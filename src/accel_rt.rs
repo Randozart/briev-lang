@@ -627,11 +627,17 @@ fn proj_size(k: &BrievKernelDesc) -> u64 {
 unsafe fn seed_program_fields(k: &BrievKernelDesc, state: *const u8, mapped: *mut u8) {
     for i in 0..k.n_seed_fields as usize {
         let f = unsafe { &*k.seed_fields.add(i) };
-        std::ptr::copy_nonoverlapping(
-            state.add(f.host_offset as usize),
-            mapped.add(f.proj_offset as usize),
-            (f.count * f.elem_bytes) as usize,
-        );
+        // SAFETY: both projections come from the same desc table the caller
+        // sized the buffers from (host/proj offsets + count*elem_bytes are
+        // within `state`/`mapped`); non-overlap holds because a seed field
+        // never aliases itself (disjoint by index).
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                state.add(f.host_offset as usize),
+                mapped.add(f.proj_offset as usize),
+                (f.count * f.elem_bytes) as usize,
+            );
+        }
     }
 }
 

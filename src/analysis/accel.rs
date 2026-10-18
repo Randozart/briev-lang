@@ -630,7 +630,9 @@ fn index_write_is_kernel(
 }
 
 /// Prove the whole kernel and collect its buffer contracts.
-pub fn prove_kernel_pub(name: &str, body: &[Statement], contract: &Contract, info: &ProgramInfo, universe: &TypeUniverse) -> KernelShape {
+// pub(crate): ProgramInfo is module-internal — visibility must not
+// exceed the parameter type (private_interfaces lint).
+pub(crate) fn prove_kernel_pub(name: &str, body: &[Statement], contract: &Contract, info: &ProgramInfo, universe: &TypeUniverse) -> KernelShape {
     prove_kernel(name, body, contract, info, universe)
 }
 
@@ -2395,7 +2397,9 @@ pub(crate) fn build_program_info(items: &[TopLevel]) -> ProgramInfo {
     ProgramInfo::build(items)
 }
 
-pub fn analyze_resident_safety(
+// pub(crate): ProgramInfo is module-internal — visibility must not
+// exceed the parameter type (private_interfaces lint).
+pub(crate) fn analyze_resident_safety(
     items: &[TopLevel],
     accel: &HashMap<String, AccelEntry>,
     info: &ProgramInfo,

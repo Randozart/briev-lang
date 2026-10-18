@@ -53,7 +53,7 @@ fn main() {
     });
 
     let Some(briefc) = briefc else {
-        println!("cargo:warning=compiler-in-Briv: no prebuilt briefc found on first build — pass libraries skipped (runtime falls back to the Rust references)");
+        println!("[build] compiler-in-Briv: no prebuilt briefc (expected on first build) — pass libraries skipped; runtime falls back to the Rust references (set BRIEFC_BIN to enable)");
         println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SO=");
         println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO=");
         return;
@@ -63,7 +63,7 @@ fn main() {
     match build_pass(&briefc, "lib/compiler/needs_state.bv", &out_root) {
         Some(so) => {
             println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SO={}", so.display());
-            println!("cargo:warning=compiler-in-Briv: needs_state pass ready at {}", so.display());
+            println!("[build] compiler-in-Briv: needs_state pass ready at {}", so.display());
         }
         None => {
             println!("cargo:warning=compiler-in-Briv: needs_state pass build failed — runtime falls back to the Rust reference");
@@ -73,7 +73,7 @@ fn main() {
     match build_pass(&briefc, "lib/compiler/soa_reorder.bv", &out_root) {
         Some(so) => {
             println!("cargo:rustc-env=BRIV_COMPILER_IN_BRIV_SOA_SO={}", so.display());
-            println!("cargo:warning=compiler-in-Briv: soa_reorder pass ready at {}", so.display());
+            println!("[build] compiler-in-Briv: soa_reorder pass ready at {}", so.display());
         }
         None => {
             println!("cargo:warning=compiler-in-Briv: soa_reorder pass build failed — runtime falls back to the Rust reference");

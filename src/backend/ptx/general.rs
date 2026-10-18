@@ -3063,7 +3063,6 @@ mod tests {
         assert!(!has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 3), "256 % 3 != 0");
     }
 
-    #[test]
     /// 2026-10-01 (D14 remainder): the declared `unroll<N>` overrides
     /// the derived factor (D2) — 2 slots instead of the config default's
     /// 4: half the back-to-back loads, the counter steps by 2.

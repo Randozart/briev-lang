@@ -840,8 +840,6 @@ fn emit_asm_artifacts(asm: String, cli: &BadCli) -> Result<(), String> {
 /// `brievc bounty <file.bv>` — package a .bounty for install-time compilation.
 fn run_bounty(args: &[String]) -> Result<(), String> {
     let file_path = args.first().ok_or("usage: brievc bounty <file.bv>")?;
-    let source = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
 
     let opts = compile::BuildOptions {
         run: false,
@@ -1026,7 +1024,7 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // SysQuery$ queries the real host (backward compatible).
 
     // Helper: merge a HashMap into the base, later values override earlier.
-    let mut merge_overrides = |incoming: HashMap<String, String>, base: &mut HashMap<String, String>| {
+    let merge_overrides = |incoming: HashMap<String, String>, base: &mut HashMap<String, String>| {
         for (k, v) in incoming {
             base.insert(k, v);
         }
@@ -1325,7 +1323,6 @@ fn run_watch_loop(dir_path: &std::path::Path, pages: &[(String, String)], split:
     manager.start(dir_path).map_err(|e| format!("watcher start failed: {}", e))?;
     println!("watching {} — press Ctrl-C to stop", dir_path.display());
 
-    let nav_json_path = dir_path.join("nav.json");
     let nav_html_path = dir_path.join("nav.html");
     let mut last_build_time = std::time::SystemTime::now();
     let mut last_build_attempt = std::time::Instant::now();

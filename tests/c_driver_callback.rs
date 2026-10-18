@@ -4,7 +4,6 @@
 // calls it back via CallPtr# (call-through-pointer) and returns the result.
 // Toolchain-guarded (cc/ar/llc/clang).
 
-use std::path::Path;
 use std::process::Command;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");

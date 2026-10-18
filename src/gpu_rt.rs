@@ -142,14 +142,20 @@ mod ffi {
             });
         }
 
-        if briev_accel_init(ffi_descs.as_ptr(), ffi_descs.len() as u32) == 0 {
+        // SAFETY: `ffi_descs`/`k_tables`/`seed_ffi` are live (stack Vecs
+        // above), pointers are FFI-owned CStrings/tables, lengths match.
+        if unsafe { briev_accel_init(ffi_descs.as_ptr(), ffi_descs.len() as u32) } == 0 {
             return Err("no GPU device available (briev_accel_init failed)".into());
         }
-        let name = briev_accel_device_name();
+        // SAFETY: driver returns null or a NUL-terminated device name owned
+        // by the driver; from_ptr runs only on the non-null branch.
+        let name = unsafe { briev_accel_device_name() };
         let name = if name.is_null() {
             "?".to_string()
         } else {
-            std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned()
+            unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned()
         };
         println!("[run] device: {}", name);
 
@@ -172,24 +178,31 @@ mod ffi {
                 }
                 let idx = i as u32;
                 let state_ptr = state.as_mut_ptr();
+                // SAFETY (all three launch arms): idx comes from enumerate
+                // over prog.kernels (< desc count), state_ptr addresses the
+                // calloc'd state buffer sized above, dims are > 0 guarded.
                 match &k.dispatch {
                     RunDispatch::Items(nx) => {
                         if *nx > 0
-                            && briev_accel_launch_resident_2d(idx, state_ptr, *nx, 1) == 0
+                            && unsafe { briev_accel_launch_resident_2d(idx, state_ptr, *nx, 1) }
+                                == 0
                         {
                             return Err(format!("node '{}': dispatch failed", k.name));
                         }
                     }
                     RunDispatch::Coop { rows } => {
                         if *rows > 0
-                            && briev_accel_launch_resident_2d(idx, state_ptr, 32, *rows) == 0
+                            && unsafe { briev_accel_launch_resident_2d(idx, state_ptr, 32, *rows) }
+                                == 0
                         {
                             return Err(format!("node '{}': dispatch failed", k.name));
                         }
                     }
                     RunDispatch::Cols { cols, rows } => {
                         if *rows > 0
-                            && briev_accel_launch_resident_2d(idx, state_ptr, *cols, *rows) == 0
+                            && unsafe {
+                                briev_accel_launch_resident_2d(idx, state_ptr, *cols, *rows)
+                            } == 0
                         {
                             return Err(format!("node '{}': dispatch failed", k.name));
                         }
@@ -202,10 +215,12 @@ mod ffi {
             counters[i] = k.count;
         }
 
-        if briev_accel_download(0, state.as_mut_ptr()) == 0 {
+        // SAFETY: state buffer lives (vec above); download/shutdown use the
+        // driver's default device handle from init — same pair the C runner.
+        if unsafe { briev_accel_download(0, state.as_mut_ptr()) } == 0 {
             return Err("download failed (kernel outputs unavailable)".into());
         }
-        briev_accel_shutdown();
+        unsafe { briev_accel_shutdown() };
 
         // Observable outputs: first + last element of each written array
         // field, decoded by element width (2 = f16 bits, 4 = f32, 8 = i64).

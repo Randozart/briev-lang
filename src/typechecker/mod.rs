@@ -2704,7 +2704,9 @@ fn arithmetic_result_ty(ctx: &TypecheckContext,
 /// correct and benchmark-stable). Runs after typechecking so types are known;
 /// mutates `items` in place. A declared op whose implementation target is not
 /// a defined function is an error (was a silent link-time undefined symbol).
-pub fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv) -> Vec<TypeError> {
+// module-private: CheckEnv is module-private — visibility must not exceed
+// the parameter type (private_interfaces lint); the sole caller is in this file.
+fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv) -> Vec<TypeError> {
     let mut errors = Vec::new();
     for item in items.iter_mut() {
         let mut ctx = make_typecheck_context(env, universe);

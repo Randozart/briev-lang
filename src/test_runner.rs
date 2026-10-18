@@ -40,7 +40,7 @@ fn spawn_build(exe: &Path, bv: &Path, scratch: &Path) -> Result<(), String> {
     }
 }
 
-fn link_and_run(exe: &Path, scratch: &Path, name: &str) -> Result<(String, i32), String> {
+fn link_and_run(scratch: &Path, name: &str) -> Result<(String, i32), String> {
     let ll = scratch.join(format!("{name}.ll"));
     let bin = scratch.join(name);
     let rt = Path::new(env!("CARGO_MANIFEST_DIR")).join("lib/runtime/briev_rt.c");
@@ -85,14 +85,16 @@ fn run_one(exe: &Path, bv: &Path, root: &Path) -> TestOutcome {
     if let Err(e) = std::fs::create_dir_all(&scratch) {
         return TestOutcome { name, passed: false, detail: format!("scratch dir: {e}") };
     }
-    let src = match std::fs::read_to_string(bv) {
+    // Readability precheck only — spawn_build re-reads the file itself.
+    // Keeps a missing/unreadable source failing as `read:` before `build:`.
+    let _src = match std::fs::read_to_string(bv) {
         Ok(s) => s,
         Err(e) => return TestOutcome { name, passed: false, detail: format!("read: {e}") },
     };
     if let Err(e) = spawn_build(exe, bv, &scratch) {
         return TestOutcome { name, passed: false, detail: format!("build failed:\n{e}") };
     }
-    let (stdout, code) = match link_and_run(exe, &scratch, &name) {
+    let (stdout, code) = match link_and_run(&scratch, &name) {
         Ok(r) => r,
         Err(e) => return TestOutcome { name, passed: false, detail: e },
     };

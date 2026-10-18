@@ -6052,7 +6052,6 @@ mod tests {
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(8));
     }
 
-    #[test]
     // ── 2026-09-24 (quantities Phase 2): Tolerance/Rating specs ─────────
 
     #[test]

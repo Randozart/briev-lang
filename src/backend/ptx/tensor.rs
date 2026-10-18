@@ -2561,7 +2561,6 @@ mod r16_dump {
     /// (64KB → 1 CTA/SM — the deepest queue the power-of-2 stage gate
     /// allows; stages=3, the literal CUTLASS point, is structurally out).
     /// Only k%32==0 shapes (the eligibility gate).
-    #[test]
     /// E8a (plan 2026-09-13-e7-persistent-tiles-and-e8-warp-spec): warp
     /// specialization — 8 consumer warps (ship compute) + 2 producer warps
     /// (fill-only), 320T CTAs, named barriers F=1/C=2. Launch: threads=320,

@@ -1648,7 +1648,6 @@ pub fn build_ptx_kernels(
 mod tests {
     use super::*;
 
-    #[test]
     /// 2026-10-01 (D14 remainder): the declared `swizzle<N>` and
     /// `fragment<m,n,k>` validate against the lane's device-verified
     /// recipes — a restatement is legal, any other shape warns (the
