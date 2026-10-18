@@ -487,6 +487,78 @@ mod tests {
     }
 
     #[test]
+    fn nested_when_write_joins_the_scc() {
+        // 2026-10-18 (fixture campaign, BUGS.md): the write harvester saw
+        // only TOP-LEVEL bare assigns — a phase transition inside a `when`
+        // block was invisible, the boot node formed a lonely self-loop SCC
+        // with a [true] post, and the build refused "no provable
+        // convergence" on a program whose tick node DOES declare a
+        // completion ([passes == 4]). The ws_frame fixture's exact shape.
+        let src = r#"
+            let phase: Int = 0;
+            let passes: Int = 0;
+            let tick: Int = 0;
+            node ws_build
+                [beginprogram && phase == 0]
+                [true]
+            {
+                phase = 1;
+                term;
+            };
+            node ws_tick
+                [phase == 1 && passes < 4]
+                [passes == 4]
+            {
+                tick = tick + 1;
+                when tick == 3 {
+                    tick = 0;
+                    passes = passes + 1;
+                    when passes == 4 {
+                        phase = 2;
+                    };
+                };
+                term;
+            };
+        "#;
+        let g = graph(src);
+        assert!(
+            g.refusals.is_empty(),
+            "tick declares a completion; its nested phase write must join the SCC: {:?}",
+            g.refusals
+        );
+        let t = g.nodes.iter().find(|n| n.name == "ws_tick").unwrap();
+        assert!(t.writes.contains("phase"), "nested when write must count: {:?}", t.writes);
+        assert!(t.writes.contains("passes"), "deeply nested when write must count: {:?}", t.writes);
+        assert!(t.writes.contains("tick"));
+    }
+
+    #[test]
+    fn indexed_write_counts_as_a_write() {
+        // 2026-10-18 (fixture campaign, BUGS.md): `buf[i] = v` writes buf.
+        // The bare-identifier-only harvester missed every indexed store, so
+        // the concurrency gate's write-disjointness check and the causal
+        // graph both treated shared-buffer writers as disjoint.
+        let src = r#"
+            let buf: Ptr<Int> = Malloc#(64) as Ptr<Int>;
+            let i: Int = 0;
+            node fill
+                [beginprogram && i == 0]
+                [i == 8]
+            {
+                when i < 8 {
+                    buf[i] = i;
+                };
+                i = i + 1;
+                term;
+            };
+        "#;
+        let g = graph(src);
+        let f = g.nodes.iter().find(|n| n.name == "fill").unwrap();
+        assert!(f.writes.contains("buf"), "indexed store must count as a write of buf: {:?}", f.writes);
+        assert!(f.writes.contains("i"));
+    }
+
+    #[test]
     fn cycle_with_completion_declaration_passes() {
         let src = r#"
             let x: Int = 0;

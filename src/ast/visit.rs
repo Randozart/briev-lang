@@ -180,6 +180,71 @@ pub fn walk_stmts<F: FnMut(&Expr)>(stmts: &[Statement], f: &mut F) {
     }
 }
 
+/// Visit every assignment as a (target, value) EXPRESSION pair, descending
+/// every statement form. 2026-10-18 (fixture campaign): the goal-reachability
+/// scans in the typechecker were top-level-statement-only, so a nested
+/// `when passes == PASSES { phase = 2; }` completion store was invisible to
+/// the beginprogram gate while the (fixed) causality harvester now sees it —
+/// the two gates jointly refused compilable programs. One walker, both
+/// consumers (Rule 17).
+pub fn walk_assign_pairs<F: FnMut(&Expr, &Expr)>(stmts: &[Statement], f: &mut F) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Assign(lhs, rhs) => f(lhs, rhs),
+            Statement::ArrowAssign {
+                target: Some(t),
+                value,
+                ..
+            } => f(t, value),
+            Statement::ArrowAssign { target: None, .. } => {}
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => walk_assign_pairs(body, f),
+            Statement::Foreach { body, .. } => walk_assign_pairs(body, f),
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    walk_assign_pairs(&arm.body, f);
+                }
+            }
+            Statement::InlineDefn(d) => walk_assign_pairs(&d.body, f),
+            // No assignment pairs.
+            Statement::Let { .. }
+            | Statement::Term(_)
+            | Statement::Tail(_)
+            | Statement::EndProgram(_)
+            | Statement::Rollback(_)
+            | Statement::Check(_)
+            | Statement::Gate(_)
+            | Statement::Expression(_)
+            | Statement::TrgBinding { .. }
+            | Statement::Open(_, _)
+            | Statement::Break
+            | Statement::Trap
+            | Statement::Halt
+            | Statement::Yield
+            | Statement::MetadataAssignment(_, _)
+            | Statement::FreeHint(_)
+            | Statement::KeepHint(_)
+            | Statement::InlineAsm { .. } => {}
+        }
+    }
+}
+
+/// Visit every assignment TARGET expression in a statement list: `Assign`
+/// LHS and `ArrowAssign` targets. 2026-10-18 (fixture campaign, BUGS.md):
+/// the write harvesters (causality, concurrency gate) previously saw only
+/// top-level bare-identifier assigns — a phase transition inside a `when`
+/// block was invisible to the causal graph, and `arr[i] = v` was not a
+/// write at all, so shared-buffer writers looked disjoint to the Rule 22
+/// classifier. Targets are yielded as EXPRESSIONS (`Identifier`,
+/// `Index`, `Field`, `Deref` — whatever the grammar produces on the LHS);
+/// callers decide what counts as a written name.
+pub fn walk_assign_targets<F: FnMut(&Expr)>(stmts: &[Statement], f: &mut F) {
+    walk_assign_pairs(stmts, &mut |lhs, _| f(lhs));
+}
+
 /// Visit every `Expr` inside a pattern (literal and range patterns carry
 /// expressions; bindings do not).
 pub fn walk_pattern<F: FnMut(&Expr)>(p: &Pattern, f: &mut F) {

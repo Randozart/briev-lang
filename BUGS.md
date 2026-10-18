@@ -10268,3 +10268,34 @@ and `term` them explicitly. Pins: the ws_frame harness benchmark (all
 16,384 decodes validate; output byte-identical to the C reference) and the
 codec interpreter-parity test (all three length forms, truncation,
 encode/decode round-trip).
+
+## 2026-10-18 — beginprogram goal-reachability: direct stores unprovable; two gates conflicted (FIXED)
+
+**Symptom:** after the causality harvester fix (nested writes now visible),
+a single-node boot program that mutates a global it reads became
+UNCOMPILABLE — the two entry gates made contradictory demands. Causality
+(now correctly seeing the self-loop) refused `[true]` posts ("no provable
+convergence"); the beginprogram goal gate rejected every honest completion:
+`[phase == 1]` was "not provably reachable" even though the body contains
+the unconditional `phase = PH_BUILD;`, and `[total > 0]` failed because the
+counter advance (`total = total + ...`) sat inside a `foreach`.
+
+**Root cause (typechecker/mod.rs, `check_goal_reachable`):** the
+reachability proofs only recognized (a) counter INCREMENTS/DECREMENTS of
+flat `var = var ± literal` shape at TOP-LEVEL statements, and (b) untouched
+variables with initializer values. A direct store of the goal's value —
+including through a named constant (`phase = PH_BUILD;` proving
+`[phase == 1]`) — proved nothing, and nested stores were invisible
+(same hand-rolled-walker drift as the harvester bug). With causality
+demanding a completion post and the beginprogram gate rejecting all
+provable ones, the gates jointly refused valid programs.
+
+**Fix:** the body scans (`body_stores_flag`, `body_assigns_var`,
+`body_advances_counter`) rebuilt on the exhaustive assign-pair visitor
+(`ast::visit::walk_assign_pairs` — nested stores count); new
+`body_stores_goal_value` proves `[v == N]` from a direct store of a
+decimal literal or a literal-valued constant (a value table now folds
+top-level `const` decimals alongside initializer literals; both the
+beginprogram and bootstrap checks share it). Residual: add-chain counter
+advances with non-literal deltas (`total = total + f(x) + y`) are still
+conservatively rejected — restructure to a flat counted variable.

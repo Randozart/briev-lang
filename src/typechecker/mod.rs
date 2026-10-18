@@ -5506,6 +5506,47 @@ pub fn check_program_with_target(
     // 2026-08-06 (beginprogram plan): entry-loop validation — termination
     // (the goal must be provably reachable) and entry conflict (at most one
     // beginprogram node can be eligible at program start).
+    // 2026-09-14 (machine-entry plan): declared initial values — the
+    // initializer's literals are the pre-bootstrap state a handoff contract
+    // may rely on for fields the body never touches.
+    let mut values: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for item in items.iter() {
+        match item {
+            TopLevel::Statement(stmt) => {
+                if let Statement::Let { name, names, expr: Some(e), .. } = stmt.as_ref() {
+                    let val = match e {
+                        Expr::Decimal(n) => Some(*n),
+                        Expr::Bool(true) => Some(1),
+                        Expr::Bool(false) => Some(0),
+                        _ => None,
+                    };
+                    if let Some(v) = val {
+                        values.insert(name.clone(), v);
+                        for n in names {
+                            values.insert(n.clone(), v);
+                        }
+                    }
+                }
+            }
+            // 2026-10-18 (fixture campaign): literal-valued constants join
+            // the value table so a goal store `phase = PH_BUILD;` proves
+            // `[phase == 1]` (body_stores_goal_value resolves the const).
+            TopLevel::Constant(c) => {
+                if let Expr::Decimal(n) = c.expr {
+                    values.insert(c.name.clone(), n);
+                }
+            }
+            TopLevel::Export(e) => {
+                if let TopLevel::Constant(c) = e.inner.as_ref() {
+                    if let Expr::Decimal(n) = c.expr {
+                        values.insert(c.name.clone(), n);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     let beginprogram_nodes: Vec<(&Transaction, Expr)> = items
         .iter()
         .filter_map(|item| match item {
@@ -5515,7 +5556,7 @@ pub fn check_program_with_target(
             _ => None,
         })
         .collect();
-    check_beginprogram_program(&beginprogram_nodes, &mut errors);
+    check_beginprogram_program(&beginprogram_nodes, &values, &mut errors);
 
     // 2026-09-14 (machine-entry plan): a bootstrap node's handoff
     // postcondition is the state AFTER its body at reactor handoff — the
@@ -5523,33 +5564,12 @@ pub fn check_program_with_target(
     // corrected in Addendum A: the base plan's [armed == false] sketch
     // described the pre-body state; the contract speaks of the post-body
     // state, so `[armed == true]` with a body that stores it is the proof.)
-    // 2026-09-14 (machine-entry plan): declared initial values — the
-    // initializer's literals are the pre-bootstrap state a handoff contract
-    // may rely on for fields the body never touches.
-    let mut initials: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for item in items.iter() {
-        if let TopLevel::Statement(stmt) = item {
-            if let Statement::Let { name, names, expr: Some(e), .. } = stmt.as_ref() {
-                let val = match e {
-                    Expr::Decimal(n) => Some(*n),
-                    Expr::Bool(true) => Some(1),
-                    Expr::Bool(false) => Some(0),
-                    _ => None,
-                };
-                if let Some(v) = val {
-                    initials.insert(name.clone(), v);
-                    for n in names {
-                        initials.insert(n.clone(), v);
-                    }
-                }
-            }
-        }
-    }
+    // Shares the literal-value table built above (initializers + consts).
     for item in items.iter() {
         if let TopLevel::Transaction(t) = item {
             if t.modifiers.iter().any(|m| m.name == "bootstrap") {
                 if let Err(msg) =
-                    check_goal_reachable(&t.body, &t.contract.post_condition, &initials)
+                    check_goal_reachable(&t.body, &t.contract.post_condition, &values)
                 {
                     errors.push(TypeError::InvalidOperation {
                         operation: format!(
@@ -5674,9 +5694,13 @@ fn conjoin(a: Expr, b: Expr) -> Expr {
 /// Entry-loop validation: every beginprogram node's goal (postcondition) must
 /// be provably reachable, and at most one beginprogram node may be eligible at
 /// program start.
-fn check_beginprogram_program(nodes: &[(&Transaction, Expr)], errors: &mut Vec<TypeError>) {
+fn check_beginprogram_program(
+    nodes: &[(&Transaction, Expr)],
+    values: &std::collections::HashMap<String, i64>,
+    errors: &mut Vec<TypeError>,
+) {
     for (txn, _entry) in nodes {
-        if let Err(msg) = check_goal_reachable(&txn.body, &txn.contract.post_condition, &std::collections::HashMap::new()) {
+        if let Err(msg) = check_goal_reachable(&txn.body, &txn.contract.post_condition, values) {
             errors.push(TypeError::InvalidOperation {
                 operation: format!(
                     "beginprogram node '{}': {}",
@@ -5708,7 +5732,7 @@ fn check_beginprogram_program(nodes: &[(&Transaction, Expr)], errors: &mut Vec<T
 fn check_goal_reachable(
     body: &[Statement],
     goal: &Expr,
-    initials: &std::collections::HashMap<String, i64>,
+    values: &std::collections::HashMap<String, i64>,
 ) -> Result<(), String> {
     match goal {
         Expr::Bool(true) => Ok(()),
@@ -5717,8 +5741,8 @@ fn check_goal_reachable(
         // both conjuncts are — the handoff contract of a bootstrap is often
         // `armed == true && ticks == 0` (each conjunct proven on its own).
         Expr::BinaryOp(BinaryOpKind::And, l, r) => {
-            check_goal_reachable(body, l, initials)?;
-            check_goal_reachable(body, r, initials)
+            check_goal_reachable(body, l, values)?;
+            check_goal_reachable(body, r, values)
         }
         // `[v == init]` where the body never touches `v`: the initializer's
         // value holds at handoff (bootstrap handoff — the machine entry runs
@@ -5733,7 +5757,12 @@ fn check_goal_reachable(
                     && !body_advances_counter(body, v, true)
                     && !body_advances_counter(body, v, false)
                     && !body_assigns_var(body, v);
-                if untouched && initials.get(v) == Some(n) {
+                if untouched && values.get(v) == Some(n) {
+                    return Ok(());
+                }
+                // 2026-10-18 (fixture campaign): a direct store of the goal's
+                // value — `phase = PH_BUILD;` — proves `[phase == 1]`.
+                if body_stores_goal_value(body, v, *n, values) {
                     return Ok(());
                 }
             }
@@ -5758,14 +5787,18 @@ fn check_goal_reachable(
 }
 
 /// Whether the body assigns the named variable at all (any right side) —
-/// the initializer's value only holds for untouched variables.
+/// the initializer's value only holds for untouched variables. 2026-10-18:
+/// nested stores count (same visitor as the causality harvester).
 fn body_assigns_var(body: &[Statement], var: &str) -> bool {
-    body.iter().any(|stmt| match stmt {
-        Statement::Assign(lhs, _) => {
-            matches!(lhs, Expr::Identifier(n) if n == var)
+    let mut found = false;
+    crate::ast::visit::walk_assign_pairs(body, &mut |lhs, _| {
+        if let Expr::Identifier(n) = lhs {
+            if n == var {
+                found = true;
+            }
         }
-        _ => false,
-    })
+    });
+    found
 }
 
 /// 2026-09-23 (E14b slice 1): a declarative physics obligation — a
@@ -5801,16 +5834,59 @@ fn is_voltage_obligation(expr: &Expr, ctx: &mut TypecheckContext) -> bool {
 
 /// Whether the body stores a truthy literal into the named flag:
 /// `armed = true` proves `[armed == true]`; `armed = 1` proves it too
-/// (nonzero Ints are truthy) — one-shot entry bodies.
+/// (nonzero Ints are truthy) — one-shot entry bodies. 2026-10-18: rebuilt on
+/// the exhaustive assign-pair visitor — a completion store inside a `when`
+/// block counts (the causality harvester sees it; this gate must too).
 fn body_stores_flag(body: &[Statement], var: &str, want: bool) -> bool {
-    body.iter().any(|stmt| match stmt {
-        Statement::Assign(lhs, rhs) => match (lhs, rhs) {
-            (Expr::Identifier(n), Expr::Bool(b)) => n == var && *b == want,
-            (Expr::Identifier(n), Expr::Decimal(d)) => n == var && (*d != 0) == want,
-            _ => false,
-        },
-        _ => false,
-    })
+    let mut found = false;
+    crate::ast::visit::walk_assign_pairs(body, &mut |lhs, rhs| {
+        if found {
+            return;
+        }
+        if let Expr::Identifier(n) = lhs {
+            let hit = match rhs {
+                Expr::Bool(b) => n == var && *b == want,
+                Expr::Decimal(d) => n == var && (*d != 0) == want,
+                _ => false,
+            };
+            found = hit;
+        }
+    });
+    found
+}
+
+/// 2026-10-18 (fixture campaign): a direct store of the goal's value proves
+/// the goal — `phase = PH_BUILD;` proves `[phase == 1]` when PH_BUILD's
+/// literal value is 1. The predecessor only accepted counter INCREMENTS
+/// toward the goal, so a phase machine's completion write (the exact shape
+/// the causality gate REQUIRES) was "not provably reachable" to this gate —
+/// the two gates jointly refused compilable programs. Nested stores count
+/// (same visitor as the causality harvester).
+fn body_stores_goal_value(
+    body: &[Statement],
+    var: &str,
+    n: i64,
+    values: &std::collections::HashMap<String, i64>,
+) -> bool {
+    let mut found = false;
+    crate::ast::visit::walk_assign_pairs(body, &mut |lhs, rhs| {
+        if found {
+            return;
+        }
+        if let Expr::Identifier(name) = lhs {
+            if name != var {
+                return;
+            }
+            let hit = match rhs {
+                Expr::Decimal(d) => *d == n,
+                // A constant identifier whose literal value is the goal.
+                Expr::Identifier(c) => values.get(c) == Some(&n),
+                _ => false,
+            };
+            found = hit;
+        }
+    });
+    found
 }
 
 /// A comparison goal over a counter is reachable when the body advances the
@@ -5860,13 +5936,21 @@ fn right_side_terminal(e: &Expr) -> bool {
 /// Whether the body advances `var` toward a bound: `var = var + d` for an
 /// increasing goal, `var = var - d` for a decreasing one.
 fn body_advances_counter(body: &[Statement], var: &str, increasing: bool) -> bool {
-    body.iter().any(|stmt| match stmt {
-        Statement::Assign(lhs, rhs) => match lhs {
-            Expr::Identifier(n) => n == var && counter_advance(rhs, var, increasing),
-            _ => false,
-        },
-        _ => false,
-    })
+    // 2026-10-18 (fixture campaign): nested stores count (assign-pair
+    // visitor) — `total = total + w` inside a `foreach` builder loop is a
+    // counter advance.
+    let mut found = false;
+    crate::ast::visit::walk_assign_pairs(body, &mut |lhs, rhs| {
+        if found {
+            return;
+        }
+        if let Expr::Identifier(n) = lhs {
+            if n == var && counter_advance(rhs, var, increasing) {
+                found = true;
+            }
+        }
+    });
+    found
 }
 
 /// `var = var ± d` with a positive literal delta in the goal's direction.
