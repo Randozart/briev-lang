@@ -10018,3 +10018,132 @@ the declared Briev type. Pin: `plain_let_read_loads_native_type`
 (Float64 read → `load double, ptr @scale`, no `load i64, ptr @scale`,
 Int read + stateless-defn assertions) — verified non-vacuous (arm
 disabled → test fails with the exact fallback IR).
+## Dot-method dispatch misaligned args for explicit-receiver obj members — FIXED 2026-10-16
+
+**Symptom:** calling an obj member written in the EXPLICIT-receiver style
+(the first parameter is the obj itself, e.g. `defn put_u8(sink: ByteBuf, val:
+Int) -> ByteBuf` in `lib/std/net/bytes.bv`) via dot syntax reported a spurious
+type error:
+
+```
+buf.put_u8(2)
+  → type mismatch: expected ByteBuf for argument 0 of '.put_u8()', found Int
+```
+
+The free-function form `put_u8(buf, 2)` (used by the `ByteSink` trait defaults
+INSIDE bytes.bv) type-checked fine, and trait-DEFAULT methods called by dot
+(`buf.put_u16_be(port)`) resolved correctly — only concrete explicit-receiver
+obj members were broken through the dot form. Discovered writing the L2 socket
+module (`lib/std/net/socket.bv`, recommender-app Task 1), which builds the
+16-byte `sockaddr_in` with the bytes.bv writers.
+
+**Root cause:** `resolve_method_call` (`src/typechecker/mod.rs`) matched the
+written call args against the member parameters starting at index 0. For an
+explicit-receiver member, parameter 0 IS the receiver (`sink: ByteBuf`), so the
+first written arg (`2: Int`) was compared against the receiver parameter type
+(`ByteBuf`) — off by one. The `Type::Dyn` branch already handled this (it
+computes `takes_self` and slices `&params[1..]`), but the concrete-obj member
+branch had no equivalent skip. Implicit-receiver members (`txn push(val: Int)`,
+the obj's fields in scope, no receiver parameter) matched at index 0 correctly,
+which is why the existing `method_call_on_obj_resolves` test passed and the gap
+went unnoticed.
+
+**Fix:** in the concrete-member branch of `resolve_method_call`, compute a
+`param_offset` that skips the first parameter when it is the explicit receiver
+(its type is `Self` or the receiver obj's own type, via the new
+`first_param_is_receiver` helper), mirroring the `Type::Dyn` branch's
+`takes_self`. The written-argument COUNT disambiguates the two receiver
+styles — they ask for counts that differ by exactly one (`supplied ==
+params.len()` fits implicit, `supplied + 1 == params.len()` fits explicit),
+so at most one reading ever fits, and the skip is taken only when it is the
+fitting reading. An arity check at the chosen offset (explicit reading
+already count-guaranteed; implicit reading `supplied == params.len()`)
+rejects genuinely wrong arities with a clear error. Residual (documented in
+`member_receiver_offset`): a wrong-arity call to an explicit-receiver member
+whose extra args are Int-typed falls to the implicit reading and surfaces a
+per-argument type mismatch rather than the best arity error — refined by a
+future dual-reading diagnostic shared with the `Type::Dyn` branch.
+
+**Tests:** `typechecker::tests::method_call_explicit_receiver_member_resolves`
+(dot call to an explicit-receiver member type-checks),
+`method_call_explicit_receiver_arity_mismatch_errors` (too few args is a clear
+arity error),
+`method_call_implicit_member_same_type_first_param_resolves` (the ambiguity
+pin: an implicit member's same-type first parameter must NOT trigger the
+receiver skip), and
+`method_call_explicit_receiver_zero_value_args_resolves` (`b.clear()` on
+`defn clear(sink: Buf)`). Full `cargo test --lib` green.
+
+## MethodCall codegen binds explicit-receiver member args off by one — FIXED 2026-10-18
+
+**Symptom:** a dot call to a concrete obj member written in the EXPLICIT-
+receiver style (`defn put_u8(sink: ByteBuf, val: Int)` — the bytes.bv
+ByteSink required-method shape) compiled to INVALID IR: `sink` bound to the
+first WRITTEN arg's register and `val` unbound, so a bare `val` load fell
+through to an undefined global (`%t25 = load i64, ptr @val` — clang: "use of
+undefined value '@val'"). `sink.len`/`sink.ptr` loads silently read through
+the VALUE arg inttoptr'd as an address (runtime garbage/segfault if the IR
+were accepted). Found by the net-stack L2 review: migrating
+`lib/std/net/socket.bv`'s writer chains to dot form (`buf.put_u8(…)…`,
+the shape PR #21's typechecker fix enables) failed at the clang link stage
+of the loopback golden.
+
+**Root cause:** `emit_member_body` (`src/backend/llvm/emit_expr.rs`) pairs
+`arg_regs[i]` with the member's `params[i]`. The concrete `emit_method_call`
+path builds `arg_regs` from the WRITTEN args only — the receiver rides as
+self_binding/self_prefix for IMPLICIT members' bare field names — while an
+EXPLICIT-receiver member counts the receiver as params[0]. The dyn arms and
+the trait-conformance path already prepend the `me: Self` data register; the
+concrete path never did. PR #21's typechecker fix (same off-by-one, mirrored)
+made dot-to-explicit-member type-check for the first time — before it, the
+typechecker rejected the call, so the codegen half was unreachable via dot
+and hid (free-form calls compile through the separate defn path, which binds
+all args including the receiver).
+
+**Fix (2026-10-18, this commit):** in `emit_member_body`, prepend the
+receiver register to `arg_regs` when the member's first parameter is
+receiver-typed (`Self` or the receiver's base type) AND the counts say the
+receiver is absent (`arg_regs.len() + 1 == params.len()`) — the arity
+disambiguation mirrors the typechecker's `member_receiver_offset`: implicit
+members and callers that already threaded the receiver (dyn arms, trait
+conformance) are unchanged. Pooled receivers (prefix Some) have no single
+address to hand a param; that combination was never expressible before, so
+it panics with what/why/fix instead of binding a row id as a pointer.
+
+**Tests:** `tests/tier1/socket_loopback_smoke.bv` +
+`daily_use_smoke::socket_loopback_golden_output` (golden "11111651") — the
+full client AND server path over loopback, exercising dot-chained
+`put_u8`/`put_u16_be`/`put_u32_be`/`pad_zeros` through the fixed path; plus
+the whole `--lib` suite (no regressions on the implicit-member corpus).
+
+## Every `endprogram` exited with (state_ptr & 0xFF) — FIXED 2026-10-18
+
+**Symptom:** any program ending with `endprogram` (bare or valued) exited
+with a garbage status (observed 24/232/200 — the low byte of the %state
+pointer). `tests/tier1/byte_sink_trait_smoke.bv` and
+`trait_generics_smoke.bv` failed in daily_use_smoke (exit ≠ 0) with correct
+stdout; the tier1 corpus gate failed with them. Found while wiring the
+socket-loopback golden into daily_use_smoke (PR #22 review) — initially
+misread as an `endprogram Print#(…)` fixture-semantics issue; the bare
+`endprogram;` form failed identically, pinning the lowering.
+
+**Root cause:** the endprogram call site (`emit_stmt.rs`) hardcoded
+`call @exit_prog(ptr %state, i64 <code>)` whenever a Briev `exit_prog`
+defn exists (Family B, 2026-09-09 — correct then: all defns took %state).
+The inference-first state/plain storage (`5aa90185`) began emitting
+stateless defns PLAIN (no %state); `exit_prog` (cast_lanes.bv — body flushes
+via stdout_flush + SysCall#, no direct global refs) is inferred plain, so
+its define takes `(i64 %arg0)` only. The 2-arg call passed the state
+pointer as `code` and the real code as an ignored second arg →
+`exit_group(state_ptr)`. The call machinery's shared gate `defn_takes_state`
+(context.rs, 2026-09-23 — "replaces the blanket defn_params.contains_key at
+every call-site gate") was never migrated at this site.
+
+**Fix:** the endprogram site now passes `%state` only when
+`defn_takes_state("exit_prog")` holds. Pins:
+`test_endprogram_calls_exit_prog_when_defn_present` (plain form, no
+%state — updated) and the new
+`test_endprogram_passes_state_to_stateful_exit_prog` (stateful form, %state
+passed). The two tier1 fixtures also stop using `endprogram Print#(…)`
+(print's library return is an incidental Int, not a status — print, then
+bare `endprogram;`), so the value-binding semantics stays honest.

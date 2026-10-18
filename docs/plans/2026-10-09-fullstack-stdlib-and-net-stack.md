@@ -155,7 +155,7 @@ correct and only architecture.
 | ID | Module | New/Extend | Scope-bar gate |
 |----|--------|-----------|----------------|
 | S1 | lib/std/net/bytes.bv  | NEW ✓ DONE 2026-10-15 | ByteSink trait: ByteBuf (fixed) + GrowBuf (growing) share derived BE writers as defaults; round-trip u8/u16/u32/cstr on both; generic `<S: ByteSink>` serves both. Gate: tests/tier1/byte_sink_trait_smoke.bv (golden "18527210501852721050" in daily_use_smoke.rs) + examples/net-bytes-sink.bv |
-| S2 | lib/std/net/socket.bv | NEW    | tcp_connect to 127.0.0.1, send/recv bytes |
+| S2 | lib/std/net/socket.bv | NEW ✓ DONE 2026-10-16 | TCP client + server over raw syscalls: sock_tcp/connect/send/recv (partial-transfer loops, MSG_NOSIGNAL), sock_bind_listen/accept, set_nonblocking + SO_REUSEADDR; 16-byte sockaddr_in built from the L1 ByteSink writers via dot chaining; -errno via obj Socket. Gate: tests/tier1/socket_loopback_smoke.bv loopback round-trip (golden in daily_use_smoke.rs), brievc check clean. Two compiler bugs found+fixed (BUGS.md 2026-10-16): dot-dispatch explicit-receiver args; -> Void defn called as a statement. |
 | S3 | lib/std/db/pg.bv      | NEW    | connect + SELECT + parameterized query, typed rows |
 | S4 | lib/std/net/http.bv   | NEW    | parse a real browser GET, write a JSON 200 |
 | S5 | lib/std/web/fetch.bv  | EXTEND | POST/PUT/DELETE JSON from .rbv to backend |

@@ -4070,6 +4070,53 @@ impl LlvmBackend {
             .into_iter()
             .map(|(n, t)| (n.clone(), crate::typechecker::substitute_type(&t, &recv_subst)))
             .collect();
+        // 2026-10-18 (net stack L2 review, BUGS.md): EXPLICIT-receiver member —
+        // parameter 0 names the receiver (`sink: ByteBuf`, the bytes.bv
+        // ByteSink required-method shape). The concrete MethodCall path builds
+        // arg_regs from the WRITTEN args only (the receiver rides as
+        // self_binding/self_prefix for IMPLICIT members' bare field names), so
+        // bind the receiver register to the first parameter and shift the
+        // written args after it — the same `me: Self` prepend the dyn arms
+        // and the trait-conformance path already do. Arity disambiguation
+        // mirrors the typechecker's `member_receiver_offset`: prepend only
+        // when the first parameter is receiver-typed AND the counts say the
+        // receiver is absent (arg_regs.len() + 1 == params.len()) — implicit
+        // members (params.len() == arg_regs.len()) and callers that already
+        // threaded the receiver are unchanged. Before this, `b.put_u8(7)`
+        // bound `sink` ← the value arg and left `val` unbound (a bare `val`
+        // load fell through to an undefined global `@val`); the typechecker
+        // bug fixed in PR #21 kept this path unreachable via dot, which is
+        // why the codegen half hid. Pooled receivers (prefix Some) have no
+        // single address to hand a param (fields live in pool columns) —
+        // that combination was never expressible before; fail loudly instead
+        // of binding a row id as a pointer.
+        let explicit_recv_param = params
+            .first()
+            .map(|(_, t)| match t {
+                crate::ast::Type::Custom(n) => n.as_str() == "Self" || n == &recv_base,
+                crate::ast::Type::Applied(n, _) => n == &recv_base,
+                _ => false,
+            })
+            .unwrap_or(false);
+        let arg_regs: Vec<(String, Type)> =
+            if explicit_recv_param && arg_regs.len() + 1 == params.len() {
+                if self_prefix.is_some() {
+                    panic!(
+                        "explicit-receiver member '.{}()' on pooled instance of '{}': the \
+                         receiver parameter has no single address (fields live in pool \
+                         columns) — write the member implicit-style (bare field names, no \
+                         receiver parameter) or call the free-function form",
+                        member_briev_name(member),
+                        type_name
+                    );
+                }
+                let mut with_self = Vec::with_capacity(arg_regs.len() + 1);
+                with_self.push((recv_reg.name.clone(), recv_reg.ty.clone()));
+                with_self.extend(arg_regs.iter().cloned());
+                with_self
+            } else {
+                arg_regs.to_vec()
+            };
         for (i, (reg, rty)) in arg_regs.iter().enumerate() {
             if let Some((pname, pty)) = params.get(i) {
                 // 2026-08-12 (slice 4): a String arg is bound as the PTR (the
