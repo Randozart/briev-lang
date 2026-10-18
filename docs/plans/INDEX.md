@@ -540,6 +540,7 @@ stage/execution plans are the concrete campaigns.
 
 | Plan | Closure |
 |------|---------|
+| `2026-10-18-readme-philosophy-refresh.md` | COMPLETE 2026-10-18 — README pillars made honest from the owner interview (record: `2026-10-18-philosophy-interview.md`; 13 Q&A + consistency verdict + 7 seams, 2 rulings), dialect stability table (Stable `.bv`/`.dbv`, Functional `.abv`/`.rbv`, In dev `.ebv`, Experimental `.sbv`), auxiliary `.bad`/`.bld`/`.beast` documented, @odecode listed as contributor; `docs/architecture/philosophy.md` refresh deferred |
 | `2026-10-16-term-semantics-and-tails.md` | Steps 1–8 DONE 2026-10-16 (`9915c098`…`442fbd31` + docs commit) — P-gated bare term, tails, output inference, purity probe, SPEC/execution-model docs |
 | `2026-10-16-cpp-vs-briev-contributor-findings.md` | COMPLETE 2026-10-16 (`35092fe1`…`d79afb94`) — flaw-4 fix, memset threshold, node-inline valve (measured), frame limit, defect ledger, recommender benchmark + corpus |
 | `2026-10-16-stability-remediation.md` | ACTIVE — S1 gate → S5-A matrix → S2 diagnostics → S3 recipes → S6 ledger → S4 prologue |
