@@ -116,6 +116,14 @@ impl LanguageVocab {
                 kw("let", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("const", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("init", VocabStatus::Canonical, KeywordContext::Declaration),
+                // 2026-10-17 (state/plain storage-class plan): `state let x`
+                // / `plain let x` are CHECKED storage assertions — contextual
+                // in the parser (lex as Ident; the statement parser
+                // recognizes the shapes), canonical for accounting and LSP
+                // completions. `state` re-activates here from Removed (the
+                // rstruct-era meaning is gone; the assertion is the live one).
+                kw("state", VocabStatus::Canonical, KeywordContext::Declaration),
+                kw("plain", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("type", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("trait", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("proto", VocabStatus::Canonical, KeywordContext::Declaration),
@@ -243,7 +251,6 @@ impl LanguageVocab {
                 // reserved seat was always earmarked for this.
                 // Removed surface (Phase 3 removes from lexer/parser)
                 kw("sig", VocabStatus::Removed, KeywordContext::Declaration),
-                kw("state", VocabStatus::Removed, KeywordContext::Declaration),
                 kw("rstruct", VocabStatus::Removed, KeywordContext::Render),
                 kw("uni", VocabStatus::Removed, KeywordContext::Statement),
                 kw("is", VocabStatus::Removed, KeywordContext::Operator),
@@ -490,7 +497,7 @@ mod tests {
     #[test]
     fn removed_surface_is_recorded() {
         let vocab = LanguageVocab::canonical();
-        for name in ["sig", "state", "rstruct", "uni", "meld", "escape", "term!", "frgn!", "Ptr!"] {
+        for name in ["sig", "rstruct", "uni", "meld", "escape", "term!", "frgn!", "Ptr!"] {
             assert_eq!(
                 vocab.keyword_status(name),
                 Some(VocabStatus::Removed),
