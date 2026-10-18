@@ -30,13 +30,13 @@ import {
 // network-order port/addr), so the socket layer carries NO byte-poking of
 // its own - it reuses L1 (DRY).
 //
-// WHOLE-MODULE import (not selective): the writers are called in the
-// free-function form `put_u8(buf, val)` - the SAME form bytes.bv's own trait
-// defaults use internally (`put_u16_be` calls `put_u8(sink, …)`). A SELECTIVE
-// `import { put_u8 }` binds `put_u8` to the bodyless `ByteSink` trait
-// declaration (whose `Self` infers Int), not the `ByteBuf` member; the whole
-// import makes `put_u8` resolve to the member. (bytes.bv is a sibling L1
-// module designed to be imported whole, like io.bv imports syscall.bv.)
+// WHOLE-MODULE import (not selective): the writers are reached through DOT
+// chaining on the ByteBuf receiver (`buf.put_u8(…)`, post PR #21), which
+// resolves via the receiver's members — but a SELECTIVE
+// `import { put_u8 }` still binds the name to the bodyless `ByteSink` trait
+// declaration (whose `Self` infers Int), not the `ByteBuf` member, so any
+// FREE-FORM call site must import whole. (bytes.bv is a sibling L1 module
+// designed to be imported whole, like io.bv imports syscall.bv.)
 import "std/net/bytes.bv";
 
 // ── Address-family / socket-type constants (Linux x86_64) ─────────────────
@@ -135,18 +135,19 @@ defn make_sockaddr_in(addr: Int, port: Int)
     [term.len == 16 && term.cap >= 16]
     -> ByteBuf
 {
-    let buf: ByteBuf = buf_new(16);
-    // The L1 writers are called free-function style (put_u8(buf, val)) - the
-    // same form bytes.bv uses internally; each returns a new ByteBuf threading
-    // the shared heap allocation (Store# mutates in place, only len advances).
-    // sin_family = AF_INET little-endian: low byte then high byte.
-    let fam_lo: ByteBuf = put_u8(buf, AF_INET & 255);
-    let fam: ByteBuf = put_u8(fam_lo, (AF_INET >> 8) & 255);
-    // sin_port big-endian, sin_addr big-endian (network order on the wire).
-    let with_port: ByteBuf = put_u16_be(fam, port);
-    let with_addr: ByteBuf = put_u32_be(with_port, addr);
-    // 8 bytes of zero padding (fills the struct to 16 bytes).
-    term pad_zeros(with_addr, 8);
+    // The L1 writers, dot-chained (post PR #21 dot dispatch skips the
+    // explicit `sink` receiver parameter): each returns a new ByteBuf
+    // threading the shared heap allocation (Store# mutates in place, only
+    // len advances), so the chain reads as the byte-layout story in order —
+    // sin_family = AF_INET little-endian (low byte then high byte), then
+    // sin_port and sin_addr big-endian (network order on the wire), then
+    // 8 bytes of zero padding filling the struct to 16.
+    term buf_new(16)
+        .put_u8(AF_INET & 255)
+        .put_u8((AF_INET >> 8) & 255)
+        .put_u16_be(port)
+        .put_u32_be(addr)
+        .pad_zeros(8);
 };
 
 // pad_zeros - append `count` zero bytes via the L1 put_u8 writer (tail
@@ -160,8 +161,7 @@ defn pad_zeros(buf: ByteBuf, count: Int)
     when count == 0 {
         term buf;
     };
-    let one: ByteBuf = put_u8(buf, 0);
-    term pad_zeros(one, count - 1);
+    term buf.put_u8(0).pad_zeros(count - 1);
 };
 
 // sockaddr_free - release the ByteBuf backing a sockaddr_in after the syscall
@@ -212,6 +212,14 @@ defn sock_connect(s: Socket, addr: Int, port: Int)
 //         -errno, surfaced as the function's negative return - DISTINCT from
 //         the 0-is-EOF case, exactly as Req 9.2 demands.
 
+// MSG_NOSIGNAL (Linux): suppress the SIGPIPE that a send(2) to a
+// closed/RESET connection would otherwise raise - the kernel's default
+// SIGPIPE action TERMINATES the process, which for a server writing to a
+// dead client means the whole server dies on the first stale connection.
+// Every send(2) in this module passes this flag; the -errno (EPIPE)
+// return is how the failure reaches the caller, instead of a signal.
+const MSG_NOSIGNAL: Int = 16384;
+
 // sock_send - send the first `len` bytes of buf, looping over short writes.
 // Returns len on full success, or the first negative -errno encountered.
 defn sock_send(s: Socket, buf: ByteBuf, len: Int)
@@ -223,6 +231,8 @@ defn sock_send(s: Socket, buf: ByteBuf, len: Int)
 
 // send_loop - tail-recursive short-write loop. `done` is the running count of
 // bytes already sent; each call sends the remaining tail (base+done, len-done).
+// Every send(2) carries MSG_NOSIGNAL (see the constant above): a write to a
+// dead connection must return -EPIPE, never raise a process-killing SIGPIPE.
 defn send_loop(s: Socket, base: Int, len: Int, done: Int)
     [s.fd >= 0 && base >= 0 && len >= 0 && done >= 0][term >= -4096]
     -> Int
@@ -230,10 +240,18 @@ defn send_loop(s: Socket, base: Int, len: Int, done: Int)
     when done >= len {
         term len;
     };
-    // send(fd, buf, len, flags=0)
-    let n: Int = syscall(SYS_SEND, s.fd, base + done, len - done, 0);
+    // send(fd, buf, len, flags=MSG_NOSIGNAL)
+    let n: Int = syscall(SYS_SEND, s.fd, base + done, len - done, MSG_NOSIGNAL);
     when n < 0 {
         term n;
+    };
+    // A 0 return from send(2) with a NONZERO length is not spec'd for Linux
+    // TCP, but if the kernel ever reported one, `done + 0` would spin the
+    // loop forever. Treat it as a generic failure (stays in the -errno error
+    // domain the caller already checks) rather than recursing with no
+    // progress.
+    when n == 0 {
+        term -1;
     };
     term send_loop(s, base, len, done + n);
 };
@@ -301,14 +319,10 @@ defn sock_set_nonblocking(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
 // option value is a 4-byte int = 1; setsockopt(2) takes its pointer+length, so
 // we build a 4-byte ByteBuf, write 1 little-endian, pass its address, and free.
 defn sock_set_reuseaddr(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
-    let opt: ByteBuf = buf_new(4);
     // optval = 1 as a 4-byte little-endian int: low byte 1, then three zeros.
-    let b0: ByteBuf = put_u8(opt, 1);
-    let b1: ByteBuf = put_u8(b0, 0);
-    let b2: ByteBuf = put_u8(b1, 0);
-    let b3: ByteBuf = put_u8(b2, 0);
-    let rc: Int = syscall(SYS_SETSOCKOPT, s.fd, SOL_SOCKET, SO_REUSEADDR, b3.ptr, 4);
-    Free#(b3.ptr as Ptr);
+    let opt: ByteBuf = buf_new(4).put_u8(1).put_u8(0).put_u8(0).put_u8(0);
+    let rc: Int = syscall(SYS_SETSOCKOPT, s.fd, SOL_SOCKET, SO_REUSEADDR, opt.ptr, 4);
+    Free#(opt.ptr as Ptr);
     term rc;
 };
 

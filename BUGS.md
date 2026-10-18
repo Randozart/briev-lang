@@ -10046,3 +10046,45 @@ pin: an implicit member's same-type first parameter must NOT trigger the
 receiver skip), and
 `method_call_explicit_receiver_zero_value_args_resolves` (`b.clear()` on
 `defn clear(sink: Buf)`). Full `cargo test --lib` green.
+
+## MethodCall codegen binds explicit-receiver member args off by one — FIXED 2026-10-18
+
+**Symptom:** a dot call to a concrete obj member written in the EXPLICIT-
+receiver style (`defn put_u8(sink: ByteBuf, val: Int)` — the bytes.bv
+ByteSink required-method shape) compiled to INVALID IR: `sink` bound to the
+first WRITTEN arg's register and `val` unbound, so a bare `val` load fell
+through to an undefined global (`%t25 = load i64, ptr @val` — clang: "use of
+undefined value '@val'"). `sink.len`/`sink.ptr` loads silently read through
+the VALUE arg inttoptr'd as an address (runtime garbage/segfault if the IR
+were accepted). Found by the net-stack L2 review: migrating
+`lib/std/net/socket.bv`'s writer chains to dot form (`buf.put_u8(…)…`,
+the shape PR #21's typechecker fix enables) failed at the clang link stage
+of the loopback golden.
+
+**Root cause:** `emit_member_body` (`src/backend/llvm/emit_expr.rs`) pairs
+`arg_regs[i]` with the member's `params[i]`. The concrete `emit_method_call`
+path builds `arg_regs` from the WRITTEN args only — the receiver rides as
+self_binding/self_prefix for IMPLICIT members' bare field names — while an
+EXPLICIT-receiver member counts the receiver as params[0]. The dyn arms and
+the trait-conformance path already prepend the `me: Self` data register; the
+concrete path never did. PR #21's typechecker fix (same off-by-one, mirrored)
+made dot-to-explicit-member type-check for the first time — before it, the
+typechecker rejected the call, so the codegen half was unreachable via dot
+and hid (free-form calls compile through the separate defn path, which binds
+all args including the receiver).
+
+**Fix (2026-10-18, this commit):** in `emit_member_body`, prepend the
+receiver register to `arg_regs` when the member's first parameter is
+receiver-typed (`Self` or the receiver's base type) AND the counts say the
+receiver is absent (`arg_regs.len() + 1 == params.len()`) — the arity
+disambiguation mirrors the typechecker's `member_receiver_offset`: implicit
+members and callers that already threaded the receiver (dyn arms, trait
+conformance) are unchanged. Pooled receivers (prefix Some) have no single
+address to hand a param; that combination was never expressible before, so
+it panics with what/why/fix instead of binding a row id as a pointer.
+
+**Tests:** `tests/tier1/socket_loopback_smoke.bv` +
+`daily_use_smoke::socket_loopback_golden_output` (golden "11111651") — the
+full client AND server path over loopback, exercising dot-chained
+`put_u8`/`put_u16_be`/`put_u32_be`/`pad_zeros` through the fixed path; plus
+the whole `--lib` suite (no regressions on the implicit-member corpus).

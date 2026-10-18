@@ -228,3 +228,25 @@ fn byte_sink_trait_golden_output() {
         "ByteSink trait golden stdout drifted: {out:?}"
     );
 }
+
+/// 2026-10-18 (fullstack-webapp net stack, L2): the pure-Briev TCP transport
+/// (lib/std/net/socket.bv — raw syscalls, no libc) end to end over loopback:
+/// bind+listen (SO_REUSEADDR) → connect → accept → send one byte through the
+/// MSG_NOSIGNAL partial-transfer loop → recv → close. Golden = five ok-flags
+/// (bind_listen, connect, accept, send, recv), the received byte (65 = 'A'),
+/// then the whole-trip verdict: "11111651". Pins the client AND server paths
+/// the Postgres client (L3) and HTTP server (L4) will sit on; a codegen
+/// regression in the syscall wrapper, the sockaddr_in byte layout, or the
+/// send/recv loops is caught in CI instead of as a hung connection.
+#[test]
+fn socket_loopback_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("socket_loopback_smoke", "golden", &[]);
+    assert_eq!(
+        out, "11111651",
+        "socket loopback golden stdout drifted: {out:?}"
+    );
+}
