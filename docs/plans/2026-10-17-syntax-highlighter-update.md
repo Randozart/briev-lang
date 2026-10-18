@@ -382,3 +382,21 @@ succeeds; Praetor unchanged-tree check is vacuous for this commit
   reproducible from the reverted tree.
 - The validation script is additive; it fails loudly if a grammar is
   reverted without its package.json contribution.
+
+## Results (2026-10-17, complete)
+
+- **Commit 1** `f60f7724` — vocab truth (`state`/`plain`) + plan + icons.
+- **Commit 2** `c421afc0` — the full sweep: 6 grammars rewritten/patched,
+  4 new (`bld`, `ebv`, `sbv`, `abv` wrappers), 2 language configurations,
+  package.json 0.2.0 hygiene, README, `validate_grammars.mjs`, vsix 0.2.0.
+- **Gates, both commits:** `cargo test --lib` 3162 green; Praetor
+  baseline-identical on `src/vocab.rs`; `node syntax-highlighter/validate_grammars.mjs`
+  → 155 regexes compile, 9 grammars consistent, 49 positive + 4 negative
+  corpus smoke-matches, beast's 67 atoms locked to `serialize.rs` in both
+  directions; `vsce package` → `briev-language-0.2.0.vsix` (0.1.0 removed).
+- **Found by the gate while writing it:** dbriev config rows (`.bv: llvm;`
+  in `config/targets.dbvl:16`) were not colorable — entry-keys now allow
+  the leading dot.
+- **Also fixed:** AGENTS.md's hash-word pillar claimed `#Category`
+  hashwords were live backend directives; `src/parser/definitions.rs:6409`
+  (Phase A4) retires them. Pillar rewritten, `hash-words.md` already correct.
