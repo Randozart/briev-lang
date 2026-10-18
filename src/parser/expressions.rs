@@ -1167,6 +1167,48 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
     }
 
     /// Parse a pattern for match arms.
+    /// `Base.Variant(subs)` — the qualified enum pattern (the ONLY
+    /// qualified form; `::` is illegal). Extracted from `parse_pattern`
+    /// 2026-10-18 when the known_types gate was dropped (importers could
+    /// not qualify before — the parser's known-type set never contains
+    /// spliced names). The dot was already consumed by the caller.
+    fn parse_qualified_dot_pattern(
+        &mut self, base: String,
+    ) -> Result<crate::ast::Pattern, SyntaxError> {
+        self.pos += 1; // consume '.'
+        let variant = self.expect_identifier()?;
+        let qualified = format!("{}::{}", base, variant);
+        let mut fields = Vec::new();
+        if self.eat(&Token::LParen) {
+            if !self.check(&Token::RParen) {
+                loop {
+                    fields.push(self.parse_pattern()?);
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(Token::RParen)?;
+        }
+        Ok(crate::ast::Pattern::EnumVariant(qualified, fields))
+    }
+
+    /// `(p1, p2, …)` — the tuple pattern. Extracted from `parse_pattern`
+    /// 2026-10-18 (Praetor complexity).
+    fn parse_tuple_pattern(&mut self) -> Result<crate::ast::Pattern, SyntaxError> {
+        let mut elems = Vec::new();
+        if !self.check(&Token::RParen) {
+            loop {
+                elems.push(self.parse_pattern()?);
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Token::RParen)?;
+        Ok(crate::ast::Pattern::Tuple(elems))
+    }
+
     pub(crate) fn parse_pattern(&mut self) -> Result<crate::ast::Pattern, SyntaxError> {
         // 2026-08-22 (spec-conformance plan Phase 4a): a parenthesized
         // pattern is a TUPLE pattern `(p1, p2, …)` — the Bool-tuple form
@@ -1174,17 +1216,7 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
         // element keeps Product shape (`(x)` matches 1-tuples); use `x` for
         // plain bindings.
         if self.eat(&Token::LParen) {
-            let mut elems = Vec::new();
-            if !self.check(&Token::RParen) {
-                loop {
-                    elems.push(self.parse_pattern()?);
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-            }
-            self.expect(Token::RParen)?;
-            return Ok(crate::ast::Pattern::Tuple(elems));
+            return self.parse_tuple_pattern();
         }
         match self.peek() {
             Some(Token::Underscore) => {
@@ -1194,6 +1226,23 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
             Some(Token::Identifier(name)) => {
                 let name = name.clone();
                 self.pos += 1;
+                // 2026-10-18 (fixture campaign): `::` is illegal in Briev —
+                // qualified variant patterns use the dot form
+                // (`Enum.Variant(args)`). Give the honest diagnostic here
+                // instead of letting the typed-binding branch eat the first
+                // colon and parse_type choke on the second ("expected type"
+                // reported at the wrong site). No ColonColon token exists;
+                // `::` lexes as two Colons.
+                if self.check(&Token::Colon)
+                    && matches!(
+                        self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                        Some(Token::Colon)
+                    )
+                {
+                    return self.error_at_current(
+                        "'::' is not Briev syntax — qualified variant patterns use the dot form: Enum.Variant(args)",
+                    );
+                }
                 // 2026-08-22 (spec-conformance plan Phase 3, SPEC §8.4): a
                 // typed binding of a structural sum member — `number: Int =>`.
                 // Distinguished from a plain Binding by the colon; the type
@@ -1205,26 +1254,17 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                 // 2026-09-22 (syntax-cleanup plan): `Color.RGB(subs)` — a
                 // qualified enum pattern via member access. The pattern name
                 // carries the `::` path internally; matching normalizes to
-                // the bare variant (last segment). Fires only when the base
-                // names a DECLARED type (matching construction); a variable
-                // pattern on a non-type name falls through to Binding.
-                if self.known_types.contains(&name) && self.check(&Token::Dot) {
-                    self.pos += 1; // consume '.'
-                    let variant = self.expect_identifier()?;
-                    let qualified = format!("{}::{}", name, variant);
-                    let mut fields = Vec::new();
-                    if self.eat(&Token::LParen) {
-                        if !self.check(&Token::RParen) {
-                            loop {
-                                fields.push(self.parse_pattern()?);
-                                if !self.eat(&Token::Comma) {
-                                    break;
-                                }
-                            }
-                        }
-                        self.expect(Token::RParen)?;
-                    }
-                    return Ok(crate::ast::Pattern::EnumVariant(qualified, fields));
+                // the bare variant (last segment).
+                // 2026-10-18 (fixture campaign): the known_types gate is
+                // DROPPED — the parser's known-type set never contains
+                // spliced/imported names, so `Result.Ok(f)` in an IMPORTER
+                // parsed as Binding and died at "expected FatArrow, found
+                // '.'" (qualified patterns were impossible outside the
+                // declaring module). `Ident . Ident` never parsed before
+                // (Binding leaves the dot unconsumed), so this is strictly
+                // additive.
+                if self.check(&Token::Dot) {
+                    return self.parse_qualified_dot_pattern(name);
                 }
                 // Enum variant with fields: Foo(a, b)
                 if self.eat(&Token::LParen) {
@@ -1659,6 +1699,48 @@ mod tests {
             &arms[1].pattern,
             crate::ast::Pattern::EnumVariant(n, f) if n == "Color::Red" && f.is_empty()
         ));
+    }
+
+    #[test]
+    fn qualified_dot_pattern_parses_without_local_enum_decl() {
+        // 2026-10-18 (fixture campaign): the dot form must parse when the
+        // enum is NOT declared in this file — the importer case. The old
+        // known_types gate never contained spliced names, so `Result.Ok(f)`
+        // in an importer parsed as Binding and died at "expected FatArrow,
+        // found '.'" (qualified patterns were impossible outside the
+        // declaring module).
+        let src = "match r { Result.Ok(f) => f, Result.Err(e) => 0 }";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let e = p.parse_expression().expect("match");
+        let Expr::Match(_, arms) = e else {
+            panic!("expected Match, got {e:?}");
+        };
+        assert!(matches!(
+            &arms[0].pattern,
+            crate::ast::Pattern::EnumVariant(n, f) if n == "Result::Ok" && f.len() == 1
+        ));
+        assert!(matches!(
+            &arms[1].pattern,
+            crate::ast::Pattern::EnumVariant(n, f) if n == "Result::Err" && f.len() == 1
+        ));
+    }
+
+    #[test]
+    fn double_colon_pattern_rejected_with_dot_form_hint() {
+        // 2026-10-18: `::` is illegal in Briev. The diagnostic names the dot
+        // form instead of the old misleading cascade (the typed-binding
+        // branch ate the first colon and parse_type choked on the second:
+        // "expected type" at the wrong site).
+        let src = "match r { Result::Ok(n) => n, _ => 0 }";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_expression().expect_err(":: must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("'::' is not Briev syntax"),
+            "expected the :: diagnostic, got {msg}"
+        );
     }
 
     #[test]

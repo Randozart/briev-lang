@@ -1244,18 +1244,18 @@ Multi-payload variants accept positional arguments stored as a Tuple payload. Us
 
 #### Qualified variant paths
 
-A variant may always be constructed or matched through its qualified path:
+A variant may always be constructed or matched through its qualified path. The qualified form is the **dot form** — `::` is not Briev syntax (the parser rejects it, naming the dot form):
 
 ```briev
-let r: Result<Int, String> = Result::Ok(a / b);
+let r: Result<Int, String> = Result.Ok(a / b);
 
 term match r {
-    Result::Ok(v) => v,
-    Result::Err(msg) => 0 - 1,
+    Result.Ok(v) => v,
+    Result.Err(msg) => 0 - 1,
 };
 ```
 
-Bare construction is ambiguous when two enums declare the same variant name (`Ok` under both `Http` and `Db`): *declaring* it is legal, but a bare call `Ok(5)` fails compilation naming every declaring enum and the qualification fix. The qualified form always resolves. Patterns accept either form and normalize on the variant's last segment.
+Bare construction is ambiguous when two enums declare the same variant name (`Ok` under both `Http` and `Db`): *declaring* it is legal, but a bare call `Ok(5)` fails compilation naming every declaring enum and the qualification fix. The qualified form always resolves. Patterns accept either form and normalize on the variant's last segment. The qualified form works everywhere the enum is visible — declaring module and importer alike.
 
 ### 8.4 Structural sums
 
@@ -1380,7 +1380,7 @@ expense:
    value has not since been aliased to a different concrete — the compiler
    **inlines the impl directly** and erases the `dyn` at that site. No tag, no
    payload move, no table. This is the default. `let g: dyn Greeter = Dog{..};
-   g.greet(3)` lowers to the body of `Dog::greet` with `g`'s payload as the
+   g.greet(3)` lowers to the body of `Dog.greet` with `g`'s payload as the
    Self argument.
 2. **Switch.** When a small *closed* set of concretes can reach a use-site
    (e.g. a function that may return `Dog` or `Cat`, and the caller dispatches),
@@ -2226,8 +2226,8 @@ A `when` block has no implicit complementary branch.
 
 ```briev
 match value {
-    Result::Ok(result) => use(result),
-    Result::Err(error) when error.retryable => retry(error),
+    Result.Ok(result) => use(result),
+    Result.Err(error) when error.retryable => retry(error),
 };
 ```
 
@@ -2237,7 +2237,9 @@ match value {
 - Open or unknown alternatives require `_ =>`.
 - Unreachable arms are errors.
 - All expression arms must have compatible result types.
-- Patterns include enum variants (`Result::Ok(result)`), tuple patterns
+- Patterns include enum variants (qualified `Result.Ok(result)` or bare
+  `Ok(result)` — both normalize on the variant's last segment; `::` is not
+  Briev syntax), tuple patterns
   matching member-wise against a tuple scrutinee (`(true, false) => …`),
   typed sum bindings (`number: Int => …`), literals (integer, string,
   Bool), ranges, and `_`. Alternatives within one arm use `|`; the first
@@ -3025,7 +3027,7 @@ insertion bindings. A literal with no observable expected type
 (`let x = [1, 2, 3]` with `x` unannotated) is a compile error — type
 annotation required for an unconstrained collection literal.
 
-There is no universal `null` or `nil`. Absence uses an ordinary sum variant such as `Option::None`. The `Blob` byte buffer is never null: it always carries its `[len]`, so an empty Blob is a valid empty value, not a null pointer. `Blob` is the safe universal byte-carrier — it holds raw bytes with no interpretation; it does not signify absence.
+There is no universal `null` or `nil`. Absence uses an ordinary sum variant such as `Option.None`. The `Blob` byte buffer is never null: it always carries its `[len]`, so an empty Blob is a valid empty value, not a null pointer. `Blob` is the safe universal byte-carrier — it holds raw bytes with no interpretation; it does not signify absence.
 
 ### 16.4 Ranges
 
@@ -3112,7 +3114,7 @@ uses `char_at(s, i) -> Char` (stdlib), since raw indexing returns Int.
 > type at any declared width (every type is composed of bits; `Bit<N>` names
 > a run directly — there is no separate `Bits`). `Blob` is the
 > `[len][bytes]` byte buffer, a `Data` member like `String` but with no
-> encoding interpretation. Absence is `Option::None` (§16.3); Blob is never
+> encoding interpretation. Absence is `Option.None` (§16.3); Blob is never
 > null — it always carries its length. See
 > `docs/plans/2026-08-15-fundamentals-as-types.md`.
 >
