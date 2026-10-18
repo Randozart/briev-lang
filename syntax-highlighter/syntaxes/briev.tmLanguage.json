@@ -1,16 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "fileTypes": [
-    "bv",
-    "br",
-    "abv",
-    "sbv",
-    "rbv",
-    "srbv",
-    "ebv",
-    "sbv",
-    "dbv",
-    "dbvl"
+    "bv"
   ],
   "firstLineMatch": "^//",
   "name": "Briev",
@@ -22,10 +13,10 @@
       "include": "#line-comments"
     },
     {
-      "include": "#annotations"
+      "include": "#render-block"
     },
     {
-      "include": "#render-block"
+      "include": "#bad-body"
     },
     {
       "include": "#keywords"
@@ -86,26 +77,6 @@
     }
   ],
   "repository": {
-    "annotations": {
-      "patterns": [
-        {
-          "match": "^// === PATH ANALYSIS ===",
-          "name": "meta.annotation.briev"
-        },
-        {
-          "match": "^// === END PATH ANALYSIS ===",
-          "name": "meta.annotation.briev"
-        },
-        {
-          "match": "^// \\[(ENTRY_POINT|RECURSIVE)\\]",
-          "name": "comment.annotation.briev"
-        },
-        {
-          "match": "^// (PATHS_TO|CALLERS|RESOLVES_TO):",
-          "name": "comment.annotation.briev"
-        }
-      ]
-    },
     "ast-constructors": {
       "patterns": [
         {
@@ -231,9 +202,19 @@
     "hash-words": {
       "patterns": [
         {
-          "comment": "2026-09-11 (fundamentals doctrine): category hashwords retired. Remaining hashwords: operand markers (#L, #R, #T, #Self) and target protocols (#Link, #System).",
-          "match": "#(L|R|T|Self|Link|System)(<[a-zA-Z0-9_]+>)?",
+          "comment": "2026-09-11 (fundamentals doctrine): category hashwords RETIRED — #Float/#Int/#UInt/#String/#Bool/#Char/#Blob/#Bit/#Data/#Bits in type/protocol/op/cast positions are compile errors (hash-words.md). Colored invalid so the error is visible before compile.",
+          "match": "#(Float|Int|UInt|String|Bool|Char|Blob|Bit|Data|Bits)\\b",
+          "name": "invalid.illegal.retired-hashword.briev"
+        },
+        {
+          "comment": "Operand markers are exact lexer tokens (#Lh/#Rh/#T/#Self — lexer.rs HashL/HashR/HashT/HashSelf); #Link/#System lex as identifiers. Alternation is longest-first: the old L|R ordering matched #L and #Link partially, leaving `h`/`ink` uncolored.",
+          "match": "#(Lh|Rh|T|Self|Link|System)(<[a-zA-Z0-9_]+>)?",
           "name": "support.constant.property-value.hashword.briev"
+        },
+        {
+          "comment": "2026-09-30 (gpu-syntax-decision-record D30): the ### module-config fence — an exact lexer token (Token::HashFence).",
+          "match": "###",
+          "name": "keyword.control.module-fence.briev"
         }
       ]
     },
@@ -336,7 +317,12 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|barrier|match|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg|bootstrap)\\b",
+          "comment": "2026-10-17 (state/plain storage-class plan): contextual storage assertions — lookahead keeps bare `state`/`plain` idents as idents.",
+          "match": "\\b(state|plain)(?=\\s+let\\b)",
+          "name": "keyword.control.briev"
+        },
+        {
+          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|match|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg|bootstrap|acquire|bartered|break|halt|pin|program|relaxed|release)\\b",
           "name": "keyword.control.briev"
         },
         {
@@ -384,6 +370,9 @@
     "numbers": {
       "patterns": [
         {
+          "include": "#quantity-literals"
+        },
+        {
           "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b",
           "name": "constant.numeric.float.briev"
         },
@@ -422,6 +411,11 @@
         {
           "match": "<-",
           "name": "keyword.operator.push.briev"
+        },
+        {
+          "comment": "2026-10-08 (BILLD plan): compound-assign tokens in the shared lexer (PipeEq/AmpEq/CaretEq/ShlEq/ShrEq/PlusEq/MinusEq/StarEq/SlashEq). Must precede relational/arithmetic or `<`/`+`/`|` would split them.",
+          "match": "\\+=|-=|\\*=|/=|\\|=|&=|\\^=|<<=|>>=",
+          "name": "keyword.operator.compound-assign.briev"
         },
         {
           "match": "<=|>=|<|>",
@@ -532,6 +526,17 @@
           "name": "string.quoted.single.briev"
         },
         {
+          "begin": "#b\"",
+          "end": "\"",
+          "name": "string.quoted.double.byte.briev",
+          "patterns": [
+            {
+              "match": "\\\\.",
+              "name": "constant.character.escape.briev"
+            }
+          ]
+        },
+        {
           "begin": "\"",
           "end": "\"",
           "name": "string.quoted.double.briev",
@@ -561,6 +566,47 @@
         {
           "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
           "name": "entity.name.type.custom.briev"
+        }
+      ]
+    },
+    "quantity-literals": {
+      "comment": "2026-10-17: physical-quantity literals — source of truth src/parser/quantity.rs (compact V/A/R/F/H/W/K/s, full-word Ohm/Volt/Amp/Farad/Henry/Watt/Kelvin, SI prefixes p/n/u/m/k/M, E-series fractions like 4k7, bare prefixes like 100n). Serves .ebv/.sbv spec values and expression literals.",
+      "patterns": [
+        {
+          "match": "\\b[0-9]+(\\.[0-9]+)?(p|n|u|m|k|M)?(Ohm|Volt|Amp|Farad|Henry|Watt|Kelvin|[VAFRHWK])\\b",
+          "name": "constant.numeric.quantity.briev"
+        },
+        {
+          "comment": "E-series fraction: 4k7 -> 4.7k, 2R2 -> 2.2 ohm",
+          "match": "\\b[0-9]+[kKrR][0-9]+\\b",
+          "name": "constant.numeric.quantity.briev"
+        },
+        {
+          "comment": "bare SI prefix — dimension comes from the spec key (quantity.rs UnitSuffix::BarePrefix); valid in spec values",
+          "match": "\\b[0-9]+(p|n|u|m|k|M)\\b",
+          "name": "constant.numeric.quantity.briev"
+        }
+      ]
+    },
+    "bad-body": {
+      "comment": "2026-10-17: nested .bad bodies in .bv — both entry shapes share parse_bad_fn (definitions.rs:326 plain, :136 bootstrap). The head line carries no braces (params + -> Type + [contract] + {); the body is line-oriented .bad with ZERO braces, so the end anchor ^\\s*\\} closes at the declaration (mid-line `}` e.g. thumb `push {r4, lr}` never anchors). .bld nesting deliberately absent (no parser construct; dialect under discussion).",
+      "name": "meta.declaration.bad-body.briev",
+      "begin": "\\b(bootstrap\\s+bad|bad)(?:<([A-Za-z0-9_]+)>)?\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^)]*\\)[^{\\n]*\\{",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.briev"
+        },
+        "2": {
+          "name": "entity.name.tag.target.bad"
+        },
+        "3": {
+          "name": "entity.name.function.bad-body.briev"
+        }
+      },
+      "end": "^[ \\t]*\\}",
+      "patterns": [
+        {
+          "include": "source.bad"
         }
       ]
     }

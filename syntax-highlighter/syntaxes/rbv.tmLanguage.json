@@ -1,7 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Rendered Briev",
-  "fileTypes": ["rbv"],
+  "fileTypes": [
+    "rbv"
+  ],
   "patterns": [
     {
       "include": "#view-tag"
@@ -10,36 +12,22 @@
       "include": "#style-tag"
     },
     {
-      "include": "#script-tag"
-    },
-    {
       "include": "source.briev"
     }
   ],
   "repository": {
-    "script-tag": {
-      "begin": "(<script>|<script type=\"briev\">)",
-      "beginCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
-      },
-      "end": "</script>",
-      "endCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
-      },
-      "patterns": [
-        {
-          "include": "source.briev"
-        }
-      ]
-    },
     "view-tag": {
       "begin": "(<view>)",
       "beginCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
+        "0": {
+          "name": "punctuation.definition.tag.briev"
+        }
       },
       "end": "(</view>)",
       "endCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
+        "0": {
+          "name": "punctuation.definition.tag.briev"
+        }
       },
       "patterns": [
         {
@@ -53,11 +41,15 @@
     "style-tag": {
       "begin": "(<style>)",
       "beginCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
+        "0": {
+          "name": "punctuation.definition.tag.briev"
+        }
       },
       "end": "(</style>)",
       "endCaptures": {
-        "0": { "name": "punctuation.definition.tag.briev" }
+        "0": {
+          "name": "punctuation.definition.tag.briev"
+        }
       },
       "patterns": [
         {
@@ -70,37 +62,73 @@
         {
           "match": "(<)([A-Z][a-zA-Z0-9_]*)(\\s+[^>]*)?(/?>)",
           "captures": {
-            "1": { "name": "punctuation.definition.tag.briev" },
-            "2": { "name": "entity.name.tag.briev" },
-            "3": { "patterns": [{ "include": "text.html.basic" }] },
-            "4": { "name": "punctuation.definition.tag.briev" }
+            "1": {
+              "name": "punctuation.definition.tag.briev"
+            },
+            "2": {
+              "name": "entity.name.tag.briev"
+            },
+            "3": {
+              "patterns": [
+                {
+                  "include": "text.html.basic"
+                }
+              ]
+            },
+            "4": {
+              "name": "punctuation.definition.tag.briev"
+            }
           }
         },
         {
           "match": "(</)([A-Z][a-zA-Z0-9_]*)(>)",
           "captures": {
-            "1": { "name": "punctuation.definition.tag.briev" },
-            "2": { "name": "entity.name.tag.briev" },
-            "3": { "name": "punctuation.definition.tag.briev" }
+            "1": {
+              "name": "punctuation.definition.tag.briev"
+            },
+            "2": {
+              "name": "entity.name.tag.briev"
+            },
+            "3": {
+              "name": "punctuation.definition.tag.briev"
+            }
           }
         },
         {
           "begin": "(<)([a-z][a-z0-9]*)",
           "beginCaptures": {
-            "1": { "name": "punctuation.definition.tag.briev" },
-            "2": { "name": "entity.name.tag.briev" }
+            "1": {
+              "name": "punctuation.definition.tag.briev"
+            },
+            "2": {
+              "name": "entity.name.tag.briev"
+            }
           },
           "end": "(</)(\\2)(>)|(/>)",
           "endCaptures": {
-            "1": { "name": "punctuation.definition.tag.briev" },
-            "2": { "name": "entity.name.tag.briev" },
-            "3": { "name": "punctuation.definition.tag.briev" },
-            "4": { "name": "punctuation.definition.tag.briev" }
+            "1": {
+              "name": "punctuation.definition.tag.briev"
+            },
+            "2": {
+              "name": "entity.name.tag.briev"
+            },
+            "3": {
+              "name": "punctuation.definition.tag.briev"
+            },
+            "4": {
+              "name": "punctuation.definition.tag.briev"
+            }
           },
           "patterns": [
-            { "include": "#briev-bindings" },
-            { "include": "text.html.basic" },
-            { "include": "#html-components" }
+            {
+              "include": "#briev-bindings"
+            },
+            {
+              "include": "text.html.basic"
+            },
+            {
+              "include": "#html-components"
+            }
           ]
         }
       ]
@@ -110,10 +138,18 @@
         {
           "match": "\\b(b-[a-z0-9\\-]+)(:([a-z0-9\\-]+))?(=)(\"[^\"]*\")",
           "captures": {
-            "1": { "name": "entity.other.attribute-name.briev" },
-            "3": { "name": "variable.parameter.briev" },
-            "4": { "name": "punctuation.separator.key-value.briev" },
-            "5": { "name": "string.quoted.double.briev" }
+            "1": {
+              "name": "entity.other.attribute-name.briev"
+            },
+            "3": {
+              "name": "variable.parameter.briev"
+            },
+            "4": {
+              "name": "punctuation.separator.key-value.briev"
+            },
+            "5": {
+              "name": "string.quoted.double.briev"
+            }
           }
         }
       ]

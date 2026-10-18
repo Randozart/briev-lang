@@ -1,0 +1,127 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "BILLD",
+  "scopeName": "source.bld",
+  "fileTypes": ["bld"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#bad-block" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#booleans" },
+    { "include": "#engine-verbs" },
+    { "include": "#operators" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#functions" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.bld",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.bld",
+          "patterns": [
+            { "match": "\\\\.", "name": "constant.character.escape.bld" }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "comment": "2026-10-17: .bld keyword surface from src/parser/bld.rs — shared TOKEN keywords (import/from/as/const/defn/bootstrap/let/when/break — all Token enum arms) plus the contextual statement-head keywords (else/loop/while/continue/return — ordinary identifiers in the shared lexer, recognized only at .bld statement heads; colored everywhere as the honest TextMate-level approximation, same choice source.briev makes for `state`). `bad` is handled by #bad-block.",
+      "patterns": [
+        {
+          "match": "\\b(import|from|as|const|defn|bootstrap|let|when|break|else|loop|while|continue|return)\\b",
+          "name": "keyword.control.bld"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.bld"
+        }
+      ]
+    },
+    "bad-block": {
+      "comment": "2026-10-17: `bad { … }` statement blocks (src/parser/bld.rs — the flagship shape is a bad{ } prologue at a recipe's first statement) include source.bad between the braces so the nested .bad content colors with the real dialect rules. End is line-anchored: the .bad body is line-oriented; mid-line braces (thumb `push {r4, lr}`) never anchor. Mirrors the #bad-body nesting in source.briev.",
+      "begin": "\\b(bad)(?=\\s*\\{)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.block.bld" }
+      },
+      "end": "^[ \\t]*\\}",
+      "patterns": [{ "include": "source.bad" }]
+    },
+    "engine-verbs": {
+      "comment": "2026-10-17: PascalCase applied to `(` — the engine-verb call shape (config/bld-intrinsics.dbvl is DATA, never hardcoded here — Rule 3: match the shape, not the vocabulary). Must precede #types or the capitalized-ident rule would color verbs as types.",
+      "patterns": [
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\s*\\()",
+          "name": "support.function.engine.bld"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "comment": "Compound-assign tokens (shared lexer — 2026-10-08 BILLD plan); before the binary operators or `+`/`<`/`|` would split them.",
+          "match": "\\+=|-=|\\*=|/=|\\|=|&=|\\^=|<<=|>>=",
+          "name": "keyword.operator.compound-assign.bld"
+        },
+        { "match": "==|!=", "name": "keyword.operator.comparison.bld" },
+        { "match": "<-|->", "name": "keyword.operator.arrow.bld" },
+        { "match": "<=|>=|<|>", "name": "keyword.operator.relational.bld" },
+        { "match": "&&|\\|\\|", "name": "keyword.operator.logical.bld" },
+        { "match": "\\+|\\-|\\*|/", "name": "keyword.operator.arithmetic.bld" },
+        { "match": "~", "name": "keyword.operator.bitwise.bld" },
+        { "match": "=", "name": "keyword.operator.assignment.bld" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "match": "\\b(Int|Float|Bool|String|Char|Void|Ptr|Bits)\\b",
+          "name": "support.type.primitive.bld"
+        },
+        {
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b",
+          "name": "entity.name.type.custom.bld"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b", "name": "constant.numeric.float.bld" },
+        { "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b", "name": "constant.numeric.float.bld" },
+        { "match": "\\b0x[0-9a-fA-F]+\\b|\\b[0-9]+\\b", "name": "constant.numeric.integer.bld" }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b[a-z_][a-zA-Z0-9_]*(?=\\s*\\()",
+          "name": "entity.name.function.bld"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b",
+          "name": "variable.other.read.bld"
+        }
+      ]
+    }
+  }
+}

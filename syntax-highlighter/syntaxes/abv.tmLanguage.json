@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Accelerator Briev (wrapper)",
+  "scopeName": "source.abv",
+  "fileTypes": ["abv"],
+  "patterns": [
+    { "include": "source.briev" }
+  ]
+}

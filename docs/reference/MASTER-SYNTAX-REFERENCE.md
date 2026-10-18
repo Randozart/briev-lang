@@ -149,6 +149,8 @@ Lexed as ordinary identifiers; given meaning in specific parse positions
 | `asm` | Assembly declaration (`asm<target>`) |
 | `isr` | ISR handler declaration |
 | `init` | Runtime-seeded invariant / init declaration |
+| `state` | Storage assertion — `state let x` proves x belongs to proof-surface state (2026-10-17 storage-class plan) |
+| `plain` | Storage assertion — `plain let x` proves x lowers to non-state storage (2026-10-17 storage-class plan) |
 | `$defn` | Compile-time definition |
 | `$txn` | Compile-time transaction |
 | `$let` | Compile-time variable |
@@ -493,8 +495,11 @@ Rust plugin macros (`src/plugin/`):
 
 ## 12. Removed / reserved surface
 
-Full index deferred to a follow-up document. For diagnostics only, the
-vocab (`src/vocab.rs:240-269`) records these as **removed**: `sig`, `state`,
+Full index deferred to a follow-up document. (`state` was removed in the
+rstruct era and RE-ACTIVATED 2026-10-17 as the contextual storage
+assertion — see the declarations table; it is no longer removed.) For
+diagnostics only, the
+vocab (`src/vocab.rs:240-269`) records these as **removed**: `sig`,
 `rstruct`, `uni`, `is`, `like`, `prop`, `meld`, `syscall`, `escape`, `term!`,
 `trg!`, `cell!`, `sync!`, `frgn!`, `syscall!`, `Ptr!`, `Ok`, `Err`, `Some`,
 `None`, `some`, `none`, `cycles`, `seconds`, `minute`, `minutes`,

@@ -2,16 +2,42 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Briev Assembly Dialect",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#directives" },
-    { "include": "#top-level" },
-    { "include": "#exceptions" },
-    { "include": "#contracts" },
-    { "include": "#registers" },
-    { "include": "#numbers" },
-    { "include": "#labels" },
-    { "include": "#mnemonics" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#blocks"
+    },
+    {
+      "include": "#ack"
+    },
+    {
+      "include": "#directives"
+    },
+    {
+      "include": "#top-level"
+    },
+    {
+      "include": "#exceptions"
+    },
+    {
+      "include": "#contracts"
+    },
+    {
+      "include": "#registers"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#labels"
+    },
+    {
+      "include": "#mnemonics"
+    }
   ],
   "repository": {
     "comments": {
@@ -62,17 +88,16 @@
         },
         {
           "name": "entity.name.tag.target.bad",
-          "match": "^\\s*(default|x86_64|aarch64|riscv64|arm|thumb)(?=\\s*=>)"
+          "match": "^\\s*(default|x86_64|aarch64|riscv64|arm|thumb|ptx)(?=\\s*=>)"
         }
       ]
     },
     "contracts": {
       "patterns": [
         {
-          "name": "meta.contract.bad",
+          "name": "support.type.contract.bad",
           "begin": "\\[",
-          "end": "\\]",
-          "name": "support.type.contract.bad"
+          "end": "\\]"
         }
       ]
     },
@@ -103,7 +128,63 @@
     "mnemonics": {
       "name": "keyword.other.mnemonic.bad",
       "match": "^\\s*[a-zA-Z_][a-zA-Z0-9_.]*"
+    },
+    "blocks": {
+      "comment": "2026-10-17: block keywords — site/end site (2026-10-01 anonymous dispatch, bad-dialect.md §Sites) and raw <target> [name]/end raw (§Raw blocks). Terminators are EXACT in the parser: src/parser/bad.rs rejects bare `end` with a fix; both are line-head anchored so they win over the generic mnemonic rule.",
+      "patterns": [
+        {
+          "match": "^\\s*(raw)\\s+(x86_64|aarch64|riscv64|arm|thumb|ptx)(\\s+[a-zA-Z_][a-zA-Z0-9_]*)?",
+          "name": "meta.block.raw.bad",
+          "captures": {
+            "1": {
+              "name": "keyword.control.block.bad"
+            },
+            "2": {
+              "name": "entity.name.tag.target.bad"
+            },
+            "3": {
+              "name": "entity.name.function.label.bad"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(end)\\s+(raw|site)\\b",
+          "name": "meta.block.end.bad",
+          "captures": {
+            "1": {
+              "name": "keyword.control.block.bad"
+            },
+            "2": {
+              "name": "keyword.control.block.bad"
+            }
+          }
+        },
+        {
+          "match": "^\\s*(site)\\b",
+          "name": "keyword.control.block.bad"
+        }
+      ]
+    },
+    "ack": {
+      "comment": "2026-10-17: acknowledge-tier prefixes ^/^^/^^^ + instruction (bad-dialect.md §The acknowledge tier). The mnemonic is captured here — the generic mnemonic rule is line-head anchored and would never match past the carets.",
+      "patterns": [
+        {
+          "match": "^(\\s*)(\\^{1,3})(\\s+)([a-zA-Z_][a-zA-Z0-9_.]*)",
+          "name": "meta.instruction.acknowledged.bad",
+          "captures": {
+            "2": {
+              "name": "keyword.other.acknowledge.bad"
+            },
+            "4": {
+              "name": "keyword.other.mnemonic.bad"
+            }
+          }
+        }
+      ]
     }
   },
-  "scopeName": "source.bad"
+  "scopeName": "source.bad",
+  "fileTypes": [
+    "bad"
+  ]
 }

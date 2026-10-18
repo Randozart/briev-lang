@@ -2,7 +2,7 @@
   "name": "briev-language",
   "displayName": "Briev Language",
   "description": "Syntax highlighting, folding, bracket colorization, and intelligent editing for Briev (.bv), Rendered Briev (.rbv), and Embedded Briev (.ebv) files",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "images/extension-logo.png",
   "publisher": "randozart",
   "main": "./client/extension.js",
@@ -27,8 +27,13 @@
     "languages": [
       {
         "id": "briev",
-        "aliases": ["Briev", "briev"],
-        "extensions": [".bv"],
+        "aliases": [
+          "Briev",
+          "briev"
+        ],
+        "extensions": [
+          ".bv"
+        ],
         "icon": {
           "light": "./images/briev-logo.svg",
           "dark": "./images/briev-logo.svg"
@@ -37,8 +42,15 @@
       },
       {
         "id": "rbv",
-        "aliases": ["Rendered Briev", "rendered-briev", "Briev Render", "briev-render"],
-        "extensions": [".rbv"],
+        "aliases": [
+          "Rendered Briev",
+          "rendered-briev",
+          "Briev Render",
+          "briev-render"
+        ],
+        "extensions": [
+          ".rbv"
+        ],
         "icon": {
           "light": "./images/r-briev-logo.svg",
           "dark": "./images/r-briev-logo.svg"
@@ -47,8 +59,15 @@
       },
       {
         "id": "ebv",
-        "aliases": ["Electronics Briev", "electronics-briev", "Briev Electronics", "briev-electronics"],
-        "extensions": [".ebv"],
+        "aliases": [
+          "Electronics Briev",
+          "electronics-briev",
+          "Briev Electronics",
+          "briev-electronics"
+        ],
+        "extensions": [
+          ".ebv"
+        ],
         "icon": {
           "light": "./images/e-briev-logo.svg",
           "dark": "./images/e-briev-logo.svg"
@@ -57,8 +76,16 @@
       },
       {
         "id": "dbriev",
-        "aliases": ["Data Briev", "dbriev", "Briev Data", "briev-data"],
-        "extensions": [".dbv", ".dbvl"],
+        "aliases": [
+          "Data Briev",
+          "dbriev",
+          "Briev Data",
+          "briev-data"
+        ],
+        "extensions": [
+          ".dbv",
+          ".dbvl"
+        ],
         "icon": {
           "light": "./images/d-briev-logo.svg",
           "dark": "./images/d-briev-logo.svg"
@@ -66,29 +93,16 @@
         "configuration": "./language-configuration.json"
       },
       {
-        "id": "sbriev",
-        "aliases": ["Strict Briev", "strict-briev"],
-        "extensions": [".sbv"],
-        "icon": {
-          "light": "./images/briev-logo.svg",
-          "dark": "./images/briev-logo.svg"
-        },
-        "configuration": "./language-configuration.json"
-      },
-      {
-        "id": "srbv",
-        "aliases": ["Strict Rendered Briev", "strict-rendered-briev", "Strict Render", "strict-render"],
-        "extensions": [".srbv"],
-        "icon": {
-          "light": "./images/r-briev-logo.svg",
-          "dark": "./images/r-briev-logo.svg"
-        },
-        "configuration": "./language-configuration.json"
-      },
-      {
         "id": "abv",
-        "aliases": ["Accelerated Briev", "accelerated-briev", "Briev Accel", "briev-accel"],
-        "extensions": [".abv"],
+        "aliases": [
+          "Accelerated Briev",
+          "accelerated-briev",
+          "Briev Accel",
+          "briev-accel"
+        ],
+        "extensions": [
+          ".abv"
+        ],
         "icon": {
           "light": "./images/a-briev-logo.svg",
           "dark": "./images/a-briev-logo.svg"
@@ -97,8 +111,15 @@
       },
       {
         "id": "sbv",
-        "aliases": ["Silicon Briev", "silicon-briev", "Briev Silicon", "briev-silicon"],
-        "extensions": [".sbv"],
+        "aliases": [
+          "Silicon Briev",
+          "silicon-briev",
+          "Briev Silicon",
+          "briev-silicon"
+        ],
+        "extensions": [
+          ".sbv"
+        ],
         "icon": {
           "light": "./images/s-briev-logo.svg",
           "dark": "./images/s-briev-logo.svg"
@@ -107,14 +128,46 @@
       },
       {
         "id": "bad",
-        "aliases": ["Briev Assembly Dialect", "briev-assembly", "BAD", ".bad"],
-        "extensions": [".bad"],
-        "configuration": "./language-configuration.json"
+        "aliases": [
+          "Briev Assembly Dialect",
+          "briev-assembly",
+          "BAD",
+          ".bad"
+        ],
+        "extensions": [
+          ".bad"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/bad-icon.svg",
+          "dark": "./images/bad-icon.svg"
+        }
+      },
+      {
+        "id": "bld",
+        "aliases": [
+          "BILLD",
+          "billd",
+          "Briev Intermediate Low-Level"
+        ],
+        "extensions": [
+          ".bld"
+        ],
+        "icon": {
+          "light": "./images/billd-icon.svg",
+          "dark": "./images/billd-icon.svg"
+        },
+        "configuration": "./language-configuration-bld.json"
       },
       {
         "id": "beast",
-        "aliases": ["BEAST", "beast"],
-        "extensions": [".beast"],
+        "aliases": [
+          "BEAST",
+          "beast"
+        ],
+        "extensions": [
+          ".beast"
+        ],
         "icon": {
           "light": "./images/beast-icon.svg",
           "dark": "./images/beast-icon.svg"
@@ -135,8 +188,18 @@
       },
       {
         "language": "ebv",
-        "scopeName": "source.briev",
-        "path": "./syntaxes/briev.tmLanguage.json"
+        "scopeName": "source.ebv",
+        "path": "./syntaxes/ebv.tmLanguage.json"
+      },
+      {
+        "language": "sbv",
+        "scopeName": "source.sbv",
+        "path": "./syntaxes/sbv.tmLanguage.json"
+      },
+      {
+        "language": "abv",
+        "scopeName": "source.abv",
+        "path": "./syntaxes/abv.tmLanguage.json"
       },
       {
         "language": "dbriev",
@@ -144,29 +207,14 @@
         "path": "./syntaxes/dbriev.tmLanguage.json"
       },
       {
-        "language": "sbriev",
-        "scopeName": "source.briev",
-        "path": "./syntaxes/briev.tmLanguage.json"
-      },
-      {
         "language": "bad",
         "scopeName": "source.bad",
         "path": "./syntaxes/bad.tmLanguage.json"
       },
       {
-        "language": "srbv",
-        "scopeName": "source.rbv",
-        "path": "./syntaxes/rbv.tmLanguage.json"
-      },
-      {
-        "language": "abv",
-        "scopeName": "source.briev",
-        "path": "./syntaxes/briev.tmLanguage.json"
-      },
-      {
-        "language": "sbv",
-        "scopeName": "source.briev",
-        "path": "./syntaxes/briev.tmLanguage.json"
+        "language": "bld",
+        "scopeName": "source.bld",
+        "path": "./syntaxes/bld.tmLanguage.json"
       },
       {
         "language": "beast",
@@ -184,15 +232,6 @@
         "label": "Briev Light",
         "uiTheme": "vs",
         "path": "./themes/briev-light.json"
-      }
-    ],
-    "folding": [
-      {
-        "language": "briev",
-        "boundaries": [
-          "// === PATH ANALYSIS ===",
-          "// === END PATH ANALYSIS ==="
-        ]
       }
     ],
     "brackets": [
@@ -265,7 +304,7 @@
       }
     ],
     "comments": {
-      "lineComment": "#"
+      "lineComment": "//"
     },
     "indentationRules": {
       "increaseIndentPattern": "\\{[^}]*${|\\[([^\\]]*${|\\([^)]*${",
