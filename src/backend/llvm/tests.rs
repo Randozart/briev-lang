@@ -3009,9 +3009,13 @@ fn test_endprogram_emits_process_exit() {
 #[test]
 fn test_endprogram_calls_exit_prog_when_defn_present() {
     // 2026-10-15 (core-usable purge): with the stdlib exit_prog defn in the
-    // unit, `endprogram` calls the stateful Briev defn (i64, %state) — the
-    // void @__exit C wrapper is the fallback only (emit_stmt endprogram
-    // branch). Sibling of test_endprogram_emits_process_exit.
+    // unit, `endprogram` calls the Briev defn (i64) — the void @__exit C
+    // wrapper is the fallback only (emit_stmt endprogram branch).
+    // 2026-10-18 (state/plain inference fallout): a PLAIN exit_prog (body
+    // touches no state globals — the real cast_lanes.bv shape) is called
+    // WITHOUT %state; blanket-passing it shifted the status arg into the
+    // pointer slot and every `endprogram` exited with (state_ptr & 0xFF).
+    // The stateful form is pinned by the sibling test below.
     let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         state_count(),
@@ -3051,14 +3055,64 @@ fn test_endprogram_calls_exit_prog_when_defn_present() {
     ];
     let output = backend.generate(&program, None);
     assert!(
-        output.contains("call i64 @exit_prog(ptr %state, i64 "),
-        "stateful exit_prog call when the defn is present: {output}"
+        output.contains("call i64 @exit_prog(i64 "),
+        "plain exit_prog call must NOT pass %state: {output}"
     );
     assert!(
         !output.contains("call void @__exit(i64"),
         "C-fallback exit must not fire when exit_prog is present: {output}"
     );
     assert!(output.contains("unreachable"), "unreachable after exit: {output}");
+}
+
+#[test]
+fn test_endprogram_passes_state_to_stateful_exit_prog() {
+    // 2026-10-18: the mirror pin — an exit_prog whose body references a
+    // state global needs %state, and the endprogram call site must pass it
+    // (defn_takes_state gate). Sibling of
+    // test_endprogram_calls_exit_prog_when_defn_present.
+    let mut backend = LlvmBackend::new().with_force_emit_all(true);
+    let program = vec![
+        state_count(),
+        TopLevel::Definition(crate::ast::Definition {
+            variadic_param: None,
+            name: "exit_prog".to_string(),
+            type_params: vec![],
+            parameters: vec![("code".to_string(), Type::int())],
+            outputs: vec![Type::int()],
+            output_type: None,
+            contract: default_contract(),
+            body: vec![Statement::Term(Some(Expr::Identifier("count".into())))],
+            modifiers: vec![],
+            metadata: HashMap::new(),
+            derivation: None,
+            annotations: vec![],
+            span: None,
+            doc: None,
+        }),
+        TopLevel::Transaction(Transaction {
+            variadic_param: None,
+            name: "report".to_string(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: default_contract(),
+            body: vec![Statement::EndProgram(Some(Expr::Decimal(7)))],
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
+        }),
+    ];
+    let output = backend.generate(&program, None);
+    assert!(
+        output.contains("call i64 @exit_prog(ptr %state, i64 "),
+        "stateful exit_prog call must pass %state: {output}"
+    );
 }
 
 #[test]

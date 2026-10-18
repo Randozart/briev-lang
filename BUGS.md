@@ -10088,3 +10088,35 @@ it panics with what/why/fix instead of binding a row id as a pointer.
 full client AND server path over loopback, exercising dot-chained
 `put_u8`/`put_u16_be`/`put_u32_be`/`pad_zeros` through the fixed path; plus
 the whole `--lib` suite (no regressions on the implicit-member corpus).
+
+## Every `endprogram` exited with (state_ptr & 0xFF) — FIXED 2026-10-18
+
+**Symptom:** any program ending with `endprogram` (bare or valued) exited
+with a garbage status (observed 24/232/200 — the low byte of the %state
+pointer). `tests/tier1/byte_sink_trait_smoke.bv` and
+`trait_generics_smoke.bv` failed in daily_use_smoke (exit ≠ 0) with correct
+stdout; the tier1 corpus gate failed with them. Found while wiring the
+socket-loopback golden into daily_use_smoke (PR #22 review) — initially
+misread as an `endprogram Print#(…)` fixture-semantics issue; the bare
+`endprogram;` form failed identically, pinning the lowering.
+
+**Root cause:** the endprogram call site (`emit_stmt.rs`) hardcoded
+`call @exit_prog(ptr %state, i64 <code>)` whenever a Briev `exit_prog`
+defn exists (Family B, 2026-09-09 — correct then: all defns took %state).
+The inference-first state/plain storage (`5aa90185`) began emitting
+stateless defns PLAIN (no %state); `exit_prog` (cast_lanes.bv — body flushes
+via stdout_flush + SysCall#, no direct global refs) is inferred plain, so
+its define takes `(i64 %arg0)` only. The 2-arg call passed the state
+pointer as `code` and the real code as an ignored second arg →
+`exit_group(state_ptr)`. The call machinery's shared gate `defn_takes_state`
+(context.rs, 2026-09-23 — "replaces the blanket defn_params.contains_key at
+every call-site gate") was never migrated at this site.
+
+**Fix:** the endprogram site now passes `%state` only when
+`defn_takes_state("exit_prog")` holds. Pins:
+`test_endprogram_calls_exit_prog_when_defn_present` (plain form, no
+%state — updated) and the new
+`test_endprogram_passes_state_to_stateful_exit_prog` (stateful form, %state
+passed). The two tier1 fixtures also stop using `endprogram Print#(…)`
+(print's library return is an incidental Int, not a status — print, then
+bare `endprogram;`), so the value-binding semantics stays honest.

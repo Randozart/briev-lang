@@ -40,5 +40,8 @@ node entry [beginprogram][true] {
     let c: Tally = Tally { total: 0 };
     let c2: Tally = bump_twice(c, 5);
     let sum: Int = a2.total + b2.total + c2.total;
-    endprogram Print#(sum);
+    // 2026-10-18: `endprogram <expr>` binds the exit status to the value —
+    // print, then end bare (status 0).
+    Print#(sum);
+    endprogram;
 };

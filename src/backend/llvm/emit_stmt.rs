@@ -1871,11 +1871,25 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             } else {
                 "0".to_string()
             };
-            // 2026-09-09 (Family B): a pure-Briev exit_prog defn takes the hidden
-            // %state param and returns i64 (defns cannot be void); the C
-            // wrapper was void. Adapt the call to whichever provider exists.
+            // 2026-09-09 (Family B): a pure-Briev exit_prog defn returns i64
+            // (defns cannot be void); the C wrapper was void. Adapt the call
+            // to whichever provider exists.
+            // 2026-10-18 (state/plain inference fallout): pass the hidden
+            // %state ONLY when exit_prog actually needs it. The
+            // inference-first state/plain storage emits exit_prog PLAIN (its
+            // body touches no state globals directly), but this call site
+            // still blanket-passed %state — the status arg shifted into the
+            // pointer slot and EVERY `endprogram` exited with
+            // (state_ptr & 0xFF): tier1 fixtures failed with exit 24/232/200
+            // garbage. `defn_takes_state` (2026-09-23) is the shared
+            // call-site gate; this site was never migrated to it.
             if backend.ctx.defn_params.contains_key("exit_prog") {
-                writeln!(out, "{}call i64 @exit_prog(ptr %state, i64 {})", indent, code).ok();
+                let st = if backend.ctx.defn_takes_state("exit_prog") {
+                    "ptr %state, "
+                } else {
+                    ""
+                };
+                writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
             } else {
                 writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
             }
