@@ -1,5 +1,10 @@
 # `global let` storage class — implementation protocol & pre-registered results
 
+> **SUPERSEDED 2026-10-18 by `2026-10-17-state-plain-storage-class.md`**
+> (inference-first `state`/`plain` classification + checked assertions,
+> design locked with the author). Retained as record — do not implement
+> from this file; the pre-registration below was never executed as written.
+
 **2026-10-17.** Companion to
 `docs/plans/2026-10-17-library-state-demotion-research.md` (root cause,
 counterfactual experiment, edge cases). This document is the
