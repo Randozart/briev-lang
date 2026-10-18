@@ -1,95 +1,72 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "BEAST",
+  "scopeName": "source.beast",
   "fileTypes": ["beast"],
   "firstLineMatch": "^\\(",
   "patterns": [
-    { "include": "#comments" },
+    { "include": "#parens" },
     { "include": "#strings" },
+    { "include": "#colon-attributes" },
+    { "include": "#tag-atoms" },
     { "include": "#numbers" },
-    { "include": "#booleans" },
-    { "include": "#wildcards" },
-    { "include": "#structural-tags" },
-    { "include": "#expression-tags" },
-    { "include": "#statement-tags" },
-    { "include": "#attribute-tags" },
-    { "include": "#punctuation" },
     { "include": "#atoms" }
   ],
   "repository": {
-    "comments": {
-      "patterns": [{
-        "name": "comment.line.semicolon.beast",
-        "match": ";.*$"
-      }]
+    "parens": {
+      "comment": "2026-10-17: retarget — src/beast/serialize.rs has emitted S-expressions since 2026-07-14 (to_beast -> SExpr -> to_string, width-60 wrapping); every .beast file in the tree is a parenthesized list, not the retired line-tag format this grammar used to describe.",
+      "patterns": [
+        { "match": "[()]", "name": "punctuation.section.parens.beast" }
+      ]
     },
     "strings": {
-      "patterns": [{
-        "name": "string.quoted.double.beast",
-        "begin": "\"",
-        "end": "\"",
-        "patterns": [{
-          "name": "constant.character.escape.beast",
-          "match": "\\\\."
-        }]
-      }]
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.beast",
+          "patterns": [
+            { "match": "\\\\.", "name": "constant.character.escape.beast" }
+          ]
+        }
+      ]
+    },
+    "colon-attributes": {
+      "comment": "Atoms WITH the leading colon as emitted by src/beast/serialize.rs (:bound :lit :range :async :reactive :ref :single :choice).",
+      "patterns": [
+        {
+          "match": ":(bound|lit|range|async|reactive|ref|single|choice)\\b",
+          "name": "keyword.other.attribute.beast"
+        }
+      ]
+    },
+    "tag-atoms": {
+      "comment": "2026-10-17: the exhaustive tag-atom set extracted from src/beast/serialize.rs atom() calls — the statement/expression/type tags the serializer emits as bare atoms. Data, not vocabulary guesses (Rule 3): when serialize.rs grows a tag, this list grows with it (validate_grammars.mjs diffs the two).",
+      "patterns": [
+        {
+          "match": "\\b(addrof|alignment|assign|binop|block|body|call|capture|cast|constant|contract|defn|deref|expr|field|gate|guarded|ident|if|index|init|let|list|maxbits|member|members|metadata|method|named|none|outputs|param|params|parent|pin|pins|plugin|pos|post|post_authority|pre|properties|protocol|quantity|refs|slot|slots|state|statement|string|term!|term|toplevel|trigger|tuple|txn|typedef|unop|yield)\\b",
+          "name": "support.function.tag.beast"
+        }
+      ]
     },
     "numbers": {
       "patterns": [
-        { "name": "constant.numeric.float.beast", "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b" },
-        { "name": "constant.numeric.float.beast", "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b" },
-        { "name": "constant.numeric.integer.beast", "match": "\\b0x[0-9a-fA-F]+\\b|\\b[0-9]+\\b" }
-      ]
-    },
-    "booleans": {
-      "patterns": [
-        { "name": "constant.language.true.beast", "match": "\\btrue\\b" },
-        { "name": "constant.language.false.beast", "match": "\\bfalse\\b" }
-      ]
-    },
-    "wildcards": {
-      "patterns": [
-        { "name": "variable.parameter.beast", "match": "\\?\\?\\*" },
-        { "name": "variable.parameter.beast", "match": "\\?\\*" },
-        { "name": "variable.parameter.beast", "match": "\\?[a-zA-Z_][a-zA-Z0-9_]*" }
-      ]
-    },
-    "structural-tags": {
-      "patterns": [{
-        "name": "entity.name.type.beast",
-        "match": "\\b(defn|txn|universe|typedef|contract|state|trigger|constant|struct|enum|cell|meld|import|export|signature|link|resource|frgn|codec|svg|cfg)\\b"
-      }]
-    },
-    "expression-tags": {
-      "patterns": [{
-        "name": "support.function.beast",
-        "match": "\\b(call|ident|binop|unop|field|index|cast|deref|addrof|is|decimal|float|bool|quoted|tuple|block|if|match|lambda|within)\\b"
-      }]
-    },
-    "statement-tags": {
-      "patterns": [{
-        "name": "keyword.control.beast",
-        "match": "\\b(assign|let|term|term!|return|when|guarded|block|foreach|sync|escape|asm|trg|metadata)\\b"
-      }]
-    },
-    "attribute-tags": {
-      "patterns": [{
-        "name": "entity.other.attribute-name.beast",
-        "match": "\\b(entry|pre|post|maxbits|alignment|properties|params|body|reactive|watchdog|is_entry|mmio)\\b"
-      }]
-    },
-    "punctuation": {
-      "patterns": [
-        { "name": "punctuation.bracket.round.beast", "match": "[()]" },
-        { "name": "punctuation.terminator.beast", "match": ";" }
+        { "match": "\\b0x[0-9a-fA-F]+\\b", "name": "constant.numeric.hex.beast" },
+        { "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b", "name": "constant.numeric.float.beast" },
+        { "match": "\\b[0-9]+\\b", "name": "constant.numeric.integer.beast" }
       ]
     },
     "atoms": {
-      "patterns": [{
-        "name": "string.unquoted.beast",
-        "match": "\\b[a-zA-Z_][a-zA-Z0-9_.#]*\\b"
-      }]
+      "patterns": [
+        {
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b",
+          "name": "variable.other.atom.beast"
+        },
+        {
+          "match": "\\b[a-z_][a-zA-Z0-9_.]*\\b",
+          "name": "variable.other.atom.beast"
+        }
+      ]
     }
-  },
-  "scopeName": "source.beast"
+  }
 }

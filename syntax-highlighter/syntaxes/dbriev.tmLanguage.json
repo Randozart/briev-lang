@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Data Briev",
+  "scopeName": "source.dbriev",
   "fileTypes": [
     "dbv",
     "dbvl"
@@ -8,25 +9,16 @@
   "firstLineMatch": "^//",
   "patterns": [
     {
-      "include": "#block-comments"
+      "include": "#comments"
     },
     {
-      "include": "#line-comments"
+      "include": "#directives"
     },
     {
-      "include": "#annotations"
+      "include": "#schema-decl"
     },
     {
       "include": "#keywords"
-    },
-    {
-      "include": "#types"
-    },
-    {
-      "include": "#contracts"
-    },
-    {
-      "include": "#operators"
     },
     {
       "include": "#strings"
@@ -35,210 +27,71 @@
       "include": "#numbers"
     },
     {
-      "include": "#booleans"
+      "include": "#module-paths"
     },
     {
-      "include": "#constants"
+      "include": "#entry-keys"
     },
     {
-      "include": "#identifiers"
+      "include": "#types"
     },
     {
       "include": "#punctuation"
     }
   ],
   "repository": {
-    "block-comments": {
+    "comments": {
       "patterns": [
         {
-          "name": "comment.block.briev",
-          "begin": "#\\[",
-          "end": "\\]#"
-        }
-      ]
-    },
-    "line-comments": {
-      "patterns": [
-        {
-          "name": "comment.line.briev",
+          "name": "comment.line.double-slash.dbriev",
           "match": "//.*$"
         }
       ]
     },
-    "annotations": {
+    "directives": {
+      "comment": "2026-10-17: retarget — source of truth src/dbriev/v2.rs::parse. Line-start `>` directives (dbvl): >schema / >import / >encoding / >version, case-insensitive (starts_with_ignore_case — folded here as char classes so the pattern compiles in BOTH Oniguruma and JS RegExp; (?i:) groups are Oniguruma-only). `>schema <Name> from \"path\"` carries the from-clause (lib/boards/stm32f407/addresses.dbvl). The old debug-IR vocabulary this grammar used to describe (sig/TXN/REGISTER/ALIAS/RULE/CHECK + uppercase Briev keywords) does not exist in v2.rs.",
       "patterns": [
         {
-          "name": "meta.annotation.briev",
-          "match": "^// === PATH ANALYSIS ==="
+          "match": "^\\s*>\\s*(?:[sS][cC][hH][eE][mM][aA]|[iI][mM][pP][oO][rR][tT]|[eE][nN][cC][oO][dD][iI][nN][gG]|[vV][eE][rR][sS][iI][oO][nN])\\b",
+          "name": "keyword.control.directive.dbriev"
         },
         {
-          "name": "meta.annotation.briev",
-          "match": "^// === END PATH ANALYSIS ==="
+          "match": "\\b[fF][rR][oO][mM]\\b",
+          "name": "keyword.control.import.dbriev"
+        }
+      ]
+    },
+    "schema-decl": {
+      "patterns": [
+        {
+          "match": "\\b[sS][cC][hH][eE][mM][aA]\\b(?=\\s+[A-Za-z_])",
+          "name": "keyword.control.schema.dbriev"
         },
         {
-          "name": "comment.annotation.briev",
-          "match": "^// \\[(ENTRY_POINT|RECURSIVE)\\]"
-        },
-        {
-          "name": "comment.annotation.briev",
-          "match": "^// (PATHS_TO|CALLERS|RESOLVES_TO):"
+          "match": "\\b[aA][sS]\\b(?=\\s+[A-Za-z_]\\s*\\{)",
+          "name": "keyword.control.schema.dbriev"
         }
       ]
     },
     "keywords": {
+      "comment": "Bare (no `>`) import for backwards compat; encoding/version at line-head without the `>` form.",
       "patterns": [
         {
-          "name": "keyword.control.txn.briev",
-          "match": "\\b(txn|TXN)\\b"
-        },
-        {
-          "name": "keyword.control.reactive.briev",
-          "match": "\\b(rct|RCT)\\b"
-        },
-        {
-          "name": "keyword.control.async.briev",
-          "match": "\\b(async|ASYNC)\\b"
-        },
-        {
-          "name": "keyword.control.modifier.briev",
-          "match": "\\b(seq|vol|sync)\\b"
-        },
-        {
-          "name": "keyword.control.flow.briev",
-          "match": "\\b(term|escape|TERM|ESCAPE)\\b"
-        },
-        {
-          "name": "keyword.declaration.briev",
-          "match": "\\b(sig|defn|let|const|trg|SIG|DEFN|LET|CONST|TRG)\\b"
-        },
-        {
-          "name": "keyword.declaration.ffi.briev",
-          "match": "\\b(frgn!?|syscall!?)\\b"
-        },
-        {
-          "name": "keyword.control.match.briev",
-          "match": "\\b(match|uni)\\b"
-        },
-        {
-          "name": "keyword.control.visibility.briev",
-          "match": "\\b(pvt|sed)\\b"
-        },
-        {
-          "name": "keyword.import.briev",
-          "match": "\\b(import|from|IMPORT|FROM)\\b"
-        },
-        {
-          "name": "keyword.control.dbriev.briev",
-          "match": "\\b(REGISTER|ALIAS|RULE|CHECK)\\b"
-        },
-        {
-          "name": "keyword.control.temporal.briev",
-          "match": "\\b(within|retry)\\b"
-        },
-        {
-          "name": "keyword.other.time-unit.briev",
-          "match": "\\b(cycles|cyc|seconds|s|milliseconds|ms|minutes|min|nanoseconds|ns)\\b"
-        }
-      ]
-    },
-    "types": {
-      "patterns": [
-        {
-          "name": "support.type.primitive.briev",
-          "match": "\\b(Int|Float|String|Bool|Data|Void|UInt)\\b"
-        },
-        {
-          "name": "entity.name.type.custom.briev",
-          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
-        }
-      ]
-    },
-    "contracts": {
-      "patterns": [
-        {
-          "name": "meta.contract.briev",
-          "begin": "\\[\\[?",
-          "end": "\\]\\]?",
-          "patterns": [
-            {
-              "include": "#line-comments"
-            },
-            {
-              "include": "#block-comments"
-            },
-            {
-              "include": "#expressions"
-            }
-          ]
-        }
-      ]
-    },
-    "operators": {
-      "patterns": [
-        {
-          "name": "storage.modifier.ownership.briev",
-          "match": "&"
-        },
-        {
-          "name": "variable.language.prior-state.briev",
-          "match": "@"
-        },
-        {
-          "name": "storage.modifier.ownership.briev",
-          "match": "\\?"
-        },
-        {
-          "name": "storage.modifier.ownership.briev",
-          "match": "!"
-        },
-        {
-          "name": "keyword.operator.comparison.briev",
-          "match": "==|!="
-        },
-        {
-          "name": "keyword.operator.relational.briev",
-          "match": "<=|>=|<|>"
-        },
-        {
-          "name": "keyword.operator.logical.briev",
-          "match": "&&|\\|\\|"
-        },
-        {
-          "name": "keyword.operator.arithmetic.briev",
-          "match": "\\+|\\-|\\*|/"
-        },
-        {
-          "name": "keyword.operator.consumptive.briev",
-          "match": "~<-|~=|~\\+|~\\-|~\\*|~/"
-        },
-        {
-          "name": "keyword.operator.bitwise.briev",
-          "match": "~|&(?!&)|\\|(?!\\|)"
-        },
-        {
-          "name": "keyword.operator.arrow.briev",
-          "match": "->"
-        },
-        {
-          "name": "keyword.operator.assignment.briev",
-          "match": "="
+          "match": "^\\s*(?:[iI][mM][pP][oO][rR][tT]|[eE][nN][cC][oO][dD][iI][nN][gG]|[vV][eE][rR][sS][iI][oO][nN])\\b",
+          "name": "keyword.control.dbriev"
         }
       ]
     },
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.single.briev",
-          "match": "'(\\\\.|[^'\\\\])'"
-        },
-        {
-          "name": "string.quoted.double.briev",
           "begin": "\"",
           "end": "\"",
+          "name": "string.quoted.double.dbriev",
           "patterns": [
             {
-              "name": "constant.character.escape.briev",
-              "match": "\\\\."
+              "match": "\\\\.",
+              "name": "constant.character.escape.dbriev"
             }
           ]
         }
@@ -247,111 +100,60 @@
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.float.briev",
-          "match": "\\b[0-9]+\\.[0-9]+([eE][+-]?[0-9]+)?\\b"
+          "match": "\\b0x[0-9a-fA-F]+\\b",
+          "name": "constant.numeric.hex.dbriev"
         },
         {
-          "name": "constant.numeric.float.briev",
-          "match": "\\b[0-9]+[eE][+-]?[0-9]+\\b"
+          "match": "\\b[0-9]+\\.[0-9]+\\b",
+          "name": "constant.numeric.float.dbriev"
         },
         {
-          "name": "constant.numeric.integer.briev",
-          "match": "\\b0x[0-9a-fA-F]+\\b|\\b[0-9]+\\b"
+          "match": "\\b[0-9]+\\b",
+          "name": "constant.numeric.integer.dbriev"
         }
       ]
     },
-    "booleans": {
+    "module-paths": {
+      "comment": "Dotted module-registry paths (config/targets.dbvl rows: config/address-map.dbvl, target.x86_64).",
       "patterns": [
         {
-          "name": "constant.language.true.briev",
-          "match": "\\b(true|TRUE)\\b"
-        },
-        {
-          "name": "constant.language.false.briev",
-          "match": "\\b(false|FALSE)\\b"
-        },
-        {
-          "name": "constant.language.null.briev",
-          "match": "\\b(null|NULL)\\b"
-        },
-        {
-          "name": "constant.language.result.briev",
-          "match": "\\b(Ok|Err|OK|ERR|Some|None|SOME|NONE)\\b"
+          "match": "\\b[a-z_][a-z0-9_]*(?:\\.[a-z_][a-z0-9_]*)+\\b",
+          "name": "entity.name.import.dbriev"
         }
       ]
     },
-    "constants": {
+    "entry-keys": {
+      "comment": "Flat table keys at line head before `:` (addresses.dbvl `UART1: 0x40011000; 0x18;`), schema field names (`base_addr: String;`), and extension-keyed config rows (config/targets.dbvl `.bv: llvm; --budget 256; …` — leading dot allowed).",
       "patterns": [
         {
-          "name": "variable.other.constant.briev",
-          "match": "\\b[A-Z][A-Z0-9_]*\\b"
+          "match": "^\\s*\\.?[A-Za-z_][A-Za-z0-9_]*(?=\\s*:)",
+          "name": "entity.name.constant.dbriev"
         }
       ]
     },
-    "identifiers": {
+    "types": {
       "patterns": [
         {
-          "name": "entity.name.function.briev",
-          "match": "\\b[a-z_][a-zA-Z0-9_]*(?=\\s*\\()"
-        },
-        {
-          "name": "variable.other.read.briev",
-          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
-        }
-      ]
-    },
-    "expressions": {
-      "patterns": [
-        {
-          "include": "#line-comments"
-        },
-        {
-          "include": "#block-comments"
-        },
-        {
-          "include": "#strings"
-        },
-        {
-          "include": "#numbers"
-        },
-        {
-          "include": "#booleans"
-        },
-        {
-          "include": "#operators"
-        },
-        {
-          "include": "#constants"
-        },
-        {
-          "include": "#identifiers"
+          "match": "\\b(String|Int|Float|Bool|Blob|List|Map)\\b",
+          "name": "support.type.dbriev"
         }
       ]
     },
     "punctuation": {
       "patterns": [
         {
-          "name": "punctuation.terminator.briev",
-          "match": ";"
+          "match": "[{}]",
+          "name": "punctuation.section.block.dbriev"
         },
         {
-          "name": "punctuation.separator.comma.briev",
-          "match": ","
+          "match": ";",
+          "name": "punctuation.terminator.dbriev"
         },
         {
-          "name": "punctuation.bracket.curly.briev",
-          "match": "[{}]"
-        },
-        {
-          "name": "punctuation.bracket.square.briev",
-          "match": "[\\[\\]]"
-        },
-        {
-          "name": "punctuation.bracket.round.briev",
-          "match": "[()]"
+          "match": ":",
+          "name": "punctuation.separator.dbriev"
         }
       ]
     }
-  },
-  "scopeName": "source.dbriev"
+  }
 }

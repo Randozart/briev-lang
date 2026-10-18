@@ -355,13 +355,16 @@ succeeds; Praetor unchanged-tree check is vacuous for this commit
   syntax decision record is DESIGN; the lexer has none of these tokens.
   They land in the abv wrapper grammar (and the briev alternation,
   where they are shared) the day the parser accepts them.
-- **`.bv`-side `bootstrap bad Reset() { … }` bodies** — the
-  `bootstrap`/`bad` keywords color correctly in briev, but the
-  `{ … }` body is bad-dialect text coloring as Briev (a nested
-  include from source.briev into source.bad at the bootstrap-body
-  position is a possible follow-up; the position is unambiguous —
-  after `bootstrap bad ident(…) [contract]` — but the nesting is the
-  first of its kind in the extension).
+- **`.bv`-side bad bodies are NESTED (user decision 2026-10-17)**:
+  both real entry shapes — `bad [target] name(params) -> Ret [contract]
+  { … }` (definitions.rs:326) and `bootstrap bad name(params)
+  [contract] { … }` (definitions.rs:136) — get a begin/end pattern in
+  the briev grammar that includes `source.bad` between the braces, so
+  the body colors with the real .bad rules. The `bld`-in-`.bv`
+  NESTING is NOT added: no parser construct exists (`bld fn` is the
+  BILLD plan's explicit v1 non-goal), and the dialect itself is under
+  active discussion with a contributor (shape vs. drop). When/if `bld
+  fn` lands, its nesting pattern lands with it.
 - **Universal-chaining operators** (`.N>>`, `.name>>`,
   `.(Type)>>`, `>>` captures) — `>>` is also the shared shift token;
   scoping it as chaining would mis-scope shifts. Default operator

@@ -214,11 +214,13 @@ clang -O3 -flto -march=native -ffast-math -fdata-sections -ffunction-sections \
   (`AnalysisResults`) and read by the backend. Tunables live in
   `config/targets.toml` + `config/ir-lowering.toml`. See
   `docs/plans/2026-07-31-frontend-driven-dispatch.md`.
-- **`#Category` hashwords** (`#Int`, `#Float`, `#String`, …) are backend
-  directives in op signatures; `#Link<name>` emits `-l<name>`; `#System` is the
-  one base protocol hashword (the platform's system library). Any other
-  `#<Name>` protocol (e.g. `#Web`) is a GLUE target resolved by name. See
-  `docs/architecture/hash-words.md`.
+- **Hash-words**: `#Link<name>` emits `-l<name>`; `#System` is the one base
+  protocol hashword (the platform's system library). Any other `#<Name>`
+  protocol (e.g. `#Web`) is a GLUE target resolved by name. Category
+  hashwords (`#Int`, `#Float`, `#String`, …) are **retired** (Phase A4,
+  2026-09-11 — the parser rejects them with the bare-name fix; write `Int`,
+  not `#Int`). `#Lh`/`#Rh`/`#T`/`#Self` remain exact op-contract markers.
+  See `docs/architecture/hash-words.md`.
 - **Intrinsics vs stdlib**: `rm -rf lib/std && brievc --no-stdlib` still
   type-checks `let x: Int = 5` ⇒ intrinsic; else stdlib.
 - **No vocabulary matching.** The backend must never pattern-match specific
