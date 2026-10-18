@@ -10147,3 +10147,38 @@ every call-site gate") was never migrated at this site.
 passed). The two tier1 fixtures also stop using `endprogram Print#(…)`
 (print's library return is an incidental Int, not a status — print, then
 bare `endprogram;`), so the value-binding semantics stays honest.
+
+## 2026-10-18 — import splice: mixed match arms + member-body calls fell to raw-Int fallback (FIXED)
+
+**Symptom:** any cross-module import of a defn whose body (a) calls a
+same-module function from INSIDE a `Statement::Match` arm, or (b) is an
+obj/type member calling a same-module free function, failed
+`brievc check` in the IMPORTING file with the raw-Int fallback signature —
+"expected GrowBuf, found Int" (GrowBuf.put_u8 → grow_to_fit, live at HEAD
+since 2026-10-09; ANY GrowBuf importer failed) or "expected Int, found
+Result<Fr, String>" (mixed call-arm + construction-arm matches — the shape
+of every Result-returning parser; json.bv only ever verified as a main
+module, never spliced). The identical module passed `brievc check` in its
+home file. Found by the stdlib fixture campaign (fixture 1, WebSocket
+codec) — see `docs/plans/2026-10-18-stdlib-fixture-campaign.md`.
+
+**Root cause:** the import resolver's three hand-rolled transitive-closure
+walkers (`referenced_function_names`, `referenced_state_names`, and the
+toplevel coverage shared by them) had two blind spots: (1) no
+`Statement::Match` arm — calls inside match arms were dropped from the
+closure; (2) no descent into obj/type member bodies
+(`TopLevel::TypeDef`/`TopLevel::Obj` fell to `_ => {}`). The unresolved
+name then fell back to the raw-Int fallback at splice re-typecheck, and for
+mixed match arms the Int arm became the authoritative arm type, making the
+real arm "incompatible" (the misleading "expected Int" message). The
+predecessors predate `ast::visit` (2026-10-05, built to retire exactly this
+walker-drift class) and were never migrated.
+
+**Fix:** `ast::visit::walk_toplevel` (new, exhaustive over every TopLevel
+variant — the match cannot rot silently) + `walk_transaction`; the two
+closure walkers are rewritten as one-liners on it. Residual (not fixed,
+theoretical): `referenced_type_names` still walks SIGNATURES only — a type
+used ONLY inside a body's `let` annotation (never in a signature) would
+still be missed; no live case found. Pins:
+`tests/import_splice_closure.rs` (3 tests: mixed match arms, member→free
+call, real GrowBuf import).
