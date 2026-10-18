@@ -8,9 +8,9 @@ Briev is a programming language with the following features:
 - Partially declarative, partially imperative, functional invariant based programming
 - Invariant based runtime optimization (with execution speed at parity, or even better than C in several cases)
 - Backend independence through state-management based syntax and backend handling of intrinsics
-- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`)
+- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`), plus auxiliary dialects (`.bad`, `.bld`) and formats (`.beast`)
 - A lightweight systems language that handles complexity at compile time
-- Syntax that is equally applicable to the other backends, not just systems programming
+- Core syntax that is equally applicable to the other backends, not just systems programming (auxiliary dialects deliberately drop to lower tiers)
 - Inferred command flow through reactive top level `node` declarations
 - Memory management by proof through AST graphing
 - Syntax which encourages and optimizes for flat programming
@@ -40,8 +40,8 @@ Briev is a contract-enforced language designed for building verifiable state mac
 | Extension | Variant | Compiles to |
 |-----------|---------|-------------|
 | `.bv` | **Briev** | LLVM native binary (optional SPIR-V offload) |
-| `.rbv` | **Rendered Briev** | TypeScript + frontend code + WASM sidecars |
-| `.ebv` | **Embedded Briev** | LLVM microcontroller binary |
+| `.rbv` | **Rendered Briev** | WASM + JS shim (browser bundle) |
+| `.ebv` | **Electronics Briev** | Electronics backend (component laws, ERC, netlists) |
 | `.abv` | **Accelerated Briev** | SPIR-V GPU kernel |
 | `.sbv` | **Silicon Briev** | CIRCT hardware description (Verilog/VHDL) |
 | `.dbv` / `.dbvl` | **Data Briev** | Configuration data parsed by Briev itself |
@@ -70,23 +70,31 @@ Most programming languages are built around _operations in sequence_. Briev desc
     *   **In Hardware:** The compiler builds the roads directly out of copper.
 *   **Variable Logic:** The logic remains invariant while the material changes. A square is a square whether it's drawn in the sand or forged in steel.
 
+Where does this thesis end? Honestly: we do not know yet. It started with native code and has so far held — sometimes to our own surprise — on GPU, web, embedded, and toward silicon. The claim is the thesis; the boundary is discovered by benchmarks, not asserted.
+
 ## Philosophical Pillars
 
 ### All operations are expressed in nodes, and only nodes and transactions can call operations. They either complete fully, or not at all.
 
-Nodes and transactions are inherently cyclical. If you properly define a postcondition a cyclically executed transaction will eventually reach, it automatically starts behaving like a loop, but one that can predictably halt. A transaction with `[pre][post]` converges when the precondition becomes false. This means the postcondition describes the terminal state, and the precondition is the loop condition. You do not write `while (counter < 100)` — the precondition `[counter < 100]` already says "keep running while this holds." The goal-based postcondition `[counter == 100]` expresses the termination state. The compiler proves the postcondition is reachable and that the loop terminates.
+Nodes and transactions are inherently cyclical. If you properly define a postcondition a cyclically executed transaction will eventually reach, it automatically starts behaving like a loop, but one that can predictably halt. A transaction with `[pre][post]` converges when the precondition becomes false. This means the postcondition describes the terminal state, and the precondition is the loop condition. You do not write `while (counter < 100)` — the precondition `[counter < 100]` already says "keep running while this holds." The goal-based postcondition `[counter == 100]` expresses the termination state.
+
+Contracts here are predicates: you state how you intend the code to run; the analyses check the program against that intent and consume the contracts as the shape of the graph. And the all-or-nothing shape is preventive — partial-update cascades are a bug class this design keeps from ever forming.
 
 ### Briev doesn't need you to be correct, it just needs you to be right.
 
-The contract logic often just requires you to declare either the precondition or postcondition, not both. Contracts are simultaneously specification AND optimization input. In most languages, types/specs are safety rails that constrain what you can do. In Briev, they're also what the optimizer feeds on. The more you declare, the more the compiler can prove, and the faster your program runs.
+The contract logic often just requires you to declare either the precondition or postcondition, not both. Contracts are simultaneously specification AND optimization input. In most languages, types/specs are safety rails that constrain what you can do. In Briev, they're also what the optimizer feeds on. The more you declare, the more the compiler can prove, and the faster your program runs. In practice one-sided contracts are usually sufficient; declaring both sides is harder to get right, but pays off when you can state them.
 
 ### Execution is inferred, not prescribed.
 
 Programs are declared through a combination of variables, definitions and transactions. The entire program runs on a non-polling reactor loop. It indexes which variable changes lead to which `node` preconditions being fulfilled, and fires them automatically when it's their time to act. Because these paths are laid out predictably, the compiler has great leeway in folding these paths. If X through A, B and C will always lead to Y with side-effect Z, the compiler will simply draw a short route from X to YZ.
 
+The guarantee is Prolog's and Dialog's: *that which must follow, follows, from declaration alone.* For the software that genuinely needs predictability — a declared sequence, a memory layout — `seq` discloses that intent. It exists for correctness and legibility, never as a rescue for failed inference.
+
 ### No magic, but honest compromises.
 
 Every function and keyword in Briev must be traceable to a source following the same rules as every other definition. If it looks like `foo(x)`, it is user-defined. Period. The exception is `#`-suffixed intrinsics like `PrintInt#`, `Sqrt#`, `Load#`. These are baked into the AST but explicitly marked with the `#` at every call site. You can never mistake `sqrt` for `Sqrt#`. The `#` is the compiler saying "I have a hand in this one."
+
+The compromises are honest too: escape hatches exist (`.bad`'s acknowledge tier, authority-based bootstrap postconditions), but they are marked, auditable, and never silent. Nothing hidden — not nothing available.
 
 ### Contracts are optimization fuel, not a correctness tax.
 
@@ -94,13 +102,33 @@ In most languages, a precondition or assertion is you doing the compiler a favor
 
 So instead of thinking *"safety checks slow me down, I will add them later"*, think *"the compiler cannot optimize what it cannot prove."* Write the contract first. The performance follows.
 
+The deeper thesis: undefined behavior is a patch on languages that never let the programmer codify their intent. LLVM assumes; Briev lets you state. The compiler earns the same levers through proof instead of asserting them — a proven transform applies where an assumed one can silently lie.
+
+### Derivation, not recognition.
+
+The compiler never recognizes *which* algorithm you wrote — it derives code from the facts and proofs you declared: bounds, disjointness, associativity, iteration structure, layout intent. A trusted language must turn your algorithm into the best code it is capable of; recognizing particular shapes fails past and future computer scientists by penalizing their algorithms with our ignorance. If an algorithm works well, there is a reason, and a general shape to be discovered — it belongs in declared structure, never in a compiler match arm. Hand-written kernels still exist, but as disclosed, retirement-gated loans: they retire when the general machinery reaches their numbers.
+
+### The compiler's optimum must be expressible in Briev.
+
+C's compiler has been smarter than C for forty years because C cannot state intent. Briev closes that loop: every technique the compiler uses must be buildable in the language itself — in stdlib, metaprogramming, and disclosed hardware primitives — so no trick is forever locked behind a compiler change. The acceptance test has run once, for real: a contributor's university-thesis algorithm, compiled with zero compiler changes, matched hand-optimized C++ — more stable, at roughly equal speed.
+
+### Keywords are for correctness, never speed.
+
+Speed pragmas demand the programmer know the compiler's insides to predict their effect. A good compiler should know, or the language needs better syntax. So nobody writing Briev needs obscure keywords for fast code: the default is the fastest code for the declared semantics, and a keyword-beaten default is a compiler bug. Keywords (`seq`, `vol`, `atomic`, `sync<g>`, ...) express intended *behavior* the efficient default cannot — and anything the compiler handles directly is disclosed with `#`.
+
 ### Friction is a signal...
 
 There is no `if/else` in Briev. There are `when` guards: `when condition { body };`. This is not an omission. A guard forces you to ask "what must be true for this to execute?" rather than "which branch do I take?" For branching over values, there is exhaustive `match`. The friction is the point.
 
+Honestly: `when` is cognitive engineering, not a proof mechanism — it keeps code flat, for humans and for the machines that read after them, and the rename decouples the construct from `if`'s baggage. The proof machinery lives in `match`'s exhaustiveness.
+
 ### ...but the compiler must help you through it.
 
 Friction without explanation is frustration. Every rejected construct tells you *why* and *what to do instead*. If the compiler says "no," it says "here is the path I can accept." Misspellings get did-you-mean suggestions. Removed forms explain what replaced them. Reserved words say why they're reserved. The friction exists to make you think, not to waste your time.
+
+### Concurrency is explicit.
+
+The compiler refuses to guess whether two reactive nodes may fire together. When it proves two nodes *can* run simultaneously, it demands the author classify the pair — `async` on both (simultaneous firing, acknowledged) or `sync<g>` on both (a group barrier). Concurrency gets a visual artifact of intent on the page, legible to the compiler and to the next reader alike.
 
 ## Quick Start
 
@@ -109,7 +137,7 @@ Friction without explanation is frustration. Every rejected construct tells you 
 ```bash
 cargo build --release
 
-# Run the full test suite (~1934 tests)
+# Run the full test suite (2900+ tests)
 cargo test --lib && cargo test --bin brievc
 ```
 
@@ -126,7 +154,7 @@ node increment [count < 10][count == 10] {
 };
 ```
 
-The node fires repeatedly while the precondition `[count < 10]` holds. When the goal `[count == 10]` is reached, it stops. The compiler proves the goal is reachable.
+The node fires repeatedly while the precondition `[count < 10]` holds. When the goal `[count == 10]` is reached, it stops. The compiler checks the program against your declared intent, proves what it can, and reports what it can't — the honest boundary is visible, not hidden.
 
 ### 3. Compile and Run
 
@@ -142,22 +170,38 @@ The node fires repeatedly while the precondition `[count < 10]` holds. When the 
 
 # Format canonically (round-trip safe)
 ./target/release/brievc fmt counter.bv --stdout
+
+# Or scaffold a new package (folio.toml + an entry node) and run a program
+./target/release/brievc init hello
+./target/release/brievc run <file.bv>
 ```
 
 ## Language Variants
 
 The file extension selects which backend compiles your program. Each variant targets a different material:
 
-| Type | File Ext | Description | Compilation Target |
-|------|----------|-------------|-------------------|
-| <img src="assets/briev-icon.svg" alt="Briev" width="25"/> **Briev** | `.bv` | General-purpose systems logic | LLVM → native binary, optional SPIR-V offload |
-| <img src="assets/a-briev-icon.svg" alt="Accelerated Briev" width="25"/> **Accelerated Briev** | `.abv` | GPU compute kernel | SPIR-V |
-| <img src="assets/r-briev-icon.svg" alt="Rendered Briev" width="25"/> **Rendered Briev** | `.rbv` | Reactive web UI | TypeScript + WASM |
-| <img src="assets/e-briev-icon.svg" alt="Electronics Briev" width="25"/> **Electronics Briev** | `.ebv` | Microcontroller bare-metal | LLVM → MCU binary |
-| <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Hardware logic graph | CIRCT → Verilog/VHDL |
-| <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvl` | Configuration data | Parsed by Briev itself |
+| Type | File Ext | Description | Compilation Target | Status |
+|------|----------|-------------|-------------------|--------|
+| <img src="assets/briev-icon.svg" alt="Briev" width="25"/> **Briev** | `.bv` | General-purpose systems logic | LLVM → native binary, optional SPIR-V offload | **Stable** |
+| <img src="assets/a-briev-icon.svg" alt="Accelerated Briev" width="25"/> **Accelerated Briev** | `.abv` | GPU compute kernel | SPIR-V (+ PTX tier) | **Functional** |
+| <img src="assets/r-briev-icon.svg" alt="Rendered Briev" width="25"/> **Rendered Briev** | `.rbv` | Reactive web UI | WASM + JS shim | **Functional** |
+| <img src="assets/e-briev-icon.svg" alt="Electronics Briev" width="25"/> **Electronics Briev** | `.ebv` | Electronics logic (component laws, ERC) | Electronics backend | **In development** |
+| <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Hardware logic graph | CIRCT → Verilog/VHDL | **Experimental** |
+| <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvl` | Configuration data | Parsed by Briev itself | **Stable** |
+
+**Stability legend:** *Stable* = daily use; *Functional* = proven end-to-end (correctness gates green on all lanes / real-browser verified), with performance and surface work continuing; *In development / Experimental* = surface under construction.
+
+Bare-metal targets (riscv64, Arm Cortex-M) compile from plain `.bv` via target triples — QEMU-verified, no C runtime.
 
 Dotted profiles add strictness: `.s.bv` enables strict mode (representation fallbacks become errors).
+
+## Auxiliary Dialects
+
+Three auxiliary formats exist alongside the six main dialects:
+
+- **`.bad` — Briev Assembly Dialect.** Portable assembly: a universal core ISA, `target =>` per-architecture dispatch sites, positional label contracts. Cross-target (x86_64, aarch64, riscv64, thumbv7m, plus the `ptx` family for NVIDIA kernels), with QEMU-verified boot examples. Compile with `brievc bad file.bad --target <triple>`.
+- **`.bld` — BILLD.** The execution-recipe tier between `.bv` and `.bad`: symbolic registers, engine verbs, and a register allocator — the architecture of the machine without the chore of the scratchpad. The tier ladder: `.bv` (proven, reactive) → `.bld` (recipe) → `.bad` (instructions).
+- **`.beast` / `.beastpack` / `.bounty`** — AST s-expression serialization (`--emit-beast`) for legible metaprogramming, typed-AST packaging, and portable distribution. Formats, not compiled surfaces.
 
 ## Key Features
 
@@ -172,7 +216,7 @@ txn withdraw [balance >= amount][balance >= 0] {
 };
 ```
 
-The compiler verifies reachability of the goal and proves termination.
+The compiler verifies reachability of the goal and checks the declared intent — proving what it can and reporting what it can't.
 
 ### 2. Reactive by Default
 
@@ -356,10 +400,14 @@ See [examples/](examples/) for more verified programs.
 2. Every new source file must pass the conformance sweep
 3. Update architecture docs in the same commit as structural changes
 
+### Contributors
+
+- **Otto Westerlund** ([@odecode](https://github.com/odecode)) — static trait-constrained generics; wired the `.sbv` synthesizability gate into the frontend; LLVM `memcpy`/`memset` declaration fixes; the stdlib net stack (ByteSink, TCP client + server over raw syscalls); and the cpp-vs-briev experiment whose thesis algorithm became the first live run of the expressiveness-closure acceptance test.
+
 ## License
 
-Apache 2.0 with explicit runtime exception
+Apache-2.0 WITH LLVM-exception — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Compiled output of Briev programs is exempt from the notice/attribution obligations.
 
 ---
 
-*Last updated: 2026-08-23*
+*Last updated: 2026-10-18*
