@@ -40,5 +40,9 @@ node entry [beginprogram][true] {
     Print#(grow_get_u8(grow1, 1));
     Print#(grow_get_u8(grow1, 2));
     Print#(grow_get_u8(grow1, 3));
-    endprogram Print#(grow_get_u8(grow1, 4));
+    // 2026-10-18: `endprogram <expr>` binds the exit status to the value
+    // (print's library return is an incidental Int, not a status) — print,
+    // then end bare (status 0).
+    Print#(grow_get_u8(grow1, 4));
+    endprogram;
 };
