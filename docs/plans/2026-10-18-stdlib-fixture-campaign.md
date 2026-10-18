@@ -170,16 +170,41 @@ obj RingBuffer drain beats C 2x). The NEW fixtures aim at the same or better
 on their own shapes — and where they do not, the gap is a finding, not a
 failure.
 
-## Discovery log (experimentation charter — fill during work)
+## Status (2026-10-18, end of session)
+
+Fixture 1 (WebSocket codec) COMPLETE: module committed (9707f4bf + fix
+c2d1aa62), benchmark + C reference registered (TAG runtime), interpreter
+parity test landed (decode scenarios; len64/encode deferred on the open
+interpreter bug), full harness 79/79 MATCH. Results:
+`benchmarks/results/2026-10-18-fixture1-ws-frame.md` (ws_frame 1.58x — C
+wins at the per-byte codec-call design; an _idio variant is the recorded
+follow-up).
+
+Fixtures 2–4 (SPSC ring, arena, FSM) NOT STARTED — next session. The
+compiler-fix harvest below substantially de-risked them: the splice, gate,
+and stride machinery they would have tripped over is now fixed and pinned.
+
+## Discovery log (experimentation charter — the campaign's core yield)
 
 Every fixture logs: language gaps, awkward constructs, missing intrinsics,
-proof-engine misses, codegen opportunities. Core-language items are
-escalated to the owner BEFORE any core change; stdlib/config items are
-fixed in place.
+proof-engine misses, codegen opportunities. Core-language items were
+escalated to the owner BEFORE any core change (the `::` ruling came from
+the owner mid-session); everything else was fixed in place with pins.
 
-| # | Fixture | Finding | Class (stdlib/config/CORE-escalate/compiler-gap) | Disposition |
+| # | Fixture | Finding | Class | Disposition |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 1 | ws_frame | `check` is a NO-OP in the LLVM backend (interpreter enforces, backend discards) | compiler-gap, CORE-adjacent | OPEN — deferred; logged emit_stmt.rs:2471. Needs owner discussion (trap semantics vs assume/UB model) |
+| 2 | ws_frame | Contract violations lower to `unreachable` (assume/UB), not clean traps | CORE-escalate | OPEN — design question: is UB-on-violation the intended contract runtime? |
+| 3 | ws_frame | Global obj FIELD READ segfaults (plain-let obj globals) | compiler-gap | OPEN — avoid obj-typed globals in benchmarks; needs a proper fix |
+| 4 | ws_frame | Import splice: match-arm + member-body calls dropped from closure | compiler-gap | FIXED bde072ac (ast::visit) |
+| 5 | ws_frame | Qualified variant patterns impossible in importers; `::` mis-parses | language + parser | FIXED 9a43fcb2 — owner ruling: `::` illegal, dot form everywhere, SPEC corrected |
+| 6 | ws_frame | SPEC §8.3/§11.3 showed `::` examples (stale vs 2026-09-22 dot form) | docs | FIXED 9a43fcb2 |
+| 7 | ws_frame | ~~Consts in reactive contracts break cycle analysis~~ WITHDRAWN — the real cause was #8 | — | withdrawn |
+| 8 | ws_frame | Causality harvester blind to nested/indexed writes (false refusals + unsound Rule 22 disjointness); goal-reachability rejected all provable completions (gate-vs-gate conflict) | compiler-gap | FIXED acbff4bb |
+| 9 | ws_frame | Element stores/reads through raw pointers hardcoded i64 stride (invalid IR for byte pointees; recommender regression via Float read/write stride mismatch) | compiler-gap | FIXED acbff4bb + 855a9c1e |
+| 10 | ws_frame | SOURCE lesson: sequential-guard fall-through — discarded tail values are not returns (the codec's own if/else-if habit) | authoring | FIXED c2d1aa62; BUGS.md lesson recorded |
+| 11 | ws_frame | Interpreter: compound bitwise-or over non-literal operands yields stale values (also GrowBuf growth) in spliced programs | compiler-gap (interpreter) | OPEN — BUGS.md; len64/encode parity scenarios deferred |
+| 12 | ws_frame | ws_frame 1.58x: per-byte codec-call design vs C's inlined loop | perf opportunity | recorded — _idio variant (inlined/batched unmask) is the follow-up |
 
 ## Risks / open items
 

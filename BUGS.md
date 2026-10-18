@@ -10299,3 +10299,45 @@ top-level `const` decimals alongside initializer literals; both the
 beginprogram and bootstrap checks share it). Residual: add-chain counter
 advances with non-literal deltas (`total = total + f(x) + y`) are still
 conservatively rejected — restructure to a flat counted variable.
+
+## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (OPEN)
+
+**Symptom:** in the interpreter, inside a spliced program, a bitwise-or
+CHAIN over non-literal operand EXPRESSIONS evaluates to a stale value —
+specifically `(g5 << 16) | (g6 << 8)` with g5=1, g6=17 (both verified by
+immediately-preceding reads AND standalone shifts: `g5 << 16` = 65536 ✓,
+`g6 << 8` = 4352 ✓) evaluated to **112** — the value of an UNRELATED
+variable (`g7`) from the same scope. Operand order irrelevant; let-bound
+and argument-position alike; literal operands (`65536 | 4352`) evaluate
+correctly (69888) in the SAME scope; the identical expression shape over
+literal-initialized variables evaluates correctly in an UNSPLICED program.
+
+**Repro:** `tests/ws_frame_codec_parity.rs` (the instrumented scenario64
+prints; the shift-or probe test shows the working controls). Trigger
+conditions appear to require: import splice + non-literal operand
+expressions + a `|` chain (single shift works; literals work).
+
+**Impact:** `get_u64_be` (an 8-term shift-or chain over `get_u8` results)
+mis-evaluates in the interpreter, so the codec's 64-bit-length decode path
+cannot be interpreter-verified until this is fixed. The COMPILED backend
+evaluates the same code correctly (the ws_frame benchmark is byte-identical
+to the C reference across all 16,384 decodes, 64-bit frames included) — so
+on this expression the two engines DISAGREE, which per the house rule means
+one of them is wrong and the discrepancy is the bug.
+
+**Next step:** debug the interpreter's binary-op evaluation for `BitOr`
+with compound operand expressions under the splice; suspect stale Value
+reuse in operand evaluation (the stale value observed is a neighboring
+scope variable, not either operand). The parity test currently scopes
+around this (len64 decode verified compiled-only); when fixed, restore the
+len64 interpreter scenario (the test file carries the ready-made scenario
+commented by this note's shape).
+
+**Amendment (same day):** the symptom family is wider than bitwise-or —
+the encode-path probe shows `GrowBuf` growth mis-evaluating in the
+interpreter too (encoding 2,060 bytes produced `g4.len` = 2,245,685).
+Common thread: compound arithmetic/logic expressions over non-literal
+operands in spliced programs. The ws_frame_codec_parity test scopes to the
+decode scenarios (len7/len16/truncation/protocol — all PASS) and carries
+ready-made deferred scenarios (len64 decode, encode round-trip) to restore
+when the root cause is fixed.

@@ -1,0 +1,224 @@
+// ws_frame — WebSocket frame-codec decode benchmark (fixture 1,
+// docs/plans/2026-10-18-stdlib-fixture-campaign.md).
+//
+// Builds a deterministic corpus of RFC 6455 frames spanning all three
+// length encodings (7/16/64-bit) and masked/unmasked, then decodes every
+// frame PASSES times, validating each header against builder-recorded
+// expectations and checksumming every payload byte through the codec API
+// (ws_payload_byte — the per-byte unmask + bounds-proven read). The printed
+// observables: the XOR-mixed checksum and the violation count (must be 0).
+//
+// Stress shape: branchy variable-length header decode (the len7/126/127
+// fan-out), per-byte codec-call payload walk, contract-proven bounds on
+// every read — the shape where a traditional parser over-reads truncated
+// input and Briev's must not.
+//
+// Node-sequencing: the recommender pattern (async + distinct phases, Rule
+// 22 classification). C reference: ws_frame_c.c — same LCG, same corpus,
+// same validation, same prints.
+
+import { ByteBuf, WsFrame, ws_decode, ws_payload_byte } from "std/net/bytes";
+import { print_int } from "std/io";
+
+const F_TOTAL: Int = 4096;
+const PASSES: Int = 4;
+const LCG_MOD: Int = 2147483647;
+
+const PH_BUILD: Int = 1;
+const PH_REPORT: Int = 2;
+
+let phase: Int = 0;
+let lcg: Int = 12345;
+
+let corpus_addr: Int = 0;
+let corpus_len: Int = 0;
+let exp_len_addr: Int = 0;
+let exp_key_addr: Int = 0;
+let exp_mask_addr: Int = 0;
+let exp_opcode_addr: Int = 0;
+let frame_off_addr: Int = 0;
+
+let tick: Int = 0;
+let passes: Int = 0;
+let acc: Int = 0;
+let invalid: Int = 0;
+
+// ws_len_field_len - header length BEFORE the masking key for a payload of
+// `plen` bytes (the minimal 7/16/64-bit encoding).
+defn ws_len_field_len(plen: Int) -> Int {
+    when plen <= 125 {
+        term 2;
+    };
+    when plen <= 65535 {
+        term 4;
+    };
+    term 10;
+};
+
+// ws_mix_len - the frame's payload length for corpus index f, drawn from the
+// LCG so all three length encodings appear. Statement-when chain (no
+// when/else expression — there is no such form).
+defn ws_mix_len(f: Int, draw: Int) -> Int {
+    when f % 3 == 0 {
+        term draw % 126;
+    };
+    when f % 3 == 1 {
+        term 1000 + draw % 1000;
+    };
+    term 7000 + draw % 3000;
+};
+
+// ── node 0: build the corpus + expectation tables ───────────────────────────
+// Frame mix by index: f%3==0 → 7-bit length (0..125), f%3==1 → 16-bit
+// (1000..1999), f%3==2 → 64-bit (7000..9999). masked = f even. Payload byte
+// j = (f + j) & 255. Identical generator in ws_frame_c.c.
+async node ws_build [beginprogram && phase == 0][true] {
+    let lens: Ptr<Int> = Malloc#(F_TOTAL * 8) as Ptr<Int>;
+    let keys: Ptr<Int> = Malloc#(F_TOTAL * 8) as Ptr<Int>;
+    let masks: Ptr<Int> = Malloc#(F_TOTAL * 8) as Ptr<Int>;
+    let ops: Ptr<Int> = Malloc#(F_TOTAL * 8) as Ptr<Int>;
+    let offs: Ptr<Int> = Malloc#(F_TOTAL * 8) as Ptr<Int>;
+
+    // Pass 1: lengths + offsets (so the corpus buffer is sized exactly).
+    let total: Int = 0;
+    foreach f in 0..F_TOTAL {
+        lcg = (lcg * 1103515245 + 12345) % LCG_MOD;
+        let plen: Int = ws_mix_len(f, lcg);
+        let maskflag: Int = 0;
+        when f % 2 == 0 {
+            maskflag = 1;
+        };
+        lens[f] = plen;
+        keys[f] = when_mask_key(lcg, maskflag);
+        masks[f] = maskflag;
+        ops[f] = f % 3;
+        offs[f] = total;
+        total = total + ws_len_field_len(plen) + maskflag * 4 + plen;
+    };
+    let buf: Ptr<Bit<8>> = Malloc#(total) as Ptr<Bit<8>>;
+    corpus_addr = buf as Int;
+    corpus_len = total;
+    exp_len_addr = lens as Int;
+    exp_key_addr = keys as Int;
+    exp_mask_addr = masks as Int;
+    exp_opcode_addr = ops as Int;
+    frame_off_addr = offs as Int;
+
+    // Pass 2: emit the frames — header + masking key + payload bytes.
+    foreach f2 in 0..F_TOTAL {
+        let plen2: Int = lens[f2];
+        let maskflag2: Int = masks[f2];
+        let key2: Int = keys[f2];
+        let base: Int = offs[f2];
+        buf[base] = (128 | (f2 % 3)) as Bit<8>;
+        let l7: Int = 127;
+        when plen2 <= 65535 {
+            l7 = 126;
+        };
+        when plen2 <= 125 {
+            l7 = plen2;
+        };
+        buf[base + 1] = ((maskflag2 * 128) | l7) as Bit<8>;
+        let mut: Int = base + 2;
+        when plen2 > 125 && plen2 <= 65535 {
+            buf[mut] = ((plen2 >> 8) & 255) as Bit<8>;
+            buf[mut + 1] = (plen2 & 255) as Bit<8>;
+            mut = mut + 2;
+        };
+        when plen2 > 65535 {
+            foreach sh in 0..8 {
+                buf[mut + sh] = ((plen2 >> (8 * (7 - sh))) & 255) as Bit<8>;
+            };
+            mut = mut + 8;
+        };
+        when maskflag2 == 1 {
+            buf[mut] = ((key2 >> 24) & 255) as Bit<8>;
+            buf[mut + 1] = ((key2 >> 16) & 255) as Bit<8>;
+            buf[mut + 2] = ((key2 >> 8) & 255) as Bit<8>;
+            buf[mut + 3] = (key2 & 255) as Bit<8>;
+        };
+        let pstart: Int = base + ws_len_field_len(plen2) + maskflag2 * 4;
+        foreach j2 in 0..plen2 {
+            buf[pstart + j2] = ((f2 + j2) & 255) as Bit<8>;
+        };
+    };
+    phase = PH_BUILD;
+    term;
+};
+
+// when_mask_key - the masking key for frame index f (0 when unmasked).
+defn when_mask_key(draw: Int, maskflag: Int) -> Int {
+    when maskflag == 0 {
+        term 0;
+    };
+    term draw % 4294967296;
+};
+
+// ws_validate_frame - decode-independent validation + payload checksum for
+// one decoded frame. Returns the unmasked payload sum, or 0 - 1 on ANY
+// header mismatch (fin, opcode, length, header_len, mask bit, mask key).
+// Pure: takes its expectations as parameters; the caller counts violations.
+defn ws_validate_frame(view: ByteBuf, off: Int, f: WsFrame,
+                       exp_len: Int, exp_key: Int, exp_opcode: Int,
+                       exp_mask: Int) -> Int
+{
+    let want_hdr: Int = ws_len_field_len(exp_len) + exp_mask * 4;
+    when !f.fin || f.opcode != exp_opcode || f.payload_len != exp_len
+        || f.header_len != want_hdr {
+        term 0 - 1;
+    };
+    when exp_mask == 1 && f.mask_key != exp_key {
+        term 0 - 1;
+    };
+    let psum: Int = 0;
+    foreach i in 0..f.payload_len {
+        psum = psum + ws_payload_byte(view, off, f, i);
+    };
+    term psum;
+};
+
+// ── node 1: decode + validate + checksum one frame per tick ────────────────
+// The match arms are pure calls (block arms with side effects are not the
+// house shape); the -1 sentinel signals a decode or validation failure and
+// the node counts it.
+async node ws_tick [phase == PH_BUILD && passes < PASSES][passes == PASSES] {
+    let view: ByteBuf = ByteBuf {
+        ptr: corpus_addr,
+        len: corpus_len,
+        cap: corpus_len,
+    };
+    let offs: Ptr<Int> = frame_off_addr as Ptr<Int>;
+    let lens: Ptr<Int> = exp_len_addr as Ptr<Int>;
+    let keys: Ptr<Int> = exp_key_addr as Ptr<Int>;
+    let masks: Ptr<Int> = exp_mask_addr as Ptr<Int>;
+    let ops: Ptr<Int> = exp_opcode_addr as Ptr<Int>;
+    let r: Result<WsFrame, String> = ws_decode(view, offs[tick]);
+    let sum: Int = match r {
+        Ok(f) => ws_validate_frame(view, offs[tick], f, lens[tick], keys[tick],
+                                   ops[tick], masks[tick]),
+        Err(e) => 0 - 1,
+    };
+    when sum == 0 - 1 {
+        invalid = invalid + 1;
+    };
+    when sum >= 0 {
+        acc = acc ^ sum;
+    };
+    tick = tick + 1;
+    when tick == F_TOTAL {
+        tick = 0;
+        passes = passes + 1;
+        when passes == PASSES {
+            phase = PH_REPORT;
+        };
+    };
+    term;
+};
+
+// ── node 2: report ──────────────────────────────────────────────────────────
+async node ws_report [phase == PH_REPORT][true] {
+    print_int(acc);
+    print_int(invalid);
+    print_int(F_TOTAL * PASSES);
+    endprogram;
+};
