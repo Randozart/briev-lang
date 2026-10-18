@@ -1557,6 +1557,45 @@ impl LlvmBackend {
                         writeln!(out, "{}{} = add i64 {}, 0", indent, offset, gep_idx).ok();
                     }
                     let gep = self.fun.gen_reg();
+                    // 2026-10-18 (fixture campaign): pointee-aware read —
+                    // mirrors the write side's scalar-pointee rule
+                    // (BUGS.md 2026-10-18). A RAW Ptr<T> buffer stores scalar
+                    // elements at T's native width and stride (the write side
+                    // GEPs <elem>); the read must GEP the same element type or
+                    // the strides disagree (Ptr<Float> wrote 4-byte, read
+                    // 8-byte — the recommender regression). List/seq slots
+                    // and non-scalar pointees keep the i64-carrier paths
+                    // below (boxed handles, fat pointers, string boxes).
+                    let elem_llvm = match &obj_reg.ty {
+                        Type::Ptr(inner) => self.llvm_type(inner),
+                        _ => "i64".to_string(),
+                    };
+                    let raw_ptr_scalar = matches!(obj_reg.ty, Type::Ptr(_))
+                        && !is_list_type
+                        && matches!(
+                            elem_llvm.as_str(),
+                            "i8" | "i16" | "i32" | "i64" | "float" | "double"
+                        );
+                    if raw_ptr_scalar {
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr {}, ptr {}, i64 {}",
+                            indent, gep, elem_llvm, ptr, offset
+                        )
+                        .ok();
+                        let vol_prefix =
+                            if self.fun.volatile_read { "volatile " } else { "" };
+                        writeln!(
+                            out,
+                            "{}{} = load {}{}, ptr {}",
+                            indent, v, vol_prefix, elem_llvm, gep
+                        )
+                        .ok();
+                        return TypedRegister {
+                            name: v.to_string(),
+                            ty: index_elem_ty.clone(),
+                        };
+                    }
                     writeln!(
                         out,
                         "{}{} = getelementptr i64, ptr {}, i64 {}",
