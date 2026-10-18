@@ -7279,7 +7279,7 @@ fn first_param_is_receiver(param_ty: &Type, type_name: &str) -> bool {
 }
 
 /// 2026-10-16 (net stack L2): decide how many leading parameters of a dot-called
-/// obj member are the implicit receiver, and check the call's arity.
+/// obj member are the explicit receiver, and check the call's arity.
 ///
 /// An obj member is written in EITHER receiver style, and `x.m(args)` must
 /// dispatch to both:
@@ -7289,14 +7289,32 @@ fn first_param_is_receiver(param_ty: &Type, type_name: &str) -> bool {
 ///     `ByteSink`/bytes.bv style): parameter 0 IS the receiver, so the written
 ///     args match from index 1.
 /// Returns the offset (0 or 1) to skip before matching `supplied` args against
-/// the parameters. The arity check (supplied == params after the skip) makes the
-/// receiver-skip SOUND: a same-type first parameter on an implicit-style member
-/// fails the count and surfaces a clear arity error instead of silently
-/// mis-skipping. Mirrors the `Type::Dyn` branch's `takes_self` + arity rule.
+/// the parameters.
 ///
-/// Before this, `buf.put_u8(2)` matched `2:Int` against `params[0]` (the
-/// `sink: ByteBuf` receiver) and reported a spurious "expected ByteBuf, found
-/// Int".
+/// 2026-10-18 (review fix): the arity DISAMBIGUATES, it never gates. The two
+/// readings ask for counts that differ by exactly one (`supplied ==
+/// params.len()` fits the implicit reading; `supplied + 1 == params.len()`
+/// fits the explicit reading), so at most one reading can ever fit the
+/// written-argument count — the explicit-receiver skip is taken only when it
+/// is the fitting reading. Forcing offset 1 whenever the first parameter
+/// merely LOOKED like a receiver (the 2026-10-16 shape rule) made an implicit
+/// member with a same-type first parameter (`defn merge(other: Buf, x: Int)`
+/// called `b.merge(c, 5)`) uncallable via dot: the count fit the implicit
+/// reading, the type shape forced the explicit one, and the arity gate
+/// rejected a correct call. The count decides; the shape only marks which
+/// reading is admissible.
+///
+/// Residual (honest, documented): a WRONG-arity call to an explicit-receiver
+/// member whose extra args happen to be Int-typed falls to the implicit
+/// reading and surfaces a per-argument type mismatch rather than a crisp
+/// arity error (`b.put_u8(2, 3)` → "expected Buf, found Int at argument 0").
+/// The message points at a real type error, just not the best one; refining
+/// it needs a dual-reading diagnostic shared with the `Type::Dyn` branch and
+/// is tracked as a typechecker-cleanup follow-up, not this fix.
+///
+/// Before 2026-10-16, `buf.put_u8(2)` matched `2:Int` against `params[0]`
+/// (the `sink: ByteBuf` receiver) and reported a spurious "expected ByteBuf,
+/// found Int".
 fn member_receiver_offset(
     params: &[Type],
     type_name: &str,
@@ -7307,8 +7325,12 @@ fn member_receiver_offset(
         .first()
         .map(|p| matches!(p, Type::Custom(n) if n == "Self") || first_param_is_receiver(p, type_name))
         .unwrap_or(false);
-    let offset = if has_receiver { 1 } else { 0 };
-    let expected = params.len().saturating_sub(offset);
+    let offset = if has_receiver && supplied + 1 == params.len() {
+        1
+    } else {
+        0
+    };
+    let expected = params.len() - offset;
     if supplied != expected {
         return Err(TypeError::InvalidOperation {
             operation: format!(
@@ -9378,6 +9400,55 @@ node probe [1 < 2][true] {
 "#;
         let e = check(src);
         assert!(e.is_err(), "expected arity mismatch error, got: {:?}", e);
+    }
+    #[test]
+    fn method_call_implicit_member_same_type_first_param_resolves() {
+        // 2026-10-18 (review fix): an IMPLICIT-receiver member whose first
+        // parameter happens to be the obj's own type must stay callable via
+        // dot. The 2026-10-16 shape rule alone (first param same-typed ⇒
+        // skip it) misread `b.merge(c, 5)` as a 1-arg explicit-receiver call
+        // and arity-rejected it; the written-argument COUNT decides which
+        // reading fits (supplied == params.len() ⇒ implicit, no skip).
+        let src = r#"
+obj Buf {
+    len: Int;
+    defn merge(other: Buf, x: Int) -> Int {
+        term other.len + x;
+    };
+};
+defn mk() -> Buf { term Buf { len: 0 }; };
+node probe [1 < 2][true] {
+    let b: Buf = mk();
+    let c: Buf = mk();
+    let n: Int = b.merge(c, 5);
+    term;
+};
+"#;
+        let e = check(src);
+        assert!(e.is_ok(), "expected OK, got: {:?}", e);
+    }
+    #[test]
+    fn method_call_explicit_receiver_zero_value_args_resolves() {
+        // 2026-10-18: explicit-receiver member with NO value parameters —
+        // `b.clear()` supplies 0 written args; the count fits the explicit
+        // reading (0 + 1 == params.len()), so the receiver is skipped and the
+        // call resolves.
+        let src = r#"
+obj Buf {
+    len: Int;
+    defn clear(sink: Buf) -> Buf {
+        term Buf { len: 0 };
+    };
+};
+defn mk() -> Buf { term Buf { len: 1 }; };
+node probe [1 < 2][true] {
+    let b: Buf = mk();
+    let c: Buf = b.clear();
+    term;
+};
+"#;
+        let e = check(src);
+        assert!(e.is_ok(), "expected OK, got: {:?}", e);
     }
     #[test]
     fn let_declared_type_mismatch_errors() {

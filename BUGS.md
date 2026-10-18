@@ -10025,12 +10025,24 @@ went unnoticed.
 `param_offset` that skips the first parameter when it is the explicit receiver
 (its type is `Self` or the receiver obj's own type, via the new
 `first_param_is_receiver` helper), mirroring the `Type::Dyn` branch's
-`takes_self`. Added a sound arity check (supplied args == params after the
-skipped receiver) so a same-type first parameter on an implicit-style member
-surfaces a clear arity error instead of silently mis-skipping. Additive: the
-implicit-receiver path (`param_offset == 0`) is unchanged.
+`takes_self`. The written-argument COUNT disambiguates the two receiver
+styles — they ask for counts that differ by exactly one (`supplied ==
+params.len()` fits implicit, `supplied + 1 == params.len()` fits explicit),
+so at most one reading ever fits, and the skip is taken only when it is the
+fitting reading. An arity check at the chosen offset (explicit reading
+already count-guaranteed; implicit reading `supplied == params.len()`)
+rejects genuinely wrong arities with a clear error. Residual (documented in
+`member_receiver_offset`): a wrong-arity call to an explicit-receiver member
+whose extra args are Int-typed falls to the implicit reading and surfaces a
+per-argument type mismatch rather than the best arity error — refined by a
+future dual-reading diagnostic shared with the `Type::Dyn` branch.
 
 **Tests:** `typechecker::tests::method_call_explicit_receiver_member_resolves`
-(dot call to an explicit-receiver member type-checks) and
+(dot call to an explicit-receiver member type-checks),
 `method_call_explicit_receiver_arity_mismatch_errors` (too few args is a clear
-arity error). `cargo test --lib typechecker` green.
+arity error),
+`method_call_implicit_member_same_type_first_param_resolves` (the ambiguity
+pin: an implicit member's same-type first parameter must NOT trigger the
+receiver skip), and
+`method_call_explicit_receiver_zero_value_args_resolves` (`b.clear()` on
+`defn clear(sink: Buf)`). Full `cargo test --lib` green.
