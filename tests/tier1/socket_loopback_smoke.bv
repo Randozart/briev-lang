@@ -1,0 +1,57 @@
+// socket loopback — end-to-end gate (net stack L2).
+//
+// 2026-10-18 (fullstack-webapp net stack, review fix): lib/std/net/socket.bv
+// is the pure-Briev TCP transport (raw syscalls, no libc) that the Postgres
+// client (L3) and HTTP server (L4) sit on. This fixture pins the full client
+// AND server path in one process over 127.0.0.1: bind+listen (SO_REUSEADDR),
+// connect, accept, send one byte through the MSG_NOSIGNAL partial-transfer
+// loop, recv it back, close. Loopback needs no network — CI-safe.
+//
+// Golden: five ok-flags (bind_listen, connect, accept, send, recv), the
+// received byte (65 = 'A'), then the whole-trip flag → "11111651".
+import "std/net/socket.bv";
+import "std/net/bytes.bv";
+
+// Port for the loopback listener: high and uncommon to avoid colliding with
+// anything a CI host already holds; SO_REUSEADDR (set inside
+// sock_bind_listen) covers TIME_WAIT rebinds from a prior run.
+const TEST_PORT: Int = 39471;
+
+node entry [beginprogram][true] {
+    // Server side: TCP socket, SO_REUSEADDR, bind INADDR_ANY:port, listen.
+    // Verdicts print as Int (Bool would spell true/false).
+    let server: Socket = sock_tcp();
+    let lrc: Int = sock_bind_listen(server, TEST_PORT, 4);
+    Print#((lrc == 0) as Int);
+
+    // Client side: TCP socket, connect to loopback.
+    let client: Socket = sock_tcp();
+    let crc: Int = sock_connect(client, LOOPBACK, TEST_PORT);
+    Print#((crc == 0) as Int);
+
+    // Accept the pending connection (handshake completed via the backlog).
+    let conn: Socket = sock_accept(server);
+    Print#((conn.fd >= 0) as Int);
+
+    // Send one byte (65 = 'A') from client; the send loop moves the whole
+    // buffer and returns its length.
+    let sbuf: ByteBuf = buf_new(1).put_u8(65);
+    let nsent: Int = sock_send(client, sbuf, 1);
+    Print#((nsent == 1) as Int);
+
+    // Receive it on the accepted connection; blocking recv fills to cap.
+    let rbuf: ByteBuf = buf_new(1);
+    let nrecv: Int = sock_recv(conn, rbuf, 1);
+    Print#((nrecv == 1) as Int);
+    Print#(get_u8(rbuf, 0));
+
+    // Whole-trip verdict, then teardown (closes also exercise the Int-return
+    // callees in the liveness path).
+    let ok: Int = (lrc == 0 && crc == 0 && conn.fd >= 0 && nsent == 1 && nrecv == 1) as Int;
+    Print#(ok);
+    sock_close(conn);
+    sock_close(client);
+    sock_close(server);
+    buf_free(sbuf);
+    buf_free(rbuf);
+};

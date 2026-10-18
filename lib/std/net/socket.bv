@@ -1,0 +1,366 @@
+// socket - TCP sockets over raw Linux syscalls (net stack L2).
+//
+// 2026-10-16 (recommender-app net stack, Task 1): the PostgreSQL client and
+// the HTTP server both need a TCP transport, and the browser-sandbox glue
+// path is not available on the native backend. This is that transport: a
+// pure-Briev TCP client AND server built directly on posix/syscall.bv - no
+// libc, no third-party runtime. socket(2)/connect(2)/send(2)/recv(2) and the
+// server-side bind(2)/listen(2)/accept(2) are issued through the ONE variadic
+// `syscall(nr, ...)` wrapper, which returns the kernel's -errno on failure.
+//
+// Error convention (inherited from `syscall`): every syscall-returning value
+// is the kernel return - a non-negative result on success, a value in
+// [-4095, -1] encoding -errno on failure. We propagate that convention
+// unchanged (the postcondition `term >= -4096` pins the error domain), so a
+// caller tests `< 0` for failure exactly as it would in C.
+//
+// SELECTIVE import - exactly the socket/file syscall numbers this module
+// issues plus the one variadic `syscall`. (A full import would pull every
+// SYS_* number into this unit's namespace for no reason; fs.bv established
+// the selective-import discipline for the universal posix namespace.)
+import {
+    syscall,
+    SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
+    SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE
+} from "std/posix/syscall.bv";
+
+// L1 framing - the fixed ByteBuf and its ByteSink writers. The 16-byte
+// sockaddr_in is assembled with exactly these writers (put_u8 for the
+// host-order family + the zero pad, put_u16_be/put_u32_be for the
+// network-order port/addr), so the socket layer carries NO byte-poking of
+// its own - it reuses L1 (DRY).
+//
+// WHOLE-MODULE import (not selective): the writers are reached through DOT
+// chaining on the ByteBuf receiver (`buf.put_u8(…)`, post PR #21), which
+// resolves via the receiver's members — but a SELECTIVE
+// `import { put_u8 }` still binds the name to the bodyless `ByteSink` trait
+// declaration (whose `Self` infers Int), not the `ByteBuf` member, so any
+// FREE-FORM call site must import whole. (bytes.bv is a sibling L1 module
+// designed to be imported whole, like io.bv imports syscall.bv.)
+import "std/net/bytes.bv";
+
+// ── Address-family / socket-type constants (Linux x86_64) ─────────────────
+// AF_INET is the IPv4 address family; SOCK_STREAM selects a reliable,
+// connection-oriented byte stream (TCP). The third socket(2) argument
+// (protocol) is 0 - "the default protocol for this family+type", i.e. TCP.
+const AF_INET:     Int = 2;
+const SOCK_STREAM: Int = 1;
+const IPPROTO_TCP: Int = 0;
+
+// ── shutdown(2) "how" ─────────────────────────────────────────────────────
+// SHUT_RDWR tears down both directions at once (the usual "I am done with
+// this connection, flush and close both halves" value).
+const SHUT_RD:   Int = 0;
+const SHUT_WR:   Int = 1;
+const SHUT_RDWR: Int = 2;
+
+// Socket - a thin typed wrapper over a kernel file descriptor. A valid socket
+// has fd >= 0; a negative fd carries the -errno from a failed socket(2) (the
+// -errno convention flows through the obj unchanged, so callers can inspect
+// `s.fd < 0` without a separate error channel).
+obj Socket {
+    fd: Int;
+};
+
+// sock_tcp - create an IPv4 TCP socket: socket(AF_INET, SOCK_STREAM, 0).
+// Returns a Socket whose fd is the kernel return value: a non-negative
+// descriptor on success, or a negative -errno wrapped in the obj on failure.
+// No precondition (the arguments are compile-time constants); the fd-domain
+// postcondition is the syscall's error domain.
+defn sock_tcp() [true][term.fd >= -4096] -> Socket {
+    let fd: Int = syscall(SYS_SOCKET, AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    term Socket { fd: fd };
+};
+
+// sock_close - close(2) the descriptor, releasing the kernel resource. Returns
+// 0 on success or -errno. Requires a non-negative fd (closing a negative,
+// never-opened fd is a logic error, not a runtime recovery path).
+defn sock_close(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
+    term syscall(SYS_CLOSE, s.fd);
+};
+
+// sock_shutdown - shutdown(2) BOTH directions (SHUT_RDWR): stop further sends
+// and receives and signal the peer we are done, without yet releasing the fd
+// (close still follows). Returns 0 on success or -errno. Distinguished from
+// close because a graceful teardown half-closes before the fd is reclaimed.
+defn sock_shutdown(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
+    term syscall(SYS_SHUTDOWN, s.fd, SHUT_RDWR);
+};
+
+// ── struct sockaddr_in (16 bytes, Linux) ──────────────────────────────────
+//
+// The kernel's connect(2)/bind(2) take a pointer to this exact 16-byte
+// layout. The byte order is deliberately MIXED and that is the whole lesson:
+//
+//   offset  field         width  byte order              value
+//   ------  ------------  -----  ----------------------  -------------------
+//     0     sin_family       2   little-endian (HOST)    AF_INET = 2
+//     2     sin_port         2   big-endian  (NETWORK)   e.g. 5432
+//     4     sin_addr         4   big-endian  (NETWORK)   e.g. 127.0.0.1
+//     8     padding          8   -                       zero
+//
+// sin_family is a plain C `short` in the machine's native order, which on
+// x86_64 is little-endian - so AF_INET=2 is the two bytes 0x02 0x00 (low byte
+// first). sin_port and sin_addr are in NETWORK byte order (big-endian) because
+// they travel on the wire; that is why they use the L1 put_u16_be/put_u32_be
+// writers while the family does not. The trailing 8 bytes are unused padding
+// that must be present (the struct is 16 bytes) and zero.
+//
+// ip_v4 - pack four octets a.b.c.d into the 32-bit host integer the big-endian
+// writer expects. put_u32_be then emits them a, b, c, d on the wire (network
+// order), so passing ip_v4(127,0,0,1) yields the bytes 127 0 0 1 at offset 4.
+defn ip_v4(a: Int, b: Int, c: Int, d: Int)
+    [a >= 0 && a <= 255 && b >= 0 && b <= 255 && c >= 0 && c <= 255 && d >= 0 && d <= 255]
+    [term >= 0 && term <= 4294967295]
+    -> Int
+{
+    term (a << 24) | (b << 16) | (c << 8) | d;
+};
+
+// LOOPBACK - 127.0.0.1 as the host integer for ip_v4/put_u32_be.
+const LOOPBACK: Int = 2130706433;
+
+// make_sockaddr_in - build the 16-byte sockaddr_in into a fresh fixed ByteBuf
+// and return it (the caller passes buf.ptr + 16 to connect/bind, then frees
+// it). addr is the 32-bit IPv4 address as a host integer (big-endian on the
+// wire); port is 0..65535. Built purely from the L1 writers:
+//   - family: two put_u8 in LITTLE-endian order (low byte 0x02, then 0x00)
+//   - port:   put_u16_be (network order)
+//   - addr:   put_u32_be (network order)
+//   - pad:    eight put_u8(0)
+// The fixed ByteBuf is exactly right here (16 bytes, known up front, pointer
+// stable for the syscall) - no GrowBuf move hazard.
+defn make_sockaddr_in(addr: Int, port: Int)
+    [addr >= 0 && addr <= 4294967295 && port >= 0 && port <= 65535]
+    [term.len == 16 && term.cap >= 16]
+    -> ByteBuf
+{
+    // The L1 writers, dot-chained (post PR #21 dot dispatch skips the
+    // explicit `sink` receiver parameter): each returns a new ByteBuf
+    // threading the shared heap allocation (Store# mutates in place, only
+    // len advances), so the chain reads as the byte-layout story in order —
+    // sin_family = AF_INET little-endian (low byte then high byte), then
+    // sin_port and sin_addr big-endian (network order on the wire), then
+    // 8 bytes of zero padding filling the struct to 16.
+    term buf_new(16)
+        .put_u8(AF_INET & 255)
+        .put_u8((AF_INET >> 8) & 255)
+        .put_u16_be(port)
+        .put_u32_be(addr)
+        .pad_zeros(8);
+};
+
+// pad_zeros - append `count` zero bytes via the L1 put_u8 writer (tail
+// recursion; the fixed ByteBuf requires the room, which make_sockaddr_in
+// guarantees by sizing the buffer at 16).
+defn pad_zeros(buf: ByteBuf, count: Int)
+    [count >= 0 && buf.len + count <= buf.cap]
+    [term.len == buf.len + count && term.cap == buf.cap]
+    -> ByteBuf
+{
+    when count == 0 {
+        term buf;
+    };
+    term buf.put_u8(0).pad_zeros(count - 1);
+};
+
+// sockaddr_free - release the ByteBuf backing a sockaddr_in after the syscall
+// that consumed its pointer has returned. The kernel copies the struct during
+// connect(2)/bind(2), so the buffer is free to release immediately after.
+defn sockaddr_free(sa: ByteBuf) -> Void {
+    Free#(sa.ptr as Ptr);
+    term;
+};
+
+// ── 1.3  connect ──────────────────────────────────────────────────────────
+//
+// The pointer+length ABI: connect(2) is connect(fd, *sockaddr, addrlen). The
+// kernel reads the 16-byte struct through the pointer, so we pass the ByteBuf's
+// backing ADDRESS (sa.ptr, held as an Int) and the length 16. This is the same
+// "pass a raw address an Int holds" shape bytes.bv/fs.bv use for every buffer.
+const SOCKADDR_IN_LEN: Int = 16;
+
+// sock_connect - connect(2) the socket to addr:port (addr is the 32-bit IPv4
+// host integer, e.g. LOOPBACK). Builds the sockaddr_in, passes its pointer and
+// length to the kernel, frees the scratch buffer, and returns the syscall
+// result: 0 on success or -errno. Requires an open fd and a valid port.
+defn sock_connect(s: Socket, addr: Int, port: Int)
+    [s.fd >= 0 && addr >= 0 && addr <= 4294967295 && port >= 0 && port <= 65535]
+    [term >= -4096]
+    -> Int
+{
+    let sa: ByteBuf = make_sockaddr_in(addr, port);
+    let rc: Int = syscall(SYS_CONNECT, s.fd, sa.ptr, SOCKADDR_IN_LEN);
+    sockaddr_free(sa);
+    term rc;
+};
+
+// ── 1.4  send / recv with partial-transfer loops ───────────────────────────
+//
+// A single send(2)/recv(2) can move FEWER bytes than requested - the kernel
+// socket buffer may be partially full (send) or a TCP segment may carry only
+// part of the data (recv). Correct I/O therefore LOOPS until the whole buffer
+// has moved, advancing the offset by each call's byte count. This mirrors
+// fs.bv's write_loop/read_whole short-count loops, now over send/recv.
+//
+// Return convention, carefully distinguished:
+//   send: returns `len` once the whole buffer is sent, or -errno on a failed
+//         call (a 0 return from send is not an EOF - it just moved no bytes
+//         this call, so we keep looping).
+//   recv: returns the TOTAL bytes received. A recv of 0 is END-OF-STREAM (the
+//         peer closed); we stop and return what we have. A NEGATIVE recv is
+//         -errno, surfaced as the function's negative return - DISTINCT from
+//         the 0-is-EOF case, exactly as Req 9.2 demands.
+
+// MSG_NOSIGNAL (Linux): suppress the SIGPIPE that a send(2) to a
+// closed/RESET connection would otherwise raise - the kernel's default
+// SIGPIPE action TERMINATES the process, which for a server writing to a
+// dead client means the whole server dies on the first stale connection.
+// Every send(2) in this module passes this flag; the -errno (EPIPE)
+// return is how the failure reaches the caller, instead of a signal.
+const MSG_NOSIGNAL: Int = 16384;
+
+// sock_send - send the first `len` bytes of buf, looping over short writes.
+// Returns len on full success, or the first negative -errno encountered.
+defn sock_send(s: Socket, buf: ByteBuf, len: Int)
+    [s.fd >= 0 && len >= 0 && len <= buf.len][term >= -4096]
+    -> Int
+{
+    term send_loop(s, buf.ptr, len, 0);
+};
+
+// send_loop - tail-recursive short-write loop. `done` is the running count of
+// bytes already sent; each call sends the remaining tail (base+done, len-done).
+// Every send(2) carries MSG_NOSIGNAL (see the constant above): a write to a
+// dead connection must return -EPIPE, never raise a process-killing SIGPIPE.
+defn send_loop(s: Socket, base: Int, len: Int, done: Int)
+    [s.fd >= 0 && base >= 0 && len >= 0 && done >= 0][term >= -4096]
+    -> Int
+{
+    when done >= len {
+        term len;
+    };
+    // send(fd, buf, len, flags=MSG_NOSIGNAL)
+    let n: Int = syscall(SYS_SEND, s.fd, base + done, len - done, MSG_NOSIGNAL);
+    when n < 0 {
+        term n;
+    };
+    // A 0 return from send(2) with a NONZERO length is not spec'd for Linux
+    // TCP, but if the kernel ever reported one, `done + 0` would spin the
+    // loop forever. Treat it as a generic failure (stays in the -errno error
+    // domain the caller already checks) rather than recursing with no
+    // progress.
+    when n == 0 {
+        term -1;
+    };
+    term send_loop(s, base, len, done + n);
+};
+
+// sock_recv - receive up to `cap` bytes into buf, looping until the buffer is
+// full OR the peer closes (EOF). Returns the total bytes received (0..cap);
+// a NEGATIVE return is a -errno recv failure, distinct from a 0-byte EOF that
+// filled nothing. Note: this fills to `cap` or EOF - callers that want a
+// single message read a known length into cap.
+defn sock_recv(s: Socket, buf: ByteBuf, cap: Int)
+    [s.fd >= 0 && cap >= 0 && cap <= buf.cap][term >= -4096]
+    -> Int
+{
+    term recv_loop(s, buf.ptr, cap, 0);
+};
+
+// recv_loop - tail-recursive loop. `got` is the running received count; each
+// call receives into base+got for the remaining cap-got bytes. A 0 return is
+// EOF: stop and report `got` (what we have). A negative return is -errno,
+// surfaced directly so the caller can tell error (negative) from EOF (the loop
+// simply ending with got < cap).
+defn recv_loop(s: Socket, base: Int, cap: Int, got: Int)
+    [s.fd >= 0 && base >= 0 && cap >= 0 && got >= 0][term >= -4096]
+    -> Int
+{
+    when got >= cap {
+        term got;
+    };
+    // recv(fd, buf, len, flags=0)
+    let n: Int = syscall(SYS_RECV, s.fd, base + got, cap - got, 0);
+    when n < 0 {
+        term n;
+    };
+    when n == 0 {
+        term got;
+    };
+    term recv_loop(s, base, cap, got + n);
+};
+
+// ── 1.6  non-blocking + SO_REUSEADDR ───────────────────────────────────────
+//
+// fcntl(2) flag bits and commands (Linux x86_64).
+const F_GETFL:     Int = 3;
+const F_SETFL:     Int = 4;
+const O_NONBLOCK:  Int = 2048;
+
+// setsockopt(2) levels/options.
+const SOL_SOCKET:   Int = 1;
+const SO_REUSEADDR: Int = 2;
+
+// sock_set_nonblocking - put the socket into non-blocking mode so a single
+// connection never stalls the event loop's poll sweep. The correct sequence is
+// GET the current flags, OR in O_NONBLOCK, then SET - never clobbering the
+// other flags. Returns 0 on success or the first -errno.
+defn sock_set_nonblocking(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
+    let flags: Int = syscall(SYS_FCNTL, s.fd, F_GETFL, 0);
+    when flags < 0 {
+        term flags;
+    };
+    term syscall(SYS_FCNTL, s.fd, F_SETFL, flags | O_NONBLOCK);
+};
+
+// sock_set_reuseaddr - set SO_REUSEADDR so a listener can rebind a port still
+// in TIME_WAIT from a prior run (the "Address already in use" avoidance). The
+// option value is a 4-byte int = 1; setsockopt(2) takes its pointer+length, so
+// we build a 4-byte ByteBuf, write 1 little-endian, pass its address, and free.
+defn sock_set_reuseaddr(s: Socket) [s.fd >= 0][term >= -4096] -> Int {
+    // optval = 1 as a 4-byte little-endian int: low byte 1, then three zeros.
+    let opt: ByteBuf = buf_new(4).put_u8(1).put_u8(0).put_u8(0).put_u8(0);
+    let rc: Int = syscall(SYS_SETSOCKOPT, s.fd, SOL_SOCKET, SO_REUSEADDR, opt.ptr, 4);
+    Free#(opt.ptr as Ptr);
+    term rc;
+};
+
+// ── 1.7  server side: bind + listen + accept ────────────────────────────────
+//
+// sock_bind_listen - make `s` a listening server socket on 0.0.0.0:port (bound
+// to the ANY address so it accepts on every interface, loopback included).
+// Sets SO_REUSEADDR first (so a restart can rebind), then bind(2) the
+// sockaddr_in, then listen(2) with the given backlog (the kernel's queue of
+// not-yet-accepted completed connections). Returns 0 on success or the first
+// -errno. ANY = 0.0.0.0 = the host integer 0, which make_sockaddr_in writes as
+// four zero bytes at offset 4.
+const INADDR_ANY: Int = 0;
+
+defn sock_bind_listen(s: Socket, port: Int, backlog: Int)
+    [s.fd >= 0 && port >= 0 && port <= 65535 && backlog >= 0][term >= -4096]
+    -> Int
+{
+    let reuse: Int = sock_set_reuseaddr(s);
+    when reuse < 0 {
+        term reuse;
+    };
+    let sa: ByteBuf = make_sockaddr_in(INADDR_ANY, port);
+    let brc: Int = syscall(SYS_BIND, s.fd, sa.ptr, SOCKADDR_IN_LEN);
+    sockaddr_free(sa);
+    when brc < 0 {
+        term brc;
+    };
+    term syscall(SYS_LISTEN, s.fd, backlog);
+};
+
+// sock_accept - accept(2) one pending connection off the listen queue, giving a
+// NEW socket for that peer (the listener keeps listening). We pass NULL (0) for
+// the peer-address out-params since the caller does not need the peer address.
+// Returns a Socket whose fd is the new connection descriptor, or a negative
+// -errno wrapped in the obj (accept returns -EAGAIN on a non-blocking listener
+// with no pending connection - the caller treats that like "nothing ready").
+defn sock_accept(s: Socket) [s.fd >= 0][term.fd >= -4096] -> Socket {
+    let fd: Int = syscall(SYS_ACCEPT, s.fd, 0, 0);
+    term Socket { fd: fd };
+};
