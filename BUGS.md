@@ -9990,3 +9990,31 @@ eight examples, the host-fn chain (console probe: module-scope emission
 + wasm import binding), wasm embedding, the state-layout table, the
 router fixture, AND the real-browser smoke gate (rbv_browser_smoke +
 rbv_gate: file:// load, click round-trip) all verified working.
+
+## Plain-let READ fell through to the i64 fallback — FIXED 2026-10-18
+
+**Symptom:** a `plain let x: Float64` read in a defn/node body emitted
+`%tN = load i64, ptr @x` against a `double` global — invalid IR (clang
+type error) and an i64-typed register at every use. Int reads looked
+correct by accident (the fallback's `load i64` matches the Int global),
+which is why the plain-storage suite stayed green: the 2026-10-17
+land (`5aa90185`) pinned writes (`emit_state_store_i64`,
+emit_stmt assignment arm) and `@global` declaration, but no test read a
+non-Int plain let through `emit_expr`'s identifier chain.
+
+**Root cause:** the write resolvers check `ctx.plain_lets` BEFORE the
+field map (the protocol's stated rule — the mod.rs:7001 comment even
+says "the read/write resolvers check plain_lets"), but the READ side
+never got its arm: the chain falls field map (plain lets are not in it —
+they were demoted) → `constants` (miss) → `inits` (miss) → the generic
+final `else` that emits `load i64, ptr @name` typed `Type::int()`.
+Correct only for Int; Float64/Float/Bool/Ptr plain reads were wrong.
+
+**Fix (2026-10-18):** `emit_expr.rs` identifier resolution gains the
+mirroring arm — before `field_index_map`, a `ctx.plain_lets` hit loads
+from `ptr @name` with `self.llvm_type(&ty)` (native type from
+`plain_global_types`, default Int) and returns the register typed with
+the declared Briev type. Pin: `plain_let_read_loads_native_type`
+(Float64 read → `load double, ptr @scale`, no `load i64, ptr @scale`,
+Int read + stateless-defn assertions) — verified non-vacuous (arm
+disabled → test fails with the exact fallback IR).

@@ -11592,6 +11592,59 @@ node work [count < 3][count == 3] {
     );
 }
 
+#[test]
+fn plain_let_read_loads_native_type() {
+    // 2026-10-18 (plain-storage read path): an identifier read of a plain
+    // let must load from its module-scope @global with the NATIVE LLVM
+    // type. Without the emit_expr plain arm the read falls through every
+    // resolver (field map / constants / inits — plain lets are in none) to
+    // the generic `load i64, ptr @name` fallback — correct for Int only;
+    // a Float64 plain let then loads i64 from a `double` global (invalid
+    // IR, clang type error) and the register arrives typed Int at every
+    // use. Non-vacuous: drop the arm and the `load double, ptr @scale`
+    // assertion fails (fallback emits `load i64, ptr @scale`).
+    let src = r#"
+plain let scale: Float64 = 1.5;
+plain let acc: Int = 0;
+defn bump(k: Int) -> Int [k >= 0][term >= 0] {
+    acc = acc + k;
+    term acc;
+};
+defn scaled() -> Float64 {
+    term scale * 2.0;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(universe)
+        .with_force_emit_all(true);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("load double, ptr @scale"),
+        "a Float64 plain let read must load double natively:\n{ir}"
+    );
+    assert!(
+        !ir.contains("load i64, ptr @scale"),
+        "a Float64 plain let must never load as i64 (fallback fallthrough):\n{ir}"
+    );
+    assert!(
+        ir.contains("load i64, ptr @acc"),
+        "an Int plain let read must load from its @global:\n{ir}"
+    );
+    assert!(
+        ir.contains("@scale = global double"),
+        "the Float64 plain let must declare a double global:\n{ir}"
+    );
+    assert!(
+        ir.contains("define i64 @bump(i64 %arg0)"),
+        "a plain-only defn must stay stateless:\n{ir}"
+    );
+}
+
 // ── 2026-10-17 (readiness gate 1): watchdog honor-or-refuse ─────────────
 // The watchdog `?[cond] -> handler(arg)` was emitted only on counter-engine
 // dispatches; InlineSsa, version-DAG, and the direct-SSA loop dropped it

@@ -757,6 +757,22 @@ impl LlvmBackend {
                             ty: briev_ty,
                         }
                     }
+                } else if self.ctx.plain_lets.contains(name) {
+                    // 2026-10-17 (plain storage): a plain let loads from its
+                    // module-scope @global with its NATIVE llvm type — no
+                    // %State access, no i64-slot boxing. Same value, same
+                    // name; the machine simply doesn't carry it.
+                    let (ty, _) = self
+                        .ctx
+                        .plain_global_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or((Type::int(), None));
+                    let llvm_ty = self.llvm_type(&ty);
+                    let r = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
+                        .ok();
+                    TypedRegister { name: r, ty }
                 } else if let Some(&idx) = self.ctx.field_index_map.get(name) {
                     // 2026-07-19: Load with native type from field_types (e.g. "float",
                     // "double", "i64"). No unboxing needed — LLVM type matches %State
