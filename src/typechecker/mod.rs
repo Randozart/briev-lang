@@ -7007,10 +7007,16 @@ fn resolve_method_call(
     };
     let params = member_params(&member);
     let out = member_output(&member);
-    // 2026-09-16: chain back-references occupy the first parameter positions.
+    // 2026-10-16 (net stack L2): skip an explicit receiver parameter and
+    // check arity — the whole receiver-style disambiguation lives in the
+    // helper (see `member_receiver_offset`).
+    let param_offset =
+        member_receiver_offset(&params, type_name, name, leading.tys.len() + args.len())?;
+    // 2026-09-16: chain back-references occupy the first parameter positions
+    // (after the receiver, when the member names one explicitly).
     for (i, lty) in leading.tys.iter().enumerate() {
         let param_ty = params
-            .get(i)
+            .get(param_offset + i)
             .cloned()
             .map(|t| substitute_type(&t, &subst))
             .unwrap_or(Type::int());
@@ -7025,7 +7031,7 @@ fn resolve_method_call(
     for (i, arg) in args.iter().enumerate() {
         let arg_ty = infer_type_only(arg, ctx)?;
         let param_ty = params
-            .get(leading.tys.len() + i)
+            .get(param_offset + leading.tys.len() + i)
             .cloned()
             .map(|t| substitute_type(&t, &subst))
             .unwrap_or(Type::int());
@@ -7254,6 +7260,65 @@ fn member_params(m: &TopLevel) -> Vec<Type> {
         TopLevel::TypeDefOperator(d) => d.parameters.iter().map(|(_, ty)| ty.clone()).collect(),
         _ => Vec::new(),
     }
+}
+
+/// 2026-10-16 (net stack L2): does a member's first parameter name the
+/// explicit receiver — i.e. is its type the same obj the method is being
+/// called on? Explicit-receiver members (`defn put_u8(sink: ByteBuf, …)`)
+/// write the receiver as parameter 0; implicit-receiver members
+/// (`txn push(val)`) do not. The method-call (dot) form skips an explicit
+/// receiver when lining written args up with parameters. Matches both the
+/// bare obj name (`ByteBuf`) and an applied generic head (`Stack<T>` written
+/// as `Stack`); the generic type args are checked separately by `subst`.
+fn first_param_is_receiver(param_ty: &Type, type_name: &str) -> bool {
+    match param_ty {
+        Type::Custom(n) => n == type_name,
+        Type::Applied(n, _) => n == type_name,
+        _ => false,
+    }
+}
+
+/// 2026-10-16 (net stack L2): decide how many leading parameters of a dot-called
+/// obj member are the implicit receiver, and check the call's arity.
+///
+/// An obj member is written in EITHER receiver style, and `x.m(args)` must
+/// dispatch to both:
+///   - implicit receiver — `txn push(val: Int)`: the obj's fields are in scope,
+///     there is NO receiver parameter, so the written args match from index 0;
+///   - explicit receiver — `defn put_u8(sink: ByteBuf, val: Int)` (the
+///     `ByteSink`/bytes.bv style): parameter 0 IS the receiver, so the written
+///     args match from index 1.
+/// Returns the offset (0 or 1) to skip before matching `supplied` args against
+/// the parameters. The arity check (supplied == params after the skip) makes the
+/// receiver-skip SOUND: a same-type first parameter on an implicit-style member
+/// fails the count and surfaces a clear arity error instead of silently
+/// mis-skipping. Mirrors the `Type::Dyn` branch's `takes_self` + arity rule.
+///
+/// Before this, `buf.put_u8(2)` matched `2:Int` against `params[0]` (the
+/// `sink: ByteBuf` receiver) and reported a spurious "expected ByteBuf, found
+/// Int".
+fn member_receiver_offset(
+    params: &[Type],
+    type_name: &str,
+    name: &str,
+    supplied: usize,
+) -> Result<usize, TypeError> {
+    let has_receiver = params
+        .first()
+        .map(|p| matches!(p, Type::Custom(n) if n == "Self") || first_param_is_receiver(p, type_name))
+        .unwrap_or(false);
+    let offset = if has_receiver { 1 } else { 0 };
+    let expected = params.len().saturating_sub(offset);
+    if supplied != expected {
+        return Err(TypeError::InvalidOperation {
+            operation: format!(
+                "method call '.{}()' on {} — {} arg(s), member takes {}",
+                name, type_name, supplied, expected
+            ),
+            type_name: type_name.to_string(),
+        });
+    }
+    Ok(offset)
 }
 
 fn member_output(m: &TopLevel) -> Option<Type> {
@@ -9267,6 +9332,52 @@ node probe [st.len <= 8][true] {
 "#;
         let e = check(src);
         assert!(e.is_ok(), "expected OK, got: {:?}", e);
+    }
+    #[test]
+    fn method_call_explicit_receiver_member_resolves() {
+        // 2026-10-16 (net stack L2): the dot form must dispatch to an
+        // EXPLICIT-receiver obj member (`defn put_u8(sink: Buf, val: Int)`)
+        // — the `ByteSink`/bytes.bv style — skipping the receiver parameter
+        // when matching the written arg. Before the fix, `b.put_u8(2)`
+        // matched `2:Int` against the `sink: Buf` receiver and reported a
+        // spurious "expected Buf, found Int".
+        let src = r#"
+obj Buf {
+    len: Int;
+    defn put_u8(sink: Buf, val: Int) -> Buf {
+        term Buf { len: sink.len + 1 };
+    };
+};
+defn mk() -> Buf { term Buf { len: 0 }; };
+node probe [1 < 2][true] {
+    let b: Buf = mk();
+    let c: Buf = b.put_u8(2);
+    term;
+};
+"#;
+        let e = check(src);
+        assert!(e.is_ok(), "expected OK, got: {:?}", e);
+    }
+    #[test]
+    fn method_call_explicit_receiver_arity_mismatch_errors() {
+        // 2026-10-16: too few args to an explicit-receiver member is a clear
+        // arity error (the receiver-skip never silently absorbs a missing arg).
+        let src = r#"
+obj Buf {
+    len: Int;
+    defn put2(sink: Buf, a: Int, b: Int) -> Buf {
+        term Buf { len: sink.len + a + b };
+    };
+};
+defn mk() -> Buf { term Buf { len: 0 }; };
+node probe [1 < 2][true] {
+    let b: Buf = mk();
+    let c: Buf = b.put2(2);
+    term;
+};
+"#;
+        let e = check(src);
+        assert!(e.is_err(), "expected arity mismatch error, got: {:?}", e);
     }
     #[test]
     fn let_declared_type_mismatch_errors() {

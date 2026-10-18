@@ -9990,3 +9990,47 @@ eight examples, the host-fn chain (console probe: module-scope emission
 + wasm import binding), wasm embedding, the state-layout table, the
 router fixture, AND the real-browser smoke gate (rbv_browser_smoke +
 rbv_gate: file:// load, click round-trip) all verified working.
+
+## Dot-method dispatch misaligned args for explicit-receiver obj members — FIXED 2026-10-16
+
+**Symptom:** calling an obj member written in the EXPLICIT-receiver style
+(the first parameter is the obj itself, e.g. `defn put_u8(sink: ByteBuf, val:
+Int) -> ByteBuf` in `lib/std/net/bytes.bv`) via dot syntax reported a spurious
+type error:
+
+```
+buf.put_u8(2)
+  → type mismatch: expected ByteBuf for argument 0 of '.put_u8()', found Int
+```
+
+The free-function form `put_u8(buf, 2)` (used by the `ByteSink` trait defaults
+INSIDE bytes.bv) type-checked fine, and trait-DEFAULT methods called by dot
+(`buf.put_u16_be(port)`) resolved correctly — only concrete explicit-receiver
+obj members were broken through the dot form. Discovered writing the L2 socket
+module (`lib/std/net/socket.bv`, recommender-app Task 1), which builds the
+16-byte `sockaddr_in` with the bytes.bv writers.
+
+**Root cause:** `resolve_method_call` (`src/typechecker/mod.rs`) matched the
+written call args against the member parameters starting at index 0. For an
+explicit-receiver member, parameter 0 IS the receiver (`sink: ByteBuf`), so the
+first written arg (`2: Int`) was compared against the receiver parameter type
+(`ByteBuf`) — off by one. The `Type::Dyn` branch already handled this (it
+computes `takes_self` and slices `&params[1..]`), but the concrete-obj member
+branch had no equivalent skip. Implicit-receiver members (`txn push(val: Int)`,
+the obj's fields in scope, no receiver parameter) matched at index 0 correctly,
+which is why the existing `method_call_on_obj_resolves` test passed and the gap
+went unnoticed.
+
+**Fix:** in the concrete-member branch of `resolve_method_call`, compute a
+`param_offset` that skips the first parameter when it is the explicit receiver
+(its type is `Self` or the receiver obj's own type, via the new
+`first_param_is_receiver` helper), mirroring the `Type::Dyn` branch's
+`takes_self`. Added a sound arity check (supplied args == params after the
+skipped receiver) so a same-type first parameter on an implicit-style member
+surfaces a clear arity error instead of silently mis-skipping. Additive: the
+implicit-receiver path (`param_offset == 0`) is unchanged.
+
+**Tests:** `typechecker::tests::method_call_explicit_receiver_member_resolves`
+(dot call to an explicit-receiver member type-checks) and
+`method_call_explicit_receiver_arity_mismatch_errors` (too few args is a clear
+arity error). `cargo test --lib typechecker` green.
