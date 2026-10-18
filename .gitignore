@@ -348,3 +348,13 @@ examples/gpu/briev_accel_rt.c
 
 # stray benchmark ELF binaries
 benchmarks/mandelbrot_c
+
+# stray build outputs (2026-10-18 tree sweep — gitignore when uncertain:
+# only regenerate-here artifacts; real sources/results/tests stay tracked)
+libstrexp.a
+benchmarks/async_counters_idio
+benchmarks/async_counters_idio_c
+benchmarks/recommender
+benchmarks/recommender_c
+examples/gpu/.tmp_quad/
+examples/gpu/briev_*_test_*.abv
