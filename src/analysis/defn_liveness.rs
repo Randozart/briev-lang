@@ -1626,7 +1626,8 @@ fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::ba
                 | BadBodyItem::Break(_)
                 | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => {}
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {}
             }
         }
         out

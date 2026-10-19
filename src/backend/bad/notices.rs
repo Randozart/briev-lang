@@ -156,7 +156,8 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => None,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
         })
         .collect();
     // Single iterator chain (items → instrs → Name operands) — no nested
@@ -179,7 +180,8 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => None,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
         })
         .flat_map(|instr| instr.operands.iter().map(move |op| (instr, op)));
     for (instr, op) in name_ops {
@@ -431,7 +433,8 @@ fn collect_acks<'a>(
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => None,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
             })
             .collect(),
         BadTopLevel::Defn(d) => {
@@ -449,7 +452,8 @@ fn collect_acks<'a>(
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => None,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
                     })
                     .collect()
             } else {

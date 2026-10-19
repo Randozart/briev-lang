@@ -207,7 +207,8 @@ fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => {}
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {}
         }
     }
     // A loop's span ends at its LAST jump back to the head (the
@@ -731,7 +732,8 @@ fn rewrite(
             | BadBodyItem::Break(_)
             | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => out.push(item.clone()),
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => out.push(item.clone()),
         }
     }
     // Fall-off-the-end exit: restore the frame (no auto-ret — the naked

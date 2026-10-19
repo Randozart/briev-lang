@@ -132,8 +132,15 @@ pub enum BadBodyItem {
     /// `name(args);` / `call name(args);` — a call statement (engine verb,
     /// defn, or `fn`).
     CallStmt { text: String, span: Span },
-    /// `return;` / `return expr;` — only legal inside a `fn`.
+    /// `return;` / `return expr;` — only legal inside a `call defn`.
     Return { value: Option<String>, span: Span },
+    /// `raw [clobbers rN, ...] { … }` — verbatim physical instructions
+    /// inside a symbolic body. The clobber list is the boundary contract.
+    RawRegion {
+        text: String,
+        clobbers: Vec<String>,
+        span: Span,
+    },
 }
 
 /// `fn name(params) -> Ret { … }` — a callable function.

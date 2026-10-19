@@ -519,6 +519,11 @@ impl<'s> Parser<'s> {
             self.pos += 1;
             return Ok(Some(BadBodyItem::Continue(span)));
         }
+        if c == "raw {" || c.starts_with("raw ") {
+            let clobbers = parse_raw_region_head(c, line, span.clone())?;
+            let text = self.consume_raw_block(line, span.clone())?;
+            return Ok(Some(BadBodyItem::RawRegion { text, clobbers, span }));
+        }
         if let Some(rest) = c.strip_prefix("let ") {
             let item = parse_let_text(rest, span.clone(), line)?;
             self.pos += 1;
@@ -653,6 +658,50 @@ impl<'s> Parser<'s> {
                 .to_string(),
             line: lno.max(line),
             span: Span::new(off, off + c.len(), lno, 0),
+        })
+    }
+
+    /// Capture a `raw [clobbers ...] { … }` region verbatim. Braces are
+    /// line-delimited: the head ends in `{`, the close is a lone `}`.
+    fn consume_raw_block(
+        &mut self, line: usize, span: Span,
+    ) -> Result<String, BadParseError> {
+        let (_, head, _) = self.lines[self.pos];
+        if !head.trim_end().ends_with('{') {
+            return Err(BadParseError {
+                message: "inline `raw` must end its head line with `{` and put `}` on its own line"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        self.pos += 1;
+        let mut lines: Vec<String> = Vec::new();
+        while self.pos < self.lines.len() {
+            let (_, content, lno) = self.lines[self.pos];
+            if content == "}" {
+                self.pos += 1;
+                return Ok(lines.join("\n"));
+            }
+            if content.is_empty() {
+                self.pos += 1;
+                continue;
+            }
+            if content.starts_with("local ") || content.starts_with("defn ") {
+                return Err(BadParseError {
+                    message: "inline `raw` takes physical instructions only - keep labels/defns                               out of the region"
+                        .to_string(),
+                    line: lno,
+                    span: Span::new(0, 0, lno, 0),
+                });
+            }
+            lines.push(content.to_string());
+            self.pos += 1;
+        }
+        Err(BadParseError {
+            message: "unterminated inline `raw` region - add a `}` on its own line".to_string(),
+            line,
+            span,
         })
     }
 
@@ -1205,6 +1254,12 @@ impl<'s> Parser<'s> {
     fn try_raw_block(
         &mut self, content: &str, line: usize, span: Span,
     ) -> Result<Option<BadRawBlock>, BadParseError> {
+        // Inline `raw { … }` / `raw clobbers … { … }` is a symbolic-body
+        // region, not the top-level `raw <target> … end raw` form.
+        let t = content.trim_end();
+        if t == "raw {" || t.starts_with("raw clobbers ") {
+            return Ok(None);
+        }
         // A bare `raw` with no target is a clear error, not an instruction.
         if content.trim() == "raw" {
             return Err(BadParseError {
@@ -1699,6 +1754,44 @@ fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), Ba
         seen.push(key);
     }
     Ok(())
+}
+
+/// Parse `raw {` / `raw clobbers r3, r4 {` and return the clobber list.
+fn parse_raw_region_head(
+    content: &str, line: usize, span: Span,
+) -> Result<Vec<String>, BadParseError> {
+    let t = content.trim_end();
+    let Some(head) = t.strip_suffix('{') else {
+        return Err(BadParseError {
+            message: "inline `raw` needs `raw {` or `raw clobbers rN, ... {`".to_string(),
+            line,
+            span,
+        });
+    };
+    let head = head.trim();
+    if head == "raw" {
+        return Ok(Vec::new());
+    }
+    let Some(list) = head.strip_prefix("raw clobbers ") else {
+        return Err(BadParseError {
+            message: "inline `raw` takes `raw {` or `raw clobbers rN, ... {`".to_string(),
+            line,
+            span,
+        });
+    };
+    let mut out = Vec::new();
+    for part in list.split(',') {
+        let name = part.trim();
+        if name.is_empty() || !is_ident(name) {
+            return Err(BadParseError {
+                message: format!("`{name}` is not a valid clobber register"),
+                line,
+                span,
+            });
+        }
+        out.push(name.to_string());
+    }
+    Ok(out)
 }
 
 fn parse_fn_params(

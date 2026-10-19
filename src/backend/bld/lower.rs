@@ -1078,6 +1078,11 @@ impl<'a> BldLowerer<'a> {
             BldStmt::Return { value, .. } => self.st_return(value.as_ref()),
             BldStmt::Bad { text, .. } => self.st_bad(text, pos),
             BldStmt::Instr(i) => self.st_instr(i),
+            BldStmt::Bind { name, register, .. } => self.st_bind(name, register),
+            BldStmt::WriteReg { register, value, .. } => self.st_write_reg(register, value),
+            BldStmt::RawClobber { text, clobbers, .. } => {
+                self.st_raw_clobber(text, clobbers, pos)
+            }
         }
     }
 
@@ -1340,6 +1345,80 @@ impl<'a> BldLowerer<'a> {
     /// splice into the recipe body at any position. Ownership items
     /// (sections, data labels, defns, raw blocks) attach only at the
     /// recipe's first or last statement — .bad ownership is positional.
+    fn canonical_phys(&self, name: &str) -> Result<(String, VClass), String> {
+        let is_portable = |n: &str| {
+            if n == "sp" || n == "pc" {
+                return true;
+            }
+            let Some(rest) = n.strip_prefix('r').or_else(|| n.strip_prefix('f')) else {
+                return false;
+            };
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        };
+        if is_portable(name) {
+            if self.regs.resolve(name, &self.family).is_none() {
+                return Err(self.fail(
+                    &format!("register `{name}`"),
+                    &format!("`{}` has no such portable register", self.family),
+                    "use a register the target defines, or `raw <target>` for target-only code",
+                ));
+            }
+            let class = if name.starts_with('f') { VClass::Float } else { VClass::Int };
+            return Ok((name.to_string(), class));
+        }
+        if let Some((canon, width)) = self.regs.resolve_alias(name, &self.family) {
+            if width.is_some() {
+                return Err(self.fail(
+                    &format!("register `{name}`"),
+                    "width-specific register spellings are not supported at the boundary yet",
+                    "use the full-width name (`rax`, `x0`, `a0`) or a raw region",
+                ));
+            }
+            let class = if canon.starts_with('f') { VClass::Float } else { VClass::Int };
+            return Ok((canon, class));
+        }
+        let targets = self.regs.alias_targets(name);
+        if !targets.is_empty() {
+            return Err(self.fail(
+                &format!("register `{name}`"),
+                &format!("it exists only on [{}]", targets.join(", ")),
+                &format!("use a register `{}` has, or a raw region", self.family),
+            ));
+        }
+        Err(self.fail(
+            &format!("`{name}`"),
+            "it is not a physical register",
+            "use a canonical register (r0-r15, f0-f15), a target name, or a symbolic value",
+        ))
+    }
+
+    fn st_bind(&mut self, name: &str, register: &str) -> Result<(), String> {
+        let (canon, class) = self.canonical_phys(register)?;
+        if self.body.reserved.iter().any(|r| r == &canon) {
+            // fine — two pins to the same register are the author's call
+        }
+        self.body.reserved.push(canon.clone());
+        self.scopes_insert(name, Binding { reg: Some(canon), class, konst: None })
+    }
+
+    fn st_write_reg(&mut self, register: &str, value: &Expr) -> Result<(), String> {
+        let (canon, class) = self.canonical_phys(register)?;
+        let v = self.expr(value)?;
+        let v = self.promote(v, class)?;
+        self.body.reserved.push(canon.clone());
+        self.emit_copy(&canon, v.op, class)
+    }
+
+    fn st_raw_clobber(
+        &mut self, text: &str, clobbers: &[String], pos: RecipePos,
+    ) -> Result<(), String> {
+        for c in clobbers {
+            let (canon, _) = self.canonical_phys(c)?;
+            self.body.reserved.push(canon);
+        }
+        self.st_bad(text, pos)
+    }
+
     /// Internal symbolic instruction (from the .bad assembly+ pass).
     /// Operands may name `vN`/`fvN`; the allocator resolves them.
     fn st_instr(&mut self, i: &BadInstr) -> Result<(), String> {
@@ -2050,6 +2129,30 @@ impl<'a> BldLowerer<'a> {
             )?;
             return Ok(Some(Lowered::temp_reg(reg, VClass::Int)));
         }
+        if callee == "copyreg" {
+            if args.len() != 1 {
+                return Err(self.fail(
+                    "`copyreg`",
+                    &format!("it takes one register, got {} argument(s)", args.len()),
+                    "write `copyreg(r5)`",
+                ));
+            }
+            let name = match &args[0] {
+                Expr::Identifier(n) => n.clone(),
+                _ => {
+                    return Err(self.fail(
+                        "`copyreg`",
+                        "its argument must be a bare register name",
+                        "write `copyreg(r5)`",
+                    ))
+                }
+            };
+            let (canon, class) = self.canonical_phys(&name)?;
+            let v = self.fresh_vreg(class);
+            self.body.reserved.push(canon.clone());
+            self.emit_copy(&v, BadOperand::Name(canon), class)?;
+            return Ok(Some(Lowered::temp_reg(v, class)));
+        }
         if callee.contains('.') {
             return Err(self.fail(
                 &format!("call to `{callee}`"),
@@ -2466,6 +2569,8 @@ fn stmts_contain_call(stmts: &[BldStmt]) -> bool {
                 || otherwise.as_ref().map_or(false, |o| stmts_contain_call(o))
         }
         BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => stmts_contain_call(body),
+        // Raw regions are opaque; assume they can call, so params stash.
+        BldStmt::RawClobber { .. } => true,
         _ => false,
     })
 }
@@ -2485,5 +2590,8 @@ fn stmt_span(st: &BldStmt) -> Span {
         | BldStmt::Return { span, .. }
         | BldStmt::Bad { span, .. } => *span,
         BldStmt::Instr(i) => i.span,
+        BldStmt::Bind { span, .. }
+        | BldStmt::WriteReg { span, .. }
+        | BldStmt::RawClobber { span, .. } => *span,
     }
 }

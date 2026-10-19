@@ -604,6 +604,38 @@ mod tests {
     }
 
     #[test]
+    fn raw_boundary_copy_in_out_and_pin() {
+        let src = "_start:\n    raw clobbers r5 {\n        mov r5, 42\n    }\n    \
+                   let x = r5\n    x += 1\n    r6 = x\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $42, %rdi"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+
+        let pin = "_start:\n    let p = pin r5\n    p = 7\n    halt\n";
+        let x86 = lower_ok(pin, "x86_64");
+        assert!(x86.contains("movq $7, %rdi"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
+    fn raw_clobbers_are_reserved() {
+        let src = "_start:\n    mov x, 1\n    raw clobbers r3 {\n        mov r3, 2\n    }\n    \
+                   x += 1\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $2, %rbx"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+    }
+
+    #[test]
+    fn boundary_register_must_exist() {
+        let err = generate("_start:\n    let x = pin r99\n", "x86_64")
+            .expect_err("missing register");
+        assert!(err.contains("r99"), "{err}");
+    }
+
+    #[test]
     fn symbolic_addr_and_label_as_address() {
         let src = "call defn use_ptr(p: Ptr) -> Int {\n    return 0\n}\n\
                    bootstrap Entry {\n    let a = addr(banner)\n    \

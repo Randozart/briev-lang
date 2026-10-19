@@ -836,7 +836,8 @@ impl<'a> Lowerer<'a> {
                 | BadBodyItem::Break(_)
                 | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => self.errors.push(
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => self.errors.push(
                     "symbolic statement reached emission - the symbolic lowering pass did not run"
                         .to_string(),
                 ),
@@ -1332,7 +1333,8 @@ impl<'a> Lowerer<'a> {
                 | BadBodyItem::Break(_)
                 | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => {
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {
                     return Err(
                         "symbolic statement inside a defn reached emission - the symbolic                          lowering pass did not run"
                             .to_string(),

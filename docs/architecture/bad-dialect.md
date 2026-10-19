@@ -301,6 +301,15 @@ Rules:
 - `addr(label)` produces a label address. A known data/code label in a
   symbolic value position also means its address (`uart_puts(UART0, banner)`);
   raw `mov rN, label` still errors and points at `addr`.
+- Boundary handoff:
+  - `let x = r5` copies a physical register into a symbolic value.
+  - `r5 = x` copies a symbolic value back to a physical register.
+  - `let p = pin r5` binds a symbolic name directly to `r5`; assignments
+    write the register (no copy).
+  - `raw clobbers r3, r4 { … }` splices verbatim physical instructions.
+    The clobber list is reserved for the whole symbolic body; undeclared
+    clobbers are the author's contract. Raw regions cannot reference
+    symbolic values.
 
 ## Registers
 

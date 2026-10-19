@@ -54,7 +54,8 @@ pub fn check_label_contracts(
         | BadBodyItem::Break(_)
         | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => None,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
     }).collect();
     for pred in preds {
         check_pred(pred, &instrs, &ctx, errors, &mut proven);

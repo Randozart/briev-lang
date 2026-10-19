@@ -171,4 +171,11 @@ pub enum BldStmt {
     /// assembly+ pass, never parsed from `.bld` source. The allocator
     /// resolves `vN`/`fvN` operands through the ISA role table.
     Instr(BadInstr),
+    /// `let x = pin r5` — bind a symbolic name to a physical register.
+    Bind { name: String, register: String, span: Span },
+    /// `r5 = x` — copy a symbolic value back to a physical register.
+    WriteReg { register: String, value: Expr, span: Span },
+    /// `raw clobbers rN { … }` — verbatim physical region. The clobbers
+    /// are reserved for the whole recipe.
+    RawClobber { text: String, clobbers: Vec<String>, span: Span },
 }

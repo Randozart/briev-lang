@@ -237,7 +237,8 @@ fn body_has_symbolic(body: &[crate::ast::bad::BadBodyItem], ctx: &SymCtx<'_>) ->
         | BadBodyItem::Break(_)
         | BadBodyItem::Continue(_)
         | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. } => true,
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => true,
         BadBodyItem::Instr(i) => instr_has_symbolic(i, ctx),
         BadBodyItem::Local(_) | BadBodyItem::Site(_) => false,
     })
@@ -332,6 +333,13 @@ impl Builder<'_, '_> {
 
     fn known(&self, name: &str) -> bool {
         self.params.contains(name) || is_known_value(name, self.ctx)
+    }
+
+    fn is_phys_reg(&self, name: &str) -> bool {
+        is_portable_name(name)
+            || self.ctx.regs.resolve(name, self.ctx.family).is_some()
+            || self.ctx.regs.resolve_real(name, self.ctx.family).is_some()
+            || !self.ctx.regs.alias_targets(name).is_empty()
     }
 
     fn parse_expr(&self, text: &str, line: usize) -> Result<Expr, String> {
@@ -431,7 +439,32 @@ impl Builder<'_, '_> {
         match item {
             BadBodyItem::Let(x) => {
                 self.check_new_name(&x.name, x.span.line)?;
-                let value = self.parse_expr(&x.value, x.span.line)?;
+                let raw = x.value.trim().trim_end_matches(';').trim();
+                if let Some(reg) = raw.strip_prefix("pin ") {
+                    let reg = reg.trim();
+                    if !self.is_phys_reg(reg) {
+                        return Err(format!(
+                            "`pin {reg}` (line {}) needs a physical register",
+                            x.span.line
+                        ));
+                    }
+                    self.stmts.push(BldStmt::Bind {
+                        name: x.name.clone(),
+                        register: reg.to_string(),
+                        span: x.span.clone(),
+                    });
+                    self.bound.insert(x.name.clone());
+                    return Ok(());
+                }
+                let value = if self.is_phys_reg(raw) {
+                    Expr::Call(
+                        "copyreg".to_string(),
+                        vec![Expr::Identifier(raw.to_string())],
+                        None,
+                    )
+                } else {
+                    self.parse_expr(&x.value, x.span.line)?
+                };
                 self.stmts.push(BldStmt::Let {
                     name: x.name.clone(),
                     ty: x.ty.as_deref().map(parse_type),
@@ -441,6 +474,34 @@ impl Builder<'_, '_> {
                 self.bound.insert(x.name.clone());
             }
             BadBodyItem::Assign(x) => {
+                if self.is_phys_reg(&x.name) {
+                    let rhs = self.parse_expr(&x.value, x.span.line)?;
+                    let value = if x.op.is_empty() {
+                        rhs
+                    } else {
+                        let kind = compound_kind(&x.op).ok_or_else(|| {
+                            format!(
+                                "unknown compound operator `{}=` at line {}",
+                                x.op, x.span.line
+                            )
+                        })?;
+                        Expr::BinaryOp(
+                            kind,
+                            Box::new(Expr::Call(
+                                "copyreg".to_string(),
+                                vec![Expr::Identifier(x.name.clone())],
+                                None,
+                            )),
+                            Box::new(rhs),
+                        )
+                    };
+                    self.stmts.push(BldStmt::WriteReg {
+                        register: x.name.clone(),
+                        value,
+                        span: x.span.clone(),
+                    });
+                    return Ok(());
+                }
                 self.check_assign_name(&x.name, x.span.line)?;
                 if !self.bound.contains(&x.name) {
                     return Err(format!(
@@ -562,6 +623,13 @@ impl Builder<'_, '_> {
                 });
             }
             BadBodyItem::Instr(i) => self.emit_instr(i)?,
+            BadBodyItem::RawRegion { text, clobbers, span } => {
+                self.stmts.push(BldStmt::RawClobber {
+                    text: text.clone(),
+                    clobbers: clobbers.clone(),
+                    span: span.clone(),
+                });
+            }
             BadBodyItem::Local(l) => {
                 return Err(format!(
                     "manual label `{}` inside a symbolic body (line {}) - symbolic bodies use \
