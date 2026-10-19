@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn symbolic_addr_and_label_as_address() {
-        let src = "fn use_ptr(p: Ptr) -> Int {\n    return 0\n}\n\
+        let src = "call defn use_ptr(p: Ptr) -> Int {\n    return 0\n}\n\
                    bootstrap Entry {\n    let a = addr(banner)\n    \
                    let b = use_ptr(banner)\n    halt\n}\n\
                    data {\n    banner: .asciz \"ok\\n\"\n}\n";
@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn fn_calls_stage_abi_and_return() {
-        let src = "fn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\
+        let src = "call defn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\
                    bootstrap Entry {\n    let x = add(2, 3)\n    halt\n}\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("add:"), "{x86}");
@@ -630,8 +630,8 @@ mod tests {
 
     #[test]
     fn fn_calls_another_fn_and_loop_body() {
-        let src = "fn inc(a: Int) -> Int {\n    return a + 1\n}\n\
-                   fn twice(a: Int) -> Int {\n    return inc(inc(a))\n}\n\
+        let src = "call defn inc(a: Int) -> Int {\n    return a + 1\n}\n\
+                   call defn twice(a: Int) -> Int {\n    return inc(inc(a))\n}\n\
                    bootstrap Entry {\n    let x = twice(1)\n    halt\n}\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("call inc"), "{x86}");
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn fn_uart_puts_shape_lowers() {
-        let src = "fn uart_puts(base: Ptr, msg: Ptr) -> Int {\n    let p = msg\n    \
+        let src = "call defn uart_puts(base: Ptr, msg: Ptr) -> Int {\n    let p = msg\n    \
                    loop {\n        let ch = Load(p)\n        when ch == 0: break\n        \
                    Store(ch, base)\n        p += 1\n    }\n    return 0\n}\n\
                    bootstrap Entry {\n    let r = uart_puts(0x10000000, 0x1000)\n    halt\n}\n";
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn fn_void_auto_returns_and_accepts_engine_verbs() {
-        let src = "fn stop() {\n    DisableInterrupts\n    halt\n}\n\
+        let src = "call defn stop() {\n    DisableInterrupts\n    halt\n}\n\
                    bootstrap Entry {\n    stop()\n}\n";
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("stop:"), "{x86}");
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn non_void_fn_without_return_is_loud() {
-        let src = "fn bad(a: Int) -> Int {\n    mov x, a\n}\n";
+        let src = "call defn bad(a: Int) -> Int {\n    mov x, a\n}\n";
         let err = generate(src, "x86_64").expect_err("missing return");
         assert!(err.contains("no `return`"), "{err}");
     }
@@ -675,7 +675,48 @@ mod tests {
     fn return_outside_fn_is_loud() {
         let src = "_start:\n    return 1\n";
         let err = generate(src, "x86_64").expect_err("return in a label");
-        assert!(err.contains("only legal inside a `fn`"), "{err}");
+        assert!(err.contains("only legal inside a `call defn`"), "{err}");
+    }
+
+    #[test]
+    fn inline_defn_expands_without_a_call() {
+        let src = "defn grant_pmp() {\n    WriteControlReg(944, -1)\n    \
+                   WriteControlReg(928, 15)\n}\n\
+                   bootstrap Entry {\n    grant_pmp()\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $-1, %rax"), "{x86}");
+        assert!(x86.contains("movq $15, %rax"), "{x86}");
+        assert!(!x86.contains("call grant_pmp"), "{x86}");
+        assert!(!x86.contains("grant_pmp:"), "{x86}");
+    }
+
+    #[test]
+    fn inline_defn_params_and_locals_expand() {
+        let src = "defn blink(base: Ptr) {\n    let c = 66\n    loop {\n        \
+                   when c > 68: break\n        Store(c, base)\n        c += 1\n    }\n}\n\
+                   bootstrap Entry {\n    blink(0xB8000)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $753664"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(!x86.contains("call blink"), "{x86}");
+    }
+
+    #[test]
+    fn fn_keyword_is_rejected_with_fix() {
+        let err = generate("fn foo() {\n    halt\n}\n", "x86_64")
+            .expect_err("fn removed");
+        assert!(err.contains("`defn name(params)"), "{err}");
+        assert!(err.contains("call defn"), "{err}");
+    }
+
+    #[test]
+    fn inline_defn_return_is_rejected() {
+        let err = generate(
+            "defn bad() {\n    return\n}\nbootstrap Entry {\n    bad()\n}\n",
+            "x86_64",
+        )
+        .expect_err("inline return");
+        assert!(err.contains("only legal inside a `call defn`"), "{err}");
     }
 
     #[test]

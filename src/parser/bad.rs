@@ -217,15 +217,32 @@ impl<'s> Parser<'s> {
     fn try_fn(
         &mut self, content: &str, line: usize, span: Span,
     ) -> Result<Option<BadTopLevel>, BadParseError> {
-        let Some(rest) = content.strip_prefix("fn ") else { return Ok(None) };
-        let rest = rest.trim();
-        let Some(open) = rest.find('(') else {
+        let (rest, callable) = if let Some(r) = content.strip_prefix("call defn ") {
+            (r, true)
+        } else if let Some(r) = content.strip_prefix("defn ") {
+            (r, false)
+        } else if content.starts_with("fn ") {
             return Err(BadParseError {
-                message: "`fn` takes `fn name(params) -> Ret { … }` or `fn name(params) { … }`"
+                message: "`.bad` has no `fn` - write `defn name(params) { … }` for an INLINE                           definition, or `call defn name(params) -> Ret { … }` for a callable                           function"
                     .to_string(),
                 line,
                 span,
             });
+        } else {
+            return Ok(None);
+        };
+        let rest = rest.trim();
+        let Some(open) = rest.find('(') else {
+            if callable {
+                return Err(BadParseError {
+                    message: "`call defn` needs `call defn name(params) -> Ret { … }`"
+                        .to_string(),
+                    line,
+                    span,
+                });
+            }
+            // Raw-line `defn name params` — the existing inline raw form.
+            return Ok(None);
         };
         let name = rest[..open].trim();
         if !is_ident(name) || name.starts_with('.') {
@@ -273,14 +290,27 @@ impl<'s> Parser<'s> {
                 span,
             });
         }
+        if !callable && ret.is_some() {
+            return Err(BadParseError {
+                message: "an INLINE `defn` cannot return a value - mark it `call defn … -> Ret`                           if callers need a result, or return through an output parameter"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
         let body = self.consume_block(line, span.clone())?;
-        Ok(Some(BadTopLevel::Fn(BadFn {
+        let f = BadFn {
             name: name.to_string(),
             params,
             ret,
             body,
             span,
-        })))
+        };
+        Ok(Some(if callable {
+            BadTopLevel::Fn(f)
+        } else {
+            BadTopLevel::SymDefn(f)
+        }))
     }
 
     fn try_bootstrap(

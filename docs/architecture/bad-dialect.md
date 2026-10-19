@@ -63,9 +63,10 @@ msg: .asciz "hello from .bad\n"
 | `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
 | `bootstrap Name { … }` | authored machine entry — emits `global Name` + `Name:` + body; exactly one per image |
 | `data { … }` | data block — labels/directives; section inferred from each directive (explicit `section` wins) |
-| `defn name params` | defn head — owns following lines until next top-level line (inline) |
-| `fn name(params: T, …) -> R { … }` | callable C-ABI function with an assembly+ body; omitted return = void |
-| `return;` / `return expr;` | only inside `fn`; value writes the ABI return register |
+| `defn name params` | inline RAW definition — owns following lines until the next top-level item |
+| `defn name(params: T, …) { … }` | inline SYMBOLIC definition — expanded at each call site; no ABI, no `return` |
+| `call defn name(params: T, …) -> R { … }` | callable C-ABI function; omitted return = void |
+| `return;` / `return expr;` | only inside `call defn`; value writes the ABI return register |
 | `name(args)` / `call name(args)` | call statement (engine verb, `fn`, or defn) |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
@@ -226,10 +227,15 @@ data {
 - `global` and other directives are allowed in the block.
 - Data labels are known symbols for `addr`/raw use.
 
-## Functions — `fn`
+## Definitions — `defn` and `call defn`
 
 ```bad
-fn uart_puts(base: Ptr, msg: Ptr) -> Int {
+defn grant_pmp() {                 // INLINE: expanded at each call; no stack
+    WriteControlReg(944, -1)
+    WriteControlReg(928, 15)
+}
+
+call defn uart_puts(base: Ptr, msg: Ptr) -> Int {
     let p = msg
     loop {
         let ch = Load(p)
@@ -241,23 +247,24 @@ fn uart_puts(base: Ptr, msg: Ptr) -> Int {
 }
 
 bootstrap Reset_Handler {
-    let r = uart_puts(0x10000000, banner)
+    grant_pmp()
+    let r = uart_puts(UART0, banner)
     halt
 }
 ```
 
-- `fn` is a real callable label with C-ABI parameters/return. Param
-  registers are reserved; the allocator opens a frame only when needed.
-- Calls stage arguments (`name(args)` or `call name(args)`); the result
-  can be bound (`let r = name(...)`).
-- `fn`s call each other; labels call `fn`s. Symbolic labels and `fn`s are
-  lowered together so calls resolve.
-- Omitted return = void; the compiler appends `return;`. A non-void `fn`
-  must contain a `return`.
-- `defn` remains inline, no frame, no ABI; use it for boot-safe helpers
-  before the stack exists. `fn` calls need a valid `sp`.
-- Symbolic `defn` (inline) bodies remain a follow-up; keep inline defns
-  raw and call them from a raw label.
+- `defn name(params) { … }` — inline symbolic macro. Parameters bind at the
+  call site; locals are block-scoped. Stack-free, no return address.
+  `return` is illegal; it would exit the caller.
+- `call defn name(params) -> Ret { … }` — real callable label with C-ABI
+  parameters/return. Calls stage arguments; a frame is opened only when
+  needed. `return` is the function exit.
+- Raw `defn name params` remains an inline raw-line definition.
+- `fn` does not exist. Neither does `else`.
+- Inline defns can call other inline defns; depth is capped at 64.
+  Use `call defn` for recursion or code-size sharing.
+- Call-site syntax is uniform: `name(args)`. The definition kind decides
+  inline expansion vs real call. `call name(args)` forces a call.
 
 ## Symbolic bodies (assembly+)
 

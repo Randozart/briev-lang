@@ -16,7 +16,7 @@
 // symbolic instructions. Raw physical-only labels never enter this pass.
 
 use super::registry::{BadIsa, BadRegisters};
-use crate::ast::bad::{BadInstr, BadLabel, BadOperand, BadTopLevel};
+use crate::ast::bad::{BadFn, BadInstr, BadLabel, BadOperand, BadTopLevel};
 use crate::ast::bld::{
     BldConst, BldDefn, BldParam, BldProgram, BldStmt, BldTopLevel,
 };
@@ -36,6 +36,9 @@ pub struct SymCtx<'a> {
     pub label_names: &'a HashSet<String>,
     pub defns: &'a HashSet<String>,
     pub intrinsics: &'a BldIntrinsics,
+    /// Inline symbolic definitions (`defn name(params) { … }`), expanded
+    /// at each call site.
+    pub symdefs: &'a HashMap<String, BadFn>,
 }
 
 const PREFIX: &str = "__bad_sym_";
@@ -92,7 +95,7 @@ pub fn lower_symbolic_labels(
             BadTopLevel::Fn(f) => {
                 if f.ret.is_some() && !body_has_return(&f.body) {
                     return Err(format!(
-                        "fn `{}` (line {}) returns a value but has no `return` - add \
+                        "`call defn {}` (line {}) returns a value but has no `return` - add \
                          `return <expr>;` on the value path",
                         f.name, f.span.line
                     ));
@@ -106,6 +109,7 @@ pub fn lower_symbolic_labels(
                     body: f.body.clone(),
                 });
             }
+            BadTopLevel::SymDefn(_) => {}
             _ => {}
         }
     }
@@ -130,6 +134,7 @@ pub fn lower_symbolic_labels(
             bound: params.clone(),
             params,
             is_fn: u.kind == Kind::Fn,
+            depth: 0,
         };
         b.emit_body(&u.body)?;
         if u.kind == Kind::Fn && u.ret.is_none() {
@@ -314,6 +319,7 @@ struct Builder<'a, 'b> {
     bound: HashSet<String>,
     params: HashSet<String>,
     is_fn: bool,
+    depth: usize,
 }
 
 impl Builder<'_, '_> {
@@ -362,6 +368,62 @@ impl Builder<'_, '_> {
                 Ok(Expr::Identifier(n.clone()))
             }
         }
+    }
+
+    /// A call statement: inline symbolic `defn` expands here, everything
+    /// else becomes a real `call` (callable `defn`, engine verb, or fn).
+    fn emit_call(
+        &mut self, callee: String, args: Vec<Expr>, span: Span,
+    ) -> Result<(), String> {
+        if let Some(d) = self.ctx.symdefs.get(&callee).cloned() {
+            if args.len() != d.params.len() {
+                return Err(format!(
+                    "inline defn `{}` (line {}) takes {} argument(s), got {}",
+                    callee,
+                    span.line,
+                    d.params.len(),
+                    args.len()
+                ));
+            }
+            if self.depth >= 64 {
+                return Err(format!(
+                    "inline defn expansion exceeds 64 frames at `{callee}` (line {}) -                      use `call defn` for recursion",
+                    span.line
+                ));
+            }
+            let mut body = Vec::new();
+            let mut inner_bound = HashSet::new();
+            let mut inner_params = HashSet::new();
+            for (p, a) in d.params.iter().zip(args) {
+                body.push(BldStmt::Let {
+                    name: p.name.clone(),
+                    ty: Some(parse_type(&p.ty)),
+                    value: a,
+                    span: span.clone(),
+                });
+                inner_bound.insert(p.name.clone());
+                inner_params.insert(p.name.clone());
+            }
+            {
+                let mut inner = Builder {
+                    ctx: self.ctx,
+                    stmts: &mut body,
+                    bound: inner_bound,
+                    params: inner_params,
+                    is_fn: false,
+                    depth: self.depth + 1,
+                };
+                inner.emit_body(&d.body)?;
+            }
+            self.stmts.push(BldStmt::Block { body, span });
+            return Ok(());
+        }
+        self.stmts.push(BldStmt::Call {
+            callee,
+            args,
+            span,
+        });
+        Ok(())
     }
 
     fn emit_item(&mut self, item: &crate::ast::bad::BadBodyItem) -> Result<(), String> {
@@ -419,6 +481,7 @@ impl Builder<'_, '_> {
                         bound: self.bound.clone(),
                         params: self.params.clone(),
                         is_fn: self.is_fn,
+                        depth: self.depth,
                     };
                     inner.emit_body(&x.then)?;
                 }
@@ -438,6 +501,7 @@ impl Builder<'_, '_> {
                         bound: self.bound.clone(),
                         params: self.params.clone(),
                         is_fn: self.is_fn,
+                        depth: self.depth,
                     };
                     inner.emit_body(&x.body)?;
                 }
@@ -456,6 +520,7 @@ impl Builder<'_, '_> {
                         bound: self.bound.clone(),
                         params: self.params.clone(),
                         is_fn: self.is_fn,
+                        depth: self.depth,
                     };
                     inner.emit_body(&x.body)?;
                 }
@@ -477,16 +542,12 @@ impl Builder<'_, '_> {
                         span.line, text
                     ));
                 };
-                self.stmts.push(BldStmt::Call {
-                    callee,
-                    args,
-                    span: span.clone(),
-                });
+                self.emit_call(callee, args, span.clone())?;
             }
             BadBodyItem::Return { value, span } => {
                 if !self.is_fn {
                     return Err(format!(
-                        "`return` (line {}) is only legal inside a `fn` - a label falls \
+                        "`return` (line {}) is only legal inside a `call defn` - a label falls \
                          through or uses raw `ret`",
                         span.line
                     ));

@@ -243,6 +243,22 @@ impl<'a> Lowerer<'a> {
             const_values.push((name, v));
         }
         let intrinsics = crate::backend::bld::registry::BldIntrinsics::load();
+        let symdefs: std::collections::HashMap<String, crate::ast::bad::BadFn> = self
+            .emit_items
+            .iter()
+            .filter_map(|i| match i {
+                BadTopLevel::SymDefn(f) => {
+                    if intrinsics.is_intrinsic(&f.name) {
+                        self.errors.push(format!(
+                            "inline defn `{}` shadows an engine verb - rename it",
+                            f.name
+                        ));
+                    }
+                    Some((f.name.clone(), f.clone()))
+                }
+                _ => None,
+            })
+            .collect();
         let ctx = crate::backend::bad::symbolic::SymCtx {
             isa: self.isa,
             regs: self.regs,
@@ -253,6 +269,7 @@ impl<'a> Lowerer<'a> {
             label_names: &self.label_names,
             defns: &self.defns.keys().cloned().collect(),
             intrinsics: &intrinsics,
+            symdefs: &symdefs,
         };
         let mut items = std::mem::take(&mut self.emit_items);
         let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
@@ -271,9 +288,10 @@ impl<'a> Lowerer<'a> {
                 }
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
                 BadTopLevel::Fn(f) => self.errors.push(format!(
-                    "fn `{}` reached emission - the symbolic lowering pass did not run",
+                    "`call defn {}` reached emission - the symbolic lowering pass did not run",
                     f.name
                 )),
+                BadTopLevel::SymDefn(_) => {}
                 BadTopLevel::Label(l) => self.emit_label(l),
                 BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
             }
@@ -330,7 +348,7 @@ impl<'a> Lowerer<'a> {
                     let n = crate::backend::bad::notices::check_label(l, self.regs, &self.family);
                     self.notices.extend(n);
                 }
-                BadTopLevel::Fn(f) => {
+                BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
                 if !self.label_names.insert(f.name.clone()) {
                     self.errors.push(format!(
                         "fn `{}` is declared twice - functions share one symbol namespace \

@@ -35,9 +35,12 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
-    /// `fn name(params) -> Ret { … }` — callable C-ABI function with an
-    /// assembly+ body. Lowered to a label by the symbolic pass.
+    /// `call defn name(params) -> Ret { … }` — callable C-ABI function
+    /// with an assembly+ body. Lowered to a label by the symbolic pass.
     Fn(BadFn),
+    /// `defn name(params) { … }` — INLINE symbolic definition. Expanded
+    /// at each call site; stack-free, no ABI, no `return`.
+    SymDefn(BadFn),
     /// `raw x86_64 ... end raw` — target-verbatim assembly block
     /// (2026-09-22; named close 2026-10-01). Lines pass through
     /// UNPARSED, emitted only when the active family matches the
