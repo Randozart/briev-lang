@@ -270,6 +270,7 @@ impl<'a> Lowerer<'a> {
             defns: &self.defns.keys().cloned().collect(),
             intrinsics: &intrinsics,
             symdefs: &symdefs,
+            bad_defns: &self.defns,
         };
         let mut items = std::mem::take(&mut self.emit_items);
         let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);

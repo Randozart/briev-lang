@@ -575,12 +575,12 @@ mod tests {
     #[test]
     fn engine_stdlib_verbs_inline() {
         let src = "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n    \
-                   WriteControlReg 0, 1\n    ReadControlReg 0, r1\n    Park\n";
+                   WriteControlReg 0, 1\n    let cr = ReadControlReg(0)\n    Park\n";
         let x86 = engine_stdlib("x86_64", src).unwrap();
         assert!(x86.contains("cli"), "{x86}");
         assert!(x86.contains("movq $1, %rax"), "{x86}");
         assert!(x86.contains("movq %rax, %cr0"), "{x86}");
-        assert!(x86.contains("movq %cr0, %rcx"), "{x86}");
+        assert!(x86.contains("movq %cr0"), "{x86}");
         assert!(x86.contains("hlt"), "{x86}");
 
         let rv = engine_stdlib(
@@ -590,6 +590,13 @@ mod tests {
         .unwrap();
         assert!(rv.contains("li t1, 8"), "{rv}");
         assert!(rv.contains("csrw 768, t1"), "{rv}");
+    }
+
+    #[test]
+    fn raw_engine_defn_call_keeps_its_arity_form() {
+        let src = "import \"std/bad/engine.bad\"\n_start:\n    ReadControlReg 0, r1\n    ret\n";
+        let x86 = engine_stdlib("x86_64", src).unwrap();
+        assert!(x86.contains("movq %cr0, %rcx"), "{x86}");
     }
 
     #[test]

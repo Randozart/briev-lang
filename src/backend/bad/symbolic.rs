@@ -39,6 +39,10 @@ pub struct SymCtx<'a> {
     /// Inline symbolic definitions (`defn name(params) { … }`), expanded
     /// at each call site.
     pub symdefs: &'a HashMap<String, BadFn>,
+    /// Raw `.bad` defns (inline expansion material). Used to keep a raw
+    /// arity-matching call on the raw path when a same-named engine verb
+    /// exists (e.g. `ReadControlReg 0, r1` vs `ReadControlReg(0)`).
+    pub bad_defns: &'a HashMap<String, crate::ast::bad::BadDefn>,
 }
 
 const PREFIX: &str = "__bad_sym_";
@@ -256,6 +260,17 @@ fn body_has_return(body: &[crate::ast::bad::BadBodyItem]) -> bool {
 }
 
 fn instr_has_symbolic(instr: &BadInstr, ctx: &SymCtx<'_>) -> bool {
+    // A raw defn call with matching arity stays raw, even when an engine
+    // verb shares the name (`ReadControlReg n, dst` vs `ReadControlReg(n)`).
+    if let Some(d) = ctx.bad_defns.get(&instr.mnemonic) {
+        let arity = match &d.shape {
+            crate::ast::bad::BadDefnShape::Sequence(_) => d.params.len(),
+            crate::ast::bad::BadDefnShape::Branch(rows) => rows.first().map(|r| r.body.len()).unwrap_or(0),
+        };
+        if arity == instr.operands.len() {
+            return false;
+        }
+    }
     // Engine verbs are symbolic statements even with zero operands
     // (`Park`, `DisableInterrupts`).
     if ctx.intrinsics.is_intrinsic(&instr.mnemonic) {
