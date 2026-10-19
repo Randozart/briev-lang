@@ -224,43 +224,60 @@ fn negate_canonical(g: &LinC) -> Option<LinC> {
 /// Is the goal conjunct PROVEN by this fact? Both normalized: fact
 /// `F op1 c1`, goal `F op2 c2` over the SAME linear term.
 fn fact_entails(fact: &LinC, goal: &LinC) -> bool {
-    if fact.terms != goal.terms {
-        return false;
+    if fact.terms == goal.terms {
+        return entail_same_terms(fact, goal);
     }
-    // Real semantics: for Le/Lt, a tighter (smaller) bound entails a looser
-    // one. Eq entails only Eq with the same constant.
-    match (fact.op, goal.op) {
-        (BinaryOpKind::Le, BinaryOpKind::Le) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Lt, BinaryOpKind::Lt) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Le, BinaryOpKind::Lt) => fact.const_ < goal.const_,
-        // A STRICT fact entails the NON-STRICT goal at the same constant
-        // (T < c ⇒ T <= c — no gap needed). The gap belongs to the reverse
-        // direction (Le → Lt), kept real-conservative above.
-        (BinaryOpKind::Lt, BinaryOpKind::Le) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Le) => true,
-        (BinaryOpKind::Eq, BinaryOpKind::Lt) => false, // real semantics: eq gives < only if strictness known; conservative
-        (BinaryOpKind::Eq, BinaryOpKind::Eq) => fact.const_ == goal.const_,
-        (BinaryOpKind::Le, BinaryOpKind::Eq) => fact.const_ == goal.const_,
-        (BinaryOpKind::Lt, BinaryOpKind::Eq) => false,
-        (BinaryOpKind::Neq, BinaryOpKind::Neq) => fact.const_ == goal.const_,
-        _ => false,
+    // An EQUALITY fact also holds under term negation: `T = a` ≡ `-T = -a`.
+    // This lets an equality refute/prove goals whose normalization flipped
+    // the term's sign (e.g. `x == 3` against the negation of `x < 3`).
+    if fact.op == BinaryOpKind::Eq {
+        let neg_terms: Vec<(String, f64)> = fact
+            .terms
+            .iter()
+            .map(|(a, k)| (a.clone(), -k))
+            .collect();
+        if neg_terms == goal.terms {
+            let twin = LinC {
+                terms: neg_terms,
+                const_: -fact.const_,
+                op: BinaryOpKind::Eq,
+            };
+            return entail_same_terms(&twin, goal);
+        }
     }
+    false
 }
 
-fn fact_refutes(fact: &LinC, goal: &LinC) -> bool {
-    // The fact's negation entails the goal: fact says the goal is false.
+/// Entailment for the SAME normalized term `T` (facts and goals are both in
+/// canonical `T op c` form after `normalize`). Soundness table — every arm is
+/// an exact implication, never a guess:
+///
+///   (≤a) ⊨ (≤b) iff a ≤ b        (≤a) ⊨ (<b) iff a < b
+///   (<a) ⊨ (≤b) iff a ≤ b        (<a) ⊨ (<b) iff a ≤ b
+///   (=a) ⊨ (≤b) iff a ≤ b        (=a) ⊨ (<b) iff a < b
+///   (=a) ⊨ (=b) iff a = b        (=a) ⊨ (≠b) iff a ≠ b
+///   (≤a) ⊨ (≠b) iff b > a        (<a) ⊨ (≠b) iff b ≥ a
+///   (≠a) ⊨ (≠b) iff a = b        (≠a) entails nothing else
+///
+/// 2026-10-20 (census finding): the predecessor claimed `(Eq, Le) => true`
+/// (equality entails ANY upper bound) and `(Le, Eq)` from a shared constant
+/// (a bound entails equality) — both false, and together with the
+/// atom-blind `fact_refutes` they produced 5,122 bogus REFUTED verdicts on
+/// trivially-true conjuncts (`2 >= 2`, `(b0 & 31) >= 0`). Under `deny` that
+/// would reject valid programs.
+fn entail_same_terms(fact: &LinC, goal: &LinC) -> bool {
     match (fact.op, goal.op) {
-        // fact T <= c1, goal T > c2 (= not (T <= c2)) with c1 <= c2 → goal
-        // refuted.
-        (BinaryOpKind::Le, BinaryOpKind::Gt) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Lt, BinaryOpKind::Ge) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Le, BinaryOpKind::Ge) => fact.const_ < goal.const_,
-        (BinaryOpKind::Lt, BinaryOpKind::Gt) => fact.const_ + 1.0 <= goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Neq) => fact.const_ == goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Lt) => fact.const_ >= goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Gt) => fact.const_ <= goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Le) => fact.const_ > goal.const_,
-        (BinaryOpKind::Eq, BinaryOpKind::Ge) => fact.const_ < goal.const_,
+        (BinaryOpKind::Le, BinaryOpKind::Le) => fact.const_ <= goal.const_,
+        (BinaryOpKind::Le, BinaryOpKind::Lt) => fact.const_ < goal.const_,
+        (BinaryOpKind::Lt, BinaryOpKind::Le) => fact.const_ <= goal.const_,
+        (BinaryOpKind::Lt, BinaryOpKind::Lt) => fact.const_ <= goal.const_,
+        (BinaryOpKind::Eq, BinaryOpKind::Le) => fact.const_ <= goal.const_,
+        (BinaryOpKind::Eq, BinaryOpKind::Lt) => fact.const_ < goal.const_,
+        (BinaryOpKind::Eq, BinaryOpKind::Eq) => fact.const_ == goal.const_,
+        (BinaryOpKind::Eq, BinaryOpKind::Neq) => fact.const_ != goal.const_,
+        (BinaryOpKind::Le, BinaryOpKind::Neq) => goal.const_ > fact.const_,
+        (BinaryOpKind::Lt, BinaryOpKind::Neq) => goal.const_ >= fact.const_,
+        (BinaryOpKind::Neq, BinaryOpKind::Neq) => fact.const_ == goal.const_,
         _ => false,
     }
 }
@@ -313,7 +330,10 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
         let Some(fc) = normalize(l, op, r) else {
             continue;
         };
-        if fact_refutes(&fc, &negated) || fact_entails(&fc, &negated) {
+        // Refutation is exactly "the fact entails the goal's negation".
+        // (`fact_refutes`, an atom-blind second matcher, was unsound — see
+        // entail_same_terms.)
+        if fact_entails(&fc, &negated) {
             return Verdict::Refuted;
         }
     }
@@ -516,6 +536,34 @@ mod tests {
     fn unproven_without_facts() {
         let goal = e("off < buf.len");
         assert_eq!(prove_precondition(&goal, &[]), Verdict::Unproven);
+    }
+
+    #[test]
+    fn unrelated_atom_does_not_refute() {
+        // 2026-10-20 census finding: trivially-true conjuncts were REFUTED by
+        // an atom-blind matcher. `(b0 & 31)` is an opaque atom; no fact about
+        // `i`/`len` may refute its non-negativity.
+        let facts = vec![e("i >= 0"), e("len >= 0")];
+        let goal = e("(b0 & 31) >= 0");
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Unproven);
+    }
+
+    #[test]
+    fn upper_bound_does_not_prove_equality() {
+        // T <= 5 does not entail T == 5 (the unsound (Le, Eq) arm).
+        let facts = vec![e("x <= 5")];
+        let goal = e("x == 5");
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Unproven);
+    }
+
+    #[test]
+    fn equality_proves_weaker_upper_bound() {
+        // T = 3 entails T <= 5 and T >= 3 (via the term-negated twin), and
+        // refutes the strict T < 3.
+        let facts = vec![e("x == 3")];
+        assert_eq!(prove_precondition(&e("x <= 5"), &facts), Verdict::Proven);
+        assert_eq!(prove_precondition(&e("x >= 3"), &facts), Verdict::Proven);
+        assert_eq!(prove_precondition(&e("x < 3"), &facts), Verdict::Refuted);
     }
 
     #[test]

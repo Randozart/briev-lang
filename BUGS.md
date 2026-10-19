@@ -10546,3 +10546,33 @@ is correct (see the net-stack golden). Rule-5 divergence.
 **Next step:** implement Int→Data→String in the interpreter as a view: the
 Data value at `addr` reads a `[len: i64][bytes]` header and yields the String
 bytes, matching the backend's representation.
+
+## 2026-10-20 — contract prover: unsound refutation (5,122 false REFUTED) — FIXED
+
+**Symptom:** the census run under `policy: warn` announced 5,122 REFUTED call
+sites — including trivially-true conjuncts such as `2 >= 2`,
+`(b0 & 31) >= 0`, and `(s.^Length >= 0)`. A refuted verdict is a compile
+error under `policy: deny`, so the gate would have rejected valid programs.
+
+**Root cause (two independent unsoundnesses in the entailment check):**
+1. `fact_refutes` matched only (fact.op, goal.op) pairs and NEVER compared
+   the normalized TERMS — any fact with a compatible operator/constant could
+   refute an unrelated goal. It was ORed into the refutation path alongside
+   the correct "fact entails the negation" test.
+2. `fact_entails` had wrong arms: `(Eq, Le) => true` (an equality entails ANY
+   upper bound) and `(Le, Eq) => fact.const == goal.const` (a bound entails
+   equality). Both are false.
+
+**Fix:** refutation is now exactly "some fact entails the goal's negation" via
+the atom-checked `fact_entails`; `fact_refutes` is deleted; the entailment
+table is replaced by an exact soundness table (`entail_same_terms`), plus
+equality facts are also matched under term negation (`T = a` ≡ `-T = -a`), so
+`x == 3` still proves `x >= 3` and refutes `x < 3`. Regression tests:
+`unrelated_atom_does_not_refute`, `upper_bound_does_not_prove_equality`,
+`equality_proves_weaker_upper_bound` (proof_engine::callgate).
+
+**Census after the fix (same sweep):** 79,415 unproven announcements,
+**0 refuted**, 144 unique contracted fns (65 noise-only preconditions,
+63 bounds/domain, 16 unresolved — lambdas/params/foreign wrappers). The
+announcement count duplicates per consumer (the sweep re-checks spliced
+imports); the unique-fn count is the migration surface.

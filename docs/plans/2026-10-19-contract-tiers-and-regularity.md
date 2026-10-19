@@ -112,8 +112,8 @@ the contract census (see below).
   (`[x >= 0]`, `[term >= 0]`, `[term >= 0 && term <= MASK32]`). The landed
   `websocket.bv` carries only the proven core's preconditions (2), because
   its original helper contracts were replaced by the bounds-proven core.
-  The 90/23,117 figure is therefore STALE: re-run the census under
-  `policy: warn` and refresh the buckets before the `deny` flip.
+  The 90/23,117 figure was STALE; refreshed 2026-10-20 under
+  `policy: warn` (see "Census refresh" below).
 - The interpreter compound-expression defect is ROOT-CAUSED AND FIXED
   (`59b2b1e5` — B1 string-deref misfire; bitwise ops disambiguate by
   representation); len64 parity restored. Residual: the encode path's
@@ -131,6 +131,29 @@ the contract census (see below).
 3. **Domain/termination contracts** (the delicate core): `[n >= 0 && n <= 20]`
    IS zeros' recursion proof; callers must carry the proof-flow — the
    float/string formatting internals (float_fmt.bv, cast_lanes.bv).
+
+## Census refresh (2026-10-20, after the PR interlude)
+
+Measured with `policy: warn` over the conformance sweep:
+
+- **79,415 unproven announcements, 0 refuted, 144 unique contracted fns.**
+  Announcements duplicate per consumer (the sweep re-checks spliced imports),
+  so the unique-fn count is the migration surface; the announcement count is
+  a churn metric.
+- Bucket split over the 144: **65 noise-only** preconditions (every conjunct
+  a non-negativity/`[true]` restatement), **63 bounds/domain** (real
+  `<`/`<=`/masks/`!=`, incl. the float/string formatting core), **16
+  unresolved** call names (lambdas/parameters/foreign wrappers —
+  classification noise, to triage).
+- **Finding fixed during the census:** the prover's refutation was unsound
+  (`fact_refutes` ignored atom identity; `fact_entails` had false arms). It
+  had reported 5,122 REFUTED — trivially-true conjuncts like `2 >= 2` and
+  `(b0 & 31) >= 0` — which would have rejected valid programs at the `deny`
+  flip. Fixed with an exact entailment table + atom checks + equality
+  twin matching; BUGS.md 2026-10-20. The census above is therefore the first
+  trustworthy one.
+- Interpreter-side check statements: none in the corpus (the `check` gate's
+  deny flip is about user programs, not stdlib).
 
 ## Workstreams
 
