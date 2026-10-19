@@ -61,6 +61,8 @@ msg: .asciz "hello from .bad\n"
 | `site` ... `end site` | anonymous branch site — exactly one row lowers per family: the matching target row, else the default; leading bare lines are the default row; no default = loud capability error on unmatched families (see Sites) |
 | `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts). Bare labels remain global for compatibility. |
 | `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
+| `bootstrap Name { … }` | authored machine entry — emits `global Name` + `Name:` + body; exactly one per image |
+| `data { … }` | data block — labels/directives; section inferred from each directive (explicit `section` wins) |
 | `defn name params` | defn head — owns following lines until next top-level line |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
@@ -189,6 +191,37 @@ Sub-width fields ride `ldb/ldub/ldh/lduh/stb/sth` via `.w8/.w16/.w32`
 width-token register rows (x86 `%al`, aarch64 `w`-regs). Template refs:
 `$N.w8` = width-qualified register; `$N!` = raw substitute (no imm
 prefix — x86 displacements are bare).
+
+## Bootstrap entry
+
+```bad
+bootstrap Reset_Handler {
+    DisableInterrupts
+    mov stack, 0x90000
+    halt
+}
+```
+
+Expands to `global Reset_Handler` + `Reset_Handler:` + the body. Exactly one
+`bootstrap` per image; a second is a loud error. The body is naked: no
+compiler prologue, no auto-`ret`; the author owns stack setup and handoff.
+
+## Data blocks
+
+```bad
+data {
+    banner: .asciz "Briev rv64 boot\n"   // inferred .rodata
+    ticks:  .quad 0                       // inferred .data
+}
+```
+
+- `.asciz`/`.string`/`.ascii`/`.float`/`.double` → `.rodata`
+- `.zero`/`.space`/`.skip`/`.comm`/`.lcomm` → `.bss`
+- everything else → `.data`
+- An explicit `section .name` inside the block sets the section for the
+  following labels; explicit beats inferred.
+- `global` and other directives are allowed in the block.
+- Data labels are known symbols for `addr`/raw use.
 
 ## Symbolic bodies (assembly+)
 

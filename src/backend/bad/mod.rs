@@ -604,6 +604,42 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_emits_entry_and_lowers_body() {
+        let src = "bootstrap Reset_Handler {\n    mov x, 1\n    x += 1\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".global Reset_Handler"), "{x86}");
+        assert!(x86.contains("Reset_Handler:"), "{x86}");
+        assert!(x86.contains("movq $1"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn duplicate_bootstrap_is_loud() {
+        let src = "bootstrap A {\n    halt\n}\nbootstrap B {\n    halt\n}\n";
+        let err = generate(src, "x86_64").expect_err("two bootstraps");
+        assert!(err.contains("at most ONE"), "{err}");
+    }
+
+    #[test]
+    fn data_block_infers_sections() {
+        let src = "data {\n    banner: .asciz \"ok\\n\"\n    ticks: .quad 0\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .rodata"), "{x86}");
+        assert!(x86.contains("banner: .asciz \"ok\\n\""), "{x86}");
+        assert!(x86.contains(".section .data"), "{x86}");
+        assert!(x86.contains("ticks: .quad 0"), "{x86}");
+    }
+
+    #[test]
+    fn data_block_explicit_section_wins() {
+        let src = "data {\n    section .custom\n    blob: .byte 1, 2\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .custom"), "{x86}");
+        assert!(x86.contains("blob: .byte 1, 2"), "{x86}");
+    }
+
+    #[test]
     fn symbolic_label_lowers_through_the_allocator() {
         let src = "_start:\n    mov vga, 0xB8000\n    mov c, 66\n    loop {\n        \
                    when c > 68: break\n        store c, vga\n        vga += 2\n        \

@@ -50,6 +50,8 @@ struct Parser<'s> {
     items: Vec<BadTopLevel>,
     /// Inline contract waiting for the next instruction line.
     pending_contract: Option<BadContract>,
+    /// Exactly one `bootstrap` entry per image.
+    saw_bootstrap: bool,
 }
 
 /// Identification of the line being pushed — bundles the diagnostic
@@ -77,7 +79,13 @@ impl<'s> Parser<'s> {
             }
             offset += raw.len() + 1;
         }
-        Parser { lines, pos: 0, items: Vec::new(), pending_contract: None }
+        Parser {
+            lines,
+            pos: 0,
+            items: Vec::new(),
+            pending_contract: None,
+            saw_bootstrap: false,
+        }
     }
 
     fn parse(mut self) -> Result<BadProgram, BadParseError> {
@@ -110,6 +118,24 @@ impl<'s> Parser<'s> {
             // `raw <target>` head convention. Unconditional call: the
             // fn early-returns for non-site lines.
             if self.try_site(content, line, span.clone(), &owner)?.is_some() {
+                continue;
+            }
+
+            // `bootstrap Name { … }` — authored machine entry. Top-level
+            // only; expands to `global Name` + `Name:` + body.
+            if let Some((dir, label)) = self.try_bootstrap(content, line, span.clone())? {
+                self.items.push(BadTopLevel::Directive(dir));
+                let idx = self.items.len();
+                self.items.push(BadTopLevel::Label(label));
+                owner = Some(Owner::Label(idx));
+                continue;
+            }
+
+            // `data { … }` — data block with section inference. A
+            // top-level block closes the current owner.
+            if let Some(items) = self.try_data_block(content, line, span.clone())? {
+                self.items.extend(items);
+                owner = None;
                 continue;
             }
 
@@ -181,6 +207,129 @@ impl<'s> Parser<'s> {
         Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
     }
 
+
+    fn try_bootstrap(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<(BadDirective, BadLabel)>, BadParseError> {
+        let Some(rest) = content.strip_prefix("bootstrap ") else { return Ok(None) };
+        if self.saw_bootstrap {
+            return Err(BadParseError {
+                message: "a .bad image has at most ONE `bootstrap` entry - merge the steps \
+                          or pick one entry per image"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        let rest = rest.trim();
+        let Some(head) = rest.strip_suffix('{') else {
+            return Err(BadParseError {
+                message: "`bootstrap <Name> {` needs `{` at the end of the head line and \
+                          `}` on its own line"
+                    .to_string(),
+                line,
+                span,
+            });
+        };
+        let name = head.trim();
+        if !is_ident(name) || name.starts_with('.') {
+            return Err(BadParseError {
+                message: format!("`{name}` is not a valid bootstrap symbol"),
+                line,
+                span,
+            });
+        }
+        self.saw_bootstrap = true;
+        let body = self.consume_block(line, span.clone())?;
+        let dir = BadDirective {
+            name: "global".to_string(),
+            args: name.to_string(),
+            span: span.clone(),
+        };
+        let label = BadLabel {
+            name: name.to_string(),
+            local: false,
+            contracts: Vec::new(),
+            body,
+            reserved_regs: Vec::new(),
+            span,
+        };
+        Ok(Some((dir, label)))
+    }
+
+    fn try_data_block(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<Vec<BadTopLevel>>, BadParseError> {
+        if !(content == "data {" || content == "data{") {
+            return Ok(None);
+        }
+        self.pos += 1;
+        let mut out = Vec::new();
+        let mut current_section: Option<(String, bool)> = None;
+        while self.pos < self.lines.len() {
+            let (off, content, lno) = self.lines[self.pos];
+            let sp = Span::new(off, off + content.len(), lno, 0);
+            if content == "}" {
+                self.pos += 1;
+                if out.is_empty() {
+                    return Err(BadParseError {
+                        message: "empty `data { }` block - remove it or add data".to_string(),
+                        line,
+                        span,
+                    });
+                }
+                return Ok(Some(out));
+            }
+            let Some(item) = self.try_top_level(content, lno, sp.clone())? else {
+                return Err(BadParseError {
+                    message: format!(
+                        "`{content}` cannot appear in a `data` block - use `section`, \
+                         `global`, a directive, or `label: .directive`"
+                    ),
+                    line: lno,
+                    span: sp,
+                });
+            };
+            match item {
+                BadTopLevel::Directive(d) => {
+                    if d.name == "section" {
+                        current_section = Some((d.args.clone(), true));
+                    }
+                    out.push(BadTopLevel::Directive(d));
+                }
+                BadTopLevel::Data(d) => {
+                    let inferred = infer_data_section(&d.directive.name);
+                    let emit = match &current_section {
+                        None => true,
+                        Some((cur, explicit)) => !*explicit && cur != inferred,
+                    };
+                    if emit {
+                        current_section = Some((inferred.to_string(), false));
+                        out.push(BadTopLevel::Directive(BadDirective {
+                            name: "section".to_string(),
+                            args: inferred.to_string(),
+                            span: d.span.clone(),
+                        }));
+                    }
+                    out.push(BadTopLevel::Data(d));
+                }
+                _ => {
+                    return Err(BadParseError {
+                        message: "a `data` block holds directives and data labels only"
+                            .to_string(),
+                        line: lno,
+                        span: sp,
+                    });
+                }
+            }
+            self.pos += 1;
+        }
+        Err(BadParseError {
+            message: "unterminated `data` block - add a `}` on its own line".to_string(),
+            line,
+            span,
+        })
+    }
 
     /// `.name:` local label. Returns true when the line was consumed.
     fn try_local(
@@ -1591,6 +1740,15 @@ fn parse_assignment_text(
         value: value.to_string(),
         span,
     }))
+}
+
+/// Infer a data section from a directive. Explicit `section` wins.
+fn infer_data_section(directive: &str) -> &'static str {
+    match directive {
+        ".asciz" | ".string" | ".ascii" | ".double" | ".float" => ".rodata",
+        ".zero" | ".space" | ".skip" | ".comm" | ".lcomm" => ".bss",
+        _ => ".data",
+    }
 }
 
 fn validate_ident(s: &str, line: usize, span: Span) -> Result<(), BadParseError> {
