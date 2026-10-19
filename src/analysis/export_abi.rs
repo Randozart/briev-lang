@@ -192,6 +192,26 @@ pub fn type_member_key(type_name: &str, member: &str) -> String {
     format!("{type_name}::{member}")
 }
 
+/// 2026-10-19 (dot-call statefulness): does the method named `method` need
+/// state on AT LEAST ONE indexed type? A `recv.method(args)` call site has no
+/// resolved receiver type in the AST at this analysis stage, so we take the
+/// union over every indexed `Type::method` member's current fixpoint verdict.
+/// Sound over-approximation: if no type's `method` is stateful the call is
+/// treated stateless (precise); if one is, every dot-call of that name is
+/// treated stateful (conservative — a harmless unused `%state` param at worst,
+/// the pass's standing stance). `regular` is scanned for member keys of the
+/// shape `*::method`; `needs` holds the current iteration's verdicts.
+fn method_is_stateful_on_any_type(
+    method: &str,
+    regular: &HashMap<String, &Definition>,
+    needs: &HashMap<String, bool>,
+) -> bool {
+    let suffix = format!("::{method}");
+    regular.keys().any(|key| {
+        key.ends_with(&suffix) && *needs.get(key).unwrap_or(&false)
+    })
+}
+
 /// Index an obj type's member defns under type-qualified keys. Only body-ful
 /// `Definition` members are nodes (a body-less required-method stub carries no
 /// calls); member txns are reactor-threaded and handled by the txn set.
@@ -589,8 +609,25 @@ fn expr_needs_state(
         // an export calling a regular defn through a cast got a STATELESS shim
         // that referenced `%state` (opt: "use of undefined value '%state'").
         Expr::Cast(inner, _) | Expr::IsType(inner, _) => rec(inner),
-        Expr::MethodCall(recv, _, args, _, _) => {
-            rec(recv) || args.iter().any(|a| rec(a))
+        // 2026-10-19 (fix: dot-call to a stateful obj member left the caller
+        // stateless → undefined %state, BUGS.md): a `recv.method(args)` call
+        // reaches the concrete member `Type::method`, whose statefulness the
+        // 2026-10-15 indexing already computes under a type-qualified key. The
+        // previous arm only walked `recv` and `args` — it never consulted the
+        // member's own verdict, so `sink.put_bytes(src, n)` where
+        // `GrowBuf::put_bytes` reaches `Malloc#` via `grow_to_fit` was judged
+        // stateless; its caller (`put_str` → the response writers) then got no
+        // `%state` param while the inlined member body referenced `%state`.
+        // The MethodCall AST carries no resolved receiver type here, so we OR
+        // in whether the method is stateful on ANY indexed type — the same
+        // sound over-approximation `type_stateful_members` already relies on
+        // ("an unused leading pointer param is free"). Undo: restore
+        // `rec(recv) || args.iter().any(|a| rec(a))` (reopens the undefined
+        // `%state` class for dot-called stateful members).
+        Expr::MethodCall(recv, method, args, _, _) => {
+            rec(recv)
+                || args.iter().any(|a| rec(a))
+                || method_is_stateful_on_any_type(method, regular, needs)
         }
         Expr::Reflect(recv, _, _) => rec(recv),
         Expr::Index(arr, idx) => rec(arr) || rec(idx),
@@ -1059,6 +1096,65 @@ mod tests {
             map.get(&type_member_key("Fixed", "put")),
             Some(&false),
             "Fixed.put only does Store# and must stay stateless"
+        );
+    }
+
+    #[test]
+    fn dot_call_to_stateful_member_forces_caller_state() {
+        // 2026-10-19 (fix: dot-call to a stateful obj member left the caller
+        // stateless → undefined %state): a free-standing defn that invokes a
+        // stateful member through a DOT method call (`sink.put(val)`, where
+        // `Growing::put` reaches Malloc# via grow_it) must itself be
+        // state-taking. Before the fix the MethodCall arm walked only the
+        // receiver and args, never the member's verdict, so the caller was
+        // emitted without `%state` while the inlined member body referenced it.
+        let src = r#"
+            defn grow_it(addr: Int) -> Int { let fresh: Int = Malloc#(16) as Int; term fresh; };
+            obj Growing {
+                ptr: Int;
+                defn put(sink: Growing, val: Int) -> Growing {
+                    let moved: Int = grow_it(sink.ptr);
+                    Store#(moved, val, 1);
+                    term Growing { ptr: moved };
+                };
+            };
+            defn app(sink: Growing, val: Int) -> Growing {
+                term sink.put(val);
+            };
+        "#;
+        let items = parse(src);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
+        assert_eq!(
+            map.get("app"),
+            Some(&true),
+            "app dot-calls Growing.put (reaches Malloc#) and must take %state"
+        );
+    }
+
+    #[test]
+    fn dot_call_to_stateless_member_keeps_caller_stateless() {
+        // The soundness/precision counterpart: a free defn that dot-calls ONLY
+        // a stateless member (Store# over its own param, no Malloc#) stays
+        // stateless. Pins that the fix does not blanket-flip every dot call to
+        // state-taking — only names stateful on some indexed type.
+        let src = r#"
+            obj Fixed {
+                ptr: Int;
+                defn put(sink: Fixed, val: Int) -> Fixed {
+                    Store#(sink.ptr, val, 1);
+                    term Fixed { ptr: sink.ptr };
+                };
+            };
+            defn app(sink: Fixed, val: Int) -> Fixed {
+                term sink.put(val);
+            };
+        "#;
+        let items = parse(src);
+        let map = compute_defn_needs_state(&items, &HashSet::new());
+        assert_eq!(
+            map.get("app"),
+            Some(&false),
+            "app dot-calls only the stateless Fixed.put and must stay stateless"
         );
     }
 
