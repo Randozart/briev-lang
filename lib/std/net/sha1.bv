@@ -74,7 +74,7 @@ defn sha1_init() -> Sha1State {
 // bytes: msg_len + 1 (the 0x80) rounded up so that 8 more bytes (the length
 // field) land on a 64-byte boundary. The +8 before the mod accounts for the
 // trailing 64-bit length that must also fit in the final block.
-defn sha1_padded_len(msg_len: Int) [msg_len >= 0][term >= msg_len + 9 && term % 64 == 0] -> Int {
+defn sha1_padded_len(msg_len: Int) [true][term >= msg_len + 9 && term % 64 == 0] -> Int {
     // After the 0x80 we need room for the 8-byte length; pad with zeros until
     // (len % 64 == 56) so the 8-byte length completes the block to 64.
     let with_one: Int = msg_len + 1;
@@ -92,7 +92,7 @@ defn sha1_padded_len(msg_len: Int) [msg_len >= 0][term >= msg_len + 9 && term % 
 // L1 writer takes a 32-bit value, and for our message sizes the high half is
 // almost always zero, but we compute it honestly).
 defn sha1_build_padded(src_addr: Int, msg_len: Int)
-    [msg_len >= 0]
+    [true]
     [term.len == term.cap && term.len % 64 == 0]
     -> ByteBuf
 {
@@ -301,7 +301,7 @@ defn sha1_compress_all(state: Sha1State, msg: ByteBuf, base: Int)
 // ByteBuf that the caller owns and frees. This is the whole algorithm: build
 // the padded message, compress every block, serialize the final state.
 defn sha1_digest(src_addr: Int, msg_len: Int)
-    [msg_len >= 0]
+    [true]
     [term.len == 20 && term.cap >= 20]
     -> ByteBuf
 {

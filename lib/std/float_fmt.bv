@@ -48,7 +48,7 @@ defn pow2(n: Int) [n >= 0 && n <= 60][term >= 1] -> Int {
 
 // trunc - divide acc by 10 until below 1000000000000000000 (drops low digits only; keeps
 // >= 18 significant digits - leading 9 + rounding digit survive).
-defn trunc(acc: Int) [acc >= 0][term >= 0] -> Int {
+defn trunc(acc: Int) [true][term >= 0] -> Int {
     when acc < 1000000000000000000 {
         term acc;
     };

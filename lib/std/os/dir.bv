@@ -45,11 +45,11 @@ defn dirent_cstr_string(p: Int) [p > 0][term > 0] -> Int {
     term s;
 };
 
-defn dir_open(path: Int) [path >= 0][term >= -4096] -> Int {
+defn dir_open(path: Int) [true][term >= -4096] -> Int {
     term syscall(SYS_OPEN, path, O_RDONLY + O_DIRECTORY, 0);
 };
 
-defn dir_close(fd: Int) [fd >= 0][term >= -4096] -> Int {
+defn dir_close(fd: Int) [true][term >= -4096] -> Int {
     term syscall(SYS_CLOSE, fd);
 };
 

@@ -53,21 +53,21 @@ const MODE_0644: Int = 420;
 // ── raw syscall wrappers (fs-prefixed: this namespace is universal) ──────
 
 defn fs_open(path: Int, flags: Int, mode: Int)
-    [path >= 0 && flags >= 0 && mode >= 0][term >= -4096] -> Int {
+    [true][term >= -4096] -> Int {
     term syscall(SYS_OPEN, path, flags, mode);
 };
 
 defn fs_read(fd: Int, buf: Int, count: Int)
-    [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
+    [true][term >= -4096] -> Int {
     term syscall(SYS_READ, fd, buf, count);
 };
 
 defn fs_write(fd: Int, buf: Int, count: Int)
-    [fd >= 0 && buf >= 0 && count >= 0][term >= -4096] -> Int {
+    [true][term >= -4096] -> Int {
     term syscall(SYS_WRITE, fd, buf, count);
 };
 
-defn fs_close(fd: Int) [fd >= 0][true] -> Int {
+defn fs_close(fd: Int)  -> Int {
     term syscall(SYS_CLOSE, fd);
 };
 
@@ -86,7 +86,7 @@ export defn file_exists(path: String) [true][term == true || term == false] -> B
 };
 
 // fs_unlink — raw unlink(2) over a C-string path.
-defn fs_unlink(path: Int) [path >= 0][term >= -4096] -> Int {
+defn fs_unlink(path: Int) [true][term >= -4096] -> Int {
     term syscall(SYS_UNLINK, path);
 };
 
@@ -123,7 +123,7 @@ export defn read_file(path: String) [true][is_ok(term) || is_err(term)] -> Resul
 // s+8), doubling the data capacity when full. The length header is stored
 // at EOF; the buffer is freed on the error path.
 defn read_whole(fd: Int, s: Int, cap: Int, total: Int)
-    [fd >= 0 && s >= 0 && cap >= 0 && total >= 0][is_ok(term) || is_err(term)]
+    [true][is_ok(term) || is_err(term)]
     -> Result<String, Int> {
     when total >= cap {
         let ns: Int = Alloc#(8 + cap * 2) as Int;
@@ -164,7 +164,7 @@ export defn write_file(path: String, data: String)
 
 // write_loop — short-write loop over the String's data area (base + 8).
 defn write_loop(fd: Int, data: String, len: Int, done: Int)
-    [fd >= 0 && len >= 0 && done >= 0][term >= -4096] -> Int {
+    [true][term >= -4096] -> Int {
     when done >= len {
         term done;
     };
@@ -223,7 +223,7 @@ defn count_lines(data: String, i: Int, lines: Int)
     term count_lines(data, i + 1, lines);
 };
 
-defn split_lines(data: String) [data .^Length >= 0] -> List<String> {
+defn split_lines(data: String) [true] -> List<String> {
     let acc: List<String> = [];
     term split_lines_loop(data, acc, 0, 0);
 };

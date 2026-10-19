@@ -234,7 +234,7 @@ defn sock_send(s: Socket, buf: ByteBuf, len: Int)
 // Every send(2) carries MSG_NOSIGNAL (see the constant above): a write to a
 // dead connection must return -EPIPE, never raise a process-killing SIGPIPE.
 defn send_loop(s: Socket, base: Int, len: Int, done: Int)
-    [s.fd >= 0 && base >= 0 && len >= 0 && done >= 0][term >= -4096]
+    [true][term >= -4096]
     -> Int
 {
     when done >= len {
@@ -274,7 +274,7 @@ defn sock_recv(s: Socket, buf: ByteBuf, cap: Int)
 // surfaced directly so the caller can tell error (negative) from EOF (the loop
 // simply ending with got < cap).
 defn recv_loop(s: Socket, base: Int, cap: Int, got: Int)
-    [s.fd >= 0 && base >= 0 && cap >= 0 && got >= 0][term >= -4096]
+    [true][term >= -4096]
     -> Int
 {
     when got >= cap {

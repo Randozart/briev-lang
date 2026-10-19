@@ -25,7 +25,7 @@ const MKTEMP_TRIES: Int = 8;
 
 /// One O_EXCL create attempt. fd >= 0 → the file exists, close it and
 /// return the path; otherwise the negative errno.
-defn attempt(prefix: String, tag: Int) [tag >= 0][is_ok(term) || is_err(term)] -> Result<String, Int> {
+defn attempt(prefix: String, tag: Int) [true][is_ok(term) || is_err(term)] -> Result<String, Int> {
     let path: String = prefix + "-" + (tag as String);
     let cpath: Int = to_c_string(path);
     let fd: Int = fs_open(cpath, O_CREAT + O_EXCL + O_WRONLY, MODE_0644);
@@ -39,7 +39,7 @@ defn attempt(prefix: String, tag: Int) [tag >= 0][is_ok(term) || is_err(term)] -
 /// Retry EEXIST collisions up to `tries` more times; anything else (or
 /// success) propagates. Bounded recursion — the convergence gate re-checks
 /// per attempt.
-defn mktemp_attempt(prefix: String, tries: Int) [tries >= 0][is_ok(term) || is_err(term)] -> Result<String, Int> {
+defn mktemp_attempt(prefix: String, tries: Int) [true][is_ok(term) || is_err(term)] -> Result<String, Int> {
     let r: Result<String, Int> = attempt(prefix, rand_range(0, 1000000));
     when is_ok(r) {
         term r;

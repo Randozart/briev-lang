@@ -31,7 +31,7 @@ defn arg_count() [term >= 0] -> Int {
 };
 
 // arg_ptr — the address of argv[i]'s C string, or 0 past the end.
-defn arg_ptr(i: Int, argv: Int) [i >= 0 && argv >= 0][term >= 0] -> Int {
+defn arg_ptr(i: Int, argv: Int) [true][term >= 0] -> Int {
     when i >= Argc#() {
         term 0;
     };
@@ -39,7 +39,7 @@ defn arg_ptr(i: Int, argv: Int) [i >= 0 && argv >= 0][term >= 0] -> Int {
 };
 
 // arg — argv[i] as a Briev String (empty when out of range).
-defn arg(i: Int) [i >= 0][true] -> String {
+defn arg(i: Int)  -> String {
     let argv: Int = Args#();
     let p: Int = arg_ptr(i, argv);
     when p == 0 {
@@ -55,7 +55,7 @@ defn arg(i: Int) [i >= 0][true] -> String {
 
 // cstr_equals — C-string p equals the Briev String key (byte compare).
 defn cstr_equals(p: Int, key: Int, klen: Int, i: Int)
-    [p >= 0 && key >= 0 && klen >= 0 && i >= 0][term == true || term == false] -> Bool {
+    [true][term == true || term == false] -> Bool {
     when i >= klen {
         term Load#(p + i, 1) == 0;
     };
@@ -68,7 +68,7 @@ defn cstr_equals(p: Int, key: Int, klen: Int, i: Int)
 // argv_find — the index of the argv entry equal to key (scanning from
 // `from`), or -1. The KEY=VALUE walk shape of environ_find, over argv.
 defn argv_find(key: Int, klen: Int, argv: Int, from: Int)
-    [key >= 0 && klen >= 0 && argv >= 0 && from >= 0][term >= -1] -> Int {
+    [true][term >= -1] -> Int {
     when from >= Argc#() {
         term 0 - 1;
     };

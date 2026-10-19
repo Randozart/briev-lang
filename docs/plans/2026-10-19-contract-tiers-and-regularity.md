@@ -179,6 +179,20 @@ Measured with `policy: warn` over the conformance sweep:
 - Interpreter-side check statements: none in the corpus (the `check` gate's
   deny flip is about user programs, not stdlib).
 
+**Bucket 1 migrated (2026-10-20).** All 65 noise-only preconditions (pure
+non-negativity restatements) plus the chained callees they fed were
+neutralized: a `[noise]` pre became `[true]` where a meaningful post exists,
+or the whole contract was omitted when the post was also `true` (the
+tautology rule rejects `[true][true]`). Verified by iterating the warn
+census three times: each round showed a handful of callees whose body used
+the removed assumption (`sha1_build_padded`, `when_hi`, `task_done`,
+`task_result`, `read64le`, `pf_exp_digits`, `sha1_padded_len`); migrating
+those too left ZERO new warnings.
+
+Result: **79,415 → 39,865 announcements (−50%)**, unique contracted fns
+**144 → 85**. Remaining work is the two substantive buckets (3: dynamic
+boundaries → Result; 2: float/string domain/termination proof-flow).
+
 ## Workstreams
 
 ### A — Contract gate: LANDED, STAGED; migration next

@@ -272,7 +272,7 @@ defn http_header(req: HttpRequest, name: String) [true][CharCount#(term) >= 0] -
 // CRLF-delimited line. Tail recursion; returns "" when the block is exhausted.
 // The name match is case-insensitive (str_eq_ci), so `name` is passed as-is.
 defn http_header_scan(block: String, name: String, off: Int)
-    [off >= 0][CharCount#(term) >= 0]
+    [true][CharCount#(term) >= 0]
     -> String
 {
     when off >= CharCount#(block) {

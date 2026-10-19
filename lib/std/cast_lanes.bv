@@ -24,7 +24,7 @@ import "std/float_fmt.bv";
 // 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
 // the lane parsers share one definition.
-defn byte_at(s: String, i: Int) [s .^Length >= 0][term >= 0] -> Int {
+defn byte_at(s: String, i: Int) [true][term >= 0] -> Int {
     let addr: Int = (s as Data) as Int;
     when i < 0 || i >= s .^Length {
         term 0;
@@ -58,7 +58,7 @@ out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
 };
 
 // pos_digit_count — decimal digit count (n >= 0).
-defn pos_digit_count(n: Int, acc: Int) [n >= 0 && acc >= 0][term >= 1] -> Int {
+defn pos_digit_count(n: Int, acc: Int) [true][term >= 1] -> Int {
     when n < 10 { term acc + 1; };
     term pos_digit_count(n / 10, acc + 1);
 };
@@ -123,7 +123,7 @@ out defn char_to_str(c: Int) [c >= 0][term .^Length >= 1] -> String {
 
 // utf8_encode — write codepoint c's UTF8 bytes at addr, return the byte
 // count (1-4). Mirror of C char_to_str's encoding table.
-defn utf8_encode(addr: Int, c: Int) [addr >= 0 && c >= 0][term >= 1 && term <= 4] -> Int {
+defn utf8_encode(addr: Int, c: Int) [true][term >= 1 && term <= 4] -> Int {
     when c < 0x80 {
         Store#(addr, c, 1);
         term 1;
@@ -232,7 +232,7 @@ defn bytes_eq_at(s: String, i: Int, ref: String, want: Int)
 
 // bytes_eq_shift — compare s[i] vs ref[j] for `n` bytes.
 defn bytes_eq_shift(s: String, i: Int, ref: String, j: Int, n: Int)
-    [i >= 0 && j >= 0 && n >= 0][term == true || term == false]
+    [true][term == true || term == false]
     -> Bool
 {
     when n == 0 {
@@ -270,7 +270,7 @@ out defn str_to_float(s: String) [true][term >= 0.0 || term < 0.0] -> Float {
 };
 
 // pf_ws — skip isspace (space, \t \n \v \f \r).
-defn pf_ws(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> Int {
+defn pf_ws(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
     when i >= len {
         term i;
     };
@@ -282,7 +282,7 @@ defn pf_ws(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> Int {
 };
 
 // pf_sign — optional +/-, returns (sign, next index).
-defn pf_sign(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= -1 && term <= 1] -> (Int, Int) {
+defn pf_sign(s: String, i: Int, len: Int) [true][term >= -1 && term <= 1] -> (Int, Int) {
     when i < len {
         let b: Int = byte_raw(s, i);
         when b == 43 {
@@ -302,7 +302,7 @@ defn pf_sign(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= -1 && ter
 // for the rounding headroom). First '.' enters frac mode; any other
 // non-digit ends the number (strtod's trailing-garbage stop).
 defn pf_num(s: String, i: Int, len: Int, m: Int, d: Int, frac: Int, seen: Int)
-    [i >= 0 && len >= 0 && m >= 0][term >= -1100 && term <= 1100]
+    [true][term >= -1100 && term <= 1100]
     -> (Int, Int, Int, Int)
 {
     when i >= len {
@@ -331,7 +331,7 @@ defn pf_num(s: String, i: Int, len: Int, m: Int, d: Int, frac: Int, seen: Int)
 // pf_exp — optional e/E exponent: (exponent, next index). e is clamped at
 // +/-1000 (f32 saturates near +/-45 anyway; the cap only guards i64 d).
 defn pf_exp(s: String, i: Int, len: Int, acc: Int)
-    [i >= 0 && len >= 0][term >= -1000 && term <= 1000]
+    [true][term >= -1000 && term <= 1000]
     -> (Int, Int)
 {
     when i >= len {
@@ -356,7 +356,7 @@ defn pf_exp(s: String, i: Int, len: Int, acc: Int)
 
 // pf_exp_digits — the exponent's digit run, sign folded in.
 defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
-    [i >= 0 && len >= 0][term >= -1000 && term <= 1000]
+    [true][term >= -1000 && term <= 1000]
     -> (Int, Int)
 {
     when i >= len {
@@ -374,7 +374,7 @@ defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
 
 // pf_make — M x 10^-d with ONE correctly-rounded scaling: d > 0 divides by
 // 10^d (exact in f32 through 10^10 — 5^10 < 2^24), d < 0 multiplies.
-defn pf_make(m: Int, d: Int) [m >= 0][term >= 0.0 || term < 0.0] -> Float {
+defn pf_make(m: Int, d: Int) [true][term >= 0.0 || term < 0.0] -> Float {
     let base: Float = m as Float;
     when d == 0 {
         term base;
@@ -419,7 +419,7 @@ defn byte_raw(s: String, i: Int) [true][term >= 0] -> Int {
 };
 
 // bytes_equal_at — do n payload bytes of a and b match (from offset 0)?
-defn bytes_equal_at(a: String, b: String, n: Int) [n >= 0][term == true || term == false] -> Bool {
+defn bytes_equal_at(a: String, b: String, n: Int) [true][term == true || term == false] -> Bool {
     when n == 0 {
         term true;
     };
@@ -459,7 +459,7 @@ out defn briev_str_substr(s: String, a: Int, b: Int) [true][term .^Length >= 0] 
 };
 
 // when_raw — max(a, 0) clamped to len.
-defn when_raw(a: Int, len: Int) [len >= 0][term >= 0] -> Int {
+defn when_raw(a: Int, len: Int) [true][term >= 0] -> Int {
     when a < 0 {
         term 0;
     };
@@ -470,7 +470,7 @@ defn when_raw(a: Int, len: Int) [len >= 0][term >= 0] -> Int {
 };
 
 // clamp_hi — min(b, len), then max(hi, lo).
-defn clamp_hi(b: Int, len: Int, lo: Int) [len >= 0 && lo >= 0][term >= 0] -> Int {
+defn clamp_hi(b: Int, len: Int, lo: Int) [true][term >= 0] -> Int {
     let hi: Int = when_hi(b, len);
     when hi < lo {
         term lo;
@@ -478,7 +478,7 @@ defn clamp_hi(b: Int, len: Int, lo: Int) [len >= 0 && lo >= 0][term >= 0] -> Int
     term hi;
 };
 
-defn when_hi(b: Int, len: Int) [len >= 0][term >= 0] -> Int {
+defn when_hi(b: Int, len: Int) [true][term >= 0] -> Int {
     when b > len {
         term len;
     };
@@ -567,7 +567,7 @@ out defn briev_char_len(s: String) [true][term >= 0] -> Int {
     term count_lead(s, 0, str_len_bytes(s));
 };
 
-defn count_lead(s: String, i: Int, len: Int) [i >= 0 && len >= 0][term >= 0] -> Int {
+defn count_lead(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
     when i >= len {
         term 0;
     };
@@ -626,7 +626,7 @@ out defn stdout_flush() [true][term >= 0] -> Int {
     term 0;
 };
 
-out defn stdout_byte(b: Int) [b >= 0][term >= 0] -> Int {
+out defn stdout_byte(b: Int) [true][term >= 0] -> Int {
     when stdout_buf == 0 {
         stdout_buf = Alloc#(STDOUT_CAP) as Int;
     };
@@ -742,7 +742,7 @@ out defn str_first_char(s: String) [true][term >= 0] -> Int {
 // until the arena resets — the C malloc/free pair has no arena equivalent).
 
 // coll_count_true_i64 — popcount of an i64-slot mask.
-defn coll_count_true_i64(mask: Int, n: Int) [mask >= 0 && n >= 0][term >= 0] -> Int {
+defn coll_count_true_i64(mask: Int, n: Int) [true][term >= 0] -> Int {
     when n == 0 {
         term 0;
     };
@@ -754,7 +754,7 @@ defn coll_count_true_i64(mask: Int, n: Int) [mask >= 0 && n >= 0][term >= 0] -> 
 };
 
 // coll_min — min of two non-negative counts.
-defn coll_min(a: Int, b: Int) [a >= 0 && b >= 0][term >= 0] -> Int {
+defn coll_min(a: Int, b: Int) [true][term >= 0] -> Int {
     when a > b {
         term b;
     };
@@ -777,7 +777,7 @@ out defn briev_mask_select(data: Int, mask: Int, mask_len: Int)
 
 // gather_bytes — two-index walk: i reads data/mask, w writes obuf.
 defn gather_bytes(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
-    [ml >= 0 && i >= 0 && w >= 0][term >= 0]
+    [true][term >= 0]
     -> Int
 {
     when i >= ml {
@@ -870,7 +870,7 @@ defn gather_f32_i8(data: Int, mask: Int, obuf: Int, ml: Int, i: Int, w: Int)
 };
 
 // coll_count_true_i8 — popcount of a byte mask.
-defn coll_count_true_i8(mask: Int, n: Int) [mask >= 0 && n >= 0][term >= 0] -> Int {
+defn coll_count_true_i8(mask: Int, n: Int) [true][term >= 0] -> Int {
     when n == 0 {
         term 0;
     };
@@ -933,7 +933,7 @@ out defn briev_slice_range64(data: Int, n: Int, lo: Int, hi: Int)
 };
 
 // coll_hi_fix — max(h, lo) for the range clamp.
-defn coll_hi_fix(h: Int, lo: Int) [h >= 0 && lo >= 0][term >= 0] -> Int {
+defn coll_hi_fix(h: Int, lo: Int) [true][term >= 0] -> Int {
     when h < lo {
         term lo;
     };
@@ -957,7 +957,7 @@ out defn briev_slice_range_f32(data: Int, n: Int, lo: Int, hi: Int)
 
 // slice_f32_copy — widen f32 elements into obuf slots 1..
 defn slice_f32_copy(data: Int, obuf: Int, l: Int, len: Int, i: Int)
-    [l >= 0 && len >= 0 && i >= 0][term >= 0]
+    [true][term >= 0]
     -> Int
 {
     when i >= len {
@@ -1006,7 +1006,7 @@ defn coll_step_fix(step: Int) [step >= 0][term >= 1] -> Int {
 };
 
 // coll_len_fix — 0 when hi < lo (empty range), else the computed len.
-defn coll_len_fix(h: Int, l: Int, len: Int) [h >= 0 && l >= 0][term >= 0] -> Int {
+defn coll_len_fix(h: Int, l: Int, len: Int) [true][term >= 0] -> Int {
     when h < l {
         term 0;
     };
@@ -1034,7 +1034,7 @@ out defn briev_slice_strided_f32(data: Int, n: Int, lo: Int, hi: Int, step: Int)
 
 // slice_f32_strided_copy — widen strided f32 elements into obuf slots 1..
 defn slice_f32_strided_copy(data: Int, obuf: Int, l: Int, s: Int, len: Int, i: Int)
-    [l >= 0 && s >= 0 && len >= 0 && i >= 0][term >= 0]
+    [true][term >= 0]
     -> Int
 {
     when i >= len {
@@ -1141,7 +1141,7 @@ out defn wait_for_trigger() [true][term >= 0] -> Int {
 
 // cstr_len — NUL-terminated string length (replaces the libc strlen the
 // GetCwd# call site used — one of the last libc references).
-out defn cstr_len(p: Int) [p >= 0][term >= 0] -> Int {
+out defn cstr_len(p: Int) [true][term >= 0] -> Int {
     when Load#(p, 1) == 0 {
         term 0;
     };
@@ -1151,7 +1151,7 @@ out defn cstr_len(p: Int) [p >= 0][term >= 0] -> Int {
 // env_key_match — does the C string at s begin with key's bytes + '='?
 // i = bytes matched so far (recursion index over the KEY's klen bytes).
 defn env_key_match(key: Int, klen: Int, s: Int, i: Int)
-    [key >= 0 && klen >= 0 && s >= 0 && i >= 0][term == true || term == false] -> Bool {
+    [true][term == true || term == false] -> Bool {
     when i >= klen {
         when Load#(s + i, 1) == 61 {
             term true;
@@ -1167,7 +1167,7 @@ defn env_key_match(key: Int, klen: Int, s: Int, i: Int)
 // environ_find — the address of the VALUE string for key, or -1 (0 - 1).
 // Entries live at environ + 8*i; a NULL entry ends the array.
 defn environ_find(key: Int, klen: Int, environ: Int, i: Int)
-    [key >= 0 && klen >= 0 && environ >= 0 && i >= 0][term >= -1] -> Int {
+    [true][term >= -1] -> Int {
     let entry: Int = Load#(environ + 8 * i, 8);
     when entry == 0 {
         term 0 - 1;
@@ -1181,7 +1181,7 @@ defn environ_find(key: Int, klen: Int, environ: Int, i: Int)
 // briev_getenv_briev_impl — the VALUE as a fresh Briev String; no match →
 // an empty String (the C returned NULL and callers null-checked).
 out defn briev_getenv_briev_impl(key: Int, environ: Int)
-    [key >= 0 && environ >= 0][term .^Length >= 0] -> String {
+    [true][term .^Length >= 0] -> String {
     let klen: Int = Load#(key, 8);
     let vp: Int = environ_find(key, klen, environ, 0);
     when vp < 0 {
@@ -1200,7 +1200,7 @@ out defn briev_getenv_briev_impl(key: Int, environ: Int)
 
 // env_int_digits — strtol-style digit run (sign folded by the caller).
 defn env_int_digits(p: Int, acc: Int, sign: Int)
-    [p >= 0][term == 0 || term != 0] -> Int {
+    [true][term == 0 || term != 0] -> Int {
     let b: Int = Load#(p, 1);
     when b < 48 || b > 57 {
         term acc;
@@ -1212,7 +1212,7 @@ defn env_int_digits(p: Int, acc: Int, sign: Int)
 // digits → 0); no match → 0. The get_env_int! const path folds at compile
 // time — this is the RUNTIME getenv the bindings ghost never provided.
 out defn briev_getenv_int_impl(key: Int, environ: Int)
-    [key >= 0 && environ >= 0][term == 0 || term != 0] -> Int {
+    [true][term == 0 || term != 0] -> Int {
     let klen: Int = Load#(key, 8);
     let vp: Int = environ_find(key, klen, environ, 0);
     when vp < 0 {
@@ -1272,7 +1272,7 @@ out defn briev_task_spawn_impl(sched: Int, table: Int, nseg: Int, nargs: Int, ar
 
 // spawn_copy_args - copy the argv block into the record, then link at tail.
 defn spawn_copy_args(rec: Int, argv: Int, nargs: Int, i: Int, blk: Int)
-    [rec >= 0 && argv >= 0 && nargs >= 0 && i >= 0][term >= 0] -> Int {
+    [true][term >= 0] -> Int {
     when i < nargs {
         Store#(rec + 56 + 8 * i, Load#(argv + 8 * i, 8), 8);
         term spawn_copy_args(rec, argv, nargs, i + 1, blk);
@@ -1287,12 +1287,12 @@ defn spawn_copy_args(rec: Int, argv: Int, nargs: Int, i: Int, blk: Int)
 };
 
 // task_status - the record's status field.
-defn task_status(rec: Int) [rec >= 0][term >= 0 && term <= 4] -> Int {
+defn task_status(rec: Int) [true][term >= 0 && term <= 4] -> Int {
     term Load#(rec + 8, 8);
 };
 
 // task_done - DONE status check (the await termination test).
-defn task_done(target: Int) [target >= 0][term == true || term == false] -> Bool {
+defn task_done(target: Int) [true][term == true || term == false] -> Bool {
     when target == 0 {
         term false;
     };
@@ -1300,7 +1300,7 @@ defn task_done(target: Int) [target >= 0][term == true || term == false] -> Bool
 };
 
 // task_result - the stored completion value.
-defn task_result(rec: Int) [rec >= 0][term >= 0] -> Int {
+defn task_result(rec: Int) [true][term >= 0] -> Int {
     term Load#(rec + 40, 8);
 };
 
@@ -1314,7 +1314,7 @@ out defn briev_await_impl(sched: Int, target: Int)
 
 // await_passes - one scheduler pass per recursion level.
 defn await_passes(blk: Int, target: Int)
-    [blk >= 0 && target >= 0][term >= 0] -> Int {
+    [true][term >= 0] -> Int {
     when task_done(target) {
         term task_result(target);
     };
@@ -1331,7 +1331,7 @@ defn await_passes(blk: Int, target: Int)
 // scheduler block: [16] holds the CURRENT task record while its segment
 // runs (the event-read blocked path registers it as a waiter).
 defn await_one_pass(blk: Int, cur: Int, ran: Int)
-    [blk >= 0 && cur >= 0 && ran >= 0][term >= 0] -> Int {
+    [true][term >= 0] -> Int {
     when cur == 0 {
         term ran;
     };
