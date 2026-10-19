@@ -94,6 +94,30 @@ compile-error-enforced at call sites — the negative-cost axiom tested for
 real. First step unchanged: verify async pair scheduling against
 `async_counters.bv`. C reference: fair C11-atomics SPSC.
 
+## Status (2026-10-19, end of session)
+
+- **A — contract gate: INFRASTRUCTURE LANDED, STAGED** (`4ffa5b8c`). The
+  full machinery is live behind `config/contracts.dbvl` `policy:`
+  (allow/warn/deny; default allow — the IrrPolicy-precedent migration
+  stage, flip criteria recorded in the config file). Census at tip: **90
+  contracted fns / 23,117 unproven sites**. The migration's three buckets,
+  from the census: (1) noise conjuncts restating length/cast/intrinsic
+  non-negativity (`[s.^Length >= 0]` — remove; the callee gains nothing);
+  (2) domain/termination contracts (`[n >= 0 && n <= 20]` IS zeros'
+  recursion proof) whose callers need proof-flow restructuring — the
+  float/string formatting internals, the delicate core of the migration;
+  (3) genuinely dynamic boundaries → convert to Result (the ws_decode
+  idiom). Bucket 1 is mechanical; bucket 2 is the multi-day core; bucket 3
+  is per-site judgment.
+- **D — interpreter compound-expression defect: ROOT-CAUSED AND FIXED**
+  (`59b2b1e5`) — the B1 string-bitwise default dereferenced Int atoms as
+  heap strings on address collision; bitwise ops now disambiguate by
+  representation. The len64 decode parity scenario is RESTORED (the
+  deferred pin passes). Residual: the encode path's GrowBuf growth
+  misfires in the interpreter (separate repro, OPEN in BUGS.md) — the
+  round-trip scenario stays deferred on it.
+- **B, C, E: NOT STARTED** — next session, in plan order.
+
 ## Sequencing
 
 A → B → C → D → E. A reshapes how fixture code is written (every remaining
