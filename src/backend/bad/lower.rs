@@ -1335,6 +1335,23 @@ impl<'a> Lowerer<'a> {
             let v = self.const_value(name, &[])?;
             return Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v));
         }
+        // A real target spelling used on the wrong target: name the
+        // targets that have it instead of the generic "not a register".
+        let alias_targets = self.regs.alias_targets(name);
+        if !alias_targets.is_empty() {
+            let bound = param
+                .map(|p| format!(" (bound from param `{p}`)"))
+                .unwrap_or_default();
+            return Err(format!(
+                "operand `{name}`{bound} in `{mn}` (line {line}) is a target-specific \
+                 register on [{}], not on `{fam}` - use a portable register (r0-r15, \
+                 f0-f15) or a `raw <target>` block for target-only code",
+                alias_targets.join(", "),
+                mn = instr.mnemonic,
+                line = instr.span.line,
+                fam = self.family,
+            ));
+        }
         if allow_symbols {
             // Local-label reference: `.loop` inside label `foo` →
             // `Lfoo__loop`. A missing parent is a hard error (the
@@ -1431,7 +1448,9 @@ impl<'a> Lowerer<'a> {
     /// Resolve a name through aliases then the register table.
     fn resolve_register(&self, name: &str) -> Option<&'a str> {
         let canonical = self.aliases.get(name).map(|s| s.as_str()).unwrap_or(name);
-        self.regs.resolve(canonical, &self.family)
+        self.regs
+            .resolve(canonical, &self.family)
+            .or_else(|| self.regs.resolve_real(canonical, &self.family))
     }
 
     /// Portable register SYNTAX check for raw operands: `r14` on x86_64

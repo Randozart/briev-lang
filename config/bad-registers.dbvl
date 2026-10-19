@@ -11,6 +11,9 @@
 //   target (x86_64 has 16 GPRs, so r14/r15 have no x86_64 field).
 //   Referencing it there is a loud compile error — never a silent remap.
 // - Assembler tokens are GAS-ready (x86_64 carries %).
+// - The token is also the target-specific SOURCE spelling (strip a
+//   leading `%`): `rax`, `x0`, `a0`, `xmm0`. Full-width rows only —
+//   width spellings (`eax`, `al`, `w0`) stay template refs for now.
 // - `imm` row: the immediate-literal prefix per target, applied by the
 //   backend when substituting immediate operands into ISA templates.
 // - Special-register knowledge (zero register, etc.) belongs in

@@ -659,9 +659,12 @@ mod tests {
 
     #[test]
     fn end_to_end_float_param_passthrough() {
-        let src = "defn id(x: Float) -> Float { return x; }";
+        // `x` binds f0 and returns in f0 — a self-move, elided. Use the
+        // second parameter so the pass-through move is real.
+        let src = "defn second(x: Float, y: Float) -> Float { return y; }";
         let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
-        assert!(s.contains("movsd %xmm0, %xmm0"), "{s}");
+        assert!(s.contains("second:"), "{s}");
+        assert!(s.contains("movsd %xmm1, %xmm0"), "{s}");
     }
 
     // ── M4: register allocation ───────────────────────────────────────

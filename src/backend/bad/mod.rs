@@ -562,6 +562,30 @@ mod tests {
     }
 
     #[test]
+    fn real_register_spellings_resolve_per_target() {
+        let x86 = lower_ok(
+            "_start:\n    mov rax, 1\n    mov rdi, 2\n    ret\n",
+            "x86_64",
+        );
+        assert!(x86.contains("movq $1, %rax"), "{x86}");
+        assert!(x86.contains("movq $2, %rdi"), "{x86}");
+
+        let arm = lower_ok("_start:\n    mov x0, 1\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x0, =1"), "{arm}");
+
+        let rv = lower_ok("_start:\n    mov a0, 1\n    ret\n", "riscv64");
+        assert!(rv.contains("li a0, 1"), "{rv}");
+    }
+
+    #[test]
+    fn real_register_on_wrong_target_is_loud() {
+        let err = generate("_start:\n    mov rax, 1\n    ret\n", "aarch64")
+            .expect_err("x86_64 register on aarch64 must be loud");
+        assert!(err.contains("target-specific register"), "{err}");
+        assert!(err.contains("x86_64"), "{err}");
+    }
+
+    #[test]
     fn template_self_moves_are_elided_but_raw_blocks_are_verbatim() {
         // Template-generated copy-then-op sequences drop the dead copy
         // when destination == source. Raw blocks bypass the filter.

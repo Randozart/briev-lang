@@ -170,6 +170,13 @@ properties (`caller` / `callee` / `ro`):
   error, never a silent remap.
 - Properties feed the contract proofs, never codegen branches.
 - `alias result = r0` is source sugar resolved before mapping.
+- **Real target spellings are source names too**: `rax`, `x0`, `a0`,
+  `xmm0`, `rsp`, `rip` (the forum's full-width token with a leading `%`
+  stripped). They resolve through the same registry rows — one source of
+  truth. Using one on a target that does not have it is a loud error
+  naming the targets that do; there is no silent remap or fallback.
+  Width-specific spellings (`eax`, `al`, `w0`) are not source aliases
+  yet; use a `raw <target>` block or a width template ref.
 - The `imm` row holds each target's immediate prefix (`$` / `#` / empty);
   the `comment` row its GAS comment prefix.
 

@@ -187,11 +187,25 @@ pub struct BadRegEntry {
     pub prop: RegProp,
 }
 
+/// One target-specific spelling of a portable register (`rax` → `r0`,
+/// `xmm0` → `f0`, `eax` → `r0` with width 32). Built from the same rows
+/// as the portable map — no second source of truth.
+#[derive(Debug, Clone)]
+pub struct RegAliasEntry {
+    pub target: String,
+    pub canonical: String,
+    /// `None` = full-width spelling (`rax`, `x0`); `Some(w)` = the
+    /// width-qualified row (`.w8`/`.w16`/`.w32`; 255 = aarch64 `wN`).
+    pub width: Option<u8>,
+}
+
 /// config/bad-registers.dbvl — portable register mapping + per-target
 /// scalar rows (`imm` prefix, `comment` prefix).
 #[derive(Debug, Clone)]
 pub struct BadRegisters {
     regs: HashMap<String, Vec<BadRegEntry>>,
+    /// Reverse index: source spelling (no `%`) → portable register(s).
+    aliases: HashMap<String, Vec<RegAliasEntry>>,
     scalars: HashMap<String, Vec<(String, String)>>,
 }
 
@@ -233,7 +247,89 @@ impl BadRegisters {
                 regs.insert(key, entries);
             }
         }
-        BadRegisters { regs, scalars }
+        // Reverse target spellings: `%rax` → r0, `eax` → r0.w32,
+        // `xmm0` → f0. Identity spellings (`r0` on thumb) are skipped —
+        // the canonical name already means the right thing.
+        let mut aliases: HashMap<String, Vec<RegAliasEntry>> = HashMap::new();
+        for (key, entries) in &regs {
+            let (canonical, width) = match key.split_once(".w") {
+                Some((base, w)) => {
+                    let width: Option<u8> = if w.is_empty() { Some(255) } else { w.parse::<u8>().ok() };
+                    (base, width)
+                }
+                None => (key.as_str(), None),
+            };
+            for entry in entries {
+                // PTX rows name virtual registers directly (`%rd2`) and
+                // the raw-substitution pass already leaves them alone.
+                if entry.target == "ptx" {
+                    continue;
+                }
+                // Width-specific spellings (`eax`, `al`, `w0`) need
+                // width-aware instruction selection; they ride the
+                // `$N.w8` template refs instead for now. Only full-width
+                // real names are accepted as source aliases.
+                if width.is_some() {
+                    continue;
+                }
+                let alias = entry.token.trim_start_matches('%').to_string();
+                // Never let a target token shadow a canonical portable
+                // name (`r14` is a canonical row even though x86_64's
+                // %r14 maps to r12).
+                if alias.is_empty() || alias == canonical || regs.contains_key(&alias) {
+                    continue;
+                }
+                aliases.entry(alias).or_default().push(RegAliasEntry {
+                    target: entry.target.clone(),
+                    canonical: canonical.to_string(),
+                    width,
+                });
+            }
+        }
+        BadRegisters { regs, aliases, scalars }
+    }
+
+    /// Resolve a target-specific spelling (`rax`, `x0`, `eax`, `xmm0`)
+    /// to its portable register and width. Prefers the full-width
+    /// spelling when both exist (`x0` beats the `.w32` alias row).
+    pub fn resolve_alias(&self, name: &str, family: &str) -> Option<(String, Option<u8>)> {
+        let entries: Vec<&RegAliasEntry> = self
+            .aliases
+            .get(name)?
+            .iter()
+            .filter(|e| family.starts_with(e.target.as_str()))
+            .collect();
+        let pick = entries
+            .iter()
+            .find(|e| e.width.is_none())
+            .or_else(|| entries.iter().find(|e| e.width == Some(255)))
+            .or_else(|| entries.first())?;
+        Some((pick.canonical.clone(), pick.width))
+    }
+
+    /// Assembler token for a target-specific spelling (`rax`, `eax`,
+    /// `x0`, `w0`, `xmm0`) on `family`, or None when the family does not
+    /// have it. The returned token is width-correct (`%eax` for `eax`,
+    /// `w0` for `w0`).
+    pub fn resolve_real(&self, name: &str, family: &str) -> Option<&str> {
+        let (canonical, width) = self.resolve_alias(name, family)?;
+        match width {
+            Some(w) => self.resolve_w(&canonical, family, w),
+            None => self.resolve(&canonical, family),
+        }
+    }
+
+    /// Every target that knows this target-specific spelling — for the
+    /// "register exists only on X" diagnostic.
+    pub fn alias_targets(&self, name: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .aliases
+            .get(name)
+            .map(|es| es.iter().map(|e| e.target.clone()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// The assembler token for portable register `reg` on `family`.
