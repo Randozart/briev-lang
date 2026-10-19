@@ -68,9 +68,37 @@ natively (Vec-backed; `cap` is compiler-owned, and after workstream B's
 hidden-slot gating `len` is the only observable). Decide at implementation
 with the minimal repro in hand.
 
+## Session log — PR interlude (hiatus), resumed 2026-10-20
+
+Work on this plan paused for a PR interlude: reviewing and merging Otto's
+open PRs (#25 lexer `\r`, #23 const String global, #24 dot-call `%state`,
+#27 `Malloc#` raw-memory attribute, #28 Float tuple unboxing) and
+reconciling #26 into the unified `lib/std/net/websocket.bv` (closed as
+superseded; full record in `docs/plans/2026-10-20-pr-review-net-stack.md`).
+The interlude fixed several bugs that intersect this plan's paths —
+notably the TRANSITIVE raw-memory classification (a caller's memory
+attribute must be at least as permissive as its callees' effects) and the
+trait-declaration splice retention — and landed four net modules that grew
+the contract census (see below).
+
+**Resumed order (owner-approved):**
+
+1. **Refresh the census** under `policy: warn` and update the ledger
+   (the 90 fns / 23,117 sites figure predates the interlude).
+2. **Workstream C — obj-globals** via plain/state (inference default,
+   assertions optional, mismatch = compile error; complete the plain-obj
+   handle path and the state-obj column). Live defects: a global obj's
+   `.len` reads 0, and passing a global obj to a defn segfaults.
+3. **Interpreter parity trio** — callable Briev txns, the
+   raw-address→String door, and the GrowBuf growth misfire — so the
+   reference engine can verify the stdlib and the fixtures again.
+4. **The migration arc** (buckets 1→3→2, assume sweep, flip to `deny`),
+   then B (`.len` regularity), then fixtures 2–4.
+
 ## Baseline (Rule 12 equivalent — semantics work)
 
-- 2026-10-20 tree: 3176 lib tests green; harness 79/79 MATCH
+- 2026-10-20 (post-interlude) tree: 3188 lib tests green; harness 79/79
+  MATCH
   (`benchmarks/results/2026-10-18-fixture1-ws-frame.md`); determinism
   ALL DETERMINISTIC.
 - The call-site contract gate is LANDED, STAGED (`4ffa5b8c`): machinery

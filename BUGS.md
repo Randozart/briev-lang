@@ -10395,7 +10395,7 @@ beginprogram and bootstrap checks share it). Residual: add-chain counter
 advances with non-literal deltas (`total = total + f(x) + y`) are still
 conservatively rejected — restructure to a flat counted variable.
 
-## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (OPEN)
+## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (FIXED 2026-10-19; GrowBuf-growth residual OPEN)
 
 **Symptom:** in the interpreter, inside a spliced program, a bitwise-or
 CHAIN over non-literal operand EXPRESSIONS evaluates to a stale value —
