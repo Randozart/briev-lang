@@ -561,6 +561,47 @@ mod tests {
         assert!(riscv.contains("li a0, 42"), "{}", riscv);
     }
 
+    fn engine_stdlib(triple: &str, src: &str) -> Result<String, String> {
+        generate_with(
+            src,
+            triple,
+            false,
+            Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+            true,
+        )
+    }
+
+    #[test]
+    fn engine_stdlib_verbs_inline() {
+        let src = "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n    \
+                   WriteControlReg 0, 1\n    ReadControlReg 0, r1\n    Park\n";
+        let x86 = engine_stdlib("x86_64", src).unwrap();
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("movq $1, %rax"), "{x86}");
+        assert!(x86.contains("movq %rax, %cr0"), "{x86}");
+        assert!(x86.contains("movq %cr0, %rcx"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+
+        let rv = engine_stdlib(
+            "riscv64",
+            "import \"std/bad/engine.bad\"\n_start:\n    WriteControlReg 768, 8\n",
+        )
+        .unwrap();
+        assert!(rv.contains("li t1, 8"), "{rv}");
+        assert!(rv.contains("csrw 768, t1"), "{rv}");
+    }
+
+    #[test]
+    fn engine_stdlib_gap_is_loud() {
+        let err = engine_stdlib(
+            "aarch64",
+            "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n",
+        )
+        .expect_err("aarch64 interrupt control has no verified row yet");
+        assert!(err.contains("aarch64"), "{err}");
+        assert!(err.contains("row"), "{err}");
+    }
+
     #[test]
     fn local_keyword_labels_scope_and_hygiene() {
         // `local loop:` scopes to the enclosing global label; plain

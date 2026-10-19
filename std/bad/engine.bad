@@ -1,0 +1,39 @@
+// ── std/bad/engine.bad — named engine verbs as ordinary .bad defns ─────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// 2026-10-19 (bad assembly+ plan): the BILLD engine-verb registry becomes
+// stdlib. No Rust, no config rows beyond the core ISA. Defns inline by
+// default; constant-required params are documented (the core op's `$N!`
+// slot rejects a register operand at assembly time).
+//
+// Import explicitly: `import "std/bad/engine.bad"`.
+
+// Interrupt control. No aarch64 row until verified DAIF encodings land:
+// the defn is a loud capability error there (never a guessed encoding).
+defn DisableInterrupts
+    x86_64 => cli
+    riscv64 => mov r9, 8; csrc mstatus, r9
+
+defn EnableInterrupts
+    x86_64 => sti
+    riscv64 => mov r9, 8; csrs mstatus, r9
+
+// Stop and wait. `Park` is the x86-safe halt (IRQs off); bare `halt`
+// remains the portable wait-for-interrupt form.
+defn Park
+    x86_64 => cli; hlt
+    default => halt
+
+// CR/CSR access. `n` is opcode-encoded: pass a literal or `.const`.
+defn ReadControlReg n, dst
+    readcr dst, n
+
+defn WriteControlReg n, value
+    writecr n, value
+
+// Names for core ops that need no sequence.
+alias WaitForInterrupt = wfi
+alias MemoryBarrier = fence
+alias InvalidateTlb = tlbflush
+alias LoadGdt = lgdt
+alias FarJump = ljmp

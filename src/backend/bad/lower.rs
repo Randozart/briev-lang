@@ -1411,8 +1411,11 @@ impl<'a> Lowerer<'a> {
                     return self.syscall_number_token(name, instr);
                 }
                 // Check local env first, then fn-level param_env.
+                // A bare ref (`$N!`) demands the value with NO imm prefix
+                // — opcode-encoded slots (`%cr$2!`, `csrw $1!`) splice it
+                // into the mnemonic/CSR text.
                 if let Some(Bound::Imm(v)) = env.get(name).or_else(|| self.param_env.get(name)) {
-                    return Ok(format!("{imm}{v}"));
+                    return Ok(if r.bare { v.to_string() } else { format!("{imm}{v}") });
                 }
                 let (bound_name, param) = match env.get(name).or_else(|| self.param_env.get(name)) {
                     Some(Bound::Token(t)) => (t.as_str(), Some(name.as_str())),

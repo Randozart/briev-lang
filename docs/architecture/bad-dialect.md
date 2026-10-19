@@ -75,6 +75,29 @@ by default from `std/bad/friendly.bad` (the prelude); `brievc bad --raw`
 opts out. Raw core names always work — aliases are additive and
 self-describing. `_start` is the one genuinely universal name and has NO
 alias.
+## Engine verbs — `std/bad/engine.bad`
+
+Named hardware verbs are ordinary `.bad` defns, imported explicitly:
+
+```bad
+import "std/bad/engine.bad"
+_start:
+    DisableInterrupts
+    WriteControlReg 768, 8
+    Park
+```
+
+- `DisableInterrupts` / `EnableInterrupts` — x86 `cli`/`sti`; riscv
+  `csrc`/`csrs` on `mstatus`. No aarch64 row until verified DAIF
+  encodings land: a loud capability error there, never a guess.
+- `Park` — x86 `cli; hlt`; `default => halt` elsewhere.
+- `ReadControlReg n, dst` / `WriteControlReg n, value` — the CR/CSR
+  number is opcode-encoded; pass a literal or `.const`.
+- Aliases for no-sequence ops: `WaitForInterrupt`, `MemoryBarrier`,
+  `InvalidateTlb`, `LoadGdt`, `FarJump`.
+- Defns inline at the call site (no call, no stack). A defn with `ret`
+  cannot inline; use a `raw` block or a callable label.
+
 ## Sites — anonymous target dispatch (2026-10-01)
 
 Plan: `docs/plans/2026-10-01-bad-site-blocks.md`. A `site` is the
