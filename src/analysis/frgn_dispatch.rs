@@ -222,7 +222,6 @@ pub fn resolve_single_frgn(
             BackendKind::Vm => "VM",
             BackendKind::Ptx => "PTX",
             BackendKind::Bad => "Briev Assembly Dialect",
-            BackendKind::Bld => "Briev Intermediate Low-Level Dialect",
         }
     )))
 }

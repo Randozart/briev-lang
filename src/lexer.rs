@@ -366,7 +366,7 @@ pub enum Token {
 
     // 2026-10-08 (BILLD plan): compound bit/shift assignment. Additive —
     // `|=` &co. previously lexed as two tokens (`|` `=`) and was never
-    // valid anywhere, so no existing program changes meaning. The .bld
+    // valid anywhere, so no existing program changes meaning. The symbolic-engine
     // statement parser desugars them to `x = x <op> rhs`.
     #[token("|=")]
     PipeEq,

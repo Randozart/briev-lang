@@ -1,12 +1,12 @@
-// ── .bld intrinsic registry loader ────────────────────────────────────
+// ── symbolic-engine verb-table loader (config/bad-verbs.dbvl) ──────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// 2026-10-08 (BILLD plan M5): parse config/bld-intrinsics.dbvl — one row
+// 2026-10-08 (BILLD plan M5): parse config/bad-verbs.dbvl — one row
 // per engine verb: arity, result flag, per-target `.bad` instruction
 // sequences. Pure data (Rules 3/15/23): the lowerer consults this table
 // generically; nothing in Rust knows an individual verb's name.
 //
-// To undo: delete this file and config/bld-intrinsics.dbvl.
+// To undo: delete this file and config/bad-verbs.dbvl.
 
 use std::collections::HashMap;
 
@@ -34,9 +34,9 @@ pub struct BldIntrinsics {
 impl BldIntrinsics {
     pub fn load() -> Self {
         let content =
-            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/bld-intrinsics.dbvl"));
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/config/bad-verbs.dbvl"));
         let db = crate::dbriev::config_db::ConfigDb::from_quoted_str(content)
-            .unwrap_or_else(|e| panic!("config/bld-intrinsics.dbvl parse error: {}", e));
+            .unwrap_or_else(|e| panic!("config/bad-verbs.dbvl parse error: {}", e));
         let mut intrinsics = HashMap::new();
         for key in db.keys() {
             let Some(arity) = db.field_string(&key, 0).and_then(|s| s.parse::<usize>().ok())

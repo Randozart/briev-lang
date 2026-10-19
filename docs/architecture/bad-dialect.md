@@ -270,7 +270,7 @@ bootstrap Reset_Handler {
 
 A label body that contains a symbolic statement (`let`, assignment, `when`,
 `loop`, `while`, `break`, `continue`) or a symbolic operand on a supported
-instruction is lowered through the BILLD expression engine and the
+instruction is lowered through the symbolic expression/allocator engine and the
 register allocator, then spliced back as physical instructions.
 
 Supported instructions in a symbolic body:

@@ -1,7 +1,7 @@
-// ── .bld engine intrinsics — config registry ──────────────────────────
+// ── symbolic-engine engine verbs — config registry ──────────────────────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// 2026-10-08 (BILLD plan M5): the engine-verb registry. Data, NOT Rust
+// 2026-10-08 (bad assembly+ plan): the engine-verb registry. Data, NOT Rust
 // string matches (Rules 3/15/23): each row maps ONE PascalCase engine
 // verb to an arity, a result flag, and per-target lowering sequences of
 // `.bad` core instructions. The .bld lowerer splices the call's argument

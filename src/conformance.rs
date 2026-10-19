@@ -47,8 +47,6 @@ pub enum SourceKind {
     DataStructured,
     /// Line-oriented Data Briev: `.dbvl`.
     DataLine,
-    /// BILLD recipe Briev: `.bld` (2026-10-08, BILLD plan).
-    Bld,
 }
 
 impl SourceKind {
@@ -61,7 +59,6 @@ impl SourceKind {
             SourceKind::Rendered => "rendered",
             SourceKind::DataStructured => "dbv",
             SourceKind::DataLine => "dbvl",
-            SourceKind::Bld => "bld",
         }
     }
 }
@@ -181,7 +178,6 @@ pub fn classify(path: &Path) -> Option<SourceKind> {
         "rbv" => Some(SourceKind::Rendered),
         "dbv" => Some(SourceKind::DataStructured),
         "dbvl" => Some(SourceKind::DataLine),
-        "bld" => Some(SourceKind::Bld),
         _ => None,
     }
 }
@@ -274,13 +270,6 @@ fn frontend_check(path: &str, src: &str) -> Result<(), String> {
     if path.ends_with(".dbv") || path.ends_with(".dbvl") {
         return crate::pipeline::check_data_source(path, src).map(|_| ());
     }
-    // 2026-10-08 (BILLD plan M7): .bld recipes check through their own
-    // parser + lowering (no .bv pipeline entry — same lane shape as
-    // .bad, which the CLI owns separately).
-    if path.ends_with(".bld") {
-        return crate::backend::bld::lower_to_bad(src, "x86_64", None, None)
-            .map(|_| ());
-    }
     // 2026-09-14 (machine-entry plan): mechanism-less `node @ vector`
     // declarations are target-relative (the profile names the mechanism).
     // A leading `// target: <triple>` header scopes the source.
@@ -336,8 +325,7 @@ mod tests {
                 }
                 SourceKind::Rendered
                 | SourceKind::DataStructured
-                | SourceKind::DataLine
-                | SourceKind::Bld => {
+                | SourceKind::DataLine => {
                     // check_source/check_data_source dispatch by extension.
                     checked += 1;
                     if let Err(e) = frontend_check(&path_str, &src) {

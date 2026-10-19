@@ -51,7 +51,6 @@ fn main() {
         "remove" => run_remove(&args[2..]),
         "bounty" => run_bounty(&args[2..]),
         "bad" => run_bad(&args[2..]),
-        "bld" => run_bld(&args[2..]),
         "registry" => run_registry(&args[2..]),
         "register" => run_register(&args[2..]),
         // 2026-10-08 (file-based routing, Part 2b): build every page in a
@@ -552,9 +551,6 @@ fn route_by_extension(args: &[String]) -> Result<(), String> {
     if file.ends_with(".bad") {
         return run_bad(&args[1..]);
     }
-    if file.ends_with(".bld") {
-        return run_bld(&args[1..]);
-    }
     eprintln!("unknown command: {}", args[1]);
     print_usage(&args[0]);
     Ok(())
@@ -582,12 +578,6 @@ struct BadCli {
 
 fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
     parse_dialect_cli(args, "bad", ".bad")
-}
-
-/// The .bld CLI reuses the dialect flag set (the artifact tail is the
-/// same pipeline after lowering).
-fn parse_bld_cli(args: &[String]) -> Result<BadCli, String> {
-    parse_dialect_cli(args, "bld", ".bld")
 }
 
 fn parse_dialect_cli(
@@ -773,26 +763,6 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     )
     .map_err(|e| format!("bad: {e}"))?;
 
-    emit_asm_artifacts(asm, &cli)
-}
-
-/// `brievc bld <file.bld> [--target <triple>] ...` — compile a .bld
-/// (BILLD) recipe: lower to a BadProgram (M3), allocate registers (M4),
-/// then the .bad artifact pipeline (2026-10-08, BILLD plan M7). Imports
-/// resolve against the file's directory; the file's own path seeds the
-/// module dedup so import cycles terminate.
-fn run_bld(args: &[String]) -> Result<(), String> {
-    let cli = parse_bld_cli(args)?;
-    let source = std::fs::read_to_string(&cli.file_path)
-        .map_err(|e| format!("bld: cannot read '{}': {}", cli.file_path, e))?;
-    let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
-    let asm = briev_compiler::backend::bld::generate_with(
-        &source,
-        &cli.triple,
-        base_dir.as_deref(),
-        Some(std::path::Path::new(&cli.file_path)),
-    )
-    .map_err(|e| format!("bld: {e}"))?;
     emit_asm_artifacts(asm, &cli)
 }
 

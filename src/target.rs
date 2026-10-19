@@ -19,9 +19,6 @@ pub enum BackendKind {
     /// 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect.
     /// Portable core ISA + `target =>` exceptions → target assembly text.
     Bad,
-    /// 2026-10-08 (BILLD plan): .bld — Briev Intermediate Low-Level
-    /// Dialect. Execution recipes → BadProgram → the .bad backend.
-    Bld,
 }
 
 /// One entry from config/targets.dbvl.
@@ -397,7 +394,6 @@ impl TargetConfig {
             "vm" => Ok(BackendKind::Vm),
             "ptx" => Ok(BackendKind::Ptx),
             "bad" => Ok(BackendKind::Bad),
-            "bld" => Ok(BackendKind::Bld),
             _ => Err(format!("unknown backend '{}'. Supported: llvm, circt, electronics, webstack, vm, spirv, ptx, bad", name)),
         }
     }
@@ -452,13 +448,6 @@ plugins = ["prelude", "execute-many"]
 # 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect.
 [".bad"]
 backend = "bad"
-defaults = []
-plugins = ["prelude"]
-
-# 2026-10-08 (BILLD plan M7): the .bld routing row, mirrored in the
-# frozen golden so the parity test keeps counting honestly.
-[".bld"]
-backend = "bld"
 defaults = []
 plugins = ["prelude"]
 

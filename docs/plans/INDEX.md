@@ -47,7 +47,7 @@ territory — read the linked plan before starting a workstream.
 |------|----------|--------|
 | `feat/e14a-intent-synthesis` | `../briev-e14a` | Electronics `.ebv` (component laws, tolerance model, ERC) — **C2's parked remainder belongs here** |
 | `feat/bad-dialect` | `../briv-compiler-bad-dialect` | Embedded / bad-dialect bootstrapper |
-| ~~`feat/billd-dialect`~~ | — | **MERGED into main 2026-10-08** (fast-forward at `ad5dde16`; all milestones M2–M8) — worktree and branch removed same day; history lives in main. Plan `2026-10-08-billd-intermediate-dialect.md`, ref `docs/architecture/bld-dialect.md` |
+| ~~`feat/billd-dialect`~~ | — | **MERGED 2026-10-08; RETIRED 2026-10-19** — `.bld` dialect deleted; symbolic assembly+ lives inside `.bad`. Plan `2026-10-08-billd-intermediate-dialect.md` (historical); retirement + forward plan `2026-10-19-bad-assembly-plus.md` |
 | (baseline) | `../briev-compiler-baseline` | Rule 12b A/B worktree — measure `main` only |
 
 Standing exclusion (`2026-09-24-followup-stages.md` §Exclusion): never merge,

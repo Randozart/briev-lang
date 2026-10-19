@@ -1,4 +1,4 @@
-// ── .bld backend — BILLD (Briev Intermediate Low-Level Dialect) ───────
+// ── symbolic ENGINE backend (internal; .bld dialect retired) ──────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // 2026-10-08 (BILLD plan, docs/plans/2026-10-08-billd-intermediate-dialect.md
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn stdlib_bit_wrappers_lower() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Bool { return test_bit(a, 3); }";
         let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
         // the call site
@@ -987,7 +987,7 @@ mod tests {
     #[test]
     fn stdlib_set_bit_clears_through_not() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Int { return clear_bit(a, 5); }";
         let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
         let body = instrs(&p, "clear_bit");
@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn end_to_end_bit_wrapper_assembles() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Int { return set_bit(a, 3); }";
         let s = generate_with(src, "x86_64-unknown-linux-gnu", Some(&dir), None).unwrap();
         assert!(s.contains("set_bit:"), "{s}");

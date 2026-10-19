@@ -8,7 +8,7 @@ Briev is a programming language with the following features:
 - Partially declarative, partially imperative, functional invariant based programming
 - Invariant based runtime optimization (with execution speed at parity, or even better than C in several cases)
 - Backend independence through state-management based syntax and backend handling of intrinsics
-- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`), plus auxiliary dialects (`.bad`, `.bld`) and formats (`.beast`)
+- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`), plus the auxiliary `.bad` dialect and formats (`.beast`)
 - A lightweight systems language that handles complexity at compile time
 - Core syntax that is equally applicable to the other backends, not just systems programming (auxiliary dialects deliberately drop to lower tiers)
 - Inferred command flow through reactive top level `node` declarations
@@ -197,10 +197,9 @@ Dotted profiles add strictness: `.s.bv` enables strict mode (representation fall
 
 ## Auxiliary Dialects
 
-Three auxiliary formats exist alongside the six main dialects:
+Two auxiliary formats exist alongside the six main dialects:
 
 - **`.bad` — Briev Assembly Dialect.** Portable assembly: a universal core ISA, `target =>` per-architecture dispatch sites, positional label contracts. Cross-target (x86_64, aarch64, riscv64, thumbv7m, plus the `ptx` family for NVIDIA kernels), with QEMU-verified boot examples. Compile with `brievc bad file.bad --target <triple>`.
-- **`.bld` — BILLD.** The execution-recipe tier between `.bv` and `.bad`: symbolic registers, engine verbs, and a register allocator — the architecture of the machine without the chore of the scratchpad. The tier ladder: `.bv` (proven, reactive) → `.bld` (recipe) → `.bad` (instructions).
 - **`.beast` / `.beastpack` / `.bounty`** — AST s-expression serialization (`--emit-beast`) for legible metaprogramming, typed-AST packaging, and portable distribution. Formats, not compiled surfaces.
 
 ## Key Features

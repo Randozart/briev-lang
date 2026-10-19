@@ -1,6 +1,8 @@
-// ── .bld (BILLD — Briev Intermediate Low-Level Dialect) AST ────────────
+// ── symbolic ENGINE AST (formerly the .bld dialect) ────────────────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+// 2026-10-19: internal to the .bad assembly+ symbolic lowering. The user-
+// facing .bld dialect is retired; only .bad exists. Kept as the engine AST.
 // 2026-10-08 (BILLD plan, docs/plans/2026-10-08-billd-intermediate-dialect.md):
 // AST for .bld programs — the execution-recipe tier between .bv (proven,
 // bounded, reactor) and .bad (physical registers, line-oriented).

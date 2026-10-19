@@ -1,6 +1,6 @@
 pub mod assembler;
 pub mod bad;
-pub mod bld;
+pub(crate) mod bld;
 pub mod capabilities;
 pub mod register_types;
 pub mod circt;

@@ -36,7 +36,7 @@ with raw wherever it does not.
 | Defns | assembly+ bodies, inline by default; `call name(args)` forces a real C-ABI call; `inline name(args)` forces expansion. |
 | Entry | `bootstrap Name { ... }` sugar for `global Name` + `Name:` + entry marking. `.bv` `bootstrap bad` stays. |
 | Data label as value | resolves to its address in symbolic value position; raw `mov rN, label` still errors and points at `addr`. |
-| Engine verbs | `std/bad/engine.bad` aliases + inline defns; delete `config/bld-intrinsics.dbvl`. |
+| Engine verbs | `std/bad/engine.bad` aliases + inline defns; delete `config/bad-verbs.dbvl`. |
 | Immediate memory | `store`/`storeoff` accept immediates; materialize through a disclosed reserved scratch. |
 | ISA metadata | rows carry operand roles and clobbers; allocator stops hardcoding `roles()`. |
 | `logic { }` islands | not part of the default. Fallback only: if a symbolic pattern cannot hit parity, structured statements are gated behind an explicit block. |
@@ -272,8 +272,8 @@ end
 - Aliases for portable no-arg ops (`WaitForInterrupt`, `MemoryBarrier`, `InvalidateTlb`,
   `LoadGdt`, `FarJump`).
 - `!` marks a constant-required param.
-- Delete `config/bld-intrinsics.dbvl`.
-- Delete `lib/std/bld/bits.bld`; use `lib/std/bits.bv` or inline expressions.
+- Delete `config/bad-verbs.dbvl`.
+- Delete the internal symbolic test fixture; use `lib/std/bits.bv` or inline expressions.
 
 ### Defns and calls
 
@@ -384,7 +384,7 @@ Calls resolve by definition kind; `call name(args)` forces a call. No `fn`.
 4. Two-way boundary: `let x = r5`, `r5 = x`, `pin r5`,
    `raw clobbers rN { … }`, `declarations`; allocator clobber wall.
 5. Engine verbs: symbolic calls inline `.bad` defns; delete
-   `config/bld-intrinsics.dbvl`; add `!` constant params.
+   `config/bad-verbs.dbvl`; add `!` constant params.
 6. Call staging/coalescing, stack profile, profiles, unused-value lint.
 7. Boot checklist QEMU gate; delete `.bld`; performance corpus; docs.
 
@@ -412,5 +412,5 @@ transitional engine-verb source.
 
 Delete this plan and revert the `.bad` parser/AST/lowering/allocator changes; restore
 the `.bld` modules from git history; restore `BackendKind::Bld`, `SourceKind::Bld`,
-`brievc bld`, the `.bld` target row, `config/bld-intrinsics.dbvl`, `lib/std/bld/`,
+`brievc bld`, the `.bld` target row, `config/bad-verbs.dbvl`, `lib/std/bld/`,
 `examples/bld/`, and the highlighter `bld` language. Historical plans remain untouched.
