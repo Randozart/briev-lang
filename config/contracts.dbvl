@@ -1,0 +1,17 @@
+// 2026-10-19 (contract tiers, plan 2026-10-19-contract-tiers-and-regularity.md):
+// the call-site contract gate's rollout stage. allow = migration stage (the
+// gate computes verdicts, rejects nothing); warn = each refuted/unproven site
+// announces on stderr; deny = the Option-1 end state (refuted and unproven
+// contracted call sites are compile errors).
+//
+// FLIP CRITERIA (the end of the stdlib contract migration, censused
+// 2026-10-19 at 90 contracted fns / 23,117 sites across the sweep):
+//   1. every stdlib contract is either leverage-carrying (callers prove it)
+//      or removed as noise (length/cast/intrinsic sign restatements);
+//   2. genuinely dynamic boundaries return Result (the ws_decode idiom);
+//   3. the full sweep + suite + harness are green under `policy: warn`
+//      with zero announcements — then flip to deny.
+// (policy: allow) — the default is INACTIVE install: no file row means
+// `allow` with no global writes, so unrelated check_source callers never
+// race a policy window in parallel tests. At flip time this line becomes:
+// policy: deny

@@ -3408,7 +3408,19 @@ impl LlvmBackend {
         // load, miscompiled every string iteration). Defns with direct
         // raw-memory intrinsics emit with #13 (full memory(readwrite));
         // pure-Briev defns keep #8's alias-analysis benefits.
-        let attr_idx = if Self::definition_touches_raw_memory(&d.body) {
+        // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the check
+        // is now TRANSITIVE (ctx.defn_touches_raw_memory). A caller with no
+        // raw intrinsic of its own can still reach one through a callee —
+        // `print_str` -> `write_all` -> `SysCall#`. Emitting #8 there told
+        // LLVM the call touches no memory except through its pointer args,
+        // and -O2 deleted every buffer-filling store before write(2): all
+        // String concats printed empty. The caller's attribute must be at
+        // least as permissive as its callees' effects.
+        let base = d.name.split('$').next().unwrap_or(&d.name);
+        let attr_idx = if self.ctx.defn_touches_raw_memory.contains(&d.name)
+            || self.ctx.defn_touches_raw_memory.contains(base)
+            || Self::definition_touches_raw_memory(&d.body)
+        {
             "#13"
         } else {
             "#8"
@@ -6966,4 +6978,12 @@ mod tests {
              where the txn folds away entirely)"
         );
     }
+}
+
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): free-function
+/// seam over the associated `LlvmBackend::definition_touches_raw_memory`, so
+/// the transitive-closure computation in `llvm::mod` can consult it without
+/// naming the backend type (private to this module).
+pub(crate) fn definition_touches_raw_memory_fn(stmts: &[Statement]) -> bool {
+    LlvmBackend::definition_touches_raw_memory(stmts)
 }

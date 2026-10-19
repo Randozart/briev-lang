@@ -1,5 +1,9 @@
 // bytes - a growable raw byte buffer for wire protocols (net stack L1).
 //
+// 2026-10-18 (fixture 1): WebSocket frame codec appended (RFC 6455 §5.2) —
+// ws_decode / ws_payload_byte / ws_encode on top of the L1 readers/writers.
+import "std/result";
+//
 // 2026-10-09 (fullstack-webapp net stack): PostgreSQL and HTTP need exact
 // byte-level framing - lengths in network byte order, NUL-terminated strings,
 // arbitrary bytes (0x00, high bytes) that a UTF-8 String cannot hold. This is
@@ -55,6 +59,20 @@ trait ByteSink {
         let byte1: Self = put_u8(byte0, (val >> 16) & 255);
         let byte2: Self = put_u8(byte1, (val >> 8) & 255);
         term put_u8(byte2, val & 255);
+    };
+
+    // put_u64_be - write a 64-bit value in BIG-ENDIAN order: eight bytes, most
+    // significant first. This is the WebSocket 64-bit frame length field (RFC
+    // 6455 caps it at 2^63-1). Built by chaining put_u8 like put_u32_be.
+    defn put_u64_be(sink: Self, val: Int) -> Self {
+        let byte0: Self = put_u8(sink,  (val >> 56) & 255);
+        let byte1: Self = put_u8(byte0, (val >> 48) & 255);
+        let byte2: Self = put_u8(byte1, (val >> 40) & 255);
+        let byte3: Self = put_u8(byte2, (val >> 32) & 255);
+        let byte4: Self = put_u8(byte3, (val >> 24) & 255);
+        let byte5: Self = put_u8(byte4, (val >> 16) & 255);
+        let byte6: Self = put_u8(byte5, (val >> 8) & 255);
+        term put_u8(byte6, val & 255);
     };
 
     // put_cstr - write a String as a NUL-terminated C string: the raw UTF-8
@@ -266,3 +284,33 @@ defn get_u32_be(buf: ByteBuf, off: Int)
 
 // (put_bytes is now a ByteBuf member / ByteSink required method, above.)
 // (put_cstr is now a ByteSink trait DEFAULT, defined once in the trait above.)
+
+// ── L1 64-bit reader (used by wire protocols) ──────────────────────────────
+// 2026-10-18 (fixture 1): get_u64_be reads a 64-bit big-endian value.
+// 2026-10-20 (PR #26 reconciliation): the RFC 6455 codec that lived here MOVED
+// to std/net/websocket.bv (one implementation; bytes.bv stays the L1 layer).
+//
+// get_u64_be - read a 64-bit big-endian value at offset off. RFC 6455 caps
+// frame lengths at 2^63-1 (the top bit must be zero), which is exactly the
+// positive range of an Int; the caller enforces the RFC top-bit rule.
+
+// get_u64_be - read a 64-bit big-endian value at offset off. RFC 6455 caps
+// frame lengths at 2^63-1 (the top bit must be zero), which is exactly the
+// positive range of an Int — the precondition keeps all 8 bytes present; the
+// RFC top-bit rule is ws_decode's business (a negative result is rejected
+// there as a protocol error).
+defn get_u64_be(buf: ByteBuf, off: Int)
+    [off >= 0 && off + 8 <= buf.len]
+    -> Int
+{
+    let b0: Int = get_u8(buf, off);
+    let b1: Int = get_u8(buf, off + 1);
+    let b2: Int = get_u8(buf, off + 2);
+    let b3: Int = get_u8(buf, off + 3);
+    let b4: Int = get_u8(buf, off + 4);
+    let b5: Int = get_u8(buf, off + 5);
+    let b6: Int = get_u8(buf, off + 6);
+    let b7: Int = get_u8(buf, off + 7);
+    term (b0 << 56) | (b1 << 48) | (b2 << 40) | (b3 << 32)
+       | (b4 << 24) | (b5 << 16) | (b6 << 8) | b7;
+};

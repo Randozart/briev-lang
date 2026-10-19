@@ -1725,13 +1725,22 @@ fn emit_syscall(
         // x86_64 Linux: inline syscall instruction
         // syscall clobbers rcx (saves RIP) and r11 (saves RFLAGS).
         // Args in rax, rdi, rsi, rdx, r10, r8, r9. Output in rax.
-        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},{{rsi}},{{rdx}},{{r10}},{{r8}},{{r9}},~{{rcx}},~{{r11}}\" ({}",
+        // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
+        // syscall MUST clobber ~{memory}. The kernel reads/writes user memory
+        // through the pointer args (write/read/mmap/...); without the clobber
+        // LLVM treats the asm as memory-transparent and DELETES the stores
+        // that fill a buffer before write(2) — every concat printed empty at
+        // -O2 because its malloc+memcpy were folded away as dead stores.
+        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},{{rsi}},{{rdx}},{{r10}},{{r8}},{{r9}},~{{rcx}},~{{r11}},~{{memory}}\" ({}",
             indent, v, all_args.join(", ")).ok();
         writeln!(out, "{}  )", indent).ok();
     } else if triple.starts_with("aarch64") && triple.contains("linux") {
         // aarch64 Linux: inline svc #0
-        // Args in x0-x5, output in x0. No clobbers beyond the ABI (kernel preserves).
-        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x0}},{{x1}},{{x2}},{{x3}},{{x4}},{{x5}}\" ({}",
+        // Args in x0-x5, output in x0. 2026-10-20 (BUGS.md concat -O2): the
+        // kernel reads/writes user memory through the pointer args, so the
+        // asm must clobber ~{memory} or LLVM deletes the buffer-filling
+        // stores before a write(2).
+        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x0}},{{x1}},{{x2}},{{x3}},{{x4}},{{x5}},~{{memory}}\" ({}",
             indent, v, all_args.join(", ")).ok();
         writeln!(out, "{}  )", indent).ok();
     } else if triple.starts_with("riscv64") {

@@ -41,6 +41,83 @@ docs/2026-08-27-session-report.md).
 
 **Fix:** after the `load i64`, `unbox_tuple_float_element` (emit_stmt.rs) reinterprets a Float-protocol element by its casting-graph LLVM width: `bitcast i64 -> double` for a 64-bit Float, `trunc i64 -> i32; bitcast i32 -> float` for a 32-bit one. It caches the native register in reg_float_cache and binds the name to it. Dispatch is protocol membership + resolved width (never the type name), so Float, Float32, Float64, Double and user aliases all take the right arm. This is the exact inverse of the adapt_to_i64 store side and mirrors the boxed Float param-slot unbox in emit_expr.rs. Regression tests test_float_tuple_destructure_unboxes_f32_elements / _f64_elements (src/backend/llvm/tests.rs), both run with a registered type universe and the float-position verifier.
 
+## `\r` escape dropped in regular string + char literals — FIXED 2026-10-19
+
+**Symptom:** a plain `"\r\n"` lexed to the FOUR literal characters `\ r \n`
+instead of the two bytes CR LF — `find("...\r\n\r\n...", "\r\n\r\n")` returned
+-1 and the HTTP/websocket net stack could not express a CRLF line terminator
+in a String. Discovered building `lib/std/net/http.bv` (recommender-app Task
+3): the incremental request parser never found the header terminator.
+
+**Controlled A/B:** `"ab\r\n\r\ncd" .^Length` printed **10** (want 8); byte 2 =
+92 (`\`), byte 3 = 114 (`r`) — the backslash and `r` survived as text. The
+`#b"..."` byte-string lane decoded `\r` correctly (via `decode_byte_escape`),
+pinning the gap to the regular-string/char lanes only.
+
+**Root cause:** `unescape_string` (src/lexer.rs) handled `\n \t \\ \" \0 \x \u`
+but its `other =>` arm passed `\r` through as a literal backslash+r; the Char
+literal handler likewise lacked a `\\r` case. `decode_byte_escape` already had
+`Some('r') => b'\r'`, so the three lanes had drifted.
+
+**Fix:** add `'r' => out.push('\r')` to `unescape_string` and
+`if inner == "\\r" { return Some('\r'); }` to the Char handler, restoring parity
+with the byte-string lane and the C escape family. Not a workaround — the
+escape belongs in the language. Regression tests: `test_string_carriage_return_escape`
+and the `\r` case in `test_char_literals` (src/lexer.rs).
+
+## `const String` global emitted as `ptr null` → segfault on read — FIXED 2026-10-19
+
+**Symptom:** reading a module-level `const Name: String = "lit";` (even a bare
+`println!("{}", Name)`) segfaulted. Found building `lib/std/net/http.bv`
+(recommender-app Task 3): `WS_MAGIC` (the RFC 6455 handshake GUID) crashed
+`ws_accept_key`.
+
+**Controlled A/B:** `client_key + "literal"` worked (len 60); `client_key +
+WS_MAGIC` (a `const String`) segfaulted. IR showed `@WS_MAGIC = constant ptr
+null` — the const was a null pointer; dereferencing its `[len][bytes]` header
+crashed.
+
+**Root cause:** the constant-global emitter (src/backend/llvm/mod.rs) had a stub
+`Expr::Quoted(_) => "null"` arm, and `collect_strings_tl` never scanned
+`TopLevel::Constant`, so a String const's literal was neither interned nor
+pointed at.
+
+**Fix:** (1) `collect_strings_tl` now scans `TopLevel::Constant` so the literal
+joins the interned `@str.N` table; (2) the emitter resolves the literal's index
+and emits `@Name = constant ptr @str.N` (dedup keyed by literal text). Matches
+how body-level string literals resolve (emit_expr.rs). The interpreter already
+handled const String correctly (it is the reference).
+
+## Dot-call to a stateful obj member left the caller stateless → undefined `%state` — FIXED 2026-10-19
+
+**Symptom:** a free `defn` that invoked a stateful obj member through a DOT
+method call (`sink.put_bytes(src, n)`, where `GrowBuf::put_bytes` reaches
+`Malloc#` via `grow_to_fit`) emitted invalid IR: the caller had no `%state`
+parameter, yet the inlined member body called `@grow_to_fit(ptr %state, ...)` —
+"use of undefined value '%state'", clang rejected it. Found building
+`lib/std/net/http.bv` (recommender-app Task 3, the flagged trait-default-state
+risk): the response writers' `put_str` helper.
+
+**Controlled A/B:** `defn app(sink: GrowBuf, ...) { term sink.put_bytes(src, n); }`
+failed; the free-function form `put_bytes(sink, src, n)` and a direct
+`grow_new(...)` call both compiled. The discriminator: the `MethodCall`
+(dot) call site vs the `Call` (free) call site.
+
+**Root cause:** `compute_defn_needs_state` (src/analysis/export_abi.rs) indexes
+obj members under type-qualified keys (`GrowBuf::put_bytes`) and the fixpoint
+computes their verdicts correctly — but the `Expr::MethodCall` arm of
+`expr_needs_state` only recursed into the receiver and args; it never consulted
+the called member's own statefulness. So a dot-called stateful member did not
+propagate `%state` to its caller. (The 2026-10-15 member-indexing fix added the
+producer; the MethodCall consumer was the missing half.)
+
+**Fix:** the `MethodCall` arm now ORs in `method_is_stateful_on_any_type`, the
+union of every indexed `Type::method` verdict (the AST carries no resolved
+receiver type at this stage; the union is the same sound over-approximation
+`type_stateful_members` already relies on — a harmless unused `%state` param at
+worst). Regression tests: `dot_call_to_stateful_member_forces_caller_state` and
+`dot_call_to_stateless_member_keeps_caller_stateless` (src/analysis/export_abi.rs).
+
 ## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
 
 **Symptom:** three sweep A/B "regressions" (queue_drain 2.51x,
@@ -10155,3 +10232,307 @@ every call-site gate") was never migrated at this site.
 passed). The two tier1 fixtures also stop using `endprogram Print#(…)`
 (print's library return is an incidental Int, not a status — print, then
 bare `endprogram;`), so the value-binding semantics stays honest.
+
+## 2026-10-18 — import splice: mixed match arms + member-body calls fell to raw-Int fallback (FIXED)
+
+**Symptom:** any cross-module import of a defn whose body (a) calls a
+same-module function from INSIDE a `Statement::Match` arm, or (b) is an
+obj/type member calling a same-module free function, failed
+`brievc check` in the IMPORTING file with the raw-Int fallback signature —
+"expected GrowBuf, found Int" (GrowBuf.put_u8 → grow_to_fit, live at HEAD
+since 2026-10-09; ANY GrowBuf importer failed) or "expected Int, found
+Result<Fr, String>" (mixed call-arm + construction-arm matches — the shape
+of every Result-returning parser; json.bv only ever verified as a main
+module, never spliced). The identical module passed `brievc check` in its
+home file. Found by the stdlib fixture campaign (fixture 1, WebSocket
+codec) — see `docs/plans/2026-10-18-stdlib-fixture-campaign.md`.
+
+**Root cause:** the import resolver's three hand-rolled transitive-closure
+walkers (`referenced_function_names`, `referenced_state_names`, and the
+toplevel coverage shared by them) had two blind spots: (1) no
+`Statement::Match` arm — calls inside match arms were dropped from the
+closure; (2) no descent into obj/type member bodies
+(`TopLevel::TypeDef`/`TopLevel::Obj` fell to `_ => {}`). The unresolved
+name then fell back to the raw-Int fallback at splice re-typecheck, and for
+mixed match arms the Int arm became the authoritative arm type, making the
+real arm "incompatible" (the misleading "expected Int" message). The
+predecessors predate `ast::visit` (2026-10-05, built to retire exactly this
+walker-drift class) and were never migrated.
+
+**Fix:** `ast::visit::walk_toplevel` (new, exhaustive over every TopLevel
+variant — the match cannot rot silently) + `walk_transaction`; the two
+closure walkers are rewritten as one-liners on it. Residual (not fixed,
+theoretical): `referenced_type_names` still walks SIGNATURES only — a type
+used ONLY inside a body's `let` annotation (never in a signature) would
+still be missed; no live case found. Pins:
+`tests/import_splice_closure.rs` (3 tests: mixed match arms, member→free
+call, real GrowBuf import).
+
+## 2026-10-18 — causality/concurrency write harvest: nested + indexed writes invisible (FIXED)
+
+**Symptom:** `brievc build benchmarks/ws_frame.bv` (stdlib fixture campaign,
+fixture 1) refused: "the reactive cycle (ws_build) has no provable
+convergence and no liveness obligation". The program HAS a completion —
+`ws_tick`'s post `[passes == 4]` — but the causal graph never saw the
+write that links the cycle: `phase = PH_REPORT;` sits inside two nested
+`when` blocks, and the write harvester only sees TOP-LEVEL bare-identifier
+assignments. `ws_build` (boot node, reads own `phase` via its pre, writes
+it top-level, post `[true]`) then formed a singleton self-loop SCC with no
+completion-declaring member → refusal. `brievc check` PASSED the same file
+(check does not run the causality gate — the known check/build divergence
+family, this time in build's favor being the stricter side).
+
+**Why every existing benchmark escaped:** the SCC only refuses when NO
+member declares completion. Recommender's cycle survives because
+`build_sparse` happens to write `phase` at TOP level (joining the SCC,
+declaring `[phase == 2]`); `async_counters` writes its counters at top
+level. A phase machine that performs its phase transition inside a
+`when` — the natural shape — is the first program to expose the
+harvester's blindness. Confirmed empirically: recommender builds at tip
+while the minimal nested-write shape refuses.
+
+**Root cause:** `collect_assigned_identifiers` (src/backend/mod.rs) walks
+only top-level `Statement::Assign` with a BARE-identifier LHS — no descent
+into Guarded/Foreach/Block/Match bodies, and `arr[i] = v` targets (Index
+LHS) are not writes at all. `collect_read_identifiers` descends Guarded
+only — no Foreach/Match arms. Both predate `ast::visit` (2026-10-05, the
+exhaustive visitor built to retire exactly this walker-drift class).
+
+**Blast radius beyond causality:** the same harvesters feed the Rule 22
+concurrency gate (`xor_overlap`) and `detect_fusable_pairs`. Missed writes
+make write-disjointness LOOK true when it is not — the async
+classification's soundness rests on a blind read of every nested/indexed
+write (e.g. ring_buffer's `data[tail % CAP] = ops` was never a write to
+the graph). No live misclassification found (the reactor is single-threaded
+today), but the proof was unsound.
+
+**Fix:** both harvesters rebuilt on `ast::visit`: new exhaustive
+`walk_assign_targets` (Assign LHS, ArrowAssign targets — bare identifiers
+AND Index bases count as writes) + read collection via the existing
+`walk_toplevel` (every statement form, match arms included). Consumers
+swapped: causality `collect_nodes`, concurrency gate, `detect_fusable_pairs`.
+Pins: causality unit tests (nested-when phase write joins the SCC; indexed
+write counts as a write; the ws_frame refusal shape now passes).
+
+## 2026-10-18 — sequential-guard fall-through: discarded tail values don't return (codec, FIXED)
+
+**Symptom:** the WebSocket codec's `ws_decode` decoded every 7-bit-length
+frame perfectly and mis-decoded EVERY 16/64-bit-length frame (the ws_frame
+benchmark: invalid = 10920 = exactly the 2/3 of frames with extended
+lengths; acc still matched C because 7-bit frames dominated the checksum
+XOR-symmetric). Found by the fixture campaign's C-reference parity gate
+after the compiler-side fixes; three hours of IR archaeology confirmed the
+COMPILER was correct at every level — call sites, branch IR, object
+layout, attributes, -O0 and -O3 alike.
+
+**Root cause — the SOURCE, not the compiler:** the decode body was a
+C-style `if / else if / else` chain written as three SEQUENTIAL guards:
+
+```briev
+when len7 <= 125 { term ...; };
+when len7 == 126 { ...no term on the last statement... };
+// "the only remaining value" — the len64 path
+```
+
+SPEC §11.2: a `when` block has no implicit complementary branch — guards
+are SEQUENTIAL STATEMENTS. The len7 path returns early (`term`), masking
+the trap; the len16 path's last statement was a match expression in
+STATEMENT position (its value discarded), so after completing it, control
+FELL THROUGH into the len64 guard, which re-ran `ws_ext_len64` at the same
+offset and overwrote the result (the wire's next 8 bytes, not the frame's
+length field). The compiler emits exactly the specified semantics: both
+guard bodies execute in order.
+
+**Lesson (general):** a branch that should EXHAUST a case must `term` on
+EVERY path — a tail expression in statement position is a discarded value,
+not a return. The per-byte interpreter would have caught this: the
+fixture's parity gate (compiled vs C) is what caught it here.
+
+**Fix:** all three length-class branches bind their match results to lets
+and `term` them explicitly. Pins: the ws_frame harness benchmark (all
+16,384 decodes validate; output byte-identical to the C reference) and the
+codec interpreter-parity test (all three length forms, truncation,
+encode/decode round-trip).
+
+## 2026-10-18 — beginprogram goal-reachability: direct stores unprovable; two gates conflicted (FIXED)
+
+**Symptom:** after the causality harvester fix (nested writes now visible),
+a single-node boot program that mutates a global it reads became
+UNCOMPILABLE — the two entry gates made contradictory demands. Causality
+(now correctly seeing the self-loop) refused `[true]` posts ("no provable
+convergence"); the beginprogram goal gate rejected every honest completion:
+`[phase == 1]` was "not provably reachable" even though the body contains
+the unconditional `phase = PH_BUILD;`, and `[total > 0]` failed because the
+counter advance (`total = total + ...`) sat inside a `foreach`.
+
+**Root cause (typechecker/mod.rs, `check_goal_reachable`):** the
+reachability proofs only recognized (a) counter INCREMENTS/DECREMENTS of
+flat `var = var ± literal` shape at TOP-LEVEL statements, and (b) untouched
+variables with initializer values. A direct store of the goal's value —
+including through a named constant (`phase = PH_BUILD;` proving
+`[phase == 1]`) — proved nothing, and nested stores were invisible
+(same hand-rolled-walker drift as the harvester bug). With causality
+demanding a completion post and the beginprogram gate rejecting all
+provable ones, the gates jointly refused valid programs.
+
+**Fix:** the body scans (`body_stores_flag`, `body_assigns_var`,
+`body_advances_counter`) rebuilt on the exhaustive assign-pair visitor
+(`ast::visit::walk_assign_pairs` — nested stores count); new
+`body_stores_goal_value` proves `[v == N]` from a direct store of a
+decimal literal or a literal-valued constant (a value table now folds
+top-level `const` decimals alongside initializer literals; both the
+beginprogram and bootstrap checks share it). Residual: add-chain counter
+advances with non-literal deltas (`total = total + f(x) + y`) are still
+conservatively rejected — restructure to a flat counted variable.
+
+## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (OPEN)
+
+**Symptom:** in the interpreter, inside a spliced program, a bitwise-or
+CHAIN over non-literal operand EXPRESSIONS evaluates to a stale value —
+specifically `(g5 << 16) | (g6 << 8)` with g5=1, g6=17 (both verified by
+immediately-preceding reads AND standalone shifts: `g5 << 16` = 65536 ✓,
+`g6 << 8` = 4352 ✓) evaluated to **112** — the value of an UNRELATED
+variable (`g7`) from the same scope. Operand order irrelevant; let-bound
+and argument-position alike; literal operands (`65536 | 4352`) evaluate
+correctly (69888) in the SAME scope; the identical expression shape over
+literal-initialized variables evaluates correctly in an UNSPLICED program.
+
+**Repro:** `tests/ws_frame_codec_parity.rs` (the instrumented scenario64
+prints; the shift-or probe test shows the working controls). Trigger
+conditions appear to require: import splice + non-literal operand
+expressions + a `|` chain (single shift works; literals work).
+
+**Impact:** `get_u64_be` (an 8-term shift-or chain over `get_u8` results)
+mis-evaluates in the interpreter, so the codec's 64-bit-length decode path
+cannot be interpreter-verified until this is fixed. The COMPILED backend
+evaluates the same code correctly (the ws_frame benchmark is byte-identical
+to the C reference across all 16,384 decodes, 64-bit frames included) — so
+on this expression the two engines DISAGREE, which per the house rule means
+one of them is wrong and the discrepancy is the bug.
+
+**ROOT CAUSE (2026-10-19, FIXED):** the B1 string-bitwise default in the
+interpreter's binary-op evaluator dereferenced INT atoms as heap strings
+whenever the integer VALUE collided with a live heap address —
+`string_bytes` probes `heap.read(addr, 8)` for any positive Int. Shift-or
+chains produce large integers; large integers land inside live allocations
+(the codec test's 140KB corpus buffer); the byte-wise string path then
+mangles them into values that LOOK like stale scope variables (the observed
+112 was heap-adjacent data, not a scope bug — the splice was never the
+trigger; it merely brought large integers and big allocations together).
+
+**Fix:** the bitwise ops disambiguate by representation — two Int atoms are
+INTEGERS (the backend emits integer ops; Rule 5 parity); the B1 string
+default applies only to genuine `Value::Bits` byte strings. Regression pin:
+the len64 decode scenario in `tests/ws_frame_codec_parity.rs` (was 27, now
+31 = +len64).
+
+**Residual (separate repro, OPEN):** the ENCODE path's GrowBuf growth
+still mis-evaluates in the interpreter — encoding 9,060 bytes produced
+`g4.len` = 2,371,930 (the cap check `len + needed <= cap` appears to grow
+every put). Not a BitOr symptom (that path is fixed); needs its own
+minimal repro (grow_new(8) + N puts → inspect len/cap per put). The
+round-trip parity scenario stays deferred until this lands.
+
+**Amendment (same day):** the symptom family is wider than bitwise-or —
+the encode-path probe shows `GrowBuf` growth mis-evaluating in the
+interpreter too (encoding 2,060 bytes produced `g4.len` = 2,245,685).
+Common thread: compound arithmetic/logic expressions over non-literal
+operands in spliced programs. The ws_frame_codec_parity test scopes to the
+decode scenarios (len7/len16/truncation/protocol — all PASS) and carries
+ready-made deferred scenarios (len64 decode, encode round-trip) to restore
+when the root cause is fixed.
+
+## 2026-10-20 — string concat miscompiles at -O2/-O3 (allocation folded away, prints empty)
+
+**Symptom:** any `a + b` String concat compiled at the project's own pipeline
+flags (`-O2`/`-O3`, and with `-flto -ffast-math`) prints an EMPTY string.
+`-O0` is correct. Minimal repro: `let b: String = a + a; print_str(b);` with
+`a = get_env!("PATH")` → `-O0` prints 1136 bytes, `-O2` prints 0. Literal +
+literal (`"ab" + "cd"`) reproduces identically, so it is not a const-only
+path. **Pre-existing**: verified at `ba7aed3c` (before the 2026-10-20 PR
+merges) in a clean worktree, so it is NOT a regression from #23/#24/#25.
+
+**Mechanism (narrowed):** in the optimized `txn_entry`, the concat's
+`malloc` + both `memcpy` calls are DELETED, and the consumer `print_str`
+reads a byte directly from the `"|"` literal instead — LLVM concluded the
+concat result aliases a constant. The generated concat uses
+`and (ptrtoint p), -4` → `inttoptr` as the string-header address (the
+retired tag-mask). That ptrtoint/inttoptr round-trip strips pointer
+provenance; LLVM's alias/escape analysis then treats the malloc'd result as
+non-escaping and folds the allocation. `-fno-strict-aliasing` and removing
+the conditional free do NOT fix it; removing the mask alone does not either,
+so the whole ptrtoint-mask-inttoptr idiom is implicated.
+
+**Impact:** HIGH — every string concat in every program is wrong under the
+benchmark pipeline. The benchmark suite did not catch it because its
+correctness gate compares Briev vs C stdout, and the concat-heavy programs
+either do not exercise concat under these flags or their goldens predate the
+regression window. Fixture 1's codec does not concat, which is why ws_frame
+passed.
+
+**ROOT CAUSE (2026-10-20, FIXED):** defn memory attributes were computed
+from the defn's OWN body only. `print_str` has no raw intrinsic itself — it
+calls `write_all`, which contains the `SysCall#` asm. So `print_str` was
+emitted with `#8` = `memory(argmem: readwrite)` ("only accesses memory
+through pointer arguments"), a LIE: it writes `@stdout_buf`/`@stdout_fill`
+and the kernel reads the pointer passed to write(2). Given the lie,
+InstCombine (pinned by `opt-bisect-limit`: pass 130, instcombine on `main`)
+proved the call had no effect outside its pointer arg, found that arg dead,
+and deleted `print_str(malloc)` together with the malloc + both memcpys —
+the buffer-filling stores were "dead" before the syscall read them. That is
+exactly the observed `-O2` empty output; `-O0` cannot do this analysis.
+
+The narrower hypothesis first suspected (the ptrtoint/and-4/inttoptr tag
+mask, and the syscall asm missing a `~{memory}` clobber) was tested and is
+NECESSARY but not the cause: adding `~{memory}` to every syscall asm was
+kept (it is correct — the kernel reads/writes user memory), but the empty
+output persisted until the attribute lie was fixed.
+
+**Fix:** (1) `ctx.defn_touches_raw_memory` — a TRANSITIVE closure over the
+call graph (seed: defns with a direct Load#/Store#/Alloc#/Free#/Copy#/
+Fill#/Volatile*/SysCall#; close over calls; the existing
+collect_called_names_stmt was extended to cover Match/Foreach/Check/Gate/
+EndProgram/Rollback/ArrowAssign/InlineDefn so the closure cannot
+under-approximate). Emitted attrs use it: any defn reaching raw memory
+through a callee is `#13` (full `memory(readwrite)`). (2) `~{memory}` added
+to the x86_64/aarch64 syscall asm (and the brk asm) — the rv64 path already
+had it.
+
+**Pins:** `string_concat_at_o2_is_correct` (un-ignored) +
+`tests/tier1/string_concat_probe.bv`, run through the harness flags
+(-O3 -flto -ffast-math). Full harness 79/79 MATCH, zero MISMATCH;
+3185 lib tests green; determinism clean.
+
+## 2026-10-20 — interpreter: callable Briev txns are not executed (OPEN)
+
+**Symptom:** a `txn` invoked as a FUNCTION (callable txn) does not execute in
+the interpreter; the calling node reaches equilibrium without `endprogram`.
+Minimal: `txn b64_loop(...) [off < buf.len][off >= buf.len] -> String { ... }`
+called from `defn base64_encode(...)` — the node that calls base64_encode
+never completes. Only `txn` named `run` has a legacy call path
+(`eval.rs`: `TopLevel::Transaction(t) if t.name == "run"`).
+
+**Impact:** the reference interpreter cannot verify any stdlib function that
+delegates to a callable txn (PR #26's `base64_encode` → `b64_loop`). The
+COMPILED backend executes it correctly (canonical Base64 vectors pass through
+the pipeline — tests/tier1/net_stack_helpers.bv). Rule-5 divergence.
+
+**Next step:** teach the interpreter's call resolution to execute a
+body-carrying `Transaction` like a `defn` (bind params, run body, return
+`term`), matching the backend's callable-txn support.
+
+## 2026-10-20 — interpreter: raw-address→String door unsupported (OPEN)
+
+**Symptom:** `(addr as Data) as String` (constructing a Briev String at a raw
+heap address with a `[len][bytes]` header) yields a non-Int, non-String
+value in the interpreter — a probe reading `s .^Length` produced None. The
+reverse direction (`String as Data as Int`, bytes at +8) works.
+
+**Impact:** blocks interpreter verification of every heap-String constructor:
+PR #26's websocket payload materialization (`ws_message`), http's
+`buf_slice_string`, and base64's read path all use the door. Compiled output
+is correct (see the net-stack golden). Rule-5 divergence.
+
+**Next step:** implement Int→Data→String in the interpreter as a view: the
+Data value at `addr` reads a `[len: i64][bytes]` header and yields the String
+bytes, matching the backend's representation.

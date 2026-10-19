@@ -1,0 +1,326 @@
+// sha1 - a small pure SHA-1 digest (net stack helper for the websocket upgrade).
+//
+// 2026-10-18 (recommender-app net stack, Task 3.3): the RFC 6455 websocket
+// handshake requires Sec-WebSocket-Accept = base64(SHA1(key + magic-GUID)).
+// SHA-1 is cryptographically dead for signatures, but RFC 6455 pins it as the
+// handshake's fixed, NON-secret transform (it only proves the server parsed
+// the Upgrade request - there is no secret here), so a correct SHA-1 is exactly
+// what the protocol asks for. This is that SHA-1: pure Briev over raw bytes,
+// no FFI, built on the L1 ByteBuf.
+//
+// THE 32-BIT PROBLEM. SHA-1 is defined on 32-bit words with ADDITION MODULO
+// 2^32 and 32-bit left rotation. Briev's Int is 64-bit, so every intermediate
+// that SHA-1 treats as a 32-bit word must be masked back to 32 bits after each
+// add/rotate - otherwise the high bits leak and the digest is wrong. We mask
+// with MASK32 (0xFFFFFFFF) at every word-producing step and rotate with a
+// dedicated 32-bit rotl32 (NOT bits.bv's 64-bit rotate_left).
+
+import "std/net/bytes.bv";
+
+// MASK32 - keep only the low 32 bits (= value mod 2^32). Applied after every
+// SHA-1 add/rotate so a 64-bit Briev Int behaves as the spec's 32-bit word.
+const MASK32: Int = 4294967295;      // 0xFFFFFFFF
+
+// SHA-1 initial hash state h0..h4 (the fixed IV from FIPS 180-4 §5.3.1).
+const SHA1_H0: Int = 1732584193;     // 0x67452301
+const SHA1_H1: Int = 4023233417;     // 0xEFCDAB89
+const SHA1_H2: Int = 2562383102;     // 0x98BADCFE
+const SHA1_H3: Int = 271733878;      // 0x10325476
+const SHA1_H4: Int = 3285377520;     // 0xC3D2E1F0
+
+// The four per-round constants K (one per 20-round quarter, FIPS 180-4 §4.2.1).
+const SHA1_K0: Int = 1518500249;     // 0x5A827999  rounds  0..19
+const SHA1_K1: Int = 1859775393;     // 0x6ED9EBA1  rounds 20..39
+const SHA1_K2: Int = 2400959708;     // 0x8F1BBCDC  rounds 40..59
+const SHA1_K3: Int = 3395469782;     // 0xCA62C1D6  rounds 60..79
+
+// rotl32 - rotate a 32-bit value left by n bits (0 <= n < 32). The low 32 bits
+// shift up (masked back to 32), the bits that fall off the top (x >> (32-n))
+// wrap into the bottom. This is the SHA-1 rotate; it is DISTINCT from
+// bits.bv's 64-bit rotate_left, which would wrap across 64 bits and corrupt
+// the word. Masking `x` first makes the function correct for any 64-bit input.
+defn rotl32(x: Int, n: Int) [n >= 0 && n < 32][term >= 0 && term <= MASK32] -> Int {
+    let lo: Int = x & MASK32;
+    term ((lo << n) | (lo >> (32 - n))) & MASK32;
+};
+
+// Sha1State - the five-word running hash (h0..h4) threaded through the block
+// compression. A fresh digest starts at the FIPS IV; each 64-byte block folds
+// into a new state; the final state's five words concatenated big-endian are
+// the 20-byte digest.
+obj Sha1State {
+    h0: Int;
+    h1: Int;
+    h2: Int;
+    h3: Int;
+    h4: Int;
+};
+
+// sha1_init - the initial state (the fixed IV).
+defn sha1_init() -> Sha1State {
+    term Sha1State { h0: SHA1_H0, h1: SHA1_H1, h2: SHA1_H2, h3: SHA1_H3, h4: SHA1_H4 };
+};
+
+// ── Padded-message construction ────────────────────────────────────────────
+//
+// SHA-1 pads the message to a multiple of 64 bytes: append one 0x80 byte, then
+// zero bytes, then the ORIGINAL message bit-length as a 64-bit big-endian
+// integer, chosen so the total is a multiple of 64. We build the whole padded
+// message into one fixed ByteBuf (the length is known up front from the input
+// length), then compress it block by block. Building it once in a ByteBuf
+// keeps all the byte-poking on the L1 writers (DRY) and gives stable offsets.
+
+// sha1_padded_len - the padded length in bytes for a message of `msg_len`
+// bytes: msg_len + 1 (the 0x80) rounded up so that 8 more bytes (the length
+// field) land on a 64-byte boundary. The +8 before the mod accounts for the
+// trailing 64-bit length that must also fit in the final block.
+defn sha1_padded_len(msg_len: Int) [msg_len >= 0][term >= msg_len + 9 && term % 64 == 0] -> Int {
+    // After the 0x80 we need room for the 8-byte length; pad with zeros until
+    // (len % 64 == 56) so the 8-byte length completes the block to 64.
+    let with_one: Int = msg_len + 1;
+    let rem: Int = with_one % 64;
+    // zeros needed to reach the 56-byte mark of a block (then +8 length = 64).
+    let zeros: Int = (56 - rem + 64) % 64;
+    term with_one + zeros + 8;
+};
+
+// sha1_build_padded - copy the `msg_len` source bytes from `src_addr`, append
+// the 0x80 marker, zero-pad, and write the 64-bit big-endian BIT length in the
+// last 8 bytes. Returns a fixed ByteBuf whose len == cap == padded length, so
+// its bytes are exactly the blocks to compress. The bit length is msg_len * 8;
+// we split it into a high and low 32-bit half and write each big-endian (the
+// L1 writer takes a 32-bit value, and for our message sizes the high half is
+// almost always zero, but we compute it honestly).
+defn sha1_build_padded(src_addr: Int, msg_len: Int)
+    [msg_len >= 0]
+    [term.len == term.cap && term.len % 64 == 0]
+    -> ByteBuf
+{
+    let total: Int = sha1_padded_len(msg_len);
+    let bits: Int = msg_len * 8;
+    let hi: Int = (bits >> 32) & MASK32;
+    let lo: Int = bits & MASK32;
+    // message bytes, then 0x80, then zeros up to the last 8 bytes, then the
+    // 64-bit big-endian bit length (hi word then lo word).
+    let zeros: Int = total - msg_len - 1 - 8;
+    let after_one: ByteBuf = buf_new(total)
+        .put_bytes(src_addr, msg_len)
+        .put_u8(128);
+    let padded: ByteBuf = sha1_zero_fill(after_one, zeros);
+    term padded
+        .put_u32_be(hi)
+        .put_u32_be(lo);
+};
+
+// sha1_zero_fill - append `count` zero bytes via the L1 put_u8 writer (tail
+// recursion). A local helper so sha1.bv depends only on bytes.bv (L1), never
+// on socket.bv's pad_zeros - SHA-1 is a pure helper and must not invert the
+// layering by reaching up into a sibling L2 module.
+defn sha1_zero_fill(buf: ByteBuf, count: Int)
+    [count >= 0 && buf.len + count <= buf.cap]
+    [term.len == buf.len + count && term.cap == buf.cap]
+    -> ByteBuf
+{
+    when count == 0 {
+        term buf;
+    };
+    term sha1_zero_fill(buf.put_u8(0), count - 1);
+};
+
+// ── Per-block compression ───────────────────────────────────────────────────
+//
+// For each 64-byte block: expand the 16 big-endian words into an 80-word
+// message schedule w[0..79] (w[t] = rotl32(w[t-3]^w[t-8]^w[t-14]^w[t-16], 1)
+// for t>=16), then run 80 rounds mixing a..e, and add the block's result into
+// the running state. We hold w[] in a scratch 320-byte ByteBuf (80 words x 4
+// bytes) addressed directly with Load#/Store# at a 4-byte stride - a mutable
+// random-access array, which the functional obj state cannot give us.
+
+// sched_get / sched_set - read/write word t of the 80-word schedule held in a
+// 320-byte scratch buffer at native byte order (offset t*4). These are the
+// mutable-array accessors the schedule expansion needs.
+defn sched_get(sched: ByteBuf, t: Int) [t >= 0 && t < 80][term >= 0 && term <= MASK32] -> Int {
+    term Load#(sched.ptr + t * 4, 4) & MASK32;
+};
+
+defn sched_set(sched: ByteBuf, t: Int, val: Int) [t >= 0 && t < 80][true] -> Void {
+    Store#(sched.ptr + t * 4, val & MASK32, 4);
+    term;
+};
+
+// sha1_load_block - fill schedule words 0..15 from the 16 big-endian 32-bit
+// words at byte offset `base` in the padded message (each word is 4 bytes,
+// most significant first). Tail recursion over the 16 words. Returns the final
+// index (16) so the base case is `term <value>` — an unambiguous early return,
+// NOT a bare `term;` convergence checkpoint that falls through to the body.
+defn sha1_load_block(msg: ByteBuf, sched: ByteBuf, base: Int, t: Int)
+    [t >= 0 && t <= 16][term == 16]
+    -> Int
+{
+    when t == 16 {
+        term 16;
+    };
+    let off: Int = base + t * 4;
+    let b0: Int = Load#(msg.ptr + off, 1);
+    let b1: Int = Load#(msg.ptr + off + 1, 1);
+    let b2: Int = Load#(msg.ptr + off + 2, 1);
+    let b3: Int = Load#(msg.ptr + off + 3, 1);
+    let word: Int = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+    sched_set(sched, t, word);
+    term sha1_load_block(msg, sched, base, t + 1);
+};
+
+// sha1_expand - compute schedule words 16..79 from the earlier words:
+// w[t] = rotl32(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1). Tail recursion;
+// returns the final index (80) so the base case is an explicit early return.
+defn sha1_expand(sched: ByteBuf, t: Int) [t >= 16 && t <= 80][term == 80] -> Int {
+    when t == 80 {
+        term 80;
+    };
+    let mixed: Int = sched_get(sched, t - 3)
+        ^ sched_get(sched, t - 8)
+        ^ sched_get(sched, t - 14)
+        ^ sched_get(sched, t - 16);
+    sched_set(sched, t, rotl32(mixed, 1));
+    term sha1_expand(sched, t + 1);
+};
+
+// sha1_f - the per-round nonlinear function f(t, b, c, d), selected by which
+// 20-round quarter t falls in (FIPS 180-4 §4.1.1):
+//   0..19 : (b AND c) OR ((NOT b) AND d)        - Ch
+//  20..39 : b XOR c XOR d                        - Parity
+//  40..59 : (b AND c) OR (b AND d) OR (c AND d)  - Maj
+//  60..79 : b XOR c XOR d                        - Parity
+// All masked to 32 bits (NOT b is ~b & MASK32, since Briev's ~ is 64-bit).
+defn sha1_f(t: Int, b: Int, c: Int, d: Int) [t >= 0 && t < 80][term >= 0 && term <= MASK32] -> Int {
+    when t < 20 {
+        term ((b & c) | ((b ^ MASK32) & d)) & MASK32;
+    };
+    when t < 40 {
+        term (b ^ c ^ d) & MASK32;
+    };
+    when t < 60 {
+        term ((b & c) | (b & d) | (c & d)) & MASK32;
+    };
+    term (b ^ c ^ d) & MASK32;
+};
+
+// sha1_k - the per-round constant for round t (the quarter's K).
+defn sha1_k(t: Int) [t >= 0 && t < 80][true] -> Int {
+    when t < 20 {
+        term SHA1_K0;
+    };
+    when t < 40 {
+        term SHA1_K1;
+    };
+    when t < 60 {
+        term SHA1_K2;
+    };
+    term SHA1_K3;
+};
+
+// Sha1Work - the five working variables a..e threaded through the 80 rounds of
+// one block. Separate from Sha1State so the round loop reads cleanly; the
+// block folds Sha1Work back into Sha1State at the end.
+obj Sha1Work {
+    a: Int;
+    b: Int;
+    c: Int;
+    d: Int;
+    e: Int;
+};
+
+// sha1_round - one of the 80 rounds (FIPS 180-4 §6.1.2 step 3):
+//   temp = rotl32(a,5) + f(t,b,c,d) + e + K(t) + w[t]   (mod 2^32)
+//   e=d; d=c; c=rotl32(b,30); b=a; a=temp
+// Every arithmetic result is masked to 32 bits.
+defn sha1_round(work: Sha1Work, sched: ByteBuf, t: Int) [t >= 0 && t < 80][true] -> Sha1Work {
+    let temp: Int = (rotl32(work.a, 5)
+        + sha1_f(t, work.b, work.c, work.d)
+        + work.e
+        + sha1_k(t)
+        + sched_get(sched, t)) & MASK32;
+    term Sha1Work {
+        a: temp,
+        b: work.a,
+        c: rotl32(work.b, 30),
+        d: work.c,
+        e: work.d
+    };
+};
+
+// sha1_rounds - run rounds t..79 over the working variables (tail recursion).
+defn sha1_rounds(work: Sha1Work, sched: ByteBuf, t: Int) [t >= 0 && t <= 80][true] -> Sha1Work {
+    when t == 80 {
+        term work;
+    };
+    term sha1_rounds(sha1_round(work, sched, t), sched, t + 1);
+};
+
+// sha1_compress_block - fold the 64-byte block at offset `base` into the state:
+// load + expand the schedule, run the 80 rounds from the current state, then
+// add the five working variables back into the state (mod 2^32). Returns the
+// new Sha1State. The scratch schedule buffer is allocated and freed here.
+defn sha1_compress_block(state: Sha1State, msg: ByteBuf, base: Int)
+    [base >= 0][true]
+    -> Sha1State
+{
+    let sched: ByteBuf = buf_new(320);
+    let loaded: Int = sha1_load_block(msg, sched, base, 0);
+    let expanded: Int = sha1_expand(sched, 16);
+    let start: Sha1Work = Sha1Work {
+        a: state.h0, b: state.h1, c: state.h2, d: state.h3, e: state.h4
+    };
+    let done: Sha1Work = sha1_rounds(start, sched, 0);
+    buf_free(sched);
+    term Sha1State {
+        h0: (state.h0 + done.a) & MASK32,
+        h1: (state.h1 + done.b) & MASK32,
+        h2: (state.h2 + done.c) & MASK32,
+        h3: (state.h3 + done.d) & MASK32,
+        h4: (state.h4 + done.e) & MASK32
+    };
+};
+
+// sha1_compress_all - compress every 64-byte block of the padded message in
+// order (tail recursion over block offsets 0, 64, 128, ...).
+defn sha1_compress_all(state: Sha1State, msg: ByteBuf, base: Int)
+    [base >= 0][true]
+    -> Sha1State
+{
+    when base >= msg.len {
+        term state;
+    };
+    term sha1_compress_all(sha1_compress_block(state, msg, base), msg, base + 64);
+};
+
+// ── Public digest ────────────────────────────────────────────────────────────
+
+// sha1_digest - the 20-byte SHA-1 digest of `msg_len` bytes at `src_addr`,
+// written big-endian (h0..h4, most significant byte first) into a fresh 20-byte
+// ByteBuf that the caller owns and frees. This is the whole algorithm: build
+// the padded message, compress every block, serialize the final state.
+defn sha1_digest(src_addr: Int, msg_len: Int)
+    [msg_len >= 0]
+    [term.len == 20 && term.cap >= 20]
+    -> ByteBuf
+{
+    let padded: ByteBuf = sha1_build_padded(src_addr, msg_len);
+    let state: Sha1State = sha1_compress_all(sha1_init(), padded, 0);
+    buf_free(padded);
+    term buf_new(20)
+        .put_u32_be(state.h0)
+        .put_u32_be(state.h1)
+        .put_u32_be(state.h2)
+        .put_u32_be(state.h3)
+        .put_u32_be(state.h4);
+};
+
+// sha1_digest_str - convenience over sha1_digest for a String input: the bytes
+// start 8 past the String's [len] header (the bytes.bv put_cstr convention), the
+// count is .^Length. Returns the owned 20-byte digest ByteBuf.
+defn sha1_digest_str(text: String) [true][term.len == 20 && term.cap >= 20] -> ByteBuf {
+    let count: Int = text .^Length;
+    let data_addr: Int = ((text as Data) as Int) + 8;
+    term sha1_digest(data_addr, count);
+};

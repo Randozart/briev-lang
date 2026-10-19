@@ -1259,21 +1259,48 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         } else {
                             writeln!(out, "{}{} = add i64 {}, 0", indent, offset, gep_idx).ok();
                         }
-                        writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, gep, ptr, offset).ok();
-                        // 2026-08-01 (E): `vol let p` — stores through the
-                        // local (`p[i] = v`) emit `store volatile` (MMIO
-                        // register arrays).
+                        // 2026-10-18 (fixture campaign, BUGS.md): pointee-aware
+                        // store. For SCALAR pointees the GEP element type and
+                        // the stored width come from the pointer's POINTEE
+                        // (mirroring the read side's 2026-08-01 D3 behavior) —
+                        // the hardcoded i64 form emitted INVALID IR for any
+                        // byte-pointee store (`store i64 %v` with %v: i8 —
+                        // ws_frame's Ptr<Bit<8>> corpus) and an 8-byte stride
+                        // for every narrower element. Collection/struct pointees
+                        // (ptr / aggregate llvm types) KEEP the i64 carrier —
+                        // their slots are i64 handles by design (2026-08-04:
+                        // dyn/String elements ptrtoint into list buffers), so
+                        // the legacy adapt_to_i64 path stays for them.
+                        let elem_llvm = match &obj_reg.ty {
+                            Type::Ptr(inner) => backend.llvm_type(inner),
+                            _ => "i64".to_string(),
+                        };
+                        let scalar_pointee = matches!(
+                            elem_llvm.as_str(),
+                            "i8" | "i16" | "i32" | "i64" | "float" | "double"
+                        );
                         let vol_obj = match obj.as_ref() {
                             Expr::Identifier(n) => backend.fun.volatile_locals.contains(n),
                             _ => false,
                         };
-                        // 2026-08-04 (compiler-in-Briev): collection slots are
-                        // i64 — a String element (a ptr) must be ptrtoint'd
-                        // before the store (`inner.data[len] = val`), or
-                        // `store i64 <ptr>, ptr` is invalid IR.
-                        let e64 = backend.adapt_to_i64(out, indent, &val);
-                        writeln!(out, "{}store {}i64 {}, ptr {}", indent,
-                            if vol_obj { "volatile " } else { "" }, e64, gep).ok();
+                        let vol_prefix = if vol_obj { "volatile " } else { "" };
+                        if scalar_pointee {
+                            writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, elem_llvm, ptr, offset).ok();
+                            let universe = backend.ctx.type_universe.clone();
+                            let store_val = backend.ensure_typed_value(
+                                out,
+                                indent,
+                                &elem_llvm,
+                                &val.name,
+                                Some(val.ty.clone()),
+                                universe.as_ref(),
+                            );
+                            writeln!(out, "{}store {}{} {}, ptr {}", indent, vol_prefix, elem_llvm, store_val, gep).ok();
+                        } else {
+                            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, gep, ptr, offset).ok();
+                            let e64 = backend.adapt_to_i64(out, indent, &val);
+                            writeln!(out, "{}store {}i64 {}, ptr {}", indent, vol_prefix, e64, gep).ok();
+                        }
                     }
                 }
                 // 2026-08-01 (D3): field store — `obj.name = val`. The receiver
@@ -2517,10 +2544,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
         // 2026-08-23 (SPEC §10.x): check — runtime assertion. Branches to
         // trap/rollback if the condition is false; falls through otherwise.
         Statement::Check(cond) => {
+            // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
+            // regularity.md): check is STATIC-ONLY — the typechecker proves
+            // it or rejects the program; a static-only check has no runtime
+            // meaning, so this no-op is the CORRECT lowering (BUGS.md
+            // finding #1 closes as by-design). The condition still flows
+            // through the emitter so any emission side effects of its
+            // subexpressions stay ordered; the register result is discarded.
             let cond_reg = backend.emit_expr(out, cond, indent);
             let cond_i1 = guard_cond_i1(backend, out, indent, &cond_reg);
-            // For now: no-op on success. Phase C: branch to a rollback
-            // block for unprovable loops.
             let noop = backend.fun.gen_reg();
             writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
             TypedRegister { name: noop, ty: Type::void() }

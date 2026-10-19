@@ -117,6 +117,36 @@ pub struct ImportResolver {
     pub plugin_factory: Option<Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>>>,
 }
 
+/// 2026-10-20 (PR #26 reconciliation — trait defaults cross-module):
+/// structural conformance means NOTHING references the trait by name
+/// (`ByteBuf`/`GrowBuf` conform to `ByteSink` without naming it), so the
+/// reference closure dropped the trait from a named-import splice and the
+/// typechecker could not resolve its DEFAULT members in the importer
+/// (`put_u16_be` has no member). Keep every trait declaration from a module
+/// origin that contributed a kept item: a module's trait surface is part of
+/// its public API, and unused traits emit no code. Split out of
+/// `filter_items_with_origins` (Praetor complexity).
+fn retain_module_traits(
+    items: &[TopLevel],
+    origins: &[Option<u32>],
+    keep: &mut std::collections::HashSet<String>,
+) {
+    let kept_origins: std::collections::HashSet<u32> = items
+        .iter()
+        .zip(origins)
+        .filter(|(it, _)| item_name(it).map_or(false, |n| keep.contains(n)))
+        .filter_map(|(_, o)| *o)
+        .collect();
+    for (item, origin) in items.iter().zip(origins) {
+        if let TopLevel::Trait(t) = item {
+            let same_module = origin.map_or(true, |o| kept_origins.contains(&o));
+            if same_module {
+                keep.insert(t.name.clone());
+            }
+        }
+    }
+}
+
 /// The name of a top-level item, if it carries one.
 fn item_name(item: &TopLevel) -> Option<&str> {
     match item {
@@ -274,183 +304,33 @@ fn referenced_type_names(item: &TopLevel) -> Vec<String> {
 /// write to state whose type is already declared by the `let`, so pulling it
 /// in is harmless.
 fn referenced_state_names(item: &TopLevel) -> Vec<String> {
-    fn expr_vars(e: &crate::ast::Expr, acc: &mut Vec<String>) {
-        acc.extend(e.collect_vars());
-    }
-    fn stmt_vars(s: &crate::ast::Statement, acc: &mut Vec<String>) {
-        match s {
-            crate::ast::Statement::Expression(e) => expr_vars(e, acc),
-            crate::ast::Statement::Let { expr: Some(e), .. } => expr_vars(e, acc),
-            crate::ast::Statement::Let { .. } => {}
-            crate::ast::Statement::Assign(lhs, rhs) => {
-                expr_vars(lhs, acc);
-                expr_vars(rhs, acc);
-            }
-            crate::ast::Statement::ArrowAssign { value, .. } => expr_vars(value, acc),
-            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => expr_vars(e, acc),
-            crate::ast::Statement::EndProgram(Some(e)) => expr_vars(e, acc),
-            crate::ast::Statement::Guarded(cond, b) => {
-                expr_vars(cond, acc);
-                for s in b {
-                    stmt_vars(s, acc);
-                }
-            }
-            crate::ast::Statement::Block(b) => {
-                for s in b {
-                    stmt_vars(s, acc);
-                }
-            }
-            crate::ast::Statement::Foreach { list, body, .. } => {
-                expr_vars(list, acc);
-                for s in body {
-                    stmt_vars(s, acc);
-                }
-            }
-            _ => {}
-        }
-    }
+    // 2026-10-18 (fixture campaign): rewritten on the one exhaustive AST
+    // visitor (ast::visit, Rule 17) — same drift the function-name walker
+    // had: no `Statement::Match` arms, no obj/type member bodies.
     let mut out = Vec::new();
-    match item {
-        TopLevel::Definition(d) => {
-            // 2026-10-15 (contract closure): contracts are emitted code (the
-            // callable-txn gate) — their identifier reads belong in the state
-            // closure, mirroring referenced_function_names.
-            expr_vars(&d.contract.pre_condition, &mut out);
-            expr_vars(&d.contract.post_condition, &mut out);
-            if let Some(w) = &d.contract.watchdog {
-                expr_vars(&w.condition, &mut out);
-            }
-            for s in &d.body {
-                stmt_vars(s, &mut out);
-            }
-        }
-        TopLevel::Transaction(t) => {
-            expr_vars(&t.contract.pre_condition, &mut out);
-            expr_vars(&t.contract.post_condition, &mut out);
-            if let Some(w) = &t.contract.watchdog {
-                expr_vars(&w.condition, &mut out);
-            }
-            for s in &t.body {
-                stmt_vars(s, &mut out);
-            }
-        }
-        _ => {}
-    }
+    crate::ast::visit::walk_toplevel(item, &mut |e| {
+        out.extend(e.collect_vars());
+    });
     out
 }
 
 fn referenced_function_names(item: &TopLevel) -> Vec<String> {
-    fn expr_calls(e: &crate::ast::Expr, acc: &mut Vec<String>) {
-        match e {
-            crate::ast::Expr::Call(name, args, _) => {
-                acc.push(name.clone());
-                for a in args {
-                    expr_calls(a, acc);
-                }
-            }
-            crate::ast::Expr::MethodCall(recv, _, args, _, _) => {
-                expr_calls(recv, acc);
-                for a in args {
-                    expr_calls(a, acc);
-                }
-            }
-            crate::ast::Expr::BinaryOp(_, l, r) => {
-                expr_calls(l, acc);
-                expr_calls(r, acc);
-            }
-            crate::ast::Expr::UnaryOp(_, inner) => expr_calls(inner, acc),
-            crate::ast::Expr::Index(base, i) => {
-                expr_calls(base, acc);
-                expr_calls(i, acc);
-            }
-            crate::ast::Expr::Field(base, _) => expr_calls(base, acc),
-            crate::ast::Expr::List(elems) => {
-                for el in elems {
-                    expr_calls(el, acc);
-                }
-            }
-            crate::ast::Expr::Tuple(elems) => {
-                for el in elems {
-                    expr_calls(el, acc);
-                }
-            }
-            crate::ast::Expr::Lambda(_, body) => expr_calls(body, acc),
-            crate::ast::Expr::StructLiteral { fields, .. } => {
-                for (_, v) in fields {
-                    expr_calls(v, acc);
-                }
-            }
-            _ => {}
-        }
-    }
-    fn stmt_calls(s: &crate::ast::Statement, acc: &mut Vec<String>) {
-        match s {
-            crate::ast::Statement::Expression(e) => expr_calls(e, acc),
-            crate::ast::Statement::Let { expr: Some(e), .. } => expr_calls(e, acc),
-            crate::ast::Statement::Let { .. } => {}
-            crate::ast::Statement::Assign(_, e) => expr_calls(e, acc),
-            crate::ast::Statement::ArrowAssign { value, .. } => expr_calls(value, acc),
-            crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => expr_calls(e, acc),
-            crate::ast::Statement::Term(None) => {}
-            crate::ast::Statement::EndProgram(Some(e)) => expr_calls(e, acc),
-            crate::ast::Statement::EndProgram(None) => {}
-            crate::ast::Statement::Guarded(cond, b) => {
-                // 2026-09-09 (parity spike): the guard CONDITION is an
-                // expression too — `when value_ge_10(acc, b) { ... }`. Before
-                // this fix the condition's calls were missed, so a helper
-                // called ONLY from a guard position was dropped from the
-                // transitive import closure and the backend emitted an
-                // undefined `@value_ge_10`.
-                expr_calls(cond, acc);
-                for s in b {
-                    stmt_calls(s, acc);
-                }
-            }
-            crate::ast::Statement::Block(b) => {
-                for s in b {
-                    stmt_calls(s, acc);
-                }
-            }
-            crate::ast::Statement::Foreach { list, body, .. } => {
-                expr_calls(list, acc);
-                for s in body {
-                    stmt_calls(s, acc);
-                }
-            }
-            _ => {}
-        }
-    }
+    // 2026-10-18 (fixture campaign): rewritten on the one exhaustive AST
+    // visitor (ast::visit, Rule 17). The hand-rolled predecessor missed
+    // `Statement::Match` arms entirely (a call inside a match arm was
+    // dropped from the transitive import closure; at splice re-typecheck
+    // the unresolved name fell back to the raw-Int fallback and the arm
+    // unification failed: "expected Int, found Result<…>") and never
+    // descended into obj/type member bodies (`GrowBuf.put_u8` →
+    // same-module `grow_to_fit`; every cross-module importer failed).
+    // `walk_toplevel` covers both (members + all statement forms) and
+    // cannot rot silently — its matches are exhaustive over the AST.
     let mut out = Vec::new();
-    match item {
-        TopLevel::Definition(d) => {
-            // 2026-10-15 (contract closure): a contract is CODE the backend
-            // emits — the callable-txn convergence gate evaluates pre/post
-            // (and a watchdog fires) at runtime, so its calls belong in the
-            // transitive closure. `dir_loop`'s `[is_ok(term) ||
-            // is_err(term)]` was the first live case: the contract-only
-            // generics never spliced, and the gate emitted bare calls to
-            // never-defined generics (`use of undefined value '@is_err'`).
-            expr_calls(&d.contract.pre_condition, &mut out);
-            expr_calls(&d.contract.post_condition, &mut out);
-            if let Some(w) = &d.contract.watchdog {
-                expr_calls(&w.condition, &mut out);
-            }
-            for s in &d.body {
-                stmt_calls(s, &mut out);
-            }
+    crate::ast::visit::walk_toplevel(item, &mut |e| {
+        if let Expr::Call(name, _, _) = e {
+            out.push(name.clone());
         }
-        TopLevel::Transaction(t) => {
-            expr_calls(&t.contract.pre_condition, &mut out);
-            expr_calls(&t.contract.post_condition, &mut out);
-            if let Some(w) = &t.contract.watchdog {
-                expr_calls(&w.condition, &mut out);
-            }
-            for s in &t.body {
-                stmt_calls(s, &mut out);
-            }
-        }
-        _ => {}
-    }
+    });
     out
 }
 
@@ -1469,6 +1349,7 @@ impl ImportResolver {
                 }
             }
         }
+        retain_module_traits(items, origins, &mut keep);
         let mut out: Vec<TopLevel> = Vec::new();
         let mut out_origins: Vec<Option<u32>> = Vec::new();
         for (item, origin) in items.iter().zip(origins) {

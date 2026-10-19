@@ -721,45 +721,42 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
 
 /// Intent: Collect all identifiers assigned in a guarded statement body.
 pub fn collect_assigned_identifiers(body: &[Statement]) -> Vec<String> {
-    let mut ids = Vec::new();
-    for stmt in body {
-        if let Statement::Assign(lhs, _) = stmt {
-            if let Expr::Identifier(name) = lhs {
-                ids.push(name.clone());
+    // 2026-10-18 (fixture campaign, BUGS.md): rebuilt on the exhaustive
+    // AST visitor. The hand-rolled predecessor walked only TOP-LEVEL
+    // bare-identifier assigns — writes inside `when` blocks, `foreach`
+    // bodies, and match arms were invisible to the causal graph (a phase
+    // machine performing its transition inside a `when` built a false
+    // "no convergence" cycle) and to the Rule 22 concurrency gate's
+    // write-disjointness check. Indexed stores (`arr[i] = v`) and field
+    // stores (`obj.f = v`) count as writes of the BASE name — that is
+    // what read-write overlap means.
+    fn written_name(target: &Expr, out: &mut Vec<String>) {
+        match target {
+            Expr::Identifier(name) => out.push(name.clone()),
+            Expr::Index(base, _) | Expr::Field(base, _) | Expr::Deref(base) => {
+                written_name(base, out);
             }
+            _ => {}
         }
     }
+    let mut ids = Vec::new();
+    crate::ast::visit::walk_assign_targets(body, &mut |target| {
+        written_name(target, &mut ids);
+    });
     ids
 }
 
 /// Intent: Collect all identifiers read by an expression/statement.
 pub fn collect_read_identifiers(body: &[Statement]) -> std::collections::HashSet<String> {
+    // 2026-10-18 (fixture campaign, BUGS.md): rebuilt on the exhaustive
+    // visitor — every statement form (the predecessor descended `when`
+    // blocks only and had no Foreach/Match arms).
     let mut ids = std::collections::HashSet::new();
-    for stmt in body {
-        match stmt {
-            Statement::Assign(_, expr) => {
-                collect_expr_identifiers(expr, &mut ids);
-            }
-            Statement::Let { expr: Some(e), .. } => {
-                collect_expr_identifiers(e, &mut ids);
-            }
-            Statement::Guarded(cond, stmts) => {
-                collect_expr_identifiers(cond, &mut ids);
-                ids.extend(collect_read_identifiers(stmts));
-            }
-            Statement::Expression(e) => {
-                collect_expr_identifiers(e, &mut ids);
-            }
-            // 2026-08-01 (Phase 3c): term expressions read their
-            // operands — a `term x;` node genuinely reads x. Without this the
-            // concurrency gate's XOR-overlap check would miss read-write
-            // dependencies through Term, wrongly requiring classification.
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-                collect_expr_identifiers(e, &mut ids);
-            }
-            _ => {}
+    crate::ast::visit::walk_stmts(body, &mut |e| {
+        if let Expr::Identifier(name) = e {
+            ids.insert(name.clone());
         }
-    }
+    });
     ids
 }
 

@@ -1,0 +1,19 @@
+// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): a literal
+// concat and a let-bound concat, both of which must print "abcd". Under the
+// project pipeline (-O2/-O3) both currently print EMPTY — see the ignored
+// test `string_concat_at_o2_is_known_broken` in tests/daily_use_smoke.rs.
+import "std/string.bv";
+
+let done: Int = 0;
+
+node entry [done == 0][done == 1] {
+    let a: String = "ab" + "cd";
+    print_str(a);
+    print_str("|");
+    let x: String = "ab";
+    let y: String = "cd";
+    let b: String = x + y;
+    print_str(b);
+    done = 1;
+    term;
+};

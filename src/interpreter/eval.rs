@@ -1996,6 +1996,22 @@ fn eval_binary_op(
             }
         }
         BinaryOpKind::BitAnd | BinaryOpKind::BitOr | BinaryOpKind::BitXor => {
+            // 2026-10-19 (BUGS.md 2026-10-18, interpreter compound-expression
+            // defect — ROOT CAUSE): the B1 string default dereferenced INT
+            // atoms as heap strings whenever the integer VALUE collided with
+            // a live heap address — `(a << 16) | (b << 8)` produced large
+            // integers, large integers landed inside live allocations, and
+            // the byte-wise string path mangled them into stale-looking
+            // values. The ambiguity is unfixable at the Value level (Int
+            // atoms ARE the int representation), so the BITWISE OP now
+            // disambiguates: two Int atoms are INTEGERS (the backend emits
+            // integer ops — Rule 5 parity); the B1 string default applies
+            // only to genuine `Value::Bits` byte strings.
+            match (&lv, &rv) {
+                (Value::Atom(Atom::Int(_)), Value::Atom(Atom::Int(_))) => {
+                    execute_intrinsic(&format!("{:?}#", kind), &[lv, rv], heap)
+                }
+                _ => {
             // 2026-08-01 (B1): String bitwise defaults — operate on content
             // bytes and return a NEW string of the same length (interpreter
             // half of B1; the backend mirrors it with briev_str_band/bor/bxor).
@@ -2016,14 +2032,11 @@ fn eval_binary_op(
                     Ok(Value::bits(result))
                 }
                 _ => {
-                    // 2026-08-03: Non-string operands (Int/Ptr) fall through to
-                    // the integer bitwise intrinsics (BitAnd#/BitOr#/BitXor#),
-                    // restoring the pre-B1 path that B1's string-default match
-                    // arm shadowed (ba1d02b4) — it returned bool_to_bits(false)
-                    // for every non-string operand, silently zeroing Int & Int.
-                    // The backends emit real integer bitwise ops (LLVM and/or/xor);
-                    // the interpreter is the reference and must match.
+                    // 2026-08-03: Non-string operands fall through to
+                    // the integer bitwise intrinsics (BitAnd#/BitOr#/BitXor#).
                     execute_intrinsic(&format!("{:?}#", kind), &[lv, rv], heap)
+                }
+            }
                 }
             }
         }
@@ -2396,19 +2409,13 @@ pub fn eval_statement(
         // 2026-08-22 (Phase 8): yield; is a no-op in the eager reference
         // scheduler — the concurrent scheduler's future suspension point.
         Statement::Yield => Ok(Value::Void),
-        // 2026-08-23 (SPEC §10.x): check — runtime assertion for unprovable
-        // loops. Failure triggers rollback.
-        Statement::Check(cond) => {
-            let v = eval_expr(cond, heap, bindings, functions)?;
-            let ok = v.is_true();
-            if !ok {
-                Err(RuntimeError::ContractViolation(format!(
-                    "liveness check failed: {}", cond
-                )))
-            } else {
-                Ok(Value::Void)
-            }
-        }
+        // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
+        // regularity.md): check is STATIC-ONLY — a proof dialogue with the
+        // typechecker, fully consumed at compile time. There is nothing to
+        // execute: the typechecker has proven the condition or rejected the
+        // program. Both engines agree a static-only check has no runtime
+        // meaning; the former runtime ContractViolation is retired.
+        Statement::Check(_cond) => Ok(Value::Void),
         Statement::Let { name, ty, expr, .. } => {
             if let Some(expr) = expr {
                 let val = eval_let_binding(ty.as_ref(), expr, heap, bindings, functions)?;

@@ -514,6 +514,64 @@ impl Drop for SettingsGuard {
     }
 }
 
+/// 2026-10-19 (contract tiers, Option 1 — plan
+/// 2026-10-19-contract-tiers-and-regularity.md): the call-site contract
+/// gate's ROLLOUT STAGE. `Allow` (default, migration stage) = the gate
+/// computes verdicts but rejects nothing; `Warn` = each refuted/unproven
+/// site announces itself on stderr; `Deny` = the Option-1 end state —
+/// refuted and unproven contracted call sites are compile errors. This is
+/// the compiler's own migration stage (the IrrPolicy precedent), not a
+/// per-call-site escape hatch: the flip to `deny` is a config commit once
+/// the stdlib contract migration lands (90 contracted fns / 23k sites
+/// censused 2026-10-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractGatePolicy {
+    Allow,
+    Warn,
+    Deny,
+}
+
+static CONTRACT_GATE_POLICY: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+// 2026-10-20: a thread-local override for TESTS. The global policy is
+// process-wide; tests that exercise the deny stage run in parallel with the
+// conformance sweep, and a leak would fail unrelated sources (observed with
+// `.smoke/eq_demo.bv`). The thread-local keeps a test's window to its own
+// thread — no mutex, no cross-test contamination.
+thread_local! {
+    static CONTRACT_GATE_POLICY_TL: std::cell::Cell<Option<ContractGatePolicy>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The effective gate policy: thread-local override (tests), else the global
+/// (0 = Allow, 1 = Warn, 2 = Deny).
+pub fn contract_gate_policy() -> ContractGatePolicy {
+    if let Some(p) = CONTRACT_GATE_POLICY_TL.with(|c| c.get()) {
+        return p;
+    }
+    match CONTRACT_GATE_POLICY.load(std::sync::atomic::Ordering::Acquire) {
+        1 => ContractGatePolicy::Warn,
+        2 => ContractGatePolicy::Deny,
+        _ => ContractGatePolicy::Allow,
+    }
+}
+
+/// Set (or clear) the calling thread's policy override — the test seam for
+/// the deny stage. Never touches other threads.
+pub fn install_thread_local_contract_gate_policy(policy: Option<ContractGatePolicy>) {
+    CONTRACT_GATE_POLICY_TL.with(|c| c.set(policy));
+}
+
+pub fn install_contract_gate_policy(policy: ContractGatePolicy) {
+    let v = match policy {
+        ContractGatePolicy::Allow => 0u8,
+        ContractGatePolicy::Warn => 1,
+        ContractGatePolicy::Deny => 2,
+    };
+    CONTRACT_GATE_POLICY.store(v, std::sync::atomic::Ordering::Release);
+}
+
 /// 2026-09-30 (D30): how the module treats a site-local `irr` (D29).
 /// `Allow` (default) = silent suppression; `Warn` = each use announces
 /// itself; `Deny` = any `irr` is a compile error. Warnings-only policy —

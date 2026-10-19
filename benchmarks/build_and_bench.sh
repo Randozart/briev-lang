@@ -144,6 +144,7 @@ TAG[hash_ops]=runtime
 TAG[hash_ops_idio]=runtime
 TAG[enemy_swarm]=runtime
 TAG[recommender]=runtime
+TAG[ws_frame]=runtime
 # 2026-10-09 (T2b): hot-loop-over-slice — measures the contiguous-slice
 # zero-copy VIEW vs the copy path. Self-contained (Briev vs Briev A/B); no C
 # reference, so it is NOT in the BENCHMARKS timing list (would SKIP on the
@@ -207,6 +208,11 @@ BENCHMARKS=(
     # the correctness gate is byte-stable. Multi-node async + defn-extracted
     # hot kernel; compiles clean at -O2/-O3.
     "recommender"
+    # 2026-10-18 (fixture campaign, fixture 1): WebSocket frame-codec decode
+    # (RFC 6455) — deterministic corpus spanning all three length encodings
+    # and masked/unmasked; per-byte codec-call checksum. The gate that found
+    # the sequential-guard fall-through bug (BUGS.md 2026-10-18).
+    "ws_frame"
     "bridge_glue"
     "bridge_multi"
     # "gpu/saxpy"        # no .bv file exists
