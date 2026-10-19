@@ -235,6 +235,18 @@ fn string_concat_at_o2_is_correct() {
 /// the compiled pipeline — Base64, the RFC 6455 accept key (SHA-1 + Base64),
 /// incremental HTTP parse, and the websocket conveniences over the unified
 /// codec. Base64 is compiled-path only (interpreter callable-txn gap).
+/// 2026-10-20 (workstream C): pooled object globals — runtime initializer
+/// seeding, per-instance pool rows, and boxed argument passing.
+#[test]
+fn obj_globals_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("obj_globals", "golden", &[]);
+    assert_eq!(out, "3|8|9|1|4", "pooled object globals drifted: {out:?}");
+}
+
 #[test]
 fn net_stack_helpers_golden_output() {
     if !has("clang") {

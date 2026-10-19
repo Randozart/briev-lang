@@ -10576,3 +10576,42 @@ equality facts are also matched under term negation (`T = a` ≡ `-T = -a`), so
 63 bounds/domain, 16 unresolved — lambdas/params/foreign wrappers). The
 announcement count duplicates per consumer (the sweep re-checks spliced
 imports); the unique-fn count is the migration surface.
+
+## 2026-10-20 — obj-globals: initializers never seeded; static instances shared row 0 — FIXED
+
+**Symptom:** a top-level obj binding (`let b: ByteBuf = buf_new(16);`) read
+`.len` as 0 and segfaulted when passed to a defn. Both were silent class
+bugs: the value looked usable and the crash had no diagnostic.
+
+**Root causes (object instance pools):**
+1. `obj_instance_inits` recorded each binding's initializer but NOTHING ever
+   seeded it — pool columns stayed `zeroinitializer`, so field reads saw 0 and
+   `box_pooled_instance_value` boxed null fields (the segfault).
+2. Every static instance of a base used pool row "0"
+   (`unpacked_instance_prefix` hardcoded it), so distinct top-level instances
+   aliased each other; pool capacity was `spawn + 1` regardless.
+3. Seeding exposed a third: an explicit-receiver member call
+   (`b0.put_u8(0)`) on a pooled receiver was an unconditional panic ("no
+   single address") — the combination was previously unreachable because
+   initializers never ran.
+
+**Fix:**
+1. `build_field_index` pre-assigns a distinct row per top-level instance
+   (declaration order); `register_pool_columns` sizes columns
+   `max(statics,1) + spawns` and starts the spawn counter after the static
+   rows; `unpacked_instance_prefix` returns the assigned row.
+2. `emit_init_state` seeds non-literal instance initializers before the plain
+   lets: evaluate the initializer (a constructor/member call producing an
+   instance VALUE), then split the box's members (stored as i64 words) into
+   the binding's own pool row via the new `adapt_from_i64`
+   (Bool trunc, Float bitcast, String/Ptr inttoptr). Literal `= 0`
+   initializers still zero-init.
+3. The explicit-receiver member path boxes a pooled receiver from its row
+   (`box_pooled_instance_from_row`) instead of panicking — the same
+   value-context rule as a defn argument.
+
+**Pins:** `tests/tier1/obj_globals.bv` + `obj_globals_golden_output`
+(field length, argument passing, distinct rows, explicit-receiver member).
+Placement assistance verified: explicit `plain` on a compound initializer and
+`state` on a value the machine never references both produce actionable
+errors (SPEC §899-924 machinery).

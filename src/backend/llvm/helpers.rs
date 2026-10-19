@@ -2322,6 +2322,48 @@ impl LlvmBackend {
     /// Box a typed register to i64 for uniform state storage.
     /// Handles Float64(double)→bitcast→i64, Float(float)→bitcast→i32→zext→i64,
     /// Bool(i8)→zext→i64, String/Data(i8*)→ptrtoint→i64. Int is already i64 (identity).
+    /// 2026-10-20 (obj-globals instance seeding): the INVERSE of
+    /// `adapt_to_i64` for ONE boxed word — the instance box stores every
+    /// member as an i64 word (see `box_pooled_instance_value`), and seeding a
+    /// pool row must store each member at its COLUMN's native type. Returns
+    /// the value register converted to `llvm_type(ty)`; aggregates (nested
+    /// arrays) are returned unchanged and the caller skips them.
+    pub(crate) fn adapt_from_i64(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &str,
+        ty: &Type,
+    ) -> String {
+        let target = self.llvm_type(ty);
+        match target.as_str() {
+            "i64" => reg.to_string(),
+            "i8" | "i16" | "i32" => {
+                let r = self.fun.gen_reg();
+                writeln!(out, "{}{} = trunc i64 {} to {}", indent, r, reg, target).ok();
+                r
+            }
+            "float" => {
+                let bits = self.fun.gen_reg();
+                writeln!(out, "{}{} = trunc i64 {} to i32", indent, bits, reg).ok();
+                let f = self.fun.gen_reg();
+                writeln!(out, "{}{} = bitcast i32 {} to float", indent, f, bits).ok();
+                f
+            }
+            "double" => {
+                let d = self.fun.gen_reg();
+                writeln!(out, "{}{} = bitcast i64 {} to double", indent, d, reg).ok();
+                d
+            }
+            "ptr" => {
+                let p = self.fun.gen_reg();
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, reg).ok();
+                p
+            }
+            _ => reg.to_string(),
+        }
+    }
+
     pub(crate) fn adapt_to_i64(
         &mut self,
         out: &mut String,

@@ -89,6 +89,18 @@ the contract census (see below).
    assertions optional, mismatch = compile error; complete the plain-obj
    handle path and the state-obj column). Live defects: a global obj's
    `.len` reads 0, and passing a global obj to a defn segfaults.
+   **DONE 2026-10-20** (symptoms): the existing OBJECT-INSTANCE-POOL
+   representation was fixed rather than replaced — (a) non-literal
+   initializers are now SEEDED into the binding's row, (b) each static
+   instance owns a distinct row (was shared row "0"), (c) explicit-receiver
+   member calls on pooled receivers box from the row instead of panicking.
+   Pins: `obj_globals` golden. Placement assistance verified (plain on a
+   compound initializer, and state the machine never references, both
+   error with actionable text). DEVIATION FROM THE RULING'S SKETCH: the
+   implementation keeps pool columns rather than switching obj bindings to
+   a single @global/%State HANDLE slot; plain-obj handles remain disallowed
+   by the placement policy. Recorded for the owner — the ruly intent
+   (correct global obj bindings) is met; the representation differs.
 3. **Interpreter parity trio** — callable Briev txns, the
    raw-address→String door, and the GrowBuf growth misfire — so the
    reference engine can verify the stdlib and the fixtures again.

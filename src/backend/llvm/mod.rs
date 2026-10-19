@@ -7091,9 +7091,53 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     }
 
     // ── Field index ───────────────────────────────────────────
+    /// 2026-10-20 (obj-globals): is this top-level let an UNPACKED instance
+    /// pool candidate? (obj base, not a heap collection, initializer not a
+    /// literal list/tuple). Single source of truth for the registration pass
+    /// and the row pre-scan.
+    fn unpack_base_name(&self, ty: &Type, expr: Option<&Expr>) -> Option<String> {
+        match ty {
+            Type::Applied(base, _)
+                if self.ctx.obj_members.contains_key(base)
+                    && !self.is_heap_coll(base)
+                    && !matches!(expr, Some(Expr::List(_)) | Some(Expr::Tuple(_))) =>
+            {
+                Some(base.clone())
+            }
+            Type::Custom(base)
+                if self.ctx.obj_members.contains_key(base) && !self.is_heap_coll(base) =>
+            {
+                Some(base.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn build_field_index(&mut self, items: &[TopLevel]) {
         self.ctx.field_index_map.clear();
         self.ctx.field_types.clear();
+        // 2026-10-20 (obj-globals): rebuild the instance-row bookkeeping with
+        // the field index (the liveness fixpoint re-enters this function).
+        self.ctx.instance_rows.clear();
+        self.ctx.static_instance_counts.clear();
+        self.ctx.obj_instance_inits.clear();
+        let mut row_next: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for item in items {
+            if let TopLevel::Statement(stmt) = item {
+                if let crate::ast::Statement::Let { name, ty: Some(ty), expr, .. } = stmt.as_ref() {
+                    if self.ctx.plain_lets.contains(name) {
+                        continue;
+                    }
+                    if let Some(base) = self.unpack_base_name(ty, expr.as_ref()) {
+                        let row = *row_next.entry(base.clone()).or_insert(0);
+                        self.ctx.instance_rows.insert(name.clone(), row.to_string());
+                        row_next.insert(base.clone(), row + 1);
+                        *self.ctx.static_instance_counts.entry(base).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
         // 2026-10-17 (liveness fixpoint): field_briev_types is documented
         // parallel to field_types (push_field_type pushes both in lockstep),
         // so the rebuild must clear it too — the fixpoint re-enters this
@@ -7231,6 +7275,10 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                             Type::Applied(base, _) | Type::Custom(base) => base.clone(),
                             _ => String::new(),
                         };
+                        // 2026-10-20 (obj-globals): the row was pre-assigned in
+                        // declaration order by the pre-scan at the top of this
+                        // function; every static instance owns its own row.
+                        debug_assert!(self.ctx.instance_rows.contains_key(name));
                         // 2026-08-09 (Phase 5): a box/spill base has NO shared
                         // pool — every instance is its own heap block. Register
                         // the per-instance member layout (member → byte offset
@@ -7677,12 +7725,19 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             self.ctx.field_index_map
                 .insert(counter_name.clone(), self.ctx.field_types.len());
             self.push_field_type(&Type::int());
-            self.ctx.field_initializers.insert(counter_name.clone(), Some(Expr::Decimal(1)));
+            let first_spawn_row = self.ctx.static_instance_counts.get(base).copied().unwrap_or(0).max(1);
+            self.ctx.field_initializers.insert(
+                counter_name.clone(),
+                Some(Expr::Decimal(first_spawn_row as i64)),
+            );
             self.ctx.instance_slots.insert(counter_name);
         }
-        let capacity = self.ctx.spawn_pools.get(base)
-            .map(|n| n + 1)
-            .unwrap_or(1);
+        // 2026-10-20 (obj-globals): rows 0..N-1 are the top-level instances;
+        // spawn allocation continues from N. Capacity covers both (at least
+        // one row so the spawn counter's start row exists).
+        let statics = self.ctx.static_instance_counts.get(base).copied().unwrap_or(0);
+        let spawns = self.ctx.spawn_pools.get(base).copied().unwrap_or(0);
+        let capacity = statics.max(1) + spawns;
         let is_dependent = self.ctx.dependent_pools.contains_key(base);
         for (mname, mty) in slots {
             let slot_name = format!("{}.{}", base, mname);

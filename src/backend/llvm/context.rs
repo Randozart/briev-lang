@@ -252,6 +252,13 @@ pub struct CompilerContext {
     /// The Init member runs against the instance's prefixed slots during
     /// init_state.
     pub obj_instance_inits: std::collections::HashMap<String, (String, Expr)>,
+    /// 2026-10-20 (obj-globals): pooled-instance row assignment. Every
+    /// top-level instance gets its OWN row in its base's pool columns
+    /// (previously all static instances shared row "0" and aliased).
+    pub instance_rows: std::collections::HashMap<String, String>,
+    /// Number of top-level (static) instances per pool base — sizes the
+    /// columns and sets where spawn allocation starts.
+    pub static_instance_counts: std::collections::HashMap<String, usize>,
     pub constants: HashMap<String, (Type, Expr)>,
     /// 2026-10-03 (const-expression folding, LLVM parity with the GPU
     /// readers — plan `2026-10-03-declared-dot-detect-reduction-rung.md`):
@@ -635,6 +642,8 @@ impl CompilerContext {
             mask_constants: Vec::new(),
             instance_slots: std::collections::HashSet::new(),
             obj_instance_inits: std::collections::HashMap::new(),
+            instance_rows: std::collections::HashMap::new(),
+            static_instance_counts: std::collections::HashMap::new(),
             constants: HashMap::new(),
             const_values: HashMap::new(),
             constant_sections: HashMap::new(),
