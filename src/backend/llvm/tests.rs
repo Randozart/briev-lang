@@ -868,6 +868,67 @@ node report [n > 0][n > 0] {
     assert_no_i64_in_float_positions(&ir);
 }
 
+/// 2026-10-19 (BUGS.md "Float-tuple destructure loaded elements as i64"):
+/// IR for a defn that destructures a Float-family tuple and adds the two
+/// elements. The universe is registered as the pipeline does — without it the
+/// store side's `adapt_to_i64` cannot see Float membership and the tuple
+/// would not be boxed at all, so the test would not exercise the bug.
+fn float_tuple_destructure_ir(elem: &str) -> String {
+    let src = format!(
+        r#"
+defn pair() -> ({elem}, {elem}) {{
+    term (1.5, 2.5);
+}};
+defn sum_pair() -> {elem} {{
+    let (a, b): ({elem}, {elem}) = pair();
+    term a + b;
+}};
+"#
+    );
+    let mut items = parse_bv_source(&src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    // force_emit_all: the defns have no reactive caller; liveness would
+    // otherwise (correctly) drop them.
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(universe);
+    backend.generate(&items, None)
+}
+
+/// A 32-bit Float element is boxed as `bitcast float -> i32; zext -> i64`, so
+/// the destructure must `trunc i64 -> i32; bitcast i32 -> float`. The
+/// discriminator: before the fix the `fadd fast float` consumed the raw
+/// `load i64` registers, which the float-position verifier rejects.
+#[test]
+fn test_float_tuple_destructure_unboxes_f32_elements() {
+    let ir = float_tuple_destructure_ir("Float");
+    let body = function_body(&ir, "@sum_pair(");
+    assert!(
+        body.contains("trunc i64") && body.contains("to float"),
+        "f32 tuple elements must be unboxed from their i64 slots: {body}"
+    );
+    assert!(body.contains("fadd fast float"), "float add expected: {body}");
+    assert_no_i64_in_float_positions(&ir);
+}
+
+/// A 64-bit Float element is boxed as `bitcast double -> i64`, so the
+/// destructure must `bitcast i64 -> double` (no trunc). Float64 reaches the
+/// same arm as any other 64-bit Float-protocol type (Double, aliases) —
+/// dispatch is by protocol + resolved width, never by type name.
+#[test]
+fn test_float_tuple_destructure_unboxes_f64_elements() {
+    let ir = float_tuple_destructure_ir("Float64");
+    let body = function_body(&ir, "@sum_pair(");
+    assert!(
+        body.contains("bitcast i64") && body.contains("to double"),
+        "f64 tuple elements must be unboxed from their i64 slots: {body}"
+    );
+    assert!(body.contains("fadd fast double"), "double add expected: {body}");
+    assert_no_i64_in_float_positions(&ir);
+}
+
 /// 2026-10-05 (json.bv): a match binding a STRUCT payload (`Wrap(frame)`)
 /// must type `frame` as the struct — not a hardcoded Int — so `frame.value`
 /// lowers to a field load instead of panicking "field access '.value' on

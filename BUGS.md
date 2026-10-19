@@ -33,6 +33,14 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
+
+**Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.
+
+**Root cause:** the tuple heap block stores every element as its raw i64 BIT PATTERN (emit_tuple_materialize via adapt_to_i64: bitcast double->i64 for Float64, bitcast float->i32->zext for Float). The destructure (emit_stmt.rs `let (a,b)=t`) loaded each slot as `load i64` and bound the name to that i64 register unconditionally, ignoring the declared Float element type - so a downstream float use received an i64-defined register.
+
+**Fix:** after the `load i64`, `unbox_tuple_float_element` (emit_stmt.rs) reinterprets a Float-protocol element by its casting-graph LLVM width: `bitcast i64 -> double` for a 64-bit Float, `trunc i64 -> i32; bitcast i32 -> float` for a 32-bit one. It caches the native register in reg_float_cache and binds the name to it. Dispatch is protocol membership + resolved width (never the type name), so Float, Float32, Float64, Double and user aliases all take the right arm. This is the exact inverse of the adapt_to_i64 store side and mirrors the boxed Float param-slot unbox in emit_expr.rs. Regression tests test_float_tuple_destructure_unboxes_f32_elements / _f64_elements (src/backend/llvm/tests.rs), both run with a registered type universe and the float-position verifier.
+
 ## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
 
 **Symptom:** three sweep A/B "regressions" (queue_drain 2.51x,

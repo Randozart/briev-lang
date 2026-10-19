@@ -337,6 +337,54 @@ fn emit_bare_term_stop(backend: &mut LlvmBackend, out: &mut String, indent: &str
     backend.fun.terminated = true;
 }
 
+/// 2026-10-19 (BUGS.md "Float-tuple destructure loaded elements as i64"):
+/// unbox one tuple element loaded from its i64 heap slot back to its native
+/// Float register — the exact inverse of `adapt_to_i64` on the store side
+/// (emit_tuple_materialize), which boxes a double via `bitcast double -> i64`
+/// and a float via `bitcast float -> i32; zext -> i64`.
+///
+/// Pattern targeted: `let (a, b): (Float, Float) = f();` — the element was
+/// bound as the raw `load i64`, so a downstream float use received an
+/// i64-defined register (clang: "defined with type 'i64' but expected
+/// 'float'"). Dispatch is protocol-driven (Rule 19): Float protocol
+/// membership + the casting graph's LLVM width, so every Float-family type
+/// (Float, Float32, Float64, Double, user aliases) unboxes correctly, and a
+/// width the graph does not resolve as double/float is left untouched.
+/// Mirrors the boxed Float param-slot unbox in emit_expr.rs. Non-Float
+/// elements return the loaded i64 unchanged. To undo: bind `elem` directly
+/// at the destructure call site.
+fn unbox_tuple_float_element(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    elem: &str,
+    elem_ty: &Type,
+) -> String {
+    if !backend.is_protocol_member(elem_ty, "Float") {
+        return elem.to_string();
+    }
+    let native = match backend.llvm_type(elem_ty).as_str() {
+        "double" => {
+            let d = backend.fun.gen_reg();
+            writeln!(out, "{}{} = bitcast i64 {} to double", indent, d, elem).ok();
+            d
+        }
+        "float" => {
+            let bits = backend.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to i32", indent, bits, elem).ok();
+            let f = backend.fun.gen_reg();
+            writeln!(out, "{}{} = bitcast i32 {} to float", indent, f, bits).ok();
+            f
+        }
+        _ => return elem.to_string(),
+    };
+    // Cache the native register so later reads of the binding resolve the
+    // float value, not the boxed i64 it was loaded from.
+    backend.fun.reg_float_cache.insert(elem.to_string(), native.clone());
+    backend.fun.reg_float_cache.insert(native.clone(), native.clone());
+    native
+}
+
 pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statement, indent: &str) -> TypedRegister {
     match stmt {
         Statement::Let { name, names, ty, expr, modifiers, .. } => {
@@ -700,11 +748,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     .ok();
                     let elem = backend.fun.gen_reg();
                     writeln!(out, "{}{} = load i64, ptr {}", indent, elem, slot).ok();
-                    backend.fun.let_bindings.insert(n.clone(), elem.clone());
-                    backend.fun.let_binding_types
-                        .insert(n.clone(), elem_tys.get(i).cloned().unwrap_or_else(Type::int));
-                    backend.fun.let_original_types
-                        .insert(n.clone(), elem_tys.get(i).cloned().unwrap_or_else(Type::int));
+                    let elem_ty = elem_tys.get(i).cloned().unwrap_or_else(Type::int);
+                    let bound = unbox_tuple_float_element(backend, out, indent, &elem, &elem_ty);
+                    backend.fun.let_bindings.insert(n.clone(), bound.clone());
+                    backend.fun.let_binding_types.insert(n.clone(), elem_ty.clone());
+                    backend.fun.let_original_types.insert(n.clone(), elem_ty);
                 }
                 return TypedRegister { name: val.name, ty: Type::void() };
             }
