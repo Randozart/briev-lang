@@ -64,6 +64,7 @@ msg: .asciz "hello from .bad\n"
 | `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
 | `bootstrap Name { … }` | authored machine entry — emits `global Name` + `Name:` + body; exactly one per image |
 | `data { … }` | data block — labels/directives; section inferred from each directive (explicit `section` wins) |
+| `declarations { name: rN; … }` | file/recipe pins — the name is bound to the physical register in every symbolic body |
 | `defn name params` | inline RAW definition — owns following lines until the next top-level item |
 | `defn name(params: T, …) { … }` | inline SYMBOLIC definition — expanded at each call site; no ABI, no `return` |
 | `call defn name(params: T, …) -> R { … }` | callable C-ABI function; omitted return = void |
@@ -311,6 +312,8 @@ Rules:
     The clobber list is reserved for the whole symbolic body; undeclared
     clobbers are the author's contract. Raw regions cannot reference
     symbolic values.
+  - `declarations { uart: r2; … }` pins a name to a physical register for
+    every symbolic body in the file.
 
 ## Registers
 
