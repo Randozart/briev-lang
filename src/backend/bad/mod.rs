@@ -19,6 +19,7 @@ pub mod comptime;
 pub mod lower;
 pub mod notices;
 pub mod registry;
+pub mod symbolic;
 
 use crate::ast::bad::BadProgram;
 use crate::parser::bad::parse_bad;
@@ -600,6 +601,54 @@ mod tests {
         .expect_err("aarch64 interrupt control has no verified row yet");
         assert!(err.contains("aarch64"), "{err}");
         assert!(err.contains("row"), "{err}");
+    }
+
+    #[test]
+    fn symbolic_label_lowers_through_the_allocator() {
+        let src = "_start:\n    mov vga, 0xB8000\n    mov c, 66\n    loop {\n        \
+                   when c > 68: break\n        store c, vga\n        vga += 2\n        \
+                   c += 1\n    }\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $753664"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(x86.contains("cmpq $68"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+        // No frame, no temp/copy: the parity fixes landed.
+        assert!(!x86.contains("pushq"), "{x86}");
+        assert!(x86.contains("addq $2"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("jg L_start__lpend"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_body_allows_raw_zero_ops_and_engine_verbs() {
+        let src = "_start:\n    mov x, 1\n    DisableInterrupts\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_while_lowers() {
+        let src = "_start:\n    mov n, 3\n    while n > 0 {\n        n -= 1\n    }\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cmpq $0"), "{x86}");
+        assert!(x86.contains("subq $1"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+    }
+
+    #[test]
+    fn else_is_rejected() {
+        let src = "_start:\n    when 1 {\n        mov x, 1\n    } else {\n        mov x, 2\n    }\n";
+        let err = generate(src, "x86_64").expect_err("`.bad` has no else");
+        assert!(err.contains("no `else`"), "{err}");
+    }
+
+    #[test]
+    fn symbolic_body_rejects_raw_instructions() {
+        let src = "_start:\n    mov x, 1\n    mov r0, 1\n";
+        let err = generate(src, "x86_64").expect_err("raw instruction in symbolic body");
+        assert!(err.contains("physical register destination"), "{err}");
     }
 
     #[test]

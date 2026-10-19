@@ -133,6 +133,12 @@ impl<'s> Parser<'s> {
                 continue;
             }
 
+            // Symbolic body items: let / assignment / when / loop / while /
+            // break / continue. These belong to the nearest label/defn.
+            if self.try_symbolic_item(&mut owner, content, line, span.clone())? {
+                continue;
+            }
+
             // `target => ...` / `default => ...`
             if let Some(branch) = self.try_branch_row(content, line, span)? {
                 let owner = owner.as_mut().ok_or_else(|| BadParseError {
@@ -214,6 +220,247 @@ impl<'s> Parser<'s> {
         }
         self.pos += 1;
         Ok(true)
+    }
+
+    /// Try one symbolic body item. Returns true when the line was
+    /// consumed (the item parser advances `self.pos` itself, including
+    /// whole braced blocks).
+    fn try_symbolic_item(
+        &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
+    ) -> Result<bool, BadParseError> {
+        if let Some(item) = self.parse_symbolic_item(content, line, span.clone())? {
+            self.push_body_item(owner, item, line, span)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn parse_symbolic_item(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<BadBodyItem>, BadParseError> {
+        let c = content.trim();
+        if c == "else" || c.starts_with("else ") || c.starts_with("else{") {
+            return Err(BadParseError {
+                message: "`.bad` has no `else` - write a second `when` with the \
+                          complementary condition, or use a `local` label"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        if c == "break" || c == "break;" {
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::Break(span)));
+        }
+        if c == "continue" || c == "continue;" {
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::Continue(span)));
+        }
+        if let Some(rest) = c.strip_prefix("let ") {
+            let item = parse_let_text(rest, span.clone(), line)?;
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::Let(item)));
+        }
+        if let Some(rest) = c.strip_prefix("when ") {
+            return Ok(Some(self.parse_when(rest, line, span)?));
+        }
+        if c == "loop {" || c == "loop{" {
+            let body = self.consume_block(line, span.clone())?;
+            return Ok(Some(BadBodyItem::Loop(BadLoop { body, span })));
+        }
+        if let Some(rest) = c.strip_prefix("while ") {
+            let (cond, rest_after) = split_cond_head(rest, line, span.clone())?;
+            if !rest_after.trim().starts_with('{') || !rest_after.trim()[1..].trim().is_empty() {
+                return Err(BadParseError {
+                    message: "`while` takes `while <cond> {` with the block on its own \
+                              lines - put `{` at the end of the head line"
+                        .to_string(),
+                    line,
+                    span,
+                });
+            }
+            let body = self.consume_block(line, span.clone())?;
+            return Ok(Some(BadBodyItem::While(BadWhile { cond, body, span })));
+        }
+        if let Some(a) = parse_assignment_text(c, span.clone(), line)? {
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::Assign(a)));
+        }
+        Ok(None)
+    }
+
+    fn parse_when(
+        &mut self, rest: &str, line: usize, span: Span,
+    ) -> Result<BadBodyItem, BadParseError> {
+        let (cond, after) = split_cond_head(rest, line, span.clone())?;
+        let after = after.trim();
+        if after.starts_with(':') {
+            let stmt = after[1..].trim();
+            if stmt.is_empty() {
+                return Err(BadParseError {
+                    message: "`when <cond>:` needs a statement after the colon"
+                        .to_string(),
+                    line,
+                    span,
+                });
+            }
+            let then = self.parse_inline_items(stmt, line, span.clone())?;
+            self.pos += 1;
+            return Ok(BadBodyItem::When(BadWhen { cond, then, span }));
+        }
+        if after.starts_with('{') && after[1..].trim().is_empty() {
+            let then = self.consume_block(line, span.clone())?;
+            return Ok(BadBodyItem::When(BadWhen { cond, then, span }));
+        }
+        Err(BadParseError {
+            message: "`when` takes `when <cond>: <stmt>` or `when <cond> {` with the \
+                      block on its own lines"
+                .to_string(),
+            line,
+            span,
+        })
+    }
+
+    /// Parse the body lines of a braced block. The head line (ending in
+    /// `{`) is at `self.pos`; on return `self.pos` is past the closing
+    /// `}`. Blocks are line-delimited in .bad: `{` ends the head line and
+    /// `}` sits alone.
+    fn consume_block(
+        &mut self, line: usize, span: Span,
+    ) -> Result<Vec<BadBodyItem>, BadParseError> {
+        let (_, head, _) = self.lines[self.pos];
+        if !head.trim_end().ends_with('{') {
+            return Err(BadParseError {
+                message: "a symbolic block must end its head line with `{` and put \
+                          `}` on its own line"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        self.pos += 1;
+        let mut items = Vec::new();
+        while self.pos < self.lines.len() {
+            let (off, content, lno) = self.lines[self.pos];
+            let sp = Span::new(off, off + content.len(), lno, 0);
+            if content.starts_with("} else") || content == "else" || content.starts_with("else ") {
+                return Err(BadParseError {
+                    message: "`.bad` has no `else` - write a second `when` with the \
+                              complementary condition, or use a `local` label"
+                        .to_string(),
+                    line: lno,
+                    span: sp,
+                });
+            }
+            if content == "}" {
+                self.pos += 1;
+                return Ok(items);
+            }
+            if content.starts_with("local ") || content.starts_with('.') {
+                return Err(BadParseError {
+                    message: "symbolic blocks use structured control; manual local labels \
+                              belong in a raw label body"
+                        .to_string(),
+                    line: lno,
+                    span: sp,
+                });
+            }
+            if content.starts_with('[') {
+                return Err(BadParseError {
+                    message: "inline register contracts attach to raw instructions; \
+                              symbolic blocks have no register contracts yet"
+                        .to_string(),
+                    line: lno,
+                    span: sp,
+                });
+            }
+            if let Some(item) = self.parse_symbolic_item(content, lno, sp.clone())? {
+                items.push(item);
+                continue;
+            }
+            let instrs = self.parse_instr_line(content, lno, sp)?;
+            for i in instrs {
+                items.push(BadBodyItem::Instr(i));
+            }
+            self.pos += 1;
+        }
+        let (off, c, lno) = self.lines.last().copied().unwrap_or((0, "", line));
+        Err(BadParseError {
+            message: "unterminated symbolic block - add a `}` on its own line"
+                .to_string(),
+            line: lno.max(line),
+            span: Span::new(off, off + c.len(), lno, 0),
+        })
+    }
+
+    fn parse_inline_items(
+        &mut self, text: &str, line: usize, span: Span,
+    ) -> Result<Vec<BadBodyItem>, BadParseError> {
+        let t = text.trim().trim_end_matches(';').trim();
+        if t == "break" {
+            return Ok(vec![BadBodyItem::Break(span)]);
+        }
+        if t == "continue" {
+            return Ok(vec![BadBodyItem::Continue(span)]);
+        }
+        if let Some(rest) = t.strip_prefix("let ") {
+            return Ok(vec![BadBodyItem::Let(parse_let_text(rest, span, line)?)]);
+        }
+        if let Some(a) = parse_assignment_text(t, span.clone(), line)? {
+            return Ok(vec![BadBodyItem::Assign(a)]);
+        }
+        let instrs = self.parse_instr_line(t, line, span)?;
+        Ok(instrs.into_iter().map(BadBodyItem::Instr).collect())
+    }
+
+    fn push_body_item(
+        &mut self, owner: &mut Option<Owner>, item: BadBodyItem, line: usize, span: Span,
+    ) -> Result<(), BadParseError> {
+        if self.pending_contract.is_some() {
+            return Err(BadParseError {
+                message: "an inline contract attaches to an instruction; symbolic \
+                          statements cannot carry register contracts"
+                    .to_string(),
+                line,
+                span,
+            });
+        }
+        match owner.as_mut() {
+            Some(Owner::Label(i)) => {
+                if let Some(BadTopLevel::Label(l)) = self.items.get_mut(*i) {
+                    l.body.push(item);
+                }
+            }
+            Some(Owner::Defn { idx, branch_rows, .. }) => {
+                if *branch_rows {
+                    return Err(BadParseError {
+                        message: "defn mixes branch rows with a symbolic body - branch \
+                                  defns contain only `target =>` rows"
+                            .to_string(),
+                        line,
+                        span,
+                    });
+                }
+                if let Some(BadTopLevel::Defn(d)) = self.items.get_mut(*idx) {
+                    if matches!(d.shape, BadDefnShape::Branch(_)) {
+                        d.shape = BadDefnShape::Sequence(Vec::new());
+                    }
+                    if let BadDefnShape::Sequence(body) = &mut d.shape {
+                        body.push(item);
+                    }
+                }
+            }
+            _ => {
+                return Err(BadParseError {
+                    message: "symbolic statement is outside any label or defn - put it \
+                              inside a global label, a `defn`, or a `bootstrap` body"
+                        .to_string(),
+                    line,
+                    span,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn append_local(&mut self, idx: usize, content: &str, span: Span) {
@@ -624,6 +871,7 @@ impl<'s> Parser<'s> {
             Vec::new()
         };
         Ok(Some(BadTopLevel::Label(BadLabel {
+            reserved_regs: Vec::new(),
             name: name.to_string(),
             local: false,
             contracts,
@@ -1181,6 +1429,168 @@ fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), Ba
         seen.push(key);
     }
     Ok(())
+}
+
+/// Find the first top-level `=` that is a real assignment operator
+/// (not `==`, `=>`, `<=`, `>=`, `!=`). Respects quotes/brackets/parens.
+fn find_top_assign_eq(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_str = !in_str,
+            b'[' | b'(' if !in_str => depth += 1,
+            b']' | b')' if !in_str => depth -= 1,
+            b'=' if !in_str && depth == 0 => {
+                let next = bytes.get(i + 1).copied();
+                let prev = if i == 0 { None } else { bytes.get(i - 1).copied() };
+                if matches!(next, Some(b'=') | Some(b'>')) {
+                    continue;
+                }
+                if matches!(prev, Some(b'=') | Some(b'<') | Some(b'>') | Some(b'!')) {
+                    continue;
+                }
+                return Some(i);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a `when` / `while` head at the first top-level `:` or `{`.
+/// Returns `(condition, tail)` where the tail still starts with the
+/// delimiter.
+fn split_cond_head<'a>(
+    rest: &'a str, line: usize, span: Span,
+) -> Result<(String, &'a str), BadParseError> {
+    let bytes = rest.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'"' => in_str = !in_str,
+            b'[' | b'(' if !in_str => depth += 1,
+            b']' | b')' if !in_str => depth -= 1,
+            b':' | b'{' if !in_str && depth == 0 => {
+                let cond = rest[..i].trim();
+                if cond.is_empty() {
+                    return Err(BadParseError {
+                        message: "`when`/`while` need a condition before `:` or `{`"
+                            .to_string(),
+                        line,
+                        span,
+                    });
+                }
+                return Ok((cond.to_string(), &rest[i..]));
+            }
+            _ => {}
+        }
+    }
+    Err(BadParseError {
+        message: "`when`/`while` need `:` (one statement) or `{` (block) after the \
+                  condition"
+            .to_string(),
+        line,
+        span,
+    })
+}
+
+fn parse_let_text(
+    rest: &str, span: Span, line: usize,
+) -> Result<crate::ast::bad::BadLet, BadParseError> {
+    let rest = rest.trim().trim_end_matches(';').trim();
+    let Some(eq) = find_top_assign_eq(rest) else {
+        return Err(BadParseError {
+            message: "`let` needs `let name[: Type] = value`".to_string(),
+            line,
+            span,
+        });
+    };
+    let left = rest[..eq].trim();
+    let value = rest[eq + 1..].trim();
+    if value.is_empty() {
+        return Err(BadParseError {
+            message: "`let` needs a value after `=`".to_string(),
+            line,
+            span,
+        });
+    }
+    let (name, ty) = match left.split_once(':') {
+        Some((n, t)) => (n.trim(), Some(t.trim().to_string())),
+        None => (left, None),
+    };
+    if name.is_empty() || !is_ident(name) || name.starts_with('.') {
+        return Err(BadParseError {
+            message: format!("`{name}` is not a valid symbolic value name"),
+            line,
+            span,
+        });
+    }
+    if matches!(&ty, Some(t) if t.is_empty()) {
+        return Err(BadParseError {
+            message: "a `let` type annotation needs a type after `:`".to_string(),
+            line,
+            span,
+        });
+    }
+    Ok(crate::ast::bad::BadLet {
+        name: name.to_string(),
+        ty,
+        value: value.to_string(),
+        span,
+    })
+}
+
+fn parse_assignment_text(
+    content: &str, span: Span, line: usize,
+) -> Result<Option<crate::ast::bad::BadAssign>, BadParseError> {
+    let c = content.trim().trim_end_matches(';').trim();
+    let Some(eq) = find_top_assign_eq(c) else { return Ok(None) };
+    let left = c[..eq].trim_end();
+    let value = c[eq + 1..].trim();
+    if value.is_empty() {
+        return Err(BadParseError {
+            message: "assignment needs a value after `=`".to_string(),
+            line,
+            span,
+        });
+    }
+    let (name, op) = if let Some(n) = left.strip_suffix("<<") {
+        (n, "<<")
+    } else if let Some(n) = left.strip_suffix(">>") {
+        (n, ">>")
+    } else if let Some(n) = left.strip_suffix('+') {
+        (n, "+")
+    } else if let Some(n) = left.strip_suffix('-') {
+        (n, "-")
+    } else if let Some(n) = left.strip_suffix('*') {
+        (n, "*")
+    } else if let Some(n) = left.strip_suffix('/') {
+        (n, "/")
+    } else if let Some(n) = left.strip_suffix('%') {
+        (n, "%")
+    } else if let Some(n) = left.strip_suffix('&') {
+        (n, "&")
+    } else if let Some(n) = left.strip_suffix('|') {
+        (n, "|")
+    } else if let Some(n) = left.strip_suffix('^') {
+        (n, "^")
+    } else {
+        (left, "")
+    };
+    let name = name.trim();
+    if name.is_empty() || !is_ident(name) || name.starts_with('.') {
+        // Not a symbolic assignment; let the instruction path diagnose it.
+        return Ok(None);
+    }
+    Ok(Some(crate::ast::bad::BadAssign {
+        name: name.to_string(),
+        op: op.to_string(),
+        value: value.to_string(),
+        span,
+    }))
 }
 
 fn validate_ident(s: &str, line: usize, span: Span) -> Result<(), BadParseError> {

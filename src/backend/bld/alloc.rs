@@ -154,7 +154,7 @@ fn allocate_label(l: BadLabel, regs: &BadRegisters, family: &str) -> Result<BadL
     if analysis.order.is_empty() {
         return Ok(l); // no virtuals — physical recipe, untouched
     }
-    let plan = Plan::build(&analysis, regs, family, &l.name)?;
+    let plan = Plan::build(&analysis, regs, family, &l.name, &l.reserved_regs)?;
     let body = rewrite(&l.body, &plan, l.span)?;
     Ok(BadLabel { body, ..l })
 }
@@ -199,15 +199,23 @@ fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
                 }
             }
             BadBodyItem::Site(site) => a.walk_site(site)?,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => {}
         }
     }
     // A loop's span ends at its LAST jump back to the head (the
     // structural backedge; `continue` jumps land before it).
     for (name, head) in &heads {
-        let dotted = format!(".{name}");
+        // `jmp_target` already strips the leading dot; compare the bare
+        // local name.
         let back = jumps
             .iter()
-            .filter(|j| j.0 == dotted && j.1 > *head)
+            .filter(|j| j.0 == *name && j.1 > *head)
             .map(|j| j.1)
             .max();
         if let Some(back) = back {
@@ -366,8 +374,9 @@ impl Plan {
         regs: &BadRegisters,
         family: &str,
         label: &str,
+        reserved: &[String],
     ) -> Result<Plan, String> {
-        let pools = Pools::load(regs, family);
+        let pools = Pools::load(regs, family, reserved);
         let intervals = build_intervals(a)?;
         let homes = assign_homes(&intervals, &pools)?;
         // Deterministic lists: intervals carry first-appearance order —
@@ -478,23 +487,24 @@ struct Pools {
 }
 
 impl Pools {
-    fn load(regs: &BadRegisters, family: &str) -> Pools {
-        let abi_gp = regs.abi_args(family);
-        let abi_fp = regs.abi_args_fp(family);
+    fn load(regs: &BadRegisters, family: &str, reserved: &[String]) -> Pools {
+        // ABI argument registers are usable as temporaries unless a
+        // parameter actually lives there (`reserved`). Call walls force
+        // live values to callee-saved/spill across calls.
         let mut int_pool: Vec<String> = (0..=15)
             .map(|i| format!("r{i}"))
             .filter(|r| {
                 regs.resolve(r, family).is_some()
-                    && !abi_gp.contains(r)
                     && r != "r0"
+                    && !reserved.contains(r)
             })
             .collect();
         let mut float_pool: Vec<String> = (0..=15)
             .map(|i| format!("f{i}"))
             .filter(|r| {
                 regs.resolve(r, family).is_some()
-                    && !abi_fp.contains(r)
                     && r != "f0"
+                    && !reserved.contains(r)
             })
             .collect();
         let scratch_int = take_scratches(&mut int_pool, regs, family);
@@ -711,6 +721,13 @@ fn rewrite(
                 rewrite_instr(ins, plan, span, &mut out)?;
             }
             BadBodyItem::Site(_) => out.push(item.clone()),
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => out.push(item.clone()),
         }
     }
     // Fall-off-the-end exit: restore the frame (no auto-ret — the naked

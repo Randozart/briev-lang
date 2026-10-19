@@ -145,6 +145,13 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             // 2026-10-01 (bad-site-blocks plan): sites declare no local
             // labels (v1) — nothing to scan inside them here.
             BadBodyItem::Site(_) => None,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => None,
         })
         .collect();
     // Single iterator chain (items → instrs → Name operands) — no nested
@@ -159,6 +166,13 @@ fn check_local_refs(label: &BadLabel, out: &mut Vec<Notice>) {
             // Sites: no local-label declarations inside (v1); default-row
             // operands resolve through the ordinary pipeline.
             BadBodyItem::Site(_) => None,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => None,
         })
         .flat_map(|instr| instr.operands.iter().map(move |op| (instr, op)));
     for (instr, op) in name_ops {
@@ -402,6 +416,13 @@ fn collect_acks<'a>(
                 // Sites: W-tier analysis scans core-pipeline rows; raw
                 // rows are target-owned (as in branch defns).
                 BadBodyItem::Site(_) => None,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => None,
             })
             .collect(),
         BadTopLevel::Defn(d) => {
@@ -411,6 +432,13 @@ fn collect_acks<'a>(
                         BadBodyItem::Instr(x) => Some(x),
                         BadBodyItem::Local(_) => None,
                         BadBodyItem::Site(_) => None,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_) => None,
                     })
                     .collect()
             } else {

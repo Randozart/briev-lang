@@ -85,6 +85,10 @@ pub struct BadLabel {
     /// Label-level contracts: `[pre: ...] [post: ...]` on the label line.
     pub contracts: Vec<BadContract>,
     pub body: Vec<BadBodyItem>,
+    /// ABI registers the recipe's parameters live in (leaf recipes that
+    /// bind params directly to argument registers). The allocator must
+    /// not assign a virtual there.
+    pub reserved_regs: Vec<String>,
     pub span: Span,
 }
 
@@ -99,6 +103,65 @@ pub enum BadBodyItem {
     /// family — the matching `target =>` row, else the default row. The
     /// replacement for the retired attached-exception syntax.
     Site(BadSite),
+    /// `let name[: Type] = expr;` — a symbolic value binding.
+    Let(BadLet),
+    /// `name = expr;` / `name += expr;` — assignment or compound
+    /// assignment to a symbolic value.
+    Assign(BadAssign),
+    /// `when cond { … }` / `when cond: stmt` — one-way guard. `.bad` has
+    /// no `else`.
+    When(BadWhen),
+    /// `loop { … }` — unbounded loop.
+    Loop(BadLoop),
+    /// `while cond { … }` — guarded loop.
+    While(BadWhile),
+    /// `break` — exit the innermost structured loop.
+    Break(Span),
+    /// `continue` — next iteration of the innermost structured loop.
+    Continue(Span),
+}
+
+/// `let name[: Type] = expr;` — the value text is parsed by the shared
+/// Briev expression parser during symbolic lowering.
+#[derive(Debug, Clone)]
+pub struct BadLet {
+    pub name: String,
+    pub ty: Option<String>,
+    pub value: String,
+    pub span: Span,
+}
+
+/// `name = expr;` or `name += expr;` (`op` is empty for plain `=`,
+/// otherwise the compound operator without the `=`).
+#[derive(Debug, Clone)]
+pub struct BadAssign {
+    pub name: String,
+    pub op: String,
+    pub value: String,
+    pub span: Span,
+}
+
+/// `when cond { … }` — no else branch by design.
+#[derive(Debug, Clone)]
+pub struct BadWhen {
+    pub cond: String,
+    pub then: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+/// `loop { … }`.
+#[derive(Debug, Clone)]
+pub struct BadLoop {
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+/// `while cond { … }`.
+#[derive(Debug, Clone)]
+pub struct BadWhile {
+    pub cond: String,
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
 }
 
 /// A local label definition inside a label body: `.loop:`.

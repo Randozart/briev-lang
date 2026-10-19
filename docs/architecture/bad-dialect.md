@@ -50,7 +50,7 @@ section .data
 msg: .asciz "hello from .bad\n"
 ```
 
-## Grammar (strictly line-oriented, zero braces)
+## Grammar (line-oriented; braces group structured blocks)
 
 | Line shape | Meaning |
 |---|---|
@@ -69,6 +69,10 @@ msg: .asciz "hello from .bad\n"
 | `raw <target>` ... `end raw` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
 | `raw <target> <name>` ... `end raw` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
+| `let name[: Type] = expr;` | symbolic value binding (assembly+ body) |
+| `name = expr;` / `name op= expr;` | assignment / compound assignment to a symbolic value |
+| `when cond: stmt` / `when cond { … }` | one-way guard. **No `else`**; write a second `when` or use a `local` label |
+| `loop { … }` / `while cond { … }` | structured loops; `break` / `continue` |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
 by default from `std/bad/friendly.bad` (the prelude); `brievc bad --raw`
@@ -185,6 +189,39 @@ Sub-width fields ride `ldb/ldub/ldh/lduh/stb/sth` via `.w8/.w16/.w32`
 width-token register rows (x86 `%al`, aarch64 `w`-regs). Template refs:
 `$N.w8` = width-qualified register; `$N!` = raw substitute (no imm
 prefix — x86 displacements are bare).
+
+## Symbolic bodies (assembly+)
+
+A label body that contains a symbolic statement (`let`, assignment, `when`,
+`loop`, `while`, `break`, `continue`) or a symbolic operand on a supported
+instruction is lowered through the BILLD expression engine and the
+register allocator, then spliced back as physical instructions.
+
+Supported instructions in a symbolic body:
+
+`mov`, `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`,
+`store`, `load`.
+
+Operandless raw splices: `ret`, `halt`, `nop`, `cli`, `sti`, `wfi`, `fence`,
+`tlbflush`, `mret`. Engine verbs (`DisableInterrupts`, `WriteControlReg`,
+`Store`, `Halt`, …) are statement calls; value-returning verbs are used in
+`let`/assignment.
+
+Rules:
+
+- Symbolic values are label-local. They are not visible in another label.
+- A raw instruction **with operands** cannot mix into a symbolic body —
+  put it in its own label (the allocator would not know its clobbers).
+- `when` has no `else`. Two-way branching is two `when`s or a `local` label.
+- A `ret`/`halt` splices after the symbolic code; the allocator inserts a
+  frame epilogue before any `ret` it can see.
+- Symbolic `defn` bodies are a follow-up; keep defns raw and call them from
+  a raw label for now.
+- The allocator treats loop-backedges as extending live ranges, reserves
+  parameter ABI registers, and uses the remaining ABI registers as temps
+  for leaf code (no frame unless pressure demands it).
+- In-place assignment (`x = x op k`, `x += k`) emits directly into `x`'s
+  register. `when cond: break` / `continue` emits one inverted branch.
 
 ## Registers
 

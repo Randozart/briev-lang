@@ -263,6 +263,13 @@ struct Body {
     vreg: usize,
     name: String,
     ret: Option<VClass>,
+    /// ABI registers parameters live in (leaf recipes bind them directly).
+    reserved: Vec<String>,
+    /// Names assigned anywhere in this recipe (`x = …`, `x += …`). A
+    /// `let` whose name is mutated cannot stay a compile-time constant:
+    /// the loop/condition lowering precedes the assignment and would fold
+    /// the stale value. Force storage at declaration instead.
+    mutated: std::collections::HashSet<String>,
 }
 
 impl Body {
@@ -277,6 +284,30 @@ impl Body {
             vreg: 0,
             name: name.to_string(),
             ret,
+            reserved: Vec::new(),
+            mutated: std::collections::HashSet::new(),
+        }
+    }
+}
+
+/// Collect assignment targets across the recipe (recursing through nested
+/// blocks and loops) so `st_let` can materialize storage for mutated
+/// names.
+fn collect_assigned(stmts: &[BldStmt], out: &mut std::collections::HashSet<String>) {
+    for st in stmts {
+        match st {
+            BldStmt::Assign { target: Expr::Identifier(n), .. } => {
+                out.insert(n.clone());
+            }
+            BldStmt::Block { body, .. } => collect_assigned(body, out),
+            BldStmt::When { then, otherwise, .. } => {
+                collect_assigned(then, out);
+                if let Some(els) = otherwise {
+                    collect_assigned(els, out);
+                }
+            }
+            BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => collect_assigned(body, out),
+            _ => {}
         }
     }
 }
@@ -908,6 +939,7 @@ impl<'a> BldLowerer<'a> {
     /// One recipe = ownership frame + exported label + lowered body.
     fn recipe_core(&mut self, head: RecipeHead<'_>) -> Result<(), String> {
         self.body = Body::new(head.name, head.ret);
+        collect_assigned(head.stmts, &mut self.body.mutated);
         let stash = stmts_contain_call(head.stmts);
         self.bind_params(head.name, head.params, stash)?;
         let stmts = head.stmts;
@@ -939,6 +971,7 @@ impl<'a> BldLowerer<'a> {
             local: false,
             contracts: Vec::new(),
             body: b.items,
+            reserved_regs: b.reserved,
             span: head.span,
         }));
         self.out.extend(b.trailing);
@@ -985,10 +1018,11 @@ impl<'a> BldLowerer<'a> {
             cur.take(*class);
             let home = if stash {
                 let v = self.fresh_vreg(*class);
-                let src = BadOperand::Name(reg);
+                let src = BadOperand::Name(reg.clone());
                 self.emit_copy(&v, src, *class)?;
                 v
             } else {
+                self.body.reserved.push(reg.clone());
                 reg
             };
             let binding = Binding { reg: Some(home), class: *class, konst: None };
@@ -1045,6 +1079,13 @@ impl<'a> BldLowerer<'a> {
         };
         let class = v.class;
         let binding = match (v.konst, &v.op) {
+            // Mutated names get storage at declaration so loop conditions
+            // and later reads see the runtime value, not the initial fold.
+            (Some(_), _) if self.body.mutated.contains(name) => {
+                let reg = self.fresh_vreg(class);
+                self.emit_copy(&reg, v.op.clone(), class)?;
+                Binding { reg: Some(reg), class, konst: None }
+            }
             (Some(k), _) => Binding { reg: None, class, konst: Some(k) },
             // A freshly emitted single-def value register becomes the
             // binding's storage directly — no second copy.
@@ -1058,6 +1099,48 @@ impl<'a> BldLowerer<'a> {
             }
         };
         self.scopes_insert(name, binding)
+    }
+
+    /// `x = x <op> r` into x's own register when the operation has an
+    /// in-place form. Safe because the destination is also the first
+    /// source; the allocator never places r in the same register while x
+    /// is live.
+    fn try_inplace_assign(
+        &mut self,
+        name: &str,
+        reg: &str,
+        class: VClass,
+        value: &Expr,
+    ) -> Result<bool, String> {
+        let Expr::BinaryOp(op, l, r) = value else { return Ok(false) };
+        let op = *op;
+        if matches!(
+            op,
+            BinaryOpKind::Eq
+                | BinaryOpKind::Neq
+                | BinaryOpKind::Lt
+                | BinaryOpKind::Gt
+                | BinaryOpKind::Le
+                | BinaryOpKind::Ge
+                | BinaryOpKind::And
+                | BinaryOpKind::Or
+                | BinaryOpKind::Concat
+        ) {
+            return Ok(false);
+        }
+        let Expr::Identifier(lhs) = l.as_ref() else { return Ok(false) };
+        if lhs != name {
+            return Ok(false);
+        }
+        let rv = self.expr(r)?;
+        let rv = self.promote(rv, class)?;
+        let mn = self.binop_mnemonic(op, class)?;
+        self.emit(mn, vec![
+            BadOperand::Name(reg.to_string()),
+            BadOperand::Name(reg.to_string()),
+            rv.op.clone(),
+        ], class)?;
+        Ok(true)
     }
 
     fn st_assign(&mut self, target: &Expr, value: &Expr) -> Result<(), String> {
@@ -1085,6 +1168,14 @@ impl<'a> BldLowerer<'a> {
                 });
             }
         };
+        // `x = x <op> r` writes in place: evaluate r, then emit the op
+        // with x's own register as the destination. Removes the temp +
+        // copy hand-tuned code never had.
+        if let Some(reg) = binding.reg.clone() {
+            if self.try_inplace_assign(&name, &reg, binding.class, value)? {
+                return Ok(());
+            }
+        }
         let v = self.expr(value)?;
         let v = self.promote(v, binding.class)?;
         match binding.reg {
@@ -1107,6 +1198,23 @@ impl<'a> BldLowerer<'a> {
         then: &[BldStmt],
         otherwise: Option<&[BldStmt]>,
     ) -> Result<(), String> {
+        // `when cond: break` / `when cond: continue` is one inverted
+        // conditional branch — no synthetic label, no extra jump.
+        if otherwise.is_none() && then.len() == 1 {
+            match &then[0] {
+                BldStmt::Break { .. } => {
+                    if let Some((_, end)) = self.body.loops.last().cloned() {
+                        return self.lower_cond(cond, &end, true);
+                    }
+                }
+                BldStmt::Continue { .. } => {
+                    if let Some((head, _)) = self.body.loops.last().cloned() {
+                        return self.lower_cond(cond, &head, true);
+                    }
+                }
+                _ => {}
+            }
+        }
         let else_l = self.fresh_label("whe");
         let end = self.fresh_label("whend");
         self.lower_cond(cond, &else_l, false)?;

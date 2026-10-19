@@ -205,6 +205,7 @@ impl<'a> Lowerer<'a> {
         }
         self.emit_items = pass1;
         self.layout_structs();
+        self.lower_symbolic_regions()?;
 
         // Pass 2: emission (take the vec — borrow split vs self.errors).
         let emit_items = std::mem::take(&mut self.emit_items);
@@ -233,6 +234,32 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Pass 2 emission: one match over the flattened items.
+    /// Lower symbolic label bodies through the BILLD expression/allocator
+    /// engine. Raw physical labels are untouched.
+    fn lower_symbolic_regions(&mut self) -> Result<(), String> {
+        let mut const_values = Vec::new();
+        for name in self.consts.keys().cloned().collect::<Vec<_>>() {
+            let v = self.const_value(&name, &[])?;
+            const_values.push((name, v));
+        }
+        let intrinsics = crate::backend::bld::registry::BldIntrinsics::load();
+        let ctx = crate::backend::bad::symbolic::SymCtx {
+            isa: self.isa,
+            regs: self.regs,
+            family: &self.family,
+            aliases: &self.aliases,
+            consts: &self.consts,
+            const_values: &const_values,
+            label_names: &self.label_names,
+            defns: &self.defns.keys().cloned().collect(),
+            intrinsics: &intrinsics,
+        };
+        let mut items = std::mem::take(&mut self.emit_items);
+        let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
+        self.emit_items = items;
+        res
+    }
+
     fn emit_pass(&mut self, items: &[BadTopLevel]) {
         for item in items {
             match item {
@@ -358,6 +385,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             BadTopLevel::Directive(d) => self.collect_directive(d),
+            // Data labels are symbols too; the symbolic-value inference
+            // must not mistake `mov r0, msg` for a virtual.
+            BadTopLevel::Data(d) => {
+                self.label_names.insert(d.name.clone());
+            }
             BadTopLevel::Label(l) if !l.local => {
                 if !self.label_names.insert(l.name.clone()) {
                     self.errors.push(format!(
@@ -765,6 +797,16 @@ impl<'a> Lowerer<'a> {
                         self.errors.push(e);
                     }
                 }
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_) => self.errors.push(
+                    "symbolic statement reached emission - the symbolic lowering pass did not run"
+                        .to_string(),
+                ),
             }
         }
         self.current_locals = saved_locals;
@@ -1248,6 +1290,18 @@ impl<'a> Lowerer<'a> {
                 }
                 BadBodyItem::Site(site) => {
                     self.emit_site_in_defn(site, env, depth)?;
+                }
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_) => {
+                    return Err(
+                        "symbolic statement inside a defn reached emission - the symbolic                          lowering pass did not run"
+                            .to_string(),
+                    )
                 }
             }
         }
