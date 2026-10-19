@@ -341,6 +341,8 @@ end
 | 2026-10-19 | `1d940b71` | `call defn` ABI staging: direct moves when no parallel-move cycle; staging only on collisions. |
 | 2026-10-19 | `2f34597f` | `Park` name parity between symbolic and raw engine verbs; `std/bad/profiles/rv64-qemu-virt.bad` constants + UART steps. |
 | 2026-10-19 | `1382e595` | Raw `.bad` engine defn calls keep their arity when an intrinsic shares the name (`ReadControlReg n, dst` vs `ReadControlReg(n)`). |
+| 2026-10-19 | `73e81d84` | `.bld` dialect retired: routing/CLI/backend-kind/source-kind/target row/examples/gates/highlighter/docs/SPEC removed; symbolic engine stays internal. `config/bad-verbs.dbvl` is the internal verb table. |
+| 2026-10-19 | `d762d032` | Pure `.bad` rv64 QEMU boot gate (`boot_plus_rv64.bad`, `qemu-rv64-boot-plus-bad.sh`); `brievc bad --linker-script`. |
 
 Remaining: profile imports, data-label address expressions in symbolic
 code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,

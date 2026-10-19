@@ -11,6 +11,7 @@ lexer, typecheck, or reactor). Compile with:
 
 ```sh
 brievc bad <file.bad> [--target <triple>] [--emit-asm]
+         [--linker-script <path>] [--raw-bin] [--run]
 ```
 
 ## The one-page program
