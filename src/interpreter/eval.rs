@@ -2409,19 +2409,13 @@ pub fn eval_statement(
         // 2026-08-22 (Phase 8): yield; is a no-op in the eager reference
         // scheduler — the concurrent scheduler's future suspension point.
         Statement::Yield => Ok(Value::Void),
-        // 2026-08-23 (SPEC §10.x): check — runtime assertion for unprovable
-        // loops. Failure triggers rollback.
-        Statement::Check(cond) => {
-            let v = eval_expr(cond, heap, bindings, functions)?;
-            let ok = v.is_true();
-            if !ok {
-                Err(RuntimeError::ContractViolation(format!(
-                    "liveness check failed: {}", cond
-                )))
-            } else {
-                Ok(Value::Void)
-            }
-        }
+        // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
+        // regularity.md): check is STATIC-ONLY — a proof dialogue with the
+        // typechecker, fully consumed at compile time. There is nothing to
+        // execute: the typechecker has proven the condition or rejected the
+        // program. Both engines agree a static-only check has no runtime
+        // meaning; the former runtime ContractViolation is retired.
+        Statement::Check(_cond) => Ok(Value::Void),
         Statement::Let { name, ty, expr, .. } => {
             if let Some(expr) = expr {
                 let val = eval_let_binding(ty.as_ref(), expr, heap, bindings, functions)?;

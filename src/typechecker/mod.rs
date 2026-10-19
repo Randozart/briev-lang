@@ -3623,11 +3623,55 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     context: format!("liveness check '{}'", cond),
                 });
             }
-            // 2026-10-19 (contract tiers, Option 1): a check records its
-            // condition as fact for downstream calls (SPEC §10.x: "after a
-            // successful check, the solver records expr as a known fact").
-            // The runtime check itself is emitted by the backend (the one
-            // deliberate runtime assertion form — trap + exit 101).
+            // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
+            // regularity.md): a check is a PROOF DIALOGUE, static-only. The
+            // programmer asks the compiler "X holds here, correct?"; the
+            // compiler answers proven (facts recorded, nothing emitted — the
+            // statement is fully consumed at compile time), refuted (error
+            // with the trivial proof), or cannot-tell (error: establish it
+            // with a guard, or the condition is genuinely dynamic →
+            // Result/when is the idiom, not an assertion). There is no
+            // runtime check to emit — the backend no-op is correct by this
+            // ruling and the interpreter's runtime enforcement retires.
+            let verdict = crate::proof_engine::callgate::prove_precondition(cond, &ctx.known_facts);
+            if verdict != crate::proof_engine::callgate::Verdict::Proven {
+                // Same rollout stage as the call gate
+                // (config/contracts.dbvl `policy:`; ContractGatePolicy).
+                let policy = crate::config_tuning::contract_gate_policy();
+                let message = match verdict {
+                    crate::proof_engine::callgate::Verdict::Refuted => format!(
+                        "check '{}' is REFUTED at this point — the established facts \
+                         contradict it (the trivial proof: evaluate the constraint \
+                         against what the guards and initializers already fixed). \
+                         Remove the check or fix the code that makes it false",
+                        cond
+                    ),
+                    _ => format!(
+                        "check '{}' cannot be proven from the facts established at \
+                         this point. Establish it first (a 'when' guard or an \
+                         initializer that makes the constraint true), or the \
+                         condition is genuinely dynamic — handle it with an \
+                         explicit Result/when boundary instead of an assertion",
+                        cond
+                    ),
+                };
+                match policy {
+                    crate::config_tuning::ContractGatePolicy::Deny => {
+                        return Err(TypeError::InvalidOperation {
+                            operation: message,
+                            type_name: "contract".into(),
+                        });
+                    }
+                    crate::config_tuning::ContractGatePolicy::Warn => {
+                        eprintln!("warning: {message}");
+                    }
+                    crate::config_tuning::ContractGatePolicy::Allow => {}
+                }
+            }
+            // A check RECORDS its condition as fact for downstream calls and
+            // checks (SPEC §10.x) — the proven case's whole point. Under the
+            // migration stage (allow/warn) unproven checks also record: the
+            // author asserted it; the deny stage refuses such facts outright.
             let established = crate::proof_engine::callgate::facts_of(cond);
             ctx.known_facts.extend(established);
             Ok(())
@@ -8056,6 +8100,80 @@ mod tests {
     }
 
     // ── 2026-10-16 (tails plan §2): tail typecheck ─────────────────────────
+
+    // ── 2026-10-20 (contract tiers, ruling ii): check = static-only ───────
+
+    /// Install the deny stage for one test; restore allow on drop. The
+    /// policy is a process-global (AtomicU8), so the policy-touching tests
+    /// hold POLICY_LOCK — parallel tests with different expected verdicts
+    /// would race.
+    static POLICY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct DenyGate;
+    impl DenyGate {
+        fn install(_guard: &std::sync::MutexGuard<'static, ()>) -> Self {
+            crate::config_tuning::install_contract_gate_policy(
+                crate::config_tuning::ContractGatePolicy::Deny,
+            );
+            DenyGate
+        }
+    }
+    impl Drop for DenyGate {
+        fn drop(&mut self) {
+            crate::config_tuning::install_contract_gate_policy(
+                crate::config_tuning::ContractGatePolicy::Allow,
+            );
+        }
+    }
+
+    /// A proven check passes under `deny` and its fact discharges a
+    /// downstream contracted call.
+    #[test]
+    fn check_proven_discharges_downstream() {
+        let _lock = POLICY_LOCK.lock().unwrap();
+        let _deny = DenyGate::install(&_lock);
+        check(
+            "defn pos(x: Int) -> Int [x > 0] { term x; };\n\
+             defn f() -> Int { let n: Int = 7; check n > 0; term pos(n); };",
+        )
+        .expect("proven check discharges the downstream contract");
+    }
+
+    /// A refuted check is a compile error under `deny`.
+    #[test]
+    fn check_refuted_is_error() {
+        let _lock = POLICY_LOCK.lock().unwrap();
+        let _deny = DenyGate::install(&_lock);
+        let errs = check("defn f() -> Int { let n: Int = 5; check n < 0; term n; };")
+            .expect_err("a check the facts contradict must be rejected");
+        assert!(
+            errs.iter().any(|e| format!("{e:?}").contains("REFUTED")),
+            "names the refutation: {errs:#?}"
+        );
+    }
+
+    /// An unprovable check is a compile error under `deny`.
+    #[test]
+    fn check_unproven_is_error() {
+        let _lock = POLICY_LOCK.lock().unwrap();
+        let _deny = DenyGate::install(&_lock);
+        let errs = check("defn f(x: Int) -> Int { check x > 0; term x; };")
+            .expect_err("an unprovable check must be rejected under deny");
+        assert!(
+            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            "names the fix: {errs:#?}"
+        );
+    }
+
+    /// The migration stage (allow, the default) rejects nothing.
+    #[test]
+    fn check_unproven_allowed_under_allow_stage() {
+        let _lock = POLICY_LOCK.lock().unwrap();
+        crate::config_tuning::install_contract_gate_policy(
+            crate::config_tuning::ContractGatePolicy::Allow,
+        );
+        check("defn f(x: Int) -> Int { check x > 0; term x; };")
+            .expect("the allow stage is the migration stage");
+    }
 
     /// A tail matching the declared output type is fine.
     #[test]

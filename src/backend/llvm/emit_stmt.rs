@@ -2496,10 +2496,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
         // 2026-08-23 (SPEC §10.x): check — runtime assertion. Branches to
         // trap/rollback if the condition is false; falls through otherwise.
         Statement::Check(cond) => {
+            // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
+            // regularity.md): check is STATIC-ONLY — the typechecker proves
+            // it or rejects the program; a static-only check has no runtime
+            // meaning, so this no-op is the CORRECT lowering (BUGS.md
+            // finding #1 closes as by-design). The condition still flows
+            // through the emitter so any emission side effects of its
+            // subexpressions stay ordered; the register result is discarded.
             let cond_reg = backend.emit_expr(out, cond, indent);
             let cond_i1 = guard_cond_i1(backend, out, indent, &cond_reg);
-            // For now: no-op on success. Phase C: branch to a rollback
-            // block for unprovable loops.
             let noop = backend.fun.gen_reg();
             writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
             TypedRegister { name: noop, ty: Type::void() }

@@ -192,6 +192,35 @@ fn literal_cmp(l: &Expr, op: BinaryOpKind, r: &Expr) -> Option<bool> {
     Some(verdict)
 }
 
+/// The NEGATION of a canonical constraint, in the same canonical family:
+/// not(T <= c) = -T < -c; not(T < c) = -T <= -c; not(T = c) = T != c;
+/// not(T != c) = T = c. Extracted from `prove_conjunct` (Praetor).
+fn negate_canonical(g: &LinC) -> Option<LinC> {
+    match g.op {
+        BinaryOpKind::Le => Some(LinC {
+            terms: g.terms.iter().map(|(a, k)| (a.clone(), -k)).collect(),
+            const_: -g.const_,
+            op: BinaryOpKind::Lt,
+        }),
+        BinaryOpKind::Lt => Some(LinC {
+            terms: g.terms.iter().map(|(a, k)| (a.clone(), -k)).collect(),
+            const_: -g.const_,
+            op: BinaryOpKind::Le,
+        }),
+        BinaryOpKind::Eq => Some(LinC {
+            terms: g.terms.clone(),
+            const_: g.const_,
+            op: BinaryOpKind::Neq,
+        }),
+        BinaryOpKind::Neq => Some(LinC {
+            terms: g.terms.clone(),
+            const_: g.const_,
+            op: BinaryOpKind::Eq,
+        }),
+        _ => None,
+    }
+}
+
 /// Is the goal conjunct PROVEN by this fact? Both normalized: fact
 /// `F op1 c1`, goal `F op2 c2` over the SAME linear term.
 fn fact_entails(fact: &LinC, goal: &LinC) -> bool {
@@ -204,7 +233,10 @@ fn fact_entails(fact: &LinC, goal: &LinC) -> bool {
         (BinaryOpKind::Le, BinaryOpKind::Le) => fact.const_ <= goal.const_,
         (BinaryOpKind::Lt, BinaryOpKind::Lt) => fact.const_ <= goal.const_,
         (BinaryOpKind::Le, BinaryOpKind::Lt) => fact.const_ < goal.const_,
-        (BinaryOpKind::Lt, BinaryOpKind::Le) => fact.const_ + 1.0 <= goal.const_, // int ints only; conservative for reals
+        // A STRICT fact entails the NON-STRICT goal at the same constant
+        // (T < c ⇒ T <= c — no gap needed). The gap belongs to the reverse
+        // direction (Le → Lt), kept real-conservative above.
+        (BinaryOpKind::Lt, BinaryOpKind::Le) => fact.const_ <= goal.const_,
         (BinaryOpKind::Eq, BinaryOpKind::Le) => true,
         (BinaryOpKind::Eq, BinaryOpKind::Lt) => false, // real semantics: eq gives < only if strictness known; conservative
         (BinaryOpKind::Eq, BinaryOpKind::Eq) => fact.const_ == goal.const_,
@@ -267,31 +299,9 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
     if proven {
         return Verdict::Proven;
     }
-    // Refutation: some fact entails the goal's NEGATION, produced in the
-    // same canonical family: not(T <= c) = -T < -c; not(T < c) = -T <= -c;
-    // not(T = c) = T != c; not(T != c) = T = c.
-    let negated = match g.op {
-        BinaryOpKind::Le => LinC {
-            terms: g.terms.iter().map(|(a, k)| (a.clone(), -k)).collect(),
-            const_: -g.const_,
-            op: BinaryOpKind::Lt,
-        },
-        BinaryOpKind::Lt => LinC {
-            terms: g.terms.iter().map(|(a, k)| (a.clone(), -k)).collect(),
-            const_: -g.const_,
-            op: BinaryOpKind::Le,
-        },
-        BinaryOpKind::Eq => LinC {
-            terms: g.terms.clone(),
-            const_: g.const_,
-            op: BinaryOpKind::Neq,
-        },
-        BinaryOpKind::Neq => LinC {
-            terms: g.terms.clone(),
-            const_: g.const_,
-            op: BinaryOpKind::Eq,
-        },
-        _ => return Verdict::Unproven,
+    // Refutation: some fact entails the goal's NEGATION.
+    let Some(negated) = negate_canonical(&g) else {
+        return Verdict::Unproven;
     };
     for f in facts {
         let Some((op, l, r)) = (match f {
@@ -506,6 +516,14 @@ mod tests {
     fn unproven_without_facts() {
         let goal = e("off < buf.len");
         assert_eq!(prove_precondition(&goal, &[]), Verdict::Unproven);
+    }
+
+    #[test]
+    fn initializer_fact_refutes_literal_goal() {
+        // let n = 5 establishes `n > 0`; goal `n < 0` is its negation.
+        let facts = vec![e("n > 0")];
+        let goal = e("n < 0");
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Refuted);
     }
 
     #[test]
