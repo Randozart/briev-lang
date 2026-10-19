@@ -135,6 +135,14 @@ pub struct TypecheckContext<'a> {
     /// 2026-07-31: User function/txn parameter types, keyed by name. Used to
     /// validate call arguments (Phase 2 — re-establish type validation).
     fn_param_types: HashMap<String, Vec<Type>>,
+    /// 2026-10-19 (contract tiers, Option 1): callee preconditions (name →
+    /// param names + precondition) for the call-site proof gate.
+    fn_contracts: HashMap<String, (Vec<String>, crate::ast::Expr)>,
+    /// 2026-10-19 (contract tiers): facts known at the current program
+    /// point — guard conditions, `check` statements, and the enclosing
+    /// defn's own precondition. Pushed/popped by infer_statement; killed
+    /// (conservatively) when a variable is reassigned or shadowed.
+    known_facts: Vec<crate::ast::Expr>,
     /// 2026-07-31: The declared output type of the defn/txn currently being
     /// checked. Used to validate `term`/`term!` values.
     current_output_type: Option<Type>,
@@ -220,6 +228,8 @@ impl<'a> TypecheckContext<'a> {
             type_members: HashMap::new(),
             type_params: HashMap::new(),
             fn_param_types: HashMap::new(),
+            fn_contracts: HashMap::new(),
+            known_facts: Vec::new(),
             current_output_type: None,
             type_protocols: HashMap::new(),
             type_max_bits: HashMap::new(),
@@ -2000,6 +2010,56 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         return Ok(*f_ret);
     }
 
+    // 2026-10-19 (contract tiers, Option 1 ruling — plan
+    // 2026-10-19-contract-tiers-and-regularity.md): the CALL-SITE CONTRACT
+    // GATE. Every call to a contracted defn must PROVE the callee's
+    // precondition from the facts known at this program point (guard
+    // conditions, check statements, this body's own contract, with the
+    // actual arguments substituted in). Refuted → compile error with the
+    // counterexample; unproven → compile error with the fix (establish the
+    // guard, or make the dynamic boundary explicit with Result/Option —
+    // the ws_decode idiom). There is no runtime fallback: contracts are
+    // pure static proofs.
+    if let Some((callee_params, pre)) = ctx.fn_contracts.get(name).cloned() {
+        let goal =
+            crate::proof_engine::callgate::substitute_params(&pre, &callee_params, args);
+        let verdict = crate::proof_engine::callgate::prove_precondition(&goal, &ctx.known_facts);
+        if verdict != crate::proof_engine::callgate::Verdict::Proven {
+            // Rollout stage (config/contracts.dbvl `policy:` row): `allow`
+            // (migration) rejects nothing, `warn` announces, `deny` is the
+            // Option-1 end state. See config_tuning::ContractGatePolicy.
+            let policy = crate::config_tuning::contract_gate_policy();
+            let message = match verdict {
+                crate::proof_engine::callgate::Verdict::Refuted => format!(
+                    "call to '{}' — the contract is REFUTED at this call: '{}'. The \
+                     arguments contradict the precondition; fix the argument, add \
+                     the establishing guard, or remove the impossible call",
+                    name, goal
+                ),
+                _ => format!(
+                    "call to '{}' — the precondition '{}' is not provable at this \
+                     call site. Establish it before the call (a 'when' guard or \
+                     'check' naming the constraint over the actual arguments), or \
+                     make the dynamic boundary explicit: return a Result instead \
+                     of demanding a proof the caller cannot supply",
+                    name, goal
+                ),
+            };
+            match policy {
+                crate::config_tuning::ContractGatePolicy::Deny => {
+                    return Err(TypeError::InvalidOperation {
+                        operation: message,
+                        type_name: "contract".into(),
+                    });
+                }
+                crate::config_tuning::ContractGatePolicy::Warn => {
+                    eprintln!("warning: {message}");
+                }
+                crate::config_tuning::ContractGatePolicy::Allow => {}
+            }
+        }
+    }
+
     // User function call — validate args against param types, then return type.    // 2026-07-31 (Phase 2): call arguments must match the callee's parameter
     // types — no implicit coercion (literal Parse-ops excepted).
     // 2026-08-14 (generic `defn f<T>` dispatch): a generic defn's params are
@@ -2771,6 +2831,20 @@ fn elaborate_stmts(stmts: &mut [Statement], ctx: &mut TypecheckContext, errors: 
 fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
     match stmt {
         Statement::Let { name, names, ty, expr, .. } => {
+            // 2026-10-19 (contract tiers): a (re)binding conservatively kills
+            // every fact mentioning the bound name(s) — then re-derives what
+            // the initializer establishes (v2: initializer facts).
+            ctx.known_facts
+                .retain(|f| !crate::proof_engine::callgate::mentions(f, name));
+            if let Some(init) = expr {
+                let mut bound: Vec<&String> = names.iter().collect();
+                bound.push(&name);
+                for n in bound {
+                    if let Some(f) = crate::proof_engine::callgate::initializer_fact(n, init) {
+                        ctx.known_facts.push(f);
+                    }
+                }
+            }
             if let Some(e) = expr {
                 elaborate_expr(e, ctx, errors);
             }
@@ -3549,9 +3623,30 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                     context: format!("liveness check '{}'", cond),
                 });
             }
+            // 2026-10-19 (contract tiers, Option 1): a check records its
+            // condition as fact for downstream calls (SPEC §10.x: "after a
+            // successful check, the solver records expr as a known fact").
+            // The runtime check itself is emitted by the backend (the one
+            // deliberate runtime assertion form — trap + exit 101).
+            let established = crate::proof_engine::callgate::facts_of(cond);
+            ctx.known_facts.extend(established);
             Ok(())
         }
         Statement::Let { name, names, ty, expr, .. } => {
+            // 2026-10-19 (contract tiers): a (re)binding conservatively kills
+            // every fact mentioning the bound name(s) — then re-derives what
+            // the initializer establishes (v2: initializer facts).
+            ctx.known_facts
+                .retain(|f| !crate::proof_engine::callgate::mentions(f, name));
+            if let Some(init) = expr {
+                let mut bound: Vec<&String> = names.iter().collect();
+                bound.push(&name);
+                for n in bound {
+                    if let Some(f) = crate::proof_engine::callgate::initializer_fact(n, init) {
+                        ctx.known_facts.push(f);
+                    }
+                }
+            }
             // 2026-08-09 (init kind, Phase 2): a `let` declaring an `init`
             // name would shadow the seeded invariant — reject the shadow.
             if names.iter().any(|n| ctx.init_names.contains(n)) {
@@ -3704,6 +3799,37 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Assign(lhs, rhs) => {
+            // 2026-10-19 (contract tiers): an assignment conservatively kills
+            // every fact mentioning the written variable (a bare-identifier
+            // target invalidates its facts; field/index writes kill the BASE
+            // name — buffer contents changed).
+            {
+                let mut kill: Vec<String> = Vec::new();
+                match lhs {
+                    Expr::Identifier(v) => kill.push(v.clone()),
+                    Expr::Index(base, _) | Expr::Field(base, _) => {
+                        if let Expr::Identifier(b) = base.as_ref() {
+                            kill.push(b.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                for v in kill {
+                    ctx.known_facts
+                        .retain(|f| !crate::proof_engine::callgate::mentions(f, &v));
+                }
+                // v2 re-derivation: `v = v + e` (or mirrored) keeps `v >= 0`
+                // when the pre-assignment facts knew `v >= 0` and every atom
+                // of `e` is known non-negative — accumulators and counters
+                // carry their sign through ordinary code.
+                if let Expr::Identifier(v) = lhs {
+                    if let Some(f) = crate::proof_engine::callgate::rederives_nonneg(
+                        v, rhs, &ctx.known_facts,
+                    ) {
+                        ctx.known_facts.push(f);
+                    }
+                }
+            }
             // 2026-08-09 (init kind, Phase 2): an `init` is seeded exactly once
             // (its declaration) and is immutable for the run — any later write
             // to it is a compile error, not a runtime rebind.
@@ -4012,9 +4138,17 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
         }
         Statement::Guarded(cond, body) => {
             infer_type_only(cond, ctx)?;
+            // 2026-10-19 (contract tiers, Option 1): a guard ESTABLISHES its
+            // condition as fact inside the body — this is exactly how
+            // bounds-checked reads discharge (`when off + 4 <= buf.len {
+            // get_u16_be(buf, off + 2) }`).
+            let established = crate::proof_engine::callgate::facts_of(cond);
+            let base = ctx.known_facts.len();
+            ctx.known_facts.extend(established);
             for stmt in body {
                 infer_statement(stmt, ctx)?;
             }
+            ctx.known_facts.truncate(base);
             Ok(())
         }
         Statement::Gate(cond) => {
@@ -4792,6 +4926,41 @@ pub fn check_program_with_target(
         })
         .collect();
 
+    // 2026-10-19 (contract tiers, Option 1 ruling — plan
+    // 2026-10-19-contract-tiers-and-regularity.md): per-DEFN contracts for
+    // call-site discharge — name → (param names, precondition). A
+    // transaction's precondition is a reactive wake condition (scheduling
+    // obligation), NOT a call obligation — txn call sites are out of the
+    // gate's scope by design.
+    let fn_contracts: HashMap<String, (Vec<String>, crate::ast::Expr)> = items
+        .iter()
+        .filter_map(|item| {
+            fn defn_contract(
+                name: String,
+                d: &Definition,
+            ) -> Option<(String, (Vec<String>, crate::ast::Expr))> {
+                if matches!(d.contract.pre_condition, crate::ast::Expr::Bool(true)) {
+                    return None;
+                }
+                Some((
+                    name,
+                    (
+                        d.parameters.iter().map(|(p, _)| p.clone()).collect(),
+                        d.contract.pre_condition.clone(),
+                    ),
+                ))
+            }
+            match item {
+                TopLevel::Definition(d) => defn_contract(d.name.clone(), d),
+                TopLevel::Export(e) => match &*e.inner {
+                    TopLevel::Definition(d) => defn_contract(d.name.clone(), d),
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+        .collect();
+
     // 2026-08-14 (generic `defn f<T>` dispatch): a defn's declared type params
     // (e.g. `["T"]` for `defn first<T>`), for call-site inference + substitution.
     let fn_type_params: HashMap<String, Vec<String>> = items
@@ -5206,6 +5375,7 @@ pub fn check_program_with_target(
         fn_return_types: &fn_return_types,
         optional_frgns: &optional_frgns,
         fn_param_types: &fn_param_types,
+        fn_contracts: &fn_contracts,
         fn_type_params: &fn_type_params,
         fn_type_param_bounds: &fn_type_param_bounds,
         all_parse_bindings: &all_parse_bindings,
@@ -5255,6 +5425,7 @@ pub fn check_program_with_target(
         mctx.type_members = all_type_members.clone();
         mctx.type_params = all_type_params.clone();
         mctx.fn_param_types = fn_param_types.clone();
+        mctx.fn_contracts = fn_contracts.clone();
         mctx.type_protocols = all_type_protocols.clone();
         mctx.type_max_bits = all_type_max_bits.clone();
         for (name, ty) in &fn_return_types {
@@ -6013,6 +6184,9 @@ struct CheckEnv<'a> {
     fn_return_types: &'a HashMap<String, Type>,
     optional_frgns: &'a std::collections::HashSet<String>,
     fn_param_types: &'a HashMap<String, Vec<Type>>,
+    /// 2026-10-19 (contract tiers, Option 1): callee preconditions for
+    /// call-site discharge. Definitions only (txn pres are wake conditions).
+    fn_contracts: &'a HashMap<String, (Vec<String>, crate::ast::Expr)>,
     /// 2026-08-14 (generic `defn f<T>`): declared type params per defn.
     fn_type_params: &'a HashMap<String, Vec<String>>,
     /// 2026-10-13 (static trait-constrained generics): per-defn type-param
@@ -6132,6 +6306,9 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     for (name, ty) in env.fn_return_types {
         ctx.fn_return_types.insert(name.clone(), ty.clone());
     }
+    for (name, contract) in env.fn_contracts {
+        ctx.fn_contracts.insert(name.clone(), contract.clone());
+    }
     for name in env.optional_frgns {
         ctx.optional_frgns.insert(name.clone());
     }
@@ -6175,9 +6352,16 @@ fn check_top_level<'a>(
                 .into_iter()
                 .filter_map(|(param, bound)| bound.map(|trait_name| (param, trait_name)))
                 .collect();
+            // 2026-10-19 (contract tiers, Option 1): a body MAY assume its own
+            // precondition — facts compose through call chains (get_u16_be's
+            // body proves get_u8 calls from get_u16_be's own contract).
+            let own_pre = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
+            let fact_base = ctx.known_facts.len();
+            ctx.known_facts.extend(own_pre);
             for stmt in &defn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
+            ctx.known_facts.truncate(fact_base);
             ctx.active_type_param_bounds.clear();
             Ok(())
         }

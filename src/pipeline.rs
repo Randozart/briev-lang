@@ -813,6 +813,38 @@ pub fn check_source(file_path: &str, source: &str) -> Result<(), String> {
     check_source_for(file_path, source, None)
 }
 
+/// 2026-10-19 (contract tiers rollout): read the gate's stage from
+/// `config/contracts.dbvl` (row: `policy: allow|warn|deny`). Absent file or
+/// row = `allow` — the migration stage. The flip to `deny` is the config
+/// commit that ends the stdlib contract migration (plan
+/// 2026-10-19-contract-tiers-and-regularity.md).
+fn install_contract_gate_from_config() {
+    use crate::config_tuning::{install_contract_gate_policy, ContractGatePolicy};
+    let path = crate::resource_root().join("config/contracts.dbvl");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(db) = crate::dbriev::config_db::ConfigDb::from_quoted_str(&content) else {
+        eprintln!("warning: config/contracts.dbvl parse error — gate policy stays 'allow'");
+        return;
+    };
+    let Some(raw) = db.field_string("policy", 0) else {
+        return;
+    };
+    let policy = match raw.trim() {
+        "warn" => ContractGatePolicy::Warn,
+        "deny" => ContractGatePolicy::Deny,
+        "allow" => ContractGatePolicy::Allow,
+        other => {
+            eprintln!(
+                "warning: config/contracts.dbvl: unknown policy '{other}' — gate policy stays 'allow'"
+            );
+            return;
+        }
+    };
+    install_contract_gate_policy(policy);
+}
+
 /// 2026-09-14 (machine-entry plan): check with an explicit target triple —
 /// mechanism-less `node @ vector` declarations are target-relative (the
 /// active profile names the mechanism), so target-gated sources need the
@@ -823,6 +855,7 @@ pub fn check_source_for(
     source: &str,
     triple_override: Option<&str>,
 ) -> Result<(), String> {
+    install_contract_gate_from_config();
     let default_opts = BuildOptions {
         file_path: file_path.to_string(),
         triple_override: triple_override.map(|t| t.to_string()),

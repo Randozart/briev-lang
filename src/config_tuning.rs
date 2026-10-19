@@ -514,6 +514,44 @@ impl Drop for SettingsGuard {
     }
 }
 
+/// 2026-10-19 (contract tiers, Option 1 — plan
+/// 2026-10-19-contract-tiers-and-regularity.md): the call-site contract
+/// gate's ROLLOUT STAGE. `Allow` (default, migration stage) = the gate
+/// computes verdicts but rejects nothing; `Warn` = each refuted/unproven
+/// site announces itself on stderr; `Deny` = the Option-1 end state —
+/// refuted and unproven contracted call sites are compile errors. This is
+/// the compiler's own migration stage (the IrrPolicy precedent), not a
+/// per-call-site escape hatch: the flip to `deny` is a config commit once
+/// the stdlib contract migration lands (90 contracted fns / 23k sites
+/// censused 2026-10-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractGatePolicy {
+    Allow,
+    Warn,
+    Deny,
+}
+
+static CONTRACT_GATE_POLICY: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+/// The effective gate policy: 0 = Allow, 1 = Warn, 2 = Deny.
+pub fn contract_gate_policy() -> ContractGatePolicy {
+    match CONTRACT_GATE_POLICY.load(std::sync::atomic::Ordering::Acquire) {
+        1 => ContractGatePolicy::Warn,
+        2 => ContractGatePolicy::Deny,
+        _ => ContractGatePolicy::Allow,
+    }
+}
+
+pub fn install_contract_gate_policy(policy: ContractGatePolicy) {
+    let v = match policy {
+        ContractGatePolicy::Allow => 0u8,
+        ContractGatePolicy::Warn => 1,
+        ContractGatePolicy::Deny => 2,
+    };
+    CONTRACT_GATE_POLICY.store(v, std::sync::atomic::Ordering::Release);
+}
+
 /// 2026-09-30 (D30): how the module treats a site-local `irr` (D29).
 /// `Allow` (default) = silent suppression; `Warn` = each use announces
 /// itself; `Deny` = any `irr` is a compile error. Warnings-only policy —
