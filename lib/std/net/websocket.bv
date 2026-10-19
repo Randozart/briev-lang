@@ -1,0 +1,240 @@
+// websocket - RFC 6455 frame encode/decode (net stack L3c).
+//
+// 2026-10-18 (recommender-app net stack, Task 3): once the HTTP upgrade
+// handshake (http.bv) completes, the connection speaks the websocket framing
+// protocol instead of HTTP. This module is that framing: DECODE a client frame
+// (client->server frames are ALWAYS masked - the backend unmasks) and ENCODE a
+// server frame (server->client frames are ALWAYS unmasked). Payloads are the
+// JSON Live_Channel messages. Pure Briev over the L1 ByteBuf/GrowBuf.
+//
+// THE FRAME LAYOUT (RFC 6455 §5.2):
+//
+//   byte 0 : FIN(1) RSV1(1) RSV2(1) RSV3(1) opcode(4)
+//   byte 1 : MASK(1) payload-len(7)
+//   if payload-len == 126 : next 2 bytes = 16-bit extended length (big-endian)
+//   if payload-len == 127 : next 8 bytes = 64-bit extended length (big-endian)
+//   if MASK                : next 4 bytes = masking key
+//   payload                : `len` bytes; if MASK, each byte XOR key[i % 4]
+//
+// Opcodes we care about: 0x1 text, 0x8 close, 0x9 ping, 0xA pong. The backend
+// sends text (0x1) and may answer a ping with a pong; a close triggers a
+// connection teardown. This module exposes the opcode so the server loop can
+// route; it does not itself decide policy.
+
+import "std/net/bytes.bv";
+
+// ── Opcodes ──────────────────────────────────────────────────────────────
+const WS_OP_CONT:  Int = 0;    // continuation
+const WS_OP_TEXT:  Int = 1;    // 0x1 UTF-8 text
+const WS_OP_BIN:   Int = 2;    // 0x2 binary
+const WS_OP_CLOSE: Int = 8;    // 0x8 connection close
+const WS_OP_PING:  Int = 9;    // 0x9 ping
+const WS_OP_PONG:  Int = 10;   // 0xA pong
+
+// WsFrame - a decoded frame. `status` is 0 = NeedMore (the whole frame has not
+// arrived yet) or 1 = Complete. On Complete: `opcode` is the 4-bit opcode,
+// `fin` is the FIN bit (1 = final fragment), `payload` is the UNMASKED payload
+// as a String (text frames are UTF-8), `consumed` is the exact byte count this
+// frame occupied in the buffer (so the loop can advance past it and keep any
+// trailing bytes of the next frame).
+const WS_NEED_MORE: Int = 0;
+const WS_COMPLETE:  Int = 1;
+
+obj WsFrame {
+    status:   Int;
+    fin:      Int;
+    opcode:   Int;
+    payload:  String;
+    consumed: Int;
+};
+
+// ws_need_more - the shared NeedMore result.
+defn ws_need_more() -> WsFrame {
+    term WsFrame { status: WS_NEED_MORE, fin: 0, opcode: 0, payload: "", consumed: 0 };
+};
+
+// ── Decode (Task 3.5) ────────────────────────────────────────────────────────
+
+// ws_decode_frame - decode one frame from the first `len` bytes of `buf`.
+// Returns NeedMore until the full frame (header + extended length + mask key +
+// payload) has arrived; then Complete with the unmasked payload and the exact
+// consumed length. Handles the 7/16/64-bit length forms and the MASK bit.
+defn ws_decode_frame(buf: ByteBuf, len: Int)
+    [len >= 0 && len <= buf.len][term.status == WS_NEED_MORE || term.status == WS_COMPLETE]
+    -> WsFrame
+{
+    // Need at least the 2-byte minimal header.
+    when len < 2 {
+        term ws_need_more();
+    };
+    let b0: Int = get_u8(buf, 0);
+    let b1: Int = get_u8(buf, 1);
+    let fin: Int = (b0 >> 7) & 1;
+    let opcode: Int = b0 & 15;
+    let masked: Int = (b1 >> 7) & 1;
+    let len7: Int = b1 & 127;
+    // Resolve the payload length and the byte offset just past the length
+    // field (before the optional mask key). ws_payload_len returns a (length,
+    // header-end-offset) pair for the three length forms.
+    let (plen, after_len): (Int, Int) = ws_payload_len(buf, len, len7);
+    when plen < 0 {
+        // not enough bytes yet for the extended length field
+        term ws_need_more();
+    };
+    // mask key (4 bytes) when the MASK bit is set.
+    let key_off: Int = after_len;
+    let data_off: Int = when_masked_offset(key_off, masked);
+    let total: Int = data_off + plen;
+    when len < total {
+        // whole frame (incl. payload) not here yet
+        term ws_need_more();
+    };
+    // unmask (if masked) into a fresh payload String.
+    let payload: String = ws_read_payload(buf, data_off, plen, key_off, masked);
+    term WsFrame {
+        status:   WS_COMPLETE,
+        fin:      fin,
+        opcode:   opcode,
+        payload:  payload,
+        consumed: total
+    };
+};
+
+// ws_payload_len - resolve the payload length and the offset just past the
+// length field, for the three length forms. Returns (length, after_len_off),
+// or (-1, 0) when the extended-length bytes have not all arrived yet.
+//   len7 in 0..125 : length is len7 itself; header-so-far is 2 bytes.
+//   len7 == 126    : length is the next 2 bytes big-endian; header 4 bytes.
+//   len7 == 127    : length is the next 8 bytes big-endian; header 10 bytes.
+defn ws_payload_len(buf: ByteBuf, len: Int, len7: Int)
+    [len >= 2 && len7 >= 0 && len7 <= 127][true]
+    -> (Int, Int)
+{
+    when len7 < 126 {
+        term (len7, 2);
+    };
+    when len7 == 126 {
+        when len < 4 {
+            term (-1, 0);
+        };
+        let hi: Int = get_u8(buf, 2);
+        let lo: Int = get_u8(buf, 3);
+        term ((hi << 8) | lo, 4);
+    };
+    // len7 == 127: 64-bit length in bytes 2..9 (big-endian). For our messages
+    // the high 4 bytes are zero; we read all 8 and combine so a genuinely
+    // large length is honored (the buffer-availability check gates it anyway).
+    when len < 10 {
+        term (-1, 0);
+    };
+    term (ws_read_u64_be(buf, 2), 10);
+};
+
+// ws_read_u64_be - read 8 big-endian bytes at offset `off` as an Int. Tail
+// recursion accumulating the value most-significant byte first.
+defn ws_read_u64_be(buf: ByteBuf, off: Int) [off >= 0][term >= 0] -> Int {
+    term ws_read_be_acc(buf, off, 0, 8);
+};
+
+defn ws_read_be_acc(buf: ByteBuf, off: Int, acc: Int, n: Int)
+    [off >= 0 && n >= 0][term >= 0]
+    -> Int
+{
+    when n == 0 {
+        term acc;
+    };
+    term ws_read_be_acc(buf, off + 1, (acc << 8) | get_u8(buf, off), n - 1);
+};
+
+// when_masked_offset - the payload byte offset: 4 bytes past the key offset
+// when the MASK bit is set (the mask key sits between the length field and the
+// payload), else the key offset itself.
+defn when_masked_offset(key_off: Int, masked: Int) [key_off >= 0][term >= key_off] -> Int {
+    when masked == 1 {
+        term key_off + 4;
+    };
+    term key_off;
+};
+
+// ws_read_payload - build the payload String from `plen` bytes at `data_off`,
+// unmasking each byte with key[i % 4] when `masked`. The String is assembled as
+// a fresh [len][bytes][NUL] buffer handed through the Data->String door (the
+// same construction bytes.bv uses). The mask key is the 4 bytes at `key_off`.
+defn ws_read_payload(buf: ByteBuf, data_off: Int, plen: Int, key_off: Int, masked: Int)
+    [data_off >= 0 && plen >= 0][CharCount#(term) >= 0]
+    -> String
+{
+    let addr: Int = Malloc#(plen + 9) as Int;
+    Store#(addr, plen, 8);
+    ws_fill_payload(buf, addr, data_off, plen, key_off, masked, 0);
+    Store#(addr + 8 + plen, 0, 1);
+    term (addr as Data) as String;
+};
+
+// ws_fill_payload - copy/unmask `plen` bytes into the String buffer at addr+8.
+// Each source byte buf[data_off + i] is XORed with key[i % 4] when masked, else
+// copied verbatim. Tail recursion over i. Returns the byte index written (plen).
+defn ws_fill_payload(buf: ByteBuf, addr: Int, data_off: Int, plen: Int, key_off: Int, masked: Int, i: Int)
+    [data_off >= 0 && plen >= 0 && i >= 0][term >= 0]
+    -> Int
+{
+    when i >= plen {
+        term plen;
+    };
+    let raw: Int = get_u8(buf, data_off + i);
+    let out_byte: Int = ws_unmask_byte(buf, raw, key_off, masked, i);
+    Store#(addr + 8 + i, out_byte, 1);
+    term ws_fill_payload(buf, addr, data_off, plen, key_off, masked, i + 1);
+};
+
+// ws_unmask_byte - the i-th payload byte after unmasking: raw XOR key[i % 4]
+// when masked, else raw unchanged. key[j] is buf[key_off + j].
+defn ws_unmask_byte(buf: ByteBuf, raw: Int, key_off: Int, masked: Int, i: Int)
+    [raw >= 0 && key_off >= 0 && i >= 0][term >= 0]
+    -> Int
+{
+    when masked == 1 {
+        let k: Int = get_u8(buf, key_off + (i % 4));
+        term raw ^ k;
+    };
+    term raw;
+};
+
+// ── Encode (Task 3.6) ────────────────────────────────────────────────────────
+
+// ws_encode_text - encode a server->client TEXT frame carrying `payload`,
+// UNMASKED (server frames must not be masked, RFC 6455 §5.1), with the correct
+// length form. Returns a GrowBuf the caller owns and frees after sending.
+//   byte 0 : 0x80 | 0x1  (FIN set, opcode text)
+//   byte 1 : length form - 0..125 literal, 126 + 2-byte len, 127 + 8-byte len
+//   payload: the raw bytes, unmasked
+defn ws_encode_text(payload: String) [true][term.len >= 2] -> GrowBuf {
+    let plen: Int = payload .^Length;
+    let data_addr: Int = ((payload as Data) as Int) + 8;
+    let sink: GrowBuf = grow_new(plen + 10);
+    // FIN=1, opcode=0x1 text
+    let s1: GrowBuf = sink.put_u8(128 | WS_OP_TEXT);
+    let s2: GrowBuf = ws_put_length(s1, plen);
+    // payload bytes, unmasked (no mask bit set on the length byte above)
+    term s2.put_bytes(data_addr, plen);
+};
+
+// ws_put_length - append the server-frame length field (MASK bit CLEAR) in the
+// correct form for `plen`:
+//   0..125      : one byte = plen
+//   126..65535  : 0x7E then 2 bytes big-endian
+//   >= 65536    : 0x7F then 8 bytes big-endian
+// Built on the L1 writers (put_u8 / put_u16_be / put_u32_be).
+defn ws_put_length(sink: GrowBuf, plen: Int) [plen >= 0][term.len >= sink.len + 1] -> GrowBuf {
+    when plen < 126 {
+        term sink.put_u8(plen);
+    };
+    when plen < 65536 {
+        // 126 marker + 16-bit big-endian length
+        term sink.put_u8(126).put_u16_be(plen);
+    };
+    // 127 marker + 64-bit big-endian length: high 32 bits then low 32 bits.
+    let hi: Int = (plen >> 32) & 4294967295;
+    let lo: Int = plen & 4294967295;
+    term sink.put_u8(127).put_u32_be(hi).put_u32_be(lo);
+};

@@ -1,0 +1,464 @@
+// http - a minimal HTTP/1.1 server toolkit (net stack L3b).
+//
+// 2026-10-18 (recommender-app net stack, Task 3): the app's backend speaks
+// HTTP/1.1 to the browser frontend and upgrades one path to a websocket for
+// the Live_Channel. This module is the server-side protocol layer over the L2
+// socket: INCREMENTAL request parsing (so it composes with a non-blocking poll
+// loop and never over-reads into the next request), response writers (JSON +
+// permissive CORS for cross-origin browser calls), and the RFC 6455 websocket
+// UPGRADE handshake (Sec-WebSocket-Accept = base64(SHA1(key + magic-GUID))).
+//
+// Pure Briev. The handshake's SHA-1 and Base64 are the sibling pure helpers
+// net/sha1.bv and net/base64.bv; the byte I/O is the L1 ByteBuf/GrowBuf.
+//
+// WHY INCREMENTAL PARSING. A TCP recv() delivers whatever bytes have arrived -
+// maybe half a request, maybe one-and-a-half. The poll loop accumulates bytes
+// per connection and asks "is there a complete request yet?" after each recv.
+// http_parse_request answers NeedMore (keep accumulating) or Complete (here is
+// the request and how many bytes it consumed, so the loop can drop exactly
+// those and keep any trailing bytes of the NEXT request). Over-reading - say,
+// grabbing the body of a pipelined second request - would corrupt framing, so
+// the parser consumes EXACTLY the request line + headers + the Content-Length
+// body and not one byte more.
+
+import "std/net/bytes.bv";
+import "std/net/sha1.bv";
+import "std/net/base64.bv";
+
+// ── Byte-level string scanning (self-contained) ──────────────────────────────
+//
+// http.bv does its own substring search and case-insensitive compare over the
+// raw payload bytes (byte_at, the prelude-injected [len][bytes] accessor),
+// rather than string.bv's `find`/`to_lower_str`. Two reasons: (1) HTTP framing
+// is defined on BYTES (CR LF), so a byte scan is the honest primitive; (2) it
+// keeps the parser's correctness self-evident and independent of the collection
+// / StringBuilder machinery. These are small tail-recursive helpers in the
+// cast_lanes `count_lead` style.
+
+// str_find_from - the byte index of the first occurrence of `needle` in `hay`
+// at or after `from`, or -1 if absent. Compares byte-by-byte via byte_at over
+// the payload (ASCII-correct; http framing is ASCII). Tail recursion over the
+// candidate start positions.
+defn str_find_from(hay: String, needle: String, from: Int)
+    [from >= 0][term >= -1]
+    -> Int
+{
+    let hlen: Int = hay .^Length;
+    let nlen: Int = needle .^Length;
+    when from + nlen > hlen {
+        term -1;
+    };
+    when str_match_at(hay, needle, from, 0, nlen) {
+        term from;
+    };
+    term str_find_from(hay, needle, from + 1);
+};
+
+// str_find - first occurrence of `needle` in `hay` (from the start), or -1.
+defn str_find(hay: String, needle: String) [true][term >= -1] -> Int {
+    term str_find_from(hay, needle, 0);
+};
+
+// str_match_at - do the `len` bytes of `needle` (from index `k`) match `hay`
+// starting at byte `at + k`? Tail recursion over the needle bytes.
+defn str_match_at(hay: String, needle: String, at: Int, k: Int, len: Int)
+    [at >= 0 && k >= 0][term == true || term == false]
+    -> Bool
+{
+    when k >= len {
+        term true;
+    };
+    when byte_at(hay, at + k) != byte_at(needle, k) {
+        term false;
+    };
+    term str_match_at(hay, needle, at, k + 1, len);
+};
+
+// str_eq_ci - case-insensitive equality of two Strings (ASCII fold). Used for
+// header-name comparison (RFC 7230: header names are case-insensitive).
+defn str_eq_ci(left: String, right: String) [true][term == true || term == false] -> Bool {
+    when left .^Length != right .^Length {
+        term false;
+    };
+    term str_eq_ci_at(left, right, 0, left .^Length);
+};
+
+// str_eq_ci_at - compare bytes [k, len) of two equal-length Strings, folding
+// ASCII upper-case to lower-case (A-Z + 32) before comparing. Tail recursion.
+defn str_eq_ci_at(left: String, right: String, k: Int, len: Int)
+    [k >= 0][term == true || term == false]
+    -> Bool
+{
+    when k >= len {
+        term true;
+    };
+    when ascii_lower(byte_at(left, k)) != ascii_lower(byte_at(right, k)) {
+        term false;
+    };
+    term str_eq_ci_at(left, right, k + 1, len);
+};
+
+// ascii_lower - fold an ASCII byte to lower case (A-Z -> a-z); other bytes pass
+// through unchanged. Pure arithmetic, no table.
+defn ascii_lower(b: Int) [true][term >= 0] -> Int {
+    when b >= 65 && b <= 90 {
+        term b + 32;
+    };
+    term b;
+};
+
+// ── HttpRequest ──────────────────────────────────────────────────────────
+//
+// A parsed request. `headers` is the RAW header block (every "Name: value"
+// line joined by CRLF, WITHOUT the trailing blank line) so a lookup can scan
+// it without a separate map allocation - the request is short-lived and the
+// header count is tiny, so a linear scan is the right simplicity/cost trade.
+// `body` is the Content-Length-delimited payload (empty when none).
+obj HttpRequest {
+    method:  String;
+    path:    String;
+    headers: String;
+    body:    String;
+};
+
+// HttpParse - the incremental parse result. `status` is 0 = NeedMore (the full
+// request has not arrived yet; call again after more bytes) or 1 = Complete.
+// `consumed` is the exact byte count the complete request occupied (request
+// line + headers + blank line + body), so the poll loop can advance past it and
+// retain any trailing bytes. `request` is meaningful only when status == 1.
+const HTTP_NEED_MORE: Int = 0;
+const HTTP_COMPLETE:  Int = 1;
+
+obj HttpParse {
+    status:   Int;
+    consumed: Int;
+    request:  HttpRequest;
+};
+
+// ── Raw-bytes → String view ────────────────────────────────────────────────
+//
+// The accumulation buffer is a ByteBuf (raw bytes). HTTP headers are ASCII, so
+// to reuse the string.bv search/slice helpers we materialize the first `count`
+// bytes of the buffer as a Briev String. A String IS a pointer to
+// [len:i64][bytes][NUL]; we Malloc# that shape, Copy# the bytes in, write the
+// header and the NUL, and hand the address through the Data->String door. This
+// is the one place http.bv pokes bytes directly, and it only assembles the
+// String header the language itself uses (it does not reinvent framing).
+defn buf_slice_string(buf: ByteBuf, start: Int, count: Int)
+    [start >= 0 && count >= 0 && start + count <= buf.len][CharCount#(term) >= 0]
+    -> String
+{
+    let addr: Int = Malloc#(count + 9) as Int;
+    Store#(addr, count, 8);
+    when count > 0 {
+        Copy#(addr + 8, buf.ptr + start, count);
+    };
+    Store#(addr + 8 + count, 0, 1);
+    term (addr as Data) as String;
+};
+
+// ── Incremental request parse (Task 3.1) ────────────────────────────────────
+
+// http_parse_request - try to parse one complete request from the first `len`
+// bytes of `buf`. Returns NeedMore until the request line, all headers (ended
+// by the CRLF CRLF blank line), AND the full Content-Length body have arrived;
+// then returns Complete with the parsed request and the exact consumed length.
+//
+// Strict CRLF framing: the header terminator is the four bytes CR LF CR LF. We
+// find it by materializing the accumulated bytes as a String and searching for
+// "\r\n\r\n". Absent => NeedMore. Present => the header block is everything
+// before it; the body starts after it; Content-Length (if any) says how many
+// body bytes must follow.
+defn http_parse_request(buf: ByteBuf, len: Int)
+    [len >= 0 && len <= buf.len][term.status == HTTP_NEED_MORE || term.status == HTTP_COMPLETE]
+    -> HttpParse
+{
+    let text: String = buf_slice_string(buf, 0, len);
+    let sep: Int = str_find(text, "\r\n\r\n");
+    when sep < 0 {
+        // headers not fully arrived yet
+        term http_need_more();
+    };
+    // header block = bytes [0, sep); body starts at sep + 4.
+    let head: String = text[0:sep];
+    let body_start: Int = sep + 4;
+    let want_body: Int = http_content_length(head);
+    let have_body: Int = len - body_start;
+    when have_body < want_body {
+        // headers complete but body still arriving
+        term http_need_more();
+    };
+    // We have the whole request. Split the request line from the header lines.
+    let line_end: Int = str_find(head, "\r\n");
+    let req_line: String = http_request_line(head, line_end);
+    let hdr_block: String = http_header_block(head, line_end);
+    let body: String = text[body_start:body_start + want_body];
+    let consumed: Int = body_start + want_body;
+    term HttpParse {
+        status:   HTTP_COMPLETE,
+        consumed: consumed,
+        request:  HttpRequest {
+            method:  http_method(req_line),
+            path:    http_path(req_line),
+            headers: hdr_block,
+            body:    body
+        }
+    };
+};
+
+// http_need_more - the shared NeedMore result (an empty placeholder request).
+defn http_need_more() -> HttpParse {
+    term HttpParse {
+        status:   HTTP_NEED_MORE,
+        consumed: 0,
+        request:  HttpRequest { method: "", path: "", headers: "", body: "" }
+    };
+};
+
+// http_request_line - the first line of the header block (up to the first CRLF),
+// or the whole block if there is no CRLF (single-line header block).
+defn http_request_line(head: String, line_end: Int) [true][CharCount#(term) >= 0] -> String {
+    when line_end < 0 {
+        term head;
+    };
+    term head[0:line_end];
+};
+
+// http_header_block - the header lines after the request line (everything past
+// the first CRLF), or empty when the request line is the whole block.
+defn http_header_block(head: String, line_end: Int) [true][CharCount#(term) >= 0] -> String {
+    when line_end < 0 {
+        term "";
+    };
+    term head[line_end + 2:CharCount#(head)];
+};
+
+// http_method - the METHOD token of the request line (up to the first space).
+defn http_method(req_line: String) [true][CharCount#(term) >= 0] -> String {
+    let sp: Int = str_find(req_line, " ");
+    when sp < 0 {
+        term req_line;
+    };
+    term req_line[0:sp];
+};
+
+// http_path - the request-target of the request line (between the first and
+// second spaces: "METHOD SP path SP HTTP/1.1").
+defn http_path(req_line: String) [true][CharCount#(term) >= 0] -> String {
+    let sp1: Int = str_find(req_line, " ");
+    when sp1 < 0 {
+        term "";
+    };
+    let rest: String = req_line[sp1 + 1:CharCount#(req_line)];
+    let sp2: Int = str_find(rest, " ");
+    when sp2 < 0 {
+        term rest;
+    };
+    term rest[0:sp2];
+};
+
+// ── Header lookup ────────────────────────────────────────────────────────────
+//
+// http_header - the value of header `name` (case-insensitive on the name) in a
+// request, or "" if absent. Scans the header block line by line: a line
+// "Name: value" matches when its name equals `name` ignoring case; the value is
+// the text after the colon with one optional leading space trimmed. HTTP header
+// names are case-insensitive (RFC 7230), so we lower-case both sides to compare.
+defn http_header(req: HttpRequest, name: String) [true][CharCount#(term) >= 0] -> String {
+    term http_header_scan(req.headers, name, 0);
+};
+
+// http_header_scan - walk the header block from offset `off`, testing each
+// CRLF-delimited line. Tail recursion; returns "" when the block is exhausted.
+// The name match is case-insensitive (str_eq_ci), so `name` is passed as-is.
+defn http_header_scan(block: String, name: String, off: Int)
+    [off >= 0][CharCount#(term) >= 0]
+    -> String
+{
+    when off >= CharCount#(block) {
+        term "";
+    };
+    let rest: String = block[off:CharCount#(block)];
+    let nl: Int = str_find(rest, "\r\n");
+    let line: String = http_first_line(rest, nl);
+    when http_line_is_match(line, name) {
+        term http_line_value(line);
+    };
+    when nl < 0 {
+        term "";
+    };
+    term http_header_scan(block, name, off + nl + 2);
+};
+
+// http_first_line - the text of `rest` up to the first CRLF (or all of it).
+defn http_first_line(rest: String, nl: Int) [true][CharCount#(term) >= 0] -> String {
+    when nl < 0 {
+        term rest;
+    };
+    term rest[0:nl];
+};
+
+// http_line_is_match - does this "Name: value" line's name equal `name`
+// (case-insensitive)? Compares the name token before the colon with str_eq_ci.
+defn http_line_is_match(line: String, name: String) [true][term == true || term == false] -> Bool {
+    let colon: Int = str_find(line, ":");
+    when colon < 0 {
+        term false;
+    };
+    term str_eq_ci(line[0:colon], name);
+};
+
+// http_line_value - the value of a "Name: value" line: the text after the
+// colon, with a single optional leading space removed (the conventional
+// "Name: value" single space). Assumes the line has a colon (the caller gates
+// on http_line_is_match first).
+defn http_line_value(line: String) [true][CharCount#(term) >= 0] -> String {
+    let colon: Int = str_find(line, ":");
+    when colon < 0 {
+        term "";
+    };
+    let raw: String = line[colon + 1:CharCount#(line)];
+    when CharCount#(raw) > 0 && raw[0:1] == " " {
+        term raw[1:CharCount#(raw)];
+    };
+    term raw;
+};
+
+// http_content_length - the Content-Length of a header block (0 if absent).
+// Scans the block for the content-length line and parses its value as an Int.
+defn http_content_length(head: String) [true][term >= 0] -> Int {
+    let line_end: Int = str_find(head, "\r\n");
+    let block: String = http_header_block(head, line_end);
+    let val: String = http_header_scan(block, "Content-Length", 0);
+    when CharCount#(val) == 0 {
+        term 0;
+    };
+    let n: Int = val as Int;
+    when n < 0 {
+        term 0;
+    };
+    term n;
+};
+
+// ── Response writers (Task 3.2) ─────────────────────────────────────────────
+
+// put_str - append a String's RAW bytes (no NUL) to a GrowBuf, growing as
+// needed. The bytes start 8 past the String's [len] header; the count is the
+// byte length. A local helper so the response writers read as "append this
+// text" without each one poking the String layout (DRY over the handshake and
+// both response writers).
+defn put_str(sink: GrowBuf, text: String) [true][term.len == sink.len + text .^Length] -> GrowBuf {
+    let count: Int = text .^Length;
+    let data_addr: Int = ((text as Data) as Int) + 8;
+    term sink.put_bytes(data_addr, count);
+};
+
+// http_status_text - the reason phrase for the status codes this server emits.
+// A small fixed set (not a general table): the app returns 200, 400, 404, 101
+// for the websocket upgrade, and 500. Unknown codes fall back to "OK" so a
+// response is always well-formed.
+defn http_status_text(status: Int) [true][CharCount#(term) >= 1] -> String {
+    when status == 200 {
+        term "OK";
+    };
+    when status == 101 {
+        term "Switching Protocols";
+    };
+    when status == 400 {
+        term "Bad Request";
+    };
+    when status == 404 {
+        term "Not Found";
+    };
+    when status == 500 {
+        term "Internal Server Error";
+    };
+    term "OK";
+};
+
+// http_response - build a complete HTTP/1.1 response into a fresh GrowBuf:
+//   HTTP/1.1 <status> <reason> CRLF
+//   Content-Type: <ctype> CRLF
+//   Content-Length: <body bytes> CRLF
+//   Access-Control-Allow-Origin: * CRLF   (+ the CORS method/header allowances)
+//   Connection: close CRLF
+//   CRLF
+//   <body>
+// The caller owns the GrowBuf and frees it after sending. CORS is included on
+// every response so the browser frontend (a different origin) can read it.
+defn http_response(status: Int, ctype: String, body: String)
+    [status >= 100 && status <= 599][term.len >= 0]
+    -> GrowBuf
+{
+    let body_len: Int = body .^Length;
+    let sink: GrowBuf = grow_new(256);
+    let s1: GrowBuf = put_str(sink, "HTTP/1.1 ");
+    let s2: GrowBuf = put_str(s1, status as String);
+    let s3: GrowBuf = put_str(s2, " ");
+    let s4: GrowBuf = put_str(s3, http_status_text(status));
+    let s5: GrowBuf = put_str(s4, "\r\nContent-Type: ");
+    let s6: GrowBuf = put_str(s5, ctype);
+    let s7: GrowBuf = put_str(s6, "\r\nContent-Length: ");
+    let s8: GrowBuf = put_str(s7, body_len as String);
+    let s9: GrowBuf = put_str(s8, "\r\n");
+    let s10: GrowBuf = put_str(s9, http_cors_headers());
+    let s11: GrowBuf = put_str(s10, "Connection: close\r\n\r\n");
+    term put_str(s11, body);
+};
+
+// http_cors_headers - the permissive CORS header block appended to every
+// response. "*" origin + the methods/headers the frontend uses, so a browser
+// pre-flight (OPTIONS) and the actual cross-origin fetch both succeed.
+defn http_cors_headers() [true][CharCount#(term) >= 0] -> String {
+    term "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n";
+};
+
+// http_json_response - a JSON response: Content-Type application/json plus the
+// CORS headers (via http_response), body is the serialized JSON string.
+defn http_json_response(status: Int, body: String)
+    [status >= 100 && status <= 599][term.len >= 0]
+    -> GrowBuf
+{
+    term http_response(status, "application/json", body);
+};
+
+// ── Websocket upgrade handshake (Task 3.3) ───────────────────────────────────
+
+// WS_MAGIC - the RFC 6455 fixed GUID appended to the client's Sec-WebSocket-Key
+// before hashing. It is a protocol constant (NOT a secret): it only ensures the
+// server and client agree the handshake is a websocket upgrade and not some
+// cached HTTP response.
+const WS_MAGIC: String = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+// ws_accept_key - compute Sec-WebSocket-Accept from the client's
+// Sec-WebSocket-Key: base64(SHA1(key + WS_MAGIC)). The RFC 6455 example key
+// "dGhlIHNhbXBsZSBub25jZQ==" must yield "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".
+defn ws_accept_key(client_key: String) [true][CharCount#(term) >= 0] -> String {
+    let combined: String = client_key + WS_MAGIC;
+    let digest: ByteBuf = sha1_digest_str(combined);
+    let accept: String = base64_encode(digest);
+    buf_free(digest);
+    term accept;
+};
+
+// ws_is_upgrade - is this request a websocket upgrade? True when the Upgrade
+// header names "websocket" (case-insensitive). The poll loop uses this to route
+// a request to the handshake instead of the normal HTTP dispatch.
+defn ws_is_upgrade(req: HttpRequest) [true][term == true || term == false] -> Bool {
+    term str_eq_ci(http_header(req, "Upgrade"), "websocket");
+};
+
+// ws_handshake_response - the 101 Switching Protocols response completing the
+// upgrade: the Accept header proves the server processed the client's key.
+// After this is sent the connection is a websocket (framed, not HTTP).
+defn ws_handshake_response(req: HttpRequest) [true][term.len >= 0] -> GrowBuf {
+    let key: String = http_header(req, "Sec-WebSocket-Key");
+    let accept: String = ws_accept_key(key);
+    let sink: GrowBuf = grow_new(256);
+    let s1: GrowBuf = put_str(sink, "HTTP/1.1 101 Switching Protocols\r\n");
+    let s2: GrowBuf = put_str(s1, "Upgrade: websocket\r\n");
+    let s3: GrowBuf = put_str(s2, "Connection: Upgrade\r\n");
+    let s4: GrowBuf = put_str(s3, "Sec-WebSocket-Accept: ");
+    let s5: GrowBuf = put_str(s4, accept);
+    term put_str(s5, "\r\n\r\n");
+};
