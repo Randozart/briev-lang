@@ -8103,25 +8103,22 @@ mod tests {
 
     // ── 2026-10-20 (contract tiers, ruling ii): check = static-only ───────
 
-    /// Install the deny stage for one test; restore allow on drop. The
-    /// policy is a process-global (AtomicU8), so the policy-touching tests
-    /// hold POLICY_LOCK — parallel tests with different expected verdicts
-    /// would race.
-    static POLICY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Install the deny stage for one test via the THREAD-LOCAL override;
+    /// cleared on drop. The global policy is process-wide and tests run in
+    /// parallel — a global deny window leaked into the conformance sweep
+    /// (2026-10-20). The thread-local seam keeps the window to this thread.
     struct DenyGate;
     impl DenyGate {
-        fn install(_guard: &std::sync::MutexGuard<'static, ()>) -> Self {
-            crate::config_tuning::install_contract_gate_policy(
+        fn install() -> Self {
+            crate::config_tuning::install_thread_local_contract_gate_policy(Some(
                 crate::config_tuning::ContractGatePolicy::Deny,
-            );
+            ));
             DenyGate
         }
     }
     impl Drop for DenyGate {
         fn drop(&mut self) {
-            crate::config_tuning::install_contract_gate_policy(
-                crate::config_tuning::ContractGatePolicy::Allow,
-            );
+            crate::config_tuning::install_thread_local_contract_gate_policy(None);
         }
     }
 
@@ -8129,8 +8126,7 @@ mod tests {
     /// downstream contracted call.
     #[test]
     fn check_proven_discharges_downstream() {
-        let _lock = POLICY_LOCK.lock().unwrap();
-        let _deny = DenyGate::install(&_lock);
+        let _deny = DenyGate::install();
         check(
             "defn pos(x: Int) -> Int [x > 0] { term x; };\n\
              defn f() -> Int { let n: Int = 7; check n > 0; term pos(n); };",
@@ -8141,8 +8137,7 @@ mod tests {
     /// A refuted check is a compile error under `deny`.
     #[test]
     fn check_refuted_is_error() {
-        let _lock = POLICY_LOCK.lock().unwrap();
-        let _deny = DenyGate::install(&_lock);
+        let _deny = DenyGate::install();
         let errs = check("defn f() -> Int { let n: Int = 5; check n < 0; term n; };")
             .expect_err("a check the facts contradict must be rejected");
         assert!(
@@ -8154,8 +8149,7 @@ mod tests {
     /// An unprovable check is a compile error under `deny`.
     #[test]
     fn check_unproven_is_error() {
-        let _lock = POLICY_LOCK.lock().unwrap();
-        let _deny = DenyGate::install(&_lock);
+        let _deny = DenyGate::install();
         let errs = check("defn f(x: Int) -> Int { check x > 0; term x; };")
             .expect_err("an unprovable check must be rejected under deny");
         assert!(
@@ -8167,10 +8161,9 @@ mod tests {
     /// The migration stage (allow, the default) rejects nothing.
     #[test]
     fn check_unproven_allowed_under_allow_stage() {
-        let _lock = POLICY_LOCK.lock().unwrap();
-        crate::config_tuning::install_contract_gate_policy(
+        crate::config_tuning::install_thread_local_contract_gate_policy(Some(
             crate::config_tuning::ContractGatePolicy::Allow,
-        );
+        ));
         check("defn f(x: Int) -> Int { check x > 0; term x; };")
             .expect("the allow stage is the migration stage");
     }

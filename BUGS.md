@@ -10462,9 +10462,35 @@ either do not exercise concat under these flags or their goldens predate the
 regression window. Fixture 1's codec does not concat, which is why ws_frame
 passed.
 
-**Next step:** the fix is to carry String as a real `ptr` end-to-end through
-the concat path (no ptrtoint/mask/inttoptr round-trip): emit_mask_tag and
-emit_inttoptr_reg/emit_load_length must operate on pointers, with the legacy
-temp-bit machinery removed (it is already dead — `emit_box_concat_result`
-returns an untagged ptr, and the tag bits are never set). Then re-run the
-harness; this likely also explains latent string-op discrepancies.
+**ROOT CAUSE (2026-10-20, FIXED):** defn memory attributes were computed
+from the defn's OWN body only. `print_str` has no raw intrinsic itself — it
+calls `write_all`, which contains the `SysCall#` asm. So `print_str` was
+emitted with `#8` = `memory(argmem: readwrite)` ("only accesses memory
+through pointer arguments"), a LIE: it writes `@stdout_buf`/`@stdout_fill`
+and the kernel reads the pointer passed to write(2). Given the lie,
+InstCombine (pinned by `opt-bisect-limit`: pass 130, instcombine on `main`)
+proved the call had no effect outside its pointer arg, found that arg dead,
+and deleted `print_str(malloc)` together with the malloc + both memcpys —
+the buffer-filling stores were "dead" before the syscall read them. That is
+exactly the observed `-O2` empty output; `-O0` cannot do this analysis.
+
+The narrower hypothesis first suspected (the ptrtoint/and-4/inttoptr tag
+mask, and the syscall asm missing a `~{memory}` clobber) was tested and is
+NECESSARY but not the cause: adding `~{memory}` to every syscall asm was
+kept (it is correct — the kernel reads/writes user memory), but the empty
+output persisted until the attribute lie was fixed.
+
+**Fix:** (1) `ctx.defn_touches_raw_memory` — a TRANSITIVE closure over the
+call graph (seed: defns with a direct Load#/Store#/Alloc#/Free#/Copy#/
+Fill#/Volatile*/SysCall#; close over calls; the existing
+collect_called_names_stmt was extended to cover Match/Foreach/Check/Gate/
+EndProgram/Rollback/ArrowAssign/InlineDefn so the closure cannot
+under-approximate). Emitted attrs use it: any defn reaching raw memory
+through a callee is `#13` (full `memory(readwrite)`). (2) `~{memory}` added
+to the x86_64/aarch64 syscall asm (and the brk asm) — the rv64 path already
+had it.
+
+**Pins:** `string_concat_at_o2_is_correct` (un-ignored) +
+`tests/tier1/string_concat_probe.bv`, run through the harness flags
+(-O3 -flto -ffast-math). Full harness 79/79 MATCH, zero MISMATCH;
+3185 lib tests green; determinism clean.

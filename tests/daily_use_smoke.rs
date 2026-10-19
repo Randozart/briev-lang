@@ -215,14 +215,14 @@ fn const_string_global_golden_output() {
     );
 }
 
-/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): IGNORED —
-/// pins a KNOWN, pre-existing HIGH-severity codegen bug so it is not lost.
-/// Any String concat is EMPTY under the pipeline flags (-O2/-O3; -O0 is
-/// correct). Remove the #[ignore] in the commit that fixes it. This is why
-/// fixture-1's const-String pin avoids concat (BUGS.md 2026-10-20).
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): REGRESSION
+/// GATE for the fixed bug. Any String concat was EMPTY under the pipeline
+/// flags (-O2/-O3; -O0 correct): defns reaching a syscall through a callee
+/// (`print_str` -> `write_all` -> `SysCall#`) were emitted argmemonly, so
+/// LLVM deleted the buffer-filling stores. Fixed by making
+/// `definition_touches_raw_memory` transitive (ctx.defn_touches_raw_memory).
 #[test]
-#[ignore = "known: string concat folds to empty at -O2 — BUGS.md 2026-10-20"]
-fn string_concat_at_o2_is_known_broken() {
+fn string_concat_at_o2_is_correct() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");
         return;

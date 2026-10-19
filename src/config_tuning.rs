@@ -534,13 +534,33 @@ pub enum ContractGatePolicy {
 static CONTRACT_GATE_POLICY: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(0);
 
-/// The effective gate policy: 0 = Allow, 1 = Warn, 2 = Deny.
+// 2026-10-20: a thread-local override for TESTS. The global policy is
+// process-wide; tests that exercise the deny stage run in parallel with the
+// conformance sweep, and a leak would fail unrelated sources (observed with
+// `.smoke/eq_demo.bv`). The thread-local keeps a test's window to its own
+// thread — no mutex, no cross-test contamination.
+thread_local! {
+    static CONTRACT_GATE_POLICY_TL: std::cell::Cell<Option<ContractGatePolicy>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The effective gate policy: thread-local override (tests), else the global
+/// (0 = Allow, 1 = Warn, 2 = Deny).
 pub fn contract_gate_policy() -> ContractGatePolicy {
+    if let Some(p) = CONTRACT_GATE_POLICY_TL.with(|c| c.get()) {
+        return p;
+    }
     match CONTRACT_GATE_POLICY.load(std::sync::atomic::Ordering::Acquire) {
         1 => ContractGatePolicy::Warn,
         2 => ContractGatePolicy::Deny,
         _ => ContractGatePolicy::Allow,
     }
+}
+
+/// Set (or clear) the calling thread's policy override — the test seam for
+/// the deny stage. Never touches other threads.
+pub fn install_thread_local_contract_gate_policy(policy: Option<ContractGatePolicy>) {
+    CONTRACT_GATE_POLICY_TL.with(|c| c.set(policy));
 }
 
 pub fn install_contract_gate_policy(policy: ContractGatePolicy) {

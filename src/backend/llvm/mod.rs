@@ -40,6 +40,76 @@ fn escape_llvm_string(s: &str) -> String {
     out
 }
 
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): which defns
+/// TRANSITIVELY touch raw memory? Seeds are defns whose own body calls a raw
+/// intrinsic (Load#/Store#/Alloc#/Free#/Copy#/Fill#/Volatile*/SysCall#); the
+/// set closes over calls (fixpoint). A caller must carry at least its
+/// callees' memory effects — `print_str` reaches `SysCall#` through
+/// `write_all`, and claiming argmemonly there let -O2 delete the buffer
+/// stores before write(2).
+fn compute_transitive_raw_memory(items: &[TopLevel]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    fn gather<'a>(item: &'a TopLevel, out: &mut Vec<&'a crate::ast::Definition>) {
+        match item {
+            TopLevel::Definition(d) => out.push(d),
+            TopLevel::Export(e) => gather(&e.inner, out),
+            TopLevel::TypeDef(td) => {
+                for m in &td.body.members {
+                    gather(m, out);
+                }
+            }
+            TopLevel::Impl(im) => {
+                for d in &im.functions {
+                    out.push(d);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut defs: Vec<&crate::ast::Definition> = Vec::new();
+    for item in items {
+        gather(item, &mut defs);
+    }
+    let mut called: std::collections::HashMap<&str, HashSet<String>> =
+        std::collections::HashMap::new();
+    let mut raw: HashSet<String> = HashSet::new();
+    for d in &defs {
+        let mut calls = HashSet::new();
+        for stmt in &d.body {
+            collect_called_names_stmt(stmt, &mut calls);
+        }
+        if emit_toplevel::definition_touches_raw_memory_fn(&d.body) {
+            raw.insert(d.name.clone());
+        }
+        called.insert(d.name.as_str(), calls);
+    }
+    close_over_calls(&mut raw, &called);
+    raw
+}
+
+/// Fixpoint: add every defn that calls a name already in `raw`, until stable.
+/// Split out of `compute_transitive_raw_memory` (Praetor complexity).
+fn close_over_calls(
+    raw: &mut std::collections::HashSet<String>,
+    called: &std::collections::HashMap<&str, std::collections::HashSet<String>>,
+) {
+    loop {
+        let pending: Vec<String> = called
+            .iter()
+            .filter(|(name, calls)| {
+                !raw.contains(**name) && calls.iter().any(|c| raw.contains(c))
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+        if pending.is_empty() {
+            return;
+        }
+        for name in pending {
+            raw.insert(name);
+        }
+    }
+}
+
 /// 2026-08-26: every syntactic call name in the program (conservative set —
 /// used only to decide whether a plain txn is referenced anywhere).
 fn collect_called_names_expr(e: &Expr, out: &mut std::collections::HashSet<String>) {
@@ -118,8 +188,39 @@ fn collect_called_names_stmt(s: &Statement, out: &mut std::collections::HashSet<
                 collect_called_names_stmt(inner, out);
             }
         }
-        Statement::Block(body) | Statement::SyncBlock(body) => {
+        Statement::Block(body) | Statement::SyncBlock(body)
+        | Statement::Defer(body) | Statement::Mutex(body) => {
             for inner in body {
+                collect_called_names_stmt(inner, out);
+            }
+        }
+        // 2026-10-20 (raw-memory closure): these forms were unvisited, which
+        // would UNDER-approximate the raw-memory set (a defn reaching
+        // SysCall# only from a match arm/foreach/check would keep the
+        // argmemonly lie). Cover every statement that carries expressions.
+        Statement::Check(e) | Statement::Gate(e) | Statement::Tail(e) => {
+            collect_called_names_expr(e, out);
+        }
+        Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
+            collect_called_names_expr(e, out);
+        }
+        Statement::ArrowAssign { value, .. } => collect_called_names_expr(value, out),
+        Statement::Foreach { list, body, .. } => {
+            collect_called_names_expr(list, out);
+            for inner in body {
+                collect_called_names_stmt(inner, out);
+            }
+        }
+        Statement::Match { expr, arms } => {
+            collect_called_names_expr(expr, out);
+            for arm in arms {
+                for inner in &arm.body {
+                    collect_called_names_stmt(inner, out);
+                }
+            }
+        }
+        Statement::InlineDefn(d) => {
+            for inner in &d.body {
                 collect_called_names_stmt(inner, out);
             }
         }
@@ -1972,11 +2073,13 @@ impl LlvmBackend {
 pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &str, indent: &str) -> bool {
     let triple = self.ctx.target_triple.clone();
     if triple.starts_with("x86_64") && triple.contains("linux") {
-        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},~{{rcx}},~{{r11}}\" (i64 12, i64 {})",
+        // 2026-10-20 (BUGS.md concat -O2): brk() returns the new program
+        // break; ~{memory} keeps the allocator's stores ordered around it.
+        writeln!(out, "{}{} = call i64 asm sideeffect \"syscall\", \"={{rax}},{{rax}},{{rdi}},~{{rcx}},~{{r11}},~{{memory}}\" (i64 12, i64 {})",
             indent, v, arg_reg).ok();
         true
     } else if triple.starts_with("aarch64") && triple.contains("linux") {
-        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}}\" (i64 12, i64 12, i64 {})",
+        writeln!(out, "{}{} = call i64 asm sideeffect \"svc #0\", \"={{x0}},{{x8}},{{x0}},~{{memory}}\" (i64 12, i64 12, i64 {})",
             indent, v, arg_reg).ok();
         true
     } else {
@@ -2720,6 +2823,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
+        // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
+        // raw-memory attribute set must be TRANSITIVE. A defn whose own body
+        // has no raw intrinsic can still reach one through a callee
+        // (`print_str` -> `write_all` -> `SysCall#`); emitting the caller
+        // with #8 (argmemonly) tells LLVM it touches no memory except through
+        // its pointer args, and -O2 then deletes the stores that fill a buffer
+        // before the write() syscall — every concat printed empty. Seed with
+        // direct touchers, then close over calls (fixpoint, like needs_state).
+        self.ctx.defn_touches_raw_memory = compute_transitive_raw_memory(items);
         // 2026-10-15 (type-dependent member statefulness): concrete types with
         // a state-taking member. A trait default/generic monomorphized onto
         // such a type must itself take `%state` (its specialized body reaches a

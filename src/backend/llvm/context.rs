@@ -116,6 +116,14 @@ pub struct CompilerContext {
     /// a clean C ABI. Previously every regular defn carried state, forcing
     /// all callers to too.
     pub defn_needs_state: HashMap<String, bool>,
+    /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
+    /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
+    /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
+    /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
+    /// A caller's attribute must be at least as permissive as its callees'
+    /// effects — `print_str` reaches `SysCall#` via `write_all`; with #8
+    /// (argmem-only) LLVM deleted every store that filled the write buffer.
+    pub defn_touches_raw_memory: std::collections::HashSet<String>,
     /// 2026-10-15 (type-dependent member statefulness): concrete type names
     /// with at least one state-taking member (export_abi::type_stateful_members).
     /// A monomorphized trait default/generic specialized to such a type must
@@ -591,6 +599,7 @@ impl CompilerContext {
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
+            defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
             collection_iterables: std::collections::HashSet::new(),
