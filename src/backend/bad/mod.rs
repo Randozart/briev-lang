@@ -820,6 +820,33 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_park_matches_stdlib_name() {
+        let src = "_start:\n    Park\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn profile_import_supplies_constants_and_steps() {
+        let src = "import \"std/bad/profiles/rv64-qemu-virt.bad\"\n\
+                   defn banner(base: Ptr) {\n    uart_init(base)\n    uart_putc(base, 66)\n}\n\
+                   bootstrap Entry {\n    banner(UART0)\n    halt\n}\n";
+        let x86 = generate_with(
+            src,
+            "x86_64",
+            false,
+            Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+            true,
+        )
+        .unwrap();
+        // 0x10000000 + 0x30 materializes into a register, then stores 0x101.
+        assert!(x86.contains("movq $268435456"), "{x86}");
+        assert!(x86.contains("movq $257") || x86.contains("movq $0x101"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+    }
+
+    #[test]
     fn symbolic_body_allows_raw_zero_ops_and_engine_verbs() {
         let src = "_start:\n    mov x, 1\n    DisableInterrupts\n    halt\n";
         let x86 = lower_ok(src, "x86_64");

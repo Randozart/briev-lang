@@ -256,6 +256,11 @@ fn body_has_return(body: &[crate::ast::bad::BadBodyItem]) -> bool {
 }
 
 fn instr_has_symbolic(instr: &BadInstr, ctx: &SymCtx<'_>) -> bool {
+    // Engine verbs are symbolic statements even with zero operands
+    // (`Park`, `DisableInterrupts`).
+    if ctx.intrinsics.is_intrinsic(&instr.mnemonic) {
+        return true;
+    }
     if !SYMBOLIC_OPS.contains(&instr.mnemonic.as_str()) {
         return false;
     }

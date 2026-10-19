@@ -42,6 +42,8 @@ EnableInterrupts: "0"; "void"; "x86_64:sti"; "riscv64:mov r9, 8; csrrs r0, 768, 
 // Stop and wait.
 Halt: "0"; "void"; "x86_64:cli; halt"; "aarch64:halt"; "riscv64:halt";
 WaitForInterrupt: "0"; "void"; "x86_64:wfi"; "aarch64:wfi"; "riscv64:wfi";
+Park: "0"; "void"; "x86_64:cli; halt"; "aarch64:halt"; "riscv64:halt"; "thumbv7m:halt";
+
 
 // Memory and translation.
 MemoryBarrier: "0"; "void"; "x86_64:fence"; "aarch64:fence"; "riscv64:fence";

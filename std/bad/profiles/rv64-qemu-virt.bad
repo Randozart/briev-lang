@@ -1,0 +1,17 @@
+// ── rv64 QEMU virt profile ────────────────────────────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Hardware constants and reusable steps for QEMU's virt machine.
+// Import explicitly: `import "std/bad/profiles/rv64-qemu-virt.bad"`.
+
+.const UART0 0x10000000
+.const UART_DR 0x00
+.const UART_CR 0x30
+
+defn uart_init(base: Ptr) {
+    Store(0x101, base + UART_CR)   // UARTEN | TXE
+}
+
+defn uart_putc(base: Ptr, ch: Int) {
+    Store(ch, base + UART_DR)
+}
