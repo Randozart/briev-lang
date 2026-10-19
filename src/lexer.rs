@@ -584,6 +584,10 @@ ExclaimArrow,
         }
         if inner == "\\0" { return Some('\0'); }
         if inner == "\\n" { return Some('\n'); }
+        // 2026-10-19 (fix: `\r` dropped, BUGS.md): mirror the string lane —
+        // the carriage-return char escape was missing (byte strings already
+        // had it via decode_byte_escape).
+        if inner == "\\r" { return Some('\r'); }
         if inner == "\\t" { return Some('\t'); }
         if inner == "\\\\" { return Some('\\'); }
         if inner == "\\'" { return Some('\''); }
@@ -886,8 +890,32 @@ mod tests {
         let mut lexer = Token::lexer("'\\t'");
         assert_eq!(lexer.next(), Some(Ok(Token::Char('\t'))));
 
+        // 2026-10-19 (fix: `\r` escape dropped): the carriage-return char
+        // escape must decode to U+000D (was previously unhandled).
+        let mut lexer = Token::lexer("'\\r'");
+        assert_eq!(lexer.next(), Some(Ok(Token::Char('\r'))));
+
         let mut lexer = Token::lexer("'\\\\'");
         assert_eq!(lexer.next(), Some(Ok(Token::Char('\\'))));
+    }
+
+    #[test]
+    fn test_string_carriage_return_escape() {
+        // 2026-10-19 (fix: `\r` dropped in regular string literals, BUGS.md):
+        // a plain `"\r\n"` must lex to the two bytes CR LF (U+000D U+000A), not
+        // the four literal chars `\ r \n`. CRLF-framed wire protocols (HTTP,
+        // websocket handshakes) depend on expressing the terminator in a
+        // String. The byte-string lane (`#b"..."`) already decoded `\r`; this
+        // pins parity for the regular-string lane.
+        let mut lexer = Token::lexer(r#""\r\n""#);
+        assert_eq!(lexer.next(), Some(Ok(Token::String("\r\n".to_string()))));
+
+        // the CRLF-CRLF header terminator round-trips to exactly four bytes.
+        let mut lexer = Token::lexer(r#""a\r\n\r\nb""#);
+        assert_eq!(
+            lexer.next(),
+            Some(Ok(Token::String("a\r\n\r\nb".to_string())))
+        );
 
         let mut lexer = Token::lexer("'\\''");
         assert_eq!(lexer.next(), Some(Ok(Token::Char('\''))));
@@ -1200,6 +1228,15 @@ fn unescape_string(inner: &str) -> String {
         };
         match esc {
             'n' => out.push('\n'),
+            // 2026-10-19 (fix: `\r` dropped in regular string literals,
+            // BUGS.md): the carriage return escape was missing here (and in
+            // the Char handler) though `#b"..."` byte strings already decoded
+            // it (decode_byte_escape). Without it, `"\r\n"` lexed as the four
+            // literal chars `\ r \n`, so CRLF-framed wire protocols (HTTP,
+            // websockets) could not express their line terminator in a plain
+            // String. Now `\r` → U+000D, matching the byte-string lane and the
+            // C family of escapes.
+            'r' => out.push('\r'),
             't' => out.push('\t'),
             '\\' => out.push('\\'),
             '"' => out.push('"'),
