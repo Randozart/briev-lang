@@ -33,6 +33,83 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `\r` escape dropped in regular string + char literals — FIXED 2026-10-19
+
+**Symptom:** a plain `"\r\n"` lexed to the FOUR literal characters `\ r \n`
+instead of the two bytes CR LF — `find("...\r\n\r\n...", "\r\n\r\n")` returned
+-1 and the HTTP/websocket net stack could not express a CRLF line terminator
+in a String. Discovered building `lib/std/net/http.bv` (recommender-app Task
+3): the incremental request parser never found the header terminator.
+
+**Controlled A/B:** `"ab\r\n\r\ncd" .^Length` printed **10** (want 8); byte 2 =
+92 (`\`), byte 3 = 114 (`r`) — the backslash and `r` survived as text. The
+`#b"..."` byte-string lane decoded `\r` correctly (via `decode_byte_escape`),
+pinning the gap to the regular-string/char lanes only.
+
+**Root cause:** `unescape_string` (src/lexer.rs) handled `\n \t \\ \" \0 \x \u`
+but its `other =>` arm passed `\r` through as a literal backslash+r; the Char
+literal handler likewise lacked a `\\r` case. `decode_byte_escape` already had
+`Some('r') => b'\r'`, so the three lanes had drifted.
+
+**Fix:** add `'r' => out.push('\r')` to `unescape_string` and
+`if inner == "\\r" { return Some('\r'); }` to the Char handler, restoring parity
+with the byte-string lane and the C escape family. Not a workaround — the
+escape belongs in the language. Regression tests: `test_string_carriage_return_escape`
+and the `\r` case in `test_char_literals` (src/lexer.rs).
+
+## `const String` global emitted as `ptr null` → segfault on read — FIXED 2026-10-19
+
+**Symptom:** reading a module-level `const Name: String = "lit";` (even a bare
+`println!("{}", Name)`) segfaulted. Found building `lib/std/net/http.bv`
+(recommender-app Task 3): `WS_MAGIC` (the RFC 6455 handshake GUID) crashed
+`ws_accept_key`.
+
+**Controlled A/B:** `client_key + "literal"` worked (len 60); `client_key +
+WS_MAGIC` (a `const String`) segfaulted. IR showed `@WS_MAGIC = constant ptr
+null` — the const was a null pointer; dereferencing its `[len][bytes]` header
+crashed.
+
+**Root cause:** the constant-global emitter (src/backend/llvm/mod.rs) had a stub
+`Expr::Quoted(_) => "null"` arm, and `collect_strings_tl` never scanned
+`TopLevel::Constant`, so a String const's literal was neither interned nor
+pointed at.
+
+**Fix:** (1) `collect_strings_tl` now scans `TopLevel::Constant` so the literal
+joins the interned `@str.N` table; (2) the emitter resolves the literal's index
+and emits `@Name = constant ptr @str.N` (dedup keyed by literal text). Matches
+how body-level string literals resolve (emit_expr.rs). The interpreter already
+handled const String correctly (it is the reference).
+
+## Dot-call to a stateful obj member left the caller stateless → undefined `%state` — FIXED 2026-10-19
+
+**Symptom:** a free `defn` that invoked a stateful obj member through a DOT
+method call (`sink.put_bytes(src, n)`, where `GrowBuf::put_bytes` reaches
+`Malloc#` via `grow_to_fit`) emitted invalid IR: the caller had no `%state`
+parameter, yet the inlined member body called `@grow_to_fit(ptr %state, ...)` —
+"use of undefined value '%state'", clang rejected it. Found building
+`lib/std/net/http.bv` (recommender-app Task 3, the flagged trait-default-state
+risk): the response writers' `put_str` helper.
+
+**Controlled A/B:** `defn app(sink: GrowBuf, ...) { term sink.put_bytes(src, n); }`
+failed; the free-function form `put_bytes(sink, src, n)` and a direct
+`grow_new(...)` call both compiled. The discriminator: the `MethodCall`
+(dot) call site vs the `Call` (free) call site.
+
+**Root cause:** `compute_defn_needs_state` (src/analysis/export_abi.rs) indexes
+obj members under type-qualified keys (`GrowBuf::put_bytes`) and the fixpoint
+computes their verdicts correctly — but the `Expr::MethodCall` arm of
+`expr_needs_state` only recursed into the receiver and args; it never consulted
+the called member's own statefulness. So a dot-called stateful member did not
+propagate `%state` to its caller. (The 2026-10-15 member-indexing fix added the
+producer; the MethodCall consumer was the missing half.)
+
+**Fix:** the `MethodCall` arm now ORs in `method_is_stateful_on_any_type`, the
+union of every indexed `Type::method` verdict (the AST carries no resolved
+receiver type at this stage; the union is the same sound over-approximation
+`type_stateful_members` already relies on — a harmless unused `%state` param at
+worst). Regression tests: `dot_call_to_stateful_member_forces_caller_state` and
+`dot_call_to_stateless_member_keeps_caller_stateless` (src/analysis/export_abi.rs).
+
 ## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
 
 **Symptom:** three sweep A/B "regressions" (queue_drain 2.51x,
