@@ -53,7 +53,7 @@ const RAW_ZERO: &[&str] = &[
 
 const SYMBOLIC_OPS: &[&str] = &[
     "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr",
-    "store", "load", "addr", "readcr", "writecr",
+    "store", "load", "stb", "sth", "addr", "readcr", "writecr",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -794,6 +794,36 @@ impl Builder<'_, '_> {
                     Expr::Call("addr".to_string(), vec![Expr::Identifier(label)], None),
                     i.span.clone(),
                 )?;
+            }
+            ("stb" | "sth", 2) => {
+                // Sub-width stores: keep the operand tokens; the ISA row
+                // picks reg/imm form and the allocator resolves virtuals.
+                // Hex/const expression operands become ordinary immediates.
+                let mut ops = i.operands.clone();
+                for op in &mut ops {
+                    if let BadOperand::Expr(t) = op {
+                        match parse_bld_expr(t) {
+                            Ok(Expr::Decimal(n)) | Ok(Expr::TaggedLiteral(n, _)) => {
+                                *op = BadOperand::Int(n)
+                            }
+                            Ok(Expr::Float(_)) => {}
+                            _ => {
+                                return Err(format!(
+                                    "`{}` (line {}) takes simple value/address operands - \
+                                     assign expressions to a symbolic value first",
+                                    i.mnemonic, i.span.line
+                                ))
+                            }
+                        }
+                    }
+                }
+                self.stmts.push(BldStmt::Instr(BadInstr {
+                    mnemonic: i.mnemonic.clone(),
+                    operands: ops,
+                    contract: None,
+                    ack: None,
+                    span: i.span.clone(),
+                }));
             }
             ("store", 2) => {
                 let value = self.operand_expr(&i.operands[0], i.span.line)?;

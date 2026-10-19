@@ -1423,11 +1423,33 @@ impl<'a> BldLowerer<'a> {
     /// Operands may name `vN`/`fvN`; the allocator resolves them.
     fn st_instr(&mut self, i: &BadInstr) -> Result<(), String> {
         self.cur_span = i.span.clone();
-        let is_float = i.operands.iter().any(|o| {
+        // Resolve symbolic names through the current bindings: a bound
+        // value becomes its register/virtual or constant; an unbound
+        // name stays a symbol (e.g. the label in `addr`).
+        let mut ops = Vec::with_capacity(i.operands.len());
+        for op in &i.operands {
+            let op = match op {
+                BadOperand::Name(n) if self.lookup(n).is_some() => {
+                    self.expr(&Expr::Identifier(n.clone()))?.op
+                }
+                other => other.clone(),
+            };
+            ops.push(op);
+        }
+        // Sub-width stores cannot take an immediate address on most
+        // targets; materialize it in a register.
+        if matches!(i.mnemonic.as_str(), "stb" | "sth")
+            && matches!(ops.get(1), Some(BadOperand::Int(_) | BadOperand::Float(_)))
+        {
+            let addr = self.fresh_vreg(VClass::Int);
+            self.emit_copy(&addr, ops[1].clone(), VClass::Int)?;
+            ops[1] = BadOperand::Name(addr);
+        }
+        let is_float = ops.iter().any(|o| {
             matches!(o, BadOperand::Name(n) if n.starts_with("fv"))
         });
         let class = if is_float { VClass::Float } else { VClass::Int };
-        self.emit(&i.mnemonic, i.operands.clone(), class)
+        self.emit(&i.mnemonic, ops, class)
     }
 
     fn st_bad(&mut self, text: &str, pos: RecipePos) -> Result<(), String> {
