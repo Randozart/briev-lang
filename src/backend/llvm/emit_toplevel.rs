@@ -3662,8 +3662,15 @@ impl LlvmBackend {
 /// int-address accesses. Helpers called with their own attrs are NOT scanned
 /// (the callee's attribute governs its own accesses).
 pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
+    // 2026-10-19 (fix: Malloc# omitted → defn wrapping it emitted memory(read)
+    // → LLVM CSE'd two identical-arg calls into one allocation, aliasing +
+    // double-free, BUGS.md): Malloc# is the allocating sibling of Alloc# and is
+    // observable (intrinsic registry) — a defn whose only raw-memory op is
+    // Malloc# (e.g. `ivec_new` = `Malloc#(n*8) as Int`) MUST get memory(readwrite)
+    // (#13) so LLVM cannot merge distinct allocations. Undo: remove "Malloc#"
+    // (reopens the two-identical-allocations-alias class under -O3 LTO).
     const RAW: &[&str] = &[
-        "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
+        "Malloc#", "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
         "VolatileLoad#", "VolatileStore#", "SysCall#",
     ];
     fn expr_has(e: &Expr, found: &mut bool) {
@@ -6964,6 +6971,59 @@ mod tests {
             ir.contains("%pc"),
             "the convergence gate must be emitted (guards the vacuous pass \
              where the txn folds away entirely)"
+        );
+    }
+
+    #[test]
+    fn defn_wrapping_malloc_is_not_memory_read() {
+        // 2026-10-19 (fix: Malloc# omitted from definition_touches_raw_memory's
+        // RAW list): a defn whose only raw-memory op is Malloc# was judged
+        // side-effect-free and emitted memory(read) (#8). Under -O3 LTO, LLVM
+        // then CSE'd two identical-argument calls into ONE allocation, so two
+        // `alloc(n)` calls returned the SAME pointer — aliasing and a later
+        // double-free. The defn must instead get memory(readwrite) (#13) so the
+        // allocations stay distinct.
+        //
+        // Behavioral assertion (contract, not implementation): the emitted
+        // @alloc_box function must NOT carry a memory(read) attribute group
+        // body; it must be memory(readwrite). We check the attribute text
+        // rather than the specific #N index (the index is an implementation
+        // detail; the memory effect is the contract).
+        let src = r#"
+            defn alloc_box(n: Int) -> Int {
+                let a: Int = Malloc#(n * 8) as Int;
+                term a;
+            };
+            node entry [beginprogram][true] {
+                let x: Int = alloc_box(2);
+                let y: Int = alloc_box(2);
+                endprogram Print#(x - y);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(
+            ir.contains("@alloc_box"),
+            "the Malloc#-wrapping defn must be emitted: {ir}"
+        );
+        // The function definition line selects an attribute group; find it and
+        // confirm the referenced group is readwrite, never read-only. The
+        // defn-attr emitter uses #13 (memory(readwrite)) for raw-memory defns
+        // and #8 (memory(read)) otherwise, so the fix flips alloc_box to #13.
+        let def_line = ir
+            .lines()
+            .find(|l| l.contains("define") && l.contains("@alloc_box"))
+            .expect("alloc_box definition line");
+        assert!(
+            def_line.contains("#13"),
+            "a Malloc#-wrapping defn must use the raw-memory (readwrite) \
+             attribute group, not the read-only one: {def_line}"
+        );
+        assert!(
+            !def_line.contains("#8"),
+            "the defn must NOT get the memory(read) attribute group that lets \
+             LLVM CSE two distinct allocations: {def_line}"
         );
     }
 }
