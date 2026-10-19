@@ -101,9 +101,21 @@ the contract census (see below).
    a single @global/%State HANDLE slot; plain-obj handles remain disallowed
    by the placement policy. Recorded for the owner — the ruly intent
    (correct global obj bindings) is met; the representation differs.
-3. **Interpreter parity trio** — callable Briev txns, the
-   raw-address→String door, and the GrowBuf growth misfire — so the
-   reference engine can verify the stdlib and the fixtures again.
+3. **Interpreter parity trio** — DONE 2026-10-20 (with residuals):
+   callable txns already had a convergence loop; the real blockers were
+   (a) the casting graph's String-target lanes were unhandled (`65 as Char
+   as String` yielded the Char atom, CharCount# 0), (b) the Blob→String door
+   was unhandled, (c) obj literals produced anonymous Products (type name
+   discarded) so member dot-calls fell through to Void, (d) trait DEFAULTS
+   were never registered per conforming type (`put_u16_be` undefined), and
+   (e) module CONSTANTS never resolved. All fixed; plus the encoder's
+   per-byte recursion became an iterative foreach (stack depth no longer
+   proportional to payload). The encode round-trip scenario is RESTORED in
+   the codec parity test (7/16-bit forms). Residuals OPEN (BUGS.md):
+   ws_encode's 64-bit payload in the reactor path, and `String as Data as
+   Int` remains unrepresentable (Strings are Value::Bits with no address).
+   Also fixed while here: ws_encode never wrote the MASKING KEY on masked
+   frames (a real stdlib wire-format bug found by the restored round-trip).
 4. **The migration arc** (buckets 1→3→2, assume sweep, flip to `deny`),
    then B (`.len` regularity), then fixtures 2–4.
 

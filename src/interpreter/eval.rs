@@ -133,6 +133,42 @@ pub fn eval_expr(
                     Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Char(char::from_u32(n as u32).unwrap_or('?')))),
                     _ => Ok(v),
                 },
+                // 2026-10-20 (interpreter parity trio): the casting graph's
+                // String-target lanes (src/casting/graph.rs) were unhandled —
+                // a cast fell through to identity, so `65 as Char as String`
+                // yielded the Char atom itself (`CharCount#` = 0), breaking
+                // base64_encode and every lane consumer in the reference
+                // engine. Two shapes:
+                //   1. `(addr as Data) as String` — the Blob→String door: the
+                //      address is a `[len: i64][bytes]` buffer, viewed as a
+                //      String (mirrors the backend's reinterpretation).
+                //   2. a scalar source — dispatch the graph's ExtCall lane
+                //      (char_to_str / int_to_str / float_to_str / bool_to_str).
+                "String" => {
+                    if let Expr::Cast(inner, mid_ty) = expr.as_ref() {
+                        if matches!(
+                            target_protocol_category(mid_ty).as_str(),
+                            "Blob" | "Data"
+                        ) {
+                            return Ok(door_string_from_addr(&v, heap));
+                        }
+                    }
+                    let lane = match &v {
+                        Value::Atom(Atom::Char(_)) => "char_to_str",
+                        Value::Atom(Atom::Int(_)) => "int_to_str",
+                        Value::Atom(Atom::Float(_)) => "float_to_str",
+                        Value::Atom(Atom::Bool(_)) => "bool_to_str",
+                        // Already String-like (Value::Bits) — identity.
+                        _ => return Ok(v),
+                    };
+                    match call_user_fn(heap, bindings, functions, lane, vec![v.clone()]) {
+                        Some(res) => res,
+                        // The lane function is not in this program (no stdlib
+                        // cast lanes): keep the value rather than inventing a
+                        // representation.
+                        None => Ok(v),
+                    }
+                }
                 _ => Ok(v),
             }
         }
@@ -169,7 +205,6 @@ pub fn eval_expr(
 
         // ── Struct literal ───────────────────────────────────────
         Expr::StructLiteral { type_name, fields, specs: _ } => {
-            let _ = type_name;
             let mut names = Vec::with_capacity(fields.len());
             let values: Result<Vec<Value>, _> = fields
                 .iter()
@@ -178,7 +213,28 @@ pub fn eval_expr(
                     eval_expr(expr, heap, bindings, functions)
                 })
                 .collect();
-            Ok(Value::named_product(values?, names))
+            let values = values?;
+            // 2026-10-20 (interpreter parity trio): an OBJ literal is an
+            // INSTANCE, not an anonymous product. Struct literals previously
+            // discarded `type_name`, so `g.put_u8(...)` on a GrowBuf value
+            // fell through the Instance-only method dispatch to the UFCS
+            // fallthrough and silently returned Void (equilibrium, no error).
+            // Registered obj shapes (load_program) decide: an obj gets an
+            // identity-bearing Instance; every other struct stays a Product.
+            let is_obj = crate::interpreter::obj_shapes()
+                .map(|shapes| shapes.contains_key(type_name))
+                .unwrap_or(false);
+            if is_obj {
+                let mut map: HashMap<String, Value> = HashMap::new();
+                for (n, v) in names.into_iter().zip(values.into_iter()) {
+                    map.insert(n, v);
+                }
+                return Ok(Value::Instance {
+                    type_name: type_name.clone(),
+                    fields: std::rc::Rc::new(std::cell::RefCell::new(map)),
+                });
+            }
+            Ok(Value::named_product(values, names))
         }
 
         // ── Dereference ──────────────────────────────────────────
@@ -621,10 +677,84 @@ fn eval_call(
                     }
                     Ok(result)
                 }
-                None => Err(RuntimeError::UndefinedFunction(name.into())),
+                // 2026-10-20 (interpreter parity trio): UFCS / free form of
+                // an obj member — `put_u8(g, v)` where `put_u8` is declared
+                // inside `obj GrowBuf`. No bare function is registered for
+                // members, so dispatch on the first Instance argument.
+                None => {
+                    if let Some(first) = evaluated.first() {
+                        if let Value::Instance { type_name, .. } = first {
+                            let key = format!("{}::{}", type_name, name);
+                            if functions.contains_key(&key) {
+                                let rest: Vec<Value> = evaluated[1..].to_vec();
+                                let mut scope = EvalScope { bindings, functions };
+                                return dispatch_method_value(
+                                    first.clone(), name, rest, heap, &mut scope,
+                                );
+                            }
+                        }
+                    }
+                    Err(RuntimeError::UndefinedFunction(name.into()))
+                }
                 }
             }
         }
+    }
+}
+
+/// 2026-10-20 (interpreter parity trio): invoke a user function by name with
+/// the interpreter's dynamic-scope convention (the same shape the Expr::Call
+/// handler uses). `None` = the name is not a user function in this program.
+fn call_user_fn(
+    heap: &mut crate::interpreter::VirtualHeap,
+    bindings: &HashMap<String, Value>,
+    functions: &HashMap<String, crate::interpreter::FunctionDef>,
+    name: &str,
+    args: Vec<Value>,
+) -> Option<Result<Value, RuntimeError>> {
+    let fn_def = functions.get(name)?;
+    if fn_def.parameters.len() != args.len() {
+        return None;
+    }
+    let mut local: HashMap<String, Value> = bindings.clone();
+    for (p, v) in fn_def.parameters.iter().zip(args.into_iter()) {
+        local.insert(p.clone(), v);
+    }
+    let block = Expr::Block(fn_def.body.clone());
+    Some(match eval_expr(&block, heap, &mut local, functions) {
+        Err(RuntimeError::TermReturn(v)) => Ok(v),
+        other => other,
+    })
+}
+
+/// 2026-10-20 (interpreter parity trio): the Blob→String door —
+/// `(addr as Data) as String` views a `[len: i64][bytes]` heap buffer (the
+/// String representation) as a String value. The backend reinterprets the
+/// pointer; the interpreter reads the bytes into a Value::Bits, which is
+/// observably equivalent for the reference engine. A non-address or
+/// unreadable location yields the empty string (the backend's null-view
+/// behavior).
+fn door_string_from_addr(v: &Value, heap: &crate::interpreter::VirtualHeap) -> Value {
+    let Value::Atom(Atom::Int(addr)) = v else {
+        return v.clone();
+    };
+    if *addr < 0 {
+        return Value::bits(Vec::new());
+    }
+    let addr = *addr as u64;
+    let Some(len_bytes) = heap.read(addr, 8) else {
+        return Value::bits(Vec::new());
+    };
+    let len = i64::from_le_bytes([
+        len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3],
+        len_bytes[4], len_bytes[5], len_bytes[6], len_bytes[7],
+    ]);
+    if len < 0 {
+        return Value::bits(Vec::new());
+    }
+    match heap.read(addr + 8, len as usize) {
+        Some(bytes) => Value::bits(Vec::from(bytes)),
+        None => Value::bits(Vec::new()),
     }
 }
 

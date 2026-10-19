@@ -265,6 +265,7 @@ impl Interpreter {
                 }
             }
         }
+        self.register_trait_defaults(program);
         // 2026-08-23 (enum construction): variant registry for constructors.
         // 2026-08-26 (qualified enum paths): BOTH bare and `Enum::Variant`
         // keys register; construction stores the BARE name in the Sum so
@@ -311,11 +312,76 @@ impl Interpreter {
                 _ => {}
             }
         }
+        self.seed_constants(program);
         // 2026-08-09 (init kind, Phase 2): seed each init exactly once, before
         // any transaction runs. A seeding failure (or a duplicate init) is a
         // runtime error — the interpreter is the reference codegen must match.
         let _ = self.seed_inits(program);
     }
+
+    /// 2026-10-20 (interpreter parity trio): module constants resolve as
+    /// identifiers. The backend carries them in ctx.constants; the interpreter
+    /// seeds them into `state` — the same map exec_stmt passes as the binding
+    /// environment — in declaration order (a constant may reference an earlier
+    /// one). Split out of `load_program` (Praetor complexity).
+    fn seed_constants(&mut self, program: &[TopLevel]) {
+        for item in program {
+            if let TopLevel::Constant(c) = item {
+                if let Ok(v) = eval::eval_expr(
+                    &c.expr,
+                    &mut self.heap,
+                    &mut self.state,
+                    &self.functions,
+                ) {
+                    self.state.insert(c.name.clone(), v);
+                }
+            }
+        }
+    }
+
+    /// 2026-10-20 (interpreter parity trio): register TRAIT DEFAULTS per
+    /// conforming concrete type — the interpreter's counterpart of the
+    /// backend's monomorphization (`put_u16_be` -> GrowBuf). A default is
+    /// registered under `{concrete}::{fn}` for every registered obj whose
+    /// member set covers the trait's required (empty-body) functions; a
+    /// concrete member of the same name keeps precedence. Split out of
+    /// `load_program` (Praetor complexity).
+    fn register_trait_defaults(&mut self, program: &[TopLevel]) {
+        let mut traits: Vec<(Vec<String>, Vec<(String, FunctionDef)>)> = Vec::new();
+        for item in program {
+            if let TopLevel::Trait(tr) = item {
+                let mut required: Vec<String> = Vec::new();
+                let mut defaults: Vec<(String, FunctionDef)> = Vec::new();
+                for f in &tr.functions {
+                    if f.body.is_empty() {
+                        required.push(f.name.clone());
+                    } else {
+                        defaults.push((f.name.clone(), FunctionDef::from_defn(f)));
+                    }
+                }
+                if !defaults.is_empty() {
+                    traits.push((required, defaults));
+                }
+            }
+        }
+        let concrete_names: Vec<String> = self.objs.keys().cloned().collect();
+        for type_name in &concrete_names {
+            for (required, defaults) in &traits {
+                let conforms = required.iter().all(|req| {
+                    self.functions.contains_key(&format!("{}::{}", type_name, req))
+                });
+                if !conforms {
+                    continue;
+                }
+                for (name, def) in defaults {
+                    self.functions
+                        .entry(format!("{}::{}", type_name, name))
+                        .or_insert_with(|| def.clone());
+                }
+            }
+        }
+    }
+
 
     /// 2026-08-09 (init kind, Phase 2): evaluate each `TopLevel::Init` seeding
     /// (value expr, or body statements once) into `state` and mark the name in

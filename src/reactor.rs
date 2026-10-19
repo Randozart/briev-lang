@@ -231,7 +231,19 @@ impl Reactor {
                                     local_failed = true;
                                     break;
                                 }
-                                Err(_) => {
+                                Err(err) => {
+                                    // 2026-10-20 (diagnostic): a rollback is
+                                    // deliberate (contract failure), but a
+                                    // swallowed ENGINE error (undefined fn,
+                                    // type error) looked like silent
+                                    // equilibrium. Surface it on request.
+                                    if std::env::var("BRIEV_DEBUG_REACTOR").is_ok() {
+                                        eprintln!(
+                                            "DEBUG reactor: txn '{}' stmt {:?} error: {err:?}",
+                                            txn.name,
+                                            format!("{stmt:?}").chars().take(160).collect::<String>()
+                                        );
+                                    }
                                     local_failed = true;
                                     break;
                                 }

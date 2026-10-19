@@ -267,34 +267,61 @@ defn ws_encode(dst: GrowBuf, fin: Bool, opcode: Int, mask: Bool, key: Int,
     };
     let head: GrowBuf = dst.put_u8(b0);
 
-    // Length field: the minimal encoding for the value.
+    // Length field: the minimal encoding for the value, then the masking key
+    // (when MASK is set) and the payload.
+    // 2026-10-20 (fixture campaign): the key WRITE was missing — a masked
+    // ws_encode emitted a frame whose payload was XORed with a key that never
+    // appeared on the wire, so any conforming peer decoded garbage. The
+    // benchmark's builder writes frames itself and the net-stack golden only
+    // encoded unmasked text, so nothing noticed until the interpreter
+    // round-trip decoded its own output.
     when len <= 125 {
-        term ws_copy_payload(head.put_u8(b1 | len), src, len, key, mask, 0);
+        let after_len: GrowBuf = head.put_u8(b1 | len);
+        term ws_encode_mask(after_len, mask, key, src, len);
     };
     when len <= 65535 {
-        let l1: GrowBuf = head.put_u8(b1 | 126);
-        term ws_copy_payload(l1.put_u16_be(len), src, len, key, mask, 0);
+        let after_len: GrowBuf = head.put_u8(b1 | 126).put_u16_be(len);
+        term ws_encode_mask(after_len, mask, key, src, len);
     };
-    let l1: GrowBuf = head.put_u8(b1 | 127);
-    term ws_copy_payload(l1.put_u64_be(len), src, len, key, mask, 0);
+    let after_len: GrowBuf = head.put_u8(b1 | 127).put_u64_be(len);
+    term ws_encode_mask(after_len, mask, key, src, len);
+};
+
+// ws_encode_mask - write the 4-byte masking key (MASK bit set) and then the
+// masked payload; unmasked frames go straight to the payload copy.
+defn ws_encode_mask(buf: GrowBuf, mask: Bool, key: Int, src: Int, len: Int)
+    -> GrowBuf
+{
+    when mask {
+        let k1: GrowBuf = buf.put_u8((key >> 24) & 255);
+        let k2: GrowBuf = k1.put_u8((key >> 16) & 255);
+        let k3: GrowBuf = k2.put_u8((key >> 8) & 255);
+        let k4: GrowBuf = k3.put_u8(key & 255);
+        term ws_copy_payload(k4, src, len, key, mask, 0);
+    };
+    term ws_copy_payload(buf, src, len, key, mask, 0);
 };
 
 // ws_copy_payload - ws_encode's payload walker: one put_u8 per source byte,
-// XORed with the key byte when masked. `i` counts bytes copied so far; the
-// recursion walks the source exactly once.
-defn ws_copy_payload(buf: GrowBuf, src: Int, len: Int, key: Int, mask: Bool, i: Int)
+// XORed with the key byte when masked. 2026-10-20 (interpreter parity trio):
+// an ITERATIVE foreach, not per-byte tail recursion. The recursion made the
+// encoder's stack depth proportional to the payload (a 64-bit-length frame
+// alone would need >65k frames; the interpreter overflowed at 7k), and the
+// backend does not optimize tail calls — so large frames were a latent stack
+// bug in both engines. The loop walks the source exactly once.
+defn ws_copy_payload(buf: GrowBuf, src: Int, len: Int, key: Int, mask: Bool, i0: Int)
     -> GrowBuf
 {
-    when i == len {
-        term buf;
+    let grown: GrowBuf = buf;
+    foreach i in i0..len {
+        let raw: Int = Load#(src + i, 1);
+        let val: Int = raw;
+        when mask {
+            val = raw ^ ws_key_byte(key, i);
+        };
+        grown = grown.put_u8(val);
     };
-    let raw: Int = Load#(src + i, 1);
-    let val: Int = raw;
-    when mask {
-        val = raw ^ ws_key_byte(key, i);
-    };
-    let dst2: GrowBuf = buf.put_u8(val);
-    term ws_copy_payload(dst2, src, len, key, mask, i + 1);
+    term grown;
 };
 
 // ── Application-facing conveniences (PR #26 API, rebuilt on the core) ───────

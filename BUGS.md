@@ -10615,3 +10615,39 @@ bugs: the value looked usable and the crash had no diagnostic.
 Placement assistance verified: explicit `plain` on a compound initializer and
 `state` on a value the machine never references both produce actionable
 errors (SPEC §899-924 machinery).
+
+## 2026-10-20 — ws_encode omitted the masking key on masked frames (FIXED)
+
+**Symptom:** a masked `ws_encode` emitted a frame whose payload was XORed
+with a key that never appeared on the wire — any conforming peer decoded
+garbage. Nothing caught it earlier because the benchmark's builder writes
+frames itself and the net-stack golden only encoded UNMASKED text; the
+interpreter's own encode→decode round-trip (restored this session) was the
+first consumer to validate a masked encoded frame.
+
+**Root cause:** the key-write block was lost during the sequential-guard
+rewrite of `ws_encode` (the branch bodies were restructured to `term` on
+every path; the 4 key bytes had been written in the retired expression-form
+`with_key` binding).
+
+**Fix:** all three length branches now go through `ws_encode_mask`, which
+writes key bytes 0..3 when MASK is set and then copies the payload.
+Regression pin: the `scenario_rt` encode round-trip in
+`tests/ws_frame_codec_parity.rs` (7-bit + 16-bit forms, masked and plain).
+
+## 2026-10-20 — interpreter: large ws_encode payload fails in the reactor path (OPEN)
+
+**Symptom:** encoding a 7000-byte payload through a node body fails with
+`HeapError("Load# read failed")` at addr 0; the IDENTICAL body executed
+statement-by-statement via `exec_stmt` runs to `endprogram` successfully.
+Smaller payloads (100 bytes) work through both paths.
+
+**Impact:** interpreter-only; the compiled backend and the harness are
+unaffected (the ws_frame builder writes frames directly, and the net-stack
+golden covers the encoder's wire format). The codec round-trip is verified
+interpreter-side for the 7/16-bit forms.
+
+**Next step:** diff the reactor's statement execution against `exec_stmt`
+for this body shape (the reactor has its own Let/Foreach arms; the divergence
+is in which environment the nested defn call sees). Pinned by the ignored
+test `ws_encode_growth_interpreter`.
