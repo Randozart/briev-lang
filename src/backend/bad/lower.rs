@@ -57,8 +57,12 @@ pub struct Lowerer<'a> {
     structs: Vec<StructField>,
     /// The open `.struct` block, for `.field` context.
     current_struct: Option<String>,
-    /// Enclosing global label — scopes local labels (`.loop:`).
+    /// Enclosing global label — scopes local labels (`.loop:` / `local loop:`).
     current_label: Option<String>,
+    /// Local label names in the body currently being emitted. Plain
+    /// references (`jmp loop`) resolve through this set before falling
+    /// back to a global label/symbol.
+    current_locals: std::collections::HashSet<String>,
     /// Per-defn expansion counters (hygienic local-label gensym).
     defn_calls: HashMap<String, usize>,
     /// The active defn expansion scope, when inside one.
@@ -127,6 +131,7 @@ impl<'a> Lowerer<'a> {
             structs: Vec::new(),
             current_struct: None,
             current_label: None,
+            current_locals: std::collections::HashSet::new(),
             defn_calls: HashMap::new(),
             local_scope: None,
             label_names: std::collections::HashSet::new(),
@@ -731,6 +736,15 @@ impl<'a> Lowerer<'a> {
         if !l.local {
             self.current_label = Some(l.name.clone());
         }
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        self.current_locals = l
+            .body
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Local(x) => Some(x.name.clone()),
+                _ => None,
+            })
+            .collect();
         self.push_line(&format!("{}:", self.canonical_label(&l.name)));
         let proven = contracts::check_label_contracts(l, self.regs, &self.family, &mut self.errors);
         for note in &proven {
@@ -753,6 +767,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        self.current_locals = saved_locals;
     }
 
     /// 2026-10-01 (plan `2026-10-01-bad-site-blocks.md`): lower a site —
@@ -1214,6 +1229,14 @@ impl<'a> Lowerer<'a> {
     fn emit_sequence_body(
         &mut self, items: &[BadBodyItem], env: &HashMap<String, Bound>, depth: usize,
     ) -> Result<(), String> {
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        self.current_locals = items
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Local(x) => Some(x.name.clone()),
+                _ => None,
+            })
+            .collect();
         for item in items {
             match item {
                 BadBodyItem::Instr(instr) => {
@@ -1228,6 +1251,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        self.current_locals = saved_locals;
         Ok(())
     }
 
@@ -1482,6 +1506,15 @@ impl<'a> Lowerer<'a> {
                         instr.span.line
                     )),
                 };
+            }
+            // Plain local reference (`jmp loop` for `local loop:`).
+            if self.current_locals.contains(name) {
+                if let Some(scope) = &self.local_scope {
+                    return Ok(format!("{scope}__{name}"));
+                }
+                if let Some(parent) = &self.current_label {
+                    return Ok(format!("L{parent}__{name}"));
+                }
             }
             // Label aliases: `alias entry = _start` — references rewrite
             // to the canonical name (values naming registers or core ops

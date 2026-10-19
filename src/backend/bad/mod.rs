@@ -562,6 +562,34 @@ mod tests {
     }
 
     #[test]
+    fn local_keyword_labels_scope_and_hygiene() {
+        // `local loop:` scopes to the enclosing global label; plain
+        // references resolve to the scoped symbol.
+        let src = "section .text\nglobal _start\n_start:\n    jmp loop\nlocal loop:\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("L_start__loop:"), "{x86}");
+        assert!(x86.contains("jmp L_start__loop"), "{x86}");
+        assert!(!x86.contains("jmp loop"), "{x86}");
+
+        // Defn locals stay hygienic per expansion.
+        let src = "defn f\n    jmp done\nlocal done:\n    ret\n\
+                   _start:\n    f\n    f\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("Lf__1__done:"), "{x86}");
+        assert!(x86.contains("Lf__2__done:"), "{x86}");
+        assert!(x86.contains("jmp Lf__1__done"), "{x86}");
+        assert!(x86.contains("jmp Lf__2__done"), "{x86}");
+    }
+
+    #[test]
+    fn local_label_outside_owner_is_loud() {
+        let err = generate("local loop:\n    ret\n", "x86_64")
+            .expect_err("local label outside an owner must be loud");
+        assert!(err.contains("outside any label"), "{err}");
+        assert!(err.contains("local name:"), "{err}");
+    }
+
+    #[test]
     fn real_register_spellings_resolve_per_target() {
         let x86 = lower_ok(
             "_start:\n    mov rax, 1\n    mov rdi, 2\n    ret\n",

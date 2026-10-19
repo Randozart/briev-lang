@@ -180,24 +180,32 @@ impl<'s> Parser<'s> {
     fn try_local(
         &mut self, owner: &mut Option<Owner>, content: &str, line: usize, span: Span,
     ) -> Result<bool, BadParseError> {
-        if !(content.starts_with('.') && is_local_label_shape(content)) {
+        // `.name:` (legacy explicit local) or `local name:` (no dot).
+        let source = if let Some(rest) = content.strip_prefix("local ") {
+            if !is_local_label_shape(rest) {
+                return Ok(false);
+            }
+            rest
+        } else if content.starts_with('.') && is_local_label_shape(content) {
+            content
+        } else {
             return Ok(false);
-        }
+        };
         match owner.as_ref() {
             Some(Owner::Label(i)) => {
                 let i = *i;
-                self.append_local(i, content, span);
+                self.append_local(i, source, span);
             }
             Some(Owner::Defn { idx, branch_rows, .. }) => {
                 let (idx, branch_rows) = (*idx, *branch_rows);
-                self.append_defn_local(idx, branch_rows, content, span)?;
+                self.append_defn_local(idx, branch_rows, source, span)?;
             }
             _ => {
                 return Err(BadParseError {
                     message: format!(
-                        "local label `{content}` is outside any label - \
-                         local labels must follow a global label or sit inside \
-                         a defn body"
+                        "local label `{source}` is outside any label - \
+                         `local name:` must follow a global label or sit inside \
+                         a defn body (use `global name` for a top-level label)"
                     ),
                     line,
                     span,
@@ -209,7 +217,9 @@ impl<'s> Parser<'s> {
     }
 
     fn append_local(&mut self, idx: usize, content: &str, span: Span) {
-        let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();
+        let name = split_label(content)
+            .map(|(n, _)| n.trim_start_matches('.').to_string())
+            .unwrap_or_default();
         if let Some(BadTopLevel::Label(l)) = self.items.get_mut(idx) {
             l.body.push(BadBodyItem::Local(BadLocal { name, span }));
         }
@@ -227,7 +237,9 @@ impl<'s> Parser<'s> {
     fn append_defn_local(
         &mut self, idx: usize, branch_rows: bool, content: &str, span: Span,
     ) -> Result<(), BadParseError> {
-        let name = split_label(content).map(|(n, _)| n[1..].to_string()).unwrap_or_default();
+        let name = split_label(content)
+            .map(|(n, _)| n.trim_start_matches('.').to_string())
+            .unwrap_or_default();
         if let Some(BadTopLevel::Defn(d)) = self.items.get_mut(idx) {
             match &mut d.shape {
                 BadDefnShape::Sequence(items) => {

@@ -59,7 +59,8 @@ msg: .asciz "hello from .bad\n"
 | `target => instr; instr` | target row — inside a `site` block or a branch defn (2026-10-01: the attached-exception form was retired; `target =>` after an instruction is a parse error pointing at `site`) |
 | `default => ...` | default row (universal core syntax) — in a site or a branch defn |
 | `site` ... `end site` | anonymous branch site — exactly one row lowers per family: the matching target row, else the default; leading bare lines are the default row; no default = loud capability error on unmatched families (see Sites) |
-| `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts) |
+| `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts). Bare labels remain global for compatibility. |
+| `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
 | `defn name params` | defn head — owns following lines until next top-level line |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
@@ -222,7 +223,7 @@ properties (`caller` / `callee` / `ro`):
    code), a target row emits raw on match.
 
 Params bind positionally; recursion is cycle-guarded (depth 64). Local
-labels (`.name:`) are legal inside defn bodies with **hygienic per-call-
+labels (`local name:` or the legacy `.name:`) are legal inside defn bodies with **hygienic per-call-
 site gensym** (`L<defn>__<local>__<n>`) — double invocation never
 collides. Invocation is at the instruction position (`ChargeGuest r1`);
 a `Return` inside an inlined defn exits the ENCLOSING function (a
