@@ -604,6 +604,17 @@ mod tests {
     }
 
     #[test]
+    fn symbolic_addr_and_label_as_address() {
+        let src = "fn use_ptr(p: Ptr) -> Int {\n    return 0\n}\n\
+                   bootstrap Entry {\n    let a = addr(banner)\n    \
+                   let b = use_ptr(banner)\n    halt\n}\n\
+                   data {\n    banner: .asciz \"ok\\n\"\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq banner(%rip)"), "{x86}");
+        assert!(x86.contains("call use_ptr"), "{x86}");
+    }
+
+    #[test]
     fn fn_calls_stage_abi_and_return() {
         let src = "fn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\
                    bootstrap Entry {\n    let x = add(2, 3)\n    halt\n}\n";

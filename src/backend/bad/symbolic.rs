@@ -2,23 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Symbolic labels and callable `fn` bodies lower together through ONE
-// synthetic `.bld` program, so `fn`s can call each other and labels can
-// call `fn`s with the existing BILLD signature/call machinery:
+// in-memory BILLD program, so `fn`s call each other and labels call
+// `fn`s with the existing signature/call machinery:
 //
 //   .bad symbolic bodies
-//     → one synthetic `.bld` defn per unit
+//     → BldProgram AST (consts + one Defn per unit)
 //     → BILLD Lowerer → BadProgram with virtuals
 //     → M4 allocator (loops, ABI params, frames)
 //     → bodies extracted and spliced back
 //
-// Raw physical-only labels never enter this pass. A symbolic body cannot
-// mix raw instructions with operands; operandless control/state ops are
-// allowed. Symbolic `defn` (inline) bodies are a follow-up; use `fn` for
-// callable functions.
+// No synthetic `.bld` source, no re-parse. Phase 1 keeps arithmetic as
+// Let/Assign (paragraph parity) and uses `BldStmt::Instr` for future raw
+// symbolic instructions. Raw physical-only labels never enter this pass.
 
 use super::registry::{BadIsa, BadRegisters};
-use crate::ast::bad::*;
+use crate::ast::bad::{BadInstr, BadLabel, BadOperand, BadTopLevel};
+use crate::ast::bld::{
+    BldConst, BldDefn, BldParam, BldProgram, BldStmt, BldTopLevel,
+};
+use crate::ast::{BinaryOpKind, Expr, Type};
 use crate::backend::bld::registry::BldIntrinsics;
+use crate::errors::Span;
+use crate::parser::bld::parse_bld_expr;
 use std::collections::{HashMap, HashSet};
 
 pub struct SymCtx<'a> {
@@ -41,7 +46,7 @@ const RAW_ZERO: &[&str] = &[
 
 const SYMBOLIC_OPS: &[&str] = &[
     "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr",
-    "store", "load",
+    "store", "load", "addr", "readcr", "writecr",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,9 +59,9 @@ struct Unit {
     idx: usize,
     synth: String,
     kind: Kind,
-    params: Vec<BadFnParam>,
+    params: Vec<crate::ast::bad::BadFnParam>,
     ret: Option<String>,
-    body: Vec<BadBodyItem>,
+    body: Vec<crate::ast::bad::BadBodyItem>,
 }
 
 pub fn lower_symbolic_labels(
@@ -108,43 +113,64 @@ pub fn lower_symbolic_labels(
         return Ok(());
     }
 
-    let mut src = String::new();
+    let mut program_items: Vec<BldTopLevel> = Vec::new();
     for (cname, value) in ctx.const_values {
-        src.push_str(&format!("const {cname} = {value};\n"));
+        program_items.push(BldTopLevel::Const(BldConst {
+            name: cname.clone(),
+            value: Expr::Decimal(*value),
+            span: Span::dummy(),
+        }));
     }
     for u in &units {
         let params: HashSet<String> = u.params.iter().map(|p| p.name.clone()).collect();
-        match u.kind {
-            Kind::Label => src.push_str(&format!("defn {}() {{\n", u.synth)),
-            Kind::Fn => {
-                let ps: Vec<String> = u
-                    .params
-                    .iter()
-                    .map(|p| format!("{}: {}", p.name, p.ty))
-                    .collect();
-                let ret = u.ret.as_ref().map(|r| format!(" -> {r}")).unwrap_or_default();
-                src.push_str(&format!("defn {}({}){ret} {{\n", u.synth, ps.join(", ")));
-            }
-        }
+        let mut body: Vec<BldStmt> = Vec::new();
         let mut b = Builder {
             ctx,
-            src: &mut src,
+            stmts: &mut body,
             bound: params.clone(),
             params,
             is_fn: u.kind == Kind::Fn,
         };
         b.emit_body(&u.body)?;
         if u.kind == Kind::Fn && u.ret.is_none() {
-            src.push_str("return;\n");
+            body.push(BldStmt::Return {
+                value: None,
+                span: Span::dummy(),
+            });
         }
-        src.push_str("}\n");
+        let bparams = u
+            .params
+            .iter()
+            .map(|p| BldParam {
+                name: p.name.clone(),
+                ty: Some(parse_type(&p.ty)),
+                span: Span::dummy(),
+            })
+            .collect();
+        program_items.push(BldTopLevel::Defn(BldDefn {
+            name: u.synth.clone(),
+            params: bparams,
+            ret: u.ret.as_deref().map(parse_type),
+            body,
+            span: Span::dummy(),
+        }));
     }
 
-    let prog = crate::backend::bld::lower_to_bad(&src, ctx.family, None, None)
-        .map_err(|e| format!("symbolic lowering failed: {e}"))?;
+    let mut lowerer = crate::backend::bld::lower::BldLowerer::new(
+        ctx.isa,
+        ctx.regs,
+        ctx.family,
+        None,
+        None,
+    );
+    lowerer.load_program(BldProgram {
+        items: program_items,
+        span: Span::dummy(),
+    })?;
+    let prog = lowerer.compile()?;
     let prog = crate::backend::bld::alloc::allocate(prog, ctx.regs, ctx.family)
         .map_err(|e| format!("symbolic allocation failed: {e}"))?;
-    let mut bodies: HashMap<String, Vec<BadBodyItem>> = HashMap::new();
+    let mut bodies: HashMap<String, Vec<crate::ast::bad::BadBodyItem>> = HashMap::new();
     for item in prog.items {
         if let BadTopLevel::Label(l) = item {
             bodies.insert(l.name, l.body);
@@ -168,7 +194,7 @@ pub fn lower_symbolic_labels(
             Kind::Fn => {
                 let span = match &items[u.idx] {
                     BadTopLevel::Fn(f) => f.span.clone(),
-                    _ => crate::errors::Span::dummy(),
+                    _ => Span::dummy(),
                 };
                 items[u.idx] = BadTopLevel::Label(BadLabel {
                     name: u.synth,
@@ -185,7 +211,18 @@ pub fn lower_symbolic_labels(
     Ok(())
 }
 
-fn body_has_symbolic(body: &[BadBodyItem], ctx: &SymCtx<'_>) -> bool {
+fn parse_type(name: &str) -> Type {
+    match name.trim() {
+        "Int" => Type::Custom("Int".to_string()),
+        "Float" => Type::Custom("Float".to_string()),
+        "Bool" => Type::Custom("Bool".to_string()),
+        "Ptr" => Type::Ptr(Box::new(Type::Custom("UInt8".to_string()))),
+        other => Type::Custom(other.to_string()),
+    }
+}
+
+fn body_has_symbolic(body: &[crate::ast::bad::BadBodyItem], ctx: &SymCtx<'_>) -> bool {
+    use crate::ast::bad::BadBodyItem;
     body.iter().any(|item| match item {
         BadBodyItem::Let(_)
         | BadBodyItem::Assign(_)
@@ -201,7 +238,8 @@ fn body_has_symbolic(body: &[BadBodyItem], ctx: &SymCtx<'_>) -> bool {
     })
 }
 
-fn body_has_return(body: &[BadBodyItem]) -> bool {
+fn body_has_return(body: &[crate::ast::bad::BadBodyItem]) -> bool {
+    use crate::ast::bad::BadBodyItem;
     body.iter().any(|item| match item {
         BadBodyItem::Return { .. } => true,
         BadBodyItem::When(x) => body_has_return(&x.then),
@@ -272,14 +310,14 @@ fn normalize_call(text: &str) -> String {
 
 struct Builder<'a, 'b> {
     ctx: &'a SymCtx<'b>,
-    src: &'a mut String,
+    stmts: &'a mut Vec<BldStmt>,
     bound: HashSet<String>,
     params: HashSet<String>,
     is_fn: bool,
 }
 
 impl Builder<'_, '_> {
-    fn emit_body(&mut self, body: &[BadBodyItem]) -> Result<(), String> {
+    fn emit_body(&mut self, body: &[crate::ast::bad::BadBodyItem]) -> Result<(), String> {
         for item in body {
             self.emit_item(item)?;
         }
@@ -290,13 +328,54 @@ impl Builder<'_, '_> {
         self.params.contains(name) || is_known_value(name, self.ctx)
     }
 
-    fn emit_item(&mut self, item: &BadBodyItem) -> Result<(), String> {
+    fn parse_expr(&self, text: &str, line: usize) -> Result<Expr, String> {
+        let text = normalize_call(text);
+        let expr = parse_bld_expr(&text)
+            .map_err(|e| format!("line {line}: expression `{text}`: {e}"))?;
+        Ok(rewrite_labels(expr, self.ctx))
+    }
+
+    fn operand_expr(&self, op: &BadOperand, line: usize) -> Result<Expr, String> {
+        match op {
+            BadOperand::Int(n) => Ok(Expr::Decimal(*n)),
+            BadOperand::Float(t) => self.parse_expr(t, line),
+            BadOperand::Expr(t) => self.parse_expr(t, line),
+            BadOperand::Name(n) => {
+                if self.params.contains(n) {
+                    return Ok(Expr::Identifier(n.clone()));
+                }
+                if self.ctx.regs.resolve(n, self.ctx.family).is_some()
+                    || self.ctx.regs.resolve_real(n, self.ctx.family).is_some()
+                {
+                    return Err(format!(
+                        "physical register `{n}` (line {line}) in a symbolic expression - \
+                         copy it into a symbolic value first, or keep the instruction raw"
+                    ));
+                }
+                if self.ctx.label_names.contains(n) {
+                    return Ok(Expr::Call(
+                        "addr".to_string(),
+                        vec![Expr::Identifier(n.clone())],
+                        None,
+                    ));
+                }
+                Ok(Expr::Identifier(n.clone()))
+            }
+        }
+    }
+
+    fn emit_item(&mut self, item: &crate::ast::bad::BadBodyItem) -> Result<(), String> {
+        use crate::ast::bad::BadBodyItem;
         match item {
             BadBodyItem::Let(x) => {
                 self.check_new_name(&x.name, x.span.line)?;
-                let ty = x.ty.as_ref().map(|t| format!(": {t}")).unwrap_or_default();
-                let value = normalize_call(&x.value);
-                self.src.push_str(&format!("let {}{ty} = {};\n", x.name, value));
+                let value = self.parse_expr(&x.value, x.span.line)?;
+                self.stmts.push(BldStmt::Let {
+                    name: x.name.clone(),
+                    ty: x.ty.as_deref().map(parse_type),
+                    value,
+                    span: x.span.clone(),
+                });
                 self.bound.insert(x.name.clone());
             }
             BadBodyItem::Assign(x) => {
@@ -311,32 +390,98 @@ impl Builder<'_, '_> {
                         name = x.name
                     ));
                 }
-                let value = normalize_call(&x.value);
-                if x.op.is_empty() {
-                    self.src.push_str(&format!("{} = {};\n", x.name, value));
+                let rhs = self.parse_expr(&x.value, x.span.line)?;
+                let value = if x.op.is_empty() {
+                    rhs
                 } else {
-                    self.src.push_str(&format!("{} {}= {};\n", x.name, x.op, value));
-                }
+                    let kind = compound_kind(&x.op).ok_or_else(|| {
+                        format!("unknown compound operator `{}=` at line {}", x.op, x.span.line)
+                    })?;
+                    Expr::BinaryOp(
+                        kind,
+                        Box::new(Expr::Identifier(x.name.clone())),
+                        Box::new(rhs),
+                    )
+                };
+                self.stmts.push(BldStmt::Assign {
+                    target: Expr::Identifier(x.name.clone()),
+                    value,
+                    span: x.span.clone(),
+                });
             }
             BadBodyItem::When(x) => {
-                self.src.push_str(&format!("when {} {{\n", x.cond));
-                self.emit_body(&x.then)?;
-                self.src.push_str("}\n");
+                let cond = self.parse_expr(&x.cond, x.span.line)?;
+                let mut then = Vec::new();
+                {
+                    let mut inner = Builder {
+                        ctx: self.ctx,
+                        stmts: &mut then,
+                        bound: self.bound.clone(),
+                        params: self.params.clone(),
+                        is_fn: self.is_fn,
+                    };
+                    inner.emit_body(&x.then)?;
+                }
+                self.stmts.push(BldStmt::When {
+                    cond,
+                    then,
+                    otherwise: None,
+                    span: x.span.clone(),
+                });
             }
             BadBodyItem::Loop(x) => {
-                self.src.push_str("loop {\n");
-                self.emit_body(&x.body)?;
-                self.src.push_str("}\n");
+                let mut body = Vec::new();
+                {
+                    let mut inner = Builder {
+                        ctx: self.ctx,
+                        stmts: &mut body,
+                        bound: self.bound.clone(),
+                        params: self.params.clone(),
+                        is_fn: self.is_fn,
+                    };
+                    inner.emit_body(&x.body)?;
+                }
+                self.stmts.push(BldStmt::Loop {
+                    body,
+                    span: x.span.clone(),
+                });
             }
             BadBodyItem::While(x) => {
-                self.src.push_str(&format!("while {} {{\n", x.cond));
-                self.emit_body(&x.body)?;
-                self.src.push_str("}\n");
+                let cond = self.parse_expr(&x.cond, x.span.line)?;
+                let mut body = Vec::new();
+                {
+                    let mut inner = Builder {
+                        ctx: self.ctx,
+                        stmts: &mut body,
+                        bound: self.bound.clone(),
+                        params: self.params.clone(),
+                        is_fn: self.is_fn,
+                    };
+                    inner.emit_body(&x.body)?;
+                }
+                self.stmts.push(BldStmt::While {
+                    cond,
+                    body,
+                    span: x.span.clone(),
+                });
             }
-            BadBodyItem::Break(_) => self.src.push_str("break;\n"),
-            BadBodyItem::Continue(_) => self.src.push_str("continue;\n"),
-            BadBodyItem::CallStmt { text, .. } => {
-                self.src.push_str(&format!("{};\n", normalize_call(text)));
+            BadBodyItem::Break(span) => self.stmts.push(BldStmt::Break { span: span.clone() }),
+            BadBodyItem::Continue(span) => {
+                self.stmts.push(BldStmt::Continue { span: span.clone() })
+            }
+            BadBodyItem::CallStmt { text, span } => {
+                let expr = self.parse_expr(text, span.line)?;
+                let Expr::Call(callee, args, _) = expr else {
+                    return Err(format!(
+                        "line {}: `{}` is not a call statement",
+                        span.line, text
+                    ));
+                };
+                self.stmts.push(BldStmt::Call {
+                    callee,
+                    args,
+                    span: span.clone(),
+                });
             }
             BadBodyItem::Return { value, span } => {
                 if !self.is_fn {
@@ -346,10 +491,14 @@ impl Builder<'_, '_> {
                         span.line
                     ));
                 }
-                match value {
-                    Some(v) => self.src.push_str(&format!("return {};\n", normalize_call(v))),
-                    None => self.src.push_str("return;\n"),
-                }
+                let value = match value {
+                    Some(v) => Some(self.parse_expr(v, span.line)?),
+                    None => None,
+                };
+                self.stmts.push(BldStmt::Return {
+                    value,
+                    span: span.clone(),
+                });
             }
             BadBodyItem::Instr(i) => self.emit_instr(i)?,
             BadBodyItem::Local(l) => {
@@ -408,7 +557,10 @@ impl Builder<'_, '_> {
 
     fn emit_instr(&mut self, i: &BadInstr) -> Result<(), String> {
         if i.operands.is_empty() && RAW_ZERO.contains(&i.mnemonic.as_str()) {
-            self.src.push_str(&format!("bad {{ {} }};\n", i.mnemonic));
+            self.stmts.push(BldStmt::Bad {
+                text: i.mnemonic.clone(),
+                span: i.span.clone(),
+            });
             return Ok(());
         }
         if self.ctx.intrinsics.is_intrinsic(&i.mnemonic) {
@@ -430,9 +582,13 @@ impl Builder<'_, '_> {
             }
             let mut args = Vec::with_capacity(i.operands.len());
             for op in &i.operands {
-                args.push(self.value(op, i.span.line)?);
+                args.push(self.operand_expr(op, i.span.line)?);
             }
-            self.src.push_str(&format!("{}({});\n", i.mnemonic, args.join(", ")));
+            self.stmts.push(BldStmt::Call {
+                callee: i.mnemonic.clone(),
+                args,
+                span: i.span.clone(),
+            });
             return Ok(());
         }
         if self.ctx.isa.is_sym(&i.mnemonic) {
@@ -446,44 +602,91 @@ impl Builder<'_, '_> {
         match (i.mnemonic.as_str(), arity) {
             ("mov", 2) => {
                 let dst = self.dest(&i.operands[0], i.span.line)?;
-                let src = self.value(&i.operands[1], i.span.line)?;
-                self.write_dst(&dst, &src, i.span.line)?;
+                let value = self.operand_expr(&i.operands[1], i.span.line)?;
+                self.write_dst(&dst, value, i.span.clone())?;
             }
             ("add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shl"
                 | "shr", 3) => {
-                let op = match i.mnemonic.as_str() {
-                    "add" => "+",
-                    "sub" => "-",
-                    "mul" => "*",
-                    "div" => "/",
-                    "mod" => "%",
-                    "and" => "&",
-                    "or" => "|",
-                    "xor" => "^",
-                    "shl" => "<<",
-                    "shr" => ">>",
+                let kind = match i.mnemonic.as_str() {
+                    "add" => BinaryOpKind::Add,
+                    "sub" => BinaryOpKind::Sub,
+                    "mul" => BinaryOpKind::Mul,
+                    "div" => BinaryOpKind::Div,
+                    "mod" => BinaryOpKind::Mod,
+                    "and" => BinaryOpKind::BitAnd,
+                    "or" => BinaryOpKind::BitOr,
+                    "xor" => BinaryOpKind::BitXor,
+                    "shl" => BinaryOpKind::Shl,
+                    "shr" => BinaryOpKind::Shr,
                     _ => unreachable!(),
                 };
                 let dst = self.dest(&i.operands[0], i.span.line)?;
-                let a = self.value(&i.operands[1], i.span.line)?;
-                let b = self.value(&i.operands[2], i.span.line)?;
-                self.write_dst(&dst, &format!("{a} {op} {b}"), i.span.line)?;
+                let a = self.operand_expr(&i.operands[1], i.span.line)?;
+                let b = self.operand_expr(&i.operands[2], i.span.line)?;
+                self.write_dst(
+                    &dst,
+                    Expr::BinaryOp(kind, Box::new(a), Box::new(b)),
+                    i.span.clone(),
+                )?;
+            }
+            ("addr", 2) => {
+                let dst = self.dest(&i.operands[0], i.span.line)?;
+                let label = match &i.operands[1] {
+                    BadOperand::Name(n) => n.clone(),
+                    _ => {
+                        return Err(format!(
+                            "`addr` (line {}) needs a bare label operand",
+                            i.span.line
+                        ))
+                    }
+                };
+                self.write_dst(
+                    &dst,
+                    Expr::Call("addr".to_string(), vec![Expr::Identifier(label)], None),
+                    i.span.clone(),
+                )?;
             }
             ("store", 2) => {
-                let value = self.value(&i.operands[0], i.span.line)?;
-                let addr = self.value(&i.operands[1], i.span.line)?;
-                self.src.push_str(&format!("Store({value}, {addr});\n"));
+                let value = self.operand_expr(&i.operands[0], i.span.line)?;
+                let addr = self.operand_expr(&i.operands[1], i.span.line)?;
+                self.stmts.push(BldStmt::Call {
+                    callee: "Store".to_string(),
+                    args: vec![value, addr],
+                    span: i.span.clone(),
+                });
             }
             ("load", 2) => {
                 let dst = self.dest(&i.operands[0], i.span.line)?;
-                let addr = self.value(&i.operands[1], i.span.line)?;
-                self.write_dst(&dst, &format!("Load({addr})"), i.span.line)?;
+                let addr = self.operand_expr(&i.operands[1], i.span.line)?;
+                self.write_dst(
+                    &dst,
+                    Expr::Call("Load".to_string(), vec![addr], None),
+                    i.span.clone(),
+                )?;
+            }
+            ("readcr", 2) => {
+                let dst = self.dest(&i.operands[0], i.span.line)?;
+                let n = self.operand_expr(&i.operands[1], i.span.line)?;
+                self.write_dst(
+                    &dst,
+                    Expr::Call("ReadControlReg".to_string(), vec![n], None),
+                    i.span.clone(),
+                )?;
+            }
+            ("writecr", 2) => {
+                let n = self.operand_expr(&i.operands[0], i.span.line)?;
+                let value = self.operand_expr(&i.operands[1], i.span.line)?;
+                self.stmts.push(BldStmt::Call {
+                    callee: "WriteControlReg".to_string(),
+                    args: vec![n, value],
+                    span: i.span.clone(),
+                });
             }
             _ => {
                 return Err(format!(
                     "`{}` (line {}) is not supported in a symbolic body yet - use one of \
-                     mov/add/sub/mul/div/mod/and/or/xor/shl/shr/store/load, or put the raw \
-                     instruction in its own label",
+                     mov/add/sub/mul/div/mod/and/or/xor/shl/shr/store/load/addr/readcr/writecr, \
+                     or put the raw instruction in its own label",
                     i.mnemonic, i.span.line
                 ))
             }
@@ -516,43 +719,80 @@ impl Builder<'_, '_> {
         Ok(name.clone())
     }
 
-    fn value(&self, op: &BadOperand, line: usize) -> Result<String, String> {
-        match op {
-            BadOperand::Int(n) => Ok(n.to_string()),
-            BadOperand::Float(t) => Ok(t.clone()),
-            BadOperand::Expr(t) => Ok(normalize_call(t)),
-            BadOperand::Name(n) => {
-                if self.params.contains(n) {
-                    return Ok(n.clone());
-                }
-                if self.ctx.regs.resolve(n, self.ctx.family).is_some()
-                    || self.ctx.regs.resolve_real(n, self.ctx.family).is_some()
-                {
-                    return Err(format!(
-                        "physical register `{n}` (line {line}) in a symbolic expression - \
-                         copy it into a symbolic value first, or keep the instruction raw"
-                    ));
-                }
-                if self.ctx.label_names.contains(n) {
-                    return Err(format!(
-                        "label `{n}` (line {line}) used as a value - address expressions are \
-                         not supported in symbolic bodies yet; pass the address in a register \
-                         or use `addr` in a raw label"
-                    ));
-                }
-                Ok(n.clone())
-            }
-        }
-    }
-
-    fn write_dst(&mut self, dst: &str, value: &str, line: usize) -> Result<(), String> {
+    fn write_dst(
+        &mut self, dst: &str, value: Expr, span: Span,
+    ) -> Result<(), String> {
         if self.bound.contains(dst) {
-            self.src.push_str(&format!("{dst} = {value};\n"));
+            self.stmts.push(BldStmt::Assign {
+                target: Expr::Identifier(dst.to_string()),
+                value,
+                span,
+            });
         } else {
-            self.check_new_name(dst, line)?;
-            self.src.push_str(&format!("let {dst} = {value};\n"));
+            self.check_new_name(dst, span.line)?;
+            self.stmts.push(BldStmt::Let {
+                name: dst.to_string(),
+                ty: None,
+                value,
+                span,
+            });
             self.bound.insert(dst.to_string());
         }
         Ok(())
     }
+}
+
+/// A known data/code label used as a value means its address in a
+/// symbolic expression. `addr(label)` keeps its bare argument.
+fn rewrite_labels(expr: Expr, ctx: &SymCtx<'_>) -> Expr {
+    match expr {
+        Expr::Identifier(n) if ctx.label_names.contains(&n) => Expr::Call(
+            "addr".to_string(),
+            vec![Expr::Identifier(n)],
+            None,
+        ),
+        Expr::Call(callee, args, id) => {
+            let args = if callee == "addr" {
+                args
+            } else {
+                args.into_iter().map(|a| rewrite_labels(a, ctx)).collect()
+            };
+            Expr::Call(callee, args, id)
+        }
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            kind,
+            Box::new(rewrite_labels(*l, ctx)),
+            Box::new(rewrite_labels(*r, ctx)),
+        ),
+        Expr::UnaryOp(kind, v) => Expr::UnaryOp(kind, Box::new(rewrite_labels(*v, ctx))),
+        Expr::Field(base, name) => Expr::Field(Box::new(rewrite_labels(*base, ctx)), name),
+        Expr::MethodCall(base, name, args, id, refs) => Expr::MethodCall(
+            Box::new(rewrite_labels(*base, ctx)),
+            name,
+            args.into_iter().map(|a| rewrite_labels(a, ctx)).collect(),
+            id,
+            refs,
+        ),
+        Expr::Index(base, idx) => Expr::Index(
+            Box::new(rewrite_labels(*base, ctx)),
+            Box::new(rewrite_labels(*idx, ctx)),
+        ),
+        other => other,
+    }
+}
+
+fn compound_kind(op: &str) -> Option<BinaryOpKind> {
+    Some(match op {
+        "+" => BinaryOpKind::Add,
+        "-" => BinaryOpKind::Sub,
+        "*" => BinaryOpKind::Mul,
+        "/" => BinaryOpKind::Div,
+        "%" => BinaryOpKind::Mod,
+        "&" => BinaryOpKind::BitAnd,
+        "|" => BinaryOpKind::BitOr,
+        "^" => BinaryOpKind::BitXor,
+        "<<" => BinaryOpKind::Shl,
+        ">>" => BinaryOpKind::Shr,
+        _ => return None,
+    })
 }

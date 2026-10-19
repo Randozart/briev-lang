@@ -291,6 +291,9 @@ Rules:
   for leaf code (no frame unless pressure demands it).
 - In-place assignment (`x = x op k`, `x += k`) emits directly into `x`'s
   register. `when cond: break` / `continue` emits one inverted branch.
+- `addr(label)` produces a label address. A known data/code label in a
+  symbolic value position also means its address (`uart_puts(UART0, banner)`);
+  raw `mov rN, label` still errors and points at `addr`.
 
 ## Registers
 

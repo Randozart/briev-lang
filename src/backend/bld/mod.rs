@@ -66,7 +66,9 @@ pub fn generate_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::bad::{BadBodyItem, BadOperand, BadTopLevel};
+    use crate::ast::bad::{BadBodyItem, BadInstr, BadOperand, BadTopLevel};
+    use crate::ast::bld::{BldDefn, BldProgram, BldStmt, BldTopLevel};
+    use crate::errors::Span;
 
     fn lower_ok(src: &str) -> BadProgram {
         lower_to_bad(src, "x86_64", None, None)
@@ -689,6 +691,39 @@ mod tests {
         // the scratch reserve)
         assert_eq!(ops_of(items[0]), vec!["r1", "r5", "1"]);
         assert_eq!(ops_of(items[1]), vec!["r0", "r1"]);
+    }
+
+    #[test]
+    fn direct_ast_instr_lowers() {
+        // `BldStmt::Instr` is the assembly+ bridge for symbolic core ops.
+        let (isa, regs) = crate::backend::bad::registries();
+        let mut lw = crate::backend::bld::lower::BldLowerer::new(
+            &isa, &regs, "x86_64", None, None,
+        );
+        let prog = BldProgram {
+            items: vec![BldTopLevel::Defn(BldDefn {
+                name: "f".to_string(),
+                params: Vec::new(),
+                ret: None,
+                body: vec![BldStmt::Instr(BadInstr {
+                    mnemonic: "addr".to_string(),
+                    operands: vec![
+                        BadOperand::Name("v0".to_string()),
+                        BadOperand::Name("msg".to_string()),
+                    ],
+                    contract: None,
+                    ack: None,
+                    span: Span::dummy(),
+                })],
+                span: Span::dummy(),
+            })],
+            span: Span::dummy(),
+        };
+        lw.load_program(prog).unwrap();
+        let p = lw.compile().unwrap();
+        let items = instrs(&p, "f");
+        assert_eq!(mnems(&items), vec!["addr"]);
+        assert_eq!(ops_of(items[0]), vec!["v0", "msg"]);
     }
 
     #[test]

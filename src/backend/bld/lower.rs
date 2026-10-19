@@ -35,7 +35,7 @@ use crate::analysis::density::is_float_type;
 use crate::ast::bad::{
     BadBodyItem, BadDirective, BadInstr, BadLabel, BadLocal, BadOperand, BadProgram, BadTopLevel,
 };
-use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldStmt, BldTopLevel};
+use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldProgram, BldStmt, BldTopLevel};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::backend::bad::registry::{BadIsa, BadIsaLowering, BadRegisters, ImmHandling};
 use super::registry::{BldIntrinsics, IntrinsicLowering};
@@ -399,6 +399,23 @@ impl<'a> BldLowerer<'a> {
             .unwrap_or_else(|| "<input>".to_string());
         let items = program.items;
         self.load_items(items, self.cur_file.clone(), 0)
+    }
+
+    /// Load an already-built `BldProgram` (the .bad assembly+ pass). No
+    /// parsing, no synthetic source: the AST carries exact spans.
+    pub fn load_program(&mut self, program: BldProgram) -> Result<(), String> {
+        if let Some(root) = &self.root_path {
+            if let Ok(canon) = root.canonicalize() {
+                self.modules.insert(canon);
+            }
+        }
+        self.root_span = program.span;
+        self.cur_file = self
+            .root_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<input>".to_string());
+        self.load_items(program.items, self.cur_file.clone(), 0)
     }
 
     /// Merge one file's top-level items, recursing through `.bld` imports.
@@ -1060,6 +1077,7 @@ impl<'a> BldLowerer<'a> {
             BldStmt::Continue { .. } => self.st_continue(),
             BldStmt::Return { value, .. } => self.st_return(value.as_ref()),
             BldStmt::Bad { text, .. } => self.st_bad(text, pos),
+            BldStmt::Instr(i) => self.st_instr(i),
         }
     }
 
@@ -1322,6 +1340,17 @@ impl<'a> BldLowerer<'a> {
     /// splice into the recipe body at any position. Ownership items
     /// (sections, data labels, defns, raw blocks) attach only at the
     /// recipe's first or last statement — .bad ownership is positional.
+    /// Internal symbolic instruction (from the .bad assembly+ pass).
+    /// Operands may name `vN`/`fvN`; the allocator resolves them.
+    fn st_instr(&mut self, i: &BadInstr) -> Result<(), String> {
+        self.cur_span = i.span.clone();
+        let is_float = i.operands.iter().any(|o| {
+            matches!(o, BadOperand::Name(n) if n.starts_with("fv"))
+        });
+        let class = if is_float { VClass::Float } else { VClass::Int };
+        self.emit(&i.mnemonic, i.operands.clone(), class)
+    }
+
     fn st_bad(&mut self, text: &str, pos: RecipePos) -> Result<(), String> {
         let wrapped = format!("_bldwrap:\n{text}");
         let prog = parse_bad(&wrapped).map_err(|e| {
@@ -1993,6 +2022,34 @@ impl<'a> BldLowerer<'a> {
     }
 
     fn lower_call(&mut self, callee: &str, args: &[Expr]) -> Result<Option<Lowered>, String> {
+        // `addr(label)` — symbolic address-of. The label is a symbol, not
+        // a value; emit the core `addr` op with a fresh virtual dest.
+        if callee == "addr" {
+            if args.len() != 1 {
+                return Err(self.fail(
+                    "`addr`",
+                    &format!("it takes one label, got {} argument(s)", args.len()),
+                    "write `addr(label)` with a data or code label",
+                ));
+            }
+            let label = match &args[0] {
+                Expr::Identifier(n) => n.clone(),
+                _ => {
+                    return Err(self.fail(
+                        "`addr`",
+                        "its argument must be a bare label name",
+                        "write `addr(banner)` — not an expression",
+                    ))
+                }
+            };
+            let reg = self.fresh_vreg(VClass::Int);
+            self.emit(
+                "addr",
+                vec![BadOperand::Name(reg.clone()), BadOperand::Name(label)],
+                VClass::Int,
+            )?;
+            return Ok(Some(Lowered::temp_reg(reg, VClass::Int)));
+        }
         if callee.contains('.') {
             return Err(self.fail(
                 &format!("call to `{callee}`"),
@@ -2427,5 +2484,6 @@ fn stmt_span(st: &BldStmt) -> Span {
         | BldStmt::Continue { span }
         | BldStmt::Return { span, .. }
         | BldStmt::Bad { span, .. } => *span,
+        BldStmt::Instr(i) => i.span,
     }
 }

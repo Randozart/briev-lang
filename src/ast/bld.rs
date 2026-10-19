@@ -21,6 +21,7 @@
 // src/ast/mod.rs and src/parser/mod.rs, and drop the five compound-assign
 // tokens from src/lexer.rs.
 
+use crate::ast::bad::BadInstr;
 use crate::ast::{Expr, Type};
 use crate::errors::Span;
 
@@ -166,4 +167,8 @@ pub enum BldStmt {
         text: String,
         span: Span,
     },
+    /// A core instruction with symbolic operands — built by the .bad
+    /// assembly+ pass, never parsed from `.bld` source. The allocator
+    /// resolves `vN`/`fvN` operands through the ISA role table.
+    Instr(BadInstr),
 }

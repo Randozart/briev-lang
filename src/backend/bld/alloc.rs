@@ -352,7 +352,7 @@ fn roles(mn: &str) -> Roles {
         | "fadd" | "fsub" | "fmul" | "fdiv" => Roles::Def1Use2,
         "jz" | "jnz" | "jlt" | "jle" | "jgt" | "jge" | "fjz" | "fjnz" | "fjlt" | "fjle"
         | "fjgt" | "fjge" | "store" => Roles::Use2,
-        "load" => Roles::Def1Use1,
+        "load" | "addr" => Roles::Def1Use1,
         "jmp" | "call" | "ret" => Roles::None,
         _ => Roles::Unknown,
     }
