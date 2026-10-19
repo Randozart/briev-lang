@@ -117,6 +117,36 @@ pub struct ImportResolver {
     pub plugin_factory: Option<Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>>>,
 }
 
+/// 2026-10-20 (PR #26 reconciliation — trait defaults cross-module):
+/// structural conformance means NOTHING references the trait by name
+/// (`ByteBuf`/`GrowBuf` conform to `ByteSink` without naming it), so the
+/// reference closure dropped the trait from a named-import splice and the
+/// typechecker could not resolve its DEFAULT members in the importer
+/// (`put_u16_be` has no member). Keep every trait declaration from a module
+/// origin that contributed a kept item: a module's trait surface is part of
+/// its public API, and unused traits emit no code. Split out of
+/// `filter_items_with_origins` (Praetor complexity).
+fn retain_module_traits(
+    items: &[TopLevel],
+    origins: &[Option<u32>],
+    keep: &mut std::collections::HashSet<String>,
+) {
+    let kept_origins: std::collections::HashSet<u32> = items
+        .iter()
+        .zip(origins)
+        .filter(|(it, _)| item_name(it).map_or(false, |n| keep.contains(n)))
+        .filter_map(|(_, o)| *o)
+        .collect();
+    for (item, origin) in items.iter().zip(origins) {
+        if let TopLevel::Trait(t) = item {
+            let same_module = origin.map_or(true, |o| kept_origins.contains(&o));
+            if same_module {
+                keep.insert(t.name.clone());
+            }
+        }
+    }
+}
+
 /// The name of a top-level item, if it carries one.
 fn item_name(item: &TopLevel) -> Option<&str> {
     match item {
@@ -1319,6 +1349,7 @@ impl ImportResolver {
                 }
             }
         }
+        retain_module_traits(items, origins, &mut keep);
         let mut out: Vec<TopLevel> = Vec::new();
         let mut out_origins: Vec<Option<u32>> = Vec::new();
         for (item, origin) in items.iter().zip(origins) {

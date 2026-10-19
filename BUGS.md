@@ -10494,3 +10494,37 @@ had it.
 `tests/tier1/string_concat_probe.bv`, run through the harness flags
 (-O3 -flto -ffast-math). Full harness 79/79 MATCH, zero MISMATCH;
 3185 lib tests green; determinism clean.
+
+## 2026-10-20 — interpreter: callable Briev txns are not executed (OPEN)
+
+**Symptom:** a `txn` invoked as a FUNCTION (callable txn) does not execute in
+the interpreter; the calling node reaches equilibrium without `endprogram`.
+Minimal: `txn b64_loop(...) [off < buf.len][off >= buf.len] -> String { ... }`
+called from `defn base64_encode(...)` — the node that calls base64_encode
+never completes. Only `txn` named `run` has a legacy call path
+(`eval.rs`: `TopLevel::Transaction(t) if t.name == "run"`).
+
+**Impact:** the reference interpreter cannot verify any stdlib function that
+delegates to a callable txn (PR #26's `base64_encode` → `b64_loop`). The
+COMPILED backend executes it correctly (canonical Base64 vectors pass through
+the pipeline — tests/tier1/net_stack_helpers.bv). Rule-5 divergence.
+
+**Next step:** teach the interpreter's call resolution to execute a
+body-carrying `Transaction` like a `defn` (bind params, run body, return
+`term`), matching the backend's callable-txn support.
+
+## 2026-10-20 — interpreter: raw-address→String door unsupported (OPEN)
+
+**Symptom:** `(addr as Data) as String` (constructing a Briev String at a raw
+heap address with a `[len][bytes]` header) yields a non-Int, non-String
+value in the interpreter — a probe reading `s .^Length` produced None. The
+reverse direction (`String as Data as Int`, bytes at +8) works.
+
+**Impact:** blocks interpreter verification of every heap-String constructor:
+PR #26's websocket payload materialization (`ws_message`), http's
+`buf_slice_string`, and base64's read path all use the door. Compiled output
+is correct (see the net-stack golden). Rule-5 divergence.
+
+**Next step:** implement Int→Data→String in the interpreter as a view: the
+Data value at `addr` reads a `[len: i64][bytes]` header and yields the String
+bytes, matching the backend's representation.

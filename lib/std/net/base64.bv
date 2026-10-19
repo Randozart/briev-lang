@@ -1,0 +1,112 @@
+// base64 - standard Base64 encoding of raw bytes (net stack helper).
+//
+// 2026-10-18 (recommender-app net stack, Task 3.3): the websocket handshake's
+// Sec-WebSocket-Accept is base64(SHA1(...)). This is that Base64: the standard
+// RFC 4648 alphabet (A-Z a-z 0-9 + /) with '=' padding, encoding the bytes of
+// a ByteBuf into a Briev String. Pure Briev over the L1 ByteBuf; no FFI.
+//
+// HOW BASE64 WORKS. Base64 packs 3 input bytes (24 bits) into 4 output
+// characters of 6 bits each (2^6 = 64, hence the name). When the input is not
+// a multiple of 3, the final group is 1 or 2 bytes: the missing bytes are
+// treated as zero, and the output is padded with '=' so the length is always a
+// multiple of 4 (1 leftover byte -> "xx==", 2 leftover -> "xxx="). The decoder
+// uses the '=' count to know how many real bytes the final group held.
+
+import "std/net/bytes.bv";
+
+// b64_char - map a 6-bit value (0..63) to its Base64 alphabet character.
+//   0..25  -> 'A'..'Z'   (ASCII 65..90)
+//  26..51  -> 'a'..'z'   (ASCII 97..122)
+//  52..61  -> '0'..'9'   (ASCII 48..57)
+//     62   -> '+'        (ASCII 43)
+//     63   -> '/'        (ASCII 47)
+// Returned as a one-character String so the caller can concat with '+'.
+defn b64_char(val: Int) [val >= 0 && val <= 63][CharCount#(term) == 1] -> String {
+    when val < 26 {
+        term (65 + val) as Char as String;
+    };
+    when val < 52 {
+        term (97 + (val - 26)) as Char as String;
+    };
+    when val < 62 {
+        term (48 + (val - 52)) as Char as String;
+    };
+    when val == 62 {
+        term "+";
+    };
+    term "/";
+};
+
+// b64_group - encode ONE group starting at byte offset `off` in `buf`, where
+// `avail` is how many real input bytes remain (1, 2, or >=3). Returns the four
+// output characters for this group, with '=' padding when avail < 3.
+//
+// The three input bytes b0,b1,b2 (missing ones zero) form a 24-bit value; the
+// four 6-bit fields are the top-6, next-6, next-6, low-6 bits. When only 1 byte
+// is real, only the first two characters carry data (the rest is "=="); when 2
+// bytes are real, three characters carry data (the last is "=").
+defn b64_group(buf: ByteBuf, off: Int, avail: Int)
+    [off >= 0 && avail >= 1 && off + 1 <= buf.len][CharCount#(term) == 4]
+    -> String
+{
+    let b0: Int = get_u8(buf, off);
+    let b1: Int = b64_byte_or_zero(buf, off + 1, avail, 2);
+    let b2: Int = b64_byte_or_zero(buf, off + 2, avail, 3);
+    let n: Int = (b0 << 16) | (b1 << 8) | b2;
+    let c0: String = b64_char((n >> 18) & 63);
+    let c1: String = b64_char((n >> 12) & 63);
+    // third char is '=' only when a single byte was available
+    let c2: String = b64_pad_or_char(n, 6, avail, 2);
+    // fourth char is '=' when fewer than 3 bytes were available
+    let c3: String = b64_pad_or_char(n, 0, avail, 3);
+    term c0 + c1 + c2 + c3;
+};
+
+// b64_byte_or_zero - the byte at `off` if `need <= avail` (it is a real input
+// byte), else 0 (the spec treats missing trailing bytes as zero before the
+// bit-packing). `need` is the 1-based position of this byte within the group.
+defn b64_byte_or_zero(buf: ByteBuf, off: Int, avail: Int, need: Int)
+    [off >= 0][term >= 0 && term <= 255]
+    -> Int
+{
+    when avail >= need && off < buf.len {
+        term get_u8(buf, off);
+    };
+    term 0;
+};
+
+// b64_pad_or_char - the output character carrying bits `shift..shift+5` of the
+// 24-bit group, OR '=' when this character position has no real input behind
+// it. `need` is the 1-based input-byte count required for this output char to
+// be real (char index 2 needs byte 2, char index 3 needs byte 3).
+defn b64_pad_or_char(n: Int, shift: Int, avail: Int, need: Int)
+    [shift >= 0 && shift <= 18][CharCount#(term) == 1]
+    -> String
+{
+    when avail >= need {
+        term b64_char((n >> shift) & 63);
+    };
+    term "=";
+};
+
+// b64_loop - encode successive 3-byte groups, accumulating the output String.
+// `off` advances by 3 each step; `avail` is len - off (real bytes left). Tail
+// recursion; stops when off reaches len.
+txn b64_loop(buf: ByteBuf, acc: String, off: Int)
+    [off < buf.len][off >= buf.len] -> String
+{
+    let avail: Int = buf.len - off;
+    acc = acc + b64_group(buf, off, avail);
+    off = off + 3;
+    term acc;
+};
+
+// base64_encode - the public encoder: Base64 of every byte in `buf` (0..len) as
+// a String. An empty buffer encodes to the empty string. Built on the L1
+// get_u8 reader (DRY); no byte-poking of its own.
+defn base64_encode(buf: ByteBuf) [true][CharCount#(term) >= 0] -> String {
+    when buf.len == 0 {
+        term "";
+    };
+    term b64_loop(buf, "", 0);
+};

@@ -3098,6 +3098,21 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.program_txns.clear();
         self.ctx.defn_params.clear();
         self.ctx.defn_return_types.clear();
+        // 2026-10-20 (PR #26 reconciliation): these two are populated ONLY by
+        // the registration loop below (top-level defns + trait defaults), but
+        // were not cleared with the other per-generation tables. The liveness
+        // fixpoint re-enters generate_with_analysis; on the second pass the
+        // stale `generic_defns` made the trait-default arm skip, leaving the
+        // defaults out of `defn_params` — cross-module trait-default calls
+        // then panicked at emission ("no member 'put_u16_be' on 'GrowBuf'").
+        self.ctx.generic_defns.clear();
+        self.ctx.generic_defn_type_params.clear();
+        // 2026-10-20 (same re-entry class): the specialization bookkeeping is
+        // also per-generation. A stale `emitted_defn_specializations` made the
+        // second pass skip re-enqueueing `put_u16_be$GrowBuf`, so the call was
+        // emitted but its definition never was (undefined symbol at link).
+        self.ctx.emitted_defn_specializations.clear();
+        self.ctx.pending_defn_specializations.clear();
         self.ctx.constants.clear();
         self.ctx.inits.clear();
         self.ctx.string_constants = collect_strings(items);

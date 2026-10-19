@@ -17,7 +17,8 @@
 // 22 classification). C reference: ws_frame_c.c — same LCG, same corpus,
 // same validation, same prints.
 
-import { ByteBuf, WsFrame, ws_decode, ws_payload_byte } from "std/net/bytes";
+import { ByteBuf } from "std/net/bytes";
+import { WsFrame, ws_decode, ws_payload_byte } from "std/net/websocket";
 import { print_int } from "std/io";
 
 const F_TOTAL: Int = 4096;
