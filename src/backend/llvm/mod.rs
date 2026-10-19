@@ -680,6 +680,16 @@ fn collect_strings_tl(tl: &TopLevel, seen: &mut std::collections::HashSet<String
         // strings that the emitted member references. Without this arm the
         // globals are referenced but undefined once the member is actually
         // compiled (it was unreachable before the obj value ABI fix).
+        // 2026-10-19 (fix: const String global emitted as `ptr null`,
+        // BUGS.md): a `const Name: String = "lit";` holds a quoted literal that
+        // the constant-global emitter must point at the interned `@str.N`. If
+        // the literal is not ALSO collected here it is never interned, so the
+        // reference dangles. Scan the constant's value expression so its
+        // literal joins `string_constants` (the body-emission path relies on
+        // the same `position` lookup).
+        TopLevel::Constant(c) => {
+            collect_strings_expr(&c.expr, seen, out);
+        }
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
                 collect_strings_tl(member, seen, out);
@@ -4096,7 +4106,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     Expr::Decimal(n) => format!("{}:-{}", llvm_ty, n),
                     _ => format!("{}:neg:{}", llvm_ty, name),
                 },
-                Expr::Quoted(_) => format!("{}:null", llvm_ty),
+                // 2026-10-19 (fix: const String `ptr null`): dedup String
+                // consts by their literal TEXT (identical text → one @str.N →
+                // one canonical global + aliases), matching the interned
+                // string-table identity.
+                Expr::Quoted(s) => format!("{}:str:{}", llvm_ty, String::from_utf8_lossy(s)),
                 _ => format!("{}:unresolved:{}", llvm_ty, name),
             };
             if let Some(canonical) = dedup_map.get(&key) {
@@ -4128,7 +4142,25 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     Expr::Decimal(n) => format!("-{}", n),
                     _ => if *ty == Type::float() { "0.0".to_string() } else { "0".to_string() },
                 },
-                Expr::Quoted(_) => "null".to_string(),
+                // 2026-10-19 (fix: const String global was `ptr null` → every
+                // read of the const dereferenced null and segfaulted): a
+                // `const Name: String = "lit";` must point at the interned
+                // `@str.N` holding the literal's [len][bytes] struct, exactly
+                // like a body-level string literal (emit_expr.rs resolves the
+                // same `position`). The literal is interned by the
+                // `TopLevel::Constant` arm in `collect_strings_tl`, so the
+                // lookup always succeeds; the empty-string sentinel (@str.0)
+                // is the sound fallback if it somehow did not. The global is
+                // typed `ptr` (protocol_llvm_type(String) = ptr), and @str.N
+                // yields a `ptr` under opaque pointers, so `constant ptr
+                // @str.N` is a well-typed aliasing global.
+                Expr::Quoted(s) => {
+                    let lit = String::from_utf8_lossy(s).into_owned();
+                    let si = self.ctx.string_constants.iter()
+                        .position(|c| *c == lit)
+                        .unwrap_or(0);
+                    format!("@str.{}", si)
+                }
                 _ => {
                     if *ty == Type::float() {
                         "0.0".to_string()
