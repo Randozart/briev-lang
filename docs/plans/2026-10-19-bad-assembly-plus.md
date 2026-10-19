@@ -337,6 +337,7 @@ end
 | 2026-10-19 | `794f0476` | Callable `fn` with typed C-ABI params/return, arg staging, cross-calls, void auto-return; labels and fns lower in one synthetic program. |
 | 2026-10-19 | `6c259278` | Direct `BldStmt` AST (no synthetic `.bld` text); `BldStmt::Instr`; `addr(label)` expression + label-as-address; shared expression parser; raw goldens unchanged. |
 | 2026-10-19 | `b5335e2a` | Definition modes: `defn` inline symbolic, `call defn` callable, `fn` removed. Inline expansion with param binding, block scoping, depth cap 64. |
+| 2026-10-19 | `75a3a5bd` | Two-way boundary: `let x = r5` copy in, `r5 = x` copy out, `let p = pin r5` alias, `raw clobbers rN { … }`; clobbers/pins reserved for the recipe. |
 
 Remaining: profile imports, data-label address expressions in symbolic
 code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,
