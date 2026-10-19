@@ -118,6 +118,16 @@ receiver type at this stage; the union is the same sound over-approximation
 worst). Regression tests: `dot_call_to_stateful_member_forces_caller_state` and
 `dot_call_to_stateless_member_keeps_caller_stateless` (src/analysis/export_abi.rs).
 
+## Malloc#-wrapping defn emitted memory(read) -> two identical calls CSE-aliased -> double-free -- FIXED 2026-10-19
+
+**Symptom:** two identical-argument calls to a defn whose body only allocates via Malloc# (e.g. ivec_new(n) = Malloc#(n*8) as Int) returned the SAME pointer, so freeing both double-freed (SIGABRT). Found building lib/std/rating_population.bv (recommender-app Task 5).
+
+**Controlled A/B:** two direct Malloc#(16) calls returned DISTINCT addresses; two ivec_new(n) calls returned the SAME address. The defn WRAPPER is CSE-eligible, the raw intrinsic is not.
+
+**Root cause:** definition_touches_raw_memory (src/backend/llvm/emit_toplevel.rs) picks memory(readwrite) (#13) for a raw-memory defn, else memory(read) (#8). Its RAW list had Alloc# but NOT Malloc#, so a Malloc#-only defn got memory(read); under -O3 LTO LLVM CSE'd two identical-arg calls into one allocation (aliasing + double-free).
+
+**Fix:** add Malloc# to the RAW list (the allocating sibling of Alloc#, observable per the registry) so the defn gets memory(readwrite) and LLVM cannot merge distinct allocations. Regression test defn_wrapping_malloc_is_not_memory_read (src/backend/llvm/emit_toplevel.rs).
+
 ## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
 
 **Symptom:** three sweep A/B "regressions" (queue_drain 2.51x,
