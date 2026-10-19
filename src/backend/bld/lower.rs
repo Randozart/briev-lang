@@ -2223,6 +2223,29 @@ impl<'a> BldLowerer<'a> {
     /// needed source (`f(b, a)` with a and b already in argument regs).
     fn stage_args(&mut self, vals: &[Lowered], who: &str) -> Result<(), String> {
         let abi = ArgRegs::load(self.regs, &self.family);
+        // Direct moves when no source register is also a destination.
+        // This is the common case (immediates, virtual values) and avoids
+        // the old stage-through-a-temp dance.
+        let mut dests: Vec<String> = Vec::with_capacity(vals.len());
+        let mut cur = ArgCursor::default();
+        for v in vals {
+            let dst = match abi.next_slot(v.class, cur) {
+                Some(r) => r,
+                None => return Err(self.arg_budget_error(who, v.class, &cur, &abi)),
+            };
+            dests.push(dst);
+            cur.take(v.class);
+        }
+        let collides = vals.iter().any(|v| match &v.op {
+            BadOperand::Name(src) => dests.iter().any(|d| d == src),
+            _ => false,
+        });
+        if !collides {
+            for (v, dst) in vals.iter().zip(dests) {
+                self.emit_copy(&dst, v.op.clone(), v.class)?;
+            }
+            return Ok(());
+        }
         let staged = self.stage_each(vals, who, &abi)?;
         self.copy_staged_out(&staged, &abi)
     }

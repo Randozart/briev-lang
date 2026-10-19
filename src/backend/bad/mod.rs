@@ -653,10 +653,8 @@ mod tests {
         let x86 = lower_ok(src, "x86_64");
         assert!(x86.contains("add:"), "{x86}");
         assert!(x86.contains("call add"), "{x86}");
-        assert!(x86.contains("movq $2, %rcx"), "{x86}");
-        assert!(x86.contains("movq %rcx, %rdi"), "{x86}");
-        assert!(x86.contains("movq $3, %rdx"), "{x86}");
-        assert!(x86.contains("movq %rdx, %rsi"), "{x86}");
+        assert!(x86.contains("movq $2, %rdi"), "{x86}");
+        assert!(x86.contains("movq $3, %rsi"), "{x86}");
         assert!(x86.contains("ret"), "{x86}");
     }
 

@@ -468,10 +468,10 @@ mod tests {
         let src = "defn g(a: Int, b: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }";
         let p = lower_ok(src);
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mov", "mov", "mov", "mov", "call", "mov", "mov", "ret"]);
-        assert_eq!(ops_of(items[2]), vec!["r5", "v0"]);
-        assert_eq!(ops_of(items[3]), vec!["r4", "v1"]);
-        assert_eq!(ops_of(items[4]), vec!["g"]);
+        assert_eq!(mnems(&items), vec!["mov", "mov", "call", "mov", "mov", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r5", "1"]);
+        assert_eq!(ops_of(items[1]), vec!["r4", "2"]);
+        assert_eq!(ops_of(items[2]), vec!["g"]);
     }
 
     #[test]
@@ -744,10 +744,10 @@ mod tests {
         // staged call, return read back from the stash
         assert_eq!(
             mnems(&items),
-            vec!["push", "mov", "mov", "mov", "call", "mov", "mov", "pop", "ret"]
+            vec!["push", "mov", "mov", "call", "mov", "mov", "pop", "ret"]
         );
         assert_eq!(ops_of(items[1]), vec!["r3", "r5"]);
-        assert_eq!(ops_of(items[6]), vec!["r0", "r3"]);
+        assert!(items.iter().any(|i| ops_of(i) == vec!["r0", "r3"]));
     }
 
     #[test]
