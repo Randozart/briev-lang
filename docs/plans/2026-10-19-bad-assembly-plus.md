@@ -292,6 +292,22 @@ end
     `cargo test --lib`, QEMU gates, determinism, Praetor, conformance,
     `git grep -i bld` historical only.
 
+## Progress log
+
+| Date | Commit | Slice |
+|---|---|---|
+| 2026-10-19 | `e2351d50` | Plan locked. |
+| 2026-10-19 | `cfa0251f` | Raw `.bad` golden corpus (5 programs × 4 targets); template self-moves elided; raw blocks stay verbatim. |
+| 2026-10-19 | `3bf5cb86` | Full-width target register spellings (`rax`, `x0`, `a0`, `xmm0`, `rsp`, `rip`) through the same registry; wrong-target is a loud error. |
+| 2026-10-19 | `e4434d63` | Immediate materialization for `|-` rows through `scratch_int`/`scratch_int2`; `store`/`mul`/`mod` immediates now lower instead of erroring. |
+| 2026-10-19 | `50b3e024` | Dot-free `local name:` labels scoped to the enclosing global; defn locals hygienic; bare labels stay global. |
+| 2026-10-19 | `8b863eec` | `std/bad/engine.bad` named verbs; bare constant params in opcode slots (`readcr`/`writecr`) fixed; registry still exists for `.bld` until retirement. |
+
+Remaining: symbolic AST/parser (`let`, assignment, `when`, `loop`, `while`,
+`break`, `continue`, `bootstrap`, `defn(...) { }`), defn expansion pass,
+symbolic lowering/allocation, ISA roles/clobbers, parity fixes, `.bld`
+deletion, boot-checklist acceptance, performance corpus, docs/highlighter.
+
 ## Non-goals
 
 - No instruction scheduling, vectorization, or global optimizer in `.bad`.
