@@ -331,11 +331,17 @@ end
 | 2026-10-19 | `e4434d63` | Immediate materialization for `|-` rows through `scratch_int`/`scratch_int2`; `store`/`mul`/`mod` immediates now lower instead of erroring. |
 | 2026-10-19 | `50b3e024` | Dot-free `local name:` labels scoped to the enclosing global; defn locals hygienic; bare labels stay global. |
 | 2026-10-19 | `8b863eec` | `std/bad/engine.bad` named verbs; bare constant params in opcode slots (`readcr`/`writecr`) fixed; registry still exists for `.bld` until retirement. |
+| 2026-10-19 | `94cd673d` | Safe-defaults policy: no catch-all macro; profiles planned. |
+| 2026-10-19 | `09347abf` | Assembly+ symbolic label bodies (`let`/assignment/`when` no else/`loop`/`while`/`break`/`continue`), BILLD engine reuse, allocator loop-backedge fix, ABI registers available to leaves, in-place assignment, `when: break/continue` fusion, raw golden held. |
+| 2026-10-19 | `15a39387` | `bootstrap Name { }` entry sugar; `data { }` blocks with section inference (`.rodata`/`.data`/`.bss`). |
+| 2026-10-19 | `794f0476` | Callable `fn` with typed C-ABI params/return, arg staging, cross-calls, void auto-return; labels and fns lower in one synthetic program. |
 
-Remaining: symbolic AST/parser (`let`, assignment, `when`, `loop`, `while`,
-`break`, `continue`, `bootstrap`, `defn(...) { }`), defn expansion pass,
-symbolic lowering/allocation, ISA roles/clobbers, parity fixes, `.bld`
-deletion, boot-checklist acceptance, performance corpus, docs/highlighter.
+Remaining: profile imports, data-label address expressions in symbolic
+code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,
+`.bld` deletion, boot-checklist QEMU acceptance, performance corpus,
+highlighter/docs sweep. Known test note: the conformance sweep can race
+its own `.smoke/` artifacts when run concurrently with other tests; it
+passes in isolation.
 
 ## Non-goals
 
