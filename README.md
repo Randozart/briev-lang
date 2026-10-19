@@ -8,7 +8,7 @@ Briev is a programming language with the following features:
 - Partially declarative, partially imperative, functional invariant based programming
 - Invariant based runtime optimization (with execution speed at parity, or even better than C in several cases)
 - Backend independence through state-management based syntax and backend handling of intrinsics
-- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`), plus auxiliary dialects (`.bad`, `.bld`) and formats (`.beast`)
+- Backend targeting by extension (`.bv`, `.ebv`, `.rbv`, `.abv`, `.sbv`), plus the auxiliary assembly dialect (`.bad`) and the `.beast` AST format
 - A lightweight systems language that handles complexity at compile time
 - Core syntax that is equally applicable to the other backends, not just systems programming (auxiliary dialects deliberately drop to lower tiers)
 - Inferred command flow through reactive top level `node` declarations
@@ -178,7 +178,7 @@ The node fires repeatedly while the precondition `[count < 10]` holds. When the 
 
 ## Language Variants
 
-The file extension selects which backend compiles your program. Each variant targets a different material:
+The file extension selects which backend compiles your program (or, for `.beast`, which serialized form is emitted). Each variant targets a different material:
 
 | Type | File Ext | Description | Compilation Target | Status |
 |------|----------|-------------|-------------------|--------|
@@ -188,8 +188,10 @@ The file extension selects which backend compiles your program. Each variant tar
 | <img src="assets/e-briev-icon.svg" alt="Electronics Briev" width="25"/> **Electronics Briev** | `.ebv` | Electronics logic (component laws, ERC) | Electronics backend | **In development** |
 | <img src="assets/s-briev-icon.svg" alt="Silicon Briev" width="25"/> **Silicon Briev** | `.sbv` | Hardware logic graph | CIRCT → Verilog/VHDL | **Experimental** |
 | <img src="assets/d-briev-icon.svg" alt="Data Briev" width="25"/> **Data Briev** | `.dbv` / `.dbvl` | Configuration data | Parsed by Briev itself | **Stable** |
+| <img src="assets/bad-icon.svg" alt="BAD" width="25"/> **BAD** | `.bad` | Briev Assembly Dialect — portable assembly, universal core ISA, per-architecture dispatch | Cross-target native (x86_64, aarch64, riscv64, thumbv7m, PTX) | **Functional** |
+| <img src="assets/beast-icon.svg" alt="Beast" width="25"/> **Beast** | `.beast` / `.beastpack` | AST s-expression serialization for metaprogramming | `--emit-beast` format — not a compiled surface | **Format** |
 
-**Stability legend:** *Stable* = daily use; *Functional* = proven end-to-end (correctness gates green on all lanes / real-browser verified), with performance and surface work continuing; *In development / Experimental* = surface under construction.
+**Stability legend:** *Stable* = daily use; *Functional* = proven end-to-end (correctness gates green on all lanes / real-browser verified), with performance and surface work continuing; *In development / Experimental* = surface under construction; *Format* = serialized data for tooling, not a compiled surface.
 
 Bare-metal targets (riscv64, Arm Cortex-M) compile from plain `.bv` via target triples — QEMU-verified, no C runtime.
 
@@ -197,10 +199,9 @@ Dotted profiles add strictness: `.s.bv` enables strict mode (representation fall
 
 ## Auxiliary Dialects
 
-Three auxiliary formats exist alongside the six main dialects:
+Two auxiliary dialects and their packaging formats sit alongside the six main dialects:
 
 - **`.bad` — Briev Assembly Dialect.** Portable assembly: a universal core ISA, `target =>` per-architecture dispatch sites, positional label contracts. Cross-target (x86_64, aarch64, riscv64, thumbv7m, plus the `ptx` family for NVIDIA kernels), with QEMU-verified boot examples. Compile with `brievc bad file.bad --target <triple>`.
-- **`.bld` — BILLD.** The execution-recipe tier between `.bv` and `.bad`: symbolic registers, engine verbs, and a register allocator — the architecture of the machine without the chore of the scratchpad. The tier ladder: `.bv` (proven, reactive) → `.bld` (recipe) → `.bad` (instructions).
 - **`.beast` / `.beastpack` / `.bounty`** — AST s-expression serialization (`--emit-beast`) for legible metaprogramming, typed-AST packaging, and portable distribution. Formats, not compiled surfaces.
 
 ## Key Features
