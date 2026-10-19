@@ -243,6 +243,15 @@ impl<'a> Lowerer<'a> {
             const_values.push((name, v));
         }
         let intrinsics = crate::backend::bld::registry::BldIntrinsics::load();
+        let global_pins: Vec<(String, String)> = self
+            .emit_items
+            .iter()
+            .filter_map(|i| match i {
+                BadTopLevel::Declarations(d) => Some(d.pins.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
         let symdefs: std::collections::HashMap<String, crate::ast::bad::BadFn> = self
             .emit_items
             .iter()
@@ -271,6 +280,7 @@ impl<'a> Lowerer<'a> {
             intrinsics: &intrinsics,
             symdefs: &symdefs,
             bad_defns: &self.defns,
+            global_pins: &global_pins,
         };
         let mut items = std::mem::take(&mut self.emit_items);
         let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
@@ -292,7 +302,7 @@ impl<'a> Lowerer<'a> {
                     "`call defn {}` reached emission - the symbolic lowering pass did not run",
                     f.name
                 )),
-                BadTopLevel::SymDefn(_) => {}
+                BadTopLevel::SymDefn(_) | BadTopLevel::Declarations(_) => {}
                 BadTopLevel::Label(l) => self.emit_label(l),
                 BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
             }
@@ -349,7 +359,17 @@ impl<'a> Lowerer<'a> {
                     let n = crate::backend::bad::notices::check_label(l, self.regs, &self.family);
                     self.notices.extend(n);
                 }
-                BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
+                BadTopLevel::Declarations(d) => {
+                let mut seen = std::collections::HashSet::new();
+                for (name, _) in &d.pins {
+                    if !seen.insert(name.clone()) {
+                        self.errors.push(format!(
+                            "declaration `{name}` is pinned twice - remove one"
+                        ));
+                    }
+                }
+            }
+            BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
                 if !self.label_names.insert(f.name.clone()) {
                     self.errors.push(format!(
                         "fn `{}` is declared twice - functions share one symbol namespace \

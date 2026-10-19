@@ -35,6 +35,8 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
+    /// `declarations { name: rN; … }` — file/recipe pins.
+    Declarations(BadDeclarations),
     /// `call defn name(params) -> Ret { … }` — callable C-ABI function
     /// with an assembly+ body. Lowered to a label by the symbolic pass.
     Fn(BadFn),
@@ -216,6 +218,13 @@ pub struct BadLocal {
 pub struct BadAlias {
     pub name: String,
     pub register: String,
+    pub span: Span,
+}
+
+/// `declarations { name: rN; … }` — file-scoped symbolic pins.
+#[derive(Debug, Clone)]
+pub struct BadDeclarations {
+    pub pins: Vec<(String, String)>,
     pub span: Span,
 }
 

@@ -123,6 +123,12 @@ impl<'s> Parser<'s> {
 
             // `bootstrap Name { … }` — authored machine entry. Top-level
             // only; expands to `global Name` + `Name:` + body.
+            if let Some(item) = self.try_declarations(content, line, span.clone())? {
+                self.items.push(item);
+                owner = None;
+                continue;
+            }
+
             if let Some(item) = self.try_fn(content, line, span.clone())? {
                 self.items.push(item);
                 owner = None;
@@ -213,6 +219,61 @@ impl<'s> Parser<'s> {
         Ok(BadProgram { items: self.items, span: Span::new(0, end, 0, 0) })
     }
 
+
+    fn try_declarations(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<BadTopLevel>, BadParseError> {
+        if !(content == "declarations {" || content == "declarations{") {
+            return Ok(None);
+        }
+        self.pos += 1;
+        let mut pins = Vec::new();
+        while self.pos < self.lines.len() {
+            let (_, c, lno) = self.lines[self.pos];
+            if c == "}" {
+                self.pos += 1;
+                return Ok(Some(BadTopLevel::Declarations(BadDeclarations {
+                    pins,
+                    span,
+                })));
+            }
+            let c = c.trim().trim_end_matches(';').trim();
+            if c.is_empty() {
+                self.pos += 1;
+                continue;
+            }
+            let Some((name, reg)) = c.split_once(':') else {
+                return Err(BadParseError {
+                    message: format!("`{c}` - declarations hold `name: register` pins"),
+                    line: lno,
+                    span,
+                });
+            };
+            let name = name.trim();
+            let reg = reg.trim();
+            if !is_ident(name) || name.starts_with('.') {
+                return Err(BadParseError {
+                    message: format!("`{name}` is not a valid pin name"),
+                    line: lno,
+                    span,
+                });
+            }
+            if reg.is_empty() || !is_ident(reg) {
+                return Err(BadParseError {
+                    message: format!("pin `{name}` needs a register after `:`"),
+                    line: lno,
+                    span,
+                });
+            }
+            pins.push((name.to_string(), reg.to_string()));
+            self.pos += 1;
+        }
+        Err(BadParseError {
+            message: "unterminated `declarations` block - add a `}` on its own line".to_string(),
+            line,
+            span,
+        })
+    }
 
     fn try_fn(
         &mut self, content: &str, line: usize, span: Span,

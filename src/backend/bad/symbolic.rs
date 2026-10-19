@@ -43,6 +43,8 @@ pub struct SymCtx<'a> {
     /// arity-matching call on the raw path when a same-named engine verb
     /// exists (e.g. `ReadControlReg 0, r1` vs `ReadControlReg(0)`).
     pub bad_defns: &'a HashMap<String, crate::ast::bad::BadDefn>,
+    /// File-scoped pins from `declarations { name: rN; }`.
+    pub global_pins: &'a [(String, String)],
 }
 
 const PREFIX: &str = "__bad_sym_";
@@ -132,10 +134,21 @@ pub fn lower_symbolic_labels(
     for u in &units {
         let params: HashSet<String> = u.params.iter().map(|p| p.name.clone()).collect();
         let mut body: Vec<BldStmt> = Vec::new();
+        for (name, reg) in ctx.global_pins {
+            body.push(BldStmt::Bind {
+                name: name.clone(),
+                register: reg.clone(),
+                span: Span::dummy(),
+            });
+        }
+        let mut bound = params.clone();
+        for (name, _) in ctx.global_pins {
+            bound.insert(name.clone());
+        }
         let mut b = Builder {
             ctx,
             stmts: &mut body,
-            bound: params.clone(),
+            bound,
             params,
             is_fn: u.kind == Kind::Fn,
             depth: 0,
@@ -422,6 +435,9 @@ impl Builder<'_, '_> {
             let mut body = Vec::new();
             let mut inner_bound = HashSet::new();
             let mut inner_params = HashSet::new();
+            for (name, _) in self.ctx.global_pins {
+                inner_bound.insert(name.clone());
+            }
             for (p, a) in d.params.iter().zip(args) {
                 body.push(BldStmt::Let {
                     name: p.name.clone(),

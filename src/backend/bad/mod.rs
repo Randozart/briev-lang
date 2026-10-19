@@ -611,6 +611,17 @@ mod tests {
     }
 
     #[test]
+    fn declarations_pin_is_file_scoped() {
+        let src = "declarations {\n    uart: r2\n}\n_start:\n    uart = 0x10000000\n    \
+                   Store(66, uart)\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $268435456, %rdx"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(x86.contains("(%rdx)"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
     fn raw_boundary_copy_in_out_and_pin() {
         let src = "_start:\n    raw clobbers r5 {\n        mov r5, 42\n    }\n    \
                    let x = r5\n    x += 1\n    r6 = x\n    halt\n";
