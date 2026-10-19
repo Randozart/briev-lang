@@ -343,6 +343,48 @@ highlighter/docs sweep. Known test note: the conformance sweep can race
 its own `.smoke/` artifacts when run concurrently with other tests; it
 passes in isolation.
 
+## Resolution plan (2026-10-19, approved)
+
+Blockers from the ergonomic review, with locked spellings:
+
+| Blocker | Resolution |
+|---|---|
+| One-way raw/symbolic escape | `let x = r5`, `r5 = x`, `let y = pin r5`, `raw clobbers rN { … }`, `declarations { }` |
+| No symbolic address-of | `addr(label)` + a known label in a symbolic value position = address; `extern fn`/`extern data` |
+| No stack-free named steps | inline `defn name(params) { … }`; `call defn name(params) { … }` = callable; `fn` removed |
+| Split engine vocabulary | symbolic calls inline `std/bad/engine.bad` defns; delete `bld-intrinsics.dbvl` |
+| `fn` call staging moves | parallel-move scheduler (direct moves when safe; temps only for cycles) |
+| Implicit-virtual typos | `--warn-unused-values` |
+| Unfinished surface | direct `BldStmt` AST, profiles, `declarations`, `.bld` deletion |
+
+**Definition syntax (locked):**
+
+```bad
+defn inc(a: Int) -> Int { return a + 1 }        // INLINE; no return allowed
+call defn inc(a: Int) -> Int { … }              // CALLABLE; ABI/frame; return allowed
+```
+
+Calls resolve by definition kind; `call name(args)` forces a call. No `fn`.
+
+**Phase order:**
+
+1. Direct `BldStmt` AST: build the symbolic program in memory; add
+   `BldStmt::Instr(BadInstr)`; parse expressions via the shared parser;
+   add ISA roles/clobbers for `addr`/`readcr`/`writecr`; remove synthetic
+   `.bld` text and re-parsing. Output must stay byte-identical.
+2. Definition unification: inline symbolic `defn` expansion (params,
+   hygiene, depth/size caps); `call defn` callable; remove `fn`.
+3. Address-of + `extern fn`/`extern data`.
+4. Two-way boundary: `let x = r5`, `r5 = x`, `pin r5`,
+   `raw clobbers rN { … }`, `declarations`; allocator clobber wall.
+5. Engine verbs: symbolic calls inline `.bad` defns; delete
+   `config/bld-intrinsics.dbvl`; add `!` constant params.
+6. Call staging/coalescing, stack profile, profiles, unused-value lint.
+7. Boot checklist QEMU gate; delete `.bld`; performance corpus; docs.
+
+Do not delete `.bld` before Phase 5; its intrinsic registry is the
+transitional engine-verb source.
+
 ## Non-goals
 
 - No instruction scheduling, vectorization, or global optimizer in `.bad`.
