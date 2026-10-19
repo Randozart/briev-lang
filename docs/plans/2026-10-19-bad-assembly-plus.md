@@ -343,6 +343,7 @@ end
 | 2026-10-19 | `1382e595` | Raw `.bad` engine defn calls keep their arity when an intrinsic shares the name (`ReadControlReg n, dst` vs `ReadControlReg(n)`). |
 | 2026-10-19 | `73e81d84` | `.bld` dialect retired: routing/CLI/backend-kind/source-kind/target row/examples/gates/highlighter/docs/SPEC removed; symbolic engine stays internal. `config/bad-verbs.dbvl` is the internal verb table. |
 | 2026-10-19 | `d762d032` | Pure `.bad` rv64 QEMU boot gate (`boot_plus_rv64.bad`, `qemu-rv64-boot-plus-bad.sh`); `brievc bad --linker-script`. |
+| 2026-10-19 | `e8e5f493` | Symbolic `stb`/`sth` (sub-width stores, immediate forms + address materialization), aarch64 QEMU virt profile, pure `.bad` aarch64 boot gate. |
 
 Remaining: profile imports, data-label address expressions in symbolic
 code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,

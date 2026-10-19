@@ -199,7 +199,7 @@ Dotted profiles add strictness: `.s.bv` enables strict mode (representation fall
 
 Two auxiliary formats exist alongside the six main dialects:
 
-- **`.bad` — Briev Assembly Dialect.** Portable assembly: a universal core ISA, `target =>` per-architecture dispatch sites, positional label contracts. Cross-target (x86_64, aarch64, riscv64, thumbv7m, plus the `ptx` family for NVIDIA kernels), with QEMU-verified boot examples. Compile with `brievc bad file.bad --target <triple>`. Pure `.bad` QEMU boot gate: `tests/bare/qemu-rv64-boot-plus-bad.sh`.
+- **`.bad` — Briev Assembly Dialect.** Portable assembly: a universal core ISA, `target =>` per-architecture dispatch sites, positional label contracts. Cross-target (x86_64, aarch64, riscv64, thumbv7m, plus the `ptx` family for NVIDIA kernels), with QEMU-verified boot examples. Compile with `brievc bad file.bad --target <triple>`. Pure `.bad` QEMU boot gates: `tests/bare/qemu-rv64-boot-plus-bad.sh`, `tests/bare/qemu-aarch64-boot-plus-bad.sh`.
 - **`.beast` / `.beastpack` / `.bounty`** — AST s-expression serialization (`--emit-beast`) for legible metaprogramming, typed-AST packaging, and portable distribution. Formats, not compiled surfaces.
 
 ## Key Features

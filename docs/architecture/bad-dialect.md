@@ -277,7 +277,7 @@ register allocator, then spliced back as physical instructions.
 Supported instructions in a symbolic body:
 
 `mov`, `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`,
-`store`, `load`.
+`store`, `load`, `stb`, `sth`.
 
 Operandless raw splices: `ret`, `halt`, `nop`, `cli`, `sti`, `wfi`, `fence`,
 `tlbflush`, `mret`. Engine verbs (`DisableInterrupts`, `WriteControlReg`,
