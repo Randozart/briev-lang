@@ -10325,13 +10325,28 @@ to the C reference across all 16,384 decodes, 64-bit frames included) — so
 on this expression the two engines DISAGREE, which per the house rule means
 one of them is wrong and the discrepancy is the bug.
 
-**Next step:** debug the interpreter's binary-op evaluation for `BitOr`
-with compound operand expressions under the splice; suspect stale Value
-reuse in operand evaluation (the stale value observed is a neighboring
-scope variable, not either operand). The parity test currently scopes
-around this (len64 decode verified compiled-only); when fixed, restore the
-len64 interpreter scenario (the test file carries the ready-made scenario
-commented by this note's shape).
+**ROOT CAUSE (2026-10-19, FIXED):** the B1 string-bitwise default in the
+interpreter's binary-op evaluator dereferenced INT atoms as heap strings
+whenever the integer VALUE collided with a live heap address —
+`string_bytes` probes `heap.read(addr, 8)` for any positive Int. Shift-or
+chains produce large integers; large integers land inside live allocations
+(the codec test's 140KB corpus buffer); the byte-wise string path then
+mangles them into values that LOOK like stale scope variables (the observed
+112 was heap-adjacent data, not a scope bug — the splice was never the
+trigger; it merely brought large integers and big allocations together).
+
+**Fix:** the bitwise ops disambiguate by representation — two Int atoms are
+INTEGERS (the backend emits integer ops; Rule 5 parity); the B1 string
+default applies only to genuine `Value::Bits` byte strings. Regression pin:
+the len64 decode scenario in `tests/ws_frame_codec_parity.rs` (was 27, now
+31 = +len64).
+
+**Residual (separate repro, OPEN):** the ENCODE path's GrowBuf growth
+still mis-evaluates in the interpreter — encoding 9,060 bytes produced
+`g4.len` = 2,371,930 (the cap check `len + needed <= cap` appears to grow
+every put). Not a BitOr symptom (that path is fixed); needs its own
+minimal repro (grow_new(8) + N puts → inspect len/cap per put). The
+round-trip parity scenario stays deferred until this lands.
 
 **Amendment (same day):** the symptom family is wider than bitwise-or —
 the encode-path probe shows `GrowBuf` growth mis-evaluating in the

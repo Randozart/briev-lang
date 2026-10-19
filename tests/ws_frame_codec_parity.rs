@@ -21,16 +21,19 @@ use briev_compiler::reactor::Reactor;
 // Marker bits per scenario (exit value = OR of passed markers).
 const M_LEN7_MASKED: i64 = 1;
 const M_LEN16_PLAIN: i64 = 1 << 1;
-// M_LEN64_MASKED (bit 2) deferred — interpreter BitOr bug, BUGS.md 2026-10-18.
+const M_LEN64_MASKED: i64 = 1 << 2;
 const M_TRUNC_INCOMPLETE: i64 = 1 << 3;
 const M_PROTOCOL_ERROR: i64 = 1 << 4;
+// M_ROUNDTRIP (bit 5) remains deferred: the DECODE legs all pass, but the
+// ENCODE path's GrowBuf growth mis-evaluates in the interpreter (g4.len =
+// 2,371,930 for 9,060 encoded bytes — the cap check `len + needed <= cap`
+// appears to always grow). Separate repro from the BitOr root cause (which
+// is FIXED — the len64 decode scenario below is its regression pin);
+// investigation continues under BUGS.md 2026-10-18.
 const M_ROUNDTRIP: i64 = 1 << 5;
-// M_ROUNDTRIP (bit 5) — deferred alongside the len64 scenario: the encode
-// path (GrowBuf growth + ws_copy_payload recursion) ALSO mis-evaluates in
-// the interpreter (g4.len = 2,245,685 for 2,060 encoded bytes). Same root
-// cause as the BitOr chain — BUGS.md 2026-10-18.
 const EXPECTED: i64 = M_LEN7_MASKED
     | M_LEN16_PLAIN
+    | M_LEN64_MASKED
     | M_TRUNC_INCOMPLETE
     | M_PROTOCOL_ERROR;
 
@@ -122,14 +125,47 @@ defn ws_partial_probe(buf: ByteBuf, off: Int, b0: Int, b1: Int, plen: Int, base:
     };
 };
 
-// scenario64 — len64 masked frame: DEFERRED interpreter-side. The
-// interpreter mis-evaluates compound bitwise-or chains over non-literal
-// operands in spliced programs (BUGS.md 2026-10-18, OPEN), which breaks
-// get_u64_be — the len64 reader. The compiled side is pinned by the ws_frame
-// harness benchmark (byte-identical to the C reference, 64-bit frames
-// included). Restore this scenario when the interpreter bug is fixed: the
-// frame declares payload 70000 (bytes 00 00 00 00 00 01 11 70), mask key
-// 0x01020304, header 14, marker bit 4.
+// scenario64 - len64 masked frame: length 70000, key 0x01020304. The
+// payload sum checks the first 100 bytes (the buffer carries 100 written
+// bytes; the whole-frame-fit precondition reads the declared length).
+defn scenario64() -> Int {
+    let raw64: Ptr<Bit<8>> = Malloc#(140014) as Ptr<Bit<8>>;
+    Store#(raw64 as Int + 0, 130, 1);
+    Store#(raw64 as Int + 1, 255, 1);
+    Store#(raw64 as Int + 2, 0, 1);
+    Store#(raw64 as Int + 3, 0, 1);
+    Store#(raw64 as Int + 4, 0, 1);
+    Store#(raw64 as Int + 5, 0, 1);
+    Store#(raw64 as Int + 6, 0, 1);
+    Store#(raw64 as Int + 7, 1, 1);
+    Store#(raw64 as Int + 8, 17, 1);
+    Store#(raw64 as Int + 9, 112, 1);
+    Store#(raw64 as Int + 10, 1, 1);
+    Store#(raw64 as Int + 11, 2, 1);
+    Store#(raw64 as Int + 12, 3, 1);
+    Store#(raw64 as Int + 13, 4, 1);
+    foreach m in 0..100 {
+        Store#(raw64 as Int + 14 + m, ((m * 3) & 255) as Bit<8>, 1);
+    };
+    let view64: ByteBuf = ByteBuf { ptr: raw64 as Int, len: 70014, cap: 140014 };
+    let r64: Result<WsFrame, String> = ws_decode(view64, 0);
+    let verdict: Int = match r64 {
+        Ok(f) => {
+            let ok: Int = 0;
+            when f.fin && f.opcode == 2 && f.masked { ok = ok + 1; };
+            when f.payload_len == 70000 && f.header_len == 14 { ok = ok + 2; };
+            when f.mask_key == 16909060 { ok = ok + 4; };
+            let p64: Int = 0;
+            foreach i in 0..100 {
+                p64 = p64 + ws_payload_byte(view64, 0, f, i);
+            };
+            when p64 == 11266 { ok = ok + 8; };
+            term ok;
+        },
+        Err(e) => 0 - 3,
+    };
+    term verdict;
+};
 
 // scenario_trunc - 126 form with only 3 bytes: Err("incomplete").
 defn scenario_trunc() -> Int {
@@ -217,6 +253,9 @@ node entry [beginprogram][true] {
     };
     when scenario16() == 7 {
         acc = acc | 2;
+    };
+    when scenario64() == 15 {
+        acc = acc | 4;
     };
     when scenario_trunc() == 8 {
         acc = acc | 8;
