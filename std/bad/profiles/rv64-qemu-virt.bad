@@ -9,7 +9,9 @@
 .const UART_CR 0x30
 
 defn uart_init(base: Ptr) {
-    Store(0x101, base + UART_CR)   // UARTEN | TXE
+    // QEMU virt is an NS16550A; its reset state is usable. Do not write
+    // PL011 offsets (0x30 is outside the implemented 16550 window and
+    // faults the bus). Keep the named step for profile symmetry.
 }
 
 defn uart_putc(base: Ptr, ch: Int) {
