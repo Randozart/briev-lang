@@ -335,6 +335,8 @@ end
 | 2026-10-19 | `09347abf` | Assembly+ symbolic label bodies (`let`/assignment/`when` no else/`loop`/`while`/`break`/`continue`), BILLD engine reuse, allocator loop-backedge fix, ABI registers available to leaves, in-place assignment, `when: break/continue` fusion, raw golden held. |
 | 2026-10-19 | `15a39387` | `bootstrap Name { }` entry sugar; `data { }` blocks with section inference (`.rodata`/`.data`/`.bss`). |
 | 2026-10-19 | `794f0476` | Callable `fn` with typed C-ABI params/return, arg staging, cross-calls, void auto-return; labels and fns lower in one synthetic program. |
+| 2026-10-19 | `6c259278` | Direct `BldStmt` AST (no synthetic `.bld` text); `BldStmt::Instr`; `addr(label)` expression + label-as-address; shared expression parser; raw goldens unchanged. |
+| 2026-10-19 | `b5335e2a` | Definition modes: `defn` inline symbolic, `call defn` callable, `fn` removed. Inline expansion with param binding, block scoping, depth cap 64. |
 
 Remaining: profile imports, data-label address expressions in symbolic
 code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,
