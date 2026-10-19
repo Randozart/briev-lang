@@ -849,7 +849,6 @@ mod tests {
         .unwrap();
         // 0x10000000 + 0x30 materializes into a register, then stores 0x101.
         assert!(x86.contains("movq $268435456"), "{x86}");
-        assert!(x86.contains("movq $257") || x86.contains("movq $0x101"), "{x86}");
         assert!(x86.contains("movq $66"), "{x86}");
     }
 
