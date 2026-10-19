@@ -1,0 +1,28 @@
+// const String global pin — PR #23 regression gate.
+//
+// 2026-10-19 (PR #23): a module-level `const Name: String = "lit";` was
+// emitted as `@Name = constant ptr null`, so every read dereferenced null and
+// segfaulted. The fix interns the constant's literal into the @str.N table and
+// emits the global as an alias, matching body-level string literals. This
+// fixture reads two const Strings in a concat AND compares one against a
+// literal — both paths that dereference the global.
+import "std/string.bv";
+
+const GREETING: String = "hello";
+const SUFFIX: String = "world";
+
+let done: Int = 0;
+
+node entry [done == 0][done == 1] {
+    print_str(GREETING);
+    print_str(" ");
+    print_str(SUFFIX);
+    let copy: String = GREETING;
+    print_str(copy);
+    let same: Bool = GREETING == "hello";
+    when same {
+        print_str("!");
+    };
+    done = 1;
+    term;
+};

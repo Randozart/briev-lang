@@ -781,6 +781,37 @@ mod tests {
     }
 
     #[test]
+    fn dot_call_to_stateful_member_forces_state() {
+        // 2026-10-19 (PR #24 pin): a dot-call to a stateful obj member must
+        // force %state on the CALLER. The MethodCall form previously bypassed
+        // the needs-state walk — the inlined member body referenced %state
+        // while the caller was emitted without it (undefined %state IR). The
+        // free-call and dot-call forms of the same callee must agree.
+        let src = r#"obj Sink {
+            defn grow_member(s: Sink) -> Int { term StringNew#(); };
+        };"#;
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let caller = defn("f", vec![Statement::Term(Some(
+            Expr::MethodCall(
+                Box::new(Expr::Identifier("sink".to_string())),
+                "grow_member".to_string(),
+                vec![],
+                None,
+                Vec::new(),
+            ),
+        ))]);
+        items.push(exported(caller));
+        let map = compute_export_needs_state(&items, &HashSet::new());
+        assert_eq!(
+            map.get("f"),
+            Some(&true),
+            "dot-call to a stateful member must propagate state: {map:?}"
+        );
+    }
+
+    #[test]
     fn guard_condition_stateful_call_forces_state() {
         // 2026-09-23: a stateful call in a `when` CONDITION must be seen —
         // the walker previously ignored the guard condition and marked the

@@ -10433,3 +10433,38 @@ operands in spliced programs. The ws_frame_codec_parity test scopes to the
 decode scenarios (len7/len16/truncation/protocol — all PASS) and carries
 ready-made deferred scenarios (len64 decode, encode round-trip) to restore
 when the root cause is fixed.
+
+## 2026-10-20 — string concat miscompiles at -O2/-O3 (allocation folded away, prints empty)
+
+**Symptom:** any `a + b` String concat compiled at the project's own pipeline
+flags (`-O2`/`-O3`, and with `-flto -ffast-math`) prints an EMPTY string.
+`-O0` is correct. Minimal repro: `let b: String = a + a; print_str(b);` with
+`a = get_env!("PATH")` → `-O0` prints 1136 bytes, `-O2` prints 0. Literal +
+literal (`"ab" + "cd"`) reproduces identically, so it is not a const-only
+path. **Pre-existing**: verified at `ba7aed3c` (before the 2026-10-20 PR
+merges) in a clean worktree, so it is NOT a regression from #23/#24/#25.
+
+**Mechanism (narrowed):** in the optimized `txn_entry`, the concat's
+`malloc` + both `memcpy` calls are DELETED, and the consumer `print_str`
+reads a byte directly from the `"|"` literal instead — LLVM concluded the
+concat result aliases a constant. The generated concat uses
+`and (ptrtoint p), -4` → `inttoptr` as the string-header address (the
+retired tag-mask). That ptrtoint/inttoptr round-trip strips pointer
+provenance; LLVM's alias/escape analysis then treats the malloc'd result as
+non-escaping and folds the allocation. `-fno-strict-aliasing` and removing
+the conditional free do NOT fix it; removing the mask alone does not either,
+so the whole ptrtoint-mask-inttoptr idiom is implicated.
+
+**Impact:** HIGH — every string concat in every program is wrong under the
+benchmark pipeline. The benchmark suite did not catch it because its
+correctness gate compares Briev vs C stdout, and the concat-heavy programs
+either do not exercise concat under these flags or their goldens predate the
+regression window. Fixture 1's codec does not concat, which is why ws_frame
+passed.
+
+**Next step:** the fix is to carry String as a real `ptr` end-to-end through
+the concat path (no ptrtoint/mask/inttoptr round-trip): emit_mask_tag and
+emit_inttoptr_reg/emit_load_length must operate on pointers, with the legacy
+temp-bit machinery removed (it is already dead — `emit_box_concat_result`
+returns an untagged ptr, and the tag bits are never set). Then re-run the
+harness; this likely also explains latent string-op discrepancies.

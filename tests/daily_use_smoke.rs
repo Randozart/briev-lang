@@ -194,6 +194,43 @@ fn daily_use_smoke_golden_output() {
 /// called as a method, and the same default called as a free function — each
 /// a tally of `bump_twice(_, 5)` = 10, summed = 30. Pins the printed result so
 /// a codegen regression in trait-generic monomorphization is caught in CI.
+/// 2026-10-19 (PR #23 pin): a module-level `const Name: String = "lit";`
+/// was emitted as `@Name = constant ptr null` — every read dereferenced null
+/// and segfaulted. The fix interns the literal into the @str.N table. The
+/// fixture concats two const Strings and compares one against a literal, so
+/// the golden output proves both reads dereference real storage.
+#[test]
+fn const_string_global_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    // NOTE: this pin covers #23's const-global READ path only. String CONCAT
+    // at -O2 is a separate, pre-existing miscompile (BUGS.md 2026-10-20) —
+    // exercising it here would mask #23's verdict behind that bug.
+    let out = build_link_run("const_string_global", "golden", &[]);
+    assert_eq!(
+        out, "hello worldhello!",
+        "const String global stdout drifted: {out:?}"
+    );
+}
+
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): IGNORED —
+/// pins a KNOWN, pre-existing HIGH-severity codegen bug so it is not lost.
+/// Any String concat is EMPTY under the pipeline flags (-O2/-O3; -O0 is
+/// correct). Remove the #[ignore] in the commit that fixes it. This is why
+/// fixture-1's const-String pin avoids concat (BUGS.md 2026-10-20).
+#[test]
+#[ignore = "known: string concat folds to empty at -O2 — BUGS.md 2026-10-20"]
+fn string_concat_at_o2_is_known_broken() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("string_concat_probe", "concat", &[]);
+    assert_eq!(out, "abcd|abcd", "string concat at -O2: {out:?}");
+}
+
 #[test]
 fn trait_generics_golden_output() {
     if !has("clang") {
