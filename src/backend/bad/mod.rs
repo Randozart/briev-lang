@@ -679,6 +679,23 @@ mod tests {
     }
 
     #[test]
+    fn boot_checklist_inline_puts_lowers_stack_free() {
+        let src = "defn uart_puts(base: Ptr, msg: Ptr) {\n    let p = msg\n    \
+                   loop {\n        let ch = Load(p)\n        when ch == 0: break\n        \
+                   Store(ch, base)\n        p += 1\n    }\n}\n\
+                   bootstrap Reset_Handler {\n    DisableInterrupts\n    \
+                   uart_puts(0x10000000, banner)\n    halt\n}\n\
+                   data {\n    banner: .asciz \"ok\\n\"\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq banner(%rip)"), "{x86}");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(!x86.contains("call uart_puts"), "{x86}");
+        assert!(!x86.contains("uart_puts:"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
     fn inline_defn_expands_without_a_call() {
         let src = "defn grant_pmp() {\n    WriteControlReg(944, -1)\n    \
                    WriteControlReg(928, 15)\n}\n\
