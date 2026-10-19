@@ -921,6 +921,116 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    /// Is this operand an immediate for form selection/materialization?
+    fn operand_is_immediate(
+        &self, op: &BadOperand, env: &HashMap<String, Bound>, instr: &BadInstr,
+    ) -> bool {
+        match op {
+            BadOperand::Int(_) | BadOperand::Float(_) => true,
+            BadOperand::Name(name) => {
+                self.consts.contains_key(name)
+                    || matches!(env.get(name), Some(Bound::Imm(_)))
+            }
+            BadOperand::Expr(e) => self.eval_operand_expr(e, env, instr).is_ok(),
+        }
+    }
+
+    /// Would materializing into `scratch` clobber a register operand?
+    fn scratch_conflicts(
+        &self, scratch: &str, instr: &BadInstr, env: &HashMap<String, Bound>,
+    ) -> bool {
+        let Some(token) = self.resolve_register(scratch) else { return false };
+        for op in &instr.operands {
+            let BadOperand::Name(name) = op else { continue };
+            if let Some(Bound::Token(t)) = env.get(name) {
+                if self.resolve_register(t) == Some(token) {
+                    return true;
+                }
+            }
+            if self.resolve_register(name) == Some(token) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn pick_scratch(
+        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, used: &[String],
+    ) -> Result<String, String> {
+        let mut candidates = Vec::new();
+        if let Some(s) = self.regs.scratch_int(&self.family) {
+            candidates.push(s);
+        }
+        if let Some(s) = self.regs.scratch_int2(&self.family) {
+            candidates.push(s);
+        }
+        for cand in candidates {
+            if used.iter().any(|u| u == cand) {
+                continue;
+            }
+            if self.scratch_conflicts(cand, instr, env) {
+                continue;
+            }
+            return Ok(cand.to_string());
+        }
+        Err(format!(
+            "`{}` (line {}) has immediate operand(s) with no free materialization \
+             scratch on `{}` - free one of the scratch registers or load the value \
+             into a register yourself",
+            instr.mnemonic, instr.span.line, self.family
+        ))
+    }
+
+    /// Replace every immediate operand with a scratch register holding it.
+    /// The scratch names are canonical portable registers, so the normal
+    /// register map resolves them. Disclosed clobber.
+    fn materialize_illegal_imms(
+        &mut self, instr: &mut BadInstr, env: &HashMap<String, Bound>, depth: usize,
+    ) -> Result<(), String> {
+        let indices: Vec<usize> = instr
+            .operands
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| self.operand_is_immediate(op, env, instr))
+            .map(|(i, _)| i)
+            .collect();
+        if indices.is_empty() {
+            return Ok(());
+        }
+        let mut used: Vec<String> = Vec::new();
+        for idx in indices {
+            let op = instr.operands[idx].clone();
+            if matches!(op, BadOperand::Float(_)) {
+                return Err(format!(
+                    "`{}` (line {}) has a float immediate with no generic scratch on \
+                     `{}` - load it into a float register first or use a `raw <target>` block",
+                    instr.mnemonic, instr.span.line, self.family
+                ));
+            }
+            let scratch = self.pick_scratch(instr, env, &used)?;
+            used.push(scratch.clone());
+            if self.trace {
+                eprintln!(
+                    "trace: `{}` (line {}) immediate #{} materialized in `{}`",
+                    instr.mnemonic,
+                    instr.span.line,
+                    idx + 1,
+                    scratch
+                );
+            }
+            let mov = BadInstr {
+                mnemonic: "mov".to_string(),
+                operands: vec![BadOperand::Name(scratch.clone()), op],
+                contract: None,
+                ack: None,
+                span: instr.span,
+            };
+            self.emit_instr(&mov, env, depth)?;
+            instr.operands[idx] = BadOperand::Name(scratch);
+        }
+        Ok(())
+    }
+
     /// Emit one instruction under `env` (defn param bindings). `depth`
     /// guards defn recursion.
     fn emit_instr(
@@ -938,7 +1048,8 @@ impl<'a> Lowerer<'a> {
             owned.mnemonic = canonical;
             owned
         };
-        let instr = &instr;
+        let mut owned = instr.clone();
+        let instr = &mut owned;
 
         // 1. Defn call → inline expansion.
         if !self.isa.is_core(&instr.mnemonic) {
@@ -958,7 +1069,7 @@ impl<'a> Lowerer<'a> {
         // target dispatch now lives in `site` blocks and branch defns.)
         self.check_call_shape(instr)?;
 
-        let lowering = match self.isa.lookup(&instr.mnemonic, &self.family) {
+        let lowering = match self.isa.lookup(&instr.mnemonic, &self.family).cloned() {
             Some(l) => l,
             None => {
                 return Err(format!(
@@ -970,9 +1081,13 @@ impl<'a> Lowerer<'a> {
         };
         let has_imm = instr.operands.iter().any(|o| match o {
             BadOperand::Int(_) | BadOperand::Float(_) => true,
-            // Const names resolve to immediates at substitution — they
-            // must pick the imm form too (aarch64 mul takes no #imm).
-            BadOperand::Name(name) => self.consts.contains_key(name),
+            // Const names and defn params bound to immediates resolve
+            // to immediates at substitution — they must pick the imm
+            // form too (aarch64 mul takes no #imm).
+            BadOperand::Name(name) => {
+                self.consts.contains_key(name)
+                    || matches!(env.get(name), Some(Bound::Imm(_)))
+            }
             // An Expr that EVALUATES to a constant (a bare hex literal
             // `0x40004008`) is an immediate; one that resolves to a label
             // (`addr + 8`) is not.
@@ -984,11 +1099,10 @@ impl<'a> Lowerer<'a> {
         let template = match (&lowering.imm, has_imm) {
             (ImmHandling::Form(t), true) => t,
             (ImmHandling::Illegal, true) => {
-                return Err(format!(
-                    "core op `{}` has no immediate form on `{}` - load the value into \
-                     a register first (the hardware has no immediate encoding)",
-                    instr.mnemonic, self.family
-                ));
+                // Predictable ceremony: materialize each immediate through
+                // the configured caller-saved scratch, then use the reg form.
+                self.materialize_illegal_imms(instr, env, depth)?;
+                &lowering.reg_form
             }
             _ => &lowering.reg_form,
         };

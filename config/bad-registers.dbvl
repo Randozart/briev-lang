@@ -40,6 +40,13 @@ pc: "thumb:pc:ro"; "x86_64:%rip:ro"; "aarch64:pc:ro"; "riscv64:pc:ro";
 
 imm: "thumb:#"; "x86_64:$"; "aarch64:#"; "riscv64:"; "ptx:";
 
+// Immediate-materialization scratches. Canonical portable names so the
+// normal register map resolves them. Caller-saved, disclosed as clobbers:
+// the symbolic allocator reserves them, raw code must not keep a live
+// value there across an instruction that materializes an immediate.
+scratch_int:  "thumb:r12"; "x86_64:r9";  "aarch64:r10"; "riscv64:r10";
+scratch_int2: "thumb:r3";  "x86_64:r8";  "aarch64:r11"; "riscv64:r11";
+
 // GAS comment prefix per target — emitted contract annotations use it.
 comment: "thumb:@"; "x86_64:#"; "aarch64://"; "riscv64:#"; "ptx://";
 

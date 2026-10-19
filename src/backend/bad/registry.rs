@@ -237,6 +237,8 @@ impl BadRegisters {
             "float_literal",
             "abi_stack_arg_base",
             "abi_reg_args",
+            "scratch_int",
+            "scratch_int2",
         ];
         for key in db.keys() {
             let is_scalar = SCALAR_ROWS.contains(&key.as_str());
@@ -401,6 +403,18 @@ impl BadRegisters {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Primary integer scratch for immediate materialization. Canonical
+    /// portable name (`r9` etc.) — resolved through the normal map.
+    pub fn scratch_int(&self, family: &str) -> Option<&'static str> {
+        self.scalar("scratch_int", family).map(leak_static)
+    }
+
+    /// Secondary integer scratch when the primary is live or two
+    /// operands need materialization.
+    pub fn scratch_int2(&self, family: &str) -> Option<&'static str> {
+        self.scalar("scratch_int2", family).map(leak_static)
     }
 
     /// The portable `push` stack decrement per target.

@@ -672,12 +672,51 @@ mod tests {
     }
 
     #[test]
-    fn illegal_imm_is_a_loud_capability_error() {
-        // aarch64 mul has no immediate form (marked `|-` in bad-isa.dbvl).
-        let err = generate("_start:\n    mul r0, r1, 3\n    ret\n", "aarch64").unwrap_err();
-        assert!(err.contains("no immediate form"), "{}", err);
+    fn illegal_imm_materializes_through_scratch() {
+        // aarch64 mul has no immediate form (marked `|-` in bad-isa.dbvl);
+        // the assembler-plus path materializes it through x10, outside the
+        // row's own x9 scratch.
+        let arm = lower_ok("_start:\n    mul r0, r1, 3\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x10, =3"), "{}", arm);
+        assert!(arm.contains("mul x0, x1, x10"), "{}", arm);
         // The same op on x86_64 works (imulq takes immediates).
         lower_ok("_start:\n    mul r0, r1, 3\n    ret\n", "x86_64");
+    }
+
+    #[test]
+    fn store_immediate_materializes_per_target() {
+        let src = "_start:\n    store 66, r0\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $66, %r11"), "{}", x86);
+        assert!(x86.contains("movq %r11, (%rax)"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("ldr x10, =66"), "{}", arm);
+        assert!(arm.contains("str x10, [x0]"), "{}", arm);
+        let rv = lower_ok(src, "riscv64");
+        assert!(rv.contains("li t2, 66"), "{}", rv);
+        assert!(rv.contains("sd t2, 0(a0)"), "{}", rv);
+        let thumb = lower_ok(src, "thumbv7m");
+        assert!(thumb.contains("ldr r12, =66"), "{}", thumb);
+        assert!(thumb.contains("str r12, [r0]"), "{}", thumb);
+    }
+
+    #[test]
+    fn immediate_address_and_two_immediates_materialize() {
+        // Address immediate: only the address rides a scratch.
+        let arm_addr = lower_ok("_start:\n    store r0, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_addr.contains("ldr x10, =4096"), "{}", arm_addr);
+        assert!(arm_addr.contains("str x0, [x10]"), "{}", arm_addr);
+
+        // Two immediates: value in scratch 1, address in scratch 2.
+        let arm_both = lower_ok("_start:\n    store 66, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_both.contains("ldr x10, =66"), "{}", arm_both);
+        assert!(arm_both.contains("ldr x11, =4096"), "{}", arm_both);
+        assert!(arm_both.contains("str x10, [x11]"), "{}", arm_both);
+
+        // Scratch 1 is the value register: the address takes scratch 2.
+        let arm_pick2 = lower_ok("_start:\n    store r10, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_pick2.contains("ldr x11, =4096"), "{}", arm_pick2);
+        assert!(arm_pick2.contains("str x10, [x11]"), "{}", arm_pick2);
     }
 
     #[test]
@@ -819,9 +858,12 @@ mod appgrade_tests {
     }
 
     #[test]
-    fn aarch64_mod_imm_is_a_capability_error() {
-        let err = generate("m:\n    mod r0, r1, 10\n    ret\n", "aarch64").unwrap_err();
-        assert!(err.contains("no immediate form"), "{}", err);
+    fn aarch64_mod_imm_materializes_through_scratch() {
+        let arm = lower_ok("m:\n    mod r0, r1, 10\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x10, =10"), "{}", arm);
+        // x9 remains the row's internal scratch; the divisor stays x10.
+        assert!(arm.contains("sdiv x9, x1, x10"), "{}", arm);
+        assert!(arm.contains("msub x0, x9, x10, x1"), "{}", arm);
     }
 
     #[test]

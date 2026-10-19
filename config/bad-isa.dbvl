@@ -13,7 +13,9 @@
 //   convention, not ours).
 // - `|` splits reg-form|imm-form (optional). The backend picks the
 //   imm-form when any operand is an immediate literal; else reg-form.
-//   Absent imm-form + immediate operand = loud compile error.
+//   An absent imm-form (`|-`) is materialized through the configured
+//   `scratch_int`/`scratch_int2` register and emitted in reg form; a
+//   float immediate without a float scratch is a loud error.
 // - Operand substitution: register operands map through
 //   config/bad-registers.dbvl (assembler-ready tokens); immediate
 //   operands get the target's imm prefix from that same file; label and
@@ -49,7 +51,8 @@ add: "3"; "thumb:adds $1, $2, $3|adds $1, $2, $3"; "x86_64:leaq ($2, $3), $1|mov
 // x86_64 sub has no lea form — copy-then-op covers reg and imm alike.
 sub: "3"; "thumb:subs $1, $2, $3|subs $1, $2, $3"; "x86_64:movq $2, $1; subq $3, $1"; "aarch64:sub $1, $2, $3"; "riscv64:sub $1, $2, $3|addi $1, $2, -$3"; "ptx:sub.u64 $1, $2, $3";
 // mul/div are register-only on aarch64 and riscv64 (no immediate forms in
-// the hardware) — an immediate operand there is a loud capability error.
+// the hardware) — an immediate operand is materialized through the
+// configured scratch (disclosed clobber) before the reg form.
 // x86_64 div clobbers %rax/%rdx (caller-saved); the imm form borrows %rcx.
 mul: "3"; "thumb:muls $1, $2, $3|-"; "x86_64:imulq $3, $2; movq $2, $1"; "aarch64:mul $1, $2, $3|-"; "riscv64:mul $1, $2, $3|-"; "ptx:mul.lo.u64 $1, $2, $3";
 div: "3"; "thumb:sdiv $1, $2, $3|-"; "x86_64:movq $2, %rax; cqto; idivq $3; movq %rax, $1|movq $3, %rcx; movq $2, %rax; cqto; idivq %rcx; movq %rax, $1"; "aarch64:sdiv $1, $2, $3|-"; "riscv64:div $1, $2, $3|-"; "ptx:div.u64 $1, $2, $3";

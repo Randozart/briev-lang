@@ -138,8 +138,11 @@ per-target `"target:reg-form|imm-form"` fields:
   `mov x0, #42`).
 - **`|form`** — distinct immediate form (`mv|li`, `add|addi`,
   `sub|addi(-)`).
-- **`|-`** — the hardware has no immediate form; an immediate operand is
-  a loud capability error (`mul` on aarch64/riscv64).
+- **`|-`** — the hardware has no immediate form. The assembler-plus
+  front-end materializes the immediate through the configured
+  `scratch_int`/`scratch_int2` register (caller-saved, disclosed) and
+  emits the reg form. Exhausting both scratches, or a float immediate
+  with no float scratch, is a loud error.
 - A trailing **`"sym"`** field marks ops that take a label/symbol operand
   (`jmp jz jnz call addr`). Everywhere else an unresolvable name is a loud
   error — `mov r0, msg` on x86 would load MEMORY, not the address; the
@@ -177,6 +180,11 @@ properties (`caller` / `callee` / `ro`):
   naming the targets that do; there is no silent remap or fallback.
   Width-specific spellings (`eax`, `al`, `w0`) are not source aliases
   yet; use a `raw <target>` block or a width template ref.
+- `scratch_int` / `scratch_int2` name the caller-saved registers used to
+  materialize immediates for `|-` rows (`%r11`/`%r10`, `x10`/`x11`,
+  `t2`/`t3`, `r12`/`r3`). They are disclosed clobbers: raw code must not
+  keep a live value there across such an instruction; the symbolic
+  allocator reserves them.
 - The `imm` row holds each target's immediate prefix (`$` / `#` / empty);
   the `comment` row its GAS comment prefix.
 
@@ -496,7 +504,7 @@ toolchain is absent — never a silent pass. aarch64 `addr` rides
 
 Every failure is loud with what/why/fix: unknown mnemonic (names the core
 set), arity mismatch, missing target lowering (points at the config row or
-the `target =>` gate), missing immediate form, unmapped register (lists
+the `target =>` gate), no free immediate-materialization scratch, unmapped register (lists
 the targets that have it), unprovable contract (states the property that
 blocks it). No silent remaps, no silent substitutions.
 
