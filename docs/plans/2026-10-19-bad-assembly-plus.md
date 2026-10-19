@@ -44,6 +44,35 @@ with raw wherever it does not.
 **Supersedes the 2026-09-21 ruling** that virtual registers are rejected by design.
 Physical-only code remains WYSIWYG; symbolic values are the convenience layer.
 
+## Defaults policy (2026-10-19 decision)
+
+Safe defaults only. No catch-all `default_dec!()`, no general `macro!` yet.
+
+| Default | Behavior |
+|---|---|
+| `.text` | code section unless declared |
+| `data { }` | section inferred from directive; explicit `section` overrides |
+| `bootstrap Name { }` | global + label + entry |
+| Engine prelude | `std/bad/engine.bad` default-on like the friendly aliases; `--raw`/`--no-prelude` opts out; user declarations override |
+| Data label in value position | address, not a load |
+| `local name:` | scoped/hygienic; no dots |
+| Immediate operands | materialized through disclosed scratches |
+| Frame-free leaves | no prologue unless a spill/callee-saved use exists |
+| `fn` | C-ABI params/return staging; `extern fn` for raw labels |
+| Data alignment | inferred from directive; `align` for overrides |
+
+Still explicit: pins, raw-block clobbers, stack setup, exports beyond
+`bootstrap`/`export`, signatures for raw labels, layout-sensitive
+sections.
+
+Target boilerplate uses **profile imports** (`std/bad/profiles/...`),
+not macros: hardware constants, headers/vector tables, per-arch init
+defns, raw-call clobbers. Profiles do not set entry or app pins.
+
+Priority after symbolic lowering: `bootstrap` + `data`, `fn` + ABI
+staging, profile imports, parity fixes. Parity fixes land with symbolic
+lowering, not after.
+
 ## Surface
 
 ```bad
@@ -313,6 +342,8 @@ deletion, boot-checklist acceptance, performance corpus, docs/highlighter.
 - No instruction scheduling, vectorization, or global optimizer in `.bad`.
 - No parity claim for SIMD/tightly scheduled/hand-addressed hot code; raw is the escape.
 - No `.bld` compatibility shim.
+- No catch-all declarations macro and no general macro system in v1;
+  imports/defns/profiles cover the current needs.
 - No contracts beyond existing `.bad` positional contracts in v1.
 - No automatic `.rodata`/section invention beyond directive-kind inference; unsafe
   cases error with a snippet.
