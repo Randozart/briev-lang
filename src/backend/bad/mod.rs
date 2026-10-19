@@ -562,6 +562,24 @@ mod tests {
     }
 
     #[test]
+    fn template_self_moves_are_elided_but_raw_blocks_are_verbatim() {
+        // Template-generated copy-then-op sequences drop the dead copy
+        // when destination == source. Raw blocks bypass the filter.
+        let asm = lower_ok(
+            "_start:\n    add r0, r0, 1\n    sub r1, r1, 2\n    ret\n",
+            "x86_64",
+        );
+        assert!(!asm.lines().any(|l| l.trim() == "movq %rax, %rax"), "{asm}");
+        assert!(!asm.lines().any(|l| l.trim() == "movq %rcx, %rcx"), "{asm}");
+
+        let raw = lower_ok(
+            "_start:\n    ret\nraw x86_64\n    movq %rax, %rax\nend raw\n",
+            "x86_64",
+        );
+        assert!(raw.lines().any(|l| l.trim() == "movq %rax, %rax"), "{raw}");
+    }
+
+    #[test]
     fn site_row_swaps_only_on_matching_target() {
         // 2026-10-01 (bad-site-blocks plan): the retired attached
         // exception, rewritten as a site — one row lowers per family,

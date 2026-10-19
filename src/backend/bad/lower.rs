@@ -1381,12 +1381,13 @@ impl<'a> Lowerer<'a> {
         // (documented row semantics — riscv push/pop, x86 push2, ...).
         for part in text.split(';') {
             let part = part.trim();
-            if !part.is_empty() {
-                if self.instr_suffix.is_empty() {
-                    self.push_line(part);
-                } else {
-                    self.push_line(&format!("{part}{}", self.instr_suffix));
-                }
+            if part.is_empty() || is_self_move(part) {
+                continue;
+            }
+            if self.instr_suffix.is_empty() {
+                self.push_line(part);
+            } else {
+                self.push_line(&format!("{part}{}", self.instr_suffix));
             }
         }
     }
@@ -1583,4 +1584,40 @@ fn find_word_start(s: &str) -> Option<usize> {
     s.char_indices()
         .find(|(_, c)| c.is_alphabetic() || *c == '_' || *c == '.')
         .map(|(i, _)| i)
+}
+
+/// True for a register-to-register move with identical operands
+/// (`movq %rax, %rax`, `mov x0, x0`, `mv a0, a0`, `fmov d0, d0`).
+///
+/// Template-generated core ops copy-then-op on some targets (`x86_64`
+/// `sub`/`and`/`or`/`xor`, the x86 `add` imm form). When the destination
+/// and source are already the same register the copy is dead. Raw blocks
+/// bypass this filter — `emit_raw_block` pushes lines verbatim.
+///
+/// Deliberately excludes flag-setting `movs` (thumb) and memory operands.
+fn is_self_move(part: &str) -> bool {
+    let mut toks = part.split_whitespace();
+    let Some(mn) = toks.next() else { return false };
+    let simple_mov = matches!(
+        mn,
+        "mov" | "movq" | "movl" | "movw" | "movb" | "mv" | "fmov" | "movsd" | "movss" | "movd"
+    );
+    if !simple_mov {
+        return false;
+    }
+    let ops: Vec<&str> = toks
+        .map(|t| t.trim_end_matches(','))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if ops.len() != 2 {
+        return false;
+    }
+    let looks_like_register = |t: &str| {
+        !t.is_empty()
+            && !t.starts_with('$')
+            && !t.starts_with('#')
+            && !t.starts_with('=')
+            && !t.contains(['[', ']', '(', ')', ':', '+', '-'])
+    };
+    ops[0] == ops[1] && looks_like_register(ops[0])
 }
