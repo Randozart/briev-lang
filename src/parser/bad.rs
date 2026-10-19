@@ -123,6 +123,12 @@ impl<'s> Parser<'s> {
 
             // `bootstrap Name { … }` — authored machine entry. Top-level
             // only; expands to `global Name` + `Name:` + body.
+            if let Some(item) = self.try_fn(content, line, span.clone())? {
+                self.items.push(item);
+                owner = None;
+                continue;
+            }
+
             if let Some((dir, label)) = self.try_bootstrap(content, line, span.clone())? {
                 self.items.push(BadTopLevel::Directive(dir));
                 let idx = self.items.len();
@@ -208,6 +214,75 @@ impl<'s> Parser<'s> {
     }
 
 
+    fn try_fn(
+        &mut self, content: &str, line: usize, span: Span,
+    ) -> Result<Option<BadTopLevel>, BadParseError> {
+        let Some(rest) = content.strip_prefix("fn ") else { return Ok(None) };
+        let rest = rest.trim();
+        let Some(open) = rest.find('(') else {
+            return Err(BadParseError {
+                message: "`fn` takes `fn name(params) -> Ret { … }` or `fn name(params) { … }`"
+                    .to_string(),
+                line,
+                span,
+            });
+        };
+        let name = rest[..open].trim();
+        if !is_ident(name) || name.starts_with('.') {
+            return Err(BadParseError {
+                message: format!("`{name}` is not a valid fn name"),
+                line,
+                span,
+            });
+        }
+        let Some(close_rel) = rest[open + 1..].find(')') else {
+            return Err(BadParseError {
+                message: "`fn` parameter list is missing `)`".to_string(),
+                line,
+                span,
+            });
+        };
+        let close = open + 1 + close_rel;
+        let params = parse_fn_params(&rest[open + 1..close], line, span.clone())?;
+        let after = rest[close + 1..].trim();
+        let (ret, tail) = if let Some(after) = after.strip_prefix("->") {
+            let Some(brace) = after.find('{') else {
+                return Err(BadParseError {
+                    message: "`fn` return type needs `{` at the end of the head line"
+                        .to_string(),
+                    line,
+                    span,
+                });
+            };
+            let r = after[..brace].trim();
+            if r.is_empty() {
+                return Err(BadParseError {
+                    message: "`fn` needs a return type after `->`".to_string(),
+                    line,
+                    span,
+                });
+            }
+            (Some(r.to_string()), after[brace..].trim())
+        } else {
+            (None, after)
+        };
+        if tail != "{" {
+            return Err(BadParseError {
+                message: "`fn` head must end with `{` and put `}` on its own line".to_string(),
+                line,
+                span,
+            });
+        }
+        let body = self.consume_block(line, span.clone())?;
+        Ok(Some(BadTopLevel::Fn(BadFn {
+            name: name.to_string(),
+            params,
+            ret,
+            body,
+            span,
+        })))
+    }
+
     fn try_bootstrap(
         &mut self, content: &str, line: usize, span: Span,
     ) -> Result<Option<(BadDirective, BadLabel)>, BadParseError> {
@@ -252,6 +327,7 @@ impl<'s> Parser<'s> {
             contracts: Vec::new(),
             body,
             reserved_regs: Vec::new(),
+            symbolic: false,
             span,
         };
         Ok(Some((dir, label)))
@@ -400,6 +476,14 @@ impl<'s> Parser<'s> {
         if c == "break" || c == "break;" {
             self.pos += 1;
             return Ok(Some(BadBodyItem::Break(span)));
+        }
+        if let Some(value) = parse_return_stmt(c) {
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::Return { value, span }));
+        }
+        if let Some(text) = parse_call_stmt(c) {
+            self.pos += 1;
+            return Ok(Some(BadBodyItem::CallStmt { text, span }));
         }
         if c == "continue" || c == "continue;" {
             self.pos += 1;
@@ -551,6 +635,12 @@ impl<'s> Parser<'s> {
         }
         if t == "continue" {
             return Ok(vec![BadBodyItem::Continue(span)]);
+        }
+        if let Some(value) = parse_return_stmt(t) {
+            return Ok(vec![BadBodyItem::Return { value, span }]);
+        }
+        if let Some(text) = parse_call_stmt(t) {
+            return Ok(vec![BadBodyItem::CallStmt { text, span }]);
         }
         if let Some(rest) = t.strip_prefix("let ") {
             return Ok(vec![BadBodyItem::Let(parse_let_text(rest, span, line)?)]);
@@ -1021,6 +1111,7 @@ impl<'s> Parser<'s> {
         };
         Ok(Some(BadTopLevel::Label(BadLabel {
             reserved_regs: Vec::new(),
+            symbolic: false,
             name: name.to_string(),
             local: false,
             contracts,
@@ -1578,6 +1669,78 @@ fn site_check_dups(rows: &[BadBranch], line: usize, span: Span) -> Result<(), Ba
         seen.push(key);
     }
     Ok(())
+}
+
+fn parse_fn_params(
+    text: &str, line: usize, span: Span,
+) -> Result<Vec<crate::ast::bad::BadFnParam>, BadParseError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for part in split_top(text, b',') {
+        let part = part.trim();
+        let Some((name, ty)) = part.split_once(':') else {
+            return Err(BadParseError {
+                message: format!("fn parameter `{part}` needs `name: Type`"),
+                line,
+                span,
+            });
+        };
+        let name = name.trim();
+        let ty = ty.trim();
+        if !is_ident(name) || name.starts_with('.') {
+            return Err(BadParseError {
+                message: format!("`{name}` is not a valid fn parameter name"),
+                line,
+                span,
+            });
+        }
+        if ty.is_empty() {
+            return Err(BadParseError {
+                message: format!("fn parameter `{name}` needs a type after `:`"),
+                line,
+                span,
+            });
+        }
+        out.push(crate::ast::bad::BadFnParam {
+            name: name.to_string(),
+            ty: ty.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn parse_return_stmt(c: &str) -> Option<Option<String>> {
+    let t = c.trim().trim_end_matches(';').trim();
+    if t == "return" {
+        return Some(None);
+    }
+    t.strip_prefix("return ")
+        .map(|v| Some(v.trim().to_string()))
+}
+
+fn looks_like_call(c: &str) -> bool {
+    let c = c.trim();
+    let end = c
+        .find(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '.'))
+        .unwrap_or(c.len());
+    end > 0 && c[end..].starts_with('(')
+}
+
+fn parse_call_stmt(c: &str) -> Option<String> {
+    let c = c.trim().trim_end_matches(';').trim();
+    if let Some(rest) = c.strip_prefix("call ") {
+        let rest = rest.trim();
+        // `call f` is the core call instruction; `call f(...)` is a
+        // symbolic call statement.
+        return looks_like_call(rest).then(|| rest.to_string());
+    }
+    if looks_like_call(c) {
+        return Some(c.to_string());
+    }
+    None
 }
 
 /// Find the first top-level `=` that is a real assignment operator

@@ -1,23 +1,24 @@
 // ── .bad symbolic regions — assembly+ lowering (2026-10-19) ───────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// A label body that uses `let` / assignment / `when` / `loop` / `while` /
-// `break` / `continue` (or an instruction with a symbolic value operand)
-// is lowered through the existing BILLD expression engine:
+// Symbolic labels and callable `fn` bodies lower together through ONE
+// synthetic `.bld` program, so `fn`s can call each other and labels can
+// call `fn`s with the existing BILLD signature/call machinery:
 //
-//   .bad symbolic body
-//     → synthetic `.bld` defn (same statements, Store/Load verbs)
+//   .bad symbolic bodies
+//     → one synthetic `.bld` defn per unit
 //     → BILLD Lowerer → BadProgram with virtuals
-//     → M4 allocator → physical instructions
-//     → spliced back into the .bad label body
+//     → M4 allocator (loops, ABI params, frames)
+//     → bodies extracted and spliced back
 //
 // Raw physical-only labels never enter this pass. A symbolic body cannot
-// yet mix raw physical instructions or manual labels; those need their
-// own label. `defn` symbolic bodies are a follow-up (inline expansion).
+// mix raw instructions with operands; operandless control/state ops are
+// allowed. Symbolic `defn` (inline) bodies are a follow-up; use `fn` for
+// callable functions.
 
 use super::registry::{BadIsa, BadRegisters};
-use crate::backend::bld::registry::BldIntrinsics;
 use crate::ast::bad::*;
+use crate::backend::bld::registry::BldIntrinsics;
 use std::collections::{HashMap, HashSet};
 
 pub struct SymCtx<'a> {
@@ -34,32 +35,151 @@ pub struct SymCtx<'a> {
 
 const PREFIX: &str = "__bad_sym_";
 
-/// Operandless raw instructions safe to splice into a symbolic body:
-/// they can neither name nor clobber a symbolic value register.
 const RAW_ZERO: &[&str] = &[
     "ret", "halt", "nop", "cli", "sti", "wfi", "fence", "tlbflush", "mret",
 ];
 
+const SYMBOLIC_OPS: &[&str] = &[
+    "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr",
+    "store", "load",
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Label,
+    Fn,
+}
+
+struct Unit {
+    idx: usize,
+    synth: String,
+    kind: Kind,
+    params: Vec<BadFnParam>,
+    ret: Option<String>,
+    body: Vec<BadBodyItem>,
+}
+
 pub fn lower_symbolic_labels(
     items: &mut [BadTopLevel], ctx: &SymCtx<'_>,
 ) -> Result<(), String> {
+    let mut units: Vec<Unit> = Vec::new();
     let mut serial = 0usize;
-    for item in items.iter_mut() {
+    for (idx, item) in items.iter().enumerate() {
         match item {
-            BadTopLevel::Label(label) => {
-                if !body_has_symbolic(&label.body, ctx) {
+            BadTopLevel::Label(l) => {
+                if !body_has_symbolic(&l.body, ctx) {
                     continue;
                 }
-                let body = lower_label(&label.body, ctx, serial)
-                    .map_err(|e| format!("symbolic body `{}` (line {}): {e}", label.name, label.span.line))?;
-                label.body = body;
+                let mut synth = format!("{PREFIX}{serial}");
+                while ctx.label_names.contains(&synth) || ctx.defns.contains(&synth) {
+                    synth.push('_');
+                }
                 serial += 1;
+                units.push(Unit {
+                    idx,
+                    synth,
+                    kind: Kind::Label,
+                    params: Vec::new(),
+                    ret: None,
+                    body: l.body.clone(),
+                });
             }
-            // Symbolic `defn` bodies are a follow-up: defn params are
-            // bound only during inline expansion, so this pass cannot
-            // resolve them. Raw defns keep working unchanged.
-            BadTopLevel::Defn(_) => {}
+            BadTopLevel::Fn(f) => {
+                if f.ret.is_some() && !body_has_return(&f.body) {
+                    return Err(format!(
+                        "fn `{}` (line {}) returns a value but has no `return` - add \
+                         `return <expr>;` on the value path",
+                        f.name, f.span.line
+                    ));
+                }
+                units.push(Unit {
+                    idx,
+                    synth: f.name.clone(),
+                    kind: Kind::Fn,
+                    params: f.params.clone(),
+                    ret: f.ret.clone(),
+                    body: f.body.clone(),
+                });
+            }
             _ => {}
+        }
+    }
+    if units.is_empty() {
+        return Ok(());
+    }
+
+    let mut src = String::new();
+    for (cname, value) in ctx.const_values {
+        src.push_str(&format!("const {cname} = {value};\n"));
+    }
+    for u in &units {
+        let params: HashSet<String> = u.params.iter().map(|p| p.name.clone()).collect();
+        match u.kind {
+            Kind::Label => src.push_str(&format!("defn {}() {{\n", u.synth)),
+            Kind::Fn => {
+                let ps: Vec<String> = u
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name, p.ty))
+                    .collect();
+                let ret = u.ret.as_ref().map(|r| format!(" -> {r}")).unwrap_or_default();
+                src.push_str(&format!("defn {}({}){ret} {{\n", u.synth, ps.join(", ")));
+            }
+        }
+        let mut b = Builder {
+            ctx,
+            src: &mut src,
+            bound: params.clone(),
+            params,
+            is_fn: u.kind == Kind::Fn,
+        };
+        b.emit_body(&u.body)?;
+        if u.kind == Kind::Fn && u.ret.is_none() {
+            src.push_str("return;\n");
+        }
+        src.push_str("}\n");
+    }
+
+    let prog = crate::backend::bld::lower_to_bad(&src, ctx.family, None, None)
+        .map_err(|e| format!("symbolic lowering failed: {e}"))?;
+    let prog = crate::backend::bld::alloc::allocate(prog, ctx.regs, ctx.family)
+        .map_err(|e| format!("symbolic allocation failed: {e}"))?;
+    let mut bodies: HashMap<String, Vec<BadBodyItem>> = HashMap::new();
+    for item in prog.items {
+        if let BadTopLevel::Label(l) = item {
+            bodies.insert(l.name, l.body);
+        }
+    }
+
+    for u in units {
+        let body = bodies.remove(&u.synth).ok_or_else(|| {
+            format!(
+                "internal: synthetic label `{}` missing after symbolic lowering",
+                u.synth
+            )
+        })?;
+        match u.kind {
+            Kind::Label => {
+                if let BadTopLevel::Label(l) = &mut items[u.idx] {
+                    l.body = body;
+                    l.symbolic = true;
+                }
+            }
+            Kind::Fn => {
+                let span = match &items[u.idx] {
+                    BadTopLevel::Fn(f) => f.span.clone(),
+                    _ => crate::errors::Span::dummy(),
+                };
+                items[u.idx] = BadTopLevel::Label(BadLabel {
+                    name: u.synth,
+                    local: false,
+                    contracts: Vec::new(),
+                    body,
+                    reserved_regs: Vec::new(),
+                    symbolic: true,
+                    span,
+                });
+            }
         }
     }
     Ok(())
@@ -73,19 +193,23 @@ fn body_has_symbolic(body: &[BadBodyItem], ctx: &SymCtx<'_>) -> bool {
         | BadBodyItem::Loop(_)
         | BadBodyItem::While(_)
         | BadBodyItem::Break(_)
-        | BadBodyItem::Continue(_) => true,
+        | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. } => true,
         BadBodyItem::Instr(i) => instr_has_symbolic(i, ctx),
         BadBodyItem::Local(_) | BadBodyItem::Site(_) => false,
     })
 }
 
-/// Only these mnemonics can carry symbolic value operands. Everything
-/// else (syscall, arg, branches, raw opcodes) belongs to the raw path;
-/// treating an unknown name there as a virtual would hijack raw code.
-const SYMBOLIC_OPS: &[&str] = &[
-    "mov", "add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr",
-    "store", "load",
-];
+fn body_has_return(body: &[BadBodyItem]) -> bool {
+    body.iter().any(|item| match item {
+        BadBodyItem::Return { .. } => true,
+        BadBodyItem::When(x) => body_has_return(&x.then),
+        BadBodyItem::Loop(x) => body_has_return(&x.body),
+        BadBodyItem::While(x) => body_has_return(&x.body),
+        _ => false,
+    })
+}
 
 fn instr_has_symbolic(instr: &BadInstr, ctx: &SymCtx<'_>) -> bool {
     if !SYMBOLIC_OPS.contains(&instr.mnemonic.as_str()) {
@@ -96,14 +220,11 @@ fn instr_has_symbolic(instr: &BadInstr, ctx: &SymCtx<'_>) -> bool {
     }
     instr.operands.iter().any(|op| match op {
         BadOperand::Int(_) | BadOperand::Float(_) => false,
-        // Any expression operand is treated as symbolic; the BILLD
-        // expression parser decides whether it is constant-only.
         BadOperand::Expr(t) => !expr_is_constant(t, ctx),
         BadOperand::Name(n) => !is_known_value(n, ctx),
     })
 }
 
-/// A pure numeric / `.const` expression is raw (immediate), not symbolic.
 fn expr_is_constant(text: &str, ctx: &SymCtx<'_>) -> bool {
     for tok in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')) {
         if tok.is_empty() {
@@ -120,9 +241,6 @@ fn expr_is_constant(text: &str, ctx: &SymCtx<'_>) -> bool {
     true
 }
 
-/// Portable-shaped names (`rN`, `fN`, `sp`, `pc`) are known even when the
-/// target lacks them — the raw path owns the loud "register missing"
-/// diagnostic.
 fn is_portable_name(name: &str) -> bool {
     if name == "sp" || name == "pc" {
         return true;
@@ -144,42 +262,20 @@ fn is_known_value(name: &str, ctx: &SymCtx<'_>) -> bool {
         || ctx.defns.contains(name)
 }
 
-fn lower_label(
-    body: &[BadBodyItem], ctx: &SymCtx<'_>, serial: usize,
-) -> Result<Vec<BadBodyItem>, String> {
-    let mut name = format!("{PREFIX}{serial}");
-    while ctx.label_names.contains(&name) || ctx.defns.contains(&name) {
-        name.push('_');
-    }
-    let mut src = String::new();
-    for (cname, value) in ctx.const_values {
-        src.push_str(&format!("const {cname} = {value};\n"));
-    }
-    src.push_str(&format!("defn {name}() {{\n"));
-    let mut b = Builder { ctx, src: &mut src, bound: HashSet::new() };
-    b.emit_body(body)?;
-    src.push_str("}\n");
-
-    let prog = crate::backend::bld::lower_to_bad(&src, ctx.family, None, None)
-        .map_err(|e| format!("symbolic lowering failed: {e}"))?;
-    let prog = crate::backend::bld::alloc::allocate(prog, ctx.regs, ctx.family)
-        .map_err(|e| format!("symbolic allocation failed: {e}"))?;
-    let mut found = None;
-    for item in prog.items {
-        if let BadTopLevel::Label(l) = item {
-            if l.name == name {
-                found = Some(l.body);
-                break;
-            }
-        }
-    }
-    found.ok_or_else(|| format!("internal: synthetic label `{name}` missing after lowering"))
+fn normalize_call(text: &str) -> String {
+    text.trim()
+        .strip_prefix("call ")
+        .unwrap_or(text.trim())
+        .trim()
+        .to_string()
 }
 
 struct Builder<'a, 'b> {
     ctx: &'a SymCtx<'b>,
     src: &'a mut String,
     bound: HashSet<String>,
+    params: HashSet<String>,
+    is_fn: bool,
 }
 
 impl Builder<'_, '_> {
@@ -190,12 +286,17 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    fn known(&self, name: &str) -> bool {
+        self.params.contains(name) || is_known_value(name, self.ctx)
+    }
+
     fn emit_item(&mut self, item: &BadBodyItem) -> Result<(), String> {
         match item {
             BadBodyItem::Let(x) => {
                 self.check_new_name(&x.name, x.span.line)?;
                 let ty = x.ty.as_ref().map(|t| format!(": {t}")).unwrap_or_default();
-                self.src.push_str(&format!("let {}{ty} = {};\n", x.name, x.value));
+                let value = normalize_call(&x.value);
+                self.src.push_str(&format!("let {}{ty} = {};\n", x.name, value));
                 self.bound.insert(x.name.clone());
             }
             BadBodyItem::Assign(x) => {
@@ -210,10 +311,11 @@ impl Builder<'_, '_> {
                         name = x.name
                     ));
                 }
+                let value = normalize_call(&x.value);
                 if x.op.is_empty() {
-                    self.src.push_str(&format!("{} = {};\n", x.name, x.value));
+                    self.src.push_str(&format!("{} = {};\n", x.name, value));
                 } else {
-                    self.src.push_str(&format!("{} {}= {};\n", x.name, x.op, x.value));
+                    self.src.push_str(&format!("{} {}= {};\n", x.name, x.op, value));
                 }
             }
             BadBodyItem::When(x) => {
@@ -233,6 +335,22 @@ impl Builder<'_, '_> {
             }
             BadBodyItem::Break(_) => self.src.push_str("break;\n"),
             BadBodyItem::Continue(_) => self.src.push_str("continue;\n"),
+            BadBodyItem::CallStmt { text, .. } => {
+                self.src.push_str(&format!("{};\n", normalize_call(text)));
+            }
+            BadBodyItem::Return { value, span } => {
+                if !self.is_fn {
+                    return Err(format!(
+                        "`return` (line {}) is only legal inside a `fn` - a label falls \
+                         through or uses raw `ret`",
+                        span.line
+                    ));
+                }
+                match value {
+                    Some(v) => self.src.push_str(&format!("return {};\n", normalize_call(v))),
+                    None => self.src.push_str("return;\n"),
+                }
+            }
             BadBodyItem::Instr(i) => self.emit_instr(i)?,
             BadBodyItem::Local(l) => {
                 return Err(format!(
@@ -253,7 +371,12 @@ impl Builder<'_, '_> {
     }
 
     fn check_new_name(&self, name: &str, line: usize) -> Result<(), String> {
-        if is_known_value(name, self.ctx) {
+        if self.params.contains(name) {
+            return Err(format!(
+                "`let {name}` (line {line}) redeclares a parameter - assign it with `{name} = ...`"
+            ));
+        }
+        if self.known(name) {
             return Err(format!(
                 "symbolic value `{name}` (line {line}) collides with a register, const, label, \
                  or defn - use a different name"
@@ -284,13 +407,10 @@ impl Builder<'_, '_> {
     }
 
     fn emit_instr(&mut self, i: &BadInstr) -> Result<(), String> {
-        // Operandless control/state instructions are safe raw splices.
         if i.operands.is_empty() && RAW_ZERO.contains(&i.mnemonic.as_str()) {
             self.src.push_str(&format!("bad {{ {} }};\n", i.mnemonic));
             return Ok(());
         }
-        // Statement-position engine verbs (BILLD intrinsic table, the
-        // transitional shared source of truth with std/bad/engine.bad).
         if self.ctx.intrinsics.is_intrinsic(&i.mnemonic) {
             let arity = self.ctx.intrinsics.arity(&i.mnemonic).unwrap_or(0);
             if i.operands.len() != arity {
@@ -303,7 +423,8 @@ impl Builder<'_, '_> {
             }
             if self.ctx.intrinsics.returns(&i.mnemonic) == Some(true) {
                 return Err(format!(
-                    "value-returning verb `{}` (line {}) cannot stand as a statement - use                      `let x = {}(…)` or `x = {}(…)`",
+                    "value-returning verb `{}` (line {}) cannot stand as a statement - use \
+                     `let x = {}(…)` or `x = {}(…)`",
                     i.mnemonic, i.span.line, i.mnemonic, i.mnemonic
                 ));
             }
@@ -399,8 +520,11 @@ impl Builder<'_, '_> {
         match op {
             BadOperand::Int(n) => Ok(n.to_string()),
             BadOperand::Float(t) => Ok(t.clone()),
-            BadOperand::Expr(t) => Ok(t.clone()),
+            BadOperand::Expr(t) => Ok(normalize_call(t)),
             BadOperand::Name(n) => {
+                if self.params.contains(n) {
+                    return Ok(n.clone());
+                }
                 if self.ctx.regs.resolve(n, self.ctx.family).is_some()
                     || self.ctx.regs.resolve_real(n, self.ctx.family).is_some()
                 {

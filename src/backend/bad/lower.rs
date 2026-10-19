@@ -270,6 +270,10 @@ impl<'a> Lowerer<'a> {
                     self.push_line(&format!("{}: {} {}", d.name, d.directive.name, args));
                 }
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
+                BadTopLevel::Fn(f) => self.errors.push(format!(
+                    "fn `{}` reached emission - the symbolic lowering pass did not run",
+                    f.name
+                )),
                 BadTopLevel::Label(l) => self.emit_label(l),
                 BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
             }
@@ -326,7 +330,16 @@ impl<'a> Lowerer<'a> {
                     let n = crate::backend::bad::notices::check_label(l, self.regs, &self.family);
                     self.notices.extend(n);
                 }
-                BadTopLevel::Defn(d) => {
+                BadTopLevel::Fn(f) => {
+                if !self.label_names.insert(f.name.clone()) {
+                    self.errors.push(format!(
+                        "fn `{}` is declared twice - functions share one symbol namespace \
+                         with labels; rename one",
+                        f.name
+                    ));
+                }
+            }
+            BadTopLevel::Defn(d) => {
                     let n = crate::backend::bad::notices::check_defn(d);
                     self.notices.extend(n);
                 }
@@ -803,7 +816,9 @@ impl<'a> Lowerer<'a> {
                 | BadBodyItem::Loop(_)
                 | BadBodyItem::While(_)
                 | BadBodyItem::Break(_)
-                | BadBodyItem::Continue(_) => self.errors.push(
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. } => self.errors.push(
                     "symbolic statement reached emission - the symbolic lowering pass did not run"
                         .to_string(),
                 ),
@@ -1297,7 +1312,9 @@ impl<'a> Lowerer<'a> {
                 | BadBodyItem::Loop(_)
                 | BadBodyItem::While(_)
                 | BadBodyItem::Break(_)
-                | BadBodyItem::Continue(_) => {
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. } => {
                     return Err(
                         "symbolic statement inside a defn reached emission - the symbolic                          lowering pass did not run"
                             .to_string(),

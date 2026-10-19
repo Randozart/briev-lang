@@ -35,6 +35,9 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
+    /// `fn name(params) -> Ret { … }` — callable C-ABI function with an
+    /// assembly+ body. Lowered to a label by the symbolic pass.
+    Fn(BadFn),
     /// `raw x86_64 ... end raw` — target-verbatim assembly block
     /// (2026-09-22; named close 2026-10-01). Lines pass through
     /// UNPARSED, emitted only when the active family matches the
@@ -89,6 +92,10 @@ pub struct BadLabel {
     /// bind params directly to argument registers). The allocator must
     /// not assign a virtual there.
     pub reserved_regs: Vec<String>,
+    /// True when the symbolic lowering pass produced this body. The
+    /// W-tier raw-register analysis is skipped: the allocator already
+    /// handled register lifetimes (call staging is ABI-correct).
+    pub symbolic: bool,
     pub span: Span,
 }
 
@@ -119,6 +126,27 @@ pub enum BadBodyItem {
     Break(Span),
     /// `continue` — next iteration of the innermost structured loop.
     Continue(Span),
+    /// `name(args);` / `call name(args);` — a call statement (engine verb,
+    /// defn, or `fn`).
+    CallStmt { text: String, span: Span },
+    /// `return;` / `return expr;` — only legal inside a `fn`.
+    Return { value: Option<String>, span: Span },
+}
+
+/// `fn name(params) -> Ret { … }` — a callable function.
+#[derive(Debug, Clone)]
+pub struct BadFn {
+    pub name: String,
+    pub params: Vec<BadFnParam>,
+    pub ret: Option<String>,
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct BadFnParam {
+    pub name: String,
+    pub ty: String,
 }
 
 /// `let name[: Type] = expr;` — the value text is parsed by the shared

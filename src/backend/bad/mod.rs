@@ -604,6 +604,70 @@ mod tests {
     }
 
     #[test]
+    fn fn_calls_stage_abi_and_return() {
+        let src = "fn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\
+                   bootstrap Entry {\n    let x = add(2, 3)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("add:"), "{x86}");
+        assert!(x86.contains("call add"), "{x86}");
+        assert!(x86.contains("movq $2, %rcx"), "{x86}");
+        assert!(x86.contains("movq %rcx, %rdi"), "{x86}");
+        assert!(x86.contains("movq $3, %rdx"), "{x86}");
+        assert!(x86.contains("movq %rdx, %rsi"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn fn_calls_another_fn_and_loop_body() {
+        let src = "fn inc(a: Int) -> Int {\n    return a + 1\n}\n\
+                   fn twice(a: Int) -> Int {\n    return inc(inc(a))\n}\n\
+                   bootstrap Entry {\n    let x = twice(1)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("call inc"), "{x86}");
+        assert!(x86.contains("call twice"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn fn_uart_puts_shape_lowers() {
+        let src = "fn uart_puts(base: Ptr, msg: Ptr) -> Int {\n    let p = msg\n    \
+                   loop {\n        let ch = Load(p)\n        when ch == 0: break\n        \
+                   Store(ch, base)\n        p += 1\n    }\n    return 0\n}\n\
+                   bootstrap Entry {\n    let r = uart_puts(0x10000000, 0x1000)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("uart_puts:"), "{x86}");
+        assert!(x86.contains("call uart_puts"), "{x86}");
+        assert!(x86.contains("movq (%"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+    }
+
+    #[test]
+    fn fn_void_auto_returns_and_accepts_engine_verbs() {
+        let src = "fn stop() {\n    DisableInterrupts\n    halt\n}\n\
+                   bootstrap Entry {\n    stop()\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("stop:"), "{x86}");
+        assert!(x86.contains("call stop"), "{x86}");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn non_void_fn_without_return_is_loud() {
+        let src = "fn bad(a: Int) -> Int {\n    mov x, a\n}\n";
+        let err = generate(src, "x86_64").expect_err("missing return");
+        assert!(err.contains("no `return`"), "{err}");
+    }
+
+    #[test]
+    fn return_outside_fn_is_loud() {
+        let src = "_start:\n    return 1\n";
+        let err = generate(src, "x86_64").expect_err("return in a label");
+        assert!(err.contains("only legal inside a `fn`"), "{err}");
+    }
+
+    #[test]
     fn bootstrap_emits_entry_and_lowers_body() {
         let src = "bootstrap Reset_Handler {\n    mov x, 1\n    x += 1\n    halt\n}\n";
         let x86 = lower_ok(src, "x86_64");

@@ -972,6 +972,7 @@ impl<'a> BldLowerer<'a> {
             contracts: Vec::new(),
             body: b.items,
             reserved_regs: b.reserved,
+            symbolic: false,
             span: head.span,
         }));
         self.out.extend(b.trailing);

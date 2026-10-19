@@ -1624,7 +1624,9 @@ fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::ba
                 | BadBodyItem::Loop(_)
                 | BadBodyItem::While(_)
                 | BadBodyItem::Break(_)
-                | BadBodyItem::Continue(_) => {}
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. } => {}
             }
         }
         out

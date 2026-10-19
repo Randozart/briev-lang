@@ -63,7 +63,10 @@ msg: .asciz "hello from .bad\n"
 | `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
 | `bootstrap Name { … }` | authored machine entry — emits `global Name` + `Name:` + body; exactly one per image |
 | `data { … }` | data block — labels/directives; section inferred from each directive (explicit `section` wins) |
-| `defn name params` | defn head — owns following lines until next top-level line |
+| `defn name params` | defn head — owns following lines until next top-level line (inline) |
+| `fn name(params: T, …) -> R { … }` | callable C-ABI function with an assembly+ body; omitted return = void |
+| `return;` / `return expr;` | only inside `fn`; value writes the ABI return register |
+| `name(args)` / `call name(args)` | call statement (engine verb, `fn`, or defn) |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
@@ -222,6 +225,39 @@ data {
   following labels; explicit beats inferred.
 - `global` and other directives are allowed in the block.
 - Data labels are known symbols for `addr`/raw use.
+
+## Functions — `fn`
+
+```bad
+fn uart_puts(base: Ptr, msg: Ptr) -> Int {
+    let p = msg
+    loop {
+        let ch = Load(p)
+        when ch == 0: break
+        Store(ch, base)
+        p += 1
+    }
+    return 0
+}
+
+bootstrap Reset_Handler {
+    let r = uart_puts(0x10000000, banner)
+    halt
+}
+```
+
+- `fn` is a real callable label with C-ABI parameters/return. Param
+  registers are reserved; the allocator opens a frame only when needed.
+- Calls stage arguments (`name(args)` or `call name(args)`); the result
+  can be bound (`let r = name(...)`).
+- `fn`s call each other; labels call `fn`s. Symbolic labels and `fn`s are
+  lowered together so calls resolve.
+- Omitted return = void; the compiler appends `return;`. A non-void `fn`
+  must contain a `return`.
+- `defn` remains inline, no frame, no ABI; use it for boot-safe helpers
+  before the stack exists. `fn` calls need a valid `sp`.
+- Symbolic `defn` (inline) bodies remain a follow-up; keep inline defns
+  raw and call them from a raw label.
 
 ## Symbolic bodies (assembly+)
 
