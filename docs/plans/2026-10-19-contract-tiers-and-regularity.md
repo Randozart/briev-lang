@@ -78,6 +78,14 @@ with the minimal repro in hand.
   `config/contracts.dbvl` default `allow`. Census at tip: **90 contracted
   fns / 23,117 unproven sites** across the sweep, in three migration
   buckets (below).
+  **Census increment (2026-10-20, PR #26 landing).** `lib/std/net/sha1.bv`
+  (9 contract-bearing defns), `http.bv` (8) and `base64.bv` (4) joined the
+  sweep — ~21 new sites, overwhelmingly the bucket-1 noise class
+  (`[x >= 0]`, `[term >= 0]`, `[term >= 0 && term <= MASK32]`). The landed
+  `websocket.bv` carries only the proven core's preconditions (2), because
+  its original helper contracts were replaced by the bounds-proven core.
+  The 90/23,117 figure is therefore STALE: re-run the census under
+  `policy: warn` and refresh the buckets before the `deny` flip.
 - The interpreter compound-expression defect is ROOT-CAUSED AND FIXED
   (`59b2b1e5` — B1 string-deref misfire; bitwise ops disambiguate by
   representation); len64 parity restored. Residual: the encode path's

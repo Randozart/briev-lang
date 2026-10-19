@@ -18,6 +18,20 @@
 // WHOLE frame fit. A truncated packet fails cleanly as a value, never as an
 // over-read.
 //
+// Porting from PR #26's original surface (the branch this module absorbed):
+//   - its `WsFrame { status, fin, opcode, payload: String, consumed }` is THIS
+//     module's `WsMessage` — same fields, same types, same semantics;
+//   - its `ws_decode_frame(buf, n)` decoded the first frame of a buffer with
+//     `n` available bytes. The equivalent here is
+//     `ws_message(ByteBuf { ptr: buf.ptr, len: n, cap: buf.cap }, 0)` — this API
+//     expresses availability through the ByteBuf's own `len` plus an offset, so
+//     a read loop decodes at `off` and advances by `consumed`;
+//   - `ws_encode_text` keeps its name and signature;
+//   - behavior is a strict superset: WS_PROTOCOL reports RFC length-field
+//     misuse (non-minimal 126/127 forms, top-bit-set 64-bit lengths) where the
+//     original returned NeedMore indefinitely.
+// There is deliberately no `ws_decode_frame` alias: one decoder, one surface.
+//
 // Opcodes (RFC 6455 §5.2) — exposed so the server loop can route.
 const WS_OP_CONT:  Int = 0;
 const WS_OP_TEXT:  Int = 1;

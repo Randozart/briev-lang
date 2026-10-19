@@ -79,6 +79,30 @@ Two interpreter gaps found (both OPEN, BUGS.md 2026-10-20; compiled output
 correct): callable Briev txns are not executed (base64's `b64_loop`), and the
 raw-address→String door (`(addr as Data) as String`) is unsupported.
 
+**Reconciliation verified (2026-10-20):**
+
+| Check | Result |
+|---|---|
+| Branch scope | single commit `0eb2235f`, exactly 4 `.bv` files — nothing else missed |
+| `base64.bv`, `sha1.bv`, `http.bv` | byte-identical to the branch |
+| `websocket.bv` | intentionally unified: core moved from bytes.bv + PR API rebuilt on it |
+| `WsFrame{status,fin,opcode,payload,consumed}` | absorbed as `WsMessage` — same fields/types/semantics |
+| payload String representation | identical (`Malloc#(plen+9)`, 8-byte length, bytes, NUL, address→String door) — interchangeable with string ops |
+| `consumed` / `fin` / opcode constants | identical semantics/values |
+| `ws_encode_text` | same name/signature; minimal length forms added |
+| Behavior | strict superset (`WS_PROTOCOL`, RFC minimality, 64-bit top-bit rejection) |
+| removed internal helper names | ZERO references anywhere in the tree |
+| tests | branch had none; ours cover the union (golden + codec parity + the loop contract) |
+
+Availability mapping documented in the module header: his
+`ws_decode_frame(buf, n)` ≡ `ws_message(ByteBuf{ptr: buf.ptr, len: n,
+cap: buf.cap}, 0)`; no compatibility alias (one decoder, one surface). The
+loop contract (decode at `off`, advance by `consumed`, partial second frame
+→ WS_NEED_MORE) is pinned in `tests/tier1/net_stack_helpers.bv`.
+
+**Disposition:** PR #26 CLOSED as superseded (content landed adapted in
+`8d929650`; verification summary posted on the PR).
+
 Original phase text follows.
 
 **Phase 2 — #26 reconciliation (original plan):**

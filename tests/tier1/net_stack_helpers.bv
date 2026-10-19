@@ -10,9 +10,12 @@
 //   - incremental HTTP parse of a complete GET (method/path/consumed)
 //   - ws_message on a masked client frame -> unmasked "abc"
 //   - ws_encode_text round-trip -> "abc"
+//   - the PR #26 read-loop contract: two frames in one buffer, decode at 0,
+//     advance by `consumed`, decode the second; a truncated second frame
+//     reports WS_NEED_MORE
 // Prints: aGVsbG8=|s3pPLMBiTxaQ9kYGzzhZRbK+xOo=|OK
 import { ByteBuf, GrowBuf } from "std/net/bytes";
-import { ws_decode, ws_message, ws_encode_text } from "std/net/websocket";
+import { ws_decode, ws_message, ws_encode_text, WS_COMPLETE, WS_NEED_MORE } from "std/net/websocket";
 import { http_parse_request, ws_accept_key } from "std/net/http";
 import { base64_encode } from "std/net/base64";
 import { print_str } from "std/io";
@@ -69,7 +72,29 @@ node entry [beginprogram][ok == 4] {
         ok = ok + 1;
     };
 
-    when ok == 4 {
+    // The PR #26 loop contract: frame B starts exactly at frame A's
+    // `consumed`; a view that cuts into frame B is WS_NEED_MORE.
+    Store#(raw as Int + 9, 0x81, 1);
+    Store#(raw as Int + 10, 0x03, 1);
+    Store#(raw as Int + 11, 120, 1);
+    Store#(raw as Int + 12, 121, 1);
+    Store#(raw as Int + 13, 122, 1);
+    let two: ByteBuf = ByteBuf { ptr: raw as Int, len: 14, cap: 16 };
+    let first = ws_message(two, 0);
+    when first.status == WS_COMPLETE && first.payload == "abc" && first.consumed == 9 {
+        let second = ws_message(two, first.consumed);
+        when second.status == WS_COMPLETE && second.payload == "xyz"
+            && second.consumed == 5 {
+            ok = ok + 1;
+        };
+    };
+    let cut: ByteBuf = ByteBuf { ptr: raw as Int, len: 12, cap: 16 };
+    let partial = ws_message(cut, 9);
+    when partial.status == WS_NEED_MORE {
+        ok = ok + 1;
+    };
+
+    when ok == 6 {
         print_str("OK");
     };
     endprogram 0;
