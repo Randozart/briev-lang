@@ -514,8 +514,8 @@ The alternative — one `x86_64 => <line>` exception per line — cannot
 carry directives (`.code32` in an exception row is an unknown-mnemonic
 error) and is unergonomic for whole preambles. Raw blocks fix both.
 Used by the x86 real-mode MBR body (`examples/bad/boot_mbr.bad`, with
-the `int` core op for BIOS software interrupts) and the multiboot2 32-bit
-prologue (`examples/bad/boot_multiboot.bad`). A bare `raw` with no target
+the `int` core op for BIOS software interrupts) and the multiboot 32-bit
+prologue (`examples/bad/boot_plus_x86.bad`). A bare `raw` with no target
 or an unterminated block before EOF is a loud error.
 
 ## Per-arch stdlib boot entries (named raw blocks)
@@ -649,6 +649,28 @@ objects assemble `-mabi=lp64` soft-float to match the `.bv` side's ABI.
 The two-stage pattern (`examples/bad/boot_stage1.bv`) shows a bootloader
 that does machine setup then CALLS a `kernel` routine in the same image
 — the load-and-handoff bootstrapper, verified from the flat `.bin`.
+
+### x86 multiboot boot (`boot_plus_x86.bad`)
+
+`tests/bare/qemu-x86-multiboot-bad.sh` boots a pure `.bad` multiboot
+image and asserts the banner. Two QEMU constraints shape it:
+
+- QEMU's loader (`hw/i386/multiboot.c`) only takes **multiboot1**.
+- It rejects ELF64 (`Cannot load x86-64 image, give a 32bit one`), so a
+  64-bit kernel must use the multiboot1 **a.out kludge** (flags bit 16):
+  the 32-byte header carries `header_addr`/`load_addr`/`entry_addr` and
+  the image is a flat `--raw-bin` binary. `lib/targets/multiboot-x86_64.ld`
+  places `.text` at 1 MiB so the header lands at flat offset 0.
+
+The 32-bit prologue prints `Briev` over COM1, builds identity page
+tables in `.data`, switches to long mode, and jumps to a symbolic 64-bit
+body that prints `R64` and parks — proving both the boot path and the
+assembly+ lowering. `lgdt` needs a **6-byte pseudo-descriptor**
+(`.word limit; .long base`), not the GDT entries themselves.
+
+Port I/O uses the `outb` / `inb` core ops (x86_64 only; other families
+get the loud capability error). They pin the hardware's `%al`/`%dx`, so
+the rows stage both and disclose the clobber.
 
 ## The acknowledge tier — predicting, not blocking
 

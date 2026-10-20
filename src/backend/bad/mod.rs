@@ -742,6 +742,36 @@ mod tests {
     }
 
     #[test]
+    fn outb_lowers_to_x86_port_io() {
+        let src = "_start:\n    let port = 0x3F8\n    let c = 65\n    outb c, port\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("outb %al, %dx"), "{x86}");
+    }
+
+    #[test]
+    fn outb_is_a_loud_capability_error_off_x86() {
+        let err = generate(
+            "_start:\n    let port = 0x3F8\n    let c = 65\n    outb c, port\n    halt\n",
+            "riscv64",
+        )
+        .expect_err("outb is x86-only");
+        assert!(err.contains("riscv64") && err.contains("outb"), "{err}");
+    }
+
+    #[test]
+    fn x86_multiboot_example_lowers() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/bad/boot_plus_x86.bad"
+        ));
+        let x86 = generate(src, "x86_64").unwrap_or_else(|e| panic!("{e}"));
+        assert!(x86.contains("0x1BADB002"), "{x86}");
+        assert!(x86.contains("ljmp $0x08, $_start64") || x86.contains("ljmp $0x8"), "{x86}");
+        assert!(x86.contains("outb %al, %dx"), "{x86}");
+        assert!(x86.contains("gdt_desc:"), "{x86}");
+    }
+
+    #[test]
     fn raw_boundary_copy_in_out_and_pin() {
         let src = "_start:\n    raw clobbers r5 {\n        mov r5, 42\n    }\n    \
                    let x = r5\n    x += 1\n    r6 = x\n    halt\n";

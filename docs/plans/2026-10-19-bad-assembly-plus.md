@@ -345,6 +345,10 @@ end
 | 2026-10-19 | `d762d032` | Pure `.bad` rv64 QEMU boot gate (`boot_plus_rv64.bad`, `qemu-rv64-boot-plus-bad.sh`); `brievc bad --linker-script`. |
 | 2026-10-19 | `e8e5f493` | Symbolic `stb`/`sth` (sub-width stores, immediate forms + address materialization), aarch64 QEMU virt profile, pure `.bad` aarch64 boot gate. |
 | 2026-10-19 | `8e08b88e` | `declarations { name: rN; }` file-scoped pins applied to every symbolic label/fn; register reserved. |
+| 2026-10-20 | `b81d3986` | Engine verbs inline from `std/bad/engine.bad`; `config/bad-verbs.dbvl` + `bld::registry::BldIntrinsics` deleted; `Store`/`Load`/`ReadControlReg`/`WriteControlReg` lower to core ops, remaining core ops route through `BldStmt::Instr`. |
+| 2026-10-20 | `e2df4105` | `declarations { extern fn …; extern data …; stack N; … }`: typed C-ABI signatures for raw labels, external data symbols, `.bss` stack reservation (`__bad_stack`/`__bad_stack_top`). |
+| 2026-10-20 | `e2a0204d` | `--warn-unused-values` unused-value lint over the symbolic program (typo class); advisory, never blocking. |
+| 2026-10-20 | (this commit) | x86 multiboot pure-`.bad` boot gate: `boot_plus_x86.bad` (multiboot1 a.out kludge, COM1 banner, long-mode switch, symbolic 64-bit body) + `qemu-multiboot.sh` asserting `Briev`+`R64`; `outb`/`inb` core ops; `boot_multiboot.bad` retired. |
 
 Remaining: profile imports, data-label address expressions in symbolic
 code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,

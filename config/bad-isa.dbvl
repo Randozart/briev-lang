@@ -206,6 +206,15 @@ csrs: "2"; "riscv64:csrs $1, $2"; "sym";
 csrc: "2"; "riscv64:csrc $1, $2"; "sym";
 mret: "0"; "riscv64:mret";
 
+// ── x86 port I/O (x86_64 only) ────────────────────────────────────────
+// outb value, port — write a byte to an I/O port. The hardware pins the
+// ports: the value must be in %al and the port in %dx, so the row stages
+// both (clobbers %al/%dx — the row author's contract, like the CR writes).
+// The port rides a register (the `outb %al, $imm8` immediate form only
+// reaches 8-bit ports, so the generic register form is the safe one).
+outb: "2"; "x86_64:movb $1.w8, %al; movw $2.w16, %dx; outb %al, %dx";
+inb: "2"; "x86_64:movw $1.w16, %dx; inb %dx, %al; movb %al, $2.w8";
+
 // ── PTX-family-only rows (2026-10-01, bad-ptx-family plan M2) ──────────
 // GPU-only primitives: a CPU-family use = loud capability error (the
 // row has no field for it), per the header doctrine. %p1 (pred) and
