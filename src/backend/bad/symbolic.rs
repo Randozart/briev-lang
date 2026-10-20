@@ -16,12 +16,11 @@
 // symbolic instructions. Raw physical-only labels never enter this pass.
 
 use super::registry::{BadIsa, BadRegisters};
-use crate::ast::bad::{BadFn, BadInstr, BadLabel, BadOperand, BadTopLevel};
+use crate::ast::bad::{BadBodyItem, BadDefn, BadDefnShape, BadFn, BadInstr, BadLabel, BadOperand, BadTopLevel};
 use crate::ast::bld::{
     BldConst, BldDefn, BldParam, BldProgram, BldStmt, BldTopLevel,
 };
-use crate::ast::{BinaryOpKind, Expr, Type};
-use crate::backend::bld::registry::BldIntrinsics;
+use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::errors::Span;
 use crate::parser::bld::parse_bld_expr;
 use std::collections::{HashMap, HashSet};
@@ -35,14 +34,17 @@ pub struct SymCtx<'a> {
     pub const_values: &'a [(String, i64)],
     pub label_names: &'a HashSet<String>,
     pub defns: &'a HashSet<String>,
-    pub intrinsics: &'a BldIntrinsics,
     /// Inline symbolic definitions (`defn name(params) { … }`), expanded
     /// at each call site.
     pub symdefs: &'a HashMap<String, BadFn>,
-    /// Raw `.bad` defns (inline expansion material). Used to keep a raw
-    /// arity-matching call on the raw path when a same-named engine verb
-    /// exists (e.g. `ReadControlReg 0, r1` vs `ReadControlReg(0)`).
-    pub bad_defns: &'a HashMap<String, crate::ast::bad::BadDefn>,
+    /// User raw `.bad` defns. An arity-matching call stays raw here even
+    /// when an engine verb shares the name (`ReadControlReg 0, r1` vs
+    /// `ReadControlReg(0)`).
+    pub bad_defns: &'a HashMap<String, BadDefn>,
+    /// Engine verbs from the `std/bad/engine.bad` prelude. Always
+    /// expanded inline (branch rows pick a target row, sequence defns
+    /// inline directly); never left raw.
+    pub engine_defns: &'a HashMap<String, BadDefn>,
     /// File-scoped pins from `declarations { name: rN; }`.
     pub global_pins: &'a [(String, String)],
 }
@@ -274,19 +276,19 @@ fn body_has_return(body: &[crate::ast::bad::BadBodyItem]) -> bool {
 
 fn instr_has_symbolic(instr: &BadInstr, ctx: &SymCtx<'_>) -> bool {
     // A raw defn call with matching arity stays raw, even when an engine
-    // verb shares the name (`ReadControlReg n, dst` vs `ReadControlReg(n)`).
+    // verb shares the name (`ReadControlReg 0, r1` vs `ReadControlReg(0)`).
     if let Some(d) = ctx.bad_defns.get(&instr.mnemonic) {
         let arity = match &d.shape {
-            crate::ast::bad::BadDefnShape::Sequence(_) => d.params.len(),
-            crate::ast::bad::BadDefnShape::Branch(rows) => rows.first().map(|r| r.body.len()).unwrap_or(0),
+            BadDefnShape::Sequence(_) => d.params.len(),
+            BadDefnShape::Branch(rows) => rows.first().map(|r| r.body.len()).unwrap_or(0),
         };
         if arity == instr.operands.len() {
             return false;
         }
     }
-    // Engine verbs are symbolic statements even with zero operands
-    // (`Park`, `DisableInterrupts`).
-    if ctx.intrinsics.is_intrinsic(&instr.mnemonic) {
+    // Engine verbs from `std/bad/engine.bad` are always symbolic — they
+    // inline through `emit_engine_defn`, never stay raw.
+    if ctx.engine_defns.contains_key(&instr.mnemonic) {
         return true;
     }
     if !SYMBOLIC_OPS.contains(&instr.mnemonic.as_str()) {
@@ -411,8 +413,9 @@ impl Builder<'_, '_> {
         }
     }
 
-    /// A call statement: inline symbolic `defn` expands here, everything
-    /// else becomes a real `call` (callable `defn`, engine verb, or fn).
+    /// A call statement: inline symbolic `defn` expands here, engine verbs
+    /// inline through `std/bad/engine.bad`, everything else becomes a real
+    /// `call` (callable `defn`, or fn).
     fn emit_call(
         &mut self, callee: String, args: Vec<Expr>, span: Span,
     ) -> Result<(), String> {
@@ -462,11 +465,106 @@ impl Builder<'_, '_> {
             self.stmts.push(BldStmt::Block { body, span });
             return Ok(());
         }
-        self.stmts.push(BldStmt::Call {
-            callee,
-            args,
-            span,
-        });
+        // Engine verb alias: zero-arg name for a core op (WaitForInterrupt
+        // = wfi, MemoryBarrier = fence, …). Aliases are mnemonics, so they
+        // only apply to calls with no arguments.
+        if args.is_empty() {
+            if let Some(target) = self.ctx.aliases.get(&callee) {
+                self.stmts.push(BldStmt::Instr(BadInstr {
+                    mnemonic: target.clone(),
+                    operands: Vec::new(),
+                    contract: None,
+                    ack: None,
+                    span: span.clone(),
+                }));
+                return Ok(());
+            }
+        }
+        // Engine verb defn from `std/bad/engine.bad` (Park,
+        // DisableInterrupts, WriteControlReg, …). Branch rows pick a target
+        // row; sequence defns inline directly.
+        if let Some(d) = self.ctx.engine_defns.get(&callee) {
+            return self.emit_engine_defn(&d, &args, span);
+        }
+        self.stmts.push(BldStmt::Call { callee, args, span });
+        Ok(())
+    }
+
+    /// Inline an engine-verb defn from `std/bad/engine.bad`. Substitute
+    /// params into argument operands, then emit each body instruction as a
+    /// core ISA instruction (physical-register destinations write straight
+    /// through; no `write_dst`/`Let` indirection, since engine verbs use
+    /// the r0 result convention and named physical scratch).
+    fn emit_engine_defn(
+        &mut self, d: &BadDefn, args: &[Expr], span: Span,
+    ) -> Result<(), String> {
+        if args.len() != d.params.len() {
+            return Err(format!(
+                "engine verb `{}` (line {}) takes {} argument(s), got {}",
+                d.name,
+                span.line,
+                d.params.len(),
+                args.len()
+            ));
+        }
+        let body = match &d.shape {
+            BadDefnShape::Sequence(items) => items.clone(),
+            BadDefnShape::Branch(rows) => {
+                let row = rows
+                    .iter()
+                    .find(|r| !r.is_default && self.ctx.family.starts_with(r.target.as_str()))
+                    .or_else(|| rows.iter().find(|r| r.is_default));
+                match row {
+                    Some(r) => r
+                        .body
+                        .clone()
+                        .into_iter()
+                        .map(BadBodyItem::Instr)
+                        .collect(),
+                    None => {
+                        return Err(format!(
+                            "engine verb `{}` (line {}) has no row for target `{}` - \
+                             add a target row (`x86_64 => ...`) or a `default => ...` row \
+                             to `std/bad/engine.bad`",
+                            d.name, span.line, self.ctx.family
+                        ));
+                    }
+                }
+            }
+        };
+        // Map param names to argument operands.
+        let mut env: HashMap<String, BadOperand> = HashMap::new();
+        for (p, a) in d.params.iter().zip(args) {
+            env.insert(p.clone(), expr_to_operand(a)?);
+        }
+        for instr in body {
+            let BadBodyItem::Instr(instr) = instr else {
+                return Err(format!(
+                    "engine verb `{}` body contains a non-instruction item - \
+                     engine verb bodies must be flat instruction sequences",
+                    d.name
+                ));
+            };
+            let ops: Vec<BadOperand> = instr
+                .operands
+                .iter()
+                .map(|op| substitute_operand(op, &env))
+                .collect();
+            if ops.is_empty() {
+                self.stmts.push(BldStmt::Bad {
+                    text: instr.mnemonic.clone(),
+                    span: instr.span.clone(),
+                });
+            } else {
+                self.stmts.push(BldStmt::Instr(BadInstr {
+                    mnemonic: instr.mnemonic.clone(),
+                    operands: ops,
+                    contract: None,
+                    ack: None,
+                    span: instr.span.clone(),
+                }));
+            }
+        }
         Ok(())
     }
 
@@ -728,40 +826,20 @@ impl Builder<'_, '_> {
             });
             return Ok(());
         }
-        if self.ctx.intrinsics.is_intrinsic(&i.mnemonic) {
-            let arity = self.ctx.intrinsics.arity(&i.mnemonic).unwrap_or(0);
-            if i.operands.len() != arity {
-                return Err(format!(
-                    "engine verb `{}` (line {}) takes {arity} argument(s), got {}",
-                    i.mnemonic,
-                    i.span.line,
-                    i.operands.len()
-                ));
-            }
-            if self.ctx.intrinsics.returns(&i.mnemonic) == Some(true) {
-                return Err(format!(
-                    "value-returning verb `{}` (line {}) cannot stand as a statement - use \
-                     `let x = {}(…)` or `x = {}(…)`",
-                    i.mnemonic, i.span.line, i.mnemonic, i.mnemonic
-                ));
-            }
-            let mut args = Vec::with_capacity(i.operands.len());
-            for op in &i.operands {
-                args.push(self.operand_expr(op, i.span.line)?);
-            }
-            self.stmts.push(BldStmt::Call {
-                callee: i.mnemonic.clone(),
-                args,
-                span: i.span.clone(),
-            });
-            return Ok(());
-        }
+        // Engine verb defns are handled by `emit_call`/`emit_engine_defn`,
+        // not here — `emit_instr` only sees raw/core instructions.
         if self.ctx.isa.is_sym(&i.mnemonic) {
             return Err(format!(
                 "`{}` (line {}) is a branch/symbol operation in a symbolic body - use \
                  `when`/`loop`/`while`, or move the raw jump into its own label",
                 i.mnemonic, i.span.line
             ));
+        }
+        // A bare engine verb mnemonic (`Park`, `DisableInterrupts`) inline
+        // through `std/bad/engine.bad` just like a call statement.
+        if let Some(d) = self.ctx.engine_defns.get(&i.mnemonic) {
+            let args = bad_operands_to_exprs(&i.operands)?;
+            return self.emit_engine_defn(&d, &args, i.span.clone());
         }
         let arity = i.operands.len();
         match (i.mnemonic.as_str(), arity) {
@@ -878,6 +956,20 @@ impl Builder<'_, '_> {
                 });
             }
             _ => {
+                // Any remaining core ISA op (`csrc`/`csrr`/`csrw`/`lgdt`/
+                // `ljmp`/`hlt`/`fence`/`tlbflush`/…) maps straight to a
+                // `BldStmt::Instr` — the allocator + pass-2 emitter resolve
+                // registers, immediates, and the reg/imm form pick.
+                if self.ctx.isa.is_core(&i.mnemonic) {
+                    self.stmts.push(BldStmt::Instr(BadInstr {
+                        mnemonic: i.mnemonic.clone(),
+                        operands: i.operands.clone(),
+                        contract: None,
+                        ack: None,
+                        span: i.span.clone(),
+                    }));
+                    return Ok(());
+                }
                 return Err(format!(
                     "`{}` (line {}) is not supported in a symbolic body yet - use one of \
                      mov/add/sub/mul/div/mod/and/or/xor/shl/shr/store/load/addr/readcr/writecr, \
@@ -990,4 +1082,49 @@ fn compound_kind(op: &str) -> Option<BinaryOpKind> {
         ">>" => BinaryOpKind::Shr,
         _ => return None,
     })
+}
+
+/// Convert an `Expr` argument to a `BadOperand`. Only constants and bare
+/// names are representable; anything else is an immediate-form error at
+/// the ISA layer rather than silently materializing a scratch.
+fn expr_to_operand(e: &Expr) -> Result<BadOperand, String> {
+    match e {
+        Expr::Decimal(n) => Ok(BadOperand::Int(*n)),
+        Expr::TaggedLiteral(n, _) => Ok(BadOperand::Int(*n)),
+        Expr::UnaryOp(UnaryOpKind::Neg, inner) => match inner.as_ref() {
+            Expr::Decimal(n) => Ok(BadOperand::Int(-n)),
+            Expr::TaggedLiteral(n, _) => Ok(BadOperand::Int(-n)),
+            _ => Err(format!(
+                "engine verb argument `{e}` is not a constant or register name - \
+                 engine verbs take literal/operand arguments, not expressions"
+            )),
+        },
+        Expr::Identifier(n) => Ok(BadOperand::Name(n.clone())),
+        other => Err(format!(
+            "engine verb argument `{other}` is not a constant or register name - \
+             engine verbs take literal/operand arguments, not expressions"
+        )),
+    }
+}
+
+/// Substitute a formal parameter operand (`Name(param)`) into an argument
+/// operand; everything else passes through unchanged.
+fn substitute_operand(op: &BadOperand, env: &HashMap<String, BadOperand>) -> BadOperand {
+    match op {
+        BadOperand::Name(n) => env.get(n).cloned().unwrap_or_else(|| op.clone()),
+        other => other.clone(),
+    }
+}
+
+/// Convert instruction operands into the `Expr` arguments an engine defn
+/// expects, preserving immediate/constant and register names.
+fn bad_operands_to_exprs(ops: &[BadOperand]) -> Result<Vec<Expr>, String> {
+    ops.iter().map(|op| match op {
+        BadOperand::Int(n) => Ok(Expr::Decimal(*n)),
+        BadOperand::Float(t) => Ok(Expr::Float(t.parse::<f64>().unwrap_or(0.0))),
+        BadOperand::Name(n) => Ok(Expr::Identifier(n.clone())),
+        BadOperand::Expr(t) => {
+            parse_bld_expr(t).map_err(|e| format!("engine verb argument `{t}`: {e}"))
+        }
+    }).collect()
 }

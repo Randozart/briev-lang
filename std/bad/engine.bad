@@ -21,10 +21,12 @@ defn EnableInterrupts
 // Stop and wait. `Park` is the x86-safe halt (IRQs off); bare `halt`
 // remains the portable wait-for-interrupt form.
 defn Park
-    x86_64 => cli; hlt
+    x86_64 => cli; halt
     default => halt
 
 // CR/CSR access. `n` is opcode-encoded: pass a literal or `.const`.
+// `dst` receives the value; omit it and the result lands in r0 via a
+// plain `readcr` instruction instead.
 defn ReadControlReg n, dst
     readcr dst, n
 

@@ -18,6 +18,7 @@ use super::comptime;
 use super::contracts;
 use super::registry::{BadIsa, BadRegisters, ImmHandling};
 use crate::ast::bad::*;
+use crate::parser::bad::parse_bad;
 use std::collections::HashMap;
 
 /// Max defn expansion depth (mutual-recursion guard). 64 matches the
@@ -242,7 +243,30 @@ impl<'a> Lowerer<'a> {
             let v = self.const_value(&name, &[])?;
             const_values.push((name, v));
         }
-        let intrinsics = crate::backend::bld::registry::BldIntrinsics::load();
+
+        // `std/bad/engine.bad` is the default-on engine-verb prelude (like
+        // the friendly alias sheet): its defns are the engine verbs, inlined
+        // at call sites. Its aliases (e.g. `WaitForInterrupt = wfi`) join
+        // the alias table so bare verb mnemonics canonicalize too.
+        let engine_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/std/bad/engine.bad"
+        ));
+        let engine_program = parse_bad(engine_src)
+            .map_err(|e| format!("engine.bad prelude: line {}: {}", e.line, e.message))?;
+        let mut engine_defns: std::collections::HashMap<String, BadDefn> =
+            std::collections::HashMap::new();
+        for item in &engine_program.items {
+            match item {
+                BadTopLevel::Defn(d) => {
+                    engine_defns.insert(d.name.clone(), d.clone());
+                }
+                BadTopLevel::Alias(a) => {
+                    self.aliases.insert(a.name.clone(), a.register.clone());
+                }
+                _ => {}
+            }
+        }
         let global_pins: Vec<(String, String)> = self
             .emit_items
             .iter()
@@ -257,7 +281,7 @@ impl<'a> Lowerer<'a> {
             .iter()
             .filter_map(|i| match i {
                 BadTopLevel::SymDefn(f) => {
-                    if intrinsics.is_intrinsic(&f.name) {
+                    if engine_defns.contains_key(&f.name) {
                         self.errors.push(format!(
                             "inline defn `{}` shadows an engine verb - rename it",
                             f.name
@@ -277,9 +301,9 @@ impl<'a> Lowerer<'a> {
             const_values: &const_values,
             label_names: &self.label_names,
             defns: &self.defns.keys().cloned().collect(),
-            intrinsics: &intrinsics,
             symdefs: &symdefs,
             bad_defns: &self.defns,
+            engine_defns: &engine_defns,
             global_pins: &global_pins,
         };
         let mut items = std::mem::take(&mut self.emit_items);

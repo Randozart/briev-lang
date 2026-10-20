@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn engine_stdlib_verbs_inline() {
         let src = "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n    \
-                   WriteControlReg 0, 1\n    let cr = ReadControlReg(0)\n    Park\n";
+                   WriteControlReg 0, 1\n    ReadControlReg(0, r1)\n    Park\n";
         let x86 = engine_stdlib("x86_64", src).unwrap();
         assert!(x86.contains("cli"), "{x86}");
         assert!(x86.contains("movq $1, %rax"), "{x86}");

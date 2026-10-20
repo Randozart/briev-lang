@@ -89,10 +89,12 @@ self-describing. `_start` is the one genuinely universal name and has NO
 alias.
 ## Engine verbs — `std/bad/engine.bad`
 
-Named hardware verbs are ordinary `.bad` defns, imported explicitly:
+Named hardware verbs are ordinary `.bad` defns, loaded as a prelude (like
+the friendly alias sheet); `brievc bad --raw` skips the friendly aliases
+but the engine verbs stay available because they are plain stdlib defns.
+They inline at the call site — no call, no stack.
 
 ```bad
-import "std/bad/engine.bad"
 _start:
     DisableInterrupts
     WriteControlReg 768, 8
@@ -102,13 +104,16 @@ _start:
 - `DisableInterrupts` / `EnableInterrupts` — x86 `cli`/`sti`; riscv
   `csrc`/`csrs` on `mstatus`. No aarch64 row until verified DAIF
   encodings land: a loud capability error there, never a guess.
-- `Park` — x86 `cli; hlt`; `default => halt` elsewhere.
+- `Park` — x86 `cli; halt`; `default => halt` elsewhere.
 - `ReadControlReg n, dst` / `WriteControlReg n, value` — the CR/CSR
   number is opcode-encoded; pass a literal or `.const`.
 - Aliases for no-sequence ops: `WaitForInterrupt`, `MemoryBarrier`,
   `InvalidateTlb`, `LoadGdt`, `FarJump`.
-- Defns inline at the call site (no call, no stack). A defn with `ret`
-  cannot inline; use a `raw` block or a callable label.
+- A verb is a `defn`: branch-shaped verbs pick the matching `target =>`
+  row (else `default =>`), sequence-shaped verbs inline directly. A defn
+  with `ret` cannot inline; use a `raw` block or a callable label.
+- There is no Rust/config verb table: verbs are data in `engine.bad`, so
+  adding one is editing stdlib, never the compiler.
 
 ## Sites — anonymous target dispatch (2026-10-01)
 
