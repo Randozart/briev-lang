@@ -1,0 +1,17 @@
+// memcpy — raw physical form. Copies 64 words from 0x300000 to 0x200000.
+section .text
+global _start
+_start:
+    mov r0, 0x200000
+    mov r1, 0x300000
+    mov r2, 64
+.loop:
+    jz r2, 0, .done
+    load r3, r1
+    store r3, r0
+    add r0, r0, 1
+    add r1, r1, 1
+    sub r2, r2, 1
+    jmp .loop
+.done:
+    halt

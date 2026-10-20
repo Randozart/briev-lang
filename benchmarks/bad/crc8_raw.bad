@@ -1,0 +1,28 @@
+// CRC-8/ATM over 32 bytes at 0x200000 — raw physical form.
+section .text
+global _start
+_start:
+    mov r0, 0x200000
+    mov r1, 32
+    mov r2, 0
+.outer:
+    jz r1, 0, .done
+    ldub r3, r0
+    xor r2, r2, r3
+    mov r4, 8
+.inner:
+    jz r4, 0, .next
+    and r6, r2, 128
+    shl r5, r2, 1
+    jz r6, 0, .skip
+    xor r5, r5, 7
+.skip:
+    mov r2, r5
+    sub r4, r4, 1
+    jmp .inner
+.next:
+    add r0, r0, 1
+    sub r1, r1, 1
+    jmp .outer
+.done:
+    halt

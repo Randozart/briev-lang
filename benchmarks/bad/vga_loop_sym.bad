@@ -1,0 +1,15 @@
+// VGA text loop — assembly+ symbolic form (same kernel as vga_loop_raw).
+// Bottom-tested: the break is the loop's last statement so the backedge
+// fuses into one conditional branch.
+section .text
+global _start
+_start:
+    let vga = 0xB8000
+    let c = 66
+    loop {
+        store c, vga
+        vga += 2
+        c += 1
+        when c == 91: break
+    }
+    halt
