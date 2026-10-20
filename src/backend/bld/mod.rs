@@ -56,7 +56,7 @@ pub fn generate_with(
     let (isa, regs) = super::bad::registries();
     // M4 (2026-10-08): virtual value registers resolve to physical
     // registers (or frame slots) before the .bad backend sees them.
-    let program = self::alloc::allocate(program, &regs, family)?;
+    let program = self::alloc::allocate(program, &isa, &regs, family)?;
     let mut lw = super::bad::lower::Lowerer::new(&isa, &regs, family)
         .with_base_dir(base_dir.map(|p| p.to_path_buf()));
     lw.run(&program)
@@ -675,8 +675,8 @@ mod tests {
         let family = "x86_64";
         let prog = lower_to_bad(src, family, None, None)
             .unwrap_or_else(|e| panic!("lower failed: {e}"));
-        let (_, regs) = crate::backend::bad::registries();
-        alloc::allocate(prog, &regs, family)
+        let (isa, regs) = crate::backend::bad::registries();
+        alloc::allocate(prog, &isa, &regs, family)
             .unwrap_or_else(|e| panic!("alloc failed: {e}"))
     }
 
@@ -805,8 +805,8 @@ mod tests {
                    let ab = aa + 1; let ac = ab + 1; \
                    return p + q + r + s + t + u + v + w + x + y + z + aa + ab + ac; }";
         let prog = lower_to_bad(src, "x86_64", None, None).unwrap();
-        let (_, regs) = crate::backend::bad::registries();
-        let e = alloc::allocate(prog, &regs, "x86_64").err().unwrap();
+        let (isa, regs) = crate::backend::bad::registries();
+        let e = alloc::allocate(prog, &isa, &regs, "x86_64").err().unwrap();
         assert!(e.contains("cannot open a frame"), "{e}");
     }
 

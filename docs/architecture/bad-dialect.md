@@ -379,6 +379,31 @@ properties (`caller` / `callee` / `ro`):
 - The `imm` row holds each target's immediate prefix (`$` / `#` / empty);
   the `comment` row its GAS comment prefix.
 
+## ISA metadata — roles and clobbers
+
+`config/bad-isa.dbvl` rows carry two trailing metadata fields so the
+register allocator carries no per-op knowledge (Rule 15):
+
+```text
+mov:  "2"; …; "roles d1,u2";
+add:  "3"; …; "roles d1,u2,u3";
+store:"2"; …; "roles u1,u2";
+inb:  "2"; …; "roles u1,d2"; "clobbers r0, r2";
+div:  "3"; …; "roles d1,u2,u3"; "clobbers r0, r1, r2";
+```
+
+- **`roles dN`/`uN`** (1-based) — operand N is a destination (`d`) or a
+  read (`u`). The allocator builds liveness and spill decisions from
+  these. `"roles"` with no indices marks a no-virtual op (e.g. `ret`) as
+  known; a symbolic use of an op with **no** roles row is a loud error
+  (raw code in physical registers still works).
+- **`clobbers r0, r1`** — physical registers a template writes besides
+  its operand destinations (portable names). The allocator keeps live
+  values and spill scratches out of them. Templates that name physical
+  registers directly must declare them here.
+- The `mul` x86 template copies its source before multiplying
+  (`movq $2, $1; imulq $3, $1`) so it never destroys a source operand.
+
 ## Contracts
 
 - `[rN preserved]` — **proven** when `rN` is callee-saved on the

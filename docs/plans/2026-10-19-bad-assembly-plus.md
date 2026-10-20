@@ -351,14 +351,13 @@ end
 | 2026-10-20 | (this commit) | x86 multiboot pure-`.bad` boot gate: `boot_plus_x86.bad` (multiboot1 a.out kludge, COM1 banner, long-mode switch, symbolic 64-bit body) + `qemu-multiboot.sh` asserting `Briev`+`R64`; `outb`/`inb` core ops; `boot_multiboot.bad` retired. |
 | 2026-10-20 | (this commit) | Scalar parity corpus (`benchmarks/bad/`, 6 kernels) + `parity.sh`; results in `benchmarks/results/2026-10-19-bad-assembly-plus.md`. `bit_ops`/`memcpy` exact parity, `crc8` −2; `vga_loop` +1 jmp (back-edge fusion open), `uart_banner` +11 (outb staging), `call_chain` +5 (ABI staging). |
 | 2026-10-20 | (this commit) | Final docs sweep: SPEC §20.1 assembly+ surface, README boot gates, `.bad` highlighter (`declarations`/`extern`/`stack`/assembly+ keywords); complexity splits in `try_declarations`, `lower_call`, `lower_symbolic_labels`, `emit_instr`, `lint`. Full lib 3223, all QEMU gates + determinism green. |
+| 2026-10-20 | (this commit) | ISA roles/clobbers data migration: `config/bad-isa.dbvl` rows carry `roles dN/uN` + `clobbers rN`; the allocator reads them (hardcoded `roles()` deleted) and excludes clobbered registers from pools/scratches; `mul` x86 template preserves its source. |
 
-Remaining: ISA roles/clobbers data migration (the allocator still
-hardcodes `roles()`; `outb` was added there) and cross-target parity
-measurement (results are x86_64). The scalar corpus is at instruction
-parity except `uart_banner` (+11 — `outb` pins `%al`/`%dx`) and `crc8`
-(−2, symbolic tighter). Known test note: the conformance sweep can race
-its own `.smoke/` artifacts when run concurrently with other tests; it
-passes in isolation.
+Remaining: cross-target parity measurement (results are x86_64). The
+scalar corpus is at instruction parity except `uart_banner` (+11 —
+`outb` pins `%al`/`%dx`) and `crc8` (−2, symbolic tighter). Known test
+note: the conformance sweep can race its own `.smoke/` artifacts when run
+concurrently with other tests; it passes in isolation.
 
 ## Resolution plan (2026-10-19, approved)
 

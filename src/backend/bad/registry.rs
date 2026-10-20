@@ -32,6 +32,15 @@ pub struct BadIsaLowering {
     pub imm: ImmHandling,
 }
 
+/// Operand roles for one op: which operands it defines / reads. Indices
+/// are 0-based operand positions (`d1,u2` in config = def[0], use[1]).
+/// The register allocator reads these instead of hardcoding op names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpRoles {
+    pub defs: Vec<usize>,
+    pub uses: Vec<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BadIsaOp {
     pub arity: usize,
@@ -40,6 +49,14 @@ pub struct BadIsaOp {
     /// names there substitute verbatim; everywhere else an unresolvable
     /// name is a loud error (the `movq msg, %rdi` loads-memory footgun).
     pub sym: bool,
+    /// Operand roles (`"roles d1,u2,u3"`). `None` = the row author has not
+    /// declared roles; a symbolic use carrying a virtual is then a loud
+    /// error (raw code in physical registers still works).
+    pub roles: Option<OpRoles>,
+    /// Physical registers the row's template writes besides its operand
+    /// destinations (`"clobbers r0, r1"`). The allocator keeps values and
+    /// spill scratches out of these.
+    pub clobbers: Vec<String>,
 }
 
 /// config/bad-isa.dbvl — the portable core ISA. `Op: "<arity>";
@@ -60,10 +77,10 @@ impl BadIsa {
             else {
                 continue;
             };
-            let (lowerings, sym) = parse_isa_row(&db, &key);
+            let (lowerings, sym, roles, clobbers) = parse_isa_row(&db, &key);
             ops.insert(
                 key,
-                BadIsaOp { arity, lowerings, sym },
+                BadIsaOp { arity, lowerings, sym, roles, clobbers },
             );
         }
         BadIsa { ops }
@@ -97,18 +114,51 @@ impl BadIsa {
         v.sort();
         v
     }
+
+    /// Operand roles for `op`, if the row declares them.
+    pub fn roles(&self, op: &str) -> Option<&OpRoles> {
+        self.ops.get(op)?.roles.as_ref()
+    }
+
+    /// Physical registers `op`'s templates clobber (portable names).
+    pub fn clobbers(&self, op: &str) -> &[String] {
+        self.ops
+            .get(op)
+            .map(|o| o.clobbers.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 
 /// One ISA row: fields 1.. are `"target:reg-form|imm-form"` lowerings; a
-/// trailing `"sym"` field marks ops that take a label/symbol operand.
-fn parse_isa_row(db: &crate::dbriev::config_db::ConfigDb, key: &str) -> (Vec<BadIsaLowering>, bool) {
+/// trailing `"sym"` marks ops that take a label/symbol operand;
+/// `"roles d1,u2,…"` declares operand roles; `"clobbers r0, r1"`
+/// declares physical scratch the templates write.
+fn parse_isa_row(
+    db: &crate::dbriev::config_db::ConfigDb,
+    key: &str,
+) -> (Vec<BadIsaLowering>, bool, Option<OpRoles>, Vec<String>) {
     let mut lowerings = Vec::new();
     let mut sym = false;
+    let mut roles: Option<OpRoles> = None;
+    let mut clobbers = Vec::new();
     let mut idx = 1;
     while let Some(field) = db.field_string(key, idx) {
         if field == "sym" {
             sym = true;
+            idx += 1;
+            continue;
+        }
+        if field == "roles" || field.starts_with("roles ") {
+            roles = Some(parse_roles(key, field.strip_prefix("roles").unwrap_or("")));
+            idx += 1;
+            continue;
+        }
+        if field == "clobbers" || field.starts_with("clobbers ") {
+            clobbers.extend(
+                split_list(field.strip_prefix("clobbers").unwrap_or(""))
+                    .map(str::to_string),
+            );
             idx += 1;
             continue;
         }
@@ -128,7 +178,32 @@ fn parse_isa_row(db: &crate::dbriev::config_db::ConfigDb, key: &str) -> (Vec<Bad
         }
         idx += 1;
     }
-    (lowerings, sym)
+    (lowerings, sym, roles, clobbers)
+}
+
+/// ` d1,u2,u3` → `OpRoles { defs: [0], uses: [1, 2] }`.
+fn parse_roles(key: &str, rest: &str) -> OpRoles {
+    let mut roles = OpRoles::default();
+    for tok in split_list(rest) {
+        let (kind, num) = tok.split_at(1);
+        let n: usize = num.parse().unwrap_or_else(|_| {
+            panic!("config/bad-isa.dbvl `{key}`: bad role `{tok}` (want dN or uN)")
+        });
+        if n == 0 {
+            panic!("config/bad-isa.dbvl `{key}`: role `{tok}` is 1-based, got 0");
+        }
+        match kind {
+            "d" => roles.defs.push(n - 1),
+            "u" => roles.uses.push(n - 1),
+            _ => panic!("config/bad-isa.dbvl `{key}`: role `{tok}` (want dN or uN)"),
+        }
+    }
+    roles
+}
+
+fn split_list(rest: &str) -> impl Iterator<Item = &str> {
+    rest.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
 }
 
 
@@ -556,6 +631,35 @@ mod tests {
         assert!(!isa.is_sym("mov"));
         let l = isa.lookup("addr", "x86_64").expect("addr x86_64 lowering");
         assert!(l.reg_form.contains("leaq"));
+    }
+
+    #[test]
+    fn isa_roles_and_clobbers_load() {
+        let isa = BadIsa::load();
+        let defs = |op: &str| isa.roles(op).map(|r| r.defs.clone()).unwrap_or_default();
+        let uses = |op: &str| isa.roles(op).map(|r| r.uses.clone()).unwrap_or_default();
+        // mov dst, src — def[0], use[1]
+        assert_eq!(defs("mov"), vec![0]);
+        assert_eq!(uses("mov"), vec![1]);
+        // add dst, a, b — def[0], uses[1,2]
+        assert_eq!(defs("add"), vec![0]);
+        assert_eq!(uses("add"), vec![1, 2]);
+        // store value, addr — no defs, both uses
+        assert!(defs("store").is_empty());
+        assert_eq!(uses("store"), vec![0, 1]);
+        // jz a, b, label — two uses (the label is neither)
+        assert_eq!(uses("jz"), vec![0, 1]);
+        // inb port, dst — use[0], def[1] (a non-leading destination)
+        assert_eq!(defs("inb"), vec![1]);
+        assert_eq!(uses("inb"), vec![0]);
+        // no-operand ops still declare (empty) roles = known.
+        assert_eq!(isa.roles("ret"), Some(&OpRoles::default()));
+        assert_eq!(isa.roles("not-an-op"), None);
+        // div's templates clobber %rax/%rcx/%rdx (portable r0/r1/r2).
+        for r in ["r0", "r1", "r2"] {
+            assert!(isa.clobbers("div").iter().any(|c| c == r), "div clobbers {r}");
+        }
+        assert!(isa.clobbers("mov").is_empty());
     }
 
     #[test]

@@ -121,7 +121,7 @@ pub fn lower_symbolic_labels(
         span: Span::dummy(),
     })?;
     let prog = lowerer.compile()?;
-    let prog = crate::backend::bld::alloc::allocate(prog, ctx.regs, ctx.family)
+    let prog = crate::backend::bld::alloc::allocate(prog, ctx.isa, ctx.regs, ctx.family)
         .map_err(|e| format!("symbolic allocation failed: {e}"))?;
     let mut bodies: HashMap<String, Vec<crate::ast::bad::BadBodyItem>> = HashMap::new();
     for item in prog.items {
