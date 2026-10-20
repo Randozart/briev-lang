@@ -102,6 +102,10 @@ pub struct Lowerer<'a> {
     /// `.blockthreads` / `.sharedbytes` kernel geometry (ptx family).
     block_threads: Option<u32>,
     shared_bytes: Option<u32>,
+    /// `--warn-unused-values`: collect defined-but-never-read symbolic
+    /// values during symbolic lowering.
+    warn_unused: bool,
+    unused_values: Vec<crate::backend::bad::UnusedValue>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -153,6 +157,8 @@ impl<'a> Lowerer<'a> {
             instr_suffix: if family == "ptx" { ";" } else { "" },
             block_threads: None,
             shared_bytes: None,
+            warn_unused: false,
+            unused_values: Vec::new(),
         }
     }
 
@@ -185,6 +191,19 @@ impl<'a> Lowerer<'a> {
     pub fn with_param_env(mut self, env: HashMap<String, Bound>) -> Self {
         self.param_env = env;
         self
+    }
+
+    /// `--warn-unused-values`: collect defined-but-never-read symbolic
+    /// values during lowering.
+    pub fn with_warn_unused(mut self, warn: bool) -> Self {
+        self.warn_unused = warn;
+        self
+    }
+
+    /// The unused-value findings from the last run (empty unless
+    /// `with_warn_unused(true)`).
+    pub fn unused_values(&self) -> &[crate::backend::bad::UnusedValue] {
+        &self.unused_values
     }
 
     /// Lower the whole program. First pass collects defns + aliases
@@ -324,11 +343,18 @@ impl<'a> Lowerer<'a> {
             global_pins: &global_pins,
             extern_fns: &extern_fns,
             stack,
+            warn_unused: self.warn_unused,
         };
         let mut items = std::mem::take(&mut self.emit_items);
         let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
         self.emit_items = items;
-        res
+        match res {
+            Ok(unused) => {
+                self.unused_values = unused;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn emit_pass(&mut self, items: &[BadTopLevel]) {

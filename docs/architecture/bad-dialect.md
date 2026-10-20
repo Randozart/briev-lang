@@ -11,8 +11,13 @@ lexer, typecheck, or reactor). Compile with:
 
 ```sh
 brievc bad <file.bad> [--target <triple>] [--emit-asm]
-         [--linker-script <path>] [--raw-bin] [--run]
+         [--linker-script <path>] [--raw-bin] [--run] [--warn-unused-values]
 ```
+
+`--warn-unused-values` reports symbolic values that are defined but never
+read (a probable typo like `vga` vs `vgaa`). It is advisory and never
+blocks compilation; prefix a name with `_` to mark it intentionally
+unused. Pins and physical-register bindings are not flagged.
 
 ## The one-page program
 

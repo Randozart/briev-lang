@@ -575,6 +575,7 @@ struct BadCli {
     raw_bin: bool,
     no_link: bool,
     linker_script: Option<String>,
+    warn_unused: bool,
 }
 
 fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
@@ -608,6 +609,7 @@ fn parse_dialect_cli(
         raw_bin: false,
         no_link: false,
         linker_script: None,
+        warn_unused: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -624,6 +626,9 @@ fn parse_dialect_cli(
             "--trace-lowering" => cli.trace = true,
             "--run" => cli.run = true,
             "--raw" => cli.raw = true,
+            // 2026-10-20: warn when a symbolic value is defined but never
+            // read (a probable typo like `vga` vs `vgaa`).
+            "--warn-unused-values" => cli.warn_unused = true,
             // 2026-09-22: extract the flat loadable image (boot sector /
             // firmware blob) from the linked ELF via objcopy -O binary.
             "--raw-bin" => cli.raw_bin = true,
@@ -768,14 +773,34 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let source = std::fs::read_to_string(&cli.file_path)
         .map_err(|e| format!("bad: cannot read '{}': {}", cli.file_path, e))?;
     let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
-    let asm = briev_compiler::backend::bad::generate_with(
-        &source,
-        &cli.triple,
-        cli.trace,
-        base_dir.as_deref(),
-        !cli.raw,
-    )
-    .map_err(|e| format!("bad: {e}"))?;
+    let asm = if cli.warn_unused {
+        let (asm, unused) = briev_compiler::backend::bad::generate_with_lints(
+            &source,
+            &cli.triple,
+            cli.trace,
+            base_dir.as_deref(),
+            !cli.raw,
+            true,
+        )
+        .map_err(|e| format!("bad: {e}"))?;
+        for u in &unused {
+            eprintln!(
+                "warning: `{}` (line {}) is defined but never used - check for a typo, \
+                 or prefix it with `_`",
+                u.name, u.line
+            );
+        }
+        asm
+    } else {
+        briev_compiler::backend::bad::generate_with(
+            &source,
+            &cli.triple,
+            cli.trace,
+            base_dir.as_deref(),
+            !cli.raw,
+        )
+        .map_err(|e| format!("bad: {e}"))?
+    };
 
     emit_asm_artifacts(asm, &cli)
 }

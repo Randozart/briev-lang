@@ -16,10 +16,13 @@
 
 pub mod contracts;
 pub mod comptime;
+pub mod lint;
 pub mod lower;
 pub mod notices;
 pub mod registry;
 pub mod symbolic;
+
+pub use lint::UnusedValue;
 
 use crate::ast::bad::BadProgram;
 use crate::parser::bad::parse_bad;
@@ -66,6 +69,27 @@ pub fn generate_with_notices(
     let asm = lowerer.run(&program)?;
     let notices = lowerer.notices().to_vec();
     Ok((asm, notices))
+}
+
+/// `--warn-unused-values`: lower and return the defined-but-never-read
+/// symbolic values alongside the assembly. `warn_unused` enables the
+/// lint; without it the vector is empty.
+pub fn generate_with_lints(
+    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    friendly: bool, warn_unused: bool,
+) -> Result<(String, Vec<UnusedValue>), String> {
+    let program: BadProgram =
+        parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
+    let (isa, regs) = registries();
+    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    let mut lowerer = lower::Lowerer::new(&isa, &regs, family)
+        .with_trace(trace)
+        .with_friendly(friendly)
+        .with_base_dir(base_dir.map(|p| p.to_path_buf()))
+        .with_warn_unused(warn_unused);
+    let asm = lowerer.run(&program)?;
+    let unused = lowerer.unused_values().to_vec();
+    Ok((asm, unused))
 }
 
 /// Request bundle for `generate_bad_fn` — six inputs, one struct (the
@@ -675,6 +699,46 @@ mod tests {
         let err = generate("declarations {\n    extern foo\n}\n", "x86_64")
             .expect_err("malformed extern");
         assert!(err.contains("extern fn") && err.contains("extern data"), "{err}");
+    }
+
+    fn lint(src: &str, warn: bool) -> Vec<UnusedValue> {
+        generate_with_lints(src, "x86_64", false, None, true, warn)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .1
+    }
+
+    #[test]
+    fn unused_value_is_reported() {
+        let src = "_start:\n    let vgaa = 0xB8000\n    halt\n";
+        let unused = lint(src, true);
+        assert_eq!(unused.len(), 1, "{unused:?}");
+        assert_eq!(unused[0].name, "vgaa");
+        assert_eq!(unused[0].line, 2);
+    }
+
+    #[test]
+    fn used_value_is_not_reported() {
+        let src = "_start:\n    let vga = 0xB8000\n    let c = 66\n    store c, vga\n    halt\n";
+        assert!(lint(src, true).is_empty());
+    }
+
+    #[test]
+    fn underscore_prefixed_value_is_not_reported() {
+        let src = "_start:\n    let _scratch = 1\n    halt\n";
+        assert!(lint(src, true).is_empty());
+    }
+
+    #[test]
+    fn unused_lint_is_off_without_the_flag() {
+        let src = "_start:\n    let vgaa = 0xB8000\n    halt\n";
+        assert!(lint(src, false).is_empty());
+    }
+
+    #[test]
+    fn unused_inline_defn_param_is_reported() {
+        let src = "defn ignore(x: Int) {\n    halt\n}\nbootstrap E {\n    ignore(1)\n}\n";
+        let unused = lint(src, true);
+        assert!(unused.iter().any(|u| u.name == "x"), "{unused:?}");
     }
 
     #[test]

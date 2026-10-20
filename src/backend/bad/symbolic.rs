@@ -52,6 +52,9 @@ pub struct SymCtx<'a> {
     pub extern_fns: &'a [crate::ast::bad::BadExternFn],
     /// `declarations { stack N; }` — reserved stack size, if declared.
     pub stack: Option<i64>,
+    /// `--warn-unused-values`: run the unused-value lint over the built
+    /// symbolic program and return its findings.
+    pub warn_unused: bool,
 }
 
 const PREFIX: &str = "__bad_sym_";
@@ -82,7 +85,7 @@ struct Unit {
 
 pub fn lower_symbolic_labels(
     items: &mut [BadTopLevel], ctx: &SymCtx<'_>,
-) -> Result<(), String> {
+) -> Result<Vec<crate::backend::bad::UnusedValue>, String> {
     let mut units: Vec<Unit> = Vec::new();
     let mut serial = 0usize;
     for (idx, item) in items.iter().enumerate() {
@@ -127,7 +130,7 @@ pub fn lower_symbolic_labels(
         }
     }
     if units.is_empty() && ctx.extern_fns.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let mut program_items: Vec<BldTopLevel> = Vec::new();
@@ -203,6 +206,14 @@ pub fn lower_symbolic_labels(
         }));
     }
 
+    // Unused-value lint runs on the author's names, before the engine
+    // lowerer resolves them to `vN`s.
+    let unused = if ctx.warn_unused {
+        crate::backend::bad::lint::unused_values(&program_items)
+    } else {
+        Vec::new()
+    };
+
     let mut lowerer = crate::backend::bld::lower::BldLowerer::new(
         ctx.isa,
         ctx.regs,
@@ -255,7 +266,7 @@ pub fn lower_symbolic_labels(
             }
         }
     }
-    Ok(())
+    Ok(unused)
 }
 
 fn parse_type(name: &str) -> Type {
