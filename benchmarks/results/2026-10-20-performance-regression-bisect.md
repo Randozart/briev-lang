@@ -96,3 +96,32 @@ This is now the concrete P2-8 root cause. Next: implement the cost model in the
 frontend-driven loop/state strategy, or a loop-engine memory/register choice
 for high-field float loops that keeps the accumulator in a register while
 leaving the bulk fields in memory.
+
+
+## Additional experiments 2026-10-20 — what does NOT fix it
+
+All on the `5aa90185` worktree, same harness:
+
+| Variant | float_math | queue_drain | interval_step | Verdict |
+|---|---:|---:|---:|---|
+| stateless print + stack state (current) | 2.72x | 0.45x | 0.61x | baseline |
+| stateless print + **stateful stdout** | **0.92x** | 1.44x | 1.46x | tradeoff, rejected |
+| stateless print + **global state** | 2.71x | 1.68x | 1.67x | fails both |
+| stateless print + **launder state base** | 2.61x | 0.49x | 0.69x | fails float |
+| stateless print + **noinline print functions** | ~2.7x (0.125s) | — | — | fails |
+
+Conclusions:
+
+- It is not simply SROA/state escape: global state and a launder barrier do not
+  recover float_math.
+- It is not print-function inlining: `noinline` on print_float/put_char/
+  print_int/print_str does not recover.
+- It is not "make stdout stateful" as a fix: that loses the queue/interval
+  wins.
+- The fast codegen keeps the trace accumulator in `xmm0`; the slow codegen
+  spills it to `0x14(%rsp)` every iteration. The trigger is the combination of
+  the stateless print call shape and clang's SROA/register allocation, not one
+  isolated flag.
+
+Therefore the long-term fix must control the loop's state/register materialization
+explicitly from the frontend/target model, not rely on clang's SROA decision.

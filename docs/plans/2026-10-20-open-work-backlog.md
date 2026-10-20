@@ -203,15 +203,17 @@ These are ranked by repeated evidence across fixtures and the suite.
 | queue_drain | 1.35x | 0.45x | 0.47x | improved |
 | interval_step | 1.23x | 0.61x | 0.72x | improved |
 
-**Status:** bisected + trigger confirmed. `float_math` fast `3c15268a` =
+**Status:** bisected + trigger narrowed. `float_math` fast `3c15268a` =
 **0.94x**, first regression at `5aa90185` state/plain = **2.72x** (same
-machine/harness); current ~2.74x. A controlled 5aa experiment makes
-`stdout_buf`/`stdout_fill` stateful again: float_math **0.92x**, but
-queue_drain **1.44x** and interval_step **1.46x** (the wins are lost). Root
-cause: stateless print lets SROA promote 13 float fields; register pressure
-spills the loop accumulator every iteration. The raw-pointer provenance patch
-is not the cause (float_math has no Ptr). Fix must be a general
-register-pressure-aware state/loop strategy, not a blanket stateful print.
+machine/harness); current ~2.74x. Controlled experiments: stateful stdout
+recovers float_math **0.92x** but loses queue_drain/interval_step
+(1.44/1.46). Global state (2.71x), a launder state base (2.61x), and noinline
+print functions (~2.7x) do **not** recover float_math. It is not print
+inlining and not merely SROA escape; clang spills the trace accumulator under
+the stateless print/state shape. The provenance patch is not the cause
+(float_math has no Ptr). Long-term fix: explicit target-pressure-driven
+state/loop materialization, not a blanket print/state change. Design:
+`docs/plans/2026-10-20-machine-backed-state-and-loop-emission.md`.
 Immediate `ws_frame` slice is DONE: 3.50x → **1.48x**, better than the old
 1.58x, by removing per-byte guards and using a proven direct `Load#`. Full
 record: `benchmarks/results/2026-10-20-performance-regression-bisect.md`.

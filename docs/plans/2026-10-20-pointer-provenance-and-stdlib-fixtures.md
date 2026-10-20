@@ -8,6 +8,9 @@ and the performance contract the fixtures must be measured against).
 **Open work:** `docs/plans/2026-10-20-open-work-backlog.md` — the complete
 remaining P0–P4 list after this plan's first pass. Update statuses there; this
 file remains the structural design/result record.
+**State/loop decision:** `docs/plans/2026-10-20-machine-backed-state-and-loop-emission.md`
+— target-pressure-driven state materialization, explicit phi/memory partitioning,
+and the perf sentinel that prevents the fast-era regressions from returning.
 
 ## Charter
 
