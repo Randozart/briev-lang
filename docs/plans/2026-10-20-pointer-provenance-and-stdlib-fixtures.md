@@ -594,6 +594,21 @@ P0-1 is closed. The slow rows remain explicit P2 workstreams; none is excused
 as noise. `deep_recursion`/`series_converge`/`bit_clear` are sub-millisecond
 and tie-dominated.
 
+### ws_frame regression recovery (2026-10-20, P2-8 first slice)
+
+The P0 table's `ws_frame` 3.50x was a regression introduced by the contract
+migration's runtime guards on the per-byte path (`get_u8` total guard +
+`ws_payload_byte` index guard + a benchmark-level redundant guard), not by the
+provenance change. Fixed structurally: foreach range facts now reach the call
+gate; `ws_payload_byte` proves its index from its contract and uses
+`Load#(buf.ptr + idx, 1)`; the benchmark guard is gone. New measurement:
+**1.48x C**, MATCH — better than the pre-migration 1.58x. See the fixture-1
+results amendment.
+
+The remaining fast→current regressions (`float_math`, `telemetry_stream`,
+`pid_control`, `sweep_sparse`) are in the P2-8 bisect queue; they appeared
+before the provenance patch and are not explained by it.
+
 ## Risks
 
 - Canonical-pointer caching can be unsound if a Ptr slot is reassigned while a

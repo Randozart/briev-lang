@@ -188,6 +188,41 @@ These are ranked by repeated evidence across fixtures and the suite.
 - No redundant `ptrtoint`/`inttoptr`/boxing in hot loops; suite unchanged or
   improved.
 
+### P2-8 — Performance regression triage
+
+**Evidence (fast `3c15268a` → current):**
+
+| Benchmark | Fast | State/plain | Current | Verdict |
+|---|---:|---:|---:|---|
+| float_math | 0.90x | 2.01x | 2.74x | real regression |
+| telemetry_stream | 0.86x | 1.03x | 1.48x | real regression |
+| pid_control | 0.99x | 1.23x | 1.23x | real regression |
+| sweep_sparse | 1.30x | 1.44x | 1.49x | real regression |
+| nbody_newton | 0.97x | 1.13x | 1.08x | real/needs A/B |
+| ws_frame | — | — | 3.50x → **1.48x** | fixed 2026-10-20 (P2-8 first slice) |
+| queue_drain | 1.35x | 0.45x | 0.47x | improved |
+| interval_step | 1.23x | 0.61x | 0.72x | improved |
+
+**Status:** ws_frame slice DONE. The other rows are not yet bisected; do not
+call them noise and do not blame the provenance patch without A/B evidence.
+
+**Work**
+1. Re-run `3c15268a`, `5aa90185`, and current interleaved on the same machine,
+   7x, same BOUND/geometry; record whether the fast/current gap reproduces.
+2. Bisect `3c15268a..fad30da8` for float_math/telemetry/pid/sweep via
+   `git bisect run`, correctness-gated at a print boundary.
+3. Inspect float_math IR/asm: `%State` promotion/SROA, loop-carried field
+   loads/stores, FMA contraction under `-ffast-math`, vectorization, spills.
+4. Fix the first reproduced cause in the general pass; no shape matcher, no
+   strategy keyword.
+5. Refresh the full P0 table after each fix.
+
+**Acceptance**
+- Regression rows either return to the fast-era ratio within noise, or have a
+  named missing capability with a measured cause.
+- `queue_drain`/`interval_step` improvements are not lost while fixing the
+  float/stream lane.
+
 ### P2-7 — Full-suite re-baseline with new rows
 
 **Evidence**

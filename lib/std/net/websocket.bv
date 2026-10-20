@@ -222,14 +222,16 @@ defn ws_decode_mask(buf: ByteBuf, off: Int, f: WsFrame) -> Result<WsFrame, Strin
 // proof an over-read is unrepresentable. Returns byte i of the UNMASKED
 // payload (the mask is applied here, so callers see plaintext either way).
 defn ws_payload_byte(buf: ByteBuf, off: Int, f: WsFrame, i: Int)
-    [i >= 0 && i < f.payload_len && off + f.header_len + f.payload_len <= buf.len]
+    [off >= 0 && i >= 0 && i < f.payload_len
+        && off + f.header_len + f.payload_len <= buf.len]
     -> Int
 {
+    // 2026-10-20 (ws_frame hot path): the contract proves the index is in
+    // bounds (off + header + i < off + header + payload <= len); load the
+    // byte directly so the per-byte codec walk has no runtime guard and no
+    // total-accessor call. This is the same primitive get_u8 wraps.
     let idx: Int = off + f.header_len + i;
-    when idx < 0 || idx >= buf.len {
-        term 0;
-    };
-    let raw: Int = get_u8(buf, idx);
+    let raw: Int = Load#(buf.ptr + idx, 1);
     when !f.masked {
         term raw;
     };

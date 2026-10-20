@@ -176,9 +176,7 @@ defn ws_validate_frame(view: ByteBuf, off: Int, f: WsFrame,
     };
     let psum: Int = 0;
     foreach i in 0..f.payload_len {
-        when i >= 0 && i < f.payload_len {
-            psum = psum + ws_payload_byte(view, off, f, i);
-        };
+        psum = psum + ws_payload_byte(view, off, f, i);
     };
     term psum;
 };

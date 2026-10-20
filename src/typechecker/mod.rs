@@ -2952,9 +2952,12 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
         }
         Statement::Block(body) | Statement::SyncBlock(body)
         | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
-        Statement::Foreach { list, body, .. } => {
+        Statement::Foreach { item, list, body } => {
             elaborate_expr(list, ctx, errors);
+            let fact_base = ctx.known_facts.len();
+            ctx.known_facts.extend(foreach_range_facts(list, item));
             elaborate_stmts(body, ctx, errors);
+            ctx.known_facts.truncate(fact_base);
         }
         _ => {}
     }
@@ -3737,6 +3740,40 @@ fn record_call_post_facts(
     ctx.known_facts.extend(facts);
 }
 
+/// Range facts established inside `foreach i in a..b` (or `a..=b`): the loop
+/// item is bounded by the range endpoints. Only simple endpoints are used —
+/// an endpoint expression with effects could change while the fact is live.
+/// This is what lets a proven callee precondition (`i < payload_len`) discharge
+/// without a redundant per-iteration guard in the hot loop.
+fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
+    let Expr::Range { start, end, inclusive } = list else {
+        return Vec::new();
+    };
+    fn simple(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(_) | Expr::Decimal(_) => true,
+            Expr::Field(base, _) => simple(base),
+            Expr::Cast(inner, _) => simple(inner),
+            _ => false,
+        }
+    }
+    if !simple(start) || !simple(end) {
+        return Vec::new();
+    }
+    let lhs = Expr::Identifier(item.to_string());
+    let mut facts = vec![Expr::BinaryOp(
+        BinaryOpKind::Ge,
+        Box::new(lhs.clone()),
+        start.clone(),
+    )];
+    facts.push(Expr::BinaryOp(
+        if *inclusive { BinaryOpKind::Le } else { BinaryOpKind::Lt },
+        Box::new(lhs),
+        end.clone(),
+    ));
+    facts
+}
+
 /// Infer the type of a statement.
 pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(), TypeError> {
     match stmt {
@@ -4374,14 +4411,18 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // hardcoded Int.
             let element_ty = foreach_item_type(ctx, &list_ty);
             ctx.bindings.insert(item.clone(), element_ty);
+            let fact_base = ctx.known_facts.len();
+            ctx.known_facts.extend(foreach_range_facts(list, item));
             ctx.foreach_depth += 1;
             for stmt in body {
                 if let Err(e) = infer_statement(stmt, ctx) {
                     ctx.foreach_depth -= 1;
+                    ctx.known_facts.truncate(fact_base);
                     return Err(e);
                 }
             }
             ctx.foreach_depth -= 1;
+            ctx.known_facts.truncate(fact_base);
             Ok(())
         }
         // 2026-08-17 (foreach break): `break;` is valid only lexically inside
@@ -8437,6 +8478,24 @@ mod tests {
         .expect("fall-through gives a2 >= 1e18");
     }
 
+    /// Foreach over a range establishes the item bounds for call-site proofs.
+    /// This is what lets a hot payload walk call a bounds-proven accessor
+    /// without a redundant per-iteration guard.
+    #[test]
+    fn foreach_range_proves_item_bounds() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(i: Int, n: Int) [i >= 0 && i < n][term >= 0] -> Int { term i; }; \
+             defn f(n: Int) [n >= 0][term >= 0] -> Int { \
+                 foreach i in 0..n { let x: Int = need(i, n); }; \
+                 term 0; \
+             };",
+        )
+        .expect("the foreach range facts prove the item bounds");
+    }
+
+    /// A post fact that a scale is positive proves a multiplied argument
+    /// non-negative.
     /// A post fact that a scale is positive proves a multiplied argument
     /// non-negative.
     #[test]
