@@ -496,8 +496,15 @@ BOUND=50000000. Correctness MATCH on every row.
 codec calls); it is not accepted as normal. `deep_recursion`/`series_converge`
 are sub-millisecond and dominated by harness noise.
 
-**Next:** resume the fixture campaign at Fixture 4 (FSM), then Arena, then
-SPSC. The provenance prerequisite for Arena/SPSC is now structurally in place;
+**Fixture 4 first pass (this session):** `lib/std/fsm.bv` + `fsm_smoke` +
+`fsm_dispatch` landed. Correctness MATCH; performance **2.82x C** (down from
+7.47x when the integer-code wrapper ran inside the loop). The residual is
+heap-boxed `Result`/enum returns per transition — open performance discovery,
+recorded in `benchmarks/results/2026-10-20-fixture4-fsm.md`. This is the
+fixture campaign doing its job: the FSM is competitive only after the
+compiler learns to unbox small sum types. No keyword/workaround used.
+
+**Next:** Fixture 3 (Arena), then Fixture 2 (SPSC). The provenance prerequisite for Arena/SPSC is now structurally in place;
 the remaining risk in 2 is the single-threaded reactor (documented, not hidden).
 
 ## Risks

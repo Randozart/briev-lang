@@ -1,0 +1,15 @@
+// fsm_dispatch — exhaustive TCP-subset FSM transition throughput (fixture 4).
+//
+// The enum-typed event loop lives in std/fsm.bv (`fsm_run`); this driver only
+// supplies the runtime-determined bound. The event stream is deterministic, so
+// the final checksum is byte-stable.
+//
+// C reference: fsm_dispatch_c.c (the same switch-table transition function).
+import "std/fsm.bv";
+
+let N: Int = get_env_int!("BOUND");
+
+node run [beginprogram][true] {
+    println!("{}", fsm_run(N));
+    endprogram 0;
+};

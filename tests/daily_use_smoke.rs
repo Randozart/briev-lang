@@ -265,6 +265,23 @@ fn net_stack_helpers_golden_output() {
 /// reads the zero slot; every later iteration reads the previous store. This
 /// pins the behavioral side of the #13 effect-summary fix; #8 on either defn
 /// is exactly the attribute lie that lets LTO hoist the read.
+/// 2026-10-20 (Fixture 4, stdlib campaign): the TCP-subset FSM exercises
+/// closed enums, exhaustive nested matches, and Result-returning illegal
+/// edges. The integer-code boundary keeps the fixture on the stable import
+/// surface; the enum/match machinery lives in `lib/std/fsm.bv`.
+#[test]
+fn fsm_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("fsm_smoke", "golden", &[]);
+    assert_eq!(
+        out, "0|1|3|4|5|6|10|1",
+        "FSM transition golden drifted: {out:?}"
+    );
+}
+
 #[test]
 fn ptr_crossdefn_probe_golden_output() {
     if !has("clang") {

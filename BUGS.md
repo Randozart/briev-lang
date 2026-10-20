@@ -82,6 +82,16 @@ failing clang with `'%t2' defined with type 'ptr' but expected 'i64'`.
 **Status:** logged, not fixed. This is a separate storage-class lowering gap
 from the canonical-pointer work; do not paper over it with a cast.
 
+## Named imports of enum types (`import { TcpState } ...`) are undefined -- OPEN 2026-10-20
+
+**Symptom:** `import { TcpState, TcpEvent } from "std/fsm"` then
+`TcpEvent.PassiveOpen` fails with `undefined variable 'TcpEvent'`. Importing
+the enum type by name does not bring the type/variant namespace into scope;
+the module itself checks and runs. Discovered building Fixture 4 (FSM).
+**Workaround in fixture:** integer-code boundary (`tcp_step_code`) instead of
+named enum-type imports; the enum/match core stays in `lib/std/fsm.bv`.
+**Status:** OPEN — stable import surface for enum types/variants.
+
 ## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
 
 **Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.
