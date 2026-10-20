@@ -85,14 +85,14 @@ obj WsFrame {
 // ws_ext_len16 - the 16-bit extended payload length (len7 == 126). Truncation
 // fails cleanly before the read.
 defn ws_ext_len16(buf: ByteBuf, off: Int) -> Result<Int, String> {
-    when off + 4 > buf.len {
+    when off < 0 || off + 4 > buf.len {
         term Err("incomplete");
     };
     term Ok(get_u16_be(buf, off + 2));
 };
 
 defn ws_ext_len64(buf: ByteBuf, off: Int) -> Result<Int, String> {
-    when off + 10 > buf.len {
+    when off < 0 || off + 10 > buf.len {
         term Err("incomplete");
     };
     term Ok(get_u64_be(buf, off + 2));
@@ -101,7 +101,7 @@ defn ws_ext_len64(buf: ByteBuf, off: Int) -> Result<Int, String> {
 // ws_mask_key_at - the 4-byte masking key that follows the length field when
 // the MASK bit is set. `at` is the offset just past the length field.
 defn ws_mask_key_at(buf: ByteBuf, at: Int) -> Result<Int, String> {
-    when at + 4 > buf.len {
+    when at < 0 || at + 4 > buf.len {
         term Err("incomplete");
     };
     term Ok(get_u32_be(buf, at));
@@ -225,7 +225,11 @@ defn ws_payload_byte(buf: ByteBuf, off: Int, f: WsFrame, i: Int)
     [i >= 0 && i < f.payload_len && off + f.header_len + f.payload_len <= buf.len]
     -> Int
 {
-    let raw: Int = get_u8(buf, off + f.header_len + i);
+    let idx: Int = off + f.header_len + i;
+    when idx < 0 || idx >= buf.len {
+        term 0;
+    };
+    let raw: Int = get_u8(buf, idx);
     when !f.masked {
         term raw;
     };
@@ -387,5 +391,5 @@ defn when_incomplete_or_protocol(e: String) -> WsMessage {
 defn ws_encode_text(payload: String) -> GrowBuf {
     let plen: Int = payload .^Length;
     let data_addr: Int = ((payload as Data) as Int) + 8;
-    term ws_encode(grow_new(plen + 10), true, WS_OP_TEXT, false, 0, data_addr, plen);
+    term ws_encode(grow_new(plen + 10), true, 1, false, 0, data_addr, plen);  // WS_OP_TEXT
 };

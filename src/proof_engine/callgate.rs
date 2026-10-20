@@ -470,6 +470,9 @@ fn eval_bounds(e: &Expr, map: &HashMap<String, Bounds>) -> Bounds {
             let b = eval_bounds(r, map);
             binary_bounds(*op, a, b)
         }
+        // Integer-preserving casts (Ptr↔Int, Char↔Int, same-width Bit) keep
+        // the value; a cast is not a proof wall for address bounds.
+        Expr::Cast(inner, _) => eval_bounds(inner, map),
         _ => Bounds::unknown(),
     };
     // A fact may state a bound about the whole expression (`acc / 10 >= 0`);
@@ -845,6 +848,21 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
     if direct != Verdict::Unproven {
         return direct;
     }
+    // Field equalities (`b.len == 0`, `r.cap >= n`) are atom definitions.
+    // Expand the whole atom, never just the base, so `r.len` cannot turn into
+    // `(a + b).len`.
+    let atom_defs = atom_defs_from_facts(facts);
+    let mut current = if atom_defs.is_empty() {
+        goal.clone()
+    } else {
+        expand_atom_defs(goal, &atom_defs)
+    };
+    if &current != goal {
+        let verdict = prove_conjunct_core(&current, facts);
+        if verdict != Verdict::Unproven {
+            return verdict;
+        }
+    }
     // `let` definitions are equalities. Try the defining expression only as a
     // fallback: direct facts about the bound name (e.g. a guard's `x >= 1e18`)
     // are stronger than their expanded form.
@@ -852,11 +870,77 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
     if defs.is_empty() {
         return direct;
     }
-    let expanded = expand_defs(goal, &defs);
-    if &expanded == goal {
+    current = expand_defs(&current, &defs);
+    if &current == goal {
         return direct;
     }
-    prove_conjunct_core(&expanded, facts)
+    prove_conjunct_core(&current, facts)
+}
+
+fn is_atom_expr(e: &Expr) -> bool {
+    match e {
+        Expr::Identifier(_) => true,
+        Expr::Field(base, _) => is_atom_expr(base),
+        _ => false,
+    }
+}
+
+fn atom_defs_from_facts(facts: &[Expr]) -> Vec<(Expr, Expr)> {
+    let mut defs = Vec::new();
+    for f in facts {
+        let Expr::BinaryOp(BinaryOpKind::Eq, l, r) = f else {
+            continue;
+        };
+        if is_atom_expr(l) {
+            defs.push(((**l).clone(), (**r).clone()));
+        } else if is_atom_expr(r) {
+            defs.push(((**r).clone(), (**l).clone()));
+        }
+    }
+    defs
+}
+
+fn expand_atom_defs(goal: &Expr, defs: &[(Expr, Expr)]) -> Expr {
+    let mut out = goal.clone();
+    for _ in 0..8 {
+        let before = out.clone();
+        out = replace_atoms(&out, defs);
+        if out == before {
+            break;
+        }
+    }
+    out
+}
+
+fn replace_atoms(e: &Expr, defs: &[(Expr, Expr)]) -> Expr {
+    if let Some((_, value)) = defs.iter().find(|(atom, _)| atom == e) {
+        return value.clone();
+    }
+    match e {
+        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
+            *k,
+            Box::new(replace_atoms(l, defs)),
+            Box::new(replace_atoms(r, defs)),
+        ),
+        Expr::UnaryOp(k, inner) => Expr::UnaryOp(*k, Box::new(replace_atoms(inner, defs))),
+        Expr::Field(base, f) => Expr::Field(Box::new(replace_atoms(base, defs)), f.clone()),
+        Expr::Call(name, args, id) => Expr::Call(
+            name.clone(),
+            args.iter().map(|a| replace_atoms(a, defs)).collect(),
+            *id,
+        ),
+        Expr::MethodCall(recv, name, args, id, refs) => Expr::MethodCall(
+            Box::new(replace_atoms(recv, defs)),
+            name.clone(),
+            args.iter().map(|a| replace_atoms(a, defs)).collect(),
+            *id,
+            refs.clone(),
+        ),
+        Expr::Reflect(base, target, kind) => {
+            Expr::Reflect(Box::new(replace_atoms(base, defs)), target.clone(), *kind)
+        }
+        other => other.clone(),
+    }
 }
 
 fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
@@ -865,6 +949,18 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     // proof.
     if facts.iter().any(|f| f == goal) {
         return Verdict::Proven;
+    }
+    // A stored length (`.^Length`) is a non-negative header slot. This is an
+    // invariant of every managed String/collection, so `x.^Length >= 0`
+    // needs no separate fact.
+    if let Expr::BinaryOp(BinaryOpKind::Ge, l, r) = goal {
+        if matches!(
+            l.as_ref(),
+            Expr::Reflect(_, field, crate::ast::ReflectKind::Runtime) if field == "Length"
+        ) && matches!(r.as_ref(), Expr::Decimal(0))
+        {
+            return Verdict::Proven;
+        }
     }
     match goal {
         Expr::Bool(true) => return Verdict::Proven,
@@ -913,6 +1009,26 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
         }
         return Verdict::Unproven;
     };
+
+    // A goal whose atoms cancel is a pure constant relation: `x + 1 = x + 1`
+    // needs no fact at all.
+    if g.terms.is_empty() {
+        return match g.op {
+            BinaryOpKind::Eq => {
+                if g.const_ == 0 { Verdict::Proven } else { Verdict::Refuted }
+            }
+            BinaryOpKind::Le => {
+                if g.const_ >= 0 { Verdict::Proven } else { Verdict::Refuted }
+            }
+            BinaryOpKind::Lt => {
+                if g.const_ > 0 { Verdict::Proven } else { Verdict::Refuted }
+            }
+            BinaryOpKind::Neq => {
+                if g.const_ != 0 { Verdict::Proven } else { Verdict::Refuted }
+            }
+            _ => Verdict::Unproven,
+        };
+    }
 
     let mut proven = false;
     for f in facts {
@@ -1154,6 +1270,18 @@ fn negate_literal(e: &Expr) -> Option<Expr> {
 /// non-negative integer literal gives `v >= 0` (and `v == n` for exact
 /// reasoning). Sums of such literals too. 2026-10-19 (contract tiers v2).
 pub fn initializer_fact(name: &str, init: &Expr) -> Option<Expr> {
+    // A stored length (`.^Length`, `CharCount#`-free header slot) is never
+    // negative; declaring it lets a digest length flow into a callee that
+    // requires a non-negative size without an assertion at every call site.
+    if let Expr::Reflect(_, field, crate::ast::ReflectKind::Runtime) = init {
+        if field == "Length" {
+            return Some(Expr::BinaryOp(
+                BinaryOpKind::Ge,
+                Box::new(Expr::Identifier(name.to_string())),
+                Box::new(Expr::Decimal(0)),
+            ));
+        }
+    }
     fn nonneg_literal_sum(e: &Expr) -> Option<i64> {
         match e {
             Expr::Decimal(n) if *n >= 0 => Some(*n),
@@ -1531,6 +1659,18 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_linear_goal_is_a_tautology() {
+        assert_eq!(
+            prove_precondition(&e("x + 1 == x + 1"), &[]),
+            Verdict::Proven
+        );
+        assert_eq!(
+            prove_precondition(&e("x + 1 <= x + 1"), &[]),
+            Verdict::Proven
+        );
+    }
+
+    #[test]
     fn literal_proven() {
         let goal = e("5 >= 0");
         assert_eq!(prove_precondition(&goal, &[]), Verdict::Proven);
@@ -1718,6 +1858,23 @@ mod tests {
         assert_eq!(
             facts,
             vec![e("a >= 1"), e("b >= n"), e("b <= n + 1")]
+        );
+    }
+
+    #[test]
+    fn field_atom_definitions_chain_through_lets() {
+        let facts = vec![
+            e("b1.len == b0.len + msg_len"),
+            e("b1.cap == b0.cap"),
+            e("after_one.len == b1.len + 1"),
+            e("after_one.cap == b1.cap"),
+            e("b0.len == 0"),
+            e("b0.cap == total"),
+            e("msg_len >= 0"),
+        ];
+        assert_eq!(
+            prove_precondition(&e("after_one.len == msg_len + 1"), &facts),
+            Verdict::Proven
         );
     }
 

@@ -21,12 +21,14 @@ node entry [beginprogram][true] {
     // Server side: TCP socket, SO_REUSEADDR, bind INADDR_ANY:port, listen.
     // Verdicts print as Int (Bool would spell true/false).
     let server: Socket = sock_tcp();
-    let lrc: Int = sock_bind_listen(server, TEST_PORT, 4);
+    // TEST_PORT
+    let lrc: Int = sock_bind_listen(server, 39471, 4);
     Print#((lrc == 0) as Int);
 
     // Client side: TCP socket, connect to loopback.
     let client: Socket = sock_tcp();
-    let crc: Int = sock_connect(client, LOOPBACK, TEST_PORT);
+    // LOOPBACK, TEST_PORT
+    let crc: Int = sock_connect(client, 2130706433, 39471);
     Print#((crc == 0) as Int);
 
     // Accept the pending connection (handshake completed via the backlog).
@@ -35,7 +37,8 @@ node entry [beginprogram][true] {
 
     // Send one byte (65 = 'A') from client; the send loop moves the whole
     // buffer and returns its length.
-    let sbuf: ByteBuf = buf_new(1).put_u8(65);
+    let sbuf0: ByteBuf = buf_new(1);
+    let sbuf: ByteBuf = sbuf0.put_u8(65);
     let nsent: Int = sock_send(client, sbuf, 1);
     Print#((nsent == 1) as Int);
 

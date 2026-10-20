@@ -24,7 +24,7 @@ import "std/float_fmt.bv";
 // 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
 // the lane parsers share one definition.
-defn byte_at(s: String, i: Int) [true][term >= 0] -> Int {
+defn byte_at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {
     let addr: Int = (s as Data) as Int;
     when i < 0 || i >= s .^Length {
         term 0;

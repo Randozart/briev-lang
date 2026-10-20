@@ -6,7 +6,7 @@ import { StringBuilder, new_builder, append_char } from "std/string_builder.bv";
 // ===== NATIVE DEFINITIONS =====
 
 // Conversion
-defn char_to_int(c: Char) [true][term >= 0] -> Int {
+defn char_to_int(c: Char) [true][term >= 0 && term <= 0x10FFFF] -> Int {
     term c as Int;
 };
 
@@ -113,21 +113,19 @@ defn is_ASCII(c: Char) [true][term == true || term == false] -> Bool {
 
 // Case conversion
 defn to_upper(c: Char) [true][term >= 'A'] -> Char {
-    when is_lower(c) {
+    when c >= 'a' && c <= 'z' {
         // Convert lowercase to uppercase
-        let code = char_to_int(c);
-        let upper_code = code - 32;  // ASCII difference
-        term int_to_char(upper_code);
+        let upper_code: Int = (c as Int) - 32;  // ASCII difference
+        term upper_code as Char;
     };
     term c;
 };
 
 defn to_lower(c: Char) [true][term <= 'z'] -> Char {
-    when is_upper(c) {
+    when c >= 'A' && c <= 'Z' {
         // Convert uppercase to lowercase
-        let code = char_to_int(c);
-        let lower_code = code + 32;  // ASCII difference
-        term int_to_char(lower_code);
+        let lower_code: Int = (c as Int) + 32;  // ASCII difference
+        term lower_code as Char;
     };
     term c;
 };
@@ -139,7 +137,7 @@ defn digit_to_int(c: Char) [is_digit(c)][term >= 0 && term <= 9] -> Int {
 };
 
 defn int_to_digit(n: Int) [n >= 0 && n <= 9][true] -> Char {
-    let code = char_to_int('0') + n;
+    let code: Int = 48 + n;
     term int_to_char(code);
 };
 
@@ -162,7 +160,7 @@ defn int_to_hex_digit(n: Int) [n >= 0 && n <= 15][true] -> Char {
     when n < 10 {
         term int_to_digit(n);
     };
-    let code = char_to_int('a') + (n - 10);
+    let code: Int = 97 + (n - 10);
     term int_to_char(code);
 };
 
@@ -217,6 +215,9 @@ defn is_valid_codepoint(n: Int) [true][term == true || term == false] -> Bool {
 
 // 2026-08-23: char-at accessor — String indexing s[i] returns Int (byte).
 // This wraps int_to_char for readable character-level access.
-defn char_at(s: String, i: Int) [i >= 0] -> Char {
-    term int_to_char(s[i]);
+defn char_at(s: String, i: Int) [true] -> Char {
+    when i < 0 || i >= s .^Length {
+        term '\u{0000}';
+    };
+    term s[i] as Char;
 };

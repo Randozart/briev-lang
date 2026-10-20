@@ -15,3 +15,5 @@
 // `allow` with no global writes, so unrelated check_source callers never
 // race a policy window in parallel tests. At flip time this line becomes:
 // policy: deny
+
+policy: deny;

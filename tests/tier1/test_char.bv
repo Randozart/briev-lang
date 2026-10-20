@@ -13,7 +13,8 @@ node main [done == 0][done == 1] {
     when to_upper('a') == 'A' && to_lower('Z') == 'z' {
         println!("char-convert-ok");
     };
-    when int_to_char(char_to_int('\u{1F600}')) == '\u{1F600}' {
+    let emoji: Int = char_to_int('\u{1F600}');
+    when int_to_char(emoji) == '\u{1F600}' {
         println!("char-unicode-ok");
     };
     done = 1;

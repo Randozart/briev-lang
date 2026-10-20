@@ -236,7 +236,7 @@ defn parse_hex_escape(s: String, pos: Int) -> Result<Char, String> {
         let d2 = hex_digit_to_int(char_at(s, pos+2));
         let d3 = hex_digit_to_int(char_at(s, pos+3));
         let code = d0 * 4096 + d1 * 256 + d2 * 16 + d3;
-        term Ok(int_to_char(code));
+        term Ok(code as Char);
     };
     term Err(e_invesc());
 };

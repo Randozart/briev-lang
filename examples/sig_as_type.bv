@@ -2,11 +2,11 @@
 // 2026-08-23: migrated off the removed `sig` declaration system onto
 // callable-type annotations — `fn_type = (Args) -> Ret`.
 
-defn my_printer(msg: String) [msg != ""][term == true] -> Bool {
+defn my_printer(msg: String) [term == true] -> Bool {
   term true;
 };
 
-defn apply_function(msg: String, func: (String) -> Bool) [msg != ""] -> Bool {
+defn apply_function(msg: String, func: (String) -> Bool) -> Bool {
   term func(msg);
 };
 

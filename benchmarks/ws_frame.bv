@@ -164,6 +164,9 @@ defn ws_validate_frame(view: ByteBuf, off: Int, f: WsFrame,
                        exp_mask: Int) -> Int
 {
     let want_hdr: Int = ws_len_field_len(exp_len) + exp_mask * 4;
+    when off < 0 || off + f.header_len + f.payload_len > view.len {
+        term 0 - 1;
+    };
     when !f.fin || f.opcode != exp_opcode || f.payload_len != exp_len
         || f.header_len != want_hdr {
         term 0 - 1;
@@ -173,7 +176,9 @@ defn ws_validate_frame(view: ByteBuf, off: Int, f: WsFrame,
     };
     let psum: Int = 0;
     foreach i in 0..f.payload_len {
-        psum = psum + ws_payload_byte(view, off, f, i);
+        when i >= 0 && i < f.payload_len {
+            psum = psum + ws_payload_byte(view, off, f, i);
+        };
     };
     term psum;
 };

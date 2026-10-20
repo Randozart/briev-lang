@@ -456,3 +456,21 @@ bucket checkpoint because guard restructuring can change emitted shapes.
   reach **zero** contract warnings under `policy: warn`.
 - Remaining surface: char conversion (104 + 16 + 4 + 3), syscall lanes,
   sha1/base64, bits/rand, and the bucket-3 dynamic boundaries.
+
+### Final result — 2026-10-20: deny
+
+- Remaining lanes migrated: char/codepoint, JSON parser positions, SHA-1
+  padded build, base64 loop, socket/address construction, UART/MMIO
+  examples, glue C-string boundary, and the socket/net-stack fixtures.
+- Prover: tuple component facts propagate through method receivers; field
+  atom definitions chain (`r.len == a.len + 1`); cancelled linear goals are
+  tautologies; non-negative `%` bounds, integer-preserving cast bounds, and
+  the stored-length non-negativity invariant are built in. Txn bodies now
+  assume their own precondition in both inference and elaboration.
+- Constant program literals fold at call goals (with local shadowing
+  respected); syscall numbers and MMIO addresses are literal at the call
+  site, so imported modules prove without depending on cross-module
+  constant visibility.
+- Census: **217 / 37 → 0 / 0**. `config/contracts.dbvl` now reads
+  `policy: deny;`. `cargo test --lib` (3,219) and the conformance sweep are
+  green under deny; all six parity corpora PASS.
