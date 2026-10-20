@@ -50,3 +50,13 @@ or C-style hand-inline was used to hide it.
 - `arena_smoke_golden_output` PASS.
 - `arena_bump` harness row MATCH.
 - `cargo test --lib` / determinism / parity rerun at the fixture commit.
+
+
+## Amendment 2026-10-20 (P1-1)
+
+The obj Ptr-field representation was fixed after this first pass: a Ptr-typed
+literal field now inttoptrs the i64 handle instead of storing i64 into a ptr
+slot. Arena is restored to the honest `base: Ptr<Bit<8>>` field; the benchmark
+and `arena_smoke` golden are unchanged. This supersedes the `base: Int`
+avoidance note above; the historical numbers remain valid for the allocator
+logic (the field representation did not affect the measured loop).

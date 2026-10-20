@@ -3270,7 +3270,7 @@ impl LlvmBackend {
                     continue;
                 }
                 let reg = self.emit_expr(out, value, indent);
-                let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
+                let llvm_ty = self.plain_global_llvm_type(&ty);
                 writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, reg.name, name).ok();
             }
         }

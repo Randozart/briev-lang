@@ -63,8 +63,8 @@ change the historical result files or superseded plans.
 
 | ID | Work | Evidence / shape | Acceptance |
 |---|---|---|---|
-| P1-1 | `obj` literal with a Ptr-typed field stores i64 into a ptr slot. | `BUGS.md` OPEN 2026-10-20; Arena uses `base: Int` to avoid it | Ptr-typed obj/struct fields have one storage representation; literal store and field load agree; regression fixture. |
-| P1-2 | `plain let` Ptr load emits `ptr` where consumers expect i64. | `BUGS.md` OPEN 2026-10-20 | Plain/global Ptr storage has a defined representation; load/cast/call paths agree; regression fixture. |
+| P1-1 | `obj` literal with a Ptr-typed field stores i64 into a ptr slot. **DONE 2026-10-20**: literal store inttoptrs the handle; field load remains ptr; `ptr_field_smoke` pin; Arena restored to `Ptr<Bit<8>>`. | `BUGS.md`; `tests/tier1/ptr_field_smoke.bv` | Keep the regression; do not reintroduce i64→ptr field stores. |
+| P1-2 | `plain let` Ptr load emits `ptr` where consumers expect i64. **DONE 2026-10-20**: plain Ptr globals use the i64 handle representation consistently; `plain_ptr_smoke` pin. | `BUGS.md`; `tests/tier1/plain_ptr_smoke.bv` | Keep declaration/store/load in lockstep. |
 | P1-3 | Named imports of enum types/variants are undefined. | `BUGS.md` OPEN 2026-10-20; Fixture 4 uses an integer-code boundary | `import { TcpState, TcpEvent }` works; variant construction/matching works across modules; Fixture 4 drops the boundary. |
 | P1-4 | Canonical pointer coverage is partial: arbitrary local/block i64 values still get a fresh inttoptr. | `canonical_ptr` only seeds args and `%State` Ptr fields | A block-scoped or provenance-threaded cache covers locals and mixed access paths without non-dominating SSA. |
 | P1-5 | Validate against the original external recommender repro. | `examples/recommender/reference.bv` is not in this tree; PR #29 used it | A checked-in behavioral repro (or a linked external harness) confirms the `picked[]` stale read is gone under `-O3 -flto`. |
@@ -209,7 +209,7 @@ These are ranked by repeated evidence across fixtures and the suite.
 |---|---|---|
 | P3-1 | Fixture 2 true concurrency | `os/thread.bv` is a stub; SPSC currently tests atomic lowering/ordering, not a race. Add a pthread lane and a race-detector gate before claiming concurrency. |
 | P3-2 | Fixture 4 payload variants | v1 states/events are payload-free. Add payload-carrying states/events once enum imports and match lowering are solid; keep illegal edges as `Err`. |
-| P3-3 | Fixture 3 general Ptr fields | Once P1-1 lands, restore an honest `Ptr<Bit<8>>` base field or document why `base: Int` is the intended handle form. |
+| P3-3 | Fixture 3 general Ptr fields | **DONE 2026-10-20**: Arena uses `base: Ptr<Bit<8>>`; the golden still passes. |
 | P3-4 | Fixture 1 `_idio` | See P2-3; also restore the deferred interpreter len64/encode round-trip when P1-9 lands. |
 | P3-5 | Fixture campaign result ledger | Update the active plan's status table with each fixture's follow-up state; do not rewrite historical results files. |
 
@@ -231,6 +231,7 @@ These are ranked by repeated evidence across fixtures and the suite.
 | P4-12 | Toolchain abstraction | Centralize `clang`/`opt`/`llc`/`wasm-ld`/`ar`/`cc` discovery, version probing, flags, and error mapping; support explicit overrides and fail with actionable diagnostics. |
 | P4-13 | Driver diagnostics | Keep structured diagnostics in the frontend; return typed driver errors and format them once at the CLI boundary instead of `String` at every helper. |
 | P4-14 | Architecture review verification | Keep the table above current when the driver is refactored; do not repeat the inaccurate “tarball”/size claims. |
+| P4-15 | IR emission ergonomics | Evaluate a small IRBuilder/instruction-helper layer instead of a blanket multi-line `write!` refactor. Fixed boilerplate may use `write!` with escaped braces; dynamic/conditional instruction streams stay line-per-instruction; measure code size/readability, not runtime. |
 
 ### External `compile.rs` review — verification
 

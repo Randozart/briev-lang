@@ -768,7 +768,7 @@ impl LlvmBackend {
                         .get(name)
                         .cloned()
                         .unwrap_or((Type::int(), None));
-                    let llvm_ty = self.llvm_type(&ty);
+                    let llvm_ty = self.plain_global_llvm_type(&ty);
                     let r = self.fun.gen_reg();
                     writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
                         .ok();
@@ -2855,8 +2855,13 @@ impl LlvmBackend {
                 out.push_str(&self.emit_packed_field_store(indent, &ptr_reg, &pf, &val));
                 continue;
             }
-            // Convert i64 to ptr if the field type expects a pointer
-            if val.ty == Type::int() && self.is_ptr_field(type_name, field_name) {
+            // Convert the i64 handle to ptr if the field type expects a
+            // pointer. Ptr<T> values are i64 handles in registers (the same
+            // representation as Int); storing the handle directly into a ptr
+            // slot is invalid IR (BUGS.md obj Ptr-field entry).
+            if self.is_ptr_field(type_name, field_name)
+                && (val.ty == Type::int() || matches!(val.ty, Type::Ptr(_)))
+            {
                 let conv = self.fun.gen_reg();
                 writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, conv, val.name).ok();
                 writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();

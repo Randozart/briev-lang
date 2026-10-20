@@ -276,6 +276,32 @@ fn net_stack_helpers_golden_output() {
 /// power-of-two masking, release/acquire atomics. The reactor is
 /// single-threaded here, so this pins the atomic lowering and ring discipline,
 /// not a cross-thread race.
+/// 2026-10-20 (P1-1): an obj Ptr-typed field must round-trip the handle
+/// through the ptr slot. This is the Arena shape, restored to an honest
+/// `Ptr<Bit<8>>` field instead of `Int`.
+/// 2026-10-20 (P1-2): a `plain let` Ptr global stores/loads the i64 handle,
+/// then the raw index path recovers the pointer. Previously the global was
+/// declared `ptr` and loaded `ptr` into i64 consumers.
+#[test]
+fn plain_ptr_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("plain_ptr_smoke", "golden", &[]);
+    assert_eq!(out, "7", "plain Ptr global round-trip drifted: {out:?}");
+}
+
+#[test]
+fn ptr_field_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("ptr_field_smoke", "golden", &[]);
+    assert_eq!(out, "7", "obj Ptr-field round-trip drifted: {out:?}");
+}
+
 #[test]
 fn spsc_smoke_golden_output() {
     if !has("clang") {

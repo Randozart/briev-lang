@@ -74,26 +74,28 @@ received data was invisible to the buffer API.
 **Fix:** `sock_recv` now sets `buf.len = n` for a non-negative result before
 returning (a negative error leaves len untouched). The loopback golden passes.
 
-## `plain let` Ptr load emits `ptr` where the consumer expects i64 -- OPEN 2026-10-20
+## `plain let` Ptr load emits `ptr` where the consumer expects i64 -- FIXED 2026-10-20
 
 **Symptom:** a `plain let picked: Ptr<Int>` read emitted
 `%t = load ptr, ...` but the pointer-arithmetic consumer expected i64,
 failing clang with `'%t2' defined with type 'ptr' but expected 'i64'`.
-**Status:** logged, not fixed. This is a separate storage-class lowering gap
-from the canonical-pointer work; do not paper over it with a cast.
+**Fix:** plain Ptr globals now use the same i64 handle representation as
+`%State` Ptr slots (`plain_global_llvm_type`); declaration, seed store, and
+load agree. Pin: `tests/tier1/plain_ptr_smoke.bv` +
+`plain_ptr_smoke_golden_output`.
 
-## `obj` literal with a Ptr-typed field stores i64 into a ptr slot -- OPEN 2026-10-20
+## `obj` literal with a Ptr-typed field stores i64 into a ptr slot -- FIXED 2026-10-20
 
 **Symptom:** `obj Arena { base: Ptr<Bit<8>>; ... }` initialized via
 `Arena { base, ... }` emitted `store ptr %t1` where `%t1` was the i64
 `ptrtoint` handle (`'%t1' defined with type 'i64' but expected 'ptr'`).
 Discovered building Fixture 3 (Arena).
 
-**Status:** OPEN — the struct/obj Ptr-field storage representation is split
-between ptr in the literal-store path and i64 in the field-load/consumer
-paths. Arena avoids it with `base: Int` (the honest handle form for the
-current ABI); fix the general representation before exposing Ptr-typed obj
-fields. Do not add an ad-hoc cast.
+**Fix:** `emit_struct_literal` now inttoptrs an i64 handle when the field is
+Ptr-typed (the same conversion the Int-handle case already used). The field
+load remains ptr; consumers cast to Int with `as Int` where they need the
+handle. Arena is restored to an honest `Ptr<Bit<8>>` base field. Pin:
+`tests/tier1/ptr_field_smoke.bv` + `ptr_field_smoke_golden_output`.
 
 ## Named imports of enum types (`import { TcpState } ...`) are undefined -- OPEN 2026-10-20
 

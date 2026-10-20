@@ -4358,7 +4358,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_plain.sort();
         for name in &sorted_plain {
             let (ty, init) = &self.ctx.plain_global_types[name];
-            let llvm_ty = protocol_llvm_type(ty, self.ctx.type_universe.as_ref());
+            let llvm_ty = self.plain_global_llvm_type(ty);
             let zero = if llvm_ty == "float" { "0.0" } else if llvm_ty == "double" { "0.0" } else if llvm_ty == "ptr" { "null" } else { "0" };
             let literal = match init {
                 Some(Expr::Decimal(n)) => Some(n.to_string()),

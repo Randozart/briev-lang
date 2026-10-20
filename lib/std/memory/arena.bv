@@ -14,15 +14,15 @@
 //   4. arena_reset(a)         — rewind offset to 0 (reuse memory)
 //   5. arena_free(a)          — release the backing buffer
 obj Arena {
-    // Addresses are i64 handles in the current ABI (ByteBuf.ptr follows the
-    // same rule); the allocator casts back to Ptr<Bit<8>> at the boundary.
-    base: Int;
+    // 2026-10-20 (P1-1): the obj Ptr-field representation is fixed; keep the
+    // honest typed field and cast to the i64 handle only for address math.
+    base: Ptr<Bit<8>>;
     offset: Int;
     capacity: Int;
 };
 
 defn arena_init(cap: Int) [cap >= 0][true] -> Arena {
-    let base: Int = Alloc#(cap) as Int;
+    let base: Ptr<Bit<8>> = Alloc#(cap) as Ptr<Bit<8>>;
     term Arena { base, offset: 0, capacity: cap };
 };
 
@@ -34,7 +34,7 @@ defn arena_alloc(a: Arena, size: Int)
     [term >= 0]
     -> Ptr<Bit<8>>
 {
-    let ptr: Ptr<Bit<8>> = (a.base + a.offset) as Ptr<Bit<8>>;
+    let ptr: Ptr<Bit<8>> = (a.base as Int + a.offset) as Ptr<Bit<8>>;
     a.offset = a.offset + size;
     term ptr;
 };
@@ -51,7 +51,7 @@ defn arena_alloc_aligned(a: Arena, size: Int, align: Int)
     let mis: Int = a.offset % align;
     let pad: Int = (align - mis) % align;
     let off: Int = a.offset + pad;
-    let ptr: Ptr<Bit<8>> = (a.base + off) as Ptr<Bit<8>>;
+    let ptr: Ptr<Bit<8>> = (a.base as Int + off) as Ptr<Bit<8>>;
     a.offset = off + size;
     term ptr;
 };
@@ -63,5 +63,5 @@ defn arena_reset(a: Arena) [a.capacity >= 0][a.offset == 0] {
 
 // arena_free — release the backing buffer.
 defn arena_free(a: Arena) {
-    Free#(a.base as Ptr<Bit<8>>);
+    Free#(a.base);
 };

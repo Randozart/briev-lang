@@ -2488,6 +2488,17 @@ impl LlvmBackend {
         self.load_field_type(out, indent, idx)
     }
 
+    /// LLVM storage type for a `plain let` global. Pointer handles use the
+    /// i64 representation, matching `%State` Ptr slots and every consumer;
+    /// the ptr conversion happens at call/index boundaries (P1-2).
+    pub(crate) fn plain_global_llvm_type(&self, ty: &Type) -> String {
+        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) {
+            "i64".to_string()
+        } else {
+            protocol_llvm_type(ty, self.ctx.type_universe.as_ref())
+        }
+    }
+
     /// Store a value to a state field with the native LLVM type.
     /// The value should match the field's LLVM type (float, double, i64, etc.).
     pub(crate) fn emit_state_store_i64(
@@ -2507,7 +2518,7 @@ impl LlvmBackend {
                 .get(name)
                 .map(|(t, _)| t.clone())
                 .unwrap_or(crate::ast::Type::int());
-            let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
+            let llvm_ty = self.plain_global_llvm_type(&ty);
             writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();
             return Some(());
         }
