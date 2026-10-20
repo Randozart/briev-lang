@@ -2857,6 +2857,13 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                         ctx.known_facts.push(f);
                     }
                 }
+                if names.len() == 1 {
+                    if let Some(f) =
+                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    {
+                        ctx.known_facts.push(f);
+                    }
+                }
             }
             if let Some(e) = expr {
                 elaborate_expr(e, ctx, errors);
@@ -2871,7 +2878,9 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                     ctx.bindings.insert(n.clone(), t.clone());
                 }
             }
-            record_call_post_facts(expr.as_ref(), name, ctx);
+            if let Some(first) = names.first() {
+                record_call_post_facts(expr.as_ref(), first, ctx);
+            }
         }
         Statement::Assign(l, r) => {
             elaborate_expr(l, ctx, errors);
@@ -3741,6 +3750,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                         ctx.known_facts.push(f);
                     }
                 }
+                if names.len() == 1 {
+                    if let Some(f) =
+                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    {
+                        ctx.known_facts.push(f);
+                    }
+                }
             }
             // 2026-08-09 (init kind, Phase 2): a `let` declaring an `init`
             // name would shadow the seeded invariant — reject the shadow.
@@ -4353,6 +4369,12 @@ fn check_let_destructure(
     let count = elem_types.len().min(names.len());
     for i in 0..count {
         ctx.bindings.insert(names[i].clone(), elem_types[i].clone());
+    }
+    // Multi-value returns: `term` names the FIRST result (the primary value).
+    // A tuple postcondition such as `[term >= 1]` therefore describes the
+    // first bound name; later components need their own contract surface.
+    if let Some(first) = names.first() {
+        record_call_post_facts(expr.as_ref(), first, ctx);
     }
     Ok(())
 }
@@ -8254,6 +8276,67 @@ mod tests {
              defn caller(x: Int) [x >= 1] -> Int { let y: Int = pos(x); term pos(y); };",
         )
         .expect("the callee post must prove the nested call precondition");
+    }
+
+    /// `let m = len - s.Length` expands to its defining expression, so the
+    /// contract `s.Length <= len` proves `m >= 0`.
+    #[test]
+    fn let_equality_expands_in_contract_gate() {
+        let _deny = DenyGate::install();
+        check(
+            "defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(s: String, len: Int) [s .^Length <= len][term >= 0] -> Int { \
+                 let missing: Int = len - s .^Length; \
+                 term nonneg(missing); \
+             };",
+        )
+        .expect("the let equality plus length fact proves missing >= 0");
+    }
+
+    /// The let equality makes a multiplied intermediate provable.
+    #[test]
+    fn let_equality_multiplied_intermediate() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int) [acc >= 1][term >= 0] -> Int { \
+                 let a2: Int = acc * 2; \
+                 term need(a2); \
+             };",
+        )
+        .expect("a2 = acc * 2 and acc >= 1 prove a2 >= 1");
+    }
+
+    /// Guard fall-through of a large upper bound proves the recursive
+    /// transformed argument's positivity.
+    #[test]
+    fn guard_fallthrough_large_bound() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int) [acc >= 1][term >= 0] -> Int { \
+                 let a2: Int = acc * 2; \
+                 when a2 < 1000000000000000000 { term 0; }; \
+                 term need(a2); \
+             };",
+        )
+        .expect("fall-through gives a2 >= 1e18");
+    }
+
+    /// A post fact that a scale is positive proves a multiplied argument
+    /// non-negative.
+    #[test]
+    fn post_fact_positive_product() {
+        let _deny = DenyGate::install();
+        check(
+            "defn scale(n: Int) [n >= 0 && n <= 18][term >= 1] -> Int { term n + 1; }; \
+             defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int, shift: Int) [acc >= 1 && shift >= 0 && shift <= 18][term >= 0] -> Int { \
+                 let up: Int = scale(shift); \
+                 term nonneg(acc * up); \
+             };",
+        )
+        .expect("up >= 1 and acc >= 1 prove acc * up >= 0");
     }
 
     /// A guard whose body always returns establishes its negation on the

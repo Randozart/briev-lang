@@ -106,6 +106,12 @@ fn atom_key(e: &Expr) -> String {
 /// Reduce an expression to `(terms, constant)` — `None` when the expression
 /// is not an exact integer linear form over atoms.
 fn linify(e: &Expr) -> Option<(Vec<(String, i128)>, i128)> {
+    // Fold any pure literal expression (`1 << 24`, `10 * 10`, ...) to its
+    // exact constant before atomizing; otherwise the right-hand side becomes
+    // an opaque atom and every bound against it is lost.
+    if let Some(n) = literal_int(e) {
+        return Some((vec![], n as i128));
+    }
     match e {
         Expr::Decimal(n) => Some((vec![], *n as i128)),
         Expr::Char(c) => Some((vec![], *c as i128)),
@@ -498,22 +504,34 @@ fn binary_bounds(op: BinaryOpKind, a: Bounds, b: Bounds) -> Bounds {
 }
 
 fn mul_bounds(a: Bounds, b: Bounds) -> Bounds {
-    let (Some(alo), Some(ahi), Some(blo), Some(bhi)) = (a.lo, a.hi, b.lo, b.hi) else {
-        return Bounds::unknown();
-    };
-    let candidates = [
-        alo.checked_mul(blo),
-        alo.checked_mul(bhi),
-        ahi.checked_mul(blo),
-        ahi.checked_mul(bhi),
-    ];
-    if candidates.iter().any(|c| c.is_none()) {
-        return Bounds::unknown();
+    if let (Some(alo), Some(ahi), Some(blo), Some(bhi)) = (a.lo, a.hi, b.lo, b.hi) {
+        let candidates = [
+            alo.checked_mul(blo),
+            alo.checked_mul(bhi),
+            ahi.checked_mul(blo),
+            ahi.checked_mul(bhi),
+        ];
+        if candidates.iter().any(|c| c.is_none()) {
+            return Bounds::unknown();
+        }
+        let vals: Vec<i128> = candidates.into_iter().flatten().collect();
+        return Bounds {
+            lo: vals.iter().copied().min(),
+            hi: vals.iter().copied().max(),
+        };
     }
-    let vals: Vec<i128> = candidates.into_iter().flatten().collect();
-    Bounds {
-        lo: vals.iter().copied().min(),
-        hi: vals.iter().copied().max(),
+    // One-sided bounds still fix a one-sided product when both signs are
+    // known. `acc >= 1 && acc*half` is the common `let doubled = x * 2` case.
+    match (a.lo, a.hi, b.lo, b.hi) {
+        (Some(alo), ahi, Some(blo), bhi) if alo >= 0 && blo >= 0 => Bounds {
+            lo: alo.checked_mul(blo),
+            hi: ahi.zip(bhi).and_then(|(x, y)| x.checked_mul(y)),
+        },
+        (Some(alo), ahi, blo, Some(bhi)) if alo <= 0 && bhi <= 0 => Bounds {
+            lo: alo.checked_mul(bhi),
+            hi: ahi.zip(blo).and_then(|(x, y)| x.checked_mul(y)),
+        },
+        _ => Bounds::unknown(),
     }
 }
 
@@ -522,13 +540,10 @@ fn div_bounds(a: Bounds, b: Bounds) -> Bounds {
     // suffice. (Rust `/` truncates toward zero, matching the language.)
     if let (Some(d), Some(d2)) = (b.lo, b.hi) {
         if d == d2 && d > 0 {
-            if let (Some(lo), Some(hi)) = (a.lo, a.hi) {
-                let q1 = lo / d;
-                let q2 = hi / d;
-                return Bounds {
-                    lo: Some(q1.min(q2)),
-                    hi: Some(q1.max(q2)),
-                };
+            let lo = a.lo.map(|v| v / d);
+            let hi = a.hi.map(|v| v / d);
+            if lo.is_some() || hi.is_some() {
+                return Bounds { lo, hi };
             }
         }
     }
@@ -777,7 +792,66 @@ fn prove_disjunction(goal: &Expr, facts: &[Expr]) -> Verdict {
 }
 
 /// Prove one goal conjunct against the fact list.
+/// Definitions established by `let x = e` facts (`x == e`). Used to expand
+/// derived names before interval/linear reasoning, so the prover sees the
+/// expression's bounds rather than an opaque atom.
+fn defs_from_facts(facts: &[Expr]) -> Vec<(String, Expr)> {
+    let mut defs = Vec::new();
+    for f in facts {
+        let Expr::BinaryOp(BinaryOpKind::Eq, l, r) = f else {
+            continue;
+        };
+        let (name, value) = match (l.as_ref(), r.as_ref()) {
+            (Expr::Identifier(n), v) => (n, v),
+            (v, Expr::Identifier(n)) => (n, v),
+            _ => continue,
+        };
+        if matches!(value, Expr::Identifier(n) if n == name) {
+            continue;
+        }
+        if !defs.iter().any(|(existing, _): &(String, Expr)| existing == name) {
+            defs.push((name.clone(), value.clone()));
+        }
+    }
+    defs
+}
+
+/// Expand `let` definitions until stable (bounded depth for cycles). Uses the
+/// existing parameter substitution walker; a self-definition is skipped.
+fn expand_defs(e: &Expr, defs: &[(String, Expr)]) -> Expr {
+    let mut out = e.clone();
+    for _ in 0..8 {
+        let before = out.clone();
+        for (name, value) in defs {
+            out = substitute_params(&out, std::slice::from_ref(name), std::slice::from_ref(value));
+        }
+        if out == before {
+            break;
+        }
+    }
+    out
+}
+
 fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
+    let direct = prove_conjunct_core(goal, facts);
+    if direct != Verdict::Unproven {
+        return direct;
+    }
+    // `let` definitions are equalities. Try the defining expression only as a
+    // fallback: direct facts about the bound name (e.g. a guard's `x >= 1e18`)
+    // are stronger than their expanded form.
+    let defs = defs_from_facts(facts);
+    if defs.is_empty() {
+        return direct;
+    }
+    let expanded = expand_defs(goal, &defs);
+    if &expanded == goal {
+        return direct;
+    }
+    prove_conjunct_core(&expanded, facts)
+}
+
+fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     match goal {
         Expr::Bool(true) => return Verdict::Proven,
         Expr::Bool(false) => return Verdict::Refuted,
@@ -816,6 +890,13 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
         Expr::BinaryOp(op, l, r) => normalize(l, *op, r),
         _ => None,
     }) else {
+        // Non-linear shapes (products, shifts) may still have exact interval
+        // bounds. Do not lose them just because the linear core declines.
+        if let Expr::BinaryOp(op, l, r) = goal {
+            if let Some(v) = interval_verdict(l, *op, r, facts) {
+                return v;
+            }
+        }
         return Verdict::Unproven;
     };
 
@@ -1080,6 +1161,20 @@ pub fn initializer_fact(name: &str, init: &Expr) -> Option<Expr> {
         BinaryOpKind::Gt,
         Box::new(Expr::Identifier(name.to_string())),
         Box::new(Expr::Decimal(0)),
+    ))
+}
+
+/// The equality a single-name `let` establishes (`x == init`). The prover
+/// expands these definitions before interval reasoning. A self-binding adds
+/// nothing and is skipped.
+pub fn initializer_equality(name: &str, init: &Expr) -> Option<Expr> {
+    if matches!(init, Expr::Identifier(n) if n == name) {
+        return None;
+    }
+    Some(Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier(name.to_string())),
+        Box::new(init.clone()),
     ))
 }
 
@@ -1572,6 +1667,75 @@ mod guard_flow_tests {
             bin(BinaryOpKind::Sub, id("n"), Expr::Decimal(1)),
             Expr::Decimal(0),
         );
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn let_equality_expands_for_bounds() {
+        let facts = vec![
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(id("a")),
+                Box::new(bin(
+                    BinaryOpKind::Sub,
+                    Expr::Decimal(0),
+                    id("k"),
+                )),
+            ),
+            bin(BinaryOpKind::Lt, id("k"), Expr::Decimal(0)),
+        ];
+        let goal = bin(BinaryOpKind::Ge, id("a"), Expr::Decimal(0));
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn let_equality_multiplied() {
+        let facts = vec![
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(id("a2")),
+                Box::new(bin(
+                    BinaryOpKind::Mul,
+                    id("acc"),
+                    Expr::Decimal(2),
+                )),
+            ),
+            bin(BinaryOpKind::Ge, id("acc"), Expr::Decimal(1)),
+        ];
+        let goal = bin(BinaryOpKind::Ge, id("a2"), Expr::Decimal(1));
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn product_nonnegative_from_positives() {
+        let facts = vec![
+            bin(BinaryOpKind::Ge, id("acc"), Expr::Decimal(1)),
+            bin(BinaryOpKind::Ge, id("up"), Expr::Decimal(1)),
+        ];
+        let goal = bin(
+            BinaryOpKind::Ge,
+            bin(BinaryOpKind::Mul, id("acc"), id("up")),
+            Expr::Decimal(0),
+        );
+        assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn let_equality_with_field_fact() {
+        let field = Expr::Field(Box::new(id("s")), "Length".to_string());
+        let facts = vec![
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(id("missing")),
+                Box::new(bin(
+                    BinaryOpKind::Sub,
+                    id("len"),
+                    field.clone(),
+                )),
+            ),
+            bin(BinaryOpKind::Le, field.clone(), id("len")),
+        ];
+        let goal = bin(BinaryOpKind::Ge, id("missing"), Expr::Decimal(0));
         assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
     }
 

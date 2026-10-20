@@ -406,3 +406,27 @@ bucket checkpoint because guard restructuring can change emitted shapes.
   the `b <= 60` guard; `zeros`/`pow10` over-tight upper bounds; `pow10`'s
   callers can exceed 18; `frac_digit_loop` recurses with `b - 1` into a
   `b >= 0` contract when `frac == 0`.
+
+### Phase 2 result — 2026-10-20
+
+- Let-equality facts landed (`let x = e` records `x == e`; the prover tries
+  direct facts first, then expands the definition only as a fallback). This
+  was the missing link for `missing`, `shift`, `total`, `a2`, `v`, etc.
+- Literal constants are folded before atomization, so `1 << 24` and `10^18`
+  no longer become opaque atoms in bounds.
+- Interval multiplication/division now keep one-sided bounds
+  (`acc >= 1` ⇒ `acc * 2 >= 2`, `acc / 10 >= 1`); nonlinear shapes reach the
+  interval evaluator instead of being dropped when `normalize` declines.
+- Multi-value contract convention recorded in the typechecker: a `term`
+  postcondition on a tuple result describes the FIRST bound name. No second
+  component surface exists yet.
+- Source repairs: `zeros` no longer caps at 20; `pow10` callers use the
+  correct `nd`-relative shift (was `nd + k - want`); `pow2b` is guarded
+  before its `b <= 60` call; `trunc` exposes positivity and the 1e18 cap;
+  `sscale` keeps `acc < 1e18`; `float_format` derives `d` from the digit
+  string; `mantissa_val` exposes the 24-bit bound.
+- Census: **22,727 / 62 → 10,788 / 50**. Integer-lane residual is only
+  `int_digit_count` (682, float-lane callers) and `int_leading_int` (341,
+  second tuple component). `float_fmt_cases` parity PASS.
+- Remaining Phase 3 surface: `frac_exp`/`frac_digit_loop`/`frac_all_digits`/
+  `pow10f`/`decode_*`/`fill_*`/`exp_style_mant`/`fixed_style`/`exp_style`.
