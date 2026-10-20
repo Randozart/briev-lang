@@ -82,6 +82,19 @@ failing clang with `'%t2' defined with type 'ptr' but expected 'i64'`.
 **Status:** logged, not fixed. This is a separate storage-class lowering gap
 from the canonical-pointer work; do not paper over it with a cast.
 
+## `obj` literal with a Ptr-typed field stores i64 into a ptr slot -- OPEN 2026-10-20
+
+**Symptom:** `obj Arena { base: Ptr<Bit<8>>; ... }` initialized via
+`Arena { base, ... }` emitted `store ptr %t1` where `%t1` was the i64
+`ptrtoint` handle (`'%t1' defined with type 'i64' but expected 'ptr'`).
+Discovered building Fixture 3 (Arena).
+
+**Status:** OPEN — the struct/obj Ptr-field storage representation is split
+between ptr in the literal-store path and i64 in the field-load/consumer
+paths. Arena avoids it with `base: Int` (the honest handle form for the
+current ABI); fix the general representation before exposing Ptr-typed obj
+fields. Do not add an ad-hoc cast.
+
 ## Named imports of enum types (`import { TcpState } ...`) are undefined -- OPEN 2026-10-20
 
 **Symptom:** `import { TcpState, TcpEvent } from "std/fsm"` then

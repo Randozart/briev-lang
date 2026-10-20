@@ -1,47 +1,67 @@
-// 2026-07-18: Arena — single-direction bump allocator in pure Briev.
-// Backed by Alloc# for the backing buffer. The arena is itself
-// arena-allocated when arena_init is called inside a txn context
-// (nested arena — the parent arena manages the child arena's backing
-// buffer). Arena lifecycle:
-//   1. arena_init(cap) — allocate backing buffer via Alloc#
-//   2. arena_alloc(a, size) — bump pointer forward
-//   3. arena_reset(a) — rewind offset to 0 (reuse memory)
-//   4. arena_free(a) — free backing buffer via Free#
-// The [pre][post] contract on arena_alloc prevents overflow.
-// 2026-07-25: Arena is pure data — no protocols, no contracts.
-// Migrated from `type` to `struct` as part of the type/struct/obj split.
-struct Arena {
-    base: Ptr<Bit<8>>;
+// arena — single-direction bump allocator in pure Briev.
+//
+// 2026-07-18: initial version.
+// 2026-10-20 (stdlib fixture campaign, Fixture 3): Arena is an `obj`, so the
+// bump offset mutation is visible to the caller. The old `struct` form
+// mutated a by-value copy and silently lost the advance — the allocator
+// returned the same address forever. All contracts are static; `Alloc#`
+// provides the backing buffer.
+//
+// Lifecycle:
+//   1. arena_init(cap)        — allocate the backing buffer
+//   2. arena_alloc(a, n)      — bump by n bytes
+//   3. arena_alloc_aligned    — bump with power-of-2 alignment
+//   4. arena_reset(a)         — rewind offset to 0 (reuse memory)
+//   5. arena_free(a)          — release the backing buffer
+obj Arena {
+    // Addresses are i64 handles in the current ABI (ByteBuf.ptr follows the
+    // same rule); the allocator casts back to Ptr<Bit<8>> at the boundary.
+    base: Int;
     offset: Int;
     capacity: Int;
 };
 
-// Allocate backing buffer via Alloc#. If called inside a txn with
-// an active arena, the user's arena is nested within the txn's arena:
-// the outer arena gives memory for the inner arena's backing buffer.
-defn arena_init(cap: Int) -> Arena {
-    let base: Ptr<Bit<8>> = Alloc#(cap) as Ptr<Bit<8>>;
+defn arena_init(cap: Int) [cap >= 0][true] -> Arena {
+    let base: Int = Alloc#(cap) as Int;
     term Arena { base, offset: 0, capacity: cap };
 };
 
-// Bump-allocate `size` bytes from the arena. Contract ensures
-// offset never exceeds capacity. If contract violated at compile
-// time, the compiler catches it. At runtime, unpredictable.
-defn arena_alloc(a: Arena, size: Int) -> Ptr<Bit<8>> [a.offset + size <= a.capacity] {
-    let ptr: Ptr<Bit<8>> = (a.base as Int + a.offset) as Ptr<Bit<8>>;
+// arena_alloc — allocate `size` bytes at the current offset. The contract
+// makes overflow a compile-time obligation at the call site; the mutation is
+// on the obj receiver (reference semantics), so the next call sees it.
+defn arena_alloc(a: Arena, size: Int)
+    [size >= 0 && a.offset + size <= a.capacity]
+    [term >= 0]
+    -> Ptr<Bit<8>>
+{
+    let ptr: Ptr<Bit<8>> = (a.base + a.offset) as Ptr<Bit<8>>;
     a.offset = a.offset + size;
     term ptr;
 };
 
-// Rewind offset to 0. The backing buffer stays live — memory is
-// reused on the next cycle. No system call.
-defn arena_reset(a: Arena) {
+// arena_alloc_aligned — round the offset up to `align` (a power of two,
+// 1..16), then bump. The extra `align - 1` headroom in the contract covers
+// the worst-case padding without a runtime branch.
+defn arena_alloc_aligned(a: Arena, size: Int, align: Int)
+    [size >= 0 && align >= 1 && align <= 16 && (align & (align - 1)) == 0
+        && a.offset + size + (align - 1) <= a.capacity]
+    [term >= 0]
+    -> Ptr<Bit<8>>
+{
+    let mis: Int = a.offset % align;
+    let pad: Int = (align - mis) % align;
+    let off: Int = a.offset + pad;
+    let ptr: Ptr<Bit<8>> = (a.base + off) as Ptr<Bit<8>>;
+    a.offset = off + size;
+    term ptr;
+};
+
+// arena_reset — rewind to the start; the backing buffer stays live.
+defn arena_reset(a: Arena) [a.capacity >= 0][a.offset == 0] {
     a.offset = 0;
 };
 
-// Free the backing buffer. If the arena was nested within a txn's
-// arena, Free# is a static-analysis no-op (arena memory managed by
-// outer arena). If standalone, calls @free.
+// arena_free — release the backing buffer.
 defn arena_free(a: Arena) {
-    Free#(a.base);
+    Free#(a.base as Ptr<Bit<8>>);
 };

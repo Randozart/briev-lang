@@ -504,7 +504,16 @@ recorded in `benchmarks/results/2026-10-20-fixture4-fsm.md`. This is the
 fixture campaign doing its job: the FSM is competitive only after the
 compiler learns to unbox small sum types. No keyword/workaround used.
 
-**Next:** Fixture 3 (Arena), then Fixture 2 (SPSC). The provenance prerequisite for Arena/SPSC is now structurally in place;
+**Fixture 3 first pass (this session):** `lib/std/memory/arena.bv` is now an
+`obj` with reference semantics, aligned allocation, and static contracts;
+`arena_smoke` golden + `arena_bump` benchmark landed. Performance **4.64x C**;
+the gap is hot-path call/object/Store# overhead, not allocator logic. Results:
+`benchmarks/results/2026-10-20-fixture3-arena.md`. Compiler fixes surfaced:
+Ptr-returning call ABI (ptr→i64 at the call boundary) and the obj Ptr-field
+literal store (Arena uses the honest i64 handle form; the general obj Ptr-field
+representation mismatch is logged open).
+
+**Next:** Fixture 2 (SPSC), then the recorded performance follow-ups. The provenance prerequisite for Arena/SPSC is now structurally in place;
 the remaining risk in 2 is the single-threaded reactor (documented, not hidden).
 
 ## Risks

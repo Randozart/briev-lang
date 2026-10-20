@@ -6148,6 +6148,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             call_args.join(", ")
         )
         .ok();
+        // 2026-10-20 (Arena fixture / Ptr ABI): a Ptr-returning defn uses the
+        // ptr ABI (llvm_ret_abi_type), while every Briev consumer treats Ptr
+        // as an i64 handle. Recover the i64 once at the call boundary — the
+        // same convention as Ptr params (ptr → i64 at entry / i64 → ptr at
+        // calls). Without this, a `term arena_alloc(...)` in a Ptr-returning
+        // helper emitted `inttoptr i64 <ptr>`, invalid IR.
+        if ret_llvm == "ptr" && matches!(ret_type, Type::Ptr(_) | Type::PtrConst(_)) {
+            let int_v = self.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, int_v, v).ok();
+            return TypedRegister {
+                name: int_v,
+                ty: ret_type,
+            };
+        }
         TypedRegister {
             name: v.to_string(),
             ty: ret_type,

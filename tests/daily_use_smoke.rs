@@ -269,6 +269,22 @@ fn net_stack_helpers_golden_output() {
 /// closed enums, exhaustive nested matches, and Result-returning illegal
 /// edges. The integer-code boundary keeps the fixture on the stable import
 /// surface; the enum/match machinery lives in `lib/std/fsm.bv`.
+/// 2026-10-20 (Fixture 3, stdlib campaign): Arena is an obj so the bump
+/// offset survives the call. Pins reference semantics, 8-byte bump deltas,
+/// 16-byte alignment padding, and reset.
+#[test]
+fn arena_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("arena_smoke", "golden", &[]);
+    assert_eq!(
+        out, "16|8|24|16|0",
+        "arena bump/alignment/reset golden drifted: {out:?}"
+    );
+}
+
 #[test]
 fn fsm_smoke_golden_output() {
     if !has("clang") {
