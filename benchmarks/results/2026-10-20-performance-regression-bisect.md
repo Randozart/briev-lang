@@ -69,3 +69,30 @@ The 3.50x ws_frame regression was a separate, self-inflicted contract-migration
 artifact: per-byte runtime guards on `get_u8`/`ws_payload_byte` plus a
 benchmark-level guard. Foreach range facts + a proven direct `Load#` removed
 them; measured **1.48x**, better than the old 1.58x.
+
+
+## Controlled experiment 2026-10-20 — stateless print is the trigger
+
+On the `5aa90185` worktree, keep everything else identical but exclude
+`stdout_buf`/`stdout_fill` from plain classification (they stay `%State`
+fields). Result:
+
+| Benchmark | 5aa stateless print | 5aa stateful print |
+|---|---:|---:|
+| float_math | 2.72x | **0.92x** |
+| queue_drain | 0.45x | 1.44x |
+| interval_step | 0.61x | 1.46x |
+
+So the tradeoff is confirmed: **the stateless print chain recovers
+queue_drain/interval_step but causes the 3x float_math spill**. The asm shows
+the float accumulator held in `xmm0` with stateful print, but spilled to
+`0x14(%rsp)` every iteration with stateless print. The state alloca is no
+longer passed to print, SROA promotes the 13 float fields, and register
+pressure spills the trace accumulator. The fix must be a general
+register-pressure-aware state/loop strategy, not a blanket return to stateful
+print (which loses the queue/interval wins) and not a source workaround.
+
+This is now the concrete P2-8 root cause. Next: implement the cost model in the
+frontend-driven loop/state strategy, or a loop-engine memory/register choice
+for high-field float loops that keeps the accumulator in a register while
+leaving the bulk fields in memory.

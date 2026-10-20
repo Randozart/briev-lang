@@ -203,9 +203,15 @@ These are ranked by repeated evidence across fixtures and the suite.
 | queue_drain | 1.35x | 0.45x | 0.47x | improved |
 | interval_step | 1.23x | 0.61x | 0.72x | improved |
 
-**Status:** bisected. `float_math` fast `3c15268a` = **0.94x**, first regression
-at `5aa90185` state/plain = **2.72x** (same machine/harness); current ~2.74x.
-The raw-pointer provenance patch is not the cause (float_math has no Ptr).
+**Status:** bisected + trigger confirmed. `float_math` fast `3c15268a` =
+**0.94x**, first regression at `5aa90185` state/plain = **2.72x** (same
+machine/harness); current ~2.74x. A controlled 5aa experiment makes
+`stdout_buf`/`stdout_fill` stateful again: float_math **0.92x**, but
+queue_drain **1.44x** and interval_step **1.46x** (the wins are lost). Root
+cause: stateless print lets SROA promote 13 float fields; register pressure
+spills the loop accumulator every iteration. The raw-pointer provenance patch
+is not the cause (float_math has no Ptr). Fix must be a general
+register-pressure-aware state/loop strategy, not a blanket stateful print.
 Immediate `ws_frame` slice is DONE: 3.50x → **1.48x**, better than the old
 1.58x, by removing per-byte guards and using a proven direct `Load#`. Full
 record: `benchmarks/results/2026-10-20-performance-regression-bisect.md`.
