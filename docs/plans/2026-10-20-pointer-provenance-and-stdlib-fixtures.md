@@ -339,10 +339,59 @@ Order: **4 → 3 → 2**, then Fixture 1 `_idio`.
 - plan update with measured results and decisions
 - commit per logical step (no squash of unrelated work)
 
-## Baseline (to be recorded in Phase 0)
+## Baseline (Rule 12) — commit `b8989e34`, 2026-10-20
 
-The current-commit table goes here before the first code change. The
-2026-10-18 table in `docs/plans/2026-10-18-stdlib-fixture-campaign.md` is a
+`cargo build --release` + `bash benchmarks/build_and_bench.sh --runtime`,
+5 iterations, BOUND=50000000. Ratio = Briev/C (<1 = Briev wins). Full log:
+`/tmp/opencode/baseline_prov.log`.
+
+| Benchmark | Briev | C | Ratio | Winner | Correct |
+|---|---|---|---|---|---|
+| ring_buffer | 0.0459s | 0.0487s | 0.94x | Briev | MATCH |
+| float_math | 0.1238s | 0.0469s | 2.64x | C | MATCH |
+| float_math_nonzero | 0.2458s | 0.1651s | 1.49x | C | MATCH |
+| sparse_dispatch | 0.0435s | 0.0604s | 0.72x | Briev | MATCH |
+| print_loop | 0.0309s | 0.0571s | 0.54x | Briev | MATCH |
+| nbody_newton | 7.7333s | 7.2192s | 1.07x | C | MATCH |
+| nbody_newton_accel | 1.4540s | 0.1376s | 10.57x | C | MATCH |
+| nbody_sqrt | 2.8140s | 3.4902s | 0.81x | Briev | MATCH |
+| nbody_sqrt_idio | 2.8933s | 3.2094s | 0.90x | Briev | MATCH |
+| fasta | 0.1935s | 0.2647s | 0.73x | Briev | MATCH |
+| fannkuch_redux | 0.0624s | 0.0562s | 1.11x | C | MATCH |
+| mandelbrot | 0.6404s | 0.6721s | 0.95x | Briev | MATCH |
+| kalman_filter_runtime | 0.1883s | 0.1818s | 1.04x | C | MATCH |
+| knucleotide | 0.1813s | 0.1929s | 0.94x | Briev | MATCH |
+| cancel_math | 0.0430s | 0.0618s | 0.70x | Briev | MATCH |
+| bit_clear | 0.0001s | 0.0003s | 0.33x | Briev | MATCH |
+| queue_drain | 0.0287s | 0.0624s | 0.46x | Briev | MATCH |
+| queue_drain_sym | 0.0311s | 0.0641s | 0.49x | Briev | MATCH |
+| queue_drain_idio | 0.0302s | 0.0587s | 0.51x | Briev | MATCH |
+| stack_push_pop | 0.0322s | 0.0597s | 0.54x | Briev | MATCH |
+| interval_step | 0.0436s | 0.0630s | 0.69x | Briev | MATCH |
+| telemetry_stream | 0.2357s | 0.1651s | 1.43x | C | MATCH |
+| pid_control | 0.4277s | 0.3492s | 1.22x | C | MATCH |
+| matrix_pipeline | 0.4997s | 0.5256s | 0.95x | Briev | MATCH |
+| accumulator_flush | 0.1338s | 0.1470s | 0.91x | Briev | MATCH |
+| sweep_sparse | 0.2315s | 0.1546s | 1.50x | C | MATCH |
+| sweep_mid | 0.2317s | 0.1772s | 1.31x | C | MATCH |
+| sweep_dense | 0.4032s | 0.3715s | 1.09x | C | MATCH |
+| sweep_arr | 0.4561s | 0.4397s | 1.04x | C | MATCH |
+| series_converge | 0.0002s | 0.0002s | 1.00x | ~tie | MATCH |
+| global_lifetime | 0.0318s | 0.0708s | 0.45x | Briev | MATCH |
+| deep_recursion | 0.0003s | 0.0005s | 0.60x | Briev | MATCH |
+| arena_churn | 0.0303s | 0.0968s | 0.31x | Briev | MATCH |
+| linked_list | 1.0472s | 2.0168s | 0.52x | Briev | MATCH |
+| hash_ops | 0.8685s | 0.9991s | 0.87x | Briev | MATCH |
+| hash_ops_idio | 0.7495s | 0.7069s | 1.06x | C | MATCH |
+| enemy_swarm | 0.1129s | 0.1405s | 0.80x | Briev | MATCH |
+| recommender | 0.0128s | 0.0115s | 1.11x | C | MATCH |
+| ws_frame | 0.0949s | 0.0246s | 3.86x | C | MATCH |
+
+`ws_frame` is 3.86x at this baseline versus 1.58x in
+`benchmarks/results/2026-10-18-fixture1-ws-frame.md`; the provenance work must
+not accept that as normal. Track it explicitly in Phase 2.
+
+The 2026-10-18 table in `docs/plans/2026-10-18-stdlib-fixture-campaign.md` is a
 historical reference, not the baseline for this work.
 
 ## Risks
