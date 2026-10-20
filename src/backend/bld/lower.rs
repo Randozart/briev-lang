@@ -1006,6 +1006,7 @@ impl<'a> BldLowerer<'a> {
         let b = std::mem::replace(&mut self.body, Body::new("", None));
         let mut items = b.items;
         coalesce_adjacent_copies(&mut items);
+        remove_self_moves(&mut items);
         self.out.extend(b.own_first);
         // An ownership block may have switched sections (a .rodata data
         // label); the recipe's own instructions are .text — say so
@@ -2484,20 +2485,30 @@ fn try_coalesce(items: &mut Vec<BadBodyItem>, i: usize) -> bool {
     if !writes_first_operand(&prod.mnemonic) {
         return false;
     }
-    let [BadOperand::Name(pv), rest @ ..] = prod.operands.as_slice() else {
+    let [BadOperand::Name(pv), ..] = prod.operands.as_slice() else {
         return false;
     };
     if pv != v {
         return false;
     }
-    // Renaming would clobber a source the producer still needs.
-    if rest.iter().any(|s| matches!(s, BadOperand::Name(n) if *n == d2)) {
-        return false;
-    }
+    // `d2` may equal a source: every `writes_first_operand` op reads all
+    // sources before writing its destination, and the ISA templates
+    // handle dst == src (copy-then-op), so the in-place form is safe.
     if let BadBodyItem::Instr(ins) = &mut items[i] {
         ins.operands[0] = BadOperand::Name(d2);
     }
     true
+}
+
+/// Drop `mov X, X` / `fmov X, X` no-ops the coalescer can produce.
+fn remove_self_moves(items: &mut Vec<BadBodyItem>) {
+    items.retain(|it| {
+        let BadBodyItem::Instr(ins) = it else { return true };
+        if ins.mnemonic != "mov" && ins.mnemonic != "fmov" {
+            return true;
+        }
+        !matches!(ins.operands.as_slice(), [BadOperand::Name(a), BadOperand::Name(b)] if a == b)
+    });
 }
 
 /// Whether `mn`'s first operand is a destination (never `store`/`outb`).

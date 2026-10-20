@@ -351,7 +351,7 @@ mod tests {
         let src = "defn f(n: Int, x: Float) -> Float { return x + n; }";
         let prog = lower_ok(src);
         let items = instrs(&prog, "f");
-        assert_eq!(mnems(&items), vec!["itof", "fadd", "fmov", "ret"]);
+        assert_eq!(mnems(&items), vec!["itof", "fadd", "ret"]);
     }
 
     #[test]
@@ -368,9 +368,9 @@ mod tests {
         let p = lower_to_bad("defn f(a: Int) -> Int { return a * 3; }", "aarch64", None, None)
             .unwrap();
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mov", "mul", "mov", "ret"]);
+        assert_eq!(mnems(&items), vec!["mov", "mul", "ret"]);
         assert_eq!(ops_of(items[0]), vec!["v1", "3"]);
-        assert_eq!(ops_of(items[1]), vec!["v0", "r0", "v1"]);
+        assert_eq!(ops_of(items[1]), vec!["r0", "r0", "v1"]);
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
         let src = "defn g(a: Int, b: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }";
         let p = lower_ok(src);
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mov", "mov", "call", "mov", "mov", "ret"]);
+        assert_eq!(mnems(&items), vec!["mov", "mov", "call", "ret"]);
         assert_eq!(ops_of(items[0]), vec!["r5", "1"]);
         assert_eq!(ops_of(items[1]), vec!["r4", "2"]);
         assert_eq!(ops_of(items[2]), vec!["g"]);

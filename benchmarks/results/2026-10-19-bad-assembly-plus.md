@@ -39,11 +39,44 @@ assembled bytes, which are deterministic.
   outb %al, %dx`) and the immutable port re-materializes per store. The
   raw form keeps port in `%rdx` and writes `outb %al, %dx` directly.
   x86 port I/O is the escape-hatch shape; parity is not expected here.
-- **`call_chain` — exact instruction parity (0).** A symbolic-only
+- **`call_chain` — exact instruction parity (0) on x86_64.** A symbolic-only
   redundant-move pass coalesces a single-use temp producer into its
   consumer, so `mov tmp, ret; mov arg, tmp` becomes `mov arg, ret` and
   the return copy folds into the producing `add`. The raw kernel uses the
   same C ABI (arg r5, result r0) so the comparison is apples-to-apples.
+
+## Cross-target (aarch64, riscv64)
+
+Same corpus, `TARGET=aarch64` / `TARGET=riscv64`. `uart_banner` is
+omitted (it uses the x86-only `outb`).
+
+**aarch64**
+
+| Kernel | raw instr | sym instr | Δ instr | raw bytes | sym bytes | Δ bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| `vga_loop` | 8 | 8 | 0 | 48 | 48 | 0 |
+| `memcpy` | 12 | 12 | 0 | 72 | 72 | 0 |
+| `bit_ops` | 5 | 5 | 0 | 32 | 32 | 0 |
+| `crc8` | 22 | 21 | −1 | 120 | 104 | −16 |
+| `call_chain` | 9 | 7 | −2 | 48 | 40 | −8 |
+
+**riscv64**
+
+| Kernel | raw instr | sym instr | Δ instr | raw bytes | sym bytes | Δ bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| `vga_loop` | 8 | 8 | 0 | 32 | 32 | 0 |
+| `memcpy` | 12 | 12 | 0 | 48 | 48 | 0 |
+| `bit_ops` | 5 | 5 | 0 | 24 | 24 | 0 |
+| `crc8` | 22 | 21 | −1 | 88 | 84 | −4 |
+| `call_chain` | 9 | 7 | −2 | 44 | 36 | −8 |
+
+The loop/memory/bit kernels are at exact parity on every target. `crc8`
+is one instruction tighter symbolically. `call_chain` is −2 on
+aarch64/riscv64 because the raw kernel is written in the **x86** C-ABI
+shape (first arg r5); those targets pass the first argument and the
+return in the same register (x0/a0), so the symbolic form needs no
+result→argument move across calls. The comparison is therefore a floor,
+not a fair ABI comparison, for that one kernel on those targets.
 
 ## Raw identity
 
@@ -65,7 +98,9 @@ Not parity, but the hardware-verification companion:
 
 ```sh
 cargo build --release
-bash benchmarks/bad/parity.sh
+bash benchmarks/bad/parity.sh                 # x86_64
+TARGET=aarch64 bash benchmarks/bad/parity.sh
+TARGET=riscv64 bash benchmarks/bad/parity.sh
 bash tests/bare/qemu-rv64-boot-plus-bad.sh
 bash tests/bare/qemu-aarch64-boot-plus-bad.sh
 bash tests/bare/qemu-multiboot.sh

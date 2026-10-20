@@ -6,16 +6,28 @@
 # Instruction parity is the contract for scalar symbolic code; a delta is
 # recorded, not hidden. Cycles are not measured here (QEMU timing is not
 # representative) — the ledger records instruction/byte deltas.
+#
+#   TARGET=x86_64|aarch64|riscv64 bash benchmarks/bad/parity.sh
+#
+# A kernel whose source does not compile on the target (e.g. x86-only
+# `outb`) is skipped, not silently counted.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TARGET="${TARGET:-x86_64}"
 BRIEVC="${BRIEVC:-$ROOT/target/release/brievc}"
-WORK="${WORK:-/tmp/opencode/bad-parity}"
+WORK="${WORK:-/tmp/opencode/bad-parity-$TARGET}"
+
+case "$TARGET" in
+    x86_64*)  AS=as;                       ASFLAGS=--64 ;;
+    aarch64*) AS=aarch64-linux-gnu-as;     ASFLAGS= ;;
+    riscv64*) AS=riscv64-linux-gnu-as;     ASFLAGS= ;;
+    *)        AS=as;                       ASFLAGS= ;;
+esac
 
 [[ -x "$BRIEVC" ]] || { echo "missing $BRIEVC (build --release first)" >&2; exit 1; }
-command -v as >/dev/null || { echo "missing as" >&2; exit 1; }
-command -v size >/dev/null || { echo "missing size" >&2; exit 1; }
+command -v "$AS" >/dev/null || { echo "missing $AS" >&2; exit 1; }
+command -v size >/dev/null  || { echo "missing size" >&2; exit 1; }
 
 mkdir -p "$WORK"
 count_instr() {
@@ -31,7 +43,7 @@ count_instr() {
 }
 
 text_bytes() {
-    as --64 -o "$2" "$1" 2>/dev/null
+    "$AS" $ASFLAGS -o "$2" "$1" 2>/dev/null
     size "$2" | tail -1 | awk '{ print $1 }'
 }
 
@@ -43,8 +55,8 @@ for k in "${KERNELS[@]}"; do
     raw="$ROOT/benchmarks/bad/${k}_raw.bad"
     sym="$ROOT/benchmarks/bad/${k}_sym.bad"
     [[ -f "$raw" && -f "$sym" ]] || continue
-    "$BRIEVC" bad "$raw" --target "$TARGET" --emit-asm >/dev/null
-    "$BRIEVC" bad "$sym" --target "$TARGET" --emit-asm >/dev/null
+    "$BRIEVC" bad "$raw" --target "$TARGET" --emit-asm >/dev/null 2>&1 || continue
+    "$BRIEVC" bad "$sym" --target "$TARGET" --emit-asm >/dev/null 2>&1 || continue
     rs="$ROOT/benchmarks/bad/${k}_raw.s"
     ss="$ROOT/benchmarks/bad/${k}_sym.s"
     ri=$(count_instr "$rs"); si=$(count_instr "$ss")
