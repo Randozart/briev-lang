@@ -51,11 +51,11 @@ change the historical result files or superseded plans.
 | ID | Work | Evidence | Acceptance |
 |---|---|---|---|
 | P0-1 | Rerun the **full runtime harness** including the new rows `fsm_dispatch`, `arena_bump`, `spsc_ring`. **DONE 2026-10-20**: 42 rows, all MATCH; table in the active plan. | `benchmarks/build_and_bench.sh --runtime`; `/tmp/opencode/p0_full_after.log` | Keep the table current on each performance slice. |
-| P0-2 | Fix the default `cargo test` path. **DONE 2026-10-20**: `cargo test --bin brievc` green (fixed stale test constructors/imports/options). | `src/compile.rs` test only | Re-run in CI. |
+| P0-2 | Fix the default `cargo test` path. **PARTIAL 2026-10-20**: `cargo test --bin brievc` is green; obsolete `tests/test_c.rs`/`test_rust.rs` removed; `c_driver_needs_state` API fixed; stale untracked FFI tests archived. Full all-target `cargo test` still fails on `c_driver_node`, `c_driver_python`, and `cli_args_test` (P1-15/P1-16). | `/tmp/opencode/p0_cargo_test_all2.log` | CI runs the targeted gates; either fix the remaining integration failures or document a deliberate exclusion. |
 | P0-3 | Update `docs/architecture/features/ptr.md` for the new model. **DONE 2026-10-20**: provenance section, canonical ptr, invalidation, no mutable `!invariant.load`, explicit `vol` surface. | Doc now matches the implementation | Keep in sync with future provenance slices. |
 | P0-4 | Fix the stale comment in `config/contracts.dbvl`. **DONE 2026-10-20**: active `deny` row documented; override guidance for experiments. | `config/contracts.dbvl` | Keep the row; do not omit it. |
 | P0-5 | Add CI (or an explicit equivalent). **DONE 2026-10-20**: `.github/workflows/ci.yml` runs release build, lib/bin tests, tier-1 E2E, contract census, determinism quick gate, parity. | First run still to be observed on GitHub | Keep the workflow green; add jobs only with a measured need. |
-| P0-6 | Worktree triage. **PARTIAL 2026-10-20**: new fixture binaries added to `.gitignore`; stale `utf8_ops`, untracked FFI tests/fixtures/assets, and the 2026-10-16 result file still need an explicit keep/remove decision. | `git status` | No accidental commit; each remaining item intentionally kept or removed. |
+| P0-6 | Worktree triage. **DONE 2026-10-20**: new fixture binaries ignored; user-provided asset/fixtures/results tracked; obsolete `test_c`/`test_rust` removed; untracked FFI tests archived under ignored `tests/archive/`; stale generated benchmark binaries and `benchmarks/parity/_out/` untracked and ignored; retired `utf8_ops` binary removed. | `git status` | Keep generated artifacts out of git; do not reintroduce tracked ELF binaries. |
 | P0-7 | Update the active plan/index links. **DONE 2026-10-20**: active plan and `INDEX.md` link this backlog. | docs | Keep the pointer current. |
 | P0-8 | Competitive-performance acceptance line. **DONE 2026-10-20** (policy). **POLICY 2026-10-20**: target is C parity on every runtime benchmark. A slower row is a tracked compiler gap with a measured cause in P2; no silent margin, no keyword/doc workaround. | Fixture ratios 1.90x–4.64x | Revisit only if the owner declares a margin; exceptions stay explicit. |
 
@@ -76,6 +76,8 @@ change the historical result files or superseded plans.
 | P1-11 | `i64` boxing tax Phase 1 never executed. | `docs/plans/INDEX.md`; `BUGS.md` 2026-06-16 entry | Either execute the native-type refactor or record a measured reason it is retired. |
 | P1-12 | Contract-fact constant folding shadowing tests. | Call-gate folds `const` names but skips names in `bindings`; the `total=500` shadow case was found by accident | Unit tests: global const folds, local shadow does not, nested const chains fold. |
 | P1-13 | `sock_recv` length sync regression pin. | Fixed 2026-10-20 (`buf.len = n`); loopback golden covers it | Keep the socket golden as the pin; no separate work unless another sink has the same pattern. |
+| P1-15 | C-driven Python/Node bridge round-trips fail. | `cargo test --all` log: `python_native_extension_roundtrip` (`greet("world") != "world"`), `python_node_cross_language_bridge` (empty node save). | Determine FFI/ABI regression vs host-toolchain drift; add a deterministic gate or explicitly retire the drivers. |
+| P1-16 | CLI entry-command test hangs. | `cli_args_test::entry_cmd_greet_quiet` and `entry_cmd_greet_verbose_name` ran >60s in the all-target run. | Reproduce with timeout, find the wait, fix the driver/test; no infinite hang in the default gate. |
 
 ## P2 — competitive performance workstreams
 
@@ -299,8 +301,8 @@ Recommended order:
 
 ## Decisions still needed
 
-1. **Competitive line:** C parity on every runtime benchmark, or a declared
-   margin with exceptions? P0-8.
+1. **Competitive line:** resolved 2026-10-20 — C parity target; slower rows are
+   explicit P2 gaps, no silent margin (P0-8).
 2. **Enum/Result ABI:** register-returned small sums vs scalar replacement vs
    both; scope of the first slice.
 3. **Ptr representation:** is the canonical-cache + i64-storage model the
