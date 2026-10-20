@@ -1,7 +1,7 @@
 # Pointer provenance, default performance, and the stdlib fixture campaign
 
 **Date:** 2026-10-20
-**Status:** ACTIVE — Phase 0.
+**Status:** ACTIVE — structural provenance landed; Fixtures 1–4 first passes landed (performance findings recorded).
 **Supersedes/extends:** `docs/plans/2026-10-18-stdlib-fixture-campaign.md`
 (the fixture charter is unchanged; this plan adds the provenance prerequisite
 and the performance contract the fixtures must be measured against).
