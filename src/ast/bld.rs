@@ -48,6 +48,10 @@ pub enum BldTopLevel {
     /// `bootstrap Reset_Handler() { … }` — the authored machine entry.
     /// Exactly one per file; the body IS the reset-vector recipe.
     Bootstrap(BldBootstrap),
+    /// `extern fn name(params) -> Ret;` — a raw label / external symbol
+    /// declared as a C-ABI call target. Registers a signature only; no
+    /// body, no emission.
+    ExternFn(BldExternFn),
 }
 
 /// `import "path";`
@@ -82,6 +86,17 @@ pub struct BldDefn {
 pub struct BldBootstrap {
     pub name: String,
     pub body: Vec<BldStmt>,
+    pub span: Span,
+}
+
+/// `extern fn name(params) -> Ret;` — a typed signature for an external
+/// raw label / symbol. Params must be annotated; the call stages
+/// arguments per the C ABI.
+#[derive(Debug, Clone)]
+pub struct BldExternFn {
+    pub name: String,
+    pub params: Vec<BldParam>,
+    pub ret: Option<Type>,
     pub span: Span,
 }
 

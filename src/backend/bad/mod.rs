@@ -622,6 +622,62 @@ mod tests {
     }
 
     #[test]
+    fn declarations_extern_fn_is_a_callable_signature() {
+        // An extern fn declares a C-ABI signature for a raw label /
+        // external symbol; a symbolic `call` stages its arguments and
+        // emits a real `call`.
+        let src = "declarations {\n    extern fn helper(a: Int, b: Int) -> Int\n}\n\
+                   bootstrap Entry {\n    let r = helper(1, 2)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("call helper"), "{x86}");
+        assert!(x86.contains("movq $1"), "{x86}");
+        assert!(x86.contains("movq $2"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_extern_fn_arity_is_checked() {
+        let err = generate(
+            "declarations {\n    extern fn helper(a: Int) -> Int\n}\n\
+             bootstrap Entry {\n    let r = helper(1, 2)\n    halt\n}\n",
+            "x86_64",
+        )
+        .expect_err("extern arity mismatch");
+        assert!(err.contains("takes 1 argument"), "{err}");
+    }
+
+    #[test]
+    fn declarations_extern_data_is_addressable() {
+        let src = "declarations {\n    extern data ticks\n}\n_start:\n    \
+                   let p = addr(ticks)\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq ticks(%rip)"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_stack_reserves_bss() {
+        let src = "declarations {\n    stack 4K\n}\n_start:\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .bss"), "{x86}");
+        assert!(x86.contains("__bad_stack:"), "{x86}");
+        assert!(x86.contains(".zero 4096"), "{x86}");
+        assert!(x86.contains("__bad_stack_top:"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_stack_rejects_zero() {
+        let err = generate("declarations {\n    stack 0\n}\n_start:\n    halt\n", "x86_64")
+            .expect_err("zero stack");
+        assert!(err.contains("greater than zero"), "{err}");
+    }
+
+    #[test]
+    fn declarations_extern_bad_shape_is_loud() {
+        let err = generate("declarations {\n    extern foo\n}\n", "x86_64")
+            .expect_err("malformed extern");
+        assert!(err.contains("extern fn") && err.contains("extern data"), "{err}");
+    }
+
+    #[test]
     fn raw_boundary_copy_in_out_and_pin() {
         let src = "_start:\n    raw clobbers r5 {\n        mov r5, 42\n    }\n    \
                    let x = r5\n    x += 1\n    r6 = x\n    halt\n";

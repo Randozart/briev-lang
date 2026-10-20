@@ -228,12 +228,18 @@ impl<'s> Parser<'s> {
         }
         self.pos += 1;
         let mut pins = Vec::new();
+        let mut extern_fns = Vec::new();
+        let mut extern_data = Vec::new();
+        let mut stack = None;
         while self.pos < self.lines.len() {
             let (_, c, lno) = self.lines[self.pos];
             if c == "}" {
                 self.pos += 1;
                 return Ok(Some(BadTopLevel::Declarations(BadDeclarations {
                     pins,
+                    extern_fns,
+                    extern_data,
+                    stack,
                     span,
                 })));
             }
@@ -242,9 +248,65 @@ impl<'s> Parser<'s> {
                 self.pos += 1;
                 continue;
             }
+            // `extern fn name(params) -> Ret` — a raw label / external
+            // symbol declared as a C-ABI call target.
+            if let Some(rest) = c.strip_prefix("extern fn ") {
+                extern_fns.push(parse_extern_fn(rest, lno, span.clone())?);
+                self.pos += 1;
+                continue;
+            }
+            // `extern data name` — an external data symbol.
+            if let Some(rest) = c.strip_prefix("extern data ") {
+                let name = rest.trim();
+                if !is_ident(name) || name.starts_with('.') {
+                    return Err(BadParseError {
+                        message: format!("`{name}` is not a valid extern data name"),
+                        line: lno,
+                        span,
+                    });
+                }
+                extern_data.push(name.to_string());
+                self.pos += 1;
+                continue;
+            }
+            // `stack N` — reserve an N-byte stack in .bss.
+            if let Some(rest) = c.strip_prefix("stack ") {
+                let size_text = rest.trim();
+                let size = parse_stack_size(size_text).ok_or_else(|| BadParseError {
+                    message: format!(
+                        "`stack {size_text}` - the stack size must be a positive byte count \
+                         (decimal or 0x hex, optional K/M suffix)"
+                    ),
+                    line: lno,
+                    span: span.clone(),
+                })?;
+                if size <= 0 {
+                    return Err(BadParseError {
+                        message: "the stack size must be greater than zero".to_string(),
+                        line: lno,
+                        span,
+                    });
+                }
+                stack = Some(BadStack { size, span: span.clone() });
+                self.pos += 1;
+                continue;
+            }
+            if c.starts_with("extern ") {
+                return Err(BadParseError {
+                    message: format!(
+                        "`{c}` - use `extern fn name(params) -> Ret` for a callable symbol, \
+                         or `extern data name` for a data symbol"
+                    ),
+                    line: lno,
+                    span,
+                });
+            }
             let Some((name, reg)) = c.split_once(':') else {
                 return Err(BadParseError {
-                    message: format!("`{c}` - declarations hold `name: register` pins"),
+                    message: format!(
+                        "`{c}` - declarations hold `name: register` pins, `extern fn …`, \
+                         `extern data …`, or `stack N`"
+                    ),
                     line: lno,
                     span,
                 });
@@ -1853,6 +1915,82 @@ fn parse_raw_region_head(
         out.push(name.to_string());
     }
     Ok(out)
+}
+
+/// `extern fn name(params) -> Ret` (the `extern fn ` prefix already
+/// stripped). A raw label or external symbol with a C-ABI signature.
+fn parse_extern_fn(
+    rest: &str, line: usize, span: Span,
+) -> Result<crate::ast::bad::BadExternFn, BadParseError> {
+    let rest = rest.trim();
+    let Some(open) = rest.find('(') else {
+        return Err(BadParseError {
+            message: "`extern fn` needs `name(params) -> Ret`".to_string(),
+            line,
+            span,
+        });
+    };
+    let name = rest[..open].trim();
+    if !is_ident(name) || name.starts_with('.') {
+        return Err(BadParseError {
+            message: format!("`{name}` is not a valid extern fn name"),
+            line,
+            span,
+        });
+    }
+    let Some(close_rel) = rest[open + 1..].find(')') else {
+        return Err(BadParseError {
+            message: "`extern fn` parameter list is missing `)`".to_string(),
+            line,
+            span,
+        });
+    };
+    let close = open + 1 + close_rel;
+    let params = parse_fn_params(&rest[open + 1..close], line, span.clone())?;
+    let after = rest[close + 1..].trim();
+    let ret = if let Some(after) = after.strip_prefix("->") {
+        let ty = after.trim();
+        if ty.is_empty() {
+            return Err(BadParseError {
+                message: "`extern fn` return type is empty after `->`".to_string(),
+                line,
+                span,
+            });
+        }
+        Some(ty.to_string())
+    } else if after.is_empty() {
+        None
+    } else {
+        return Err(BadParseError {
+            message: format!("unexpected `{after}` after the `extern fn` parameter list"),
+            line,
+            span,
+        });
+    };
+    Ok(crate::ast::bad::BadExternFn {
+        name: name.to_string(),
+        params,
+        ret,
+        span,
+    })
+}
+
+/// Parse a `stack` size: decimal, `0x` hex, with an optional `K`/`M`
+/// (×1024 / ×1024²) suffix.
+fn parse_stack_size(text: &str) -> Option<i64> {
+    let text = text.trim();
+    let (digits, mult) = match text.chars().last() {
+        Some('K') | Some('k') => (&text[..text.len() - 1], 1024i64),
+        Some('M') | Some('m') => (&text[..text.len() - 1], 1024i64 * 1024),
+        _ => (text, 1i64),
+    };
+    let digits = digits.trim();
+    let value = if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else {
+        digits.parse::<i64>().ok()?
+    };
+    value.checked_mul(mult)
 }
 
 fn parse_fn_params(

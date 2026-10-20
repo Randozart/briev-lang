@@ -221,10 +221,38 @@ pub struct BadAlias {
     pub span: Span,
 }
 
-/// `declarations { name: rN; … }` — file-scoped symbolic pins.
+/// `declarations { name: rN; extern fn …; extern data …; stack N; … }`
+/// — file-scoped pins plus the explicit boundary declarations.
 #[derive(Debug, Clone)]
 pub struct BadDeclarations {
     pub pins: Vec<(String, String)>,
+    /// `extern fn name(params) -> Ret;` — a raw label / external symbol
+    /// declared as a C-ABI call target with a typed signature. `call
+    /// name(args)` then stages arguments per the ABI and emits `call`.
+    pub extern_fns: Vec<BadExternFn>,
+    /// `extern data name;` — an external data symbol, so `addr(name)` and
+    /// a bare data-label reference resolve to its address.
+    pub extern_data: Vec<String>,
+    /// `stack N;` — reserve an N-byte stack in `.bss` and define
+    /// `__bad_stack` (base) plus `__bad_stack_top` (base + N). The author
+    /// still sets `sp` explicitly (`addr sp, __bad_stack_top`).
+    pub stack: Option<BadStack>,
+    pub span: Span,
+}
+
+/// `extern fn name(params) -> Ret;` inside `declarations { }`.
+#[derive(Debug, Clone)]
+pub struct BadExternFn {
+    pub name: String,
+    pub params: Vec<BadFnParam>,
+    pub ret: Option<String>,
+    pub span: Span,
+}
+
+/// `stack N;` inside `declarations { }`.
+#[derive(Debug, Clone)]
+pub struct BadStack {
+    pub size: i64,
     pub span: Span,
 }
 

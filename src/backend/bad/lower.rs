@@ -276,6 +276,23 @@ impl<'a> Lowerer<'a> {
             })
             .flatten()
             .collect();
+        let mut extern_fns: Vec<crate::ast::bad::BadExternFn> = Vec::new();
+        let mut extern_data: Vec<String> = Vec::new();
+        let mut stack: Option<i64> = None;
+        for i in &self.emit_items {
+            if let BadTopLevel::Declarations(d) = i {
+                extern_fns.extend(d.extern_fns.iter().cloned());
+                extern_data.extend(d.extern_data.iter().cloned());
+                if let Some(s) = &d.stack {
+                    stack = Some(s.size);
+                }
+            }
+        }
+        // Extern data symbols are addressable labels in symbolic code.
+        let mut label_names = self.label_names.clone();
+        for name in &extern_data {
+            label_names.insert(name.clone());
+        }
         let symdefs: std::collections::HashMap<String, crate::ast::bad::BadFn> = self
             .emit_items
             .iter()
@@ -299,12 +316,14 @@ impl<'a> Lowerer<'a> {
             aliases: &self.aliases,
             consts: &self.consts,
             const_values: &const_values,
-            label_names: &self.label_names,
+            label_names: &label_names,
             defns: &self.defns.keys().cloned().collect(),
             symdefs: &symdefs,
             bad_defns: &self.defns,
             engine_defns: &engine_defns,
             global_pins: &global_pins,
+            extern_fns: &extern_fns,
+            stack,
         };
         let mut items = std::mem::take(&mut self.emit_items);
         let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
@@ -326,12 +345,30 @@ impl<'a> Lowerer<'a> {
                     "`call defn {}` reached emission - the symbolic lowering pass did not run",
                     f.name
                 )),
-                BadTopLevel::SymDefn(_) | BadTopLevel::Declarations(_) => {}
+                BadTopLevel::SymDefn(_) => {}
+                BadTopLevel::Declarations(d) => self.emit_stack(d),
                 BadTopLevel::Label(l) => self.emit_label(l),
                 BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
             }
         }
     }
+
+    /// `declarations { stack N; }` — reserve an N-byte stack in `.bss` and
+    /// define `__bad_stack` (base) / `__bad_stack_top` (end). The author
+    /// still sets `sp` explicitly (`addr sp, __bad_stack_top`), which keeps
+    /// stack setup a deliberate, visible step.
+    fn emit_stack(&mut self, d: &BadDeclarations) {
+        let Some(s) = &d.stack else { return };
+        self.push_line(".section .bss");
+        self.push_line(".align 16");
+        self.push_line(".global __bad_stack");
+        self.push_line("__bad_stack:");
+        self.push_line(&format!("    .zero {}", s.size));
+        self.push_line(".global __bad_stack_top");
+        self.push_line("__bad_stack_top:");
+        self.push_line(".section .text");
+    }
+
 
     /// 2026-09-22: raw <target> ... end — verbatim for the active
     /// family, skipped otherwise. A named block emits its callable label

@@ -35,7 +35,7 @@ use crate::analysis::density::is_float_type;
 use crate::ast::bad::{
     BadBodyItem, BadDirective, BadInstr, BadLabel, BadLocal, BadOperand, BadProgram, BadTopLevel,
 };
-use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldProgram, BldStmt, BldTopLevel};
+use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldExternFn, BldProgram, BldStmt, BldTopLevel};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::backend::bad::registry::{BadIsa, BadIsaLowering, BadRegisters, ImmHandling};
 use crate::errors::Span;
@@ -319,6 +319,7 @@ enum Stream {
     Const(BldConst),
     Defn(BldDefn),
     Bootstrap(BldBootstrap),
+    ExternFn(BldExternFn),
 }
 
 pub struct BldLowerer<'a> {
@@ -433,6 +434,9 @@ impl<'a> BldLowerer<'a> {
                 BldTopLevel::Const(c) => self.stream.push((Stream::Const(c), file.clone())),
                 BldTopLevel::Defn(d) => self.stream.push((Stream::Defn(d), file.clone())),
                 BldTopLevel::Bootstrap(b) => self.stream.push((Stream::Bootstrap(b), file.clone())),
+                BldTopLevel::ExternFn(e) => {
+                    self.stream.push((Stream::ExternFn(e), file.clone()))
+                }
             }
         }
         Ok(())
@@ -631,11 +635,59 @@ impl<'a> BldLowerer<'a> {
                     };
                     self.declare_sig(&b.name, sig)?;
                 }
+                Stream::ExternFn(e) => {
+                    self.cur_span = e.span;
+                    self.cur_file = file.clone();
+                    let sig = self.sig_for_extern(&e)?;
+                    self.declare_sig(&e.name, sig)?;
+                }
             }
         }
         Ok(())
     }
 
+    /// Build an `extern fn` signature: annotated params, optional return.
+    /// Arity is checked (the author declared it), and argument classes are
+    /// coerced at the call site like any typed defn.
+    fn sig_for_extern(&mut self, e: &BldExternFn) -> Result<Sig, String> {
+        let mut params = Vec::with_capacity(e.params.len());
+        for p in &e.params {
+            let ty = p.ty.as_ref().ok_or_else(|| {
+                self.fail(
+                    &format!("parameter `{}` of `extern fn {}`", p.name, e.name),
+                    "it has no type, and an extern call stages arguments per the C ABI",
+                    &format!("annotate it — `{}: Int` (or Float/Bool/Ptr)", p.name),
+                )
+            })?;
+            let class = self.annotation_class(ty).map_err(|why| {
+                self.fail(
+                    &format!("parameter `{}` of `extern fn {}`", p.name, e.name),
+                    &why,
+                    "use a scalar class: Int, Float, Bool, or Ptr",
+                )
+            })?;
+            params.push(class);
+        }
+        let ret = match &e.ret {
+            None => None,
+            Some(Type::Void) => None,
+            Some(ty) => Some(self.annotation_class(ty).map_err(|why| {
+                self.fail(
+                    &format!("the return type of `extern fn {}`", e.name),
+                    &why,
+                    "use a scalar class: Int, Float, Bool, or Ptr, or omit the return type",
+                )
+            })?),
+        };
+        Ok(Sig {
+            params,
+            ret,
+            external: false,
+            check_arity: true,
+            span: e.span,
+            file: self.cur_file.clone(),
+        })
+    }
     /// The compiler-managed value namespace (`vN` / `fvN`): internal
     /// recipe names may not collide with it — the M4 allocator rewrites
     /// those operand names mechanically.
@@ -896,6 +948,8 @@ impl<'a> BldLowerer<'a> {
                     };
                     self.recipe_core(head)?;
                 }
+                // Signature-only: an `extern fn` has no body to emit.
+                Stream::ExternFn(_) => {}
             }
         }
         Ok(BadProgram {

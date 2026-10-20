@@ -47,6 +47,11 @@ pub struct SymCtx<'a> {
     pub engine_defns: &'a HashMap<String, BadDefn>,
     /// File-scoped pins from `declarations { name: rN; }`.
     pub global_pins: &'a [(String, String)],
+    /// `declarations { extern fn …; }` — typed C-ABI signatures for raw
+    /// labels / external symbols.
+    pub extern_fns: &'a [crate::ast::bad::BadExternFn],
+    /// `declarations { stack N; }` — reserved stack size, if declared.
+    pub stack: Option<i64>,
 }
 
 const PREFIX: &str = "__bad_sym_";
@@ -121,11 +126,29 @@ pub fn lower_symbolic_labels(
             _ => {}
         }
     }
-    if units.is_empty() {
+    if units.is_empty() && ctx.extern_fns.is_empty() {
         return Ok(());
     }
 
     let mut program_items: Vec<BldTopLevel> = Vec::new();
+    // `extern fn` declarations register C-ABI signatures for raw labels /
+    // external symbols so `call name(args)` stages correctly.
+    for e in ctx.extern_fns {
+        program_items.push(BldTopLevel::ExternFn(crate::ast::bld::BldExternFn {
+            name: e.name.clone(),
+            params: e
+                .params
+                .iter()
+                .map(|p| BldParam {
+                    name: p.name.clone(),
+                    ty: Some(parse_type(&p.ty)),
+                    span: Span::dummy(),
+                })
+                .collect(),
+            ret: e.ret.as_deref().map(parse_type),
+            span: e.span.clone(),
+        }));
+    }
     for (cname, value) in ctx.const_values {
         program_items.push(BldTopLevel::Const(BldConst {
             name: cname.clone(),

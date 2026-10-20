@@ -320,6 +320,34 @@ Rules:
   - `declarations { uart: r2; … }` pins a name to a physical register for
     every symbolic body in the file.
 
+### `declarations { }` — the explicit boundary
+
+`declarations` holds the things that are deliberately visible rather than
+inferred:
+
+```bad
+declarations {
+    uart: r2                                  // pin a symbolic name to a register
+    extern fn memcpy(dst: Ptr, src: Ptr, n: Int) -> Ptr
+    extern data _stack_top                    // an external data symbol
+    stack 16K                                 // reserve a .bss stack
+}
+```
+
+- **`extern fn name(params) -> Ret;`** — a raw label or external symbol
+  declared as a C-ABI call target. `call name(args)` stages arguments per
+  the ABI (register window then stack) and emits `call name`. Arity is
+  checked against the declaration; params must be annotated (`Int`,
+  `Float`, `Bool`, `Ptr`). This is how a symbolic body calls a raw label
+  that has no symbolic signature of its own.
+- **`extern data name;`** — an external data symbol; `addr(name)` and a
+  bare `name` in a value position resolve to its address (label-as-value).
+- **`stack N;`** — reserve an N-byte stack in `.bss`, defining
+  `__bad_stack` (base) and `__bad_stack_top` (end), both global. Stack
+  setup stays explicit: write `addr sp, __bad_stack_top` where you want
+  `sp` initialized. `N` accepts decimal, `0x` hex, and `K`/`M` suffixes.
+- **`name: rN;`** — a file-scoped pin (see the boundary handoff above).
+
 ## Registers
 
 `config/bad-registers.dbvl` maps the built-in portable set —
