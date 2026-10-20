@@ -1,0 +1,36 @@
+// spsc_ring — single-producer/single-consumer ring throughput (fixture 2).
+//
+// One push + one pop per step on a 1024-slot ring, with acquire/release
+// atomics and monotonic masked indices. The reactor is single-threaded, so
+// this measures the atomic/ring path, not a cross-thread race.
+//
+// C reference: spsc_ring_c.c (C11 atomics, same head/tail discipline).
+import { SpscRing, sring_new, sring_push, sring_pop, sring_free } from "std/atomic";
+import { is_ok, unwrap } from "std/result";
+import { print_int, print_str } from "std/io";
+
+let N: Int = get_env_int!("BOUND");
+let sum: Int = 0;
+let done: Bool = false;
+
+node run [beginprogram][done == true] {
+    let r: SpscRing = sring_new(1024);
+    foreach i in 0..N {
+        when r.cap > 0 {
+            let ok: Bool = sring_push(r, i);
+            when ok {
+                let x = sring_pop(r);
+                when is_ok(x) {
+                    sum = sum + unwrap(x);
+                };
+            };
+        };
+        when i % 5000000 == 0 {
+            print_int(sum); print_str("\n");
+        };
+    };
+    sring_free(r);
+    done = true;
+    print_int(sum); print_str("\n");
+    endprogram 0;
+};

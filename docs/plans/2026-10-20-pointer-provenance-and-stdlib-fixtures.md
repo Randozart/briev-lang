@@ -513,7 +513,24 @@ Ptr-returning call ABI (ptr→i64 at the call boundary) and the obj Ptr-field
 literal store (Arena uses the honest i64 handle form; the general obj Ptr-field
 representation mismatch is logged open).
 
-**Next:** Fixture 2 (SPSC), then the recorded performance follow-ups. The provenance prerequisite for Arena/SPSC is now structurally in place;
+**Fixture 2 first pass (this session):** `lib/std/atomic.bv` now has
+`SpscRing` (monotonic indices, power-of-two masking, acquire/release atomics),
+`spsc_smoke` golden, and `spsc_ring` C11 reference. Performance **1.90x C**;
+the gap is per-pop `Result` heap boxing plus object/atomic-field overhead.
+Honest scope: the reactor is single-threaded, so this is a lowering/ordering
+test, not a cross-thread race. Results:
+`benchmarks/results/2026-10-20-fixture2-spsc.md`.
+
+**Campaign status:** Fixtures 1–4 first passes all landed; every one produced
+a performance finding rather than a source workaround:
+- Fixture 1 ws_frame 3.14x (per-byte codec calls),
+- Fixture 2 SPSC 1.90x (Result boxing + atomic/object path),
+- Fixture 3 Arena 4.64x (hot-path call/object/Store# overhead),
+- Fixture 4 FSM 2.82x (heap-boxed Result/enum per transition).
+
+The common compiler gap is **small-sum-type representation and small-function
+inlining/scalar replacement** — not vocabulary, not strategy keywords. Those
+are the next performance workstreams after this plan's structural work. The provenance prerequisite for Arena/SPSC is now structurally in place;
 the remaining risk in 2 is the single-threaded reactor (documented, not hidden).
 
 ## Risks

@@ -272,6 +272,23 @@ fn net_stack_helpers_golden_output() {
 /// 2026-10-20 (Fixture 3, stdlib campaign): Arena is an obj so the bump
 /// offset survives the call. Pins reference semantics, 8-byte bump deltas,
 /// 16-byte alignment padding, and reset.
+/// 2026-10-20 (Fixture 2, stdlib campaign): SPSC ring with monotonic indices,
+/// power-of-two masking, release/acquire atomics. The reactor is
+/// single-threaded here, so this pins the atomic lowering and ring discipline,
+/// not a cross-thread race.
+#[test]
+fn spsc_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("spsc_smoke", "golden", &[]);
+    assert_eq!(
+        out, "7|21|7|0|1",
+        "SPSC ring golden drifted: {out:?}"
+    );
+}
+
 #[test]
 fn arena_smoke_golden_output() {
     if !has("clang") {
