@@ -227,107 +227,23 @@ impl<'s> Parser<'s> {
             return Ok(None);
         }
         self.pos += 1;
-        let mut pins = Vec::new();
-        let mut extern_fns = Vec::new();
-        let mut extern_data = Vec::new();
-        let mut stack = None;
+        let mut decls = BadDeclarations {
+            pins: Vec::new(),
+            extern_fns: Vec::new(),
+            extern_data: Vec::new(),
+            stack: None,
+            span: span.clone(),
+        };
         while self.pos < self.lines.len() {
             let (_, c, lno) = self.lines[self.pos];
             if c == "}" {
                 self.pos += 1;
-                return Ok(Some(BadTopLevel::Declarations(BadDeclarations {
-                    pins,
-                    extern_fns,
-                    extern_data,
-                    stack,
-                    span,
-                })));
+                return Ok(Some(BadTopLevel::Declarations(decls)));
             }
             let c = c.trim().trim_end_matches(';').trim();
-            if c.is_empty() {
-                self.pos += 1;
-                continue;
+            if !c.is_empty() {
+                apply_decl_item(&mut decls, c, lno, span.clone())?;
             }
-            // `extern fn name(params) -> Ret` — a raw label / external
-            // symbol declared as a C-ABI call target.
-            if let Some(rest) = c.strip_prefix("extern fn ") {
-                extern_fns.push(parse_extern_fn(rest, lno, span.clone())?);
-                self.pos += 1;
-                continue;
-            }
-            // `extern data name` — an external data symbol.
-            if let Some(rest) = c.strip_prefix("extern data ") {
-                let name = rest.trim();
-                if !is_ident(name) || name.starts_with('.') {
-                    return Err(BadParseError {
-                        message: format!("`{name}` is not a valid extern data name"),
-                        line: lno,
-                        span,
-                    });
-                }
-                extern_data.push(name.to_string());
-                self.pos += 1;
-                continue;
-            }
-            // `stack N` — reserve an N-byte stack in .bss.
-            if let Some(rest) = c.strip_prefix("stack ") {
-                let size_text = rest.trim();
-                let size = parse_stack_size(size_text).ok_or_else(|| BadParseError {
-                    message: format!(
-                        "`stack {size_text}` - the stack size must be a positive byte count \
-                         (decimal or 0x hex, optional K/M suffix)"
-                    ),
-                    line: lno,
-                    span: span.clone(),
-                })?;
-                if size <= 0 {
-                    return Err(BadParseError {
-                        message: "the stack size must be greater than zero".to_string(),
-                        line: lno,
-                        span,
-                    });
-                }
-                stack = Some(BadStack { size, span: span.clone() });
-                self.pos += 1;
-                continue;
-            }
-            if c.starts_with("extern ") {
-                return Err(BadParseError {
-                    message: format!(
-                        "`{c}` - use `extern fn name(params) -> Ret` for a callable symbol, \
-                         or `extern data name` for a data symbol"
-                    ),
-                    line: lno,
-                    span,
-                });
-            }
-            let Some((name, reg)) = c.split_once(':') else {
-                return Err(BadParseError {
-                    message: format!(
-                        "`{c}` - declarations hold `name: register` pins, `extern fn …`, \
-                         `extern data …`, or `stack N`"
-                    ),
-                    line: lno,
-                    span,
-                });
-            };
-            let name = name.trim();
-            let reg = reg.trim();
-            if !is_ident(name) || name.starts_with('.') {
-                return Err(BadParseError {
-                    message: format!("`{name}` is not a valid pin name"),
-                    line: lno,
-                    span,
-                });
-            }
-            if reg.is_empty() || !is_ident(reg) {
-                return Err(BadParseError {
-                    message: format!("pin `{name}` needs a register after `:`"),
-                    line: lno,
-                    span,
-                });
-            }
-            pins.push((name.to_string(), reg.to_string()));
             self.pos += 1;
         }
         Err(BadParseError {
@@ -1915,6 +1831,99 @@ fn parse_raw_region_head(
         out.push(name.to_string());
     }
     Ok(out)
+}
+
+/// Route one `declarations { }` line into the block's buckets.
+fn apply_decl_item(
+    decls: &mut BadDeclarations, c: &str, line: usize, span: Span,
+) -> Result<(), BadParseError> {
+    if let Some(rest) = c.strip_prefix("extern fn ") {
+        decls.extern_fns.push(parse_extern_fn(rest, line, span)?);
+        return Ok(());
+    }
+    if let Some(rest) = c.strip_prefix("extern data ") {
+        decls.extern_data.push(parse_extern_data(rest, line, span)?);
+        return Ok(());
+    }
+    if let Some(rest) = c.strip_prefix("stack ") {
+        if decls.stack.is_some() {
+            return Err(BadParseError {
+                message: "`stack` is declared more than once - keep one size".to_string(),
+                line,
+                span,
+            });
+        }
+        decls.stack = Some(parse_stack_decl(rest, line, span)?);
+        return Ok(());
+    }
+    if c.starts_with("extern ") {
+        return Err(parse_error(
+            format!(
+                "`{c}` - use `extern fn name(params) -> Ret` for a callable symbol, \
+                 or `extern data name` for a data symbol"
+            ),
+            line,
+            span,
+        ));
+    }
+    decls.pins.push(parse_pin(c, line, span)?);
+    Ok(())
+}
+
+fn parse_extern_data(rest: &str, line: usize, span: Span) -> Result<String, BadParseError> {
+    let name = rest.trim();
+    if !is_ident(name) || name.starts_with('.') {
+        return Err(parse_error(format!("`{name}` is not a valid extern data name"), line, span));
+    }
+    Ok(name.to_string())
+}
+
+fn parse_stack_decl(rest: &str, line: usize, span: Span) -> Result<BadStack, BadParseError> {
+    let size_text = rest.trim();
+    let size = parse_stack_size(size_text).ok_or_else(|| {
+        parse_error(
+            format!(
+                "`stack {size_text}` - the stack size must be a positive byte count \
+                 (decimal or 0x hex, optional K/M suffix)"
+            ),
+            line,
+            span.clone(),
+        )
+    })?;
+    if size <= 0 {
+        return Err(parse_error("the stack size must be greater than zero".to_string(), line, span));
+    }
+    Ok(BadStack { size, span })
+}
+
+fn parse_pin(c: &str, line: usize, span: Span) -> Result<(String, String), BadParseError> {
+    let Some((name, reg)) = c.split_once(':') else {
+        return Err(parse_error(
+            format!(
+                "`{c}` - declarations hold `name: register` pins, `extern fn …`, \
+                 `extern data …`, or `stack N`"
+            ),
+            line,
+            span,
+        ));
+    };
+    let name = name.trim();
+    let reg = reg.trim();
+    if !is_ident(name) || name.starts_with('.') {
+        return Err(parse_error(format!("`{name}` is not a valid pin name"), line, span));
+    }
+    if reg.is_empty() || !is_ident(reg) {
+        return Err(parse_error(
+            format!("pin `{name}` needs a register after `:`"),
+            line,
+            span,
+        ));
+    }
+    Ok((name.to_string(), reg.to_string()))
+}
+
+fn parse_error(message: String, line: usize, span: Span) -> BadParseError {
+    BadParseError { message, line, span }
 }
 
 /// `extern fn name(params) -> Ret` (the `extern fn ` prefix already

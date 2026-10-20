@@ -91,28 +91,30 @@ fn walk_body(body: &[BldStmt], defs: &mut Vec<(String, usize)>, uses: &mut HashS
             }
             BldStmt::Return { value: Some(v), .. } => collect_uses(v, uses),
             BldStmt::WriteReg { value, .. } => collect_uses(value, uses),
-            BldStmt::Instr(instr) => {
-                for op in &instr.operands {
-                    match op {
-                        crate::ast::bad::BadOperand::Name(n) => {
-                            uses.insert(n.clone());
-                        }
-                        crate::ast::bad::BadOperand::Expr(t) => {
-                            if let Ok(e) = crate::parser::bld::parse_bld_expr(t) {
-                                collect_uses(&e, uses);
-                            }
-                        }
-                        crate::ast::bad::BadOperand::Int(_)
-                        | crate::ast::bad::BadOperand::Float(_) => {}
-                    }
-                }
-            }
+            BldStmt::Instr(instr) => collect_instr_uses(instr, uses),
             BldStmt::Break { .. }
             | BldStmt::Continue { .. }
             | BldStmt::Return { value: None, .. }
             | BldStmt::Bad { .. }
             | BldStmt::Bind { .. }
             | BldStmt::RawClobber { .. } => {}
+        }
+    }
+}
+
+fn collect_instr_uses(instr: &crate::ast::bad::BadInstr, uses: &mut HashSet<String>) {
+    use crate::ast::bad::BadOperand;
+    for op in &instr.operands {
+        match op {
+            BadOperand::Name(n) => {
+                uses.insert(n.clone());
+            }
+            BadOperand::Expr(t) => {
+                if let Ok(e) = crate::parser::bld::parse_bld_expr(t) {
+                    collect_uses(&e, uses);
+                }
+            }
+            BadOperand::Int(_) | BadOperand::Float(_) => {}
         }
     }
 }

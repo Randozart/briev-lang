@@ -2043,58 +2043,113 @@ impl<'a> BldLowerer<'a> {
     /// An engine verb call: the registry's per-target sequence inlines at
     /// the call site — arguments substitute into `$N` slots, no ABI
     /// staging, and a `"ret"` verb's result arrives in r0.
-    fn lower_call(&mut self, callee: &str, args: &[Expr]) -> Result<Option<Lowered>, String> {
-        // `addr(label)` — symbolic address-of. The label is a symbol, not
-        // a value; emit the core `addr` op with a fresh virtual dest.
-        if callee == "addr" {
-            if args.len() != 1 {
-                return Err(self.fail(
-                    "`addr`",
-                    &format!("it takes one label, got {} argument(s)", args.len()),
-                    "write `addr(label)` with a data or code label",
-                ));
+    /// Lower the four engine verbs that map 1:1 onto core ISA ops
+    /// (`Store`/`Load`/`ReadControlReg`/`WriteControlReg`). Returns
+    /// `Some(result)` when handled, `None` for any other callee.
+    fn lower_engine_verb(
+        &mut self, callee: &str, args: &[Expr],
+    ) -> Result<Option<Option<Lowered>>, String> {
+        match callee {
+            "Store" => {
+                let [v, a] = self.check_two_args(callee, args, "Store(value, addr)")?;
+                self.emit("store", vec![v, a], VClass::Int)?;
+                Ok(Some(None))
             }
-            let label = match &args[0] {
-                Expr::Identifier(n) => n.clone(),
-                _ => {
-                    return Err(self.fail(
-                        "`addr`",
-                        "its argument must be a bare label name",
-                        "write `addr(banner)` — not an expression",
-                    ))
-                }
-            };
-            let reg = self.fresh_vreg(VClass::Int);
-            self.emit(
-                "addr",
-                vec![BadOperand::Name(reg.clone()), BadOperand::Name(label)],
-                VClass::Int,
-            )?;
-            return Ok(Some(Lowered::temp_reg(reg, VClass::Int)));
+            "WriteControlReg" => {
+                let [n, v] = self.check_two_args(callee, args, "WriteControlReg(csr, value)")?;
+                self.emit("writecr", vec![n, v], VClass::Int)?;
+                Ok(Some(None))
+            }
+            "Load" => {
+                let addr = self.check_one_arg(callee, args, "Load(addr)")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit("load", vec![BadOperand::Name(reg.clone()), addr], VClass::Int)?;
+                Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
+            }
+            "ReadControlReg" => {
+                let n = self.check_one_arg(callee, args, "ReadControlReg(csr)")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit("readcr", vec![BadOperand::Name(reg.clone()), n], VClass::Int)?;
+                Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
+            }
+            _ => Ok(None),
         }
-        if callee == "copyreg" {
-            if args.len() != 1 {
-                return Err(self.fail(
-                    "`copyreg`",
-                    &format!("it takes one register, got {} argument(s)", args.len()),
-                    "write `copyreg(r5)`",
-                ));
+    }
+
+    fn check_one_arg(
+        &mut self, callee: &str, args: &[Expr], fix: &str,
+    ) -> Result<BadOperand, String> {
+        if args.len() != 1 {
+            return Err(self.fail(
+                &format!("`{callee}`"),
+                &format!("it takes 1 argument, got {}", args.len()),
+                &format!("write `{fix}`"),
+            ));
+        }
+        Ok(self.expr(&args[0])?.op)
+    }
+
+    fn check_two_args(
+        &mut self, callee: &str, args: &[Expr], fix: &str,
+    ) -> Result<[BadOperand; 2], String> {
+        if args.len() != 2 {
+            return Err(self.fail(
+                &format!("`{callee}`"),
+                &format!("it takes 2 argument(s), got {}", args.len()),
+                &format!("write `{fix}`"),
+            ));
+        }
+        Ok([self.expr(&args[0])?.op, self.expr(&args[1])?.op])
+    }
+
+    /// `addr(label)` and `copyreg(rN)` — the two symbolic builtins that
+    /// emit a core op with a fresh virtual destination. `None` otherwise.
+    fn lower_special_call(
+        &mut self, callee: &str, args: &[Expr],
+    ) -> Result<Option<Lowered>, String> {
+        match callee {
+            "addr" => {
+                let label = self.bare_name_arg(args, "addr(label) with a data or code label")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit(
+                    "addr",
+                    vec![BadOperand::Name(reg.clone()), BadOperand::Name(label)],
+                    VClass::Int,
+                )?;
+                Ok(Some(Lowered::temp_reg(reg, VClass::Int)))
             }
-            let name = match &args[0] {
-                Expr::Identifier(n) => n.clone(),
-                _ => {
-                    return Err(self.fail(
-                        "`copyreg`",
-                        "its argument must be a bare register name",
-                        "write `copyreg(r5)`",
-                    ))
-                }
-            };
-            let (canon, class) = self.canonical_phys(&name)?;
-            let v = self.fresh_vreg(class);
-            self.body.reserved.push(canon.clone());
-            self.emit_copy(&v, BadOperand::Name(canon), class)?;
-            return Ok(Some(Lowered::temp_reg(v, class)));
+            "copyreg" => {
+                let name = self.bare_name_arg(args, "copyreg(r5)")?;
+                let (canon, class) = self.canonical_phys(&name)?;
+                let v = self.fresh_vreg(class);
+                self.body.reserved.push(canon.clone());
+                self.emit_copy(&v, BadOperand::Name(canon), class)?;
+                Ok(Some(Lowered::temp_reg(v, class)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A one-argument call whose argument must be a bare identifier.
+    fn bare_name_arg(&mut self, args: &[Expr], fix: &str) -> Result<String, String> {
+        match args {
+            [Expr::Identifier(n)] => Ok(n.clone()),
+            [_] => Err(self.fail(
+                "this call",
+                "its argument must be a bare name",
+                &format!("write `{fix}` — not an expression"),
+            )),
+            _ => Err(self.fail(
+                "this call",
+                &format!("it takes one name, got {} argument(s)", args.len()),
+                &format!("write `{fix}`"),
+            )),
+        }
+    }
+
+    fn lower_call(&mut self, callee: &str, args: &[Expr]) -> Result<Option<Lowered>, String> {
+        if let Some(v) = self.lower_special_call(callee, args)? {
+            return Ok(Some(v));
         }
         if callee.contains('.') {
             return Err(self.fail(
@@ -2107,61 +2162,8 @@ impl<'a> BldLowerer<'a> {
         // They are normally inlined by the symbolic pass (`emit_engine_defn`),
         // but a direct `Store`/`Load`/`ReadControlReg`/`WriteControlReg`
         // call lands here — lower it to the core op without a config table.
-        if callee == "Store" {
-            if args.len() != 2 {
-                return Err(self.fail(
-                    "`Store`",
-                    &format!("it takes 2 argument(s), got {}", args.len()),
-                    "write `Store(value, addr)`",
-                ));
-            }
-            let mut vals = Vec::with_capacity(2);
-            for a in args {
-                vals.push(self.expr(a)?);
-            }
-            self.emit("store", vec![vals[0].op.clone(), vals[1].op.clone()], VClass::Int)?;
-            return Ok(None);
-        }
-        if callee == "Load" {
-            if args.len() != 1 {
-                return Err(self.fail(
-                    "`Load`",
-                    &format!("it takes 1 argument, got {}", args.len()),
-                    "write `Load(addr)`",
-                ));
-            }
-            let v = self.expr(&args[0])?;
-            let reg = self.fresh_vreg(VClass::Int);
-            self.emit("load", vec![BadOperand::Name(reg.clone()), v.op], VClass::Int)?;
-            return Ok(Some(Lowered::temp_reg(reg, VClass::Int)));
-        }
-        if callee == "ReadControlReg" {
-            if args.len() != 1 {
-                return Err(self.fail(
-                    "`ReadControlReg`",
-                    &format!("it takes 1 argument, got {}", args.len()),
-                    "write `ReadControlReg(csr)`",
-                ));
-            }
-            let n = self.expr(&args[0])?;
-            let reg = self.fresh_vreg(VClass::Int);
-            self.emit("readcr", vec![BadOperand::Name(reg.clone()), n.op], VClass::Int)?;
-            return Ok(Some(Lowered::temp_reg(reg, VClass::Int)));
-        }
-        if callee == "WriteControlReg" {
-            if args.len() != 2 {
-                return Err(self.fail(
-                    "`WriteControlReg`",
-                    &format!("it takes 2 argument(s), got {}", args.len()),
-                    "write `WriteControlReg(csr, value)`",
-                ));
-            }
-            let mut vals = Vec::with_capacity(2);
-            for a in args {
-                vals.push(self.expr(a)?);
-            }
-            self.emit("writecr", vec![vals[0].op.clone(), vals[1].op.clone()], VClass::Int)?;
-            return Ok(None);
+        if let Some(res) = self.lower_engine_verb(callee, args)? {
+            return Ok(res);
         }
         let sig = match self.sigs.get(callee) {
             Some(s) => s.clone(),

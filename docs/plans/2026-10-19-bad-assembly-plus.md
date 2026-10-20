@@ -350,13 +350,15 @@ end
 | 2026-10-20 | `e2a0204d` | `--warn-unused-values` unused-value lint over the symbolic program (typo class); advisory, never blocking. |
 | 2026-10-20 | (this commit) | x86 multiboot pure-`.bad` boot gate: `boot_plus_x86.bad` (multiboot1 a.out kludge, COM1 banner, long-mode switch, symbolic 64-bit body) + `qemu-multiboot.sh` asserting `Briev`+`R64`; `outb`/`inb` core ops; `boot_multiboot.bad` retired. |
 | 2026-10-20 | (this commit) | Scalar parity corpus (`benchmarks/bad/`, 6 kernels) + `parity.sh`; results in `benchmarks/results/2026-10-19-bad-assembly-plus.md`. `bit_ops`/`memcpy` exact parity, `crc8` −2; `vga_loop` +1 jmp (back-edge fusion open), `uart_banner` +11 (outb staging), `call_chain` +5 (ABI staging). |
+| 2026-10-20 | (this commit) | Final docs sweep: SPEC §20.1 assembly+ surface, README boot gates, `.bad` highlighter (`declarations`/`extern`/`stack`/assembly+ keywords); complexity splits in `try_declarations`, `lower_call`, `lower_symbolic_labels`, `emit_instr`, `lint`. Full lib 3223, all QEMU gates + determinism green. |
 
-Remaining: profile imports, data-label address expressions in symbolic
-code, symbolic `defn` (inline) bodies, ISA roles/clobbers data migration,
-`.bld` deletion, boot-checklist QEMU acceptance, performance corpus,
-highlighter/docs sweep. Known test note: the conformance sweep can race
-its own `.smoke/` artifacts when run concurrently with other tests; it
-passes in isolation.
+Remaining: ISA roles/clobbers data migration (the allocator still
+hardcodes `roles()`; `outb` was added there), `vga_loop` trailing
+`when: break` back-edge fusion (parity item 4, +1 jmp), `call_chain`
+ABI move coalescing (parity item 3, +5), and cross-target parity
+measurement (results are x86_64). Known test note: the conformance sweep
+can race its own `.smoke/` artifacts when run concurrently with other
+tests; it passes in isolation.
 
 ## Resolution plan (2026-10-19, approved)
 

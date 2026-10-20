@@ -3539,7 +3539,25 @@ target's syscall ABI. `.export` names a C-ABI entry
 point (argument registers per the `abi_args` map; args 7+ on the stack
 at the `abi_stack_arg_base` offset); `--with-libc`
 links libc; `--run` executes natively or under qemu per target with
-cross toolchains from config. A pure-.bad stdlib lives in `std/bad/`. The grammar is line-oriented, with braces grouping structured symbolic blocks; the full dialect reference is
+cross toolchains from config. A pure-.bad stdlib lives in `std/bad/`.
+
+`.bad` also carries the **assembly+** convenience layer, mixed per line
+with raw instructions: symbolic values (`let x = expr`, `x = expr`,
+`x += 1`, `let p = pin rN`), one-way `when` (no `else` — use a second
+`when` or a `local` label), `loop` / `while` with `break` / `continue`,
+inline `defn name(params) { … }` (expanded at the call site, no frame)
+and callable `call defn name(params) -> Ret { … }` (real C-ABI call),
+`bootstrap Name { … }` (the authored entry), and `data { … }` (section
+inferred from the directive). `declarations { … }` holds file-scoped
+register pins (`name: rN`), `extern fn name(params) -> Ret` (a typed
+C-ABI signature for a raw label / external symbol), `extern data name`
+(an external data symbol), and `stack N` (an N-byte `.bss` stack with
+`__bad_stack`/`__bad_stack_top`). Engine verbs (`ReadControlReg`,
+`WriteControlReg`, `Park`, `DisableInterrupts`, …) are ordinary defns in
+`std/bad/engine.bad`, inlined at the call site. `outb` / `inb` are
+x86-only port-I/O ops (a loud capability error elsewhere).
+`--warn-unused-values` reports defined-but-never-read symbolic values — a
+probable typo — without blocking compilation. The grammar is line-oriented, with braces grouping structured symbolic blocks; the full dialect reference is
 `docs/architecture/bad-dialect.md`.
 
 ## 21. Rendered Briev

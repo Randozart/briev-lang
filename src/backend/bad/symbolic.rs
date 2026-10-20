@@ -86,72 +86,12 @@ struct Unit {
 pub fn lower_symbolic_labels(
     items: &mut [BadTopLevel], ctx: &SymCtx<'_>,
 ) -> Result<Vec<crate::backend::bad::UnusedValue>, String> {
-    let mut units: Vec<Unit> = Vec::new();
-    let mut serial = 0usize;
-    for (idx, item) in items.iter().enumerate() {
-        match item {
-            BadTopLevel::Label(l) => {
-                if !body_has_symbolic(&l.body, ctx) {
-                    continue;
-                }
-                let mut synth = format!("{PREFIX}{serial}");
-                while ctx.label_names.contains(&synth) || ctx.defns.contains(&synth) {
-                    synth.push('_');
-                }
-                serial += 1;
-                units.push(Unit {
-                    idx,
-                    synth,
-                    kind: Kind::Label,
-                    params: Vec::new(),
-                    ret: None,
-                    body: l.body.clone(),
-                });
-            }
-            BadTopLevel::Fn(f) => {
-                if f.ret.is_some() && !body_has_return(&f.body) {
-                    return Err(format!(
-                        "`call defn {}` (line {}) returns a value but has no `return` - add \
-                         `return <expr>;` on the value path",
-                        f.name, f.span.line
-                    ));
-                }
-                units.push(Unit {
-                    idx,
-                    synth: f.name.clone(),
-                    kind: Kind::Fn,
-                    params: f.params.clone(),
-                    ret: f.ret.clone(),
-                    body: f.body.clone(),
-                });
-            }
-            BadTopLevel::SymDefn(_) => {}
-            _ => {}
-        }
-    }
+    let units = collect_units(items, ctx)?;
     if units.is_empty() && ctx.extern_fns.is_empty() {
         return Ok(Vec::new());
     }
 
-    let mut program_items: Vec<BldTopLevel> = Vec::new();
-    // `extern fn` declarations register C-ABI signatures for raw labels /
-    // external symbols so `call name(args)` stages correctly.
-    for e in ctx.extern_fns {
-        program_items.push(BldTopLevel::ExternFn(crate::ast::bld::BldExternFn {
-            name: e.name.clone(),
-            params: e
-                .params
-                .iter()
-                .map(|p| BldParam {
-                    name: p.name.clone(),
-                    ty: Some(parse_type(&p.ty)),
-                    span: Span::dummy(),
-                })
-                .collect(),
-            ret: e.ret.as_deref().map(parse_type),
-            span: e.span.clone(),
-        }));
-    }
+    let mut program_items: Vec<BldTopLevel> = extern_items(ctx);
     for (cname, value) in ctx.const_values {
         program_items.push(BldTopLevel::Const(BldConst {
             name: cname.clone(),
@@ -159,52 +99,7 @@ pub fn lower_symbolic_labels(
             span: Span::dummy(),
         }));
     }
-    for u in &units {
-        let params: HashSet<String> = u.params.iter().map(|p| p.name.clone()).collect();
-        let mut body: Vec<BldStmt> = Vec::new();
-        for (name, reg) in ctx.global_pins {
-            body.push(BldStmt::Bind {
-                name: name.clone(),
-                register: reg.clone(),
-                span: Span::dummy(),
-            });
-        }
-        let mut bound = params.clone();
-        for (name, _) in ctx.global_pins {
-            bound.insert(name.clone());
-        }
-        let mut b = Builder {
-            ctx,
-            stmts: &mut body,
-            bound,
-            params,
-            is_fn: u.kind == Kind::Fn,
-            depth: 0,
-        };
-        b.emit_body(&u.body)?;
-        if u.kind == Kind::Fn && u.ret.is_none() {
-            body.push(BldStmt::Return {
-                value: None,
-                span: Span::dummy(),
-            });
-        }
-        let bparams = u
-            .params
-            .iter()
-            .map(|p| BldParam {
-                name: p.name.clone(),
-                ty: Some(parse_type(&p.ty)),
-                span: Span::dummy(),
-            })
-            .collect();
-        program_items.push(BldTopLevel::Defn(BldDefn {
-            name: u.synth.clone(),
-            params: bparams,
-            ret: u.ret.as_deref().map(parse_type),
-            body,
-            span: Span::dummy(),
-        }));
-    }
+    program_items.extend(unit_items(&units, ctx)?);
 
     // Unused-value lint runs on the author's names, before the engine
     // lowerer resolves them to `vN`s.
@@ -267,6 +162,137 @@ pub fn lower_symbolic_labels(
         }
     }
     Ok(unused)
+}
+
+/// Collect the symbolic units (labels with symbolic bodies, callable fns)
+/// and allocate each a unique synthetic symbol.
+fn collect_units(items: &[BadTopLevel], ctx: &SymCtx<'_>) -> Result<Vec<Unit>, String> {
+    let mut units: Vec<Unit> = Vec::new();
+    let mut serial = 0usize;
+    for (idx, item) in items.iter().enumerate() {
+        match item {
+            BadTopLevel::Label(l) => {
+                if !body_has_symbolic(&l.body, ctx) {
+                    continue;
+                }
+                units.push(Unit {
+                    idx,
+                    synth: fresh_synth(&mut serial, ctx),
+                    kind: Kind::Label,
+                    params: Vec::new(),
+                    ret: None,
+                    body: l.body.clone(),
+                });
+            }
+            BadTopLevel::Fn(f) => {
+                if f.ret.is_some() && !body_has_return(&f.body) {
+                    return Err(format!(
+                        "`call defn {}` (line {}) returns a value but has no `return` - add \
+                         `return <expr>;` on the value path",
+                        f.name, f.span.line
+                    ));
+                }
+                units.push(Unit {
+                    idx,
+                    synth: f.name.clone(),
+                    kind: Kind::Fn,
+                    params: f.params.clone(),
+                    ret: f.ret.clone(),
+                    body: f.body.clone(),
+                });
+            }
+            BadTopLevel::SymDefn(_) => {}
+            _ => {}
+        }
+    }
+    Ok(units)
+}
+
+/// A unique synthetic symbol for a symbolic label.
+fn fresh_synth(serial: &mut usize, ctx: &SymCtx<'_>) -> String {
+    let mut synth = format!("{PREFIX}{serial}");
+    while ctx.label_names.contains(&synth) || ctx.defns.contains(&synth) {
+        synth.push('_');
+    }
+    *serial += 1;
+    synth
+}
+
+/// Build one engine `Defn` per symbolic unit (label/fn), with global pins
+/// bound at the head and the body expanded.
+fn unit_items(units: &[Unit], ctx: &SymCtx<'_>) -> Result<Vec<BldTopLevel>, String> {
+    let mut out = Vec::with_capacity(units.len());
+    for u in units {
+        let params: HashSet<String> = u.params.iter().map(|p| p.name.clone()).collect();
+        let mut body: Vec<BldStmt> = Vec::new();
+        for (name, reg) in ctx.global_pins {
+            body.push(BldStmt::Bind {
+                name: name.clone(),
+                register: reg.clone(),
+                span: Span::dummy(),
+            });
+        }
+        let mut bound = params.clone();
+        for (name, _) in ctx.global_pins {
+            bound.insert(name.clone());
+        }
+        let mut b = Builder {
+            ctx,
+            stmts: &mut body,
+            bound,
+            params,
+            is_fn: u.kind == Kind::Fn,
+            depth: 0,
+        };
+        b.emit_body(&u.body)?;
+        if u.kind == Kind::Fn && u.ret.is_none() {
+            body.push(BldStmt::Return {
+                value: None,
+                span: Span::dummy(),
+            });
+        }
+        let bparams = u
+            .params
+            .iter()
+            .map(|p| BldParam {
+                name: p.name.clone(),
+                ty: Some(parse_type(&p.ty)),
+                span: Span::dummy(),
+            })
+            .collect();
+        out.push(BldTopLevel::Defn(BldDefn {
+            name: u.synth.clone(),
+            params: bparams,
+            ret: u.ret.as_deref().map(parse_type),
+            body,
+            span: Span::dummy(),
+        }));
+    }
+    Ok(out)
+}
+
+/// `extern fn` declarations register C-ABI signatures for raw labels /
+/// external symbols so `call name(args)` stages correctly.
+fn extern_items(ctx: &SymCtx<'_>) -> Vec<BldTopLevel> {
+    ctx.extern_fns
+        .iter()
+        .map(|e| {
+            BldTopLevel::ExternFn(crate::ast::bld::BldExternFn {
+                name: e.name.clone(),
+                params: e
+                    .params
+                    .iter()
+                    .map(|p| BldParam {
+                        name: p.name.clone(),
+                        ty: Some(parse_type(&p.ty)),
+                        span: Span::dummy(),
+                    })
+                    .collect(),
+                ret: e.ret.as_deref().map(parse_type),
+                span: e.span.clone(),
+            })
+        })
+        .collect()
 }
 
 fn parse_type(name: &str) -> Type {
@@ -852,6 +878,35 @@ impl Builder<'_, '_> {
         Ok(())
     }
 
+    /// Sub-width stores (`stb`/`sth`): keep the operand tokens, folding a
+    /// constant expression to an immediate. The ISA row picks reg/imm form
+    /// and the allocator resolves virtuals.
+    fn sub_width_store(&mut self, i: &BadInstr) -> Result<(), String> {
+        let mut ops = i.operands.clone();
+        for op in &mut ops {
+            let BadOperand::Expr(t) = op else { continue };
+            match parse_bld_expr(t) {
+                Ok(Expr::Decimal(n)) | Ok(Expr::TaggedLiteral(n, _)) => *op = BadOperand::Int(n),
+                Ok(Expr::Float(_)) => {}
+                _ => {
+                    return Err(format!(
+                        "`{}` (line {}) takes simple value/address operands - \
+                         assign expressions to a symbolic value first",
+                        i.mnemonic, i.span.line
+                    ))
+                }
+            }
+        }
+        self.stmts.push(BldStmt::Instr(BadInstr {
+            mnemonic: i.mnemonic.clone(),
+            operands: ops,
+            contract: None,
+            ack: None,
+            span: i.span.clone(),
+        }));
+        Ok(())
+    }
+
     fn emit_instr(&mut self, i: &BadInstr) -> Result<(), String> {
         if i.operands.is_empty() && RAW_ZERO.contains(&i.mnemonic.as_str()) {
             self.stmts.push(BldStmt::Bad {
@@ -923,36 +978,7 @@ impl Builder<'_, '_> {
                     i.span.clone(),
                 )?;
             }
-            ("stb" | "sth", 2) => {
-                // Sub-width stores: keep the operand tokens; the ISA row
-                // picks reg/imm form and the allocator resolves virtuals.
-                // Hex/const expression operands become ordinary immediates.
-                let mut ops = i.operands.clone();
-                for op in &mut ops {
-                    if let BadOperand::Expr(t) = op {
-                        match parse_bld_expr(t) {
-                            Ok(Expr::Decimal(n)) | Ok(Expr::TaggedLiteral(n, _)) => {
-                                *op = BadOperand::Int(n)
-                            }
-                            Ok(Expr::Float(_)) => {}
-                            _ => {
-                                return Err(format!(
-                                    "`{}` (line {}) takes simple value/address operands - \
-                                     assign expressions to a symbolic value first",
-                                    i.mnemonic, i.span.line
-                                ))
-                            }
-                        }
-                    }
-                }
-                self.stmts.push(BldStmt::Instr(BadInstr {
-                    mnemonic: i.mnemonic.clone(),
-                    operands: ops,
-                    contract: None,
-                    ack: None,
-                    span: i.span.clone(),
-                }));
-            }
+            ("stb" | "sth", 2) => self.sub_width_store(i)?,
             ("store", 2) => {
                 let value = self.operand_expr(&i.operands[0], i.span.line)?;
                 let addr = self.operand_expr(&i.operands[1], i.span.line)?;
