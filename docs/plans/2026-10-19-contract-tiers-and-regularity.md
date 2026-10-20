@@ -430,3 +430,29 @@ bucket checkpoint because guard restructuring can change emitted shapes.
   second tuple component). `float_fmt_cases` parity PASS.
 - Remaining Phase 3 surface: `frac_exp`/`frac_digit_loop`/`frac_all_digits`/
   `pow10f`/`decode_*`/`fill_*`/`exp_style_mant`/`fixed_style`/`exp_style`.
+
+### Phase 3 result — 2026-10-20
+
+- Tuple component posts are now real: `term.0`/`term.1` (and bare `term`
+  as component 0) bind each destructured name, in both inference and
+  elaboration. This closes the second-component gap noted above.
+- Prover additions: structurally identical facts prove reflection and other
+  opaque predicates (`.^Length`); `%` keeps a non-negative remainder when
+  the divisor is only known positive; a direct fact check runs before
+  linear/interval normalization.
+- Source repairs: `frac_digit_loop` is total over `m`/`count` (guards return
+  0 outside the digit window), so its recursion no longer requires
+  unprovable overflow bounds; `frac_all_digits`/`frac_exp` bind the scaled
+  tuple call so its post facts reach the recursive call; `int_digit_count`
+  accepts any non-negative Int; `pow2b` exposes its 2^60 cap; `pow10f`
+  covers the `pf_make` range; `pf_num` clamps its exponent adjustment;
+  `fill_pos`/`fill_neg` guard non-positive stop; `decode_cont` accepts
+  width 1; sign contracts use `0 <= sign <= 1`; `exp_style_mant` no longer
+  demands a non-empty mantissa; `float_format` uses the digit string length.
+- `cast_cases` regression found and fixed: the multi-digit integer branch
+  must run before the zero-fraction fast path. All six parity corpora PASS
+  (`cast`, `float`, `float_fmt`, `int`, `parse`, `string`).
+- Census: **10,788 / 50 → 217 / 37**; `float_fmt.bv` and `cast_lanes.bv`
+  reach **zero** contract warnings under `policy: warn`.
+- Remaining surface: char conversion (104 + 16 + 4 + 3), syscall lanes,
+  sha1/base64, bits/rand, and the bucket-3 dynamic boundaries.

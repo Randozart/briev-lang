@@ -2878,9 +2878,7 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                     ctx.bindings.insert(n.clone(), t.clone());
                 }
             }
-            if let Some(first) = names.first() {
-                record_call_post_facts(expr.as_ref(), first, ctx);
-            }
+            record_component_post_facts(expr.as_ref(), names, ctx);
         }
         Statement::Assign(l, r) => {
             elaborate_expr(l, ctx, errors);
@@ -3650,6 +3648,22 @@ fn unreachable_arm(what: &str, scrutinee: Type) -> TypeError {
 /// name the result; the callee postcondition is substituted with the actual
 /// arguments and `term := r`. Kept shared by inference and op elaboration so
 /// the two walkers see the same fact state.
+fn record_component_post_facts(
+    expr: Option<&Expr>,
+    names: &[String],
+    ctx: &mut TypecheckContext,
+) {
+    let Some(Expr::Call(callee, args, _)) = expr else {
+        return;
+    };
+    let Some(contract) = ctx.fn_contracts.get(callee).cloned() else {
+        return;
+    };
+    let facts =
+        crate::proof_engine::callgate::post_facts_components(&contract, args, names);
+    ctx.known_facts.extend(facts);
+}
+
 fn record_call_post_facts(
     expr: Option<&Expr>,
     binding: &str,
@@ -4370,12 +4384,7 @@ fn check_let_destructure(
     for i in 0..count {
         ctx.bindings.insert(names[i].clone(), elem_types[i].clone());
     }
-    // Multi-value returns: `term` names the FIRST result (the primary value).
-    // A tuple postcondition such as `[term >= 1]` therefore describes the
-    // first bound name; later components need their own contract surface.
-    if let Some(first) = names.first() {
-        record_call_post_facts(expr.as_ref(), first, ctx);
-    }
+    record_component_post_facts(expr.as_ref(), names, ctx);
     Ok(())
 }
 
@@ -8337,6 +8346,24 @@ mod tests {
              };",
         )
         .expect("up >= 1 and acc >= 1 prove acc * up >= 0");
+    }
+
+    /// Tuple component posts bind per slot: `term.0` names the first bound
+    /// name and `term.1` the second, so both survive destructuring.
+    #[test]
+    fn tuple_component_posts_bind_both_names() {
+        let _deny = DenyGate::install();
+        check(
+            "defn pair(n: Int) [n >= 1][term.0 >= 1 && term.1 >= 2] -> (Int, Int) { \
+                 term (n, 2); \
+             }; \
+             defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(n: Int) [n >= 1][term >= 0] -> Int { \
+                 let (a, b): (Int, Int) = pair(n); \
+                 term nonneg(a) + nonneg(b); \
+             };",
+        )
+        .expect("term.0 -> a, term.1 -> b");
     }
 
     /// A guard whose body always returns establishes its negation on the

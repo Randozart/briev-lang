@@ -560,6 +560,14 @@ fn div_bounds(a: Bounds, b: Bounds) -> Bounds {
 }
 
 fn mod_bounds(a: Bounds, b: Bounds) -> Bounds {
+    // Divisor merely known positive: a non-negative dividend gives a
+    // non-negative remainder below the divisor's upper bound.
+    if b.lo.is_some_and(|d| d >= 1) && a.lo.is_some_and(|v| v >= 0) {
+        return Bounds {
+            lo: Some(0),
+            hi: b.hi.map(|d| d - 1),
+        };
+    }
     let (Some(d), Some(d2)) = (b.lo, b.hi) else {
         return Bounds::unknown();
     };
@@ -852,6 +860,12 @@ fn prove_conjunct(goal: &Expr, facts: &[Expr]) -> Verdict {
 }
 
 fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
+    // Structural facts (reflection `.^Length`, opaque predicates, field
+    // chains) are not linear/interval expressions; an identical fact is the
+    // proof.
+    if facts.iter().any(|f| f == goal) {
+        return Verdict::Proven;
+    }
     match goal {
         Expr::Bool(true) => return Verdict::Proven,
         Expr::Bool(false) => return Verdict::Refuted,
@@ -1427,6 +1441,79 @@ pub fn post_facts(contract: &FnContract, args: &[Expr], binding: &str) -> Vec<Ex
     out
 }
 
+/// Postcondition facts for a multi-value binding. `term.0`, `term.1`, ...
+/// name the bound components; a bare `term` names the first component.
+pub fn post_facts_components(
+    contract: &FnContract,
+    args: &[Expr],
+    names: &[String],
+) -> Vec<Expr> {
+    let Some(first) = names.first() else {
+        return Vec::new();
+    };
+    let mut allowed = BTreeSet::new();
+    for a in args {
+        free_identifiers(a, &mut allowed);
+    }
+    let mut raw = Vec::new();
+    conjuncts(&contract.post, &mut raw);
+    let mut out = Vec::new();
+    for c in raw {
+        if !mentions(&c, "term") {
+            continue;
+        }
+        let substituted = substitute_params(&c, &contract.params, args);
+        let renamed = rename_term_components(&substituted, first, names);
+        let mut ids = BTreeSet::new();
+        free_identifiers(&renamed, &mut ids);
+        if ids.iter().all(|id| allowed.contains(id) || names.contains(id)) {
+            out.push(renamed);
+        }
+    }
+    out
+}
+
+fn rename_term_components(e: &Expr, first: &str, names: &[String]) -> Expr {
+    match e {
+        Expr::Identifier(n) if n == "term" => Expr::Identifier(first.to_string()),
+        Expr::Field(base, field) if matches!(base.as_ref(), Expr::Identifier(n) if n == "term") => {
+            match field.parse::<usize>().ok().and_then(|i| names.get(i)) {
+                Some(name) => Expr::Identifier(name.clone()),
+                None => e.clone(),
+            }
+        }
+        Expr::BinaryOp(k, l, r) => Expr::BinaryOp(
+            *k,
+            Box::new(rename_term_components(l, first, names)),
+            Box::new(rename_term_components(r, first, names)),
+        ),
+        Expr::UnaryOp(k, inner) => {
+            Expr::UnaryOp(*k, Box::new(rename_term_components(inner, first, names)))
+        }
+        Expr::Field(base, f) => Expr::Field(
+            Box::new(rename_term_components(base, first, names)),
+            f.clone(),
+        ),
+        Expr::Call(name, args, id) => Expr::Call(
+            name.clone(),
+            args.iter()
+                .map(|a| rename_term_components(a, first, names))
+                .collect(),
+            *id,
+        ),
+        Expr::MethodCall(recv, name, args, id, refs) => Expr::MethodCall(
+            Box::new(rename_term_components(recv, first, names)),
+            name.clone(),
+            args.iter()
+                .map(|a| rename_term_components(a, first, names))
+                .collect(),
+            *id,
+            refs.clone(),
+        ),
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,6 +1704,30 @@ mod tests {
         };
         let facts = post_facts(&contract, &[e("n")], "r");
         assert_eq!(facts, vec![e("r >= n"), e("r <= n + 1")]);
+    }
+
+    #[test]
+    fn component_post_facts_bind_each_tuple_slot() {
+        let contract = FnContract {
+            params: vec!["x".to_string()],
+            pre: e("x >= 1"),
+            post: e("term.0 >= 1 && term.1 >= x && term.1 <= x + 1"),
+        };
+        let names = vec!["a".to_string(), "b".to_string()];
+        let facts = post_facts_components(&contract, &[e("n")], &names);
+        assert_eq!(
+            facts,
+            vec![e("a >= 1"), e("b >= n"), e("b <= n + 1")]
+        );
+    }
+
+    #[test]
+    fn structural_fact_proves_reflection_goal() {
+        let facts = vec![e("r .^Length >= 1")];
+        assert_eq!(
+            prove_precondition(&e("r .^Length >= 1"), &facts),
+            Verdict::Proven
+        );
     }
 
     #[test]

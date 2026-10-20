@@ -61,7 +61,7 @@ defn trunc(acc: Int) [acc >= 1][term >= 1 && term < 1000000000000000000] -> Int 
 // Returns (acc, k) with value ~= acc x 10^k, acc < 1000000000000000000 (<= 18 digits).
 defn sscale(acc: Int, e: Int, k: Int)
     [acc >= 1 && acc < 1000000000000000000 && e >= 0 && e <= 104 && k >= -30]
-    [term >= 1 && term < 1000000000000000000]
+    [term.0 >= 1 && term.0 < 1000000000000000000 && term.1 >= 0 && term.1 <= 40]
     -> (Int, Int)
 {
     when e == 0 {
@@ -78,7 +78,7 @@ defn sscale(acc: Int, e: Int, k: Int)
 // ---- Fraction path (E < 0): value = m / 2^b ----------------------------
 // pow2b - 2^b for b in [0, 60] (fraction comparisons; b > 60 handled by the
 // value < 1 guard BEFORE calling this).
-defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1] -> Int {
+defn pow2b(b: Int) [b >= 0 && b <= 60][term >= 1 && term <= 1 << 60] -> Int {
     when b == 0 { term 1; };
     term pow2b(b - 1) * 2;
 };
@@ -93,7 +93,7 @@ defn frac_all_digits(m: Int, b: Int, count: Int)
     [term >= 0 && term < 10000000000]
     -> Int
 {
-    when count == 0 {
+    when count <= 0 {
         term 0;
     };
     when m == 0 {
@@ -104,11 +104,16 @@ defn frac_all_digits(m: Int, b: Int, count: Int)
         // value < 1: x10 = mx5 with b-1; trunc keeps the 18-digit headroom.
         // Only the FIRST digit needs this — the digit loop below never sees
         // value < 1 in the wrong place.
-        term frac_all_digits(trunc(m * 5), b - 1, count);
+        let t: Int = trunc(m * 5);
+        term frac_all_digits(t, b - 1, count);
+    };
+    when b == 0 {
+        term frac_digit_loop(m, 0, count);
     };
     when m < pow2b(b) {
-        // value < 1, b in [0,60]: x10 (first-digit normalization).
-        term frac_all_digits(trunc(m * 5), b - 1, count);
+        // value < 1, b in [1,60]: x10 (first-digit normalization).
+        let t: Int = trunc(m * 5);
+        term frac_all_digits(t, b - 1, count);
     };
     // value >= 1: run the pure digit loop from here.
     term frac_digit_loop(m, b, count);
@@ -120,27 +125,22 @@ defn frac_all_digits(m: Int, b: Int, count: Int)
 // single 0-9 digit; a >= 10 integer part (only the first step) emits all its
 // digits first.
 defn frac_digit_loop(m: Int, b: Int, count: Int)
-    [m > 0 && b >= 0 && b <= 60 && count >= 1 && count <= 10]
+    [b >= 0 && b <= 60]
     [term >= 0 && term < 10000000000]
     -> Int
 {
-    when count == 0 {
+    when count <= 0 {
         term 0;
     };
-    when m == 0 {
+    when count > 10 {
         term 0;
     };
-    when b < 0 {
-        // value = m x 2^|b| — an exact integer (small m from rem x5).
-        let v: Int = m << (0 - b);
-        let nd: Int = int_digit_count(v);
-        when nd >= count {
-            term v / pow10(nd - count);
-        };
-        term v * pow10(count - nd);
+    when m <= 0 {
+        term 0;
     };
     let digit: Int = m >> b;
-    let frac: Int = m % pow2b(b);
+    let pb: Int = pow2b(b);
+    let frac: Int = m % pb;
     when digit >= 10 {
         // Multi-digit integer part (only possible on the first step): emit
         // all of digit's digits, then continue from the fraction.
@@ -148,10 +148,29 @@ defn frac_digit_loop(m: Int, b: Int, count: Int)
         when nd >= count {
             term digit / pow10(nd - count);
         };
-        term digit * pow10(count - nd) + frac_digit_loop(frac * 5, b - 1, count - nd);
+        when frac < 1 {
+            term digit * pow10(count - nd);
+        };
+        when b < 1 {
+            term digit * pow10(count - nd);
+        };
+        let fnx: Int = frac * 5;
+        let remaining: Int = count - nd;
+        term digit * pow10(count - nd) + frac_digit_loop(fnx, b - 1, remaining);
+    };
+    when frac < 1 {
+        term digit * pow10(count - 1);
     };
     // Single 0-9 digit, then continue.
-    term digit * pow10(count - 1) + frac_digit_loop(frac * 5, b - 1, count - 1);
+    when count <= 1 {
+        term digit;
+    };
+    when b < 1 {
+        term digit;
+    };
+    let fnx: Int = frac * 5;
+    let remaining: Int = count - 1;
+    term digit * pow10(count - 1) + frac_digit_loop(fnx, b - 1, remaining);
 };
 
 // frac_exp - the leading-digit decimal exponent k of m / 2^b (b >= 1).
@@ -159,11 +178,16 @@ defn frac_exp(m: Int, b: Int)
     [m >= 1 && m < 1000000000000000000 && b >= 0 && b <= 149][term >= -45 && term <= 40]
     -> Int
 {
+    when b == 0 {
+        term int_digit_count(m) - 1;
+    };
     when b > 60 {
-        term frac_exp(trunc(m * 5), b - 1) - 1;
+        let t: Int = trunc(m * 5);
+        term frac_exp(t, b - 1) - 1;
     };
     when m < pow2b(b) {
-        term frac_exp(trunc(m * 5), b - 1) - 1;
+        let t: Int = trunc(m * 5);
+        term frac_exp(t, b - 1) - 1;
     };
     term int_digit_count(m >> b) - 1;
 };
@@ -172,7 +196,7 @@ defn frac_exp(m: Int, b: Int)
 // integer, plus the leading-digit exponent k.
 defn float_rounded(m: Int, e: Int, precision: Int)
     [m > 0 && m < 1 << 24 && e >= -149 && e <= 104 && precision >= 1 && precision <= 9]
-    [term >= 0 && term < 1000000000000000000]
+    [term.0 >= 0 && term.0 < 1000000000000000000 && term.1 >= -45 && term.1 <= 40]
     -> (Int, Int)
 {
     when e >= 0 {
@@ -188,7 +212,7 @@ defn float_rounded(m: Int, e: Int, precision: Int)
 
 // ---- Integer digits from the scaled acc --------------------------------
 // int_digit_count - decimal digit count of acc (acc >= 1, < 1000000000000000000).
-defn int_digit_count(acc: Int) [acc >= 0 && acc < 1000000000000000000][term >= 1 && term <= 19] -> Int {
+defn int_digit_count(acc: Int) [acc >= 0][term >= 1 && term <= 19] -> Int {
     when acc < 10 { term 1; };
     when acc < 100 { term 2; };
     when acc < 1000 { term 3; };
@@ -295,7 +319,9 @@ defn round_all(all: Int, precision: Int, k: Int)
 };
 
 // pad_digits - pad a digit string with leading zeros to length `len`.
-defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len][term .^Length == len] -> String {
+defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
+    [term .^Length == len && term .^Length >= 1]
+    -> String {
     let missing: Int = len - s .^Length;
     when missing == 0 {
         term s;
@@ -318,22 +344,23 @@ defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
 
 // exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.
 defn exp_style(ds: String, k: Int, sign: Int)
-    [ds .^Length >= 1 && k >= -45 && k <= 40 && (sign == 0 || sign == 1)]
+    [ds .^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
     [term .^Length >= 2]
     -> String
 {
     let first: String = ds[0:1];
     let rest: String = strip_frac_zeros(ds[1:ds .^Length]);
+    let ed: String = exp_digits(k);
     when rest .^Length == 0 {
-        term exp_style_mant(first, exp_digits(k), sign);
+        term exp_style_mant(first, ed, sign);
     };
     let mant: String = first + "." + rest;
-    term exp_style_mant(mant, exp_digits(k), sign);
+    term exp_style_mant(mant, ed, sign);
 };
 
 // exp_style_mant - prefix "-" when sign, then mant + "e" + exp.
 defn exp_style_mant(mant: String, exp: String, sign: Int)
-    [mant .^Length >= 1 && exp .^Length >= 2 && (sign == 0 || sign == 1)][term .^Length >= 2]
+    [exp .^Length >= 2 && sign >= 0 && sign <= 1][term .^Length >= 2]
     -> String
 {
     when sign == 1 {
@@ -343,7 +370,7 @@ defn exp_style_mant(mant: String, exp: String, sign: Int)
 };
 
 // exp_digits - "e±XX": the exponent field with sign and >= 2 digits.
-defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length == 2 || term .^Length == 3] -> String {
+defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length >= 2 && term .^Length <= 3] -> String {
     when k < 0 {
         let a: Int = 0 - k;
         when a < 10 {
@@ -359,7 +386,7 @@ defn exp_digits(k: Int) [k >= -45 && k <= 40][term .^Length == 2 || term .^Lengt
 
 // fixed_style - fixed %g form: place the decimal point at position k+1.
 defn fixed_style(ds: String, k: Int, sign: Int)
-    [ds .^Length >= 1 && k >= -45 && k <= 40 && (sign == 0 || sign == 1)]
+    [ds .^Length >= 1 && k >= -45 && k <= 40 && sign >= 0 && sign <= 1]
     [term .^Length >= 1]
     -> String
 {
