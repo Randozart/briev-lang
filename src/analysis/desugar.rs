@@ -674,6 +674,326 @@ fn join_block(mut out: Vec<Statement>) -> Statement {
     Statement::Block(out)
 }
 
+/// 2026-10-20 (P1-3): rewrite imported-enum variant construction.
+///
+/// The parser can only desugar `Enum.Variant` to `Enum::Variant` when the
+/// enum was declared in the SAME file (its `known_types` prescan is local).
+/// A named import of an enum type therefore parsed as ordinary field access
+/// and died in the typechecker with "undefined variable 'Enum'". Imports are
+/// resolved before this pass, so the enum declarations are present here even
+/// though they were not present at parse time.
+///
+/// This is a syntax normalization, not a type-level guess: only a base that
+/// names a declared enum AND a field that names one of its declared variants
+/// is rewritten. A field access on a variable that happens to share an enum's
+/// name has the same caveat the parser already documents; real fields are
+/// lowercase by convention and no type information is available pre-check.
+pub fn rewrite_enum_variant_access(items: &mut [TopLevel]) -> Result<(), String> {
+    let mut enums: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for item in items.iter() {
+        collect_enum_variants(item, &mut enums);
+    }
+    if enums.is_empty() {
+        return Ok(());
+    }
+    for item in items.iter_mut() {
+        rewrite_enum_item(item, &enums);
+    }
+    Ok(())
+}
+
+fn collect_enum_variants(
+    item: &TopLevel,
+    out: &mut HashMap<String, std::collections::HashSet<String>>,
+) {
+    match item {
+        TopLevel::Enum(e) => {
+            let variants = out.entry(e.name.clone()).or_default();
+            for v in &e.variants {
+                match v {
+                    crate::ast::top::EnumVariant::Unit(n)
+                    | crate::ast::top::EnumVariant::Tuple(n, _)
+                    | crate::ast::top::EnumVariant::Struct(n, _) => {
+                        variants.insert(n.clone());
+                    }
+                }
+            }
+        }
+        TopLevel::TypeDef(td) => {
+            let variants: std::collections::HashSet<String> = td
+                .body
+                .slots
+                .iter()
+                .filter_map(|s| s.name.strip_prefix("__variant_").map(str::to_string))
+                .collect();
+            if !variants.is_empty() {
+                out.entry(td.name.clone()).or_default().extend(variants);
+            }
+            for member in &td.body.members {
+                collect_enum_variants(member, out);
+            }
+        }
+        TopLevel::Export(e) => collect_enum_variants(&e.inner, out),
+        _ => {}
+    }
+}
+
+fn rewrite_enum_item(
+    item: &mut TopLevel,
+    enums: &HashMap<String, std::collections::HashSet<String>>,
+) {
+    match item {
+        TopLevel::Statement(s) => rewrite_enum_stmt(s, enums),
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => {
+            rewrite_enum_expr(&mut d.contract.pre_condition, enums);
+            rewrite_enum_expr(&mut d.contract.post_condition, enums);
+            for s in d.body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        TopLevel::Transaction(t) => {
+            rewrite_enum_expr(&mut t.contract.pre_condition, enums);
+            rewrite_enum_expr(&mut t.contract.post_condition, enums);
+            for s in t.body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        TopLevel::Constant(c) => rewrite_enum_expr(&mut c.expr, enums),
+        TopLevel::TypeDef(td) => {
+            for member in td.body.members.iter_mut() {
+                rewrite_enum_item(member, enums);
+            }
+        }
+        TopLevel::Export(e) => rewrite_enum_item(&mut e.inner, enums),
+        _ => {}
+    }
+}
+
+fn rewrite_enum_stmt(
+    stmt: &mut Statement,
+    enums: &HashMap<String, std::collections::HashSet<String>>,
+) {
+    match stmt {
+        Statement::Let { expr, .. } => {
+            if let Some(e) = expr {
+                rewrite_enum_expr(e, enums);
+            }
+        }
+        Statement::Assign(l, r) => {
+            rewrite_enum_expr(l, enums);
+            rewrite_enum_expr(r, enums);
+        }
+        Statement::ArrowAssign { target, value, .. } => {
+            if let Some(t) = target {
+                rewrite_enum_expr(t, enums);
+            }
+            rewrite_enum_expr(value, enums);
+        }
+        Statement::Term(e) | Statement::EndProgram(e) | Statement::Rollback(e) => {
+            if let Some(e) = e {
+                rewrite_enum_expr(e, enums);
+            }
+        }
+        Statement::Tail(e)
+        | Statement::Check(e)
+        | Statement::Gate(e)
+        | Statement::Expression(e) => rewrite_enum_expr(e, enums),
+        Statement::Guarded(c, body) => {
+            rewrite_enum_expr(c, enums);
+            for s in body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body) => {
+            for s in body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        Statement::Foreach { list, body, .. } => {
+            rewrite_enum_expr(list, enums);
+            for s in body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        Statement::Match { expr, arms } => {
+            rewrite_enum_expr(expr, enums);
+            for arm in arms.iter_mut() {
+                for s in arm.body.iter_mut() {
+                    rewrite_enum_stmt(s, enums);
+                }
+            }
+        }
+        Statement::TrgBinding { instance, .. } => rewrite_enum_expr(instance, enums),
+        Statement::Open(l, r) => {
+            rewrite_enum_expr(l, enums);
+            rewrite_enum_expr(r, enums);
+        }
+        Statement::InlineDefn(d) => {
+            for s in d.body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn enum_variant_field(
+    e: &Expr,
+    enums: &HashMap<String, std::collections::HashSet<String>>,
+) -> Option<(String, String)> {
+    let Expr::Field(base, variant) = e else {
+        return None;
+    };
+    let Expr::Identifier(name) = base.as_ref() else {
+        return None;
+    };
+    enums
+        .get(name)
+        .filter(|variants| variants.contains(variant))
+        .map(|_| (name.clone(), variant.clone()))
+}
+
+fn rewrite_enum_expr(
+    e: &mut Expr,
+    enums: &HashMap<String, std::collections::HashSet<String>>,
+) {
+    // `Enum.Variant` (unit) is a constructor, not a field read.
+    if let Some((enum_name, variant)) = enum_variant_field(e, enums) {
+        *e = Expr::Call(format!("{}::{}", enum_name, variant), Vec::new(), None);
+        return;
+    }
+    // `Enum.Variant(args)` parsed as a method call on a field because the
+    // parser did not know the imported enum name. Lower the pair together.
+    if let Expr::MethodCall(recv, name, args, _, refs) = e {
+        if refs.is_empty() {
+            // `Enum.Variant(args)` parses as a method call on the bare
+            // Identifier; unit `Enum.Variant` parses as a Field.
+            let enum_name = match recv.as_ref() {
+                Expr::Identifier(base) if enums.get(base).is_some_and(|v| v.contains(name)) => {
+                    Some(base.clone())
+                }
+                _ => enum_variant_field(recv, enums).map(|(base, _)| base),
+            };
+            if let Some(enum_name) = enum_name {
+                let mut lowered_args = std::mem::take(args);
+                for a in lowered_args.iter_mut() {
+                    rewrite_enum_expr(a, enums);
+                }
+                *e = Expr::Call(
+                    format!("{}::{}", enum_name, name),
+                    lowered_args,
+                    None,
+                );
+                return;
+            }
+        }
+    }
+    rewrite_enum_expr_children(e, enums);
+}
+
+fn rewrite_enum_expr_children(
+    e: &mut Expr,
+    enums: &HashMap<String, std::collections::HashSet<String>>,
+) {
+    match e {
+        Expr::Call(_, args, _) => {
+            for a in args.iter_mut() {
+                rewrite_enum_expr(a, enums);
+            }
+        }
+        Expr::BinaryOp(_, l, r) => {
+            rewrite_enum_expr(l, enums);
+            rewrite_enum_expr(r, enums);
+        }
+        Expr::UnaryOp(_, inner) => rewrite_enum_expr(inner, enums),
+        Expr::Field(inner, _) => rewrite_enum_expr(inner, enums),
+        Expr::MethodCall(recv, _, args, _, _) => {
+            rewrite_enum_expr(recv, enums);
+            for a in args.iter_mut() {
+                rewrite_enum_expr(a, enums);
+            }
+        }
+        Expr::Reflect(inner, _, _) => rewrite_enum_expr(inner, enums),
+        Expr::Index(l, r) => {
+            rewrite_enum_expr(l, enums);
+            rewrite_enum_expr(r, enums);
+        }
+        Expr::Slice { array, start, end, stride } => {
+            rewrite_enum_expr(array, enums);
+            for part in [start, end, stride].into_iter().flatten() {
+                rewrite_enum_expr(part, enums);
+            }
+        }
+        Expr::Range { start, end, .. } => {
+            rewrite_enum_expr(start, enums);
+            rewrite_enum_expr(end, enums);
+        }
+        Expr::Block(body) => {
+            for s in body.iter_mut() {
+                rewrite_enum_stmt(s, enums);
+            }
+        }
+        Expr::If(c, t, f) => {
+            rewrite_enum_expr(c, enums);
+            rewrite_enum_expr(t, enums);
+            if let Some(f) = f {
+                rewrite_enum_expr(f, enums);
+            }
+        }
+        Expr::Match(scrut, arms) => {
+            rewrite_enum_expr(scrut, enums);
+            for arm in arms.iter_mut() {
+                if let Some(g) = &mut arm.guard {
+                    rewrite_enum_expr(g, enums);
+                }
+                rewrite_enum_expr(&mut arm.body, enums);
+            }
+        }
+        Expr::Tuple(items) | Expr::List(items) => {
+            for item in items.iter_mut() {
+                rewrite_enum_expr(item, enums);
+            }
+        }
+        Expr::StructLiteral { fields, specs, .. } => {
+            for (_, v) in fields.iter_mut() {
+                rewrite_enum_expr(v, enums);
+            }
+            for (_, v) in specs.iter_mut() {
+                rewrite_enum_expr(v, enums);
+            }
+        }
+        Expr::Lambda(_, body) => rewrite_enum_expr(body, enums),
+        Expr::Spawn { args, .. } => {
+            for a in args.iter_mut() {
+                rewrite_enum_expr(a, enums);
+            }
+        }
+        Expr::Within(l, r) => {
+            rewrite_enum_expr(l, enums);
+            rewrite_enum_expr(r, enums);
+        }
+        Expr::Deref(inner)
+        | Expr::AddrOf(inner)
+        | Expr::Consume(inner)
+        | Expr::Await(inner)
+        | Expr::Cast(inner, _)
+        | Expr::IsType(inner, _) => rewrite_enum_expr(inner, enums),
+        Expr::PluginIntercept { args, receiver, .. } => {
+            if let Some(r) = receiver {
+                rewrite_enum_expr(r, enums);
+            }
+            for a in args.iter_mut() {
+                rewrite_enum_expr(a, enums);
+            }
+        }
+        Expr::Capture { expr, .. } => rewrite_enum_expr(expr, enums),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,6 +1158,20 @@ mod tests {
         let mut prog = parse("let v: Float[16];\nasync node go [false][false] { v[1, 2] = 3.0; };");
         let err = rewrite_multi_index(&mut prog).unwrap_err();
         assert!(err.contains("does not carry a shape"), "got: {err}");
+    }
+
+    #[test]
+    fn imported_enum_variant_rewrites_to_constructor() {
+        // The use site parses before the import is known: `Result.Ok(7)`
+        // becomes Field/MethodCall, not the known-local Call form.
+        let mut use_items = parse(
+            "async node go [false][false] { let r = Result.Ok(7); term; };",
+        );
+        let enum_items = parse("enum Result<T, E> { Ok(T), Err(E) };");
+        use_items.extend(enum_items);
+        rewrite_enum_variant_access(&mut use_items).unwrap();
+        let dump = format!("{:?}", use_items);
+        assert!(dump.contains("Result::Ok"), "constructor not rewritten: {dump}");
     }
 
     #[test]

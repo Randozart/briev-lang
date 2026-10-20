@@ -64,3 +64,11 @@ open performance discovery, not patched around in the fixture.
 - `fsm_dispatch` harness row MATCH.
 - Determinism/parity remain green at the provenance commit; rerun after the
   fixture commit as usual.
+
+
+## Amendment 2026-10-20 (P1-3)
+
+Named enum-type imports now work: `fsm_smoke` uses `TcpEvent.PassiveOpen` etc.
+directly (no integer-code boundary in the runtime test). The benchmark still
+uses `fsm_run` with an event-index decode for a deterministic stream; the
+2.86x measurement and the heap-boxed-Result finding are unchanged.

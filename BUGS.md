@@ -97,15 +97,17 @@ load remains ptr; consumers cast to Int with `as Int` where they need the
 handle. Arena is restored to an honest `Ptr<Bit<8>>` base field. Pin:
 `tests/tier1/ptr_field_smoke.bv` + `ptr_field_smoke_golden_output`.
 
-## Named imports of enum types (`import { TcpState } ...`) are undefined -- OPEN 2026-10-20
+## Named imports of enum types (`import { TcpState } ...`) are undefined -- FIXED 2026-10-20
 
 **Symptom:** `import { TcpState, TcpEvent } from "std/fsm"` then
 `TcpEvent.PassiveOpen` fails with `undefined variable 'TcpEvent'`. Importing
 the enum type by name does not bring the type/variant namespace into scope;
 the module itself checks and runs. Discovered building Fixture 4 (FSM).
-**Workaround in fixture:** integer-code boundary (`tcp_step_code`) instead of
-named enum-type imports; the enum/match core stays in `lib/std/fsm.bv`.
-**Status:** OPEN — stable import surface for enum types/variants.
+**Fix:** the import resolver's `item_name` now recognizes enum declarations,
+and `analysis::desugar::rewrite_enum_variant_access` lowers an importer's
+`Enum.Variant` / `Enum.Variant(args)` (parsed before the enum is known) to the
+internal `Enum::Variant` constructor after imports resolve. Pins:
+`tests/tier1/enum_import_smoke.bv`, `fsm_smoke` (now uses named enum imports).
 
 ## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
 

@@ -433,6 +433,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // → 1D row-major arithmetic. MUST run before check_types (the marker is
     // a parse artifact, not a resolvable call) and before every analysis —
     // the shape detectors and backends only ever see plain Expr::Index.
+    briev_compiler::analysis::desugar::rewrite_enum_variant_access(&mut items)?;
     briev_compiler::analysis::desugar::rewrite_multi_index(&mut items)?;
     // 2026-10-05 (three-surfaces plan Phase 0.6a): `[*]` wildcard element
     // access → the explicit declaration-order lift (plan-decided default).

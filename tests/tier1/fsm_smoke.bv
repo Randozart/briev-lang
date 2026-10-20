@@ -1,11 +1,13 @@
 // FSM fixture smoke — exhaustive TCP-subset transitions (Fixture 4).
-import { tcp_initial, state_code, tcp_step_code, TcpState } from "std/fsm";
+// 2026-10-20 (P1-3): named enum-type imports + qualified constructors now
+// work in an importer; no integer-code boundary is needed.
+import { tcp_initial, tcp_step, state_code, TcpState, TcpEvent } from "std/fsm";
 import { is_ok, is_err, unwrap } from "std/result";
 import { print_int } from "std/io";
 import { print_str } from "std/io";
 
-defn step_or_code(state: Int, event: Int) -> Int {
-    let r = tcp_step_code(state, event);
+defn step_or(state: TcpState, event: TcpEvent) -> TcpState {
+    let r = tcp_step(state, event);
     when is_err(r) {
         term state;
     };
@@ -13,21 +15,21 @@ defn step_or_code(state: Int, event: Int) -> Int {
 };
 
 node entry [beginprogram][true] {
-    let s0: Int = 0;  // tcp_initial -> Closed
-    let s1: Int = step_or_code(s0, 0);  // PassiveOpen
-    let s2: Int = step_or_code(s1, 2);  // RecvSyn
-    let s3: Int = step_or_code(s2, 4);  // RecvAck
-    let s4: Int = step_or_code(s3, 6);  // Close
-    let s5: Int = step_or_code(s4, 4);  // RecvAck
-    let s6: Int = step_or_code(s5, 5);  // RecvFin
-    print_int(s0); print_str("|");
-    print_int(s1); print_str("|");
-    print_int(s2); print_str("|");
-    print_int(s3); print_str("|");
-    print_int(s4); print_str("|");
-    print_int(s5); print_str("|");
-    print_int(s6); print_str("|");
-    let bad = tcp_step_code(s0, 4);  // Closed + RecvAck -> Err
+    let s0: TcpState = tcp_initial();
+    let s1: TcpState = step_or(s0, TcpEvent.PassiveOpen);
+    let s2: TcpState = step_or(s1, TcpEvent.RecvSyn);
+    let s3: TcpState = step_or(s2, TcpEvent.RecvAck);
+    let s4: TcpState = step_or(s3, TcpEvent.Close);
+    let s5: TcpState = step_or(s4, TcpEvent.RecvAck);
+    let s6: TcpState = step_or(s5, TcpEvent.RecvFin);
+    print_int(state_code(s0)); print_str("|");
+    print_int(state_code(s1)); print_str("|");
+    print_int(state_code(s2)); print_str("|");
+    print_int(state_code(s3)); print_str("|");
+    print_int(state_code(s4)); print_str("|");
+    print_int(state_code(s5)); print_str("|");
+    print_int(state_code(s6)); print_str("|");
+    let bad = tcp_step(s0, TcpEvent.RecvAck);
     print_int((is_err(bad)) as Int);
     endprogram 0;
 };
