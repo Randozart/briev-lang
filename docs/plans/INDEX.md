@@ -34,6 +34,11 @@ contradicting these means the gates are broken):
 needs gates re-run at the TARGET geometry — s8 passing says nothing
 about decode.
 
+**Open work backlog (2026-10-20):** `docs/plans/2026-10-20-open-work-backlog.md`
+— the consolidated P0–P4 list after the pointer-provenance fix and the four
+stdlib fixture first passes. Start there for the current queue; this index
+remains the map of the older umbrellas and live lanes.
+
 This index is the fresh-session orientation: the live foreign lanes, the
 active umbrella, every workstream's remaining work with pointers, the open
 bugs, and recommended starting points. Everything below is a map, not the

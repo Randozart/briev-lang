@@ -1,0 +1,19 @@
+// E2E test: inop with %state access
+// Uses PrintInt# intrinsic (not frgn print_int)
+inop! peek_counter() -> Int (%state) {
+  %ptr = getelementptr inbounds %State, ptr %state, i64 0, i32 0;
+  %val = load i64, ptr %ptr;
+  term %val;
+} fallback 0;
+
+let counter: Int = 42;
+let tick: Int = 0;
+
+rct txn run [tick < 1][tick == 1] {
+    [tick == 0] {
+        let r: Int = PeekCounter#();
+        term! -> Print#(r);
+    };
+    &tick = tick + 1;
+    term;
+};

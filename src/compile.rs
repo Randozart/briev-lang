@@ -3349,6 +3349,7 @@ node go [done == false][done == true] {
             view_bindings: vec![],
             ssr: false,
             dev: false,
+            split: false,
             accel_cpu_fallback: None,
             isr_mechanism: None,
             triple_override: None,
@@ -3357,6 +3358,7 @@ node go [done == false][done == true] {
             entry_override: None,
             raw_bin: false,
             no_link: false,
+            web_page_key: None,
         }
     }
 
@@ -3486,7 +3488,7 @@ node go [done == false][done == true] {
                     event: "click".to_string(),
                     txn: "bump".to_string(),
                     params: vec![],
-                    scope: crate::view_compiler::TriggerScope::Element,
+                    scope: briev_compiler::view_compiler::TriggerScope::Element,
                 },
             },
         ];
@@ -3542,6 +3544,7 @@ node go [done == false][done == true] {
                 metadata: std::collections::HashMap::new(),
                 derivation: None,
                 modifiers: vec![],
+                variadic_param: None,
                 span: None,
                 doc: None,
             },

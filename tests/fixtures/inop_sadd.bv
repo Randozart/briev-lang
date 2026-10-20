@@ -1,0 +1,16 @@
+// E2E test: inop sadd with print_int swan song
+inop sadd(a: Int, b: Int) -> Int {
+  %res = add i64 %a, %b;
+  term %res;
+} fallback a + b;
+
+let tick: Int = 0;
+
+rct txn run [tick < 1][tick == 1] {
+    [tick == 0] {
+        let x: Int = Sadd#(10, 20);
+        term! -> Print#(x);
+    };
+    &tick = tick + 1;
+    term;
+};

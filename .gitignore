@@ -231,6 +231,9 @@ benchmarks/nbody_sqrt_c
 # Scratch
 scratch/
 
+# Archived/stale tests preserved outside the default Cargo gate
+tests/archive/
+
 # Smoke build artifacts
 .smoke/out/
 
@@ -358,3 +361,13 @@ benchmarks/recommender
 benchmarks/recommender_c
 examples/gpu/.tmp_quad/
 examples/gpu/briev_*_test_*.abv
+
+# Fixture-campaign benchmark binaries (2026-10-20)
+benchmarks/fsm_dispatch
+benchmarks/fsm_dispatch_c
+benchmarks/arena_bump
+benchmarks/arena_bump_c
+benchmarks/spsc_ring
+benchmarks/spsc_ring_c
+benchmarks/ws_frame
+benchmarks/ws_frame_c

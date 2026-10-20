@@ -1,0 +1,29 @@
+// Event model test fixture
+// Tests: @ link triggers, fall-through dispatch, __io_pump/__io_sleep pattern
+// Does NOT import std/io.bv — defines its own simple pump/sleep to avoid FFI deps
+
+frgn __wait_for_event() -> Void ;
+frgn __raw_poll() -> Vector<u8> ;
+
+trg __io_pending: Bool @ link __io_pending;
+
+let io_buffer: Vector<u8> = [];
+let io_ready: Bool = false;
+let event_count: Int = 0;
+
+rct txn pump [__io_pending == true] {
+    &io_buffer = __raw_poll();
+    &io_ready = true;
+    term;
+};
+
+rct txn handle [io_ready == true] {
+    &event_count = event_count + 1;
+    &io_ready = false;
+    term;
+};
+
+rct txn sleep [event_count >= 0][event_count >= 0] {
+    __wait_for_event();
+    term;
+};

@@ -536,6 +536,64 @@ inlining/scalar replacement** — not vocabulary, not strategy keywords. Those
 are the next performance workstreams after this plan's structural work. The provenance prerequisite for Arena/SPSC is now structurally in place;
 the remaining risk in 2 is the single-threaded reactor (documented, not hidden).
 
+## P0 full rerun with fixture rows — 2026-10-20
+
+`bash benchmarks/build_and_bench.sh --runtime`, same machine, 5 iterations,
+BOUND=50000000; log `/tmp/opencode/p0_full_after.log`. This supersedes the
+"Full runtime suite after the change" table above, which predated the three
+fixture benchmark registrations. Every row is MATCH.
+
+| Benchmark | Briev | C | Ratio | Winner |
+|---|---|---|---|---|
+| ring_buffer | 0.0439s | 0.0456s | 0.96x | Briev |
+| float_math | 0.1259s | 0.0459s | 2.74x | C |
+| float_math_nonzero | 0.2462s | 0.1663s | 1.48x | C |
+| sparse_dispatch | 0.0435s | 0.0594s | 0.73x | Briev |
+| print_loop | 0.0290s | 0.0595s | 0.49x | Briev |
+| nbody_newton | 7.4143s | 6.8409s | 1.08x | C |
+| nbody_newton_accel | 1.5507s | 0.1253s | 12.38x | C |
+| nbody_sqrt | 2.7292s | 3.3600s | 0.81x | Briev |
+| nbody_sqrt_idio | 2.7530s | 3.0262s | 0.91x | Briev |
+| fasta | 0.1934s | 0.2576s | 0.75x | Briev |
+| fannkuch_redux | 0.0639s | 0.0608s | 1.05x | C |
+| mandelbrot | 0.6574s | 0.6708s | 0.98x | Briev |
+| kalman_filter_runtime | 0.1885s | 0.1789s | 1.05x | C |
+| knucleotide | 0.1795s | 0.1929s | 0.93x | Briev |
+| cancel_math | 0.0419s | 0.0589s | 0.71x | Briev |
+| bit_clear | 0.0003s | 0.0003s | 1.00x | ~tie |
+| queue_drain | 0.0284s | 0.0607s | 0.47x | Briev |
+| queue_drain_sym | 0.0291s | 0.0577s | 0.50x | Briev |
+| queue_drain_idio | 0.0288s | 0.0577s | 0.50x | Briev |
+| stack_push_pop | 0.0289s | 0.0573s | 0.50x | Briev |
+| interval_step | 0.0428s | 0.0591s | 0.72x | Briev |
+| telemetry_stream | 0.2330s | 0.1579s | 1.48x | C |
+| pid_control | 0.4276s | 0.3490s | 1.23x | C |
+| matrix_pipeline | 0.4901s | 0.4973s | 0.99x | Briev |
+| accumulator_flush | 0.1269s | 0.1350s | 0.94x | Briev |
+| sweep_sparse | 0.2299s | 0.1538s | 1.49x | C |
+| sweep_mid | 0.2275s | 0.1733s | 1.31x | C |
+| sweep_dense | 0.3870s | 0.3700s | 1.05x | C |
+| sweep_arr | 0.4272s | 0.4285s | 1.00x | ~tie |
+| series_converge | 0.0003s | 0.0003s | 1.00x | ~tie |
+| global_lifetime | 0.0290s | 0.0658s | 0.44x | Briev |
+| deep_recursion | 0.0004s | 0.0004s | 1.00x | ~tie |
+| arena_churn | 0.0292s | 0.0906s | 0.32x | Briev |
+| linked_list | 0.9775s | 1.9220s | 0.51x | Briev |
+| hash_ops | 0.9846s | 1.1898s | 0.83x | Briev |
+| hash_ops_idio | 0.7572s | 0.6722s | 1.13x | C |
+| enemy_swarm | 0.1052s | 0.1385s | 0.76x | Briev |
+| recommender | 0.0124s | 0.0122s | 1.02x | C |
+| ws_frame | 0.0858s | 0.0245s | 3.50x | C |
+| fsm_dispatch | 0.6988s | 0.2440s | 2.86x | C |
+| arena_bump | 0.2452s | 0.0551s | 4.45x | C |
+| spsc_ring | 0.1438s | 0.0724s | 1.99x | C |
+| bridge_glue | done | — | — | MATCH |
+| bridge_multi | done | — | — | PASS |
+
+P0-1 is closed. The slow rows remain explicit P2 workstreams; none is excused
+as noise. `deep_recursion`/`series_converge`/`bit_clear` are sub-millisecond
+and tie-dominated.
+
 ## Risks
 
 - Canonical-pointer caching can be unsound if a Ptr slot is reassigned while a

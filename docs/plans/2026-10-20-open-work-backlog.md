@@ -50,14 +50,14 @@ change the historical result files or superseded plans.
 
 | ID | Work | Evidence | Acceptance |
 |---|---|---|---|
-| P0-1 | Rerun the **full runtime harness** including the new rows `fsm_dispatch`, `arena_bump`, `spsc_ring`. Last full run predates those registrations. | `benchmarks/build_and_bench.sh --runtime`; plan after-table | All rows MATCH; new three rows present; update the plan's after-table with the complete result set. |
-| P0-2 | Fix the default `cargo test` path. | `src/compile.rs:3541` missing `variadic_param`; `cargo test --bin brievc` red | `cargo test` (all targets) green, or the failing target is explicitly excluded by a documented policy. |
-| P0-3 | Update `docs/architecture/features/ptr.md` for the new model: canonical ptr for args/state fields, store invalidation, no `!invariant.load` on mutable Ptr fields, no per-access volatile. | current doc still describes the old inttoptr/invariant model | Doc matches `context.rs`/`helpers.rs`/`emit_expr.rs`; no stale claims. |
-| P0-4 | Fix the stale comment in `config/contracts.dbvl` (`policy: allow`, “at flip time”). | `config/contracts.dbvl:14` | Comment states `deny` is active and how to override for experiments. |
-| P0-5 | Add CI (or an explicit equivalent). Run: lib tests, conformance, contract census, tier-1 E2E, determinism quick gate, parity, `cargo build --release`. | no `.github/workflows` | PRs cannot merge with a red default gate; PR #29 has no checks today. |
-| P0-6 | Worktree triage: generated benchmark binaries, `benchmarks/utf8_ops` deletion, untracked `tests/ffi_*`, `tests/fixtures/*`, `benchmarks/results/2026-10-16-post-stability-runtime.md`, `assets/billd-icon.svg`. | `git status` | Each is either committed intentionally, ignored, or removed. No accidental commit. |
-| P0-7 | Update the active plan/index links so this backlog is discoverable. | `docs/plans/2026-10-20-pointer-provenance-and-stdlib-fixtures.md` | Active plan links here; INDEX points at this backlog if it is still current. |
-| P0-8 | Decide the competitive-performance acceptance line. | Fixture ratios 1.90x–4.64x; suite 2.79x/10.86x on float/accel | Written policy: parity, or a declared per-benchmark margin with tracked exceptions. |
+| P0-1 | Rerun the **full runtime harness** including the new rows `fsm_dispatch`, `arena_bump`, `spsc_ring`. **DONE 2026-10-20**: 42 rows, all MATCH; table in the active plan. | `benchmarks/build_and_bench.sh --runtime`; `/tmp/opencode/p0_full_after.log` | Keep the table current on each performance slice. |
+| P0-2 | Fix the default `cargo test` path. **DONE 2026-10-20**: `cargo test --bin brievc` green (fixed stale test constructors/imports/options). | `src/compile.rs` test only | Re-run in CI. |
+| P0-3 | Update `docs/architecture/features/ptr.md` for the new model. **DONE 2026-10-20**: provenance section, canonical ptr, invalidation, no mutable `!invariant.load`, explicit `vol` surface. | Doc now matches the implementation | Keep in sync with future provenance slices. |
+| P0-4 | Fix the stale comment in `config/contracts.dbvl`. **DONE 2026-10-20**: active `deny` row documented; override guidance for experiments. | `config/contracts.dbvl` | Keep the row; do not omit it. |
+| P0-5 | Add CI (or an explicit equivalent). **DONE 2026-10-20**: `.github/workflows/ci.yml` runs release build, lib/bin tests, tier-1 E2E, contract census, determinism quick gate, parity. | First run still to be observed on GitHub | Keep the workflow green; add jobs only with a measured need. |
+| P0-6 | Worktree triage. **PARTIAL 2026-10-20**: new fixture binaries added to `.gitignore`; stale `utf8_ops`, untracked FFI tests/fixtures/assets, and the 2026-10-16 result file still need an explicit keep/remove decision. | `git status` | No accidental commit; each remaining item intentionally kept or removed. |
+| P0-7 | Update the active plan/index links. **DONE 2026-10-20**: active plan and `INDEX.md` link this backlog. | docs | Keep the pointer current. |
+| P0-8 | Competitive-performance acceptance line. **DONE 2026-10-20** (policy). **POLICY 2026-10-20**: target is C parity on every runtime benchmark. A slower row is a tracked compiler gap with a measured cause in P2; no silent margin, no keyword/doc workaround. | Fixture ratios 1.90x–4.64x | Revisit only if the owner declares a margin; exceptions stay explicit. |
 
 ## P1 — structural correctness and representation
 
@@ -84,9 +84,9 @@ These are ranked by repeated evidence across fixtures and the suite.
 ### P2-1 — Unbox small sum types (`Result` / enums)
 
 **Evidence**
-- Fixture 4 FSM: **2.82x C**; IR shows per-transition `tcp_step` returning a
+- Fixture 4 FSM: **2.86x C**; IR shows per-transition `tcp_step` returning a
   heap box, then tag/payload loads.
-- Fixture 2 SPSC: **1.90x C**; each pop returns a heap-boxed `Result`.
+- Fixture 2 SPSC: **1.99x C**; each pop returns a heap-boxed `Result`.
 - Fixture 3 Arena is partly call overhead, but the same boxed-small-value
   machinery affects every `Result`-returning API.
 
@@ -107,9 +107,9 @@ These are ranked by repeated evidence across fixtures and the suite.
 ### P2-2 — Small-function inlining and field scalar replacement
 
 **Evidence**
-- Fixture 3 Arena: **4.64x C**; the hot path calls `arena_alloc`, reads/writes
+- Fixture 3 Arena: **4.45x C**; the hot path calls `arena_alloc`, reads/writes
   obj fields, then calls `Store#`/`Load#`; C is a direct bump.
-- Fixture 1 ws_frame: **3.14x C**; per-byte codec calls.
+- Fixture 1 ws_frame: **3.50x C**; per-byte codec calls.
 - `recommender` is 0.93x (Briev wins) only because its hot kernel was already
   extracted; the remaining suite still has call/boxing losses.
 
@@ -143,10 +143,10 @@ These are ranked by repeated evidence across fixtures and the suite.
 
 ### P2-4 — Loop/vectorization gaps
 
-**Evidence (post-provenance full run)**
-- `float_math` 2.79x C, `float_math_nonzero` 1.51x.
-- `sweep_sparse` 1.51x, `sweep_mid` 1.36x, `sweep_dense` 1.05x.
-- `telemetry_stream` 1.49x, `pid_control` 1.21x.
+**Evidence (P0 full rerun)**
+- `float_math` 2.74x C, `float_math_nonzero` 1.48x.
+- `sweep_sparse` 1.49x, `sweep_mid` 1.31x, `sweep_dense` 1.05x.
+- `telemetry_stream` 1.48x, `pid_control` 1.23x.
 - Many “loop not vectorized” remarks remain in the result logs.
 
 **Work**
@@ -161,7 +161,7 @@ These are ranked by repeated evidence across fixtures and the suite.
 ### P2-5 — `nbody_newton_accel` gap
 
 **Evidence**
-- 10.86x C in the post-provenance suite. This is the largest single loss.
+- 12.38x C in the P0 full rerun. This is the largest single loss.
 
 **Work**
 - Determine whether the gap is accel/offload plumbing or CPU codegen.
@@ -224,6 +224,37 @@ These are ranked by repeated evidence across fixtures and the suite.
 | P4-7 | Spec sync | `spec/SPEC.md` is Draft; keep syntax/import/ABI changes (canonical ptr, enum imports, Ptr fields) synchronized. |
 | P4-8 | Formatting/lint gate | Decide whether `cargo fmt --check` / Clippy joins the per-commit gate; currently not documented as required. |
 | P4-9 | Toolchain matrix | Run `benchmarks/toolchain_matrix.sh` before release/backend-touching commits. |
+| P4-10 | Driver decomposition / `CompilationContext` | Extract the 1,171-line `compile_source` and 864-line `codegen` into staged drivers; replace the 15-parameter bundle with a structured compilation context. Preserve behavior and pass the full gates. |
+| P4-11 | Typed linker/backend metadata | Replace `ll_text.contains(...)` checks for freestanding `_start`, `; linker:`, and runtime symbols with structured backend-emitted hints (a `LinkHints`/artifact descriptor). |
+| P4-12 | Toolchain abstraction | Centralize `clang`/`opt`/`llc`/`wasm-ld`/`ar`/`cc` discovery, version probing, flags, and error mapping; support explicit overrides and fail with actionable diagnostics. |
+| P4-13 | Driver diagnostics | Keep structured diagnostics in the frontend; return typed driver errors and format them once at the CLI boundary instead of `String` at every helper. |
+| P4-14 | Architecture review verification | Keep the table above current when the driver is refactored; do not repeat the inaccurate “tarball”/size claims. |
+
+### External `compile.rs` review — verification
+
+An external review (2026-10-20) graded the language concepts A+ and the driver
+architecture C/C-. Checked against the tree:
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| `compile_source` is a massive god-orchestrator (~500 lines) | **Accurate, understated** | `src/compile.rs:283-1454` ≈ 1,171 lines, not ~500. |
+| `codegen` is another ~400-line function | **Accurate, understated** | `src/compile.rs:1648-2511` ≈ 864 lines. |
+| `codegen` takes 15 parameters, including nested aggregates | **Accurate** | 15 inputs (`items` … `init_roots`), including `&mut Option<HashMap<String, Result<BindRoute, String>>>`. “Nested tuples” is imprecise; these are nested generics. |
+| Driver shells out to `clang`/`opt`/`llc`/`wasm-ld`/`ar`/`cc` | **Accurate** | `src/compile.rs:2767, 2811, 3008, 3017, 3033, 3051, 3066, 3087, 3100`. |
+| Toolchain version is unpinned / unchecked | **Accurate** | direct `Command::new`, no `--version` probe or compatibility gate for clang/opt/llc; error text only says “is clang installed?”. |
+| Driver does string inspection of emitted LLVM IR | **Accurate** | `ll_text.contains("define void @_start() naked")`, `; linker: `, `@briev_bits_to_str(` etc. (`compile.rs:2850-2947`). |
+| Driver manages macro capability lockfiles | **Accurate** | `compile.rs:284-305` (macro-lock), plus cache/object handling. |
+| Driver extracts tarballs | **Inaccurate for `compile.rs`** | no tar/gz/zip/unpack path in this file; `extract_inline_stage_blocks` extracts source stage blocks, not archives. |
+| Errors are stringly typed everywhere | **Partly accurate** | the driver is largely `Result<_, String>` (18 sites); the compiler already has structured `errors::Diagnostic`/typed error enums (`src/errors.rs`) and `diagnostics::Block`. The critique overgeneralizes if applied to the whole compiler. |
+| SMT-backed contracts, tautology rejection, `b-bind` sole-writer, causality/liveness | **Accurate** | `compile.rs:675-740`, `1262-1283`; analyses in `src/analysis/`. |
+| Unified backend model (LLVM/PTX/SPIR-V/CIRCT/Wasm/KiCad) | **Accurate at the architecture level** | backend/config surfaces; individual targets remain at different maturity. |
+| BEAST snapshots are first-class | **Accurate** | `compile.rs:2511-2550` and stage snapshots throughout `compile_source`. |
+
+**Judgment:** the conceptual/architecture split is fair: the language and proof
+model are unusually strong; the driver is carrying real orchestration debt.
+The specific sizes and a few details were wrong, but the direction is right.
+The maintainability grade is a reasonable warning, not a verdict that the
+compiler is unsuitable for its current research/prototype stage.
 
 ## Dependency graph and recommended sequence
 

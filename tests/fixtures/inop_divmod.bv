@@ -1,0 +1,17 @@
+// E2E test: multi-output inop with tuple destructuring
+inop divmod(a: Int, b: Int) -> Int, Int {
+  %q = sdiv i64 %a, %b;
+  %r = srem i64 %a, %b;
+  term %q, %r;
+} fallback (a / b, a % b);
+
+let tick: Int = 0;
+
+rct txn run [tick < 1][tick == 1] {
+    [tick == 0] {
+        let (q, r) = Divmod#(10, 3);
+        term! -> Print#(q);
+    };
+    &tick = tick + 1;
+    term;
+};

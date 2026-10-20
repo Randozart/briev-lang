@@ -1,0 +1,11 @@
+// Phase 3: pattern match in guard
+let x: Int = 0;
+
+rct txn test [[x == @x + 1]
+{
+  let val: Int = 42;
+  [val Some(v)] {
+    &x = x + v;
+  };
+  term;
+};

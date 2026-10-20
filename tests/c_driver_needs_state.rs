@@ -50,7 +50,10 @@ fn needs_state_pass_matches_reference() {
         let source = std::fs::read_to_string(&src).unwrap();
         let (items, _u) = briev_compiler::library::parse_and_check(&src, &source).unwrap();
         let proj = briev_compiler::analysis::needs_state_projection::serialize_needs_state_projection(&items);
-        let needs = briev_compiler::analysis::export_abi::compute_export_needs_state(&items);
+        let needs = briev_compiler::analysis::export_abi::compute_export_needs_state(
+            &items,
+            &std::collections::HashSet::new(),
+        );
         let mut exports: Vec<String> = needs.keys().cloned().collect();
         exports.sort();
         let mut ref_mask = 0i64;
