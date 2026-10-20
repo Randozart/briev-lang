@@ -2248,12 +2248,25 @@ impl LlvmBackend {
             .obj_instance_inits
             .get(&prefix)
             .map(|(b, _)| b.clone())
-            .unwrap_or_else(|| prefix.clone());
-        let fields = self.ctx.struct_types.get(&base)?.clone();
-        if fields.is_empty() {
-            return None;
-        }
-        let size = self.struct_type_size(&base).max(8);
+            .unwrap_or(prefix);
+        Some(self.box_pooled_instance_from_row(out, indent, &base, &row))
+    }
+
+    /// 2026-10-20 (obj-globals): the row-level core of
+    /// `box_pooled_instance_value` — materialize a box from an INSTANCE'S
+    /// POOL ROW without needing the binding name. Used by the explicit-
+    /// receiver member path (a pooled receiver passed to a member that
+    /// declares its receiver parameter has no single address in the columns;
+    /// boxing row-by-row supplies one, matching the value-context rule).
+    pub(super) fn box_pooled_instance_from_row(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        base: &str,
+        row: &str,
+    ) -> TypedRegister {
+        let fields = self.ctx.struct_types.get(base).cloned().unwrap_or_default();
+        let size = self.struct_type_size(base).max(8);
         let alloc = self.fun.gen_reg();
         writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, alloc, size).ok();
         let hw = format!("i{}", self.ctx.int_bits);
@@ -2262,17 +2275,14 @@ impl LlvmBackend {
         let box_p = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, box_p, hw, addr).ok();
         for (fname, fty) in fields {
-            // Pooled columns are keyed `{base}.{member}` (shared across
-            // instances of the base; the ROW differentiates them).
             let slot = format!("{}.{}", base, fname);
             let Some(&idx) = self.ctx.field_index_map.get(&slot) else { continue; };
-            let (row_p, _row_ty, load_ty) = self.emit_instance_column_row(out, indent, idx, &row);
+            let (row_p, _row_ty, load_ty) = self.emit_instance_column_row(out, indent, idx, row);
             let val = self.fun.gen_reg();
             writeln!(out, "{}{} = load {}, ptr {}", indent, val, load_ty, row_p).ok();
-            let off = self.lookup_field_offset(&base, &fname);
+            let off = self.lookup_field_offset(base, &fname);
             let gep = self.fun.gen_reg();
             writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, box_p, off).ok();
-            // All pooled fields are boxed to i64 words in the instance block.
             let store_val = if load_ty == "i64" {
                 val.clone()
             } else {
@@ -2280,7 +2290,7 @@ impl LlvmBackend {
             };
             writeln!(out, "{}store i64 {}, ptr {}", indent, store_val, gep).ok();
         }
-        Some(TypedRegister { name: addr, ty: Type::Custom(base.clone()) })
+        TypedRegister { name: addr, ty: Type::Custom(base.to_string()) }
     }
 
     /// 2026-08-16 (Phase 3a, coll struct literal construction): build a LOCAL
@@ -2780,8 +2790,18 @@ impl LlvmBackend {
         // are all keyed by the BASE. Normalize ONCE here (every prefix
         // consumer flows through this function); struct-lookup sites that
         // need the mono key read obj_instance_inits directly.
-        self.ctx.obj_instance_inits.get(name)
-            .map(|(base, _)| (Self::pool_base(base).to_string(), "0".to_string()))
+        // 2026-10-20 (obj-globals): each static instance has its OWN pool row
+        // (pre-assigned in declaration order by build_field_index). The old
+        // hardcoded "0" made every top-level instance of a base alias row 0.
+        self.ctx.obj_instance_inits.get(name).map(|(base, _)| {
+            let row = self
+                .ctx
+                .instance_rows
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "0".to_string());
+            (Self::pool_base(base).to_string(), row)
+        })
     }
 
     /// 2026-08-07 (instance pools): does a loop body contain an OBSERVABLE
@@ -3202,6 +3222,39 @@ impl LlvmBackend {
                 self.emit_init_seeding_body(out, indent, name, &init);
             }
         }
+        // 2026-10-20 (obj-globals): seed POOLED INSTANCES whose initializer is
+        // a runtime value. A literal initializer (`= 0`) leaves the
+        // zero-initialized pool columns as-is; anything else (a constructor or
+        // a member call producing an instance VALUE) is evaluated once here
+        // and its members are SPLIT into the instance's own pool row. Before
+        // this, `obj_instance_inits` was recorded but never seeded, so every
+        // top-level obj binding's columns stayed zero (`b.len` read 0 and
+        // passing the instance boxed a null pointer). Sorted for deterministic
+        // IR; a binding's initializer may reference earlier bindings (b1 =
+        // b0.put_u8(...)), which is why instances seed before plain lets.
+        let mut sorted_instances: Vec<String> =
+            self.ctx.obj_instance_inits.keys().cloned().collect();
+        sorted_instances.sort();
+        for name in &sorted_instances {
+            let (_, init) = self.ctx.obj_instance_inits[name].clone();
+            // Only an OBJECT-VALUED initializer seeds member columns: a
+            // constructor (`buf_new(16)`) or a member call (`b.put_u8(0)`).
+            // A literal leaves the zero-initialized pools as-is; an
+            // identifier/bound expression is the DEPENDENT-POOL CAPACITY form
+            // (`let m: HashMap<Int, Int> = N`) — treating N as a box handle
+            // would inttoptr a capacity (invalid IR) and destroy the pool
+            // leaves the dependent-pool path to size its heap columns.
+            let object_valued = matches!(
+                &init,
+                Expr::Call(..) | Expr::MethodCall(..) | Expr::StructLiteral { .. }
+            );
+            if !object_valued {
+                continue;
+            }
+            let val = self.emit_expr(out, &init, indent);
+            self.emit_instance_seed_from_value(out, indent, name, &val);
+        }
+
         // 2026-10-17 (plain storage): seed plain lets whose initializer is a
         // NON-LITERAL expression (literals fold into the module-scope
         // declaration — a runtime store for them is dead weight AND defeats
@@ -3220,6 +3273,103 @@ impl LlvmBackend {
                 let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
                 writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, reg.name, name).ok();
             }
+        }
+    }
+
+    /// 2026-10-20 (obj-globals): split an instance VALUE (an i64 box handle
+    /// from a constructor/member call) into the bound instance's pool row.
+    /// The box stores every member as an i64 word (box_pooled_instance_value);
+    /// each word is converted back to the member's native type and stored in
+    /// that member's column at the instance's row. Nested-array columns are
+    /// skipped (a single word cannot materialize them; they stay zero).
+    fn emit_instance_seed_from_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        name: &str,
+        val: &TypedRegister,
+    ) {
+        let Some((mono, _)) = self.ctx.obj_instance_inits.get(name).cloned() else {
+            return;
+        };
+        let mono = mono.as_str();
+        let base = Self::pool_base(mono).to_string();
+        // 2026-10-20 (obj-globals): NOT every non-literal instance initializer
+        // is an instance VALUE. A DEPENDENT pool (`let m: HashMap<Int, Int> =
+        // N`) uses the initializer as a CAPACITY bound and seeds its heap
+        // columns through the dependent-pool path; a BOXED/spawn base stores a
+        // handle. Splitting members from those would inttoptr a capacity as a
+        // box (invalid IR). Only value-initialized pooled instances seed here.
+        if self.ctx.dependent_pools.contains_key(&base)
+            || self.ctx.boxed_offsets.contains_key(&base)
+        {
+            return;
+        }
+        let fields = self.ctx.struct_types.get(mono).cloned().unwrap_or_default();
+        let row = self
+            .ctx
+            .instance_rows
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "0".to_string());
+        let handle = if self.llvm_type(&val.ty) == "i64" {
+            val.name.clone()
+        } else {
+            self.adapt_to_i64(out, indent, val)
+        };
+        let hp = self.fun.gen_reg();
+        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, hp, handle).ok();
+        for (fname, fty) in fields {
+            let slot = format!("{}.{}", base, fname);
+            let Some(&idx) = self.ctx.field_index_map.get(&slot) else {
+                continue;
+            };
+            // A pool column's type is the ARRAY (`[N x ...]`) — that is
+            // expected. Skip only a member whose OWN type is an array: one
+            // boxed word cannot materialize it (such members stay zero).
+            if matches!(fty, Type::Vector(_, _)) {
+                continue;
+            }
+            let off = self.lookup_field_offset(mono, &fname);
+            let gep = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i8, ptr {}, i64 {}",
+                indent, gep, hp, off
+            )
+            .ok();
+            let word = self.fun.gen_reg();
+            writeln!(out, "{}{} = load i64, ptr {}", indent, word, gep).ok();
+            let native = self.adapt_from_i64(out, indent, &word, &fty);
+            let (row_p, _ty, load_ty) =
+                self.emit_instance_column_row(out, indent, idx, &row);
+            // The column's element type is not necessarily the member's
+            // protocol type: pooled state columns carry i64 WORDS, so a
+            // ptr-typed member (String/Data) needs a ptrtoint; boxed bases may
+            // expose native types and need no conversion. (`ensure_typed_value`
+            // deliberately passes ptr-typed values through unchanged, so the
+            // word path is explicit here.)
+            let native_ty = self.llvm_type(&fty);
+            let store_val = match () {
+                _ if native_ty == load_ty => native,
+                _ if load_ty == "i64" => self.adapt_to_i64(
+                    out,
+                    indent,
+                    &TypedRegister { name: native, ty: fty.clone() },
+                ),
+                _ => {
+                    let universe = self.ctx.type_universe.clone();
+                    self.ensure_typed_value(
+                        out,
+                        indent,
+                        &load_ty,
+                        &native,
+                        Some(fty.clone()),
+                        universe.as_ref(),
+                    )
+                }
+            };
+            writeln!(out, "{}store {} {}, ptr {}", indent, load_ty, store_val, row_p).ok();
         }
     }
 
@@ -3408,7 +3558,19 @@ impl LlvmBackend {
         // load, miscompiled every string iteration). Defns with direct
         // raw-memory intrinsics emit with #13 (full memory(readwrite));
         // pure-Briev defns keep #8's alias-analysis benefits.
-        let attr_idx = if Self::definition_touches_raw_memory(&d.body) {
+        // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the check
+        // is now TRANSITIVE (ctx.defn_touches_raw_memory). A caller with no
+        // raw intrinsic of its own can still reach one through a callee —
+        // `print_str` -> `write_all` -> `SysCall#`. Emitting #8 there told
+        // LLVM the call touches no memory except through its pointer args,
+        // and -O2 deleted every buffer-filling store before write(2): all
+        // String concats printed empty. The caller's attribute must be at
+        // least as permissive as its callees' effects.
+        let base = d.name.split('$').next().unwrap_or(&d.name);
+        let attr_idx = if self.ctx.defn_touches_raw_memory.contains(&d.name)
+            || self.ctx.defn_touches_raw_memory.contains(base)
+            || Self::definition_touches_raw_memory(&d.body)
+        {
             "#13"
         } else {
             "#8"
@@ -3662,8 +3824,15 @@ impl LlvmBackend {
 /// int-address accesses. Helpers called with their own attrs are NOT scanned
 /// (the callee's attribute governs its own accesses).
 pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
+    // 2026-10-19 (fix: Malloc# omitted → defn wrapping it emitted memory(read)
+    // → LLVM CSE'd two identical-arg calls into one allocation, aliasing +
+    // double-free, BUGS.md): Malloc# is the allocating sibling of Alloc# and is
+    // observable (intrinsic registry) — a defn whose only raw-memory op is
+    // Malloc# (e.g. `ivec_new` = `Malloc#(n*8) as Int`) MUST get memory(readwrite)
+    // (#13) so LLVM cannot merge distinct allocations. Undo: remove "Malloc#"
+    // (reopens the two-identical-allocations-alias class under -O3 LTO).
     const RAW: &[&str] = &[
-        "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
+        "Malloc#", "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
         "VolatileLoad#", "VolatileStore#", "SysCall#",
     ];
     fn expr_has(e: &Expr, found: &mut bool) {
@@ -6966,4 +7135,65 @@ mod tests {
              where the txn folds away entirely)"
         );
     }
+
+    #[test]
+    fn defn_wrapping_malloc_is_not_memory_read() {
+        // 2026-10-19 (fix: Malloc# omitted from definition_touches_raw_memory's
+        // RAW list): a defn whose only raw-memory op is Malloc# was judged
+        // side-effect-free and emitted memory(read) (#8). Under -O3 LTO, LLVM
+        // then CSE'd two identical-argument calls into ONE allocation, so two
+        // `alloc(n)` calls returned the SAME pointer — aliasing and a later
+        // double-free. The defn must instead get memory(readwrite) (#13) so the
+        // allocations stay distinct.
+        //
+        // Behavioral assertion (contract, not implementation): the emitted
+        // @alloc_box function must NOT carry a memory(read) attribute group
+        // body; it must be memory(readwrite). We check the attribute text
+        // rather than the specific #N index (the index is an implementation
+        // detail; the memory effect is the contract).
+        let src = r#"
+            defn alloc_box(n: Int) -> Int {
+                let a: Int = Malloc#(n * 8) as Int;
+                term a;
+            };
+            node entry [beginprogram][true] {
+                let x: Int = alloc_box(2);
+                let y: Int = alloc_box(2);
+                endprogram Print#(x - y);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(
+            ir.contains("@alloc_box"),
+            "the Malloc#-wrapping defn must be emitted: {ir}"
+        );
+        // The function definition line selects an attribute group; find it and
+        // confirm the referenced group is readwrite, never read-only. The
+        // defn-attr emitter uses #13 (memory(readwrite)) for raw-memory defns
+        // and #8 (memory(read)) otherwise, so the fix flips alloc_box to #13.
+        let def_line = ir
+            .lines()
+            .find(|l| l.contains("define") && l.contains("@alloc_box"))
+            .expect("alloc_box definition line");
+        assert!(
+            def_line.contains("#13"),
+            "a Malloc#-wrapping defn must use the raw-memory (readwrite) \
+             attribute group, not the read-only one: {def_line}"
+        );
+        assert!(
+            !def_line.contains("#8"),
+            "the defn must NOT get the memory(read) attribute group that lets \
+             LLVM CSE two distinct allocations: {def_line}"
+        );
+    }
+}
+
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): free-function
+/// seam over the associated `LlvmBackend::definition_touches_raw_memory`, so
+/// the transitive-closure computation in `llvm::mod` can consult it without
+/// naming the backend type (private to this module).
+pub(crate) fn definition_touches_raw_memory_fn(stmts: &[Statement]) -> bool {
+    LlvmBackend::definition_touches_raw_memory(stmts)
 }

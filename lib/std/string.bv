@@ -41,7 +41,7 @@ txn bytes_loop(s: String, result: List<Int>, i: Int)
 // ===== NATIVE DEFINITIONS =====
 
 // Length
-defn len(s: String) [CharCount#(s) >= 0][term == CharCount#(s)] -> Int {
+defn len(s: String) [true][term == CharCount#(s)] -> Int {
   term CharCount#(s);
 };
 
@@ -166,7 +166,10 @@ txn split_loop(s: String, delim: String, result: List<String>, last: Int, i: Int
     term result;
 };
 
-defn split(s: String, delim: String) [CharCount#(delim) > 0][true] -> List<String> {
+defn split(s: String, delim: String) -> List<String> {
+    when CharCount#(delim) == 0 {
+        term [s];
+    };
     let result: List<String> = [];
     term split_loop(s, delim, result, 0, 0);
 };

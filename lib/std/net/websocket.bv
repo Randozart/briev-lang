@@ -1,0 +1,395 @@
+// websocket - RFC 6455 frame codec (net stack L3c) — ONE implementation.
+//
+// 2026-10-18 (fixture campaign, fixture 1): the bounds-proven core
+// (ws_decode / ws_payload_byte / ws_encode) was first added to bytes.bv.
+// 2026-10-20 (PR #26 reconciliation): that core moved HERE — bytes.bv is the
+// L1 byte layer; RFC 6455 is this module — and the server-facing convenience
+// API from PR #26 (`ws_message`, `ws_encode_text`) was rebuilt ON the core
+// instead of duplicating the frame parser. One decoder, both call sites:
+//   - hot paths / streaming: ws_decode(buf, off) is offset-based and
+//     zero-copy; ws_payload_byte reads payload bytes on demand.
+//   - application paths:      ws_message(buf, off) returns a materialized
+//     WsMessage { status, fin, opcode, payload: String, consumed } with
+//     WS_NEED_MORE / WS_COMPLETE / WS_PROTOCOL status.
+//
+// The safety story is unchanged: every header read is guarded by an explicit
+// bounds `when` that returns Err("incomplete") BEFORE the read; the payload is
+// only addressable through ws_payload_byte, whose precondition demands the
+// WHOLE frame fit. A truncated packet fails cleanly as a value, never as an
+// over-read.
+//
+// Porting from PR #26's original surface (the branch this module absorbed):
+//   - its `WsFrame { status, fin, opcode, payload: String, consumed }` is THIS
+//     module's `WsMessage` — same fields, same types, same semantics;
+//   - its `ws_decode_frame(buf, n)` decoded the first frame of a buffer with
+//     `n` available bytes. The equivalent here is
+//     `ws_message(ByteBuf { ptr: buf.ptr, len: n, cap: buf.cap }, 0)` — this API
+//     expresses availability through the ByteBuf's own `len` plus an offset, so
+//     a read loop decodes at `off` and advances by `consumed`;
+//   - `ws_encode_text` keeps its name and signature;
+//   - behavior is a strict superset: WS_PROTOCOL reports RFC length-field
+//     misuse (non-minimal 126/127 forms, top-bit-set 64-bit lengths) where the
+//     original returned NeedMore indefinitely.
+// There is deliberately no `ws_decode_frame` alias: one decoder, one surface.
+//
+// Opcodes (RFC 6455 §5.2) — exposed so the server loop can route.
+const WS_OP_CONT:  Int = 0;
+const WS_OP_TEXT:  Int = 1;
+const WS_OP_BIN:   Int = 2;
+const WS_OP_CLOSE: Int = 8;
+const WS_OP_PING:  Int = 9;
+const WS_OP_PONG:  Int = 10;
+
+// WsMessage.status values.
+const WS_NEED_MORE: Int = 0;
+const WS_COMPLETE:  Int = 1;
+const WS_PROTOCOL:  Int = 2;
+
+import "std/net/bytes";
+import "std/result";
+
+// WsMessage - the application-facing view of one frame: the header fields,
+// the UNMASKED payload materialized as a String, and the exact byte count the
+// frame occupied (so a read loop can advance past it and keep trailing bytes
+// of the next frame). status = WS_NEED_MORE (whole frame not here yet),
+// WS_COMPLETE, or WS_PROTOCOL (RFC length-field misuse — see ws_decode).
+obj WsMessage {
+    status: Int;
+    fin: Int;
+    opcode: Int;
+    payload: String;
+    consumed: Int;
+};
+
+// ws_need_more - the shared WS_NEED_MORE value.
+defn ws_need_more() -> WsMessage {
+    term WsMessage { status: WS_NEED_MORE, fin: 0, opcode: 0, payload: "", consumed: 0 };
+};
+
+// ws_protocol_error - the shared WS_PROTOCOL value.
+defn ws_protocol_error() -> WsMessage {
+    term WsMessage { status: WS_PROTOCOL, fin: 0, opcode: 0, payload: "", consumed: 0 };
+};
+// WsFrame - the decoded HEADER of one WebSocket frame (the core view).
+// header_len counts ALL header bytes (2 fixed + 0/2/8 extended length + 0/4
+// masking key); the payload begins at frame_offset + header_len.
+obj WsFrame {
+    fin: Bool;
+    opcode: Int;
+    masked: Bool;
+    mask_key: Int;
+    payload_len: Int;
+    header_len: Int;
+};
+
+// ws_ext_len16 - the 16-bit extended payload length (len7 == 126). Truncation
+// fails cleanly before the read.
+defn ws_ext_len16(buf: ByteBuf, off: Int) -> Result<Int, String> {
+    when off < 0 || off + 4 > buf.len {
+        term Err("incomplete");
+    };
+    term Ok(get_u16_be(buf, off + 2));
+};
+
+defn ws_ext_len64(buf: ByteBuf, off: Int) -> Result<Int, String> {
+    when off < 0 || off + 10 > buf.len {
+        term Err("incomplete");
+    };
+    term Ok(get_u64_be(buf, off + 2));
+};
+
+// ws_mask_key_at - the 4-byte masking key that follows the length field when
+// the MASK bit is set. `at` is the offset just past the length field.
+defn ws_mask_key_at(buf: ByteBuf, at: Int) -> Result<Int, String> {
+    when at < 0 || at + 4 > buf.len {
+        term Err("incomplete");
+    };
+    term Ok(get_u32_be(buf, at));
+};
+
+// ws_partial - assemble the frame header once the length field is resolved.
+// `base` is the header length BEFORE the masking key (2, 4 or 10).
+defn ws_partial(buf: ByteBuf, off: Int, b0: Int, b1: Int, payload_len: Int, base: Int)
+    -> WsFrame
+{
+    term WsFrame {
+        fin: b0 >= 128,
+        opcode: b0 & 15,
+        masked: b1 >= 128,
+        mask_key: 0,
+        payload_len: payload_len,
+        header_len: base,
+    };
+};
+
+// ws_decode - decode the header of one WebSocket frame at offset `off`.
+// Returns Ok(frame) with header_len set to the FULL header length (masking
+// key included); Err("incomplete") when the buffer ends inside the header;
+// Err("protocol") on RFC 6455 length-field misuse (126 with a 16-bit length
+// <= 125, 127 with a 64-bit length <= 65535, or a 64-bit length with the top
+// bit set). No payload bytes are read.
+//
+// 2026-10-18 (fixture campaign): every length-class branch now TERMs
+// explicitly. Guards are SEQUENTIAL (SPEC 11.2 - no implicit else): a branch
+// whose body ends in a discarded tail value FALLS THROUGH to the next guard,
+// which then re-runs and overwrites the result. The len7 path masked this
+// for two commits (its body returns early); the len16 path hit it (the
+// len64 guard ran unconditionally after it and its result won). Discovered
+// by the ws_frame benchmark: every 7-bit frame decoded, every extended
+// frame failed.
+defn ws_decode(buf: ByteBuf, off: Int) -> Result<WsFrame, String> {
+    when off < 0 || off + 2 > buf.len {
+        term Err("incomplete");
+    };
+    let b0: Int = get_u8(buf, off);
+    let b1: Int = get_u8(buf, off + 1);
+    let len7: Int = b1 & 127;
+
+    when len7 <= 125 {
+        term ws_decode_mask(buf, off, ws_partial(buf, off, b0, b1, len7, 2));
+    };
+    when len7 == 126 {
+        let ext: Result<Int, String> = ws_ext_len16(buf, off);
+        let sized: Result<WsFrame, String> = match ext {
+            Ok(v) => ws_min_len16(buf, off, b0, b1, v),
+            Err(e) => Err(e),
+        };
+        let fin: Result<WsFrame, String> = match sized {
+            Ok(f) => ws_decode_mask(buf, off, f),
+            Err(e) => Err(e),
+        };
+        term fin;
+    };
+    // len7 == 127 — the only remaining value of a 7-bit field.
+    let ext: Result<Int, String> = ws_ext_len64(buf, off);
+    let sized: Result<WsFrame, String> = match ext {
+        Ok(v) => ws_min_len64(buf, off, b0, b1, v),
+        Err(e) => Err(e),
+    };
+    let fin: Result<WsFrame, String> = match sized {
+        Ok(f) => ws_decode_mask(buf, off, f),
+        Err(e) => Err(e),
+    };
+    term fin;
+};
+
+// ws_min_len16 - RFC 6455 5.1: the 16-bit form MUST carry a length > 125
+// (otherwise the sender used a non-minimal encoding — a protocol error).
+defn ws_min_len16(buf: ByteBuf, off: Int, b0: Int, b1: Int, v: Int)
+    -> Result<WsFrame, String>
+{
+    when v <= 125 {
+        term Err("protocol");
+    };
+    term Ok(ws_partial(buf, off, b0, b1, v, 4));
+};
+
+// ws_min_len64 - the 64-bit form MUST carry a length > 65535, and the RFC
+// caps frame lengths at 2^63-1 (the top bit must be zero — a negative Int
+// here means it was set).
+defn ws_min_len64(buf: ByteBuf, off: Int, b0: Int, b1: Int, v: Int)
+    -> Result<WsFrame, String>
+{
+    when v <= 65535 || v < 0 {
+        term Err("protocol");
+    };
+    term Ok(ws_partial(buf, off, b0, b1, v, 10));
+};
+
+// ws_decode_mask - finish the header: when the MASK bit is set, read the
+// 4-byte masking key that follows the length field and grow header_len by 4.
+// Truncation fails cleanly before the read.
+defn ws_decode_mask(buf: ByteBuf, off: Int, f: WsFrame) -> Result<WsFrame, String> {
+    when !f.masked {
+        term Ok(f);
+    };
+    let key: Result<Int, String> = ws_mask_key_at(buf, off + f.header_len);
+    match key {
+        Ok(k) => Ok(WsFrame {
+            fin: f.fin,
+            opcode: f.opcode,
+            masked: f.masked,
+            mask_key: k,
+            payload_len: f.payload_len,
+            header_len: f.header_len + 4,
+        }),
+        Err(e) => Err(e),
+    }
+};
+
+// ws_payload_byte - the ONLY way to touch a frame's payload. The precondition
+// demands the whole frame (header + payload) fit in the buffer — without that
+// proof an over-read is unrepresentable. Returns byte i of the UNMASKED
+// payload (the mask is applied here, so callers see plaintext either way).
+defn ws_payload_byte(buf: ByteBuf, off: Int, f: WsFrame, i: Int)
+    [i >= 0 && i < f.payload_len && off + f.header_len + f.payload_len <= buf.len]
+    -> Int
+{
+    let idx: Int = off + f.header_len + i;
+    when idx < 0 || idx >= buf.len {
+        term 0;
+    };
+    let raw: Int = get_u8(buf, idx);
+    when !f.masked {
+        term raw;
+    };
+    let shift: Int = 8 * (3 - (i & 3));
+    term raw ^ ((f.mask_key >> shift) & 255);
+};
+
+// ws_frame_fits - does the whole frame decoded at `off` fit in the buffer?
+// The caller's cheap gate before any payload walk.
+defn ws_frame_fits(buf: ByteBuf, off: Int, f: WsFrame) -> Bool {
+    term off + f.header_len + f.payload_len <= buf.len;
+};
+
+// ws_key_byte - masking key byte for payload index i (RFC 6455: key[i mod 4],
+// where key byte 0 is the first byte on the wire — the top byte of the
+// big-endian Int ws_decode produced).
+defn ws_key_byte(key: Int, i: Int) -> Int {
+    term (key >> (8 * (3 - (i & 3)))) & 255;
+};
+
+// ws_encode - write one complete frame onto `out` (a growing buffer, so no
+// room contract is needed): the fixed two bytes, the length field (minimal
+// 7/16/64-bit encoding per RFC 6455 5.1), the masking key when masked, then
+// the payload from `src` with the mask applied per byte. Returns the buffer
+// with the frame appended.
+defn ws_encode(dst: GrowBuf, fin: Bool, opcode: Int, mask: Bool, key: Int,
+               src: Int, len: Int)
+    [opcode >= 0 && opcode <= 15 && len >= 0]
+    -> GrowBuf
+{
+    let flag: Int = 0;
+    when fin {
+        flag = 128;
+    };
+    let b0: Int = flag | (opcode & 15);
+    let b1: Int = 0;
+    when mask {
+        b1 = 128;
+    };
+    let head: GrowBuf = dst.put_u8(b0);
+
+    // Length field: the minimal encoding for the value, then the masking key
+    // (when MASK is set) and the payload.
+    // 2026-10-20 (fixture campaign): the key WRITE was missing — a masked
+    // ws_encode emitted a frame whose payload was XORed with a key that never
+    // appeared on the wire, so any conforming peer decoded garbage. The
+    // benchmark's builder writes frames itself and the net-stack golden only
+    // encoded unmasked text, so nothing noticed until the interpreter
+    // round-trip decoded its own output.
+    when len <= 125 {
+        let after_len: GrowBuf = head.put_u8(b1 | len);
+        term ws_encode_mask(after_len, mask, key, src, len);
+    };
+    when len <= 65535 {
+        let after_len: GrowBuf = head.put_u8(b1 | 126).put_u16_be(len);
+        term ws_encode_mask(after_len, mask, key, src, len);
+    };
+    let after_len: GrowBuf = head.put_u8(b1 | 127).put_u64_be(len);
+    term ws_encode_mask(after_len, mask, key, src, len);
+};
+
+// ws_encode_mask - write the 4-byte masking key (MASK bit set) and then the
+// masked payload; unmasked frames go straight to the payload copy.
+defn ws_encode_mask(buf: GrowBuf, mask: Bool, key: Int, src: Int, len: Int)
+    -> GrowBuf
+{
+    when mask {
+        let k1: GrowBuf = buf.put_u8((key >> 24) & 255);
+        let k2: GrowBuf = k1.put_u8((key >> 16) & 255);
+        let k3: GrowBuf = k2.put_u8((key >> 8) & 255);
+        let k4: GrowBuf = k3.put_u8(key & 255);
+        term ws_copy_payload(k4, src, len, key, mask, 0);
+    };
+    term ws_copy_payload(buf, src, len, key, mask, 0);
+};
+
+// ws_copy_payload - ws_encode's payload walker: one put_u8 per source byte,
+// XORed with the key byte when masked. 2026-10-20 (interpreter parity trio):
+// an ITERATIVE foreach, not per-byte tail recursion. The recursion made the
+// encoder's stack depth proportional to the payload (a 64-bit-length frame
+// alone would need >65k frames; the interpreter overflowed at 7k), and the
+// backend does not optimize tail calls — so large frames were a latent stack
+// bug in both engines. The loop walks the source exactly once.
+defn ws_copy_payload(buf: GrowBuf, src: Int, len: Int, key: Int, mask: Bool, i0: Int)
+    -> GrowBuf
+{
+    let grown: GrowBuf = buf;
+    foreach i in i0..len {
+        let raw: Int = Load#(src + i, 1);
+        let val: Int = raw;
+        when mask {
+            val = raw ^ ws_key_byte(key, i);
+        };
+        grown = grown.put_u8(val);
+    };
+    term grown;
+};
+
+// ── Application-facing conveniences (PR #26 API, rebuilt on the core) ───────
+
+// ws_message - decode the frame at `off` and MATERIALIZE its payload as a
+// String. The server read loop calls this: WS_NEED_MORE means "accumulate
+// more bytes"; WS_COMPLETE carries the unmasked payload and the exact
+// `consumed` byte count; WS_PROTOCOL means the bytes cannot be a legal frame.
+//
+// The payload copy walks ws_payload_byte (the one payload accessor), so the
+// whole-frame-fit precondition is discharged by the explicit guard below —
+// an over-read is impossible by construction, not by convention.
+defn ws_message(buf: ByteBuf, off: Int) -> WsMessage {
+    let decoded: Result<WsFrame, String> = ws_decode(buf, off);
+    match decoded {
+        Ok(f) => ws_message_complete(buf, off, f),
+        Err(e) => when_incomplete_or_protocol(e),
+    }
+};
+
+// ws_message_complete - the WS_COMPLETE path: whole-frame-fit guard, then
+// materialize the unmasked payload. Split out of ws_message so the match's
+// arms share the WsMessage type (an Err arm cannot return a WsFrame), and so
+// the fit-guard's fact is in scope for the ws_payload_byte copy loop.
+defn ws_message_complete(buf: ByteBuf, off: Int, frame: WsFrame) -> WsMessage {
+    // Explicit guard (not ws_frame_fits()): the solver carries THIS condition
+    // as a fact into the copy loop, discharging ws_payload_byte's contract.
+    when off + frame.header_len + frame.payload_len > buf.len {
+        term ws_need_more();
+    };
+    let addr: Int = Malloc#(frame.payload_len + 9) as Int;
+    Store#(addr, frame.payload_len, 8);
+    foreach i in 0..frame.payload_len {
+        Store#(addr + 8 + i, ws_payload_byte(buf, off, frame, i), 1);
+    };
+    Store#(addr + 8 + frame.payload_len, 0, 1);
+    let fin_i: Int = 0;
+    when frame.fin {
+        fin_i = 1;
+    };
+    term WsMessage {
+        status: WS_COMPLETE,
+        fin: fin_i,
+        opcode: frame.opcode,
+        payload: (addr as Data) as String,
+        consumed: frame.header_len + frame.payload_len,
+    };
+};
+
+// when_incomplete_or_protocol - map a decode error to the message status:
+// "incomplete" = more bytes may complete the frame; anything else is a
+// protocol violation (the RFC length-field misuse ws_decode reports).
+defn when_incomplete_or_protocol(e: String) -> WsMessage {
+    when e == "incomplete" {
+        term ws_need_more();
+    };
+    term ws_protocol_error();
+};
+
+// ws_encode_text - encode a server->client TEXT frame carrying `payload`,
+// UNMASKED (RFC 6455 §5.1: server frames must not be masked), in the minimal
+// length form. Returns the GrowBuf the caller owns.
+defn ws_encode_text(payload: String) -> GrowBuf {
+    let plen: Int = payload .^Length;
+    let data_addr: Int = ((payload as Data) as Int) + 8;
+    term ws_encode(grow_new(plen + 10), true, 1, false, 0, data_addr, plen);  // WS_OP_TEXT
+};

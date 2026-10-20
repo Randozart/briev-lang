@@ -69,8 +69,8 @@
           ".ebv"
         ],
         "icon": {
-          "light": "./images/e-briev-logo.svg",
-          "dark": "./images/e-briev-logo.svg"
+          "light": "./images/e-briev-icon.svg",
+          "dark": "./images/e-briev-icon.svg"
         },
         "configuration": "./language-configuration.json"
       },
@@ -121,8 +121,8 @@
           ".sbv"
         ],
         "icon": {
-          "light": "./images/s-briev-logo.svg",
-          "dark": "./images/s-briev-logo.svg"
+          "light": "./images/s-briev-icon.svg",
+          "dark": "./images/s-briev-icon.svg"
         },
         "configuration": "./language-configuration.json"
       },

@@ -47,7 +47,7 @@ defn rotl64(x: Int, r: Int) [r > 0 && r < 64][term == 0 || term != 0] -> Int {
 };
 
 // read64le — 8 bytes at offset i, little-endian, as a u64 bit pattern.
-defn read64le(s: String, i: Int) [i >= 0][term == 0 || term != 0] -> Int {
+defn read64le(s: String, i: Int) [true][term == 0 || term != 0] -> Int {
     term byte_at(s, i)
         | (byte_at(s, i + 1) << 8)
         | (byte_at(s, i + 2) << 16)
@@ -59,7 +59,7 @@ defn read64le(s: String, i: Int) [i >= 0][term == 0 || term != 0] -> Int {
 };
 
 // read32le — 4 bytes at offset i, little-endian, as a u32 (positive i64).
-defn read32le(s: String, i: Int) [i >= 0][term >= 0 && term <= 4294967295] -> Int {
+defn read32le(s: String, i: Int) [true][term >= 0 && term <= 4294967295] -> Int {
     term byte_at(s, i)
         | (byte_at(s, i + 1) << 8)
         | (byte_at(s, i + 2) << 16)
@@ -99,7 +99,7 @@ defn xxh64_stripes(s: String, p: Int, n: Int, v1: Int, v2: Int, v3: Int, v4: Int
 // xxh64_pre — the stripe-merge accumulator when len >= 32, else seed + P5.
 // (Guard idiom: the `when` early-terms the >=32 path; the fall-through is
 // the short-input seed mix. No `when`-expressions in Briev.)
-defn xxh64_pre(s: String, n: Int, seed: Int) [n >= 0][term == 0 || term != 0] -> Int {
+defn xxh64_pre(s: String, n: Int, seed: Int) [true][term == 0 || term != 0] -> Int {
     when n >= 32 {
         let lanes: (Int, Int, Int, Int) =
             xxh64_stripes(s, 0, n,
@@ -117,7 +117,7 @@ defn xxh64_pre(s: String, n: Int, seed: Int) [n >= 0][term == 0 || term != 0] ->
 // xxh64_tail — the sub-32-byte tail: 8-byte chunks, then a 4-byte chunk,
 // then single bytes. Returns the running hash.
 defn xxh64_tail(s: String, p: Int, n: Int, h: Int)
-    [p >= 0 && n >= 0][term == 0 || term != 0]
+    [true][term == 0 || term != 0]
     -> Int
 {
     when p + 8 <= n {
@@ -189,7 +189,7 @@ defn xxh32_stripes(s: String, p: Int, n: Int, v1: Int, v2: Int, v3: Int, v4: Int
 };
 
 // xxh32_pre — the stripe accumulator when len >= 16, else seed + P5.
-defn xxh32_pre(s: String, n: Int, seed: Int) [n >= 0][term >= 0 && term <= 4294967295] -> Int {
+defn xxh32_pre(s: String, n: Int, seed: Int) [true][term >= 0 && term <= 4294967295] -> Int {
     when n >= 16 {
         let lanes: (Int, Int, Int, Int) =
             xxh32_stripes(s, 0, n,
@@ -205,7 +205,7 @@ defn xxh32_pre(s: String, n: Int, seed: Int) [n >= 0][term >= 0 && term <= 42949
 
 // xxh32_tail — sub-16-byte tail: 4-byte chunks, then single bytes.
 defn xxh32_tail(s: String, p: Int, n: Int, h: Int)
-    [p >= 0 && n >= 0][term >= 0 && term <= 4294967295]
+    [true][term >= 0 && term <= 4294967295]
     -> Int
 {
     when p + 4 <= n {

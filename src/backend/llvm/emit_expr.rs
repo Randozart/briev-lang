@@ -4139,18 +4139,20 @@ impl LlvmBackend {
             .unwrap_or(false);
         let arg_regs: Vec<(String, Type)> =
             if explicit_recv_param && arg_regs.len() + 1 == params.len() {
-                if self_prefix.is_some() {
-                    panic!(
-                        "explicit-receiver member '.{}()' on pooled instance of '{}': the \
-                         receiver parameter has no single address (fields live in pool \
-                         columns) — write the member implicit-style (bare field names, no \
-                         receiver parameter) or call the free-function form",
-                        member_briev_name(member),
-                        type_name
-                    );
-                }
                 let mut with_self = Vec::with_capacity(arg_regs.len() + 1);
-                with_self.push((recv_reg.name.clone(), recv_reg.ty.clone()));
+                if let Some((prefix, row)) = &self_prefix {
+                    // 2026-10-20 (obj-globals): a POOLED receiver has no single
+                    // address in its columns — materialize a box from its row
+                    // and pass that handle as the explicit receiver parameter
+                    // (the same value-context rule as a defn argument). This
+                    // was previously an unconditional panic, which seeding a
+                    // top-level instance initializer (`b1 = b0.put_u8(0)`)
+                    // exposed.
+                    let boxed = self.box_pooled_instance_from_row(out, indent, prefix, row);
+                    with_self.push((boxed.name, boxed.ty));
+                } else {
+                    with_self.push((recv_reg.name.clone(), recv_reg.ty.clone()));
+                }
                 with_self.extend(arg_regs.iter().cloned());
                 with_self
             } else {

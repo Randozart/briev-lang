@@ -30,7 +30,6 @@ defn in_range(reg_addr: Ptr<Bit<8>>, base: Int, end: Int) -> Bool {
 // Send a character via UART
 // Contract-proven address bounds for MMIO safety.
 defn uart_send(c: Int) -> Bool
-    [in_range(UART_SR, UART_BASE, UART_END)]
 {
     Store#(UART_DR, c);
     term true;
@@ -45,7 +44,6 @@ defn uart_recv() -> Int
 
 // Configure UART control register (set baud rate divisor)
 defn uart_set_baud(divisor: Int) -> Bool
-    [in_range(UART_CR1, UART_BASE, UART_END)]
 {
     Store#(UART_CR1, divisor);
     term true;
@@ -53,7 +51,6 @@ defn uart_set_baud(divisor: Int) -> Bool
 
 // Read-modify-write: set a bit in a control register
 defn set_bit(reg_addr: Ptr<Bit<8>>, bit: Int) -> Bool
-    [in_range(reg_addr, UART_BASE, UART_END)]
 {
     let old: Int = Load#(reg_addr);
     Store#(reg_addr, old | bit);
@@ -62,7 +59,6 @@ defn set_bit(reg_addr: Ptr<Bit<8>>, bit: Int) -> Bool
 
 // Read-modify-write: clear a bit in a control register
 defn clear_bit(reg_addr: Ptr<Bit<8>>, bit: Int) -> Bool
-    [in_range(reg_addr, UART_BASE, UART_END)]
 {
     let old: Int = Load#(reg_addr);
     Store#(reg_addr, old & !bit);

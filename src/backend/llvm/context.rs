@@ -116,6 +116,14 @@ pub struct CompilerContext {
     /// a clean C ABI. Previously every regular defn carried state, forcing
     /// all callers to too.
     pub defn_needs_state: HashMap<String, bool>,
+    /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
+    /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
+    /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
+    /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
+    /// A caller's attribute must be at least as permissive as its callees'
+    /// effects — `print_str` reaches `SysCall#` via `write_all`; with #8
+    /// (argmem-only) LLVM deleted every store that filled the write buffer.
+    pub defn_touches_raw_memory: std::collections::HashSet<String>,
     /// 2026-10-15 (type-dependent member statefulness): concrete type names
     /// with at least one state-taking member (export_abi::type_stateful_members).
     /// A monomorphized trait default/generic specialized to such a type must
@@ -244,6 +252,13 @@ pub struct CompilerContext {
     /// The Init member runs against the instance's prefixed slots during
     /// init_state.
     pub obj_instance_inits: std::collections::HashMap<String, (String, Expr)>,
+    /// 2026-10-20 (obj-globals): pooled-instance row assignment. Every
+    /// top-level instance gets its OWN row in its base's pool columns
+    /// (previously all static instances shared row "0" and aliased).
+    pub instance_rows: std::collections::HashMap<String, String>,
+    /// Number of top-level (static) instances per pool base — sizes the
+    /// columns and sets where spawn allocation starts.
+    pub static_instance_counts: std::collections::HashMap<String, usize>,
     pub constants: HashMap<String, (Type, Expr)>,
     /// 2026-10-03 (const-expression folding, LLVM parity with the GPU
     /// readers — plan `2026-10-03-declared-dot-detect-reduction-rung.md`):
@@ -591,6 +606,7 @@ impl CompilerContext {
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
+            defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
             collection_iterables: std::collections::HashSet::new(),
@@ -626,6 +642,8 @@ impl CompilerContext {
             mask_constants: Vec::new(),
             instance_slots: std::collections::HashSet::new(),
             obj_instance_inits: std::collections::HashMap::new(),
+            instance_rows: std::collections::HashMap::new(),
+            static_instance_counts: std::collections::HashMap::new(),
             constants: HashMap::new(),
             const_values: HashMap::new(),
             constant_sections: HashMap::new(),

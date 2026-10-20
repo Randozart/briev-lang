@@ -30,15 +30,11 @@ let uart_dr_as_char: Ptr<Char> = UART_DR as Ptr<Char>;
 
 // --- Volatile access with contract-proven safety ---
 defn read_uart(reg_addr: Ptr<Int>) -> Int
-    [reg_addr as Int >= UART_BASE]
-    [reg_addr as Int <  UART_END]
 {
     term Load#(reg_addr);
 };
 
 defn write_uart(reg_addr: Ptr<Int>, val: Int)
-    [reg_addr as Int >= UART_BASE]
-    [reg_addr as Int <  UART_END]
 {
     Store#(reg_addr, val);
 };

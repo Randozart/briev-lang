@@ -215,20 +215,49 @@ fn const_string_global_golden_output() {
     );
 }
 
-/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): IGNORED —
-/// pins a KNOWN, pre-existing HIGH-severity codegen bug so it is not lost.
-/// Any String concat is EMPTY under the pipeline flags (-O2/-O3; -O0 is
-/// correct). Remove the #[ignore] in the commit that fixes it. This is why
-/// fixture-1's const-String pin avoids concat (BUGS.md 2026-10-20).
+/// 2026-10-20 (BUGS.md "string concat miscompiles at -O2/-O3"): REGRESSION
+/// GATE for the fixed bug. Any String concat was EMPTY under the pipeline
+/// flags (-O2/-O3; -O0 correct): defns reaching a syscall through a callee
+/// (`print_str` -> `write_all` -> `SysCall#`) were emitted argmemonly, so
+/// LLVM deleted the buffer-filling stores. Fixed by making
+/// `definition_touches_raw_memory` transitive (ctx.defn_touches_raw_memory).
 #[test]
-#[ignore = "known: string concat folds to empty at -O2 — BUGS.md 2026-10-20"]
-fn string_concat_at_o2_is_known_broken() {
+fn string_concat_at_o2_is_correct() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");
         return;
     }
     let out = build_link_run("string_concat_probe", "concat", &[]);
     assert_eq!(out, "abcd|abcd", "string concat at -O2: {out:?}");
+}
+
+/// 2026-10-20 (PR #26 reconciliation): canonical net-stack answers through
+/// the compiled pipeline — Base64, the RFC 6455 accept key (SHA-1 + Base64),
+/// incremental HTTP parse, and the websocket conveniences over the unified
+/// codec. Base64 is compiled-path only (interpreter callable-txn gap).
+/// 2026-10-20 (workstream C): pooled object globals — runtime initializer
+/// seeding, per-instance pool rows, and boxed argument passing.
+#[test]
+fn obj_globals_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("obj_globals", "golden", &[]);
+    assert_eq!(out, "3|8|9|1|4", "pooled object globals drifted: {out:?}");
+}
+
+#[test]
+fn net_stack_helpers_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("net_stack_helpers", "golden", &[]);
+    assert_eq!(
+        out, "aGVsbG8=|s3pPLMBiTxaQ9kYGzzhZRbK+xOo=|OK",
+        "net-stack helper golden drifted: {out:?}"
+    );
 }
 
 #[test]

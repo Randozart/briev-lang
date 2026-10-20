@@ -33,6 +33,14 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
+
+**Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.
+
+**Root cause:** the tuple heap block stores every element as its raw i64 BIT PATTERN (emit_tuple_materialize via adapt_to_i64: bitcast double->i64 for Float64, bitcast float->i32->zext for Float). The destructure (emit_stmt.rs `let (a,b)=t`) loaded each slot as `load i64` and bound the name to that i64 register unconditionally, ignoring the declared Float element type - so a downstream float use received an i64-defined register.
+
+**Fix:** after the `load i64`, `unbox_tuple_float_element` (emit_stmt.rs) reinterprets a Float-protocol element by its casting-graph LLVM width: `bitcast i64 -> double` for a 64-bit Float, `trunc i64 -> i32; bitcast i32 -> float` for a 32-bit one. It caches the native register in reg_float_cache and binds the name to it. Dispatch is protocol membership + resolved width (never the type name), so Float, Float32, Float64, Double and user aliases all take the right arm. This is the exact inverse of the adapt_to_i64 store side and mirrors the boxed Float param-slot unbox in emit_expr.rs. Regression tests test_float_tuple_destructure_unboxes_f32_elements / _f64_elements (src/backend/llvm/tests.rs), both run with a registered type universe and the float-position verifier.
+
 ## `\r` escape dropped in regular string + char literals — FIXED 2026-10-19
 
 **Symptom:** a plain `"\r\n"` lexed to the FOUR literal characters `\ r \n`
@@ -109,6 +117,16 @@ receiver type at this stage; the union is the same sound over-approximation
 `type_stateful_members` already relies on — a harmless unused `%state` param at
 worst). Regression tests: `dot_call_to_stateful_member_forces_caller_state` and
 `dot_call_to_stateless_member_keeps_caller_stateless` (src/analysis/export_abi.rs).
+
+## Malloc#-wrapping defn emitted memory(read) -> two identical calls CSE-aliased -> double-free -- FIXED 2026-10-19
+
+**Symptom:** two identical-argument calls to a defn whose body only allocates via Malloc# (e.g. ivec_new(n) = Malloc#(n*8) as Int) returned the SAME pointer, so freeing both double-freed (SIGABRT). Found building lib/std/rating_population.bv (recommender-app Task 5).
+
+**Controlled A/B:** two direct Malloc#(16) calls returned DISTINCT addresses; two ivec_new(n) calls returned the SAME address. The defn WRAPPER is CSE-eligible, the raw intrinsic is not.
+
+**Root cause:** definition_touches_raw_memory (src/backend/llvm/emit_toplevel.rs) picks memory(readwrite) (#13) for a raw-memory defn, else memory(read) (#8). Its RAW list had Alloc# but NOT Malloc#, so a Malloc#-only defn got memory(read); under -O3 LTO LLVM CSE'd two identical-arg calls into one allocation (aliasing + double-free).
+
+**Fix:** add Malloc# to the RAW list (the allocating sibling of Alloc#, observable per the registry) so the defn gets memory(readwrite) and LLVM cannot merge distinct allocations. Regression test defn_wrapping_malloc_is_not_memory_read (src/backend/llvm/emit_toplevel.rs).
 
 ## compare_baseline.sh compared against stale binaries — FIXED 2026-10-17
 
@@ -10377,7 +10395,7 @@ beginprogram and bootstrap checks share it). Residual: add-chain counter
 advances with non-literal deltas (`total = total + f(x) + y`) are still
 conservatively rejected — restructure to a flat counted variable.
 
-## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (OPEN)
+## 2026-10-18 — interpreter: compound bitwise-or over non-literal operands yields stale values (FIXED 2026-10-19; GrowBuf-growth residual OPEN)
 
 **Symptom:** in the interpreter, inside a spliced program, a bitwise-or
 CHAIN over non-literal operand EXPRESSIONS evaluates to a stale value —
@@ -10462,9 +10480,174 @@ either do not exercise concat under these flags or their goldens predate the
 regression window. Fixture 1's codec does not concat, which is why ws_frame
 passed.
 
-**Next step:** the fix is to carry String as a real `ptr` end-to-end through
-the concat path (no ptrtoint/mask/inttoptr round-trip): emit_mask_tag and
-emit_inttoptr_reg/emit_load_length must operate on pointers, with the legacy
-temp-bit machinery removed (it is already dead — `emit_box_concat_result`
-returns an untagged ptr, and the tag bits are never set). Then re-run the
-harness; this likely also explains latent string-op discrepancies.
+**ROOT CAUSE (2026-10-20, FIXED):** defn memory attributes were computed
+from the defn's OWN body only. `print_str` has no raw intrinsic itself — it
+calls `write_all`, which contains the `SysCall#` asm. So `print_str` was
+emitted with `#8` = `memory(argmem: readwrite)` ("only accesses memory
+through pointer arguments"), a LIE: it writes `@stdout_buf`/`@stdout_fill`
+and the kernel reads the pointer passed to write(2). Given the lie,
+InstCombine (pinned by `opt-bisect-limit`: pass 130, instcombine on `main`)
+proved the call had no effect outside its pointer arg, found that arg dead,
+and deleted `print_str(malloc)` together with the malloc + both memcpys —
+the buffer-filling stores were "dead" before the syscall read them. That is
+exactly the observed `-O2` empty output; `-O0` cannot do this analysis.
+
+The narrower hypothesis first suspected (the ptrtoint/and-4/inttoptr tag
+mask, and the syscall asm missing a `~{memory}` clobber) was tested and is
+NECESSARY but not the cause: adding `~{memory}` to every syscall asm was
+kept (it is correct — the kernel reads/writes user memory), but the empty
+output persisted until the attribute lie was fixed.
+
+**Fix:** (1) `ctx.defn_touches_raw_memory` — a TRANSITIVE closure over the
+call graph (seed: defns with a direct Load#/Store#/Alloc#/Free#/Copy#/
+Fill#/Volatile*/SysCall#; close over calls; the existing
+collect_called_names_stmt was extended to cover Match/Foreach/Check/Gate/
+EndProgram/Rollback/ArrowAssign/InlineDefn so the closure cannot
+under-approximate). Emitted attrs use it: any defn reaching raw memory
+through a callee is `#13` (full `memory(readwrite)`). (2) `~{memory}` added
+to the x86_64/aarch64 syscall asm (and the brk asm) — the rv64 path already
+had it.
+
+**Pins:** `string_concat_at_o2_is_correct` (un-ignored) +
+`tests/tier1/string_concat_probe.bv`, run through the harness flags
+(-O3 -flto -ffast-math). Full harness 79/79 MATCH, zero MISMATCH;
+3185 lib tests green; determinism clean.
+
+## 2026-10-20 — interpreter: callable Briev txns are not executed (OPEN)
+
+**Symptom:** a `txn` invoked as a FUNCTION (callable txn) does not execute in
+the interpreter; the calling node reaches equilibrium without `endprogram`.
+Minimal: `txn b64_loop(...) [off < buf.len][off >= buf.len] -> String { ... }`
+called from `defn base64_encode(...)` — the node that calls base64_encode
+never completes. Only `txn` named `run` has a legacy call path
+(`eval.rs`: `TopLevel::Transaction(t) if t.name == "run"`).
+
+**Impact:** the reference interpreter cannot verify any stdlib function that
+delegates to a callable txn (PR #26's `base64_encode` → `b64_loop`). The
+COMPILED backend executes it correctly (canonical Base64 vectors pass through
+the pipeline — tests/tier1/net_stack_helpers.bv). Rule-5 divergence.
+
+**Next step:** teach the interpreter's call resolution to execute a
+body-carrying `Transaction` like a `defn` (bind params, run body, return
+`term`), matching the backend's callable-txn support.
+
+## 2026-10-20 — interpreter: raw-address→String door unsupported (OPEN)
+
+**Symptom:** `(addr as Data) as String` (constructing a Briev String at a raw
+heap address with a `[len][bytes]` header) yields a non-Int, non-String
+value in the interpreter — a probe reading `s .^Length` produced None. The
+reverse direction (`String as Data as Int`, bytes at +8) works.
+
+**Impact:** blocks interpreter verification of every heap-String constructor:
+PR #26's websocket payload materialization (`ws_message`), http's
+`buf_slice_string`, and base64's read path all use the door. Compiled output
+is correct (see the net-stack golden). Rule-5 divergence.
+
+**Next step:** implement Int→Data→String in the interpreter as a view: the
+Data value at `addr` reads a `[len: i64][bytes]` header and yields the String
+bytes, matching the backend's representation.
+
+## 2026-10-20 — contract prover: unsound refutation (5,122 false REFUTED) — FIXED
+
+**Symptom:** the census run under `policy: warn` announced 5,122 REFUTED call
+sites — including trivially-true conjuncts such as `2 >= 2`,
+`(b0 & 31) >= 0`, and `(s.^Length >= 0)`. A refuted verdict is a compile
+error under `policy: deny`, so the gate would have rejected valid programs.
+
+**Root cause (two independent unsoundnesses in the entailment check):**
+1. `fact_refutes` matched only (fact.op, goal.op) pairs and NEVER compared
+   the normalized TERMS — any fact with a compatible operator/constant could
+   refute an unrelated goal. It was ORed into the refutation path alongside
+   the correct "fact entails the negation" test.
+2. `fact_entails` had wrong arms: `(Eq, Le) => true` (an equality entails ANY
+   upper bound) and `(Le, Eq) => fact.const == goal.const` (a bound entails
+   equality). Both are false.
+
+**Fix:** refutation is now exactly "some fact entails the goal's negation" via
+the atom-checked `fact_entails`; `fact_refutes` is deleted; the entailment
+table is replaced by an exact soundness table (`entail_same_terms`), plus
+equality facts are also matched under term negation (`T = a` ≡ `-T = -a`), so
+`x == 3` still proves `x >= 3` and refutes `x < 3`. Regression tests:
+`unrelated_atom_does_not_refute`, `upper_bound_does_not_prove_equality`,
+`equality_proves_weaker_upper_bound` (proof_engine::callgate).
+
+**Census after the fix (same sweep):** 79,415 unproven announcements,
+**0 refuted**, 144 unique contracted fns (65 noise-only preconditions,
+63 bounds/domain, 16 unresolved — lambdas/params/foreign wrappers). The
+announcement count duplicates per consumer (the sweep re-checks spliced
+imports); the unique-fn count is the migration surface.
+
+## 2026-10-20 — obj-globals: initializers never seeded; static instances shared row 0 — FIXED
+
+**Symptom:** a top-level obj binding (`let b: ByteBuf = buf_new(16);`) read
+`.len` as 0 and segfaulted when passed to a defn. Both were silent class
+bugs: the value looked usable and the crash had no diagnostic.
+
+**Root causes (object instance pools):**
+1. `obj_instance_inits` recorded each binding's initializer but NOTHING ever
+   seeded it — pool columns stayed `zeroinitializer`, so field reads saw 0 and
+   `box_pooled_instance_value` boxed null fields (the segfault).
+2. Every static instance of a base used pool row "0"
+   (`unpacked_instance_prefix` hardcoded it), so distinct top-level instances
+   aliased each other; pool capacity was `spawn + 1` regardless.
+3. Seeding exposed a third: an explicit-receiver member call
+   (`b0.put_u8(0)`) on a pooled receiver was an unconditional panic ("no
+   single address") — the combination was previously unreachable because
+   initializers never ran.
+
+**Fix:**
+1. `build_field_index` pre-assigns a distinct row per top-level instance
+   (declaration order); `register_pool_columns` sizes columns
+   `max(statics,1) + spawns` and starts the spawn counter after the static
+   rows; `unpacked_instance_prefix` returns the assigned row.
+2. `emit_init_state` seeds non-literal instance initializers before the plain
+   lets: evaluate the initializer (a constructor/member call producing an
+   instance VALUE), then split the box's members (stored as i64 words) into
+   the binding's own pool row via the new `adapt_from_i64`
+   (Bool trunc, Float bitcast, String/Ptr inttoptr). Literal `= 0`
+   initializers still zero-init.
+3. The explicit-receiver member path boxes a pooled receiver from its row
+   (`box_pooled_instance_from_row`) instead of panicking — the same
+   value-context rule as a defn argument.
+
+**Pins:** `tests/tier1/obj_globals.bv` + `obj_globals_golden_output`
+(field length, argument passing, distinct rows, explicit-receiver member).
+Placement assistance verified: explicit `plain` on a compound initializer and
+`state` on a value the machine never references both produce actionable
+errors (SPEC §899-924 machinery).
+
+## 2026-10-20 — ws_encode omitted the masking key on masked frames (FIXED)
+
+**Symptom:** a masked `ws_encode` emitted a frame whose payload was XORed
+with a key that never appeared on the wire — any conforming peer decoded
+garbage. Nothing caught it earlier because the benchmark's builder writes
+frames itself and the net-stack golden only encoded UNMASKED text; the
+interpreter's own encode→decode round-trip (restored this session) was the
+first consumer to validate a masked encoded frame.
+
+**Root cause:** the key-write block was lost during the sequential-guard
+rewrite of `ws_encode` (the branch bodies were restructured to `term` on
+every path; the 4 key bytes had been written in the retired expression-form
+`with_key` binding).
+
+**Fix:** all three length branches now go through `ws_encode_mask`, which
+writes key bytes 0..3 when MASK is set and then copies the payload.
+Regression pin: the `scenario_rt` encode round-trip in
+`tests/ws_frame_codec_parity.rs` (7-bit + 16-bit forms, masked and plain).
+
+## 2026-10-20 — interpreter: large ws_encode payload fails in the reactor path (OPEN)
+
+**Symptom:** encoding a 7000-byte payload through a node body fails with
+`HeapError("Load# read failed")` at addr 0; the IDENTICAL body executed
+statement-by-statement via `exec_stmt` runs to `endprogram` successfully.
+Smaller payloads (100 bytes) work through both paths.
+
+**Impact:** interpreter-only; the compiled backend and the harness are
+unaffected (the ws_frame builder writes frames directly, and the net-stack
+golden covers the encoder's wire format). The codec round-trip is verified
+interpreter-side for the 7/16-bit forms.
+
+**Next step:** diff the reactor's statement execution against `exec_stmt`
+for this body shape (the reactor has its own Let/Foreach arms; the divergence
+is in which environment the nested defn call sees). Pinned by the ignored
+test `ws_encode_growth_interpreter`.

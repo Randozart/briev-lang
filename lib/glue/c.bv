@@ -35,7 +35,10 @@
 // Briev String. The param is the cstr ADDRESS as an Int — every call site
 // (`name as Int`, `proj as Int`) already holds the pointer in an Int, and
 // as a pure-Briev defn the body does raw Int arithmetic over Load#/Copy#.
-defn cstr_to_briev(p: Int) -> String [p >= 0][term .^Length >= 0] {
+defn cstr_to_briev(p: Int) -> String [true][term .^Length >= 0] {
+    when p <= 0 {
+        term "";
+    };
     let base: Int = p;
     let len: Int = cstr_len(base);
     let buf: Int = Alloc#(8 + len + 1) as Int;
@@ -48,13 +51,16 @@ defn cstr_to_briev(p: Int) -> String [p >= 0][term .^Length >= 0] {
 // str_to_c — zero-copy view: the Briev String's data region IS the
 // NUL-terminated C string (the [len][bytes][NUL] allocation invariant).
 // Returns the data pointer (not the header).
-defn str_to_c(handle: String) -> Int [handle .^Length >= 0][term >= 0] {
+defn str_to_c(handle: String) -> Int [true][term >= 0] {
     term ((handle as Data) as Int) + 8;
 };
 
 // cstring_concat — concatenate two NUL-terminated C strings into a fresh
 // NUL-terminated buffer, returned as a bare pointer (the C_String ABI).
-defn cstring_concat(a: Int, b: Int) -> Int [a >= 0 && b >= 0][term >= 0] {
+defn cstring_concat(a: Int, b: Int) -> Int [true][term >= 0] {
+    when a <= 0 || b <= 0 {
+        term 0;
+    };
     let la: Int = cstr_len(a);
     let lb: Int = cstr_len(b);
     let buf: Int = Alloc#(la + lb + 1) as Int;

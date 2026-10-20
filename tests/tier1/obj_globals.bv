@@ -1,0 +1,31 @@
+// Pooled object globals pin — 2026-10-20 (workstream C).
+//
+// Top-level obj bindings unpack into pool columns (one ROW per instance). This
+// pins three defects fixed together:
+//   - runtime initializers were never seeded (every column stayed zero, so
+//     `.len` read 0);
+//   - every static instance of a base shared row "0" (instances aliased);
+//   - passing a global obj to a defn boxed zeroed columns (null pointer).
+// Prints: 3|8|9|1|4
+import { ByteBuf, buf_new, put_u8, get_u8 } from "std/net/bytes";
+import { print_int } from "std/io";
+import { print_str } from "std/io";
+
+let b0: ByteBuf = buf_new(16);
+let b1: ByteBuf = b0.put_u8(7);
+let b2: ByteBuf = b1.put_u8(8);
+let b3: ByteBuf = b2.put_u8(9);
+
+node entry [beginprogram][true] {
+    print_int(b3.len);          // 3 — the runtime initializer chain ran
+    print_str("|");
+    print_int(get_u8(b3, 1));   // 8 — arg passing boxes the right row
+    print_str("|");
+    print_int(get_u8(b3, 2));   // 9
+    print_str("|");
+    print_int(b1.len);          // 1 — b1 and b3 are distinct rows
+    print_str("|");
+    let b4: ByteBuf = b3.put_u8(10);
+    print_int(b4.len);          // 4 — explicit-receiver member on a pooled obj
+    endprogram 0;
+};

@@ -22,8 +22,7 @@
 //
 // Undo: delete this module and its test; it carries no compiler coupling.
 
-import { syscall, SYS_OPEN, SYS_CLOSE, SYS_GETDENTS64 }
-    from "std/posix/syscall.bv";
+import { syscall } from "std/posix/syscall.bv";
 import "std/string_c.bv";
 import { Ok, Err, is_ok, is_err, unwrap, unwrap_err } from "std/result.bv";
 
@@ -45,12 +44,12 @@ defn dirent_cstr_string(p: Int) [p > 0][term > 0] -> Int {
     term s;
 };
 
-defn dir_open(path: Int) [path >= 0][term >= -4096] -> Int {
-    term syscall(SYS_OPEN, path, O_RDONLY + O_DIRECTORY, 0);
+defn dir_open(path: Int) [true][term >= -4096] -> Int {
+    term syscall(2, path, O_RDONLY + O_DIRECTORY, 0);  // SYS_OPEN
 };
 
-defn dir_close(fd: Int) [fd >= 0][term >= -4096] -> Int {
-    term syscall(SYS_CLOSE, fd);
+defn dir_close(fd: Int) [true][term >= -4096] -> Int {
+    term syscall(3, fd);  // SYS_CLOSE
 };
 
 // entries — the directory's entry names (including "." and ".."). Ok = the
@@ -64,7 +63,8 @@ export defn entries(path: String)
         term Err(fd);
     };
     let buf: Int = Alloc#(DIRENT_CAP) as Int;
-    let n: Int = syscall(SYS_GETDENTS64, fd, buf, DIRENT_CAP);
+    // SYS_GETDENTS64
+    let n: Int = syscall(217, fd, buf, DIRENT_CAP);
     when n < 0 {
         dir_close(fd);
         Free#(buf as Ptr<Bit<8>>);
@@ -81,7 +81,8 @@ txn dir_loop(fd: Int, buf: Int, names: List<String>, off: Int, n: Int)
     [fd >= 0 && buf > 0 && off >= 0 && n >= 0]
     [is_ok(term) || is_err(term)] -> Result<List<String>, Int> {
     when off >= n {
-        let m: Int = syscall(SYS_GETDENTS64, fd, buf, DIRENT_CAP);
+        // SYS_GETDENTS64
+        let m: Int = syscall(217, fd, buf, DIRENT_CAP);
         when m < 0 {
             dir_close(fd);
             Free#(buf as Ptr<Bit<8>>);
