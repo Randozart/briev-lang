@@ -65,6 +65,21 @@ Conclusions:
 The lesson: we cannot leave the state/register decision to LLVM's local SROA
 choice. We need an explicit, target-driven loop state plan.
 
+**Phase 0 negative result (2026-10-20):** capping the countdown-loop Float
+phis to the target budget (11/12) and making the state base opaque with
+`llvm.launder.invariant.group` did **not** recover float_math (2.61x). The
+trace accumulator still spilled. The state/phi plan is necessary for
+deterministic register control, but it is **not sufficient** for this
+regression.
+
+**Refined primary hypothesis:** the fast stateful-print experiment changed
+the *call ABI shape*: print functions received a context pointer (`%state`)
+instead of addressing bare `@stdout_*` globals. Group plain/plumbing lets into
+a **plain context** and pass its pointer to functions that use them; keep
+machine `%State` unescaped. That is a storage-class ABI, not a print-name
+special case. It should recover the pointer-shape codegen while preserving the
+stateless machine state that wins queue/interval.
+
 ## Target architecture
 
 ### 1. `StateLayoutPlan` (frontend)
@@ -88,6 +103,15 @@ Classify each field:
 
 The plan is in `AnalysisResults` (frontend-driven), not re-derived in the
 backend.
+
+### 1b. Plain/effect context (added from Phase 0)
+
+Plain lets (`stdout_buf`, `stdout_fill`, future plumbing) lower into a
+`PlainContext` aggregate. Functions that use plain state take a `ptr` to that
+context, exactly as defns that use machine state take `%state`. Machine `%State`
+stays unescaped. This removes bare `@global` mutation from hot effectful calls
+while preserving the plain/state split. It is the first experimental slice,
+because the state/phi-cap prototype alone did not recover float_math.
 
 ### 2. Opaque state allocation
 
@@ -156,11 +180,14 @@ register pressure. This preserves the queue/interval wins.
 
 ## Phases
 
-### Phase 0 — experiment matrix (recorded)
+### Phase 0 — experiment matrix (recorded + refined)
 
 Already measured: stateless/stateful stdout, global state, launder, noinline.
 Remaining before implementation:
 
+0. Prototype the **plain context pointer** for the print family on 5aa:
+   group stdout_buf/fill into a context, pass `ptr` to print functions, keep
+   machine `%State` unescaped. Measure float_math + queue/interval.
 1. Prototype the **state plan + capped phis** on the actual IR for float_math:
    - keep stateless print;
    - cap hot phis to the target budget + reserved accumulator/temps;

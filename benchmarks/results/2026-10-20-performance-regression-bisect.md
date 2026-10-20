@@ -125,3 +125,46 @@ Conclusions:
 
 Therefore the long-term fix must control the loop's state/register materialization
 explicitly from the frontend/target model, not rely on clang's SROA decision.
+
+
+## Phi-cap prototype 2026-10-20 — capping alone does not recover float_math
+
+On the `5aa90185` worktree, cap countdown-loop Float phis to the target
+budget (11 of 12 float fields) and make the state base opaque with
+`llvm.launder.invariant.group`; excluded fields go through `%State`
+load/store. Result:
+
+| Metric | Value |
+|---|---:|
+| Briev | 0.1238s |
+| C | 0.0475s |
+| Ratio | **2.61x** |
+| Correctness | MATCH |
+
+The loop still spills the trace accumulator. Capping phis + opaque state is
+**not sufficient**. The only variant that recovered float_math was stateful
+stdout, where the print calls receive a **state/context pointer** instead of
+addressing bare globals. That shifts the hypothesis to the plain/effect
+context ABI, not just machine-state pressure.
+
+## Refined hypothesis — plain context pointer
+
+The state/plain split currently lowers plain lets to individual module
+globals and print functions read/write those globals directly. The fast
+stateful experiment gave print functions a `ptr %state` argument; the slow
+variant uses bare `@stdout_*` globals. A context pointer is a different
+machine-level shape (pointer argument + GEPs) even when the state alloca is
+opaque.
+
+Next experiment: group plain/plumbing lets into one **plain context** and
+pass its `ptr` to the functions that use it (print family first). Keep machine
+`%State` unescaped. If that recovers float_math and preserves queue/interval,
+the long-term architecture is:
+
+- machine state: explicit pressure/plan (phi/memory) as designed;
+- plain/effect state: separate context pointer with its own ABI;
+- no bare global mutation in hot effectful calls;
+- no pattern/name matching: the split is by declared/inferred storage class.
+
+This is now the primary Phase 0 hypothesis. The phi-cap prototype remains a
+useful negative result and a guardrail for the eventual state plan.
