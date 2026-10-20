@@ -168,3 +168,27 @@ the long-term architecture is:
 
 This is now the primary Phase 0 hypothesis. The phi-cap prototype remains a
 useful negative result and a guardrail for the eventual state plan.
+
+
+## Further isolation 2026-10-20 — pointer ABI, field count, and stdout writes
+
+| Variant | float_math | Verdict |
+|---|---:|---|
+| stateless print + stack state | 2.72x | baseline |
+| force **all defns** to take `%state`, stdout still globals | 2.93x | pointer ABI alone: no |
+| add two unused Int state fields, stdout still globals | 2.72x | field count/layout: no |
+| stdout fields in `%State` (stateful stdout) | **0.92x** | only recovering shape |
+
+The recovering shape is specifically **the print path writing through state
+memory**, not merely a state pointer argument, not field count, and not print
+inlining. Bare `@stdout_*` global writes keep the slow codegen even when every
+defn takes `%state`.
+
+This strengthens the **plain/effect context** hypothesis: give the print
+path a real context pointer whose fields it reads/writes (not the machine
+`%State` and not bare globals). The context ABI carries the memory shape that
+the fast stateful-print variant accidentally exercised, while keeping machine
+`%State` unescaped.
+
+The next prototype must implement the context, not simulate it with an unused
+pointer, dummy fields, or global state.

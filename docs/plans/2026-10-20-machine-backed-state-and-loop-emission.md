@@ -73,12 +73,15 @@ deterministic register control, but it is **not sufficient** for this
 regression.
 
 **Refined primary hypothesis:** the fast stateful-print experiment changed
-the *call ABI shape*: print functions received a context pointer (`%state`)
-instead of addressing bare `@stdout_*` globals. Group plain/plumbing lets into
+the *memory shape*: print functions read/wrote through a state pointer instead
+of addressing bare `@stdout_*` globals. Forcing all defns to take `%state`
+(pointer ABI alone) did **not** recover float_math (2.93x); adding two dummy
+state fields also did not (2.72x). The distinguishing factor is the print path
+**accessing memory through a context pointer**. Group plain/plumbing lets into
 a **plain context** and pass its pointer to functions that use them; keep
 machine `%State` unescaped. That is a storage-class ABI, not a print-name
-special case. It should recover the pointer-shape codegen while preserving the
-stateless machine state that wins queue/interval.
+special case. It should recover the pointer-memory codegen while preserving
+the stateless machine state that wins queue/interval.
 
 ## Target architecture
 
