@@ -7188,6 +7188,49 @@ mod tests {
              LLVM CSE two distinct allocations: {def_line}"
         );
     }
+
+    #[test]
+    fn raw_ptr_scalar_index_load_and_store_are_volatile() {
+        // 2026-10-20 (fix/ptr-index-provenance, BUGS.md): a raw `Ptr<T>` scalar
+        // element load (`base[i]`) and store (`base[i] = v`) are each recovered
+        // from an i64 address via a FRESH `inttoptr`. Two independent inttoptr's
+        // of the same address carry no shared provenance, so under -O3 LTO
+        // BasicAA judged a sibling-defn load and store non-aliasing and hoisted
+        // the load across the store — a stale read (the recommender serving
+        // `picked[]` miscompile; confirmed by a volatile-load A/B). The fix
+        // emits both the scalar load and store VOLATILE so LLVM cannot
+        // eliminate/reorder them relative to each other.
+        //
+        // Behavioral assertion (contract, not implementation): the emitted IR
+        // for a scalar Ptr<Int> index load and store must carry `load volatile`
+        // and `store volatile`. We assert the volatile forms are present.
+        let src = r#"
+            defn poke(base: Int, i: Int, v: Int) -> Int {
+                let p: Ptr<Int> = base as Ptr<Int>;
+                p[i] = v;
+                term p[i];
+            };
+            node entry [beginprogram][true] {
+                let b: Int = Malloc#(16) as Int;
+                let r: Int = poke(b, 0, 7);
+                endprogram Print#(r);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        assert!(
+            ir.contains("load volatile i64"),
+            "a raw Ptr<Int> scalar element read must be a VOLATILE load so the \
+             inttoptr-recovered pointer's load cannot be hoisted across a store \
+             to the same buffer: {ir}"
+        );
+        assert!(
+            ir.contains("store volatile i64"),
+            "a raw Ptr<Int> scalar element write must be a VOLATILE store so it \
+             cannot be reordered around a volatile load of the same buffer: {ir}"
+        );
+    }
 }
 
 /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): free-function

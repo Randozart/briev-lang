@@ -1583,12 +1583,29 @@ impl LlvmBackend {
                             indent, gep, elem_llvm, ptr, offset
                         )
                         .ok();
-                        let vol_prefix =
-                            if self.fun.volatile_read { "volatile " } else { "" };
+                        // 2026-10-20 (fix/ptr-index-provenance, BUGS.md):
+                        // a raw Ptr<T> scalar element load is emitted VOLATILE.
+                        // The address is recovered per-access via `inttoptr i64
+                        // %base to ptr`; two independent inttoptr's of the SAME
+                        // address carry no shared provenance, so under -O3 LTO
+                        // BasicAA judges a load `base[i]` and a store
+                        // `base[j]=v` (even in sibling defns, once inlined) as
+                        // NOT aliasing and hoists/CSEs the load across the
+                        // store — a stale read (the recommender serving
+                        // `picked[i]` miscompile; confirmed by a volatile-load
+                        // A/B). `volatile` forbids the elimination/reorder,
+                        // which is the sound, general fix for every raw-buffer
+                        // read regardless of inlining. The `vol let` /
+                        // volatile_read path (MMIO) already emitted volatile
+                        // here; this makes it UNCONDITIONAL for raw scalar
+                        // pointees. Undo: restore the `volatile_read` gate (and
+                        // instead thread one canonical provenance-carrying
+                        // pointer from the `as Ptr<T>` cast — see the PR doc's
+                        // "optimization impact / future work").
                         writeln!(
                             out,
-                            "{}{} = load {}{}, ptr {}",
-                            indent, v, vol_prefix, elem_llvm, gep
+                            "{}{} = load volatile {}, ptr {}",
+                            indent, v, elem_llvm, gep
                         )
                         .ok();
                         return TypedRegister {

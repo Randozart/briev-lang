@@ -1285,6 +1285,24 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         };
                         let vol_prefix = if vol_obj { "volatile " } else { "" };
                         if scalar_pointee {
+                            // 2026-10-20 (fix/ptr-index-provenance, BUGS.md): a
+                            // raw Ptr<T> SCALAR element store is emitted VOLATILE
+                            // — the store half of the provenance pair. The
+                            // matching load (`base[i]`, emit_expr.rs raw_ptr_
+                            // scalar) is now unconditionally volatile; the store
+                            // must be too, or LLVM can still move a NON-volatile
+                            // store relative to the volatile load (volatile only
+                            // orders against other volatiles). Both volatile ⇒
+                            // the `base[j]=v` store cannot be reordered around
+                            // the `base[i]` read, closing the inttoptr-
+                            // provenance miscompile (the recommender
+                            // `picked[best]=1` / `picked[i]` read pair). Scoped
+                            // to scalar pointees ONLY — the boxed-handle (List/
+                            // dyn/String) else-branch below keeps its vol_obj
+                            // gate unchanged. Undo: restore `vol_prefix` here
+                            // (thread one canonical provenance pointer instead
+                            // — PR doc "future work").
+                            let vol_prefix = "volatile ";
                             writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, elem_llvm, ptr, offset).ok();
                             let universe = backend.ctx.type_universe.clone();
                             let store_val = backend.ensure_typed_value(

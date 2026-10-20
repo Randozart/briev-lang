@@ -33,6 +33,18 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Raw Ptr<T> scalar index load/store CSE-aliased via inttoptr provenance loss -> stale read -- FIXED 2026-10-20
+
+**Symptom:** a top-N serving routine (recommender-app Task 8 oracle, examples/recommender/reference.bv `recommend_user`) returned already-rated items and ran to `topn` instead of stopping. A `picked[]` exclusion array (a raw `Malloc#`-backed `Ptr<Int>`) was correctly marked `[1,1,1,1]` (confirmed by a print inside the writing defn), yet a sibling defn's `rec_argbest` read `picked[3]` as 0 and re-selected item 3 every pass. Same memory, same function, different result across recursion frames.
+
+**Controlled A/B:** hand-editing the emitted `.ll` to mark the single `picked[i]` load `volatile` fixed the output exactly (`best=3` at done=0 -> `best=-1` at done=1). Smaller probes (`scratch/ptr_store_crossdefn.bv` lanes A/B/C: cross-defn inline store, helper-wrapped store, recursive-select with Int then Float scoring) all PASSED -- the trigger needs the load and store in SEPARATE defns large enough to NOT inline (`rec_argbest` calls the heavy `cf_predict_ref`), so the `memory(argmem: readwrite)` attribute survives and the cross-function loads/stores remain for LTO to mis-analyze.
+
+**Root cause:** the raw `Ptr<T>` scalar index LOAD (`base[i]`, emit_expr.rs raw_ptr_scalar branch) and STORE (`base[i]=v`, emit_stmt.rs scalar_pointee branch) each recover the pointer with a FRESH `inttoptr i64 %base to ptr`. `inttoptr` yields a pointer with no provenance; LLVM BasicAA (under -O3 -flto, after inlining the load defn and store defn together) cannot prove the two independent inttoptr-derived pointers alias, so it treats the load as not-aliasing the store and hoists/CSEs the load across it -> stale read. The `#8`/`#13` memory-attribute doctrine (BUGS.md "string concat") governs the CALLER's effect summary and does NOT fix this intra-/inter-body load-vs-store provenance gap.
+
+**Fix:** emit the raw `Ptr<T>` SCALAR element load and store as `volatile` (unconditionally for scalar pointees i8/i16/i32/i64/float/double; emit_expr.rs load + emit_stmt.rs store). Volatile accesses cannot be eliminated or reordered relative to other volatile accesses, so the `base[j]=v` store can no longer be reordered around the `base[i]` read -- the sound, general fix for every raw-buffer read/write regardless of inlining. Scoped to scalar pointees; the boxed-handle (List/dyn/String) carrier path is untouched. Regression test `raw_ptr_scalar_index_load_and_store_are_volatile` (src/backend/llvm/emit_toplevel.rs).
+
+**Optimization impact (deliberate tradeoff -- see PR-ptr-index-provenance.md):** volatile defeats SLP/load-store vectorization, redundant-load elimination, and store-to-load forwarding ON RAW Ptr<T> SCALAR BUFFERS (matrix.bv/vector/CSR hot loops). Correctness-first per the operating contract. The provenance-preserving successor (thread ONE canonical `ptr` from the `as Ptr<T>` cast through every index/deref access instead of re-inttoptr-ing per access, so AA relates them and volatile can be dropped) is the documented future-work path to restore the optimization.
+
 ## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
 
 **Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.
