@@ -203,8 +203,16 @@ These are ranked by repeated evidence across fixtures and the suite.
 | queue_drain | 1.35x | 0.45x | 0.47x | improved |
 | interval_step | 1.23x | 0.61x | 0.72x | improved |
 
-**Status:** ws_frame slice DONE. The other rows are not yet bisected; do not
-call them noise and do not blame the provenance patch without A/B evidence.
+**Status:** bisected. `float_math` fast `3c15268a` = **0.94x**, first regression
+at `5aa90185` state/plain = **2.72x** (same machine/harness); current ~2.74x.
+The raw-pointer provenance patch is not the cause (float_math has no Ptr).
+Immediate `ws_frame` slice is DONE: 3.50x → **1.48x**, better than the old
+1.58x, by removing per-byte guards and using a proven direct `Load#`. Full
+record: `benchmarks/results/2026-10-20-performance-regression-bisect.md`.
+
+Do not call the remaining rows noise and do not blame provenance without an
+A/B. The open question is the state/plain stateless-print/`%State` interaction,
+not the matrix arithmetic.
 
 **Work**
 1. Re-run `3c15268a`, `5aa90185`, and current interleaved on the same machine,
