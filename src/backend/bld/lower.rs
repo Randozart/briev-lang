@@ -1004,6 +1004,8 @@ impl<'a> BldLowerer<'a> {
             self.stmt(st, pos)?;
         }
         let b = std::mem::replace(&mut self.body, Body::new("", None));
+        let mut items = b.items;
+        coalesce_adjacent_copies(&mut items);
         self.out.extend(b.own_first);
         // An ownership block may have switched sections (a .rodata data
         // label); the recipe's own instructions are .text — say so
@@ -1017,7 +1019,7 @@ impl<'a> BldLowerer<'a> {
             name: head.name.to_string(),
             local: false,
             contracts: Vec::new(),
-            body: b.items,
+            body: items,
             reserved_regs: b.reserved,
             symbolic: false,
             span: head.span,
@@ -2443,6 +2445,101 @@ fn common_class(a: VClass, b: VClass) -> VClass {
 /// The fused compare-branch mnemonic: jump when `a OP b` matches
 /// `when_true`. Dual pairs keep the polarity table explicit — no
 /// arithmetic inversion to misread.
+/// Symbolic-only redundant-move removal (parity item 9): a compiler temp
+/// `v` defined by an instruction and read exactly once by the *next*
+/// instruction's `mov dst, v` collapses — the producer writes `dst`
+/// directly. This removes the result→temp→argument / result→return-reg
+/// round-trips a call chain produces. For a plain `mov v, src` producer it
+/// is copy propagation (`mov dst, src`).
+///
+/// Never touches raw instructions: raw code names physical registers,
+/// never the compiler-managed `vN`/`fvN` temps this pass requires.
+fn coalesce_adjacent_copies(items: &mut Vec<BadBodyItem>) {
+    let mut i = 0;
+    while i + 1 < items.len() {
+        if try_coalesce(items, i) {
+            items.remove(i + 1);
+            // Re-examine i: the rewritten producer may fuse with the next.
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn try_coalesce(items: &mut Vec<BadBodyItem>, i: usize) -> bool {
+    // Consumer: `mov d2, v`.
+    let Some((d2, s2)) = copy_pair(&items[i + 1]) else {
+        return false;
+    };
+    let BadOperand::Name(v) = &s2 else {
+        return false;
+    };
+    if !BldLowerer::is_virtual_name(v) || count_name(items, v) != 2 || d2 == *v {
+        return false;
+    }
+    // Producer: an instruction whose first operand it writes.
+    let BadBodyItem::Instr(prod) = &items[i] else {
+        return false;
+    };
+    if !writes_first_operand(&prod.mnemonic) {
+        return false;
+    }
+    let [BadOperand::Name(pv), rest @ ..] = prod.operands.as_slice() else {
+        return false;
+    };
+    if pv != v {
+        return false;
+    }
+    // Renaming would clobber a source the producer still needs.
+    if rest.iter().any(|s| matches!(s, BadOperand::Name(n) if *n == d2)) {
+        return false;
+    }
+    if let BadBodyItem::Instr(ins) = &mut items[i] {
+        ins.operands[0] = BadOperand::Name(d2);
+    }
+    true
+}
+
+/// Whether `mn`'s first operand is a destination (never `store`/`outb`).
+fn writes_first_operand(mn: &str) -> bool {
+    matches!(
+        mn,
+        "mov" | "fmov" | "load" | "addr" | "ldb" | "ldub" | "ldh" | "lduh"
+            | "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor"
+            | "shl" | "shr" | "sar" | "slt" | "sltu" | "not" | "neg"
+            | "mulhi" | "mulhiu" | "itof" | "ftoi" | "fadd" | "fsub"
+            | "fmul" | "fdiv" | "fneg" | "fabs" | "readcr"
+    )
+}
+
+/// `(dst-name, src-operand)` for a `mov`/`fmov` between two operands.
+fn copy_pair(item: &BadBodyItem) -> Option<(String, BadOperand)> {
+    let BadBodyItem::Instr(ins) = item else {
+        return None;
+    };
+    if ins.mnemonic != "mov" && ins.mnemonic != "fmov" {
+        return None;
+    }
+    let [BadOperand::Name(dst), src] = ins.operands.as_slice() else {
+        return None;
+    };
+    Some((dst.clone(), src.clone()))
+}
+
+/// Total occurrences of a named operand across the body's instructions.
+fn count_name(items: &[BadBodyItem], name: &str) -> usize {
+    let mut n = 0;
+    for it in items {
+        let BadBodyItem::Instr(ins) = it else { continue };
+        for op in &ins.operands {
+            if matches!(op, BadOperand::Name(x) if x == name) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn branch_op(op: BinaryOpKind, when_true: bool, is_float: bool) -> Option<&'static str> {
     let (i, f) = match op {
         BinaryOpKind::Eq => ("jz", "fjz"),

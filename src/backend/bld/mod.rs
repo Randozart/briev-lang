@@ -312,8 +312,9 @@ mod tests {
         let src = "defn f(a: Int) -> Int { let b = a > 0; return b; }";
         let prog = lower_ok(src);
         let items = instrs(&prog, "f");
-        assert_eq!(mnems(&items), vec!["slt", "mov", "ret"]);
-        assert_eq!(ops_of(items[0]), vec!["v0", "0", "r5"]);
+        // The result move coalesces into the producer (slt writes r0).
+        assert_eq!(mnems(&items), vec!["slt", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "0", "r5"]);
     }
 
     #[test]
@@ -357,8 +358,8 @@ mod tests {
     fn x86_mul_takes_the_immediate_directly() {
         let p = lower_ok("defn f(a: Int) -> Int { return a * 3; }");
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mul", "mov", "ret"]);
-        assert_eq!(ops_of(items[0]), vec!["v0", "r5", "3"]);
+        assert_eq!(mnems(&items), vec!["mul", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "r5", "3"]);
     }
 
     #[test]
@@ -683,13 +684,10 @@ mod tests {
     fn temps_get_real_registers() {
         let p = alloc_ok("defn f(a: Int) -> Int { return a + 1; }");
         let items = instrs(&p, "f");
-        // leaf recipe: param stays in r5; the temp lands in the first
-        // allocatable register (x86_64: r3 after scratch reservation)
-        assert_eq!(mnems(&items), vec!["add", "mov", "ret"]);
-        // first allocatable caller-saved register (r8; r12/r13 went to
-        // the scratch reserve)
-        assert_eq!(ops_of(items[0]), vec!["r1", "r5", "1"]);
-        assert_eq!(ops_of(items[1]), vec!["r0", "r1"]);
+        // leaf recipe: param stays in r5; the result move coalesced, so
+        // the add writes the return register (r0) directly.
+        assert_eq!(mnems(&items), vec!["add", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "r5", "1"]);
     }
 
     #[test]

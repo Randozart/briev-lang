@@ -20,7 +20,7 @@ assembled bytes, which are deterministic.
 | `memcpy` | 12 | 12 | 0 | 96 | 96 | 0 |
 | `bit_ops` | 6 | 6 | 0 | 71 | 71 | 0 |
 | `crc8` | 24 | 22 | −2 | 141 | 134 | −7 |
-| `call_chain` | 6 | 11 | +5 | 71 | 86 | +15 |
+| `call_chain` | 9 | 9 | 0 | 80 | 80 | 0 |
 
 ## Per-kernel analysis
 
@@ -39,11 +39,11 @@ assembled bytes, which are deterministic.
   outb %al, %dx`) and the immutable port re-materializes per store. The
   raw form keeps port in `%rdx` and writes `outb %al, %dx` directly.
   x86 port I/O is the escape-hatch shape; parity is not expected here.
-- **`call_chain` — +5.** The callable `inc` uses the C ABI (param in
-  `%rdi`, result in `%rax`), so the body stages `%rdi → %rcx → %rax` and
-  the caller moves `%rax → %rdi` between calls. The raw form keeps the
-  value in `%rax` across the (caller-saved) calls. This is the ABI
-  staging cost; coalescing can recover some of it (parity item 3).
+- **`call_chain` — exact instruction parity (0).** A symbolic-only
+  redundant-move pass coalesces a single-use temp producer into its
+  consumer, so `mov tmp, ret; mov arg, tmp` becomes `mov arg, ret` and
+  the return copy folds into the producing `add`. The raw kernel uses the
+  same C ABI (arg r5, result r0) so the comparison is apples-to-apples.
 
 ## Raw identity
 

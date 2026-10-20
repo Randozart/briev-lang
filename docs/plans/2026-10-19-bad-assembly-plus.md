@@ -353,11 +353,12 @@ end
 | 2026-10-20 | (this commit) | Final docs sweep: SPEC §20.1 assembly+ surface, README boot gates, `.bad` highlighter (`declarations`/`extern`/`stack`/assembly+ keywords); complexity splits in `try_declarations`, `lower_call`, `lower_symbolic_labels`, `emit_instr`, `lint`. Full lib 3223, all QEMU gates + determinism green. |
 
 Remaining: ISA roles/clobbers data migration (the allocator still
-hardcodes `roles()`; `outb` was added there), `call_chain` ABI move
-coalescing (parity item 3, +5), and cross-target parity measurement
-(results are x86_64). Known test note: the conformance sweep can race its
-own `.smoke/` artifacts when run concurrently with other tests; it passes
-in isolation.
+hardcodes `roles()`; `outb` was added there) and cross-target parity
+measurement (results are x86_64). The scalar corpus is at instruction
+parity except `uart_banner` (+11 — `outb` pins `%al`/`%dx`) and `crc8`
+(−2, symbolic tighter). Known test note: the conformance sweep can race
+its own `.smoke/` artifacts when run concurrently with other tests; it
+passes in isolation.
 
 ## Resolution plan (2026-10-19, approved)
 
