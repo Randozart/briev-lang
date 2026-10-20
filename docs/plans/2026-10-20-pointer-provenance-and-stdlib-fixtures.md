@@ -5,6 +5,9 @@
 **Supersedes/extends:** `docs/plans/2026-10-18-stdlib-fixture-campaign.md`
 (the fixture charter is unchanged; this plan adds the provenance prerequisite
 and the performance contract the fixtures must be measured against).
+**Open work:** `docs/plans/2026-10-20-open-work-backlog.md` — the complete
+remaining P0–P4 list after this plan's first pass. Update statuses there; this
+file remains the structural design/result record.
 
 ## Charter
 

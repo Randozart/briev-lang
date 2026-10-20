@@ -1,0 +1,299 @@
+# Open work backlog — post-provenance and fixture campaign
+
+**Date:** 2026-10-20
+**Status:** ACTIVE
+**Scope:** `main` only. Foreign lanes listed in `docs/plans/INDEX.md` remain
+untouched.
+**Owner instruction:** PR #29 is explicitly deferred. Do not re-open the
+volatile/default discussion until asked; the structural fix has landed.
+
+This is the single list of everything known to be unfinished after:
+
+- the contract gate reached `policy: deny` with a zero-announcement census,
+- the structural raw-pointer provenance/effect-summary fix landed (`9f18bcb7`),
+- Fixtures 1–4 of the stdlib campaign got their first passes (`622cd519` and
+  earlier).
+
+It is a backlog, not a historical record. Update statuses in place. Do not
+change the historical result files or superseded plans.
+
+## Current ground truth
+
+- `HEAD:` `c4e29158` (docs); last code change `622cd519`.
+- `cargo test --lib`: 3,261 green; conformance sweep green under `deny`;
+  contract census 0/0.
+- `tests/daily_use_smoke`: 13/13 green.
+- Six parity corpora PASS; determinism quick gate PASS.
+- `cargo test --bin brievc`: RED on a pre-existing test-only construct
+  (`src/compile.rs:3541`, missing `variadic_param`). `cargo build` is green.
+- No CI workflows exist. All gates are local scripts.
+- Baseline and post-change benchmark tables:
+  `docs/plans/2026-10-20-pointer-provenance-and-stdlib-fixtures.md`.
+- Fixture results:
+  - `benchmarks/results/2026-10-20-fixture4-fsm.md`
+  - `benchmarks/results/2026-10-20-fixture3-arena.md`
+  - `benchmarks/results/2026-10-20-fixture2-spsc.md`
+  - `benchmarks/results/2026-10-18-fixture1-ws-frame.md`
+
+## Priority definitions
+
+- **P0** — must be done before calling the current campaign complete: default
+  gates red, missing validation, or a misleading document/config.
+- **P1** — known structural correctness/representation gaps. Each has a
+  reproduction or a concrete failing shape.
+- **P2** — competitive-performance workstreams. Each has a measured gap.
+- **P3** — fixture depth and broader language surfaces.
+- **P4** — release/tooling/platform work that does not block the compiler
+  gates.
+
+## P0 — close-out and validation
+
+| ID | Work | Evidence | Acceptance |
+|---|---|---|---|
+| P0-1 | Rerun the **full runtime harness** including the new rows `fsm_dispatch`, `arena_bump`, `spsc_ring`. Last full run predates those registrations. | `benchmarks/build_and_bench.sh --runtime`; plan after-table | All rows MATCH; new three rows present; update the plan's after-table with the complete result set. |
+| P0-2 | Fix the default `cargo test` path. | `src/compile.rs:3541` missing `variadic_param`; `cargo test --bin brievc` red | `cargo test` (all targets) green, or the failing target is explicitly excluded by a documented policy. |
+| P0-3 | Update `docs/architecture/features/ptr.md` for the new model: canonical ptr for args/state fields, store invalidation, no `!invariant.load` on mutable Ptr fields, no per-access volatile. | current doc still describes the old inttoptr/invariant model | Doc matches `context.rs`/`helpers.rs`/`emit_expr.rs`; no stale claims. |
+| P0-4 | Fix the stale comment in `config/contracts.dbvl` (`policy: allow`, “at flip time”). | `config/contracts.dbvl:14` | Comment states `deny` is active and how to override for experiments. |
+| P0-5 | Add CI (or an explicit equivalent). Run: lib tests, conformance, contract census, tier-1 E2E, determinism quick gate, parity, `cargo build --release`. | no `.github/workflows` | PRs cannot merge with a red default gate; PR #29 has no checks today. |
+| P0-6 | Worktree triage: generated benchmark binaries, `benchmarks/utf8_ops` deletion, untracked `tests/ffi_*`, `tests/fixtures/*`, `benchmarks/results/2026-10-16-post-stability-runtime.md`, `assets/billd-icon.svg`. | `git status` | Each is either committed intentionally, ignored, or removed. No accidental commit. |
+| P0-7 | Update the active plan/index links so this backlog is discoverable. | `docs/plans/2026-10-20-pointer-provenance-and-stdlib-fixtures.md` | Active plan links here; INDEX points at this backlog if it is still current. |
+| P0-8 | Decide the competitive-performance acceptance line. | Fixture ratios 1.90x–4.64x; suite 2.79x/10.86x on float/accel | Written policy: parity, or a declared per-benchmark margin with tracked exceptions. |
+
+## P1 — structural correctness and representation
+
+| ID | Work | Evidence / shape | Acceptance |
+|---|---|---|---|
+| P1-1 | `obj` literal with a Ptr-typed field stores i64 into a ptr slot. | `BUGS.md` OPEN 2026-10-20; Arena uses `base: Int` to avoid it | Ptr-typed obj/struct fields have one storage representation; literal store and field load agree; regression fixture. |
+| P1-2 | `plain let` Ptr load emits `ptr` where consumers expect i64. | `BUGS.md` OPEN 2026-10-20 | Plain/global Ptr storage has a defined representation; load/cast/call paths agree; regression fixture. |
+| P1-3 | Named imports of enum types/variants are undefined. | `BUGS.md` OPEN 2026-10-20; Fixture 4 uses an integer-code boundary | `import { TcpState, TcpEvent }` works; variant construction/matching works across modules; Fixture 4 drops the boundary. |
+| P1-4 | Canonical pointer coverage is partial: arbitrary local/block i64 values still get a fresh inttoptr. | `canonical_ptr` only seeds args and `%State` Ptr fields | A block-scoped or provenance-threaded cache covers locals and mixed access paths without non-dominating SSA. |
+| P1-5 | Validate against the original external recommender repro. | `examples/recommender/reference.bv` is not in this tree; PR #29 used it | A checked-in behavioral repro (or a linked external harness) confirms the `picked[]` stale read is gone under `-O3 -flto`. |
+| P1-6 | Mixed raw-memory access paths: `Load#`/`Store#`/`Copy#`/`Set#`, String/List carriers, `%State`, runtime helpers, and raw `Ptr<T>` index/deref. | D+C only made the raw index/deref pair canonical | Tests prove mixed paths cannot alias stale data, or a documented invariant states why they cannot. |
+| P1-7 | `!invariant.load` audit beyond Ptr fields. | We removed it for Ptr state fields because they are mutable; other metadata may still lie | Every `!invariant.load`/`!range`/alignment metadata is justified by a proof or removed. |
+| P1-8 | Pointer arithmetic / GEP slice is deferred. | Source `Ptr + Int` is rejected; `PtrAdd#` already GEP | Either keep the source restriction documented, or admit `Ptr + Int` through GEP with pinned byte-vs-element semantics. |
+| P1-9 | Interpreter gaps that block full parity: callable Briev txns not executed; raw-address→String door; compound bitwise-or residual; enum-payload match hangs. | `BUGS.md` 2026-10-20 entries; Fixture 1 len64/encode deferred | Interpreter runs the parity corpora and the fixture round-trips; backend never “fixes” an interpreter divergence. |
+| P1-10 | `dyn Trait` LLVM path and PHI-mismatch open defects. | `BUGS.md` ledger; SPSC benchmark hit a PHI-mismatch shape before refactor | `dyn` lowering has no panic; PHI verifier failures have a regression test. |
+| P1-11 | `i64` boxing tax Phase 1 never executed. | `docs/plans/INDEX.md`; `BUGS.md` 2026-06-16 entry | Either execute the native-type refactor or record a measured reason it is retired. |
+| P1-12 | Contract-fact constant folding shadowing tests. | Call-gate folds `const` names but skips names in `bindings`; the `total=500` shadow case was found by accident | Unit tests: global const folds, local shadow does not, nested const chains fold. |
+| P1-13 | `sock_recv` length sync regression pin. | Fixed 2026-10-20 (`buf.len = n`); loopback golden covers it | Keep the socket golden as the pin; no separate work unless another sink has the same pattern. |
+
+## P2 — competitive performance workstreams
+
+These are ranked by repeated evidence across fixtures and the suite.
+
+### P2-1 — Unbox small sum types (`Result` / enums)
+
+**Evidence**
+- Fixture 4 FSM: **2.82x C**; IR shows per-transition `tcp_step` returning a
+  heap box, then tag/payload loads.
+- Fixture 2 SPSC: **1.90x C**; each pop returns a heap-boxed `Result`.
+- Fixture 3 Arena is partly call overhead, but the same boxed-small-value
+  machinery affects every `Result`-returning API.
+
+**Work**
+- Define a general small-sum representation: tag + inline payload slots in
+  registers, or scalar replacement of a non-escaping box.
+- Return small sums in registers where the ABI allows; keep the boxed form for
+  escaping/large payloads.
+- Consume in `match`, `is_ok`/`is_err`, `unwrap`, tuple destructuring, and
+  method chains.
+- No source workaround, no per-type special case, no new keyword.
+
+**Acceptance**
+- FSM transition loop loses the per-step heap traffic in the `.ll`.
+- FSM/SPSC ratios improve materially; target C parity or a declared margin.
+- All fixture goldens and the full suite remain MATCH.
+
+### P2-2 — Small-function inlining and field scalar replacement
+
+**Evidence**
+- Fixture 3 Arena: **4.64x C**; the hot path calls `arena_alloc`, reads/writes
+  obj fields, then calls `Store#`/`Load#`; C is a direct bump.
+- Fixture 1 ws_frame: **3.14x C**; per-byte codec calls.
+- `recommender` is 0.93x (Briev wins) only because its hot kernel was already
+  extracted; the remaining suite still has call/boxing losses.
+
+**Work**
+- Cost-model inlining for small defns at hot call sites.
+- Scalar replacement of non-escaping obj/struct fields in a loop.
+- Contract-fact specialization at call sites (ranges, alignment, immutability).
+- Keep the default efficient; do not require `#inline`/`#unroll`.
+
+**Acceptance**
+- Arena and ws_frame IR show the hot loop collapsed as far as the language
+  permits; benchmark deltas recorded.
+- No regression on benchmarks that currently win.
+
+### P2-3 — ws_frame `_idio` follow-up
+
+**Evidence**
+- `benchmarks/results/2026-10-18-fixture1-ws-frame.md` recorded the 1.58x gap;
+  the current post-provenance run is 3.14x.
+- The codec is correct; the shape is per-byte call/validation.
+
+**Work**
+- Word-at-a-time unmask and/or an inlined payload walk.
+- Keep the bounds-proven codec as the reference; add `_idio` as a second shape,
+  not a replacement.
+- Re-run the full corpus and parity.
+
+**Acceptance**
+- `_idio` closes most of the gap; the original codec keeps its correctness
+  guarantees.
+
+### P2-4 — Loop/vectorization gaps
+
+**Evidence (post-provenance full run)**
+- `float_math` 2.79x C, `float_math_nonzero` 1.51x.
+- `sweep_sparse` 1.51x, `sweep_mid` 1.36x, `sweep_dense` 1.05x.
+- `telemetry_stream` 1.49x, `pid_control` 1.21x.
+- Many “loop not vectorized” remarks remain in the result logs.
+
+**Work**
+- Diagnose each with `-Rpass`/`-Rpass-missed` on the actual `-O3 -flto` build.
+- Feed alias/alignment/trip-count/reduction facts from contracts and analyses.
+- Fix canonical loop shapes and phi/`%State` materialization that block SROA.
+- Do not use a shape-specific matcher or a strategy keyword as the fix.
+
+**Acceptance**
+- Per-benchmark IR diagnosis and measured improvement; no vocabulary matching.
+
+### P2-5 — `nbody_newton_accel` gap
+
+**Evidence**
+- 10.86x C in the post-provenance suite. This is the largest single loss.
+
+**Work**
+- Determine whether the gap is accel/offload plumbing or CPU codegen.
+- If offload: fix the general offload path or document the unsupported shape.
+- If CPU: fold into P2-4.
+
+**Acceptance**
+- A documented cause and a measured plan; no “GPU/noise” dismissal.
+
+### P2-6 — `i64` boxing tax / handle representation
+
+**Evidence**
+- `BUGS.md` 2026-06-16; `docs/plans/INDEX.md` “Phase 1 never executed”.
+- The Arena/FSM call paths still show box/unbox and handle conversions.
+
+**Work**
+- Execute the native-type/boxing refactor or retire it with a measured
+  replacement.
+- Align with P1-1/P1-2 so Ptr/obj/enum storage has one representation.
+
+**Acceptance**
+- No redundant `ptrtoint`/`inttoptr`/boxing in hot loops; suite unchanged or
+  improved.
+
+### P2-7 — Full-suite re-baseline with new rows
+
+**Evidence**
+- Current baseline table predates `fsm_dispatch`, `arena_bump`, `spsc_ring`.
+- The post-provenance table predates those three too.
+
+**Work**
+- Run the full harness after P2-1/P2-2 land, and at least once now for the
+  current state.
+- Record before/after tables in the active plan; never compare across shapes
+  or machines.
+
+**Acceptance**
+- Every benchmark row has a current Briev/C/ratio/MATCH line.
+
+## P3 — fixture depth and language surfaces
+
+| ID | Work | Notes |
+|---|---|---|
+| P3-1 | Fixture 2 true concurrency | `os/thread.bv` is a stub; SPSC currently tests atomic lowering/ordering, not a race. Add a pthread lane and a race-detector gate before claiming concurrency. |
+| P3-2 | Fixture 4 payload variants | v1 states/events are payload-free. Add payload-carrying states/events once enum imports and match lowering are solid; keep illegal edges as `Err`. |
+| P3-3 | Fixture 3 general Ptr fields | Once P1-1 lands, restore an honest `Ptr<Bit<8>>` base field or document why `base: Int` is the intended handle form. |
+| P3-4 | Fixture 1 `_idio` | See P2-3; also restore the deferred interpreter len64/encode round-trip when P1-9 lands. |
+| P3-5 | Fixture campaign result ledger | Update the active plan's status table with each fixture's follow-up state; do not rewrite historical results files. |
+
+## P4 — release, tooling, platform
+
+| ID | Work | Notes |
+|---|---|---|
+| P4-1 | Release tags/version | `Cargo.toml` is `0.1.0`; no tags. Decide the first tagged release and platform matrix. |
+| P4-2 | Default test green + CI | See P0-2/P0-5; this is the daily-driver blocker. |
+| P4-3 | Briev-native runtime completion | `lib/runtime/briev_rt.c` still participates in links; the family migration is active. Document what remains or finish it. |
+| P4-4 | OS/thread/process surface | `os/thread.bv`, `os/process.bv`, and 16 `os/*` stubs; decide which are supported vs explicitly out of scope. |
+| P4-5 | Self-hosting | 10/12 `lib/compiler/*.bv` fail `brievc check`; keep the green-tested remainder truthful and track the path. |
+| P4-6 | Platform support | Primary x86_64 Linux; wasm functional; embedded/GPU/silicon experimental. Add Windows/macOS only with a measured support decision. |
+| P4-7 | Spec sync | `spec/SPEC.md` is Draft; keep syntax/import/ABI changes (canonical ptr, enum imports, Ptr fields) synchronized. |
+| P4-8 | Formatting/lint gate | Decide whether `cargo fmt --check` / Clippy joins the per-commit gate; currently not documented as required. |
+| P4-9 | Toolchain matrix | Run `benchmarks/toolchain_matrix.sh` before release/backend-touching commits. |
+
+## Dependency graph and recommended sequence
+
+```
+P0-1 full harness ─┬─ P0-2 default test ─┬─ P0-5 CI
+                   ├─ P0-3 ptr docs      │
+                   ├─ P0-4 config comment│
+                   └─ P0-6 hygiene      ─┘
+P1-1 obj Ptr field ─┬─ P3-3 Arena field
+P1-2 plain Ptr ─────┘
+P1-3 enum imports ── P3-2 payload variants
+P1-4 canonical coverage ─ P1-5 external repro / P1-6 mixed paths
+P2-1 sum unboxing ── P2-2 inlining ── P2-3 ws_frame ── P2-4 vectorization
+P3-1 threading ── true SPSC
+```
+
+Recommended order:
+
+1. **P0-1/P0-2/P0-3/P0-4/P0-6** — make the current state honest and green.
+2. **P1-1/P1-2/P1-3** — close the three small representation/import bugs; they
+   are prerequisites for clean fixture depth.
+3. **P2-1** — small-sum unboxing. It is the single highest-leverage performance
+   change and affects three fixtures.
+4. **P2-2** — small-function inlining/scalar replacement; then P2-3.
+5. **P1-4/P1-5/P1-6** — provenance coverage and mixed-path validation; do this
+   before trusting any raw-buffer performance result.
+6. **P2-4/P2-5/P2-6** — loop/vectorization, accel gap, boxing tax.
+7. **P3/P4** — fixture depth, threading, release/CI/platform.
+
+## Gates (unchanged house standard)
+
+- `cargo test --lib`
+- `cargo test --lib conformance_sweep`
+- contract census = 0 under `deny`
+- `tests/daily_use_smoke` (all tier-1 fixtures)
+- `bash benchmarks/ll_determinism_check.sh --quick`
+- parity corpora + full harness when codegen changes
+- Praetor on changed directories
+- BUGS.md entry for every discovered compiler gap
+- plan/results update with measured numbers
+- commit per logical step
+
+## Decisions still needed
+
+1. **Competitive line:** C parity on every runtime benchmark, or a declared
+   margin with exceptions? P0-8.
+2. **Enum/Result ABI:** register-returned small sums vs scalar replacement vs
+   both; scope of the first slice.
+3. **Ptr representation:** is the canonical-cache + i64-storage model the
+   permanent ABI, or is H/A (native ptr) still on the table?
+4. **Threading:** is a real pthread lane required for the language, or is SPSC
+   explicitly a single-threaded lowering test?
+5. **CI provider:** GitHub Actions vs an external runner; what gets gated on
+   every PR vs release-only.
+6. **Platform scope:** Windows/macOS, or Linux-first with wasm as the only
+   second target?
+
+## Explicit non-goals / rejected
+
+- Volatile-by-default or any optimizer fence for ordinary memory (PR #29
+  approach deferred by owner).
+- Shape/vocabulary-specific performance match arms.
+- Source workarounds in fixtures that hide a compiler gap.
+- Strategy keywords as the way to reach competitive performance.
+- Retroactively editing historical results/plans.
+- Touching live foreign lanes.
+
+## Appendix — current dirty worktree (not from this backlog)
+
+Generated/modified benchmark binaries, deleted `benchmarks/utf8_ops`,
+untracked `tests/ffi_*`, `tests/fixtures/*`, `benchmarks/results/2026-10-16-post-stability-runtime.md`,
+and `assets/billd-icon.svg` predate or sit outside this work. Triage under
+P0-6; never commit them accidentally.
