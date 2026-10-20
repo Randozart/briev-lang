@@ -1520,26 +1520,37 @@ impl LlvmBackend {
                     || matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
                     || is_seq_literal
                 {
-                    let ptr = self.fun.gen_reg();
-                    // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
-                    // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
-                    // width, not hardcoded i64. 2026-08-12 (slice 4): a
-                    // COLLECTION data pointer (`inner.data`, a struct Ptr field)
-                    // loads/stores at i64 (the boxed-handle ABI), so inttoptr
-                    // at i64 when the receiver value is i64; a local Ptr handle
-                    // is i{int_bits}. Match the receiver register's LLVM type.
-                    let recv_llvm = self.llvm_type(&obj_reg.ty);
-                    let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
-                        "i64".to_string()
+                    // 2026-10-20 (pointer provenance): raw `Ptr<T>` reads
+                    // reuse one canonical `ptr` per address SSA value. The
+                    // fresh-inttoptr-per-access form gave the read and the
+                    // matching store independent provenance, so LTO could
+                    // hoist the read across the store. Collection handles keep
+                    // their own carrier conversion below.
+                    let ptr = if matches!(obj_reg.ty, Type::Ptr(_)) {
+                        self.canonical_ptr(out, indent, &obj_reg.name)
                     } else {
-                        format!("i{}", self.ctx.int_bits)
+                        let p = self.fun.gen_reg();
+                        // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
+                        // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
+                        // width, not hardcoded i64. 2026-08-12 (slice 4): a
+                        // COLLECTION data pointer (`inner.data`, a struct Ptr field)
+                        // loads/stores at i64 (the boxed-handle ABI), so inttoptr
+                        // at i64 when the receiver value is i64; a local Ptr handle
+                        // is i{int_bits}. Match the receiver register's LLVM type.
+                        let recv_llvm = self.llvm_type(&obj_reg.ty);
+                        let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
+                            "i64".to_string()
+                        } else {
+                            format!("i{}", self.ctx.int_bits)
+                        };
+                        writeln!(
+                            out,
+                            "{}{} = inttoptr {} {} to ptr",
+                            indent, p, hw, obj_reg.name
+                        )
+                        .ok();
+                        p
                     };
-                    writeln!(
-                        out,
-                        "{}{} = inttoptr {} {} to ptr",
-                        indent, ptr, hw, obj_reg.name
-                    )
-                    .ok();
                     let offset = self.fun.gen_reg();
                     // 2026-07-17: List/tuple types have a length header at
                     // slot 0 — elements start at index 1. Raw Ptr buffers
@@ -1951,9 +1962,7 @@ impl LlvmBackend {
                 // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
                 // LLVM ptr before loading.
                 let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-                    let p = self.fun.gen_reg();
-                    self.emit_inttoptr(out, indent, &p, &ptr_reg.name);
-                    p.to_string()
+                    self.canonical_ptr(out, indent, &ptr_reg.name)
                 } else {
                     ptr_reg.name.clone()
                 };

@@ -2541,7 +2541,7 @@ impl LlvmBackend {
     }
 
     /// Internal helper: load a state field with its native LLVM type.
-    fn load_field_type(
+    pub(crate) fn load_field_type(
         &mut self,
         out: &mut String,
         indent: &str,
@@ -2553,12 +2553,23 @@ impl LlvmBackend {
             .get(idx)
             .cloned()
             .unwrap_or(Type::int());
+        // 2026-10-20 (pointer provenance): reuse the field's cached i64/ptr
+        // pair. A Ptr field is not reassigned between nodes, and an
+        // intra-function store invalidates the entry below.
+        if matches!(briev_ty, Type::Ptr(_) | Type::PtrConst(_)) {
+            if let Some((val, _)) = self.fun.state_ptr_cache.get(&idx) {
+                return Some((val.clone(), briev_ty));
+            }
+        }
         let llvm_ty = self
             .ctx
             .field_types
             .get(idx)
             .cloned()
             .unwrap_or_else(|| "i64".to_string());
+        if let Some((old_val, _)) = self.fun.state_ptr_cache.remove(&idx) {
+            self.fun.canonical_ptrs.remove(&old_val);
+        }
         let gep = self.fun.gen_reg();
         writeln!(
             out,
@@ -2579,20 +2590,12 @@ impl LlvmBackend {
                 write!(out, ", !range !{}", mi).ok();
             }
         }
-        // 2026-07-29: Append !invariant.load for Ptr<T> state fields.
-        // Pointers (allocated by Malloc#) are assigned once during init and
-        // never reassigned. The stored i64 value is invariant for the entire
-        // program lifetime. This allows LICM to hoist the load of the pointer
-        // from inside the loop body to the preheader, eliminating one
-        // GEP+load per iteration per pointer field.
-        // See docs/plans/2026-07-29-frontend-ir-quality-improvements.md §B.
-        if matches!(briev_ty, Type::Ptr(_) | Type::PtrConst(_)) {
-            let md_idx = self.fun.metadata_counter;
-            self.fun.metadata_counter += 1;
-            writeln!(self.fun.pending_metadata, "!{} = !{{}}", md_idx).ok();
-            write!(out, ", !invariant.load !{}", md_idx).ok();
-        }
         writeln!(out).ok();
+        // 2026-10-20 (pointer provenance): Ptr-field caching is seeded once
+        // at function entry by `preload_state_ptr_fields`; a load after a
+        // store is emitted fresh and not re-cached, so it cannot be reused
+        // from a non-dominating block. Do NOT emit !invariant.load here:
+        // state fields can be reassigned (e.g. a linked-list head).
         Some((val, briev_ty))
     }
 

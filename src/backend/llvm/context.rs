@@ -1291,6 +1291,24 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // Consulted by Length# (reads remaining), Index# (adjusts offset/remaining),
     // and Deref# (bounds check against remaining).
     pub fat_ptrs: HashMap<String, (String, String, String)>,
+
+    /// 2026-10-20 (pointer provenance): one canonical `ptr` SSA value per
+    /// pointer-shaped i64 register. Raw `Ptr<T>` accesses used to emit a fresh
+    /// `inttoptr` per load/store; two independent conversions of the same
+    /// address carry no shared provenance, so BasicAA could hoist a load across
+    /// a store under -O3 LTO. Reusing the first conversion gives every access
+    /// through the same i64 SSA value one alias identity, with zero runtime
+    /// cost. Keyed by the i64 register name (SSA names are unique), value is the
+    /// `ptr` register. Never invalidated: the i64 SSA name is immutable; a
+    /// reassigned pointer gets a new name.
+    pub canonical_ptrs: HashMap<String, String>,
+
+    /// 2026-10-20 (pointer provenance): `%State` Ptr fields are loaded through
+    /// one cached (i64, ptr) pair per field index while no store to that field
+    /// intervenes. The old emission loaded the field afresh at every access,
+    /// producing distinct i64 SSA values and therefore distinct canonical
+    /// pointers. Invalidate on `store_field_type`.
+    pub state_ptr_cache: HashMap<usize, (String, String)>,
 }
 
 impl FunctionContext {
@@ -1387,6 +1405,8 @@ impl FunctionContext {
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
             fat_ptrs: HashMap::new(),
+            canonical_ptrs: HashMap::new(),
+            state_ptr_cache: HashMap::new(),
         }
     }
 
@@ -1441,6 +1461,11 @@ impl FunctionContext {
         // here isolates the passes.
         self.last_val_temps.clear();
         self.last_val_types.clear();
+        // 2026-10-20 (pointer provenance): canonical conversions are keyed by
+        // per-function SSA names and state-field cache entries; they must not
+        // leak across an emission pass or function.
+        self.canonical_ptrs.clear();
+        self.state_ptr_cache.clear();
     }
 
     /// Reset function state for a new function (keeps txn_counter if needed).
@@ -1465,6 +1490,9 @@ impl FunctionContext {
         self.pending_metadata.clear();
         self.pending_cleanup.clear();
         self.chimera_map.clear();
+        // 2026-10-20 (pointer provenance): caches are per-function SSA names.
+        self.canonical_ptrs.clear();
+        self.state_ptr_cache.clear();
     }
 }
 

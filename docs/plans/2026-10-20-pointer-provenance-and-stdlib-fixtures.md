@@ -394,6 +394,112 @@ not accept that as normal. Track it explicitly in Phase 2.
 The 2026-10-18 table in `docs/plans/2026-10-18-stdlib-fixture-campaign.md` is a
 historical reference, not the baseline for this work.
 
+## Phase 0/1 result — 2026-10-20
+
+**Experiment outcome.** The original recommender-app repro is external and not
+in this tree; several simplified local shapes (cross-defn store/load, state
+field pair, loop-invariant read) stayed correct on the pre-fix compiler. What
+the experiment DID confirm is the structural half of the bug: a defn whose only
+memory operation is `p[i] = v` / `p[i]` emitted `#8 memory(argmem: readwrite)`,
+and `%State` Ptr fields emitted `!invariant.load` despite being reassignable.
+Both are lies the optimizer is entitled to exploit. A volatile-load `.ll` edit
+was not needed.
+
+**Decision.** Land **D + C**, defer **E**, do not adopt **H** or **A** yet:
+
+- **D (landed):** `definition_touches_raw_memory` now uses the exhaustive
+  `ast::visit` walker and classifies every `Expr::Index`/`Expr::Deref` as raw
+  memory. Defns that touch raw addresses get `#13`, never `#8`.
+- **C (landed):**
+  - Ptr ABI params keep the raw `ptr` as their canonical value (the entry
+    `%acN` i64 maps to `%argN`).
+  - `%State` Ptr fields are preloaded once per function at entry; the
+    (i64, ptr) pair is cached and reused by index/deref/Load#/Store#.
+  - A store to a Ptr state field invalidates that field's cache; the next load
+    is emitted fresh and is NOT re-cached (so a value defined in a conditional
+    block cannot leak into a non-dominating sibling).
+  - `!invariant.load` on Ptr state fields is removed: fields such as a
+    linked-list head are reassigned.
+  - Unseeded i64 values still get a fresh `inttoptr` at each access. This is
+    deliberate: caching an arbitrary SSA value across blocks produced invalid
+    non-dominating IR in the first attempt. A future block-scoped cache can
+    extend reuse without that hazard.
+- **E (deferred):** source-level `Ptr + Int` is rejected by the typechecker;
+  `PtrAdd#` already emits GEP. Revisit when pointer arithmetic becomes a
+  source form.
+- **H/A (not needed yet):** the canonical-pointer + effect-summary fix closes
+  the known structural lie without an ABI/layout change. Re-evaluate only if a
+  real repro still loses alias identity after this work.
+
+**Pins added**
+- `defn_indexing_raw_ptr_is_memory_readwrite` — both raw-Ptr index defns must
+  carry `#13`, never `#8`.
+- `ptr_crossdefn_probe_golden_output` — runtime cross-defn raw-Ptr read/write
+  through the harness-exact `-O3 -flto` pipeline; expects `7`.
+- Full `cargo test --lib`: **3,261 green**.
+- `tests/daily_use_smoke`: **10/10 green** (including socket loopback).
+- Six parity corpora PASS; determinism quick gate PASS.
+- Praetor on `src/backend/llvm` and `tests`: no unproven diagnostics.
+
+**Unrelated fix surfaced:** `sock_recv` received bytes into the raw base but
+never updated `ByteBuf.len`; `get_u8`'s total guard made the loopback gate read
+0. Fixed by setting `buf.len = n` on a non-negative result.
+
+### Full runtime suite after the change
+
+`bash benchmarks/build_and_bench.sh --runtime`, same machine, 5 iterations,
+BOUND=50000000. Correctness MATCH on every row.
+
+| Benchmark | Briev | C | Ratio | Winner |
+|---|---|---|---|---|
+| ring_buffer | 0.0446s | 0.0466s | 0.96x | Briev |
+| float_math | 0.1258s | 0.0451s | 2.79x | C |
+| float_math_nonzero | 0.2460s | 0.1628s | 1.51x | C |
+| sparse_dispatch | 0.0444s | 0.0589s | 0.75x | Briev |
+| print_loop | 0.0314s | 0.0591s | 0.53x | Briev |
+| nbody_newton | 7.2038s | 6.7144s | 1.07x | C |
+| nbody_newton_accel | 1.3428s | 0.1237s | 10.86x | C |
+| nbody_sqrt | 2.4803s | 3.1938s | 0.78x | Briev |
+| nbody_sqrt_idio | 2.7073s | 3.0091s | 0.90x | Briev |
+| fasta | 0.1910s | 0.2536s | 0.75x | Briev |
+| fannkuch_redux | 0.0627s | 0.0555s | 1.13x | C |
+| mandelbrot | 0.6348s | 0.6660s | 0.95x | Briev |
+| kalman_filter_runtime | 0.1875s | 0.1816s | 1.03x | C |
+| knucleotide | 0.1821s | 0.1903s | 0.96x | Briev |
+| cancel_math | 0.0445s | 0.0613s | 0.73x | Briev |
+| bit_clear | 0.0003s | 0.0004s | 0.75x | Briev |
+| queue_drain | 0.0288s | 0.0591s | 0.49x | Briev |
+| queue_drain_sym | 0.0334s | 0.0624s | 0.54x | Briev |
+| queue_drain_idio | 0.0317s | 0.0589s | 0.54x | Briev |
+| stack_push_pop | 0.0311s | 0.0587s | 0.53x | Briev |
+| interval_step | 0.0465s | 0.0619s | 0.75x | Briev |
+| telemetry_stream | 0.2339s | 0.1566s | 1.49x | C |
+| pid_control | 0.4268s | 0.3517s | 1.21x | C |
+| matrix_pipeline | 0.4915s | 0.5127s | 0.96x | Briev |
+| accumulator_flush | 0.1310s | 0.1385s | 0.95x | Briev |
+| sweep_sparse | 0.2313s | 0.1532s | 1.51x | C |
+| sweep_mid | 0.2290s | 0.1680s | 1.36x | C |
+| sweep_dense | 0.3907s | 0.3732s | 1.05x | C |
+| sweep_arr | 0.4409s | 0.4320s | 1.02x | C |
+| series_converge | 0.0001s | 0.0003s | 0.33x | Briev |
+| global_lifetime | 0.0310s | 0.0696s | 0.45x | Briev |
+| deep_recursion | 0.0002s | 0.0001s | 2.00x | C |
+| arena_churn | 0.0314s | 0.0909s | 0.35x | Briev |
+| linked_list | 0.9726s | 1.8663s | 0.52x | Briev |
+| hash_ops | 0.8317s | 0.9462s | 0.88x | Briev |
+| hash_ops_idio | 0.7009s | 0.6597s | 1.06x | C |
+| enemy_swarm | 0.1028s | 0.1356s | 0.76x | Briev |
+| recommender | 0.0126s | 0.0136s | 0.93x | Briev |
+| ws_frame | 0.0852s | 0.0271s | 3.14x | C |
+
+`ws_frame` improved from 3.86x to 3.14x but is still a real gap (per-byte
+codec calls); it is not accepted as normal. `deep_recursion`/`series_converge`
+are sub-millisecond and dominated by harness noise.
+
+**Next:** resume the fixture campaign at Fixture 4 (FSM), then Arena, then
+SPSC. The provenance prerequisite for Arena/SPSC is now structurally in place;
+the remaining risk in 2 is the single-threaded reactor (documented, not hidden).
+
 ## Risks
 
 - Canonical-pointer caching can be unsound if a Ptr slot is reassigned while a

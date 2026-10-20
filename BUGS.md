@@ -33,6 +33,55 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Raw Ptr<T> index/deref emitted argmemonly (#8) + per-access inttoptr provenance loss -- FIXED 2026-10-20
+
+**Symptom:** PR #29 reported a recommender `picked[]` stale read under
+`-O3 -flto`: a defensive array was written in one defn and read back in a
+sibling, but the read returned the pre-store value.
+
+**Root cause:** a raw `Ptr<T>` scalar load/store is lowered through a fresh
+`inttoptr i64 %base to ptr` per access. Two conversions of the same address
+have no shared provenance, so BasicAA can treat the load and store as
+non-aliasing. The effect-summary half was independently wrong:
+`definition_touches_raw_memory` scanned only intrinsic spellings, so a defn
+whose sole memory op was `p[i] = v` (or `p[i]` read) still emitted
+`#8 memory(argmem: readwrite)` — a lie that lets LTO hoist a load across the
+call. `!invariant.load` was also emitted on `%State` Ptr fields even though
+fields such as a linked-list head are reassigned.
+
+**Fix:** (1) D — raw `Index`/`Deref` count as raw memory in the exhaustive AST
+visitor, so such defns get `#13 memory(readwrite)`; (2) C — args and `%State`
+Ptr fields seed one canonical `ptr` at entry (`canonical_ptr`,
+`preload_state_ptr_fields`), raw index/deref/Load#/Store# reuse it, and a
+state store invalidates the field's entry until the next reload; (3) remove
+the unsound `!invariant.load` metadata on mutable Ptr fields. No volatile and
+no runtime fence. `Ptr + Int` is not a source form today (typechecker rejects
+it); `PtrAdd#` already uses GEP, so the planned GEP-arithmetic slice is
+deferred. The canonical cache only reuses values seeded at dominance points;
+arbitrary per-block i64 values are re-inttoptr'd to avoid non-dominating SSA.
+
+**Pins:** `defn_indexing_raw_ptr_is_memory_readwrite` (IR attrs),
+`ptr_crossdefn_probe_golden_output` (runtime, harness-exact `-O3 -flto`).
+Full suite 3,261 green; six parity corpora; determinism quick gate.
+
+## `sock_recv` wrote bytes but left `ByteBuf.len` at 0 -- FIXED 2026-10-20
+
+**Symptom:** the socket loopback gate printed `1111101` instead of
+`11111651`; the received byte read as 0 even though `recv` returned 1.
+`get_u8` correctly guards `off < buf.len`, and `buf_new` starts len=0, so the
+received data was invisible to the buffer API.
+
+**Fix:** `sock_recv` now sets `buf.len = n` for a non-negative result before
+returning (a negative error leaves len untouched). The loopback golden passes.
+
+## `plain let` Ptr load emits `ptr` where the consumer expects i64 -- OPEN 2026-10-20
+
+**Symptom:** a `plain let picked: Ptr<Int>` read emitted
+`%t = load ptr, ...` but the pointer-arithmetic consumer expected i64,
+failing clang with `'%t2' defined with type 'ptr' but expected 'i64'`.
+**Status:** logged, not fixed. This is a separate storage-class lowering gap
+from the canonical-pointer work; do not paper over it with a cast.
+
 ## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
 
 **Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.

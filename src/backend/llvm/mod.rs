@@ -1962,6 +1962,28 @@ impl LlvmBackend {
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dest, int_ty, src).ok();
     }
 
+    /// Return the canonical `ptr` value for an i64 pointer register, emitting
+    /// the `inttoptr` only on first use. This is the provenance fix for raw
+    /// `Ptr<T>` accesses: every load/store through the same address SSA value
+    /// shares one pointer identity, so alias analysis can relate them.
+    pub(super) fn canonical_ptr(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        int_reg: &str,
+    ) -> String {
+        if let Some(p) = self.fun.canonical_ptrs.get(int_reg) {
+            return p.clone();
+        }
+        let p = self.fun.gen_reg();
+        self.emit_inttoptr(out, indent, &p, &int_reg);
+        // Do NOT cache here: an arbitrary i64 value may be defined in a
+        // conditional block, and a cached ptr would then be reused from a
+        // non-dominating sibling block. Only values seeded at dominance points
+        // (entry arguments and preloaded state fields) are cached.
+        p
+    }
+
     /// Produce a human-readable layout summary for all state fields.
     pub fn dump_layout_str(&self) -> String {
         let mut out = String::new();

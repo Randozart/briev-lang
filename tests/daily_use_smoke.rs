@@ -260,6 +260,21 @@ fn net_stack_helpers_golden_output() {
     );
 }
 
+/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a
+/// write in a sibling defn must not be reordered by LTO. The first iteration
+/// reads the zero slot; every later iteration reads the previous store. This
+/// pins the behavioral side of the #13 effect-summary fix; #8 on either defn
+/// is exactly the attribute lie that lets LTO hoist the read.
+#[test]
+fn ptr_crossdefn_probe_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("ptr_crossdefn_probe", "golden", &[("BOUND", "8")]);
+    assert_eq!(out, "7\n", "cross-defn raw-pointer read/write drifted: {out:?}");
+}
+
 #[test]
 fn trait_generics_golden_output() {
     if !has("clang") {

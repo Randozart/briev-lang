@@ -948,13 +948,13 @@ fn emit_free(
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
     let addr_reg = backend.emit_expr(out, &args[0], indent);
-    let ptr = backend.fun.gen_reg();
     // 2026-10-06 (wasm32 pointer width): adapt the address register to the
     // pointer width before `inttoptr` (an i64 Data/Alloc handle must narrow
     // on wasm32 — `inttoptr i64 <i32 reg>` is an operand-type mismatch).
-    let ity = backend.ptr_int_ty();
+    // 2026-10-20 (pointer provenance): reuse the canonical ptr for this
+    // address SSA value.
     let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
-    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, ity, addr_op).ok();
+    let ptr = backend.canonical_ptr(out, indent, &addr_op);
     let bytes = args.get(1).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
     writeln!(out, "{}{} = load i{}, ptr {}", indent, v, bytes * 8, ptr).ok();
     // 2026-10-06 (wasm32): Load# declares `-> Int`, and Int is i{int_bits}
@@ -985,12 +985,12 @@ fn emit_store(
 ) -> BTypedRegister {
     let addr_reg = backend.emit_expr(out, &args[0], indent);
     let val = backend.emit_expr(out, &args[1], indent);
-    let ptr = backend.fun.gen_reg();
     // 2026-10-06 (wasm32): the address is a pointer-sized Int — adapt the
     // register's ACTUAL width before `inttoptr` (mirror emit_load).
-    let ity = backend.ptr_int_ty();
+    // 2026-10-20 (pointer provenance): reuse the canonical ptr for this
+    // address SSA value.
     let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
-    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, ity, addr_op).ok();
+    let ptr = backend.canonical_ptr(out, indent, &addr_op);
     let bytes = args.get(2).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
     // 2026-09-09 (Family A): narrow stores must TRUNC the i64 value first —
     // `store i8 <i64 reg>` is invalid IR. (VolatileStore# already

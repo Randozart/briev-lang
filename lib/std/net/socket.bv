@@ -272,7 +272,15 @@ defn sock_recv(s: Socket, buf: ByteBuf, cap: Int)
     [s.fd >= -4096 && cap >= 0 && cap <= buf.cap][term >= -4096]
     -> Int
 {
-    term recv_loop(s, buf.ptr, cap, 0);
+    let n: Int = recv_loop(s, buf.ptr, cap, 0);
+    // 2026-10-20: keep len in sync with what arrived. recv_loop writes through
+    // the raw base address, which a value-struct API would hide; ByteBuf is an
+    // obj, so the caller must observe the new logical size. A negative result
+    // leaves len untouched (error, no bytes committed).
+    when n >= 0 {
+        buf.len = n;
+    };
+    term n;
 };
 
 // recv_loop - tail-recursive loop. `got` is the running received count; each
