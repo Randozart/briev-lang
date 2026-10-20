@@ -15,7 +15,7 @@ assembled bytes, which are deterministic.
 
 | Kernel | raw instr | sym instr | Δ instr | raw bytes | sym bytes | Δ bytes |
 |---|---:|---:|---:|---:|---:|---:|
-| `vga_loop` | 8 | 9 | +1 | 80 | 82 | +2 |
+| `vga_loop` | 8 | 8 | 0 | 80 | 80 | 0 |
 | `uart_banner` | 14 | 25 | +11 | 104 | 133 | +29 |
 | `memcpy` | 12 | 12 | 0 | 96 | 96 | 0 |
 | `bit_ops` | 6 | 6 | 0 | 71 | 71 | 0 |
@@ -24,19 +24,16 @@ assembled bytes, which are deterministic.
 
 ## Per-kernel analysis
 
-- **`bit_ops`, `memcpy` — exact instruction parity (0).** The in-place
-  assignment and accumulate-form fixes land: `x = x | 8` and `x &= -9`
-  write the value's home, and `memcpy`'s `load`/`store` loop is
-  instruction-identical to the raw form. The `let b` declaration is
-  folded into the first `load b, src` (no dead initializer).
+- **`bit_ops`, `memcpy`, `vga_loop` — exact instruction parity (0).** The
+  in-place assignment and accumulate-form fixes land, and a trailing
+  `when cond: break` now fuses with the loop back-edge into one inverted
+  conditional branch (`jne head`) instead of `je exit; jmp head`. The
+  `let b` declaration folds into the first `load b, src` (no dead
+  initializer).
 - **`crc8` — −2 (symbolic tighter).** The nested-loop register reuse
   coalesces slightly better than the hand-written raw form; the byte
-  delta (−7) follows from tighter register choice.
-- **`vga_loop` — +1 `jmp`.** The trailing `when c == 91: break` emits
-  `cmpq; je exit` then an unconditional `jmp loop` back-edge; the raw
-  author wrote a single `cmpq; jne loop`. The `when: break` fusion does
-  not yet collapse the back-edge into one inverted conditional branch.
-  This is parity item 4 (open for the top/bottom-test fusion).
+  delta (−7) follows from tighter register choice. Its breaks sit at the
+  top of each loop (not trailing), so the back-edge fusion does not apply.
 - **`uart_banner` — +11.** `outb` pins the hardware's `%al`/`%dx`, so the
   ISA row stages both operands (`movb $1.w8, %al; movw $2.w16, %dx;
   outb %al, %dx`) and the immutable port re-materializes per store. The

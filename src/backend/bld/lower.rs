@@ -1294,11 +1294,8 @@ impl<'a> BldLowerer<'a> {
         self.push_local(&head);
         self.lower_cond(cond, &end, false)?;
         self.body.loops.push((head.clone(), end.clone()));
-        for s in body {
-            self.stmt(s, RecipePos::Middle)?;
-        }
+        self.lower_loop_body(body, &head)?;
         self.body.loops.pop();
-        self.emit_jmp(&head)?;
         self.push_local(&end);
         Ok(())
     }
@@ -1308,13 +1305,40 @@ impl<'a> BldLowerer<'a> {
         let end = self.fresh_label("lpend");
         self.push_local(&head);
         self.body.loops.push((head.clone(), end.clone()));
-        for s in body {
-            self.stmt(s, RecipePos::Middle)?;
-        }
+        self.lower_loop_body(body, &head)?;
         self.body.loops.pop();
-        self.emit_jmp(&head)?;
         self.push_local(&end);
         Ok(())
+    }
+
+    /// Emit a loop body and its back-edge. A trailing `when cond: break`
+    /// fuses with the back-edge into ONE inverted conditional branch
+    /// (`b.ne head`), instead of `beq end; b head`.
+    fn lower_loop_body(&mut self, body: &[BldStmt], head: &str) -> Result<(), String> {
+        let trailing = Self::trailing_break(body);
+        let normal = match trailing {
+            Some(_) => &body[..body.len() - 1],
+            None => body,
+        };
+        for s in normal {
+            self.stmt(s, RecipePos::Middle)?;
+        }
+        match trailing {
+            Some(cond) => self.lower_cond(cond, head, false),
+            None => self.emit_jmp(head),
+        }
+    }
+
+    /// The condition of a trailing `when cond: break` (one-way, single
+    /// `break`), if the loop body ends with one — the back-edge fusion case.
+    fn trailing_break(body: &[BldStmt]) -> Option<&Expr> {
+        let BldStmt::When { cond, then, otherwise: None, .. } = body.last()? else {
+            return None;
+        };
+        if then.len() == 1 && matches!(then[0], BldStmt::Break { .. }) {
+            return Some(cond);
+        }
+        None
     }
 
     fn st_break(&mut self) -> Result<(), String> {

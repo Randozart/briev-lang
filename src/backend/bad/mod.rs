@@ -906,6 +906,18 @@ mod tests {
     }
 
     #[test]
+    fn trailing_break_fuses_into_the_back_edge() {
+        // A loop whose last statement is `when cond: break` is bottom-tested:
+        // one inverted conditional back-edge, no unconditional `jmp`.
+        let src = "_start:\n    let n = 0\n    loop {\n        n += 1\n        \
+                   when n == 10: break\n    }\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("jne L_start__lpe"), "{x86}");
+        assert!(!x86.contains("jmp L_start__lpe"), "{x86}");
+        assert!(!x86.contains("je L_start__lpend"), "{x86}");
+    }
+
+    #[test]
     fn inline_defn_params_and_locals_expand() {
         let src = "defn blink(base: Ptr) {\n    let c = 66\n    loop {\n        \
                    when c > 68: break\n        Store(c, base)\n        c += 1\n    }\n}\n\
