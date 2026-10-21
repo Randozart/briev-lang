@@ -1071,6 +1071,9 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-10-21 (plain-context experiment): the `%plain` pointer parameter
     /// for the current function/main. Plain loads/stores GEP through it.
     pub plain_ptr: Option<String>,
+    /// 2026-10-21 (effect-state-carry experiment): add loop-carried SSA
+    /// phis for plain effect fields to the selected direct-Float loop.
+    pub effect_carry: bool,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1344,6 +1347,7 @@ impl FunctionContext {
     pub fn new() -> Self {
         FunctionContext {
             plain_ptr: None,
+            effect_carry: false,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1468,6 +1472,7 @@ impl FunctionContext {
         self.task_handle_names.clear();
         self.is_task_segment = false;
         self.plain_ptr = None;
+        self.effect_carry = false;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

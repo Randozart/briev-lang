@@ -6687,6 +6687,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
                     self.fun.local_fields = shape.local_fields.iter().cloned().collect();
+                    self.fun.effect_carry = std::env::var_os("BRIEV_DIAG_EFFECT_CARRY").is_some()
+                        && shape.carried_float_count > 0
+                        && shape.temp_mediated_float_count < shape.carried_float_count;
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
                         node.name, batch.batch_size, node.write_set.len()
