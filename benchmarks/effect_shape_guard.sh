@@ -156,6 +156,9 @@ if [[ "$TIMING" == "1" ]]; then
   }
 
   check_timing float_math 1.25
+  check_timing float_math_nonzero 1.15
+  check_timing kalman_filter_runtime 1.05
+  check_timing sweep_sparse 1.15
   check_timing telemetry_stream 1.25
   check_timing pid_control 1.20
   check_timing matrix_pipeline 1.15

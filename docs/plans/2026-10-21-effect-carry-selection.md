@@ -74,7 +74,9 @@ vs 1.08) are within run-to-run variance and are not confirmed regressions.
 - escaped: float_math, telemetry, pid, accumulator, sweep_mid, mixed
 - stateless: queue, interval, matrix, sweep_dense
 
-It also keeps the mixed output-multiset and plain-context checks.
+It also keeps the mixed output-multiset and plain-context checks. The timing
+mode adds catastrophic ceilings for the carry winners (`float_math_nonzero`
+1.15x, `kalman` 1.05x, `sweep_sparse` 1.15x).
 
 ## Rollback
 
