@@ -51,7 +51,6 @@ fn main() {
         "remove" => run_remove(&args[2..]),
         "bounty" => run_bounty(&args[2..]),
         "bad" => run_bad(&args[2..]),
-        "bld" => run_bld(&args[2..]),
         "registry" => run_registry(&args[2..]),
         "register" => run_register(&args[2..]),
         // 2026-10-08 (file-based routing, Part 2b): build every page in a
@@ -552,9 +551,6 @@ fn route_by_extension(args: &[String]) -> Result<(), String> {
     if file.ends_with(".bad") {
         return run_bad(&args[1..]);
     }
-    if file.ends_with(".bld") {
-        return run_bld(&args[1..]);
-    }
     eprintln!("unknown command: {}", args[1]);
     print_usage(&args[0]);
     Ok(())
@@ -578,16 +574,12 @@ struct BadCli {
     raw: bool,
     raw_bin: bool,
     no_link: bool,
+    linker_script: Option<String>,
+    warn_unused: bool,
 }
 
 fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
     parse_dialect_cli(args, "bad", ".bad")
-}
-
-/// The .bld CLI reuses the dialect flag set (the artifact tail is the
-/// same pipeline after lowering).
-fn parse_bld_cli(args: &[String]) -> Result<BadCli, String> {
-    parse_dialect_cli(args, "bld", ".bld")
 }
 
 fn parse_dialect_cli(
@@ -616,6 +608,8 @@ fn parse_dialect_cli(
         raw: false,
         raw_bin: false,
         no_link: false,
+        linker_script: None,
+        warn_unused: false,
     };
     let mut i = 1;
     while i < args.len() {
@@ -632,12 +626,23 @@ fn parse_dialect_cli(
             "--trace-lowering" => cli.trace = true,
             "--run" => cli.run = true,
             "--raw" => cli.raw = true,
+            // 2026-10-20: warn when a symbolic value is defined but never
+            // read (a probable typo like `vga` vs `vgaa`).
+            "--warn-unused-values" => cli.warn_unused = true,
             // 2026-09-22: extract the flat loadable image (boot sector /
             // firmware blob) from the linked ELF via objcopy -O binary.
             "--raw-bin" => cli.raw_bin = true,
             // 2026-09-22: with --raw-bin, skip the link (flat boot sectors
             // with 16-bit relocs cannot link); objcopy the object directly.
             "--no-link" => cli.no_link = true,
+            "--linker-script" => {
+                i += 1;
+                cli.linker_script = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| format!("{dialect}: --linker-script needs a path"))?,
+                );
+            }
             other => return Err(format!("{dialect}: unknown option `{other}`")),
         }
         i += 1;
@@ -678,12 +683,16 @@ fn link_bad(
     bin_path: &std::path::Path,
     family: &str,
     with_libc: bool,
+    linker_script: Option<&std::path::Path>,
     regs: &briev_compiler::backend::bad::registry::BadRegisters,
 ) -> Result<(), String> {
     let ld_bin = pick_ld_bin(family, regs);
     let mut link = std::process::Command::new(&ld_bin);
     for flag in regs.cross_ld_flags(family) {
         link.arg(flag);
+    }
+    if let Some(script) = linker_script {
+        link.arg("-T").arg(script);
     }
     link.arg(o_path).arg("-o").arg(bin_path);
     if with_libc {
@@ -764,35 +773,35 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let source = std::fs::read_to_string(&cli.file_path)
         .map_err(|e| format!("bad: cannot read '{}': {}", cli.file_path, e))?;
     let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
-    let asm = briev_compiler::backend::bad::generate_with(
-        &source,
-        &cli.triple,
-        cli.trace,
-        base_dir.as_deref(),
-        !cli.raw,
-    )
-    .map_err(|e| format!("bad: {e}"))?;
+    let asm = if cli.warn_unused {
+        let (asm, unused) = briev_compiler::backend::bad::generate_with_lints(
+            &source,
+            &cli.triple,
+            cli.trace,
+            base_dir.as_deref(),
+            !cli.raw,
+            true,
+        )
+        .map_err(|e| format!("bad: {e}"))?;
+        for u in &unused {
+            eprintln!(
+                "warning: `{}` (line {}) is defined but never used - check for a typo, \
+                 or prefix it with `_`",
+                u.name, u.line
+            );
+        }
+        asm
+    } else {
+        briev_compiler::backend::bad::generate_with(
+            &source,
+            &cli.triple,
+            cli.trace,
+            base_dir.as_deref(),
+            !cli.raw,
+        )
+        .map_err(|e| format!("bad: {e}"))?
+    };
 
-    emit_asm_artifacts(asm, &cli)
-}
-
-/// `brievc bld <file.bld> [--target <triple>] ...` — compile a .bld
-/// (BILLD) recipe: lower to a BadProgram (M3), allocate registers (M4),
-/// then the .bad artifact pipeline (2026-10-08, BILLD plan M7). Imports
-/// resolve against the file's directory; the file's own path seeds the
-/// module dedup so import cycles terminate.
-fn run_bld(args: &[String]) -> Result<(), String> {
-    let cli = parse_bld_cli(args)?;
-    let source = std::fs::read_to_string(&cli.file_path)
-        .map_err(|e| format!("bld: cannot read '{}': {}", cli.file_path, e))?;
-    let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
-    let asm = briev_compiler::backend::bld::generate_with(
-        &source,
-        &cli.triple,
-        base_dir.as_deref(),
-        Some(std::path::Path::new(&cli.file_path)),
-    )
-    .map_err(|e| format!("bld: {e}"))?;
     emit_asm_artifacts(asm, &cli)
 }
 
@@ -826,7 +835,14 @@ fn emit_asm_artifacts(asm: String, cli: &BadCli) -> Result<(), String> {
     if cli.raw_bin && cli.no_link {
         objcopy_flat(&o_path, &stem, &family)?;
     } else {
-        link_bad(&o_path, &bin_path, &family, cli.with_libc, &regs)?;
+        link_bad(
+            &o_path,
+            &bin_path,
+            &family,
+            cli.with_libc,
+            cli.linker_script.as_deref().map(std::path::Path::new),
+            &regs,
+        )?;
         if cli.raw_bin {
             objcopy_flat(&bin_path, &stem, &family)?;
         }

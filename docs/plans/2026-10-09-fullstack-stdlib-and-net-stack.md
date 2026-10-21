@@ -202,6 +202,55 @@ for anything found. New .bv stdlib files must pass the conformance sweep.
 (Compiler bugs found during implementation get a BUGS.md entry AND a line here with
 the date, the .bv snippet that triggered it, and the workaround.)
 
+### 2026-10-21 — relative code-import path bug (verification pending)
+
+Task 10.1 gate fails before typechecking: `../examples/recommender/udata.bv`
+becomes `///examples/recommender/udata.bv`. Minimal trigger is the first import
+in `scratch/udata_gate.bv`. The code resolver expands namespace dots inside
+filesystem-relative paths. Fix authored on `fix/relative-import-paths` with
+regression coverage; no application workaround. Human verification pending.
+
+### 2026-10-21 — relative import fix verified
+
+`fix/relative-import-paths`: preserve filesystem-relative path spelling via
+code_module_path; bare dotted module names retain their namespace expansion.
+Human reports post-refactor cargo check, cargo test --lib, and cargo build green;
+the native parser gate previously passed all six checks. Controlled Praetor
+before/after diagnostics match. Compiler PR is prepared before feature work resumes.
+
+### 2026-10-21 — schema gate exposes pointer-valued collection store (OPEN)
+
+Native schema-gate build fails inside pg_decode_fields before any DB connection:
+a singleton List<String> stores its ptr-valued element as i64 without conversion.
+Generated IR proves the type mismatch for both literal and decoded text.
+Controlled Int/String singleton probes authored, human verification pending.
+No pg.bv workaround. See the pointer-valued-collection-store investigation plan.
+
+
+### 2026-10-21 — generic literal argument type loss isolated
+
+Int list concatenation succeeds; String list concatenation reproduces the
+schema-gate ptr/i64 failure without net/db imports. The compiler constructs
+inline generic-call arguments using unspecialized List<T>. Frontend fix authored
+on fix/generic-call-literal-types, preserving the inferred collection type in a
+typed value block. Generic-call and operator-call paths share the helper.
+Unit/native verification pending human execution; application code unchanged.
+
+### 2026-10-21 — generic literal fix regression corrected, retest pending
+
+Full-suite output exposed empty tuple accumulators losing their declared return
+context during elaboration. Initialize current_output_type for defns and txns
+as ordinary typechecking already does. Dedicated accumulator regression added;
+no tests disabled or stdlib workarounds. Human filtered/full-suite reruns pending.
+
+### 2026-10-21 — generic literal argument fix verified
+
+Human reports full suite green after declared-return context correction. Native
+String concat gate: four true checks; Int control: two true checks. Reduced
+original failure is resolved without stdlib changes. Praetor has no increased
+metrics or added diagnostics. Commit/PR approval pending; full schema gate will
+be rerun on the integration branch after the separate compiler PR handoff.
+
 ### 2026-10-21 — terminating match arm suppresses value merge (OPEN)
 
 After loading 100,000 baseline ratings, engine-adapter verification exposed a

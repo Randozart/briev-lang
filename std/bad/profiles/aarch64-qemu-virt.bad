@@ -1,0 +1,15 @@
+// ── aarch64 QEMU virt profile ─────────────────────────────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// PL011 UART at 0x09000000. Import explicitly.
+
+.const UART0 0x09000000
+
+defn uart_init(base: Ptr) {
+    let cr = base + 0x30
+    sth 0x101, cr                 // UARTEN | TXE
+}
+
+defn uart_putc(base: Ptr, ch: Int) {
+    stb ch, base
+}

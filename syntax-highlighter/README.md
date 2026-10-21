@@ -10,14 +10,12 @@ for the whole Briev file family:
 | `.ebv` | Electronics Briev | wrapper over `source.briev` |
 | `.sbv` | Silicon Briev | wrapper over `source.briev` |
 | `.abv` | Accelerator Briev (GPU) | wrapper over `source.briev` |
-| `.bld` | BILLD — intermediate low-level | `source.bld` (nests `source.bad` in `bad { }`) |
 | `.bad` | Briev Assembly Dialect | `source.bad` (nests into `.bv` `bad fn` / `bootstrap bad` bodies) |
 | `.dbv`, `.dbvl` | Data Briev | `source.dbriev` |
 | `.beast` | BEAST snapshots (S-expressions) | `source.beast` |
 
 Nested dialects: `.bv` files color `bad name(…) { … }` and
 `bootstrap bad name(…) { … }` bodies with the real `.bad` rules;
-`.bld` files color `bad { … }` blocks the same way.
 
 ## Features
 
@@ -104,7 +102,6 @@ To modify themes:
 briev-language/
 ├── package.json                 # Extension manifest (languages + grammars)
 ├── language-configuration.json  # Brackets, // comments, indentation
-├── language-configuration-bld.json  # .bld-specific editor config
 ├── settings.json                # Default settings
 ├── syntaxes/
 │   ├── briev.tmLanguage.json    # Core Briev (nests #bad-body)
@@ -112,7 +109,6 @@ briev-language/
 │   ├── ebv.tmLanguage.json      # wrapper over source.briev
 │   ├── sbv.tmLanguage.json      # wrapper over source.briev
 │   ├── abv.tmLanguage.json      # wrapper over source.briev
-│   ├── bld.tmLanguage.json      # BILLD (nests source.bad)
 │   ├── bad.tmLanguage.json      # Briev Assembly Dialect
 │   ├── dbriev.tmLanguage.json   # Data Briev (schema/table format)
 │   └── beast.tmLanguage.json    # BEAST S-expressions

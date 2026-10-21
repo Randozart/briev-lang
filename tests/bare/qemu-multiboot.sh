@@ -1,33 +1,38 @@
 #!/usr/bin/env bash
-# Gate (bad-raw-blocks plan, 2026-09-22): a multiboot2 x86_64 kernel whose
-# 32-bit prologue is a `raw x86_64` block and whose 64-bit body is portable
-# core ops. The header rides .text (objcopy -O binary flattens only the
-# first LOAD segment), so the flat image starts with the multiboot magic.
-# qemu -kernel accepts it and runs the long-mode entry.
+# Gate (bad assembly+ plan, 2026-10-20): a pure `.bad` x86_64 multiboot
+# image. QEMU's multiboot loader takes only multiboot1 and rejects ELF64,
+# so the image uses the multiboot1 a.out kludge (flat `--raw-bin`, header
+# carries load/entry addresses). The 32-bit prologue prints "Briev" over
+# COM1, switches to long mode through identity page tables, and a symbolic
+# 64-bit body prints "R64" and parks. No .bld, no ELF32.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
 
-BIN=/tmp/opencode/boot_multiboot.bin
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+OUT=/tmp/opencode/boot_plus_x86.out
+WORK=/tmp/opencode/boot_plus_x86
 
 command -v qemu-system-x86_64 >/dev/null || { echo "SKIP: qemu-system-x86_64 not installed"; exit 0; }
+command -v objcopy >/dev/null          || { echo "SKIP: objcopy not installed"; exit 0; }
+[[ -x "$ROOT/target/release/brievc" ]] || { echo "SKIP: release brievc not built"; exit 0; }
 
-./target/release/brievc bad examples/bad/boot_multiboot.bad \
-    --target x86_64-unknown-linux-gnu --raw-bin >/dev/null
-cp boot_multiboot.bin "$BIN"
+mkdir -p "$WORK"
+cp "$ROOT/examples/bad/boot_plus_x86.bad" "$WORK/boot_plus_x86.bad"
+cd "$WORK"
+"$ROOT/target/release/brievc" bad "$WORK/boot_plus_x86.bad" \
+    --target x86_64-unknown-none \
+    --linker-script "$ROOT/lib/targets/multiboot-x86_64.ld" \
+    --raw-bin >/dev/null
+BIN="$WORK/boot_plus_x86.bin"
 
-# The flat image must START with the multiboot2 magic 0xE85250D6.
-MAGIC=$(xxd -p -l 4 "$BIN")
-if [[ "$MAGIC" != "d65052e8" ]]; then
-    echo "FAIL: expected multiboot2 magic d65052e8 at offset 0, got $MAGIC"
+timeout 3 qemu-system-x86_64 -machine pc -m 256 -kernel "$BIN" \
+    -display none -serial "file:$OUT" -no-reboot >/dev/null 2>&1 || true
+
+ACTUAL=$(tr -cd '[:print:]' < "$OUT")
+# "Briev" = the 32-bit multiboot entry; "R64" = the symbolic 64-bit body.
+if [[ "$ACTUAL" == *"Briev"* && "$ACTUAL" == *"R64"* ]]; then
+    echo "PASS: pure .bad multiboot x86_64 prints 'Briev' then 'R64'"
+else
+    echo "FAIL: expected 'Briev' and 'R64', got '$ACTUAL'"
     exit 1
 fi
-
-# qemu -kernel must accept the image (no "invalid kernel header").
-OUT=$(timeout 3 qemu-system-x86_64 -kernel "$BIN" -nographic 2>&1 || true)
-if echo "$OUT" | grep -qi "invalid kernel header"; then
-    echo "FAIL: qemu rejected the multiboot image"
-    exit 1
-fi
-
-rm -f boot_multiboot boot_multiboot.o boot_multiboot.s boot_multiboot.bin
-echo "PASS: multiboot2 x86_64 kernel (raw-block prologue) boots under qemu"
+rm -f "$BIN" "$WORK/boot_plus_x86" "$WORK/boot_plus_x86.s" "$WORK/boot_plus_x86.o"

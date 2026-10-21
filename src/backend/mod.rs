@@ -1,6 +1,6 @@
 pub mod assembler;
 pub mod bad;
-pub mod bld;
+pub(crate) mod bld;
 pub mod capabilities;
 pub mod register_types;
 pub mod circt;
@@ -41,6 +41,10 @@ pub struct AnalysisResults {
     // instead of re-deriving them with body re-walks. See
     // docs/plans/2026-07-31-frontend-driven-dispatch.md §6.
     pub loop_shapes: HashMap<String, LoopShape>,
+    /// 2026-10-21 (canonical Local/effect model): per-txn LoopMaterializationPlan,
+    /// derived from LoopShape.local_fields. The loop engine consumes this
+    /// instead of re-reading local_fields.
+    pub materialization: HashMap<String, crate::analysis::materialization::LoopMaterializationPlan>,
     pub swan_songs: HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once in the
     // frontend, consumed by the LLVM backend instead of re-walking bodies:
@@ -65,8 +69,8 @@ pub struct AnalysisResults {
     pub node_inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
     // 2026-07-31: Batch-loop decomposition (plan 2026-07-31-regain-kalman-float-
     // math-parity §5, Fix 2) — the io boundary interval derived from the guard
-    // precondition, consumed by the backend's emit_countable_batched_main.
-    pub batch_shape: Option<crate::analysis::batch_shape::BatchShape>,
+    // precondition; consumed by countdown dispatch and carry eligibility.
+    pub batch_shapes: HashMap<String, crate::analysis::batch_shape::BatchShape>,
     // 2026-08-01 (D2): garbage scheduling — the frontend-computed proof of
     // each heap-backed state field's reactor-ordered last consumer, consumed
     // by the backend to emit a `Free#` exactly after that transaction's body.
@@ -184,6 +188,8 @@ pub fn analyze_program(
             all_vars: std::collections::HashSet::new(),
         });
     let loop_shapes = crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width);
+    let materialization =
+        crate::analysis::materialization::build_materialization_plans(&loop_shapes);
     let swan_songs = build_swan_songs(items);
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once here so
     // every backend consumer reads frontend analysis instead of re-walking
@@ -196,7 +202,7 @@ pub fn analyze_program(
     // 2026-07-31: Batch-loop decomposition derived from the swan-song-stripped
     // bodies (what the backend emits). The io boundary is the guard's
     // `count % N == 0` precondition interval.
-    let batch_shape = crate::analysis::batch_shape::detect_batch_shape(&swan_songs);
+    let batch_shapes = crate::analysis::batch_shape::detect_batch_shapes(&swan_songs);
     // 2026-08-01 (D2): garbage scheduling — prove each heap-backed field's
     // reactor-ordered last consumer. Field initializers come from StateDecl +
     // top-level `let f: T = expr` (mirrors build_field_index); the node order
@@ -333,13 +339,14 @@ pub fn analyze_program(
         region_analyzer: RegionAnalyzer::analyze(items),
         dependency_graph,
         loop_shapes,
+        materialization,
         swan_songs,
         density,
         modulo_partition,
         has_unguarded_ffi,
         inline_decisions,
         node_inline_decisions,
-        batch_shape,
+        batch_shapes,
         global_lifetime,
         observable_names,
         coll_safe_txns,

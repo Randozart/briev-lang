@@ -1964,6 +1964,28 @@ impl LlvmBackend {
         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dest, int_ty, src).ok();
     }
 
+    /// Return the canonical `ptr` value for an i64 pointer register, emitting
+    /// the `inttoptr` only on first use. This is the provenance fix for raw
+    /// `Ptr<T>` accesses: every load/store through the same address SSA value
+    /// shares one pointer identity, so alias analysis can relate them.
+    pub(super) fn canonical_ptr(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        int_reg: &str,
+    ) -> String {
+        if let Some(p) = self.fun.canonical_ptrs.get(int_reg) {
+            return p.clone();
+        }
+        let p = self.fun.gen_reg();
+        self.emit_inttoptr(out, indent, &p, &int_reg);
+        // Do NOT cache here: an arbitrary i64 value may be defined in a
+        // conditional block, and a cached ptr would then be reused from a
+        // non-dominating sibling block. Only values seeded at dominance points
+        // (entry arguments and preloaded state fields) are cached.
+        p
+    }
+
     /// Produce a human-readable layout summary for all state fields.
     pub fn dump_layout_str(&self) -> String {
         let mut out = String::new();
@@ -2782,7 +2804,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // scope globals). Declared `state`/`plain` annotations are checked
         // against this inference — a contradiction is a fatal error quoting
         // the contradicting reference.
-        let plain_lets = crate::analysis::storage_class::classify_plain_lets(
+        let mut plain_lets = crate::analysis::storage_class::classify_plain_lets(
             items,
             exit_condition.as_deref(),
             &self.ctx.view_bound_fields,
@@ -2794,6 +2816,65 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         ) {
             eprintln!("{}", err);
             std::process::exit(1);
+        }
+        // 2026-10-21 (target-pressure effect shape): select the effect-memory
+        // shape once, before the storage-class ABI is computed. A direct-Float
+        // loop needs the historical escaped/stateful-effect shape (float_math,
+        // telemetry, pid); aggregate loops and fully temp-mediated Float bodies
+        // keep stateless print (queue_drain/interval_step/matrix_pipeline). The
+        // selector is structural and target-gated; no benchmark names. Only
+        // inferred plain fields are demoted; an explicit `plain` assertion
+        // remains the author's semantic assertion.
+        let effect_settings = crate::config_tuning::target_settings_for(&self.ctx.target_triple);
+        // BRIEV_DIAG_EFFECT=stateless|escaped forces the shape for the
+        // crossover experiment. Unset/auto = the target-derived selector.
+        let forced_effect = std::env::var("BRIEV_DIAG_EFFECT").ok();
+        let effect_cause = match forced_effect.as_deref() {
+            Some("stateless") => None,
+            Some("escaped") => {
+                let mut names: Vec<&String> = analysis.loop_shapes.keys().collect();
+                names.sort();
+                names.into_iter().max_by_key(|n| {
+                    analysis.loop_shapes.get(*n).map(|s| s.carried_float_count).unwrap_or(0)
+                }).cloned()
+            }
+            _ => {
+                let batch_txns: std::collections::HashSet<String> =
+                    analysis.batch_shapes.keys().cloned().collect();
+                let carry_mode = crate::analysis::loop_shape::program_carry_mode(
+                    &analysis.loop_shapes,
+                    &batch_txns,
+                    effect_settings.float_registers,
+                    effect_settings.vector_min_width,
+                    effect_settings.effect_carry_temp_min,
+                );
+                if carry_mode {
+                    None
+                } else {
+                    crate::analysis::loop_shape::escaped_effect_cause(
+                        &analysis.loop_shapes,
+                        effect_settings.float_registers,
+                        effect_settings.fp_reserved_temps,
+                    )
+                }
+            }
+        };
+        if let Some(cause) = effect_cause {
+            let before = plain_lets.len();
+            plain_lets.retain(|n| {
+                crate::analysis::storage_class::declared_storage(items, n).is_some()
+            });
+            let demoted = before.saturating_sub(plain_lets.len());
+            self.warnings.push(format!(
+                "info: effect shape escaped for txn '{}' ({} carried floats, {} FP budget, {} reserved); {} inferred plain field(s) demoted to state",
+                cause,
+                analysis.loop_shapes.get(&cause)
+                    .map(|s| s.carried_float_count)
+                    .unwrap_or(0),
+                effect_settings.float_registers,
+                effect_settings.fp_reserved_temps,
+                demoted
+            ));
         }
         self.ctx.plain_lets = plain_lets.clone();
         // Bare lets that demoted: disclose the decision (the info: line is
@@ -2825,6 +2906,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
+        self.ctx.defn_needs_plain =
+            crate::analysis::export_abi::compute_defn_needs_plain(items, &plain_lets);
         // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
         // raw-memory attribute set must be TRANSITIVE. A defn whose own body
         // has no raw intrinsic can still reach one through a callee
@@ -4338,7 +4421,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_plain.sort();
         for name in &sorted_plain {
             let (ty, init) = &self.ctx.plain_global_types[name];
-            let llvm_ty = protocol_llvm_type(ty, self.ctx.type_universe.as_ref());
+            let llvm_ty = self.plain_global_llvm_type(ty);
             let zero = if llvm_ty == "float" { "0.0" } else if llvm_ty == "double" { "0.0" } else if llvm_ty == "ptr" { "null" } else { "0" };
             let literal = match init {
                 Some(Expr::Decimal(n)) => Some(n.to_string()),
@@ -4352,6 +4435,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if !self.ctx.plain_global_types.is_empty() { writeln!(out).ok(); }
 
         self.declare_state_type(&mut out);
+        // 2026-10-21 (plain-context experiment): a separate stack aggregate
+        // for derived plain/plumbing fields. The effect path receives its
+        // address through @__briev_plain_ptr, so machine %State stays
+        // unescaped. Gated by BRIEV_DIAG_PLAIN_CONTEXT=1.
+        if self.plain_context_active() {
+            let mut names: Vec<&String> = self.ctx.plain_index_map.keys().collect();
+            names.sort_by_key(|n| self.ctx.plain_index_map[*n]);
+            let fields: Vec<String> = names
+                .iter()
+                .filter_map(|n| self.ctx.plain_global_types.get(*n))
+                .map(|(ty, _)| self.plain_global_llvm_type(ty))
+                .collect();
+            writeln!(out, "%PlainState = type {{ {} }}", fields.join(", ")).ok();
+            writeln!(out, "@__briev_plain_ptr = global ptr null").ok();
+            writeln!(out).ok();
+        }
         // %State no longer has a module-level global. Instead, main()
         // allocates it on the stack as an alloca and passes it to all
         // internal functions as a noalias nocapture parameter. This
@@ -6481,6 +6580,21 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
     ) -> bool {
         let bp = node.bounded_pre.as_ref().unwrap();
+        // 2026-10-21 (canonical Local/effect model): the frontend's
+        // materialization plan is the source of truth for Local fields. Fall
+        // back to the shape only when a caller built shapes without plans.
+        let planned_local: std::collections::HashSet<String> = analysis
+            .materialization
+            .get(&node.name)
+            .map(|plan| plan.local_fields().cloned().collect())
+            .unwrap_or_else(|| shape.local_fields.iter().cloned().collect());
+        if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
+            eprintln!(
+                "diag: txn='{}' local={:?} post_hoist_groups={} floats={} temp_mediated={} aggregates={} vector_groups={:?}",
+                node.name, shape.local_fields, post_hoist.len(), shape.carried_float_count,
+                shape.temp_mediated_float_count, shape.carried_aggregate_count, shape.vector_groups
+            );
+        }
         // 2026-07-31: Bound resolution maps the structured Bound to the backend's
         // own index/const tables (field first, then const; literal/unknown →
         // neither) — mirroring the old total_idx / total_const_name lookup so
@@ -6587,10 +6701,43 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // bodies (which is why the batch's pure inner loop regressed fmn).
         // A/B vs the batch + version-DAG is recorded in the plan's §10.
         let is_decreasing_vd = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
-        if !is_decreasing_vd {
-            if let Some(batch) = analysis.batch_shape.as_ref() {
+        // BRIEV_DIAG_LOOP_ENGINE=version|perfield forces the alternate loop
+        // shapes for the E2 materialization experiment. Unset = production
+        // dispatch (countdown first).
+        let forced_engine = std::env::var("BRIEV_DIAG_LOOP_ENGINE").ok();
+        let allow_countdown = forced_engine.as_deref() != Some("version")
+            && forced_engine.as_deref() != Some("perfield");
+        if !is_decreasing_vd && allow_countdown {
+            if let Some(batch) = analysis.batch_shapes.get(&node.name) {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
+                    self.fun.local_fields = planned_local.clone();
+                    let carry_env = std::env::var("BRIEV_DIAG_EFFECT_CARRY").ok();
+                    let direct_float = shape.carried_float_count > 0
+                        && shape.temp_mediated_float_count < shape.carried_float_count;
+                    let effect_settings =
+                        crate::config_tuning::target_settings_for(&self.ctx.target_triple);
+                    self.fun.effect_carry = match carry_env.as_deref() {
+                        Some("off") => false,
+                        Some(_) => direct_float,
+                        None => crate::analysis::loop_shape::prefer_effect_carry(
+                            shape,
+                            effect_settings.float_registers,
+                            effect_settings.vector_min_width,
+                            effect_settings.effect_carry_temp_min,
+                        ),
+                    };
+                    if self.fun.effect_carry {
+                        self.warnings.push(format!(
+                            "info: effect state carried for txn '{}' ({} floats, {} temp-mediated, {} groups, {} FP regs, min width {})",
+                            node.name,
+                            shape.carried_float_count,
+                            shape.temp_mediated_float_count,
+                            shape.vector_groups.len(),
+                            effect_settings.float_registers,
+                            effect_settings.vector_min_width
+                        ));
+                    }
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
                         node.name, batch.batch_size, node.write_set.len()
@@ -6611,13 +6758,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // the guard-absent/guard-present emission and supersedes PerFieldPhi.
         // See docs/plans/2026-07-30-flat-node-decomposition.md §11.
         self.fun.pending_post_hoist = post_hoist.clone();
-        if self.emit_version_dag_main(
-            out, counter_idx, total_idx, total_const_name, bp.bound_literal,
-            &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
-            analysis.global_lifetime.free_after.get(&node.name)
-                .map(|v| v.as_slice()).unwrap_or(&[]),
-            &node.name, watchdog,
-        ) {
+        if forced_engine.as_deref() != Some("perfield")
+            && self.emit_version_dag_main(
+                out, counter_idx, total_idx, total_const_name, bp.bound_literal,
+                &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
+                analysis.global_lifetime.free_after.get(&node.name)
+                    .map(|v| v.as_slice()).unwrap_or(&[]),
+                &node.name, watchdog,
+            )
+        {
             return true;
         }
         // 2026-07-31: version-DAG did not handle the body — remaining paths use the
@@ -6655,6 +6804,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.warnings.push(format!("info: txn '{}' dispatched via per-field phi ({}/{} fields written)", node.name, write_count, total_fields));
         }
         self.fun.pending_post_hoist = post_hoist;
+        self.fun.local_fields = planned_local.clone();
         let is_decreasing = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         self.emit_countable_main(
             out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,
@@ -7629,6 +7779,14 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                 self.ctx.field_initializers.insert(slot.clone(), Some(init.clone()));
             }
         }
+
+        self.ctx.plain_index_map.clear();
+        let mut plain_names: Vec<&String> = self.ctx.plain_global_types.keys().collect();
+        plain_names.sort();
+        for (i, name) in plain_names.into_iter().enumerate() {
+            self.ctx.plain_index_map.insert(name.clone(), i);
+        }
+
     }
 
     /// 2026-08-07 (object instance pools): register a base's allocator counter

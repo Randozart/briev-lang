@@ -1,0 +1,5 @@
+#!dispatch(parallel)
+trg sigint: Bool @ link __sigint_flag;
+trg sigterm: Bool @ link __sigterm_flag;
+rct txn handle_sigint [sigint]] { term; };
+rct txn handle_sigterm [sigterm]] { term; };

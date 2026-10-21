@@ -20,6 +20,10 @@ use std::collections::HashMap;
 /// A batch-loop decomposition of a reactive txn.
 #[derive(Debug, Clone)]
 pub struct BatchShape {
+    /// The transaction that owns this batch loop. Used by the effect-shape
+    /// selector to require that every carry-selected loop is actually emitted
+    /// by the countdown engine.
+    pub txn_name: String,
     /// The loop counter variable name (e.g. "count").
     pub counter: String,
     /// The io boundary interval N from `count % N == 0`.
@@ -50,19 +54,29 @@ pub struct BatchShape {
 /// fires it after `batch_size + 1`, an off-by-one the count=0 peel does NOT
 /// fix (it only adds the count=0 print). See
 /// docs/plans/2026-07-31-regain-kalman-float-math-parity.md §5 (scope note).
-pub fn detect_batch_shape(
+pub fn detect_batch_shapes(
     swan_songs: &HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
-) -> Option<BatchShape> {
-    let mut result: Option<BatchShape> = None;
-    for (_name, (stripped, _hoisted)) in swan_songs {
-        if let Some(bs) = detect_for_body(stripped) {
-            if result.is_some() {
-                return None; // ambiguous — more than one batch-qualifying txn
-            }
-            result = Some(bs);
+) -> HashMap<String, BatchShape> {
+    let mut result = HashMap::new();
+    for (name, (stripped, _hoisted)) in swan_songs {
+        if let Some(bs) = detect_for_body(name, stripped) {
+            result.insert(name.clone(), bs);
         }
     }
     result
+}
+
+/// Compatibility helper for callers/tests that require a unique batch shape.
+pub fn detect_batch_shape(
+    swan_songs: &HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
+) -> Option<BatchShape> {
+    let mut shapes = detect_batch_shapes(swan_songs);
+    if shapes.len() == 1 {
+        let key = shapes.keys().next().unwrap().clone();
+        shapes.remove(&key)
+    } else {
+        None
+    }
 }
 
 /// Detect a batch shape in a single txn body.
@@ -72,7 +86,7 @@ pub fn detect_batch_shape(
 /// guard placement (the increment precedes the guard). The guard may sit
 /// mid-body; the inner loop runs ALL compute (pre+post) and the guard fires at
 /// the boundary.
-fn detect_for_body(body: &[Statement]) -> Option<BatchShape> {
+fn detect_for_body(txn_name: &str, body: &[Statement]) -> Option<BatchShape> {
     let segments = split_into_segments(body);
     let mut guard: Option<Statement> = None;
     let mut guard_body: Vec<Statement> = Vec::new();
@@ -126,6 +140,7 @@ fn detect_for_body(body: &[Statement]) -> Option<BatchShape> {
     }
 
     Some(BatchShape {
+        txn_name: txn_name.to_string(),
         counter,
         batch_size,
         guard,
@@ -325,6 +340,24 @@ mod tests {
             guard(eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)), vec![]),
         ];
         assert!(detect_batch_shape(&txn(body)).is_none());
+    }
+
+    /// Multiple batch-qualifying txns remain addressable per txn; the
+    /// compatibility helper still reports ambiguity.
+    #[test]
+    fn multiple_batch_shapes_are_per_txn() {
+        let body = vec![
+            inc("count"),
+            guard(eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)), vec![]),
+        ];
+        let mut m = HashMap::new();
+        m.insert("a".to_string(), (body.clone(), Vec::new()));
+        m.insert("b".to_string(), (body, Vec::new()));
+        let shapes = detect_batch_shapes(&m);
+        assert_eq!(shapes.len(), 2);
+        assert_eq!(shapes["a"].txn_name, "a");
+        assert_eq!(shapes["b"].txn_name, "b");
+        assert!(detect_batch_shape(&m).is_none());
     }
 
     /// Zero on either side of the equality (`0 == count % N`) still matches.

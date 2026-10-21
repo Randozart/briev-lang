@@ -1,0 +1,9 @@
+// bit set/clear/test — assembly+ symbolic form (same kernel as bit_ops_raw).
+section .text
+global _start
+_start:
+    let x = 0x1234
+    x = x | 8
+    x = x & -9
+    let t = x & 8
+    halt

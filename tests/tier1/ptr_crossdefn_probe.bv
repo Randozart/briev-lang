@@ -1,0 +1,31 @@
+// Pointer provenance probe — 2026-10-20.
+//
+// A raw Ptr<Int> state field is written by one defn and read by a sibling
+// defn. Both accesses go through inttoptr'd i64 addresses. With an
+// argmemonly (#8) effect summary on either defn, LTO can hoist the read
+// across the store and return stale data. The expected result is
+// BOUND - 1 (the first read sees the zero-initialized slot; every later
+// read sees the previous iteration's store).
+let picked: Ptr<Int> = Malloc#(64) as Ptr<Int>;
+let sum: Int = 0;
+let done: Bool = false;
+
+defn store_pick(p: Ptr<Int>, i: Int) {
+    p[i] = 1;
+};
+
+defn load_pick(p: Ptr<Int>, i: Int) -> Int {
+    term p[i];
+};
+
+node run [done == false][done == true] {
+    let n: Int = get_env_int!("BOUND");
+    foreach i in 0..n {
+        let v: Int = load_pick(picked, 0);
+        store_pick(picked, 0);
+        sum = sum + v;
+    };
+    println!("{}", sum);
+    done = true;
+    term;
+};

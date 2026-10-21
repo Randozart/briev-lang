@@ -46,6 +46,16 @@ pub fn check_label_contracts(
         // contracts (the parser rejects `[` lines inside sites); the
         // default row's instructions are checked in emit_instr.
         BadBodyItem::Site(_) => None,
+        BadBodyItem::Let(_)
+        | BadBodyItem::Assign(_)
+        | BadBodyItem::When(_)
+        | BadBodyItem::Loop(_)
+        | BadBodyItem::While(_)
+        | BadBodyItem::Break(_)
+        | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => None,
     }).collect();
     for pred in preds {
         check_pred(pred, &instrs, &ctx, errors, &mut proven);

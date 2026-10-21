@@ -144,22 +144,6 @@
         }
       },
       {
-        "id": "bld",
-        "aliases": [
-          "BILLD",
-          "billd",
-          "Briev Intermediate Low-Level"
-        ],
-        "extensions": [
-          ".bld"
-        ],
-        "icon": {
-          "light": "./images/billd-icon.svg",
-          "dark": "./images/billd-icon.svg"
-        },
-        "configuration": "./language-configuration-bld.json"
-      },
-      {
         "id": "beast",
         "aliases": [
           "BEAST",
@@ -210,11 +194,6 @@
         "language": "bad",
         "scopeName": "source.bad",
         "path": "./syntaxes/bad.tmLanguage.json"
-      },
-      {
-        "language": "bld",
-        "scopeName": "source.bld",
-        "path": "./syntaxes/bld.tmLanguage.json"
       },
       {
         "language": "beast",

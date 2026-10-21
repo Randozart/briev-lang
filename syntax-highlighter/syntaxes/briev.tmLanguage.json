@@ -589,7 +589,7 @@
       ]
     },
     "bad-body": {
-      "comment": "2026-10-17: nested .bad bodies in .bv — both entry shapes share parse_bad_fn (definitions.rs:326 plain, :136 bootstrap). The head line carries no braces (params + -> Type + [contract] + {); the body is line-oriented .bad with ZERO braces, so the end anchor ^\\s*\\} closes at the declaration (mid-line `}` e.g. thumb `push {r4, lr}` never anchors). .bld nesting deliberately absent (no parser construct; dialect under discussion).",
+      "comment": "2026-10-17: nested .bad bodies in .bv — both entry shapes share parse_bad_fn (definitions.rs:326 plain, :136 bootstrap). The head line carries no braces (params + -> Type + [contract] + {); the body is line-oriented .bad with ZERO braces, so the end anchor ^\\s*\\} closes at the declaration (mid-line `}` e.g. thumb `push {r4, lr}` never anchors).",
       "name": "meta.declaration.bad-body.briev",
       "begin": "\\b(bootstrap\\s+bad|bad)(?:<([A-Za-z0-9_]+)>)?\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^)]*\\)[^{\\n]*\\{",
       "beginCaptures": {

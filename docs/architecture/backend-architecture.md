@@ -686,6 +686,17 @@ These are resolved by `resolve_llvm_type()` in the casting graph. Never hardcode
 5. Add LLVM type resolution in `resolve_llvm_type`.
 6. **No name-based matching in the backend.**
 
+### Generic collection literal arguments (2026-10-21)
+
+Frontend operator elaboration and authored generic calls preserve the inferred
+collection parameter type on each literal argument. The typechecker reuses its
+call inference and substitution, then expresses construction as a typed local
+inside a value block at the original argument evaluation site. This prevents
+codegen from constructing a literal using a raw List<T> before specializing the
+callee. No function or element type name is recognized. This bridge can retire
+when inferred expression types are carried directly into lowering. Existing
+constructor and ABI paths remain the source of truth for representation.
+
 ### Match result probing and terminating arms (2026-10-21)
 
 Only arms reaching a match's value merge contribute result types. The existing

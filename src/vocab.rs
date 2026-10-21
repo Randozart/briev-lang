@@ -289,9 +289,8 @@ impl LanguageVocab {
                 "#Category", "Intrinsic#", "$name", "name!(...)", "$(Stage)",
                 ".^Field", ".^^Field", "!value", "?",
             ]),
-            // 2026-10-08 (BILLD plan M8): .bld — the recipe dialect joins the
-            // extension vocabulary.
-            extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl", "bld"]),
+            // `.bld` retired 2026-10-19: `.bad` is the sole low-level dialect.
+            extensions: ss(&["bv", "ebv", "abv", "sbv", "rbv", "dbv", "dbvl"]),
             profiles: ss(&["s", "f"]),
             hashwords: ss(&[
                 "Int", "Float", "Bool", "String", "Char", "Bits", "Ptr", "Void",

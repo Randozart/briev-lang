@@ -1,0 +1,11 @@
+obj Holder { p: Ptr<Bit<8>>; }
+import { print_int } from "std/io";
+defn make(p: Ptr<Bit<8>>) -> Holder { term Holder { p: p }; };
+let done: Bool = false;
+node entry [beginprogram][done == true] {
+    let h: Holder = make(Malloc#(8) as Ptr<Bit<8>>);
+    h.p[0] = 7 as Bit<8>;
+    print_int(h.p[0] as Int);
+    done = true;
+    endprogram 0;
+};

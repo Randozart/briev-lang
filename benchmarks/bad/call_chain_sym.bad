@@ -1,0 +1,10 @@
+// Call chain — assembly+ symbolic form. `inc` is a callable defn (real
+// C-ABI call, not inline), invoked twice.
+call defn inc(x: Int) -> Int {
+    return x + 1
+}
+bootstrap _start {
+    let r = inc(5)
+    let s = inc(r)
+    halt
+}

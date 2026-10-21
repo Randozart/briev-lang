@@ -1173,6 +1173,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // typechecked as unknown calls; wildcard lifts typechecked as Int),
     // the exact divergence class this fn's doc records. `brievc check`
     // and the conformance sweep now see the same IR `build` sees.
+    crate::analysis::desugar::rewrite_enum_variant_access(&mut items)?;
     crate::analysis::desugar::rewrite_multi_index(&mut items)?;
     crate::analysis::desugar::rewrite_wildcard_lift(&mut items)?;
 

@@ -28,7 +28,7 @@ const ok = (msg) => console.log(`ok   ${msg}`);
 
 // ── 1. JSON parse ────────────────────────────────────────────────────────
 const GRAMMARS = [
-  "briev", "rbv", "ebv", "sbv", "abv", "bld", "bad", "dbriev", "beast",
+  "briev", "rbv", "ebv", "sbv", "abv", "bad", "dbriev", "beast",
 ];
 const parsed = {};
 for (const g of GRAMMARS) {
@@ -39,7 +39,7 @@ for (const g of GRAMMARS) {
   } catch (e) { fail(`grammar ${g}: JSON parse: ${e.message}`); }
 }
 const pkg = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
-for (const c of ["language-configuration.json", "language-configuration-bld.json"]) {
+for (const c of ["language-configuration.json"]) {
   try { JSON.parse(readFileSync(join(here, c), "utf8")); }
   catch (e) { fail(`${c}: JSON parse: ${e.message}`); }
 }
@@ -111,15 +111,6 @@ const positive = [
   ["bad", "defn store_pair x, addr\n", "storage.type.bad", "bad: defn head"],
   ["bad", "_start: [r10 preserved]\n", "entity.name.function.label.bad", "bad: label + contract"],
   // bld — real file examples/bld/boot_protected_x86.bld, src/parser/bld.rs
-  ["bld", "bootstrap Reset() {\n", "keyword.control.bld", "bld: bootstrap entry"],
-  ["bld", "        bad {\n", "keyword.control.block.bld", "bld: bad-block head"],
-  ["bld", "        loop {\n", "keyword.control.bld", "bld: loop (contextual)"],
-  ["bld", "            when c > 68 {\n", "keyword.control.bld", "bld: when"],
-  ["bld", "            break;\n", "keyword.control.bld", "bld: break"],
-  ["bld", "        DisableInterrupts();\n", "support.function.engine.bld", "bld: engine verb"],
-  ["bld", "    let vga: Ptr = 0xB8000;\n", "keyword.control.bld", "bld: let"],
-  ["bld", "    c += 1;\n", "keyword.operator.compound-assign.bld", "bld: compound assign"],
-  ["bld", "        return;\n", "keyword.control.bld", "bld: return (contextual)"],
   // briev core
   ["briev", "state let x: Int = 0;\n", "keyword.control.briev", "briev: state assertion"],
   ["briev", "plain let y: Int = 1;\n", "keyword.control.briev", "briev: plain assertion"],

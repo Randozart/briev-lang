@@ -33,6 +33,82 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Raw Ptr<T> index/deref emitted argmemonly (#8) + per-access inttoptr provenance loss -- FIXED 2026-10-20
+
+**Symptom:** PR #29 reported a recommender `picked[]` stale read under
+`-O3 -flto`: a defensive array was written in one defn and read back in a
+sibling, but the read returned the pre-store value.
+
+**Root cause:** a raw `Ptr<T>` scalar load/store is lowered through a fresh
+`inttoptr i64 %base to ptr` per access. Two conversions of the same address
+have no shared provenance, so BasicAA can treat the load and store as
+non-aliasing. The effect-summary half was independently wrong:
+`definition_touches_raw_memory` scanned only intrinsic spellings, so a defn
+whose sole memory op was `p[i] = v` (or `p[i]` read) still emitted
+`#8 memory(argmem: readwrite)` — a lie that lets LTO hoist a load across the
+call. `!invariant.load` was also emitted on `%State` Ptr fields even though
+fields such as a linked-list head are reassigned.
+
+**Fix:** (1) D — raw `Index`/`Deref` count as raw memory in the exhaustive AST
+visitor, so such defns get `#13 memory(readwrite)`; (2) C — args and `%State`
+Ptr fields seed one canonical `ptr` at entry (`canonical_ptr`,
+`preload_state_ptr_fields`), raw index/deref/Load#/Store# reuse it, and a
+state store invalidates the field's entry until the next reload; (3) remove
+the unsound `!invariant.load` metadata on mutable Ptr fields. No volatile and
+no runtime fence. `Ptr + Int` is not a source form today (typechecker rejects
+it); `PtrAdd#` already uses GEP, so the planned GEP-arithmetic slice is
+deferred. The canonical cache only reuses values seeded at dominance points;
+arbitrary per-block i64 values are re-inttoptr'd to avoid non-dominating SSA.
+
+**Pins:** `defn_indexing_raw_ptr_is_memory_readwrite` (IR attrs),
+`ptr_crossdefn_probe_golden_output` (runtime, harness-exact `-O3 -flto`).
+Full suite 3,261 green; six parity corpora; determinism quick gate.
+
+## `sock_recv` wrote bytes but left `ByteBuf.len` at 0 -- FIXED 2026-10-20
+
+**Symptom:** the socket loopback gate printed `1111101` instead of
+`11111651`; the received byte read as 0 even though `recv` returned 1.
+`get_u8` correctly guards `off < buf.len`, and `buf_new` starts len=0, so the
+received data was invisible to the buffer API.
+
+**Fix:** `sock_recv` now sets `buf.len = n` for a non-negative result before
+returning (a negative error leaves len untouched). The loopback golden passes.
+
+## `plain let` Ptr load emits `ptr` where the consumer expects i64 -- FIXED 2026-10-20
+
+**Symptom:** a `plain let picked: Ptr<Int>` read emitted
+`%t = load ptr, ...` but the pointer-arithmetic consumer expected i64,
+failing clang with `'%t2' defined with type 'ptr' but expected 'i64'`.
+**Fix:** plain Ptr globals now use the same i64 handle representation as
+`%State` Ptr slots (`plain_global_llvm_type`); declaration, seed store, and
+load agree. Pin: `tests/tier1/plain_ptr_smoke.bv` +
+`plain_ptr_smoke_golden_output`.
+
+## `obj` literal with a Ptr-typed field stores i64 into a ptr slot -- FIXED 2026-10-20
+
+**Symptom:** `obj Arena { base: Ptr<Bit<8>>; ... }` initialized via
+`Arena { base, ... }` emitted `store ptr %t1` where `%t1` was the i64
+`ptrtoint` handle (`'%t1' defined with type 'i64' but expected 'ptr'`).
+Discovered building Fixture 3 (Arena).
+
+**Fix:** `emit_struct_literal` now inttoptrs an i64 handle when the field is
+Ptr-typed (the same conversion the Int-handle case already used). The field
+load remains ptr; consumers cast to Int with `as Int` where they need the
+handle. Arena is restored to an honest `Ptr<Bit<8>>` base field. Pin:
+`tests/tier1/ptr_field_smoke.bv` + `ptr_field_smoke_golden_output`.
+
+## Named imports of enum types (`import { TcpState } ...`) are undefined -- FIXED 2026-10-20
+
+**Symptom:** `import { TcpState, TcpEvent } from "std/fsm"` then
+`TcpEvent.PassiveOpen` fails with `undefined variable 'TcpEvent'`. Importing
+the enum type by name does not bring the type/variant namespace into scope;
+the module itself checks and runs. Discovered building Fixture 4 (FSM).
+**Fix:** the import resolver's `item_name` now recognizes enum declarations,
+and `analysis::desugar::rewrite_enum_variant_access` lowers an importer's
+`Enum.Variant` / `Enum.Variant(args)` (parsed before the enum is known) to the
+internal `Enum::Variant` constructor after imports resolve. Pins:
+`tests/tier1/enum_import_smoke.bv`, `fsm_smoke` (now uses named enum imports).
+
 ## Float-tuple destructure loaded elements as i64 -> clang float/i64 clash -- FIXED 2026-10-19
 
 **Symptom:** a defn returning (Float, Float[,Float]) destructured via `let (a, b) = ...` failed to compile: `%tN defined with type i64 but expected float` (clang). Found building examples/recommender/reference.bv (recommender-app Task 5.2, the AutAI-Fusion oracle), isolated in scratch/ftuple.bv.
@@ -10651,6 +10727,63 @@ interpreter-side for the 7/16-bit forms.
 for this body shape (the reactor has its own Let/Foreach arms; the divergence
 is in which environment the nested defn call sees). Pinned by the ignored
 test `ws_encode_growth_interpreter`.
+
+## Relative code-import path corruption (FIXED 2026-10-21)
+
+Trigger: `scratch/udata_gate.bv` imports `../examples/recommender/udata.bv`.
+The resolver searches `///examples/recommender/udata.bv` and rejects the import.
+Root cause: `src/import_resolver.rs` expands every dot in the extension-stripped
+specifier before interpreting its documented filesystem-relative prefix.
+Fix authored on `fix/relative-import-paths`: preserve relative filesystem paths;
+retain dotted namespace expansion for bare imports. Regression tests exercise
+parent/current directory paths, extensionless imports, dotted filenames, and
+existing bare dotted namespaces.
+
+Verification update (2026-10-21): unit tests and debug build passed per human
+output; udata.bv checks OK and the native udata gate prints all six checks true.
+After extracting path conversion into a helper, the human reran cargo check,
+cargo test --lib, and cargo build: all green. The controlled before/after
+Praetor comparison reports identical diagnostics (no new diagnostics).
+
+## Generic-call collection literal loses its element type (FIXED 2026-10-21)
+
+Task 10 schema gate fails native linking: pg_decode_fields emits a string
+pointer `%t28` from a string constant, then `store volatile i64 %t28` at
+scratch/recommender_schema_gate.ll:6879. The dynamic text singleton later in
+the function has the same mismatch. Both come from List<String> construction.
+The indexed-store conversion path exists but fails to convert these values;
+the exact cause remains under investigation. No stdlib workaround applied.
+Controlled Int/String singleton probes are authored under scratch/list_literal_*
+for human execution. Investigation: docs/plans/2026-10-21-pointer-valued-collection-store.md.
+
+Investigation update (2026-10-21): isolated Int AND String singleton literals
+both build/run correctly. General string-list literal failure is refuted.
+Next controlled probe isolates the failing decoder's fields + [text] expression
+(inline RHS singleton plus list concatenation), without the database stack.
+
+
+Root cause isolated (2026-10-21): Int fields + [value] succeeds; String
+fields + [text] reproduces the ptr/i64 failure. Generic-call codegen constructs
+inline literals with an unspecialized parameter type before call specialization.
+Fix authored on fix/generic-call-literal-types: frontend elaboration preserves
+the inferred collection parameter in a typed value block, for both direct and
+operator-generated generic calls. Regression tests authored; human verification
+pending. No stdlib workaround and no backend mutation.
+
+2026-10-21 verification found a real regression in the authored fix: re-inference
+in elaborate_ops lacked current_output_type, rejecting empty tuple accumulators
+in iter_enumerate/iter_zip and their importing programs. Corrected by seeding
+both defn/txn elaboration contexts from their declared outputs, matching the
+ordinary checker. Added regression coverage; human retest pending. Known
+hardware/toolchain failures are not used to excuse these new failures.
+
+Final verification (2026-10-21): human reports full cargo test --lib green after
+return-context correction. Rebuilt native String concatenation probe prints
+concat_count/concat_first/concat_text/concat_empty all true; Int control prints
+concat_count/concat_values both true. The original reduced ptr/i64 failure is
+resolved. Praetor adds no diagnostics or increased metrics (existing walker
+renamed). Full schema-gate verification follows integration; commit approval
+pending per WORKFLOW.md.
 
 ## Match with a terminating arm loses its continuing result (FIXED 2026-10-21)
 

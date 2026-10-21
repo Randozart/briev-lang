@@ -1,0 +1,19 @@
+// Pure .bad assembly+ boot — QEMU virt aarch64.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+import "std/bad/profiles/aarch64-qemu-virt.bad"
+
+defn banner(base: Ptr) {
+    uart_init(base)
+    uart_putc(base, 66)
+    uart_putc(base, 114)
+    uart_putc(base, 105)
+    uart_putc(base, 101)
+    uart_putc(base, 118)
+    uart_putc(base, 10)
+}
+
+bootstrap _start {
+    banner(UART0)
+    Park
+}

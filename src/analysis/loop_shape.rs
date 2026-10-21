@@ -17,7 +17,7 @@
 use crate::analysis::loop_carried::FieldClass;
 use crate::analysis::swan_song;
 use crate::analysis::transition_graph::{BoundedPre, ConvergeDirection, ReactorTransitionGraph};
-use crate::ast::{Expr, Statement, TopLevel, Transaction};
+use crate::ast::{Expr, Statement, TopLevel, Transaction, Type};
 use std::collections::{HashMap, HashSet};
 
 /// How the loop counter's bound is known. Backend-agnostic: the backend maps
@@ -79,8 +79,30 @@ pub struct LoopShape {
     pub counter_only_writes: bool,
     /// Loop-carried fields in deterministic (sorted) order — the minimal phi set.
     pub carried_fields: Vec<String>,
+    /// 2026-10-20 (Local class): written fields whose only reads are inside
+    /// this transaction's loop body/guards. They need phis for the loop and
+    /// guard, but no post-loop %State commit: once the loop ends, their values
+    /// are unobservable. Excludes any field read by a contract, another txn,
+    /// a defn, or a top-level expression.
+    pub local_fields: Vec<String>,
     /// Isomorphic field groups eligible for vector-phi promotion.
     pub vector_groups: Vec<VectorGroup>,
+    /// 2026-10-21 (target-pressure effect shape): loop-carried fields whose
+    /// declared/inferred type is floating-point. Presence selects the escaped
+    /// effect shape unless every Float is temp-mediated (see below).
+    pub carried_float_count: usize,
+    /// Loop-carried scalar fields (float + integer/bool/char/pointer slots).
+    /// Aggregates are excluded; the selector uses the float subset today.
+    pub carried_scalar_count: usize,
+    /// Loop-carried aggregate/memory-resident fields. A non-zero count keeps
+    /// the stateless effect shape: escaping `%State` blocks SROA of the hot
+    /// aggregate (the queue_drain case).
+    pub carried_aggregate_count: usize,
+    /// 2026-10-21 (target-pressure effect shape): carried Float fields whose
+    /// value is assigned from a body-local let (`f = n;` after `let n = ...`).
+    /// A fully temp-mediated body enables the stateless SROA/vector shape;
+    /// direct field arithmetic takes the escaped effect shape.
+    pub temp_mediated_float_count: usize,
     /// True when the body ends with a swan song (`term! -> print`).
     pub has_swan_song: bool,
     /// True when the body is provably pure (or effectively pure).
@@ -133,7 +155,7 @@ pub fn build_loop_shapes(
         let Some(txn) = txns.get(&node.name) else {
             continue;
         };
-        shapes.insert(node.name.clone(), build_shape(node, txn, &names, min_width));
+        shapes.insert(node.name.clone(), build_shape(node, txn, &names, min_width, items));
     }
     shapes
 }
@@ -212,12 +234,17 @@ fn build_shape(
     txn: &Transaction,
     names: &ItemNames,
     min_width: usize,
+    items: &[TopLevel],
 ) -> LoopShape {
     let bp = node.bounded_pre.as_ref().unwrap();
     let bound = resolve_bound(bp, names);
     let counter_only_writes = node.write_set.len() == 1 && node.write_set.contains(&bp.var);
     let carried_fields = classify_carried(node.write_set.clone(), txn);
+    let local_fields = classify_local_fields(node, txn, items);
+    let field_pressure = classify_field_pressure(&carried_fields, items);
     let vector_groups = detect_vector_groups_structural(txn, node.write_set.clone(), &names.state_fields, min_width);
+    let temp_mediated_float_count =
+        count_temp_mediated_float_writes(txn, &carried_fields, items);
     let has_swan = swan_song::has_swan_song(&txn.body);
     let is_pure = node.is_pure_body || node.is_effectively_pure;
     LoopShape {
@@ -227,7 +254,12 @@ fn build_shape(
         direction: bp.direction,
         counter_only_writes,
         carried_fields,
+        local_fields,
         vector_groups,
+        carried_float_count: field_pressure.float,
+        carried_scalar_count: field_pressure.scalar,
+        carried_aggregate_count: field_pressure.aggregate,
+        temp_mediated_float_count,
         has_swan_song: has_swan,
         is_pure,
         convergence: Convergence::CounterGeBound {
@@ -275,6 +307,316 @@ impl ItemNames {
             inits: collect_init_names(items),
         }
     }
+}
+
+/// 2026-10-20 (Local class): fields written by the loop whose values are
+/// unobservable after it. A field is local only when every reference outside
+/// this txn's BODY is absent; its contract references still count as
+/// observable, and any other txn/defn/top-level expression that names it
+/// keeps it machine state.
+fn classify_local_fields(
+    node: &crate::analysis::transition_graph::ReactorNode,
+    txn: &Transaction,
+    items: &[TopLevel],
+) -> Vec<String> {
+    let mut external: HashSet<String> = HashSet::new();
+    // This txn's contract is observable.
+    crate::analysis::storage_class::collect_raw_idents(
+        &txn.contract.pre_condition,
+        &mut external,
+    );
+    crate::analysis::storage_class::collect_raw_idents(
+        &txn.contract.post_condition,
+        &mut external,
+    );
+    for item in items {
+        if let TopLevel::Transaction(other) = item {
+            if other.name == txn.name {
+                // The current transaction's BODY is the loop itself; only its
+                // contract is an external observation. Every other top-level
+                // surface is walked below.
+                continue;
+            }
+        }
+        // One generic walker covers every TopLevel form: other txns/defns,
+        // exports, cells, trigger bindings, when-laws, assertions, fuzzed
+        // items, type/operator bodies, compile-time items, cfg/sync groups,
+        // and initialization expressions. Missing a surface here would
+        // misclassify a field as Local and skip its exit store.
+        crate::ast::visit::walk_toplevel(item, &mut |e| {
+            crate::analysis::storage_class::collect_raw_idents(e, &mut external)
+        });
+    }
+    let mut local: Vec<String> = node
+        .write_set
+        .iter()
+        .filter(|f| !external.contains(*f))
+        .cloned()
+        .collect();
+    local.sort();
+    local
+}
+
+/// Structural pressure classes for the effect-shape selector. Derived from
+/// source-level types only (no LLVM type names, no type-name matching in the
+/// backend); an unknown type is conservatively aggregate so a high-float
+/// program never escapes state through an opaque object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PressureClass {
+    Float,
+    Scalar,
+    Aggregate,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FieldPressure {
+    float: usize,
+    scalar: usize,
+    aggregate: usize,
+}
+
+/// Count loop-carried fields by pressure class. The type map is built from
+/// top-level `let`/`state` declarations; an untyped literal initializer is
+/// classified from its literal tag (the parser's inference shape), and
+/// anything opaque is aggregate (fail-safe: no escaped effect).
+fn classify_field_pressure(fields: &[String], items: &[TopLevel]) -> FieldPressure {
+    let (types, exprs) = field_decls(items);
+    let mut out = FieldPressure::default();
+    for f in fields {
+        match pressure_class(types.get(f).and_then(|t| t.as_ref()), exprs.get(f)) {
+            PressureClass::Float => out.float += 1,
+            PressureClass::Scalar => out.scalar += 1,
+            PressureClass::Aggregate => out.aggregate += 1,
+        }
+    }
+    // Scalar pressure includes floats: a float is a scalar slot too.
+    out.scalar += out.float;
+    out
+}
+
+/// Field declaration types + initializers keyed by name. Used by the
+/// pressure classifier and the temp-mediated write count.
+fn field_decls(items: &[TopLevel]) -> (HashMap<String, Option<Type>>, HashMap<String, Expr>) {
+    let mut types: HashMap<String, Option<Type>> = HashMap::new();
+    let mut exprs: HashMap<String, Expr> = HashMap::new();
+    for item in items {
+        match item {
+            TopLevel::StateDecl(s) => {
+                types.insert(s.name.clone(), Some(s.ty.clone()));
+            }
+            TopLevel::Statement(stmt) => {
+                if let Statement::Let { name, ty, expr, .. } = stmt.as_ref() {
+                    types.insert(name.clone(), ty.clone());
+                    if let Some(e) = expr {
+                        exprs.insert(name.clone(), e.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (types, exprs)
+}
+
+/// Classify one field type. `None` falls back to the literal initializer's
+/// tag; no tag means opaque/aggregate. This deliberately has no target or
+/// backend dependency so the shape stays frontend-derived.
+fn pressure_class(ty: Option<&Type>, expr: Option<&Expr>) -> PressureClass {
+    if let Some(ty) = ty {
+        return type_pressure_class(ty);
+    }
+    match expr {
+        Some(Expr::Float(_)) => PressureClass::Float,
+        Some(Expr::Decimal(_)) | Some(Expr::Bool(_)) | Some(Expr::Char(_)) => {
+            PressureClass::Scalar
+        }
+        _ => PressureClass::Aggregate,
+    }
+}
+
+fn type_pressure_class(ty: &Type) -> PressureClass {
+    match ty {
+        Type::Bits(_) => PressureClass::Scalar,
+        Type::Ptr(_) | Type::PtrConst(_) => PressureClass::Scalar,
+        Type::Custom(name) => match name.as_str() {
+            "Float" | "Float16" | "Float32" | "Float64" | "Half" | "Double" => {
+                PressureClass::Float
+            }
+            "Int" | "UInt" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Bool" | "Char"
+            | "String" | "Blob" | "Data" => PressureClass::Scalar,
+            _ => PressureClass::Aggregate,
+        },
+        _ => PressureClass::Aggregate,
+    }
+}
+
+/// Count carried Float fields assigned from a body-local let (`f = n;`).
+/// A body that first computes every next value into a let and then copies it
+/// into the fields exposes the old-value/vectorizable shape (matrix_pipeline,
+/// sweep_dense); direct field arithmetic does not (float_math, telemetry,
+/// pid, sweep_sparse).
+fn count_temp_mediated_float_writes(
+    txn: &Transaction,
+    carried: &[String],
+    items: &[TopLevel],
+) -> usize {
+    let lets = body_let_names(&txn.body);
+    let carried_float = carried_float_names(carried, items);
+    let mut seen: HashSet<&str> = HashSet::new();
+    for stmt in &txn.body {
+        let Statement::Assign(lhs, Expr::Identifier(rhs)) = stmt else {
+            continue;
+        };
+        let Some(field) = lhs.as_var_name() else { continue };
+        if carried_float.contains(field) && lets.contains(rhs) {
+            seen.insert(field);
+        }
+    }
+    seen.len()
+}
+
+fn body_let_names(body: &[Statement]) -> HashSet<String> {
+    body.iter()
+        .filter_map(|stmt| match stmt {
+            Statement::Let { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn carried_float_names(carried: &[String], items: &[TopLevel]) -> HashSet<String> {
+    let (types, exprs) = field_decls(items);
+    carried
+        .iter()
+        .filter(|f| {
+            matches!(
+                pressure_class(types.get(*f).and_then(|t| t.as_ref()), exprs.get(*f)),
+                PressureClass::Float
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+/// 2026-10-21 (effect-carry selection experiment): decide whether a direct
+/// Float loop should carry its plain effect state through the loop. This is a
+/// structural cost model, not a benchmark name:
+///   - fully temp-mediated loops keep the stateless SROA/vector shape;
+///   - loops above the target FP register budget keep the escaped shape;
+///   - partial old-value capture (`temp_mediated_float_count >=
+///     target.effect_carry_temp_min`) or a vector group at the target minimum
+///     width prefers the carry shape.
+pub fn prefer_effect_carry(
+    shape: &LoopShape,
+    float_registers: usize,
+    vector_min_width: usize,
+    temp_min: usize,
+) -> bool {
+    if shape.carried_float_count == 0
+        || shape.temp_mediated_float_count >= shape.carried_float_count
+        || shape.carried_float_count > float_registers
+    {
+        return false;
+    }
+    let partial_capture = shape.temp_mediated_float_count >= temp_min.max(1);
+    let min_width_group = shape
+        .vector_groups
+        .iter()
+        .any(|g| g.width <= vector_min_width.max(1));
+    partial_capture || min_width_group
+}
+
+/// True when every direct-Float loop prefers the carry shape (and at least
+/// one exists). Used as the program-level effect-memory mode: all-carry
+/// programs keep stateless print; otherwise the escaped fallback is used.
+pub fn all_direct_loops_prefer_carry(
+    shapes: &HashMap<String, LoopShape>,
+    float_registers: usize,
+    vector_min_width: usize,
+    temp_min: usize,
+) -> bool {
+    let mut any = false;
+    for shape in shapes.values() {
+        if shape.carried_float_count == 0 {
+            continue;
+        }
+        any = true;
+        if !prefer_effect_carry(shape, float_registers, vector_min_width, temp_min) {
+            return false;
+        }
+    }
+    any
+}
+
+/// Program-level carry mode. Carry is safe only when every direct-Float loop
+/// actually uses the countdown engine: `BatchShape` names the owning txn, so a
+/// no-batch program falls back to the escaped shape instead of suppressing it
+/// while emitting a loop engine that has no carry path.
+pub fn program_carry_mode(
+    shapes: &HashMap<String, LoopShape>,
+    batch_txns: &HashSet<String>,
+    float_registers: usize,
+    vector_min_width: usize,
+    temp_min: usize,
+) -> bool {
+    if !all_direct_loops_prefer_carry(shapes, float_registers, vector_min_width, temp_min) {
+        return false;
+    }
+    shapes.iter().all(|(name, shape)| {
+        shape.carried_float_count == 0 || batch_txns.contains(name)
+    })
+}
+
+/// Return the first transaction (sorted for determinism) that needs the
+/// escaped effect-memory shape.
+///
+/// The 2026-10-21 N=1..20 sweep falsified the field-count pressure crossover:
+/// every scalar-Float loop in the countdown/periodic-effect shape improved
+/// with the escaped context, even at N=1, while Int-only loops were neutral
+/// and aggregate-carried loops (queue_drain) preferred stateless print.
+/// The causal shape feature is direct field arithmetic vs old-value temp
+/// capture: a body that computes every next value into a local let before
+/// copying it into the field keeps the stateless SROA/vector shape, while
+/// direct arithmetic needs the escaped context. `float_registers -
+/// fp_reserved_temps` is used only as a target capability gate: if the target
+/// reserves all FP registers (or has a virtual register file), there is no
+/// physical spill shape to escape and the stateless path stays.
+///
+/// Aggregate-carried loops are excluded: escaping `%State` there blocks SROA
+/// of the hot aggregate (queue_drain/interval_step). The caller consumes this
+/// as a program-level effect-memory decision.
+pub fn escaped_effect_cause(
+    shapes: &HashMap<String, LoopShape>,
+    float_registers: usize,
+    fp_reserved_temps: usize,
+) -> Option<String> {
+    // Virtual-register targets (wasm row is u32::MAX) have no physical FP
+    // pressure to escape; keep the stateless ABI.
+    if float_registers >= u32::MAX as usize {
+        return None;
+    }
+    if float_registers.saturating_sub(fp_reserved_temps) == 0 {
+        return None;
+    }
+    let mut names: Vec<&String> = shapes.keys().collect();
+    names.sort();
+    for name in names {
+        let shape = &shapes[name];
+        if shape.carried_aggregate_count != 0 || shape.carried_float_count == 0 {
+            continue;
+        }
+        // A fully temp-mediated Float body (`f = n;` for every carried field,
+        // n computed first) exposes the old-value/vectorizable shape: the
+        // stateless SROA path wins (matrix_pipeline, sweep_dense). Direct
+        // field arithmetic needs the escaped context (float_math, telemetry,
+        // pid, sweep_sparse). This is structural, not a benchmark threshold.
+        let fully_temp_mediated = shape.temp_mediated_float_count == shape.carried_float_count;
+        if !fully_temp_mediated {
+            return Some(name.clone());
+        }
+    }
+    None
 }
 
 /// Classify the loop-carried field set (minimal-state, deterministic order).
@@ -435,6 +777,199 @@ mod tests {
         let items = parse_program(src);
         let graph = ReactorTransitionGraph::build(&items, &None, &vec![]);
         (graph, items)
+    }
+
+    #[test]
+    fn test_float_math_local_fields() {
+        let src = include_str!("../../benchmarks/float_math.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape");
+        println!("float_math local_fields={:?}", shape.local_fields);
+        assert!(!shape.has_swan_song, "term; is not a swan song");
+        for f in [
+            "x0", "x1", "x2", "p00", "p01", "p02", "p10", "p11", "p12", "p20",
+            "p21", "p22",
+        ] {
+            assert!(
+                shape.local_fields.contains(&f.to_string()),
+                "{} should be loop-local, got {:?}", f, shape.local_fields
+            );
+        }
+        assert!(!shape.local_fields.contains(&"count".to_string()));
+        assert!(!shape.local_fields.contains(&"total".to_string()));
+        assert_eq!(shape.carried_float_count, 12);
+        assert_eq!(shape.carried_scalar_count, 13);
+        assert_eq!(shape.carried_aggregate_count, 0);
+        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
+        let plan = plans.get("tick").expect("tick plan");
+        assert_eq!(
+            plan.fields.get("p00"),
+            Some(&crate::analysis::materialization::StorageClass::Local)
+        );
+        assert_eq!(
+            plan.fields.get("count"),
+            Some(&crate::analysis::materialization::StorageClass::Machine)
+        );
+    }
+
+    #[test]
+    fn test_effect_shape_selector_float_presence() {
+        let src = include_str!("../../benchmarks/float_math.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let mut map = HashMap::new();
+        let shape = shapes.get("tick").expect("tick shape").clone();
+        map.insert("tick".to_string(), shape.clone());
+        assert_eq!(
+            escaped_effect_cause(&map, 16, 4),
+            Some("tick".to_string()),
+            "any carried Float selects the escaped effect shape"
+        );
+        let mut one = shape;
+        one.carried_float_count = 1;
+        map.insert("tick".to_string(), one);
+        assert_eq!(
+            escaped_effect_cause(&map, 16, 4),
+            Some("tick".to_string()),
+            "the crossover is Float presence, not a field-count threshold"
+        );
+    }
+
+    #[test]
+    fn test_effect_shape_selector_temp_mediated_stays_stateless() {
+        let src = include_str!("../../benchmarks/matrix_pipeline.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape").clone();
+        assert_eq!(shape.carried_float_count, 16);
+        assert_eq!(shape.temp_mediated_float_count, 16);
+        let mut map = HashMap::new();
+        map.insert("tick".to_string(), shape);
+        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
+            "a fully temp-mediated body keeps the stateless SROA/vector shape");
+    }
+
+    #[test]
+    fn test_local_fields_export_keeps_state() {
+        let src = r#"
+let f: Float = 0.0;
+let count: Int = 0;
+let total: Int = 10;
+export defn read_f() -> Float [true][true] { term f; };
+node tick [count < total][count == total] {
+    f = f + 1.0;
+    count = count + 1;
+    term;
+};
+"#;
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape");
+        assert!(!shape.local_fields.contains(&"f".to_string()),
+            "a field referenced by an exported defn is not loop-local");
+        assert!(!shape.local_fields.contains(&"count".to_string()));
+        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
+        let plan = plans.get("tick").expect("tick plan");
+        assert_eq!(
+            plan.fields.get("f"),
+            Some(&crate::analysis::materialization::StorageClass::Machine)
+        );
+    }
+
+    #[test]
+    fn test_effect_carry_selector_winners_and_losers() {
+        let cases = [
+            ("float_math", false),
+            ("float_math_nonzero", true),
+            ("kalman_filter_runtime", true),
+            ("sweep_sparse", true),
+            ("sweep_mid", false),
+            ("telemetry_stream", false),
+            ("accumulator_flush", false),
+            ("nbody_newton", false),
+            ("pid_control", false),
+        ];
+        for (file, expected) in cases {
+            let src = match file {
+                "float_math" => include_str!("../../benchmarks/float_math.bv"),
+                "float_math_nonzero" => include_str!("../../benchmarks/float_math_nonzero.bv"),
+                "kalman_filter_runtime" => include_str!("../../benchmarks/kalman_filter_runtime.bv"),
+                "sweep_sparse" => include_str!("../../benchmarks/sweep_sparse.bv"),
+                "sweep_mid" => include_str!("../../benchmarks/sweep_mid.bv"),
+                "telemetry_stream" => include_str!("../../benchmarks/telemetry_stream.bv"),
+                "accumulator_flush" => include_str!("../../benchmarks/accumulator_flush.bv"),
+                "nbody_newton" => include_str!("../../benchmarks/nbody_newton.bv"),
+                "pid_control" => include_str!("../../benchmarks/pid_control.bv"),
+                _ => unreachable!(),
+            };
+            let (graph, items) = graph_and_items(src);
+            let shapes = build_loop_shapes(&graph, &items, 4);
+            let (txn, shape) = shapes.iter().next().expect("shape");
+            assert_eq!(
+                prefer_effect_carry(shape, 16, 4, 3),
+                expected,
+                "{file} ({txn}) carry selection"
+            );
+            assert_eq!(
+                all_direct_loops_prefer_carry(&shapes, 16, 4, 3),
+                expected,
+                "{file} direct-loop carry preference"
+            );
+            let batch_txns: HashSet<String> = std::iter::once(txn.clone()).collect();
+            assert_eq!(
+                program_carry_mode(&shapes, &batch_txns, 16, 4, 3),
+                expected,
+                "{file} countdown-gated program carry mode"
+            );
+            assert!(
+                !program_carry_mode(&shapes, &HashSet::new(), 16, 4, 3),
+                "{file} no-batch program must fall back to escaped"
+            );
+        }
+    }
+
+    #[test]
+    fn test_effect_shape_mixed_program_shape_facts() {
+        let src = include_str!("../../tests/tier1/mixed_effect_shape.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let direct = shapes.get("direct").expect("direct shape");
+        let temp = shapes.get("temp").expect("temp shape");
+        assert_eq!(direct.temp_mediated_float_count, 0,
+            "direct arithmetic is not temp-mediated");
+        assert_eq!(temp.temp_mediated_float_count, temp.carried_float_count,
+            "temp loop captures every next value in a let");
+        assert_eq!(
+            escaped_effect_cause(&shapes, 16, 4),
+            Some("direct".to_string()),
+            "the mixed program selects escaped because the direct loop needs it"
+        );
+    }
+
+    #[test]
+    fn test_effect_shape_selector_no_float_and_capability_gates() {
+        let src = include_str!("../../benchmarks/float_math.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape").clone();
+        let mut no_float = shape.clone();
+        no_float.carried_float_count = 0;
+        no_float.carried_scalar_count = 1;
+        let mut map = HashMap::new();
+        map.insert("tick".to_string(), no_float);
+        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
+            "Int-only loops keep stateless print");
+        let mut agg = shape.clone();
+        agg.carried_aggregate_count = 1;
+        map.insert("tick".to_string(), agg);
+        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
+            "aggregate-carried loops keep the stateless effect shape");
+        map.insert("tick".to_string(), shape);
+        assert_eq!(escaped_effect_cause(&map, 4, 4), None,
+            "a target that reserves all FP registers has no escaped shape");
+        assert_eq!(escaped_effect_cause(&map, u32::MAX as usize, 4), None,
+            "virtual-register targets have no physical spill shape");
     }
 
     #[test]

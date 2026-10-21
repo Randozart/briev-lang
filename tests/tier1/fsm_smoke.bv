@@ -1,0 +1,35 @@
+// FSM fixture smoke — exhaustive TCP-subset transitions (Fixture 4).
+// 2026-10-20 (P1-3): named enum-type imports + qualified constructors now
+// work in an importer; no integer-code boundary is needed.
+import { tcp_initial, tcp_step, state_code, TcpState, TcpEvent } from "std/fsm";
+import { is_ok, is_err, unwrap } from "std/result";
+import { print_int } from "std/io";
+import { print_str } from "std/io";
+
+defn step_or(state: TcpState, event: TcpEvent) -> TcpState {
+    let r = tcp_step(state, event);
+    when is_err(r) {
+        term state;
+    };
+    term unwrap(r);
+};
+
+node entry [beginprogram][true] {
+    let s0: TcpState = tcp_initial();
+    let s1: TcpState = step_or(s0, TcpEvent.PassiveOpen);
+    let s2: TcpState = step_or(s1, TcpEvent.RecvSyn);
+    let s3: TcpState = step_or(s2, TcpEvent.RecvAck);
+    let s4: TcpState = step_or(s3, TcpEvent.Close);
+    let s5: TcpState = step_or(s4, TcpEvent.RecvAck);
+    let s6: TcpState = step_or(s5, TcpEvent.RecvFin);
+    print_int(state_code(s0)); print_str("|");
+    print_int(state_code(s1)); print_str("|");
+    print_int(state_code(s2)); print_str("|");
+    print_int(state_code(s3)); print_str("|");
+    print_int(state_code(s4)); print_str("|");
+    print_int(state_code(s5)); print_str("|");
+    print_int(state_code(s6)); print_str("|");
+    let bad = tcp_step(s0, TcpEvent.RecvAck);
+    print_int((is_err(bad)) as Int);
+    endprogram 0;
+};

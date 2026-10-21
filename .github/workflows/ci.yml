@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gates:
+    name: Default gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM + SPIR-V tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential spirv-tools
+
+      - name: Prepare test directories
+        run: mkdir -p /tmp/opencode
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release compiler
+        run: cargo build --release --bin brievc
+
+      - name: Effect-shape guard (quick)
+        run: bash benchmarks/effect_shape_guard.sh --quick
+
+      - name: Library tests
+        run: cargo test --lib
+
+      - name: Binary tests
+        run: cargo test --bin brievc
+
+      - name: Tier-1 end-to-end fixtures
+        run: cargo test --test daily_use_smoke
+
+      - name: Contract census (deny)
+        run: bash scripts/contract_census.sh /tmp/contract_census.log
+
+      - name: IR determinism (quick)
+        run: bash benchmarks/ll_determinism_check.sh --quick
+
+      - name: Parity corpora
+        run: bash benchmarks/parity/run.sh cast_cases float_cases float_fmt_cases int_cases parse_cases string_cases

@@ -1,0 +1,112 @@
+// ── boot_plus_x86.bad — multiboot boot in pure .bad ───────────────────
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// The x86 counterpart to boot_plus_rv64/aarch64: a pure `.bad` flat image
+// that QEMU's multiboot loader boots and that prints "Briev" (32-bit
+// prologue) then "R64" (64-bit symbolic body) on COM1 — captured by
+// `-serial stdio`. The prologue prints the banner, switches to long mode
+// through identity page tables in .data, then a symbolic 64-bit body runs
+// and parks.
+//
+// QEMU's multiboot loader (hw/i386/multiboot.c) only takes multiboot1, and
+// only a non-ELF32 image through the `MULTIBOOT_HEADER_HAS_ADDR` (a.out
+// kludge) path — so the header carries the load/entry addresses and the
+// image is a flat `--raw-bin` binary (lib/targets/multiboot-x86_64.ld
+// places .text at 1 MiB; the header sits at flat offset 0).
+//
+// Build/gate: tests/bare/qemu-x86-multiboot-bad.sh.
+
+section .text
+// multiboot1 header with the a.out kludge (flags bit 16).
+mh_start:
+    .long 0x1BADB002                  // magic
+    .long 0x00010000                  // flags: MULTIBOOT_HEADER_HAS_ADDR
+    .long -(0x1BADB002 + 0x00010000)  // checksum
+    .long 0x100000                    // header_addr (image base + 0)
+    .long 0x100000                    // load_addr
+    .long 0                           // load_end_addr (0 = whole file)
+    .long 0                           // bss_end_addr (0 = none)
+    .long _entry                      // entry_addr
+mh_end:
+
+// 32-bit prologue. QEMU enters here in protected mode, paging off.
+raw x86_64 _entry
+    .code32
+    cli
+    // COM1 at 0x3f8 — write "Briev\n" (QEMU's 16550 reset state is usable).
+    movw $0x3f8, %dx
+    movb $66, %al
+    outb %al, %dx
+    movb $114, %al
+    outb %al, %dx
+    movb $105, %al
+    outb %al, %dx
+    movb $101, %al
+    outb %al, %dx
+    movb $118, %al
+    outb %al, %dx
+    movb $10, %al
+    outb %al, %dx
+
+    // Switch to long mode through the identity page tables in .data.
+    lgdt gdt_desc
+    movl $pml4, %eax
+    movl %eax, %cr3
+    movl %cr4, %eax
+    orl $0x20, %eax                   // CR4.PAE
+    movl %eax, %cr4
+    movl $0xC0000080, %ecx            // EFER
+    rdmsr
+    orl $0x100, %eax                  // EFER.LME
+    wrmsr
+    movl %cr0, %eax
+    orl $0x80000001, %eax             // CR0.PG | PE
+    movl %eax, %cr0
+    ljmp $0x08, $_start64
+    .code64
+end raw
+
+// 64-bit symbolic body — exercise assembly+ on the x86 long-mode path.
+// "R64" proves the identity map + symbolic lowering ran after the switch.
+_start64: [r0 valid]
+    let port = 0x3F8
+    let r = 82
+    outb r, port
+    let six = 54
+    outb six, port
+    let four = 52
+    outb four, port
+    let nl = 10
+    outb nl, port
+    let ch = 66
+    // A one-cell VGA write proves the identity map is live.
+    store ch, 0xB8000
+    Park
+
+// Page tables and GDT live in .data (loaded, never executed).
+section .data
+.align 4096
+// Identity map: PML4 → PDPT → PD, one 2 MiB page covering 0..2 MiB
+// (code at 1 MiB, VGA at 0xB8000).
+pml4:
+    .quad pdpt + 0x3
+    .fill 511, 8, 0
+pdpt:
+    .quad pd + 0x3
+    .fill 511, 8, 0
+pd:
+    .quad 0x83                        // present | write | 2 MiB page
+    .fill 511, 8, 0
+
+// Minimal GDT: null, 64-bit code (0x08), 32-bit data (0x10). `lgdt`
+// reads a 6-byte pseudo-descriptor (limit + base), not the entries.
+.align 8
+gdt_desc:
+    .word gdt32_end - gdt32 - 1
+    .long gdt32
+.align 8
+gdt32:
+    .quad 0
+    .quad 0x00AF9A000000FFFF
+    .quad 0x00CF92000000FFFF
+gdt32_end:

@@ -35,10 +35,9 @@ use crate::analysis::density::is_float_type;
 use crate::ast::bad::{
     BadBodyItem, BadDirective, BadInstr, BadLabel, BadLocal, BadOperand, BadProgram, BadTopLevel,
 };
-use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldStmt, BldTopLevel};
+use crate::ast::bld::{BldBootstrap, BldConst, BldDefn, BldExternFn, BldProgram, BldStmt, BldTopLevel};
 use crate::ast::{BinaryOpKind, Expr, Type, UnaryOpKind};
 use crate::backend::bad::registry::{BadIsa, BadIsaLowering, BadRegisters, ImmHandling};
-use super::registry::{BldIntrinsics, IntrinsicLowering};
 use crate::errors::Span;
 use crate::parser::bad::parse_bad;
 use crate::parser::bld::parse_bld;
@@ -263,6 +262,13 @@ struct Body {
     vreg: usize,
     name: String,
     ret: Option<VClass>,
+    /// ABI registers parameters live in (leaf recipes bind them directly).
+    reserved: Vec<String>,
+    /// Names assigned anywhere in this recipe (`x = …`, `x += …`). A
+    /// `let` whose name is mutated cannot stay a compile-time constant:
+    /// the loop/condition lowering precedes the assignment and would fold
+    /// the stale value. Force storage at declaration instead.
+    mutated: std::collections::HashSet<String>,
 }
 
 impl Body {
@@ -277,6 +283,30 @@ impl Body {
             vreg: 0,
             name: name.to_string(),
             ret,
+            reserved: Vec::new(),
+            mutated: std::collections::HashSet::new(),
+        }
+    }
+}
+
+/// Collect assignment targets across the recipe (recursing through nested
+/// blocks and loops) so `st_let` can materialize storage for mutated
+/// names.
+fn collect_assigned(stmts: &[BldStmt], out: &mut std::collections::HashSet<String>) {
+    for st in stmts {
+        match st {
+            BldStmt::Assign { target: Expr::Identifier(n), .. } => {
+                out.insert(n.clone());
+            }
+            BldStmt::Block { body, .. } => collect_assigned(body, out),
+            BldStmt::When { then, otherwise, .. } => {
+                collect_assigned(then, out);
+                if let Some(els) = otherwise {
+                    collect_assigned(els, out);
+                }
+            }
+            BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => collect_assigned(body, out),
+            _ => {}
         }
     }
 }
@@ -289,12 +319,12 @@ enum Stream {
     Const(BldConst),
     Defn(BldDefn),
     Bootstrap(BldBootstrap),
+    ExternFn(BldExternFn),
 }
 
 pub struct BldLowerer<'a> {
     isa: &'a BadIsa,
     regs: &'a BadRegisters,
-    intrinsics: BldIntrinsics,
     family: String,
     base_dir: Option<std::path::PathBuf>,
     root_path: Option<std::path::PathBuf>,
@@ -328,11 +358,9 @@ impl<'a> BldLowerer<'a> {
     ) -> Self {
         let empty = Body::new("", None);
         let span = Span { start: 0, end: 0, line: 1, column: 1 };
-        let intrinsics = BldIntrinsics::load();
         BldLowerer {
             isa,
             regs,
-            intrinsics,
             family: family.to_string(),
             base_dir,
             root_path,
@@ -370,6 +398,23 @@ impl<'a> BldLowerer<'a> {
         self.load_items(items, self.cur_file.clone(), 0)
     }
 
+    /// Load an already-built `BldProgram` (the .bad assembly+ pass). No
+    /// parsing, no synthetic source: the AST carries exact spans.
+    pub fn load_program(&mut self, program: BldProgram) -> Result<(), String> {
+        if let Some(root) = &self.root_path {
+            if let Ok(canon) = root.canonicalize() {
+                self.modules.insert(canon);
+            }
+        }
+        self.root_span = program.span;
+        self.cur_file = self
+            .root_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<input>".to_string());
+        self.load_items(program.items, self.cur_file.clone(), 0)
+    }
+
     /// Merge one file's top-level items, recursing through `.bld` imports.
     fn load_items(&mut self, items: Vec<BldTopLevel>, file: String, depth: usize) -> Result<(), String> {
         self.cur_file = file.clone();
@@ -389,6 +434,9 @@ impl<'a> BldLowerer<'a> {
                 BldTopLevel::Const(c) => self.stream.push((Stream::Const(c), file.clone())),
                 BldTopLevel::Defn(d) => self.stream.push((Stream::Defn(d), file.clone())),
                 BldTopLevel::Bootstrap(b) => self.stream.push((Stream::Bootstrap(b), file.clone())),
+                BldTopLevel::ExternFn(e) => {
+                    self.stream.push((Stream::ExternFn(e), file.clone()))
+                }
             }
         }
         Ok(())
@@ -556,16 +604,6 @@ impl<'a> BldLowerer<'a> {
                             "rename it — recipe names must not look like compiler-managed value registers",
                         ));
                     }
-                    if self.intrinsics.is_intrinsic(&d.name) {
-                        return Err(self.fail(
-                            &format!("`defn {}`", d.name),
-                            "it shadows an engine intrinsic",
-                            &format!(
-                                "rename it — `{}` is the dialect's built-in verb; call it directly",
-                                d.name
-                            ),
-                        ));
-                    }
                     let sig = self.sig_for_defn(&d)?;
                     self.declare_sig(&d.name, sig)?;
                 }
@@ -577,16 +615,6 @@ impl<'a> BldLowerer<'a> {
                             &format!("`bootstrap {}`", b.name),
                             "the name is in the compiler's value namespace (vN / fvN)",
                             "rename it — entry names must not look like compiler-managed value registers",
-                        ));
-                    }
-                    if self.intrinsics.is_intrinsic(&b.name) {
-                        return Err(self.fail(
-                            &format!("`bootstrap {}`", b.name),
-                            "it shadows an engine intrinsic",
-                            &format!(
-                                "rename it — `{}` is the dialect's built-in verb",
-                                b.name
-                            ),
                         ));
                     }
                     self.bootstraps += 1;
@@ -607,11 +635,59 @@ impl<'a> BldLowerer<'a> {
                     };
                     self.declare_sig(&b.name, sig)?;
                 }
+                Stream::ExternFn(e) => {
+                    self.cur_span = e.span;
+                    self.cur_file = file.clone();
+                    let sig = self.sig_for_extern(&e)?;
+                    self.declare_sig(&e.name, sig)?;
+                }
             }
         }
         Ok(())
     }
 
+    /// Build an `extern fn` signature: annotated params, optional return.
+    /// Arity is checked (the author declared it), and argument classes are
+    /// coerced at the call site like any typed defn.
+    fn sig_for_extern(&mut self, e: &BldExternFn) -> Result<Sig, String> {
+        let mut params = Vec::with_capacity(e.params.len());
+        for p in &e.params {
+            let ty = p.ty.as_ref().ok_or_else(|| {
+                self.fail(
+                    &format!("parameter `{}` of `extern fn {}`", p.name, e.name),
+                    "it has no type, and an extern call stages arguments per the C ABI",
+                    &format!("annotate it — `{}: Int` (or Float/Bool/Ptr)", p.name),
+                )
+            })?;
+            let class = self.annotation_class(ty).map_err(|why| {
+                self.fail(
+                    &format!("parameter `{}` of `extern fn {}`", p.name, e.name),
+                    &why,
+                    "use a scalar class: Int, Float, Bool, or Ptr",
+                )
+            })?;
+            params.push(class);
+        }
+        let ret = match &e.ret {
+            None => None,
+            Some(Type::Void) => None,
+            Some(ty) => Some(self.annotation_class(ty).map_err(|why| {
+                self.fail(
+                    &format!("the return type of `extern fn {}`", e.name),
+                    &why,
+                    "use a scalar class: Int, Float, Bool, or Ptr, or omit the return type",
+                )
+            })?),
+        };
+        Ok(Sig {
+            params,
+            ret,
+            external: false,
+            check_arity: true,
+            span: e.span,
+            file: self.cur_file.clone(),
+        })
+    }
     /// The compiler-managed value namespace (`vN` / `fvN`): internal
     /// recipe names may not collide with it — the M4 allocator rewrites
     /// those operand names mechanically.
@@ -872,6 +948,8 @@ impl<'a> BldLowerer<'a> {
                     };
                     self.recipe_core(head)?;
                 }
+                // Signature-only: an `extern fn` has no body to emit.
+                Stream::ExternFn(_) => {}
             }
         }
         Ok(BadProgram {
@@ -908,6 +986,7 @@ impl<'a> BldLowerer<'a> {
     /// One recipe = ownership frame + exported label + lowered body.
     fn recipe_core(&mut self, head: RecipeHead<'_>) -> Result<(), String> {
         self.body = Body::new(head.name, head.ret);
+        collect_assigned(head.stmts, &mut self.body.mutated);
         let stash = stmts_contain_call(head.stmts);
         self.bind_params(head.name, head.params, stash)?;
         let stmts = head.stmts;
@@ -925,6 +1004,9 @@ impl<'a> BldLowerer<'a> {
             self.stmt(st, pos)?;
         }
         let b = std::mem::replace(&mut self.body, Body::new("", None));
+        let mut items = b.items;
+        coalesce_adjacent_copies(&mut items);
+        remove_self_moves(&mut items);
         self.out.extend(b.own_first);
         // An ownership block may have switched sections (a .rodata data
         // label); the recipe's own instructions are .text — say so
@@ -938,7 +1020,9 @@ impl<'a> BldLowerer<'a> {
             name: head.name.to_string(),
             local: false,
             contracts: Vec::new(),
-            body: b.items,
+            body: items,
+            reserved_regs: b.reserved,
+            symbolic: false,
             span: head.span,
         }));
         self.out.extend(b.trailing);
@@ -985,10 +1069,11 @@ impl<'a> BldLowerer<'a> {
             cur.take(*class);
             let home = if stash {
                 let v = self.fresh_vreg(*class);
-                let src = BadOperand::Name(reg);
+                let src = BadOperand::Name(reg.clone());
                 self.emit_copy(&v, src, *class)?;
                 v
             } else {
+                self.body.reserved.push(reg.clone());
                 reg
             };
             let binding = Binding { reg: Some(home), class: *class, konst: None };
@@ -1025,6 +1110,12 @@ impl<'a> BldLowerer<'a> {
             BldStmt::Continue { .. } => self.st_continue(),
             BldStmt::Return { value, .. } => self.st_return(value.as_ref()),
             BldStmt::Bad { text, .. } => self.st_bad(text, pos),
+            BldStmt::Instr(i) => self.st_instr(i),
+            BldStmt::Bind { name, register, .. } => self.st_bind(name, register),
+            BldStmt::WriteReg { register, value, .. } => self.st_write_reg(register, value),
+            BldStmt::RawClobber { text, clobbers, .. } => {
+                self.st_raw_clobber(text, clobbers, pos)
+            }
         }
     }
 
@@ -1045,6 +1136,13 @@ impl<'a> BldLowerer<'a> {
         };
         let class = v.class;
         let binding = match (v.konst, &v.op) {
+            // Mutated names get storage at declaration so loop conditions
+            // and later reads see the runtime value, not the initial fold.
+            (Some(_), _) if self.body.mutated.contains(name) => {
+                let reg = self.fresh_vreg(class);
+                self.emit_copy(&reg, v.op.clone(), class)?;
+                Binding { reg: Some(reg), class, konst: None }
+            }
             (Some(k), _) => Binding { reg: None, class, konst: Some(k) },
             // A freshly emitted single-def value register becomes the
             // binding's storage directly — no second copy.
@@ -1058,6 +1156,48 @@ impl<'a> BldLowerer<'a> {
             }
         };
         self.scopes_insert(name, binding)
+    }
+
+    /// `x = x <op> r` into x's own register when the operation has an
+    /// in-place form. Safe because the destination is also the first
+    /// source; the allocator never places r in the same register while x
+    /// is live.
+    fn try_inplace_assign(
+        &mut self,
+        name: &str,
+        reg: &str,
+        class: VClass,
+        value: &Expr,
+    ) -> Result<bool, String> {
+        let Expr::BinaryOp(op, l, r) = value else { return Ok(false) };
+        let op = *op;
+        if matches!(
+            op,
+            BinaryOpKind::Eq
+                | BinaryOpKind::Neq
+                | BinaryOpKind::Lt
+                | BinaryOpKind::Gt
+                | BinaryOpKind::Le
+                | BinaryOpKind::Ge
+                | BinaryOpKind::And
+                | BinaryOpKind::Or
+                | BinaryOpKind::Concat
+        ) {
+            return Ok(false);
+        }
+        let Expr::Identifier(lhs) = l.as_ref() else { return Ok(false) };
+        if lhs != name {
+            return Ok(false);
+        }
+        let rv = self.expr(r)?;
+        let rv = self.promote(rv, class)?;
+        let mn = self.binop_mnemonic(op, class)?;
+        self.emit(mn, vec![
+            BadOperand::Name(reg.to_string()),
+            BadOperand::Name(reg.to_string()),
+            rv.op.clone(),
+        ], class)?;
+        Ok(true)
     }
 
     fn st_assign(&mut self, target: &Expr, value: &Expr) -> Result<(), String> {
@@ -1085,6 +1225,14 @@ impl<'a> BldLowerer<'a> {
                 });
             }
         };
+        // `x = x <op> r` writes in place: evaluate r, then emit the op
+        // with x's own register as the destination. Removes the temp +
+        // copy hand-tuned code never had.
+        if let Some(reg) = binding.reg.clone() {
+            if self.try_inplace_assign(&name, &reg, binding.class, value)? {
+                return Ok(());
+            }
+        }
         let v = self.expr(value)?;
         let v = self.promote(v, binding.class)?;
         match binding.reg {
@@ -1107,6 +1255,23 @@ impl<'a> BldLowerer<'a> {
         then: &[BldStmt],
         otherwise: Option<&[BldStmt]>,
     ) -> Result<(), String> {
+        // `when cond: break` / `when cond: continue` is one inverted
+        // conditional branch — no synthetic label, no extra jump.
+        if otherwise.is_none() && then.len() == 1 {
+            match &then[0] {
+                BldStmt::Break { .. } => {
+                    if let Some((_, end)) = self.body.loops.last().cloned() {
+                        return self.lower_cond(cond, &end, true);
+                    }
+                }
+                BldStmt::Continue { .. } => {
+                    if let Some((head, _)) = self.body.loops.last().cloned() {
+                        return self.lower_cond(cond, &head, true);
+                    }
+                }
+                _ => {}
+            }
+        }
         let else_l = self.fresh_label("whe");
         let end = self.fresh_label("whend");
         self.lower_cond(cond, &else_l, false)?;
@@ -1132,11 +1297,8 @@ impl<'a> BldLowerer<'a> {
         self.push_local(&head);
         self.lower_cond(cond, &end, false)?;
         self.body.loops.push((head.clone(), end.clone()));
-        for s in body {
-            self.stmt(s, RecipePos::Middle)?;
-        }
+        self.lower_loop_body(body, &head)?;
         self.body.loops.pop();
-        self.emit_jmp(&head)?;
         self.push_local(&end);
         Ok(())
     }
@@ -1146,13 +1308,40 @@ impl<'a> BldLowerer<'a> {
         let end = self.fresh_label("lpend");
         self.push_local(&head);
         self.body.loops.push((head.clone(), end.clone()));
-        for s in body {
-            self.stmt(s, RecipePos::Middle)?;
-        }
+        self.lower_loop_body(body, &head)?;
         self.body.loops.pop();
-        self.emit_jmp(&head)?;
         self.push_local(&end);
         Ok(())
+    }
+
+    /// Emit a loop body and its back-edge. A trailing `when cond: break`
+    /// fuses with the back-edge into ONE inverted conditional branch
+    /// (`b.ne head`), instead of `beq end; b head`.
+    fn lower_loop_body(&mut self, body: &[BldStmt], head: &str) -> Result<(), String> {
+        let trailing = Self::trailing_break(body);
+        let normal = match trailing {
+            Some(_) => &body[..body.len() - 1],
+            None => body,
+        };
+        for s in normal {
+            self.stmt(s, RecipePos::Middle)?;
+        }
+        match trailing {
+            Some(cond) => self.lower_cond(cond, head, false),
+            None => self.emit_jmp(head),
+        }
+    }
+
+    /// The condition of a trailing `when cond: break` (one-way, single
+    /// `break`), if the loop body ends with one — the back-edge fusion case.
+    fn trailing_break(body: &[BldStmt]) -> Option<&Expr> {
+        let BldStmt::When { cond, then, otherwise: None, .. } = body.last()? else {
+            return None;
+        };
+        if then.len() == 1 && matches!(then[0], BldStmt::Break { .. }) {
+            return Some(cond);
+        }
+        None
     }
 
     fn st_break(&mut self) -> Result<(), String> {
@@ -1213,6 +1402,113 @@ impl<'a> BldLowerer<'a> {
     /// splice into the recipe body at any position. Ownership items
     /// (sections, data labels, defns, raw blocks) attach only at the
     /// recipe's first or last statement — .bad ownership is positional.
+    fn canonical_phys(&self, name: &str) -> Result<(String, VClass), String> {
+        let is_portable = |n: &str| {
+            if n == "sp" || n == "pc" {
+                return true;
+            }
+            let Some(rest) = n.strip_prefix('r').or_else(|| n.strip_prefix('f')) else {
+                return false;
+            };
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+        };
+        if is_portable(name) {
+            if self.regs.resolve(name, &self.family).is_none() {
+                return Err(self.fail(
+                    &format!("register `{name}`"),
+                    &format!("`{}` has no such portable register", self.family),
+                    "use a register the target defines, or `raw <target>` for target-only code",
+                ));
+            }
+            let class = if name.starts_with('f') { VClass::Float } else { VClass::Int };
+            return Ok((name.to_string(), class));
+        }
+        if let Some((canon, width)) = self.regs.resolve_alias(name, &self.family) {
+            if width.is_some() {
+                return Err(self.fail(
+                    &format!("register `{name}`"),
+                    "width-specific register spellings are not supported at the boundary yet",
+                    "use the full-width name (`rax`, `x0`, `a0`) or a raw region",
+                ));
+            }
+            let class = if canon.starts_with('f') { VClass::Float } else { VClass::Int };
+            return Ok((canon, class));
+        }
+        let targets = self.regs.alias_targets(name);
+        if !targets.is_empty() {
+            return Err(self.fail(
+                &format!("register `{name}`"),
+                &format!("it exists only on [{}]", targets.join(", ")),
+                &format!("use a register `{}` has, or a raw region", self.family),
+            ));
+        }
+        Err(self.fail(
+            &format!("`{name}`"),
+            "it is not a physical register",
+            "use a canonical register (r0-r15, f0-f15), a target name, or a symbolic value",
+        ))
+    }
+
+    fn st_bind(&mut self, name: &str, register: &str) -> Result<(), String> {
+        let (canon, class) = self.canonical_phys(register)?;
+        if self.body.reserved.iter().any(|r| r == &canon) {
+            // fine — two pins to the same register are the author's call
+        }
+        self.body.reserved.push(canon.clone());
+        self.scopes_insert(name, Binding { reg: Some(canon), class, konst: None })
+    }
+
+    fn st_write_reg(&mut self, register: &str, value: &Expr) -> Result<(), String> {
+        let (canon, class) = self.canonical_phys(register)?;
+        let v = self.expr(value)?;
+        let v = self.promote(v, class)?;
+        self.body.reserved.push(canon.clone());
+        self.emit_copy(&canon, v.op, class)
+    }
+
+    fn st_raw_clobber(
+        &mut self, text: &str, clobbers: &[String], pos: RecipePos,
+    ) -> Result<(), String> {
+        for c in clobbers {
+            let (canon, _) = self.canonical_phys(c)?;
+            self.body.reserved.push(canon);
+        }
+        self.st_bad(text, pos)
+    }
+
+    /// Internal symbolic instruction (from the .bad assembly+ pass).
+    /// Operands may name `vN`/`fvN`; the allocator resolves them.
+    fn st_instr(&mut self, i: &BadInstr) -> Result<(), String> {
+        self.cur_span = i.span.clone();
+        // Resolve symbolic names through the current bindings: a bound
+        // value becomes its register/virtual or constant; an unbound
+        // name stays a symbol (e.g. the label in `addr`).
+        let mut ops = Vec::with_capacity(i.operands.len());
+        for op in &i.operands {
+            let op = match op {
+                BadOperand::Name(n) if self.lookup(n).is_some() => {
+                    self.expr(&Expr::Identifier(n.clone()))?.op
+                }
+                other => other.clone(),
+            };
+            ops.push(op);
+        }
+        // Sub-width stores cannot take an immediate address on most
+        // targets; materialize it in a register.
+        if matches!(i.mnemonic.as_str(), "stb" | "sth")
+            && matches!(ops.get(1), Some(BadOperand::Int(_) | BadOperand::Float(_)))
+        {
+            let addr = self.fresh_vreg(VClass::Int);
+            self.emit_copy(&addr, ops[1].clone(), VClass::Int)?;
+            ops[1] = BadOperand::Name(addr);
+        }
+        let is_float = ops.iter().any(|o| {
+            matches!(o, BadOperand::Name(n) if n.starts_with("fv"))
+        });
+        let class = if is_float { VClass::Float } else { VClass::Int };
+        self.emit(&i.mnemonic, ops, class)
+    }
+
     fn st_bad(&mut self, text: &str, pos: RecipePos) -> Result<(), String> {
         let wrapped = format!("_bldwrap:\n{text}");
         let prog = parse_bad(&wrapped).map_err(|e| {
@@ -1774,116 +2070,114 @@ impl<'a> BldLowerer<'a> {
     /// An engine verb call: the registry's per-target sequence inlines at
     /// the call site — arguments substitute into `$N` slots, no ABI
     /// staging, and a `"ret"` verb's result arrives in r0.
-    fn lower_intrinsic(
-        &mut self,
-        callee: &str,
-        args: &[Expr],
-        lox: IntrinsicLowering,
-    ) -> Result<Option<Lowered>, String> {
-        let arity = self.intrinsics.arity(callee).ok_or_else(|| {
-            self.fail(
-                &format!("engine verb `{callee}`"),
-                "it lost its registry row",
-                "report this — every routed verb carries its row",
-            )
-        })?;
-        if args.len() != arity {
+    /// Lower the four engine verbs that map 1:1 onto core ISA ops
+    /// (`Store`/`Load`/`ReadControlReg`/`WriteControlReg`). Returns
+    /// `Some(result)` when handled, `None` for any other callee.
+    fn lower_engine_verb(
+        &mut self, callee: &str, args: &[Expr],
+    ) -> Result<Option<Option<Lowered>>, String> {
+        match callee {
+            "Store" => {
+                let [v, a] = self.check_two_args(callee, args, "Store(value, addr)")?;
+                self.emit("store", vec![v, a], VClass::Int)?;
+                Ok(Some(None))
+            }
+            "WriteControlReg" => {
+                let [n, v] = self.check_two_args(callee, args, "WriteControlReg(csr, value)")?;
+                self.emit("writecr", vec![n, v], VClass::Int)?;
+                Ok(Some(None))
+            }
+            "Load" => {
+                let addr = self.check_one_arg(callee, args, "Load(addr)")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit("load", vec![BadOperand::Name(reg.clone()), addr], VClass::Int)?;
+                Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
+            }
+            "ReadControlReg" => {
+                let n = self.check_one_arg(callee, args, "ReadControlReg(csr)")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit("readcr", vec![BadOperand::Name(reg.clone()), n], VClass::Int)?;
+                Ok(Some(Some(Lowered::temp_reg(reg, VClass::Int))))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn check_one_arg(
+        &mut self, callee: &str, args: &[Expr], fix: &str,
+    ) -> Result<BadOperand, String> {
+        if args.len() != 1 {
             return Err(self.fail(
-                &format!("call to `{callee}`"),
-                &format!("it takes {arity} argument(s), got {}", args.len()),
-                &format!("match the `{callee}` signature"),
+                &format!("`{callee}`"),
+                &format!("it takes 1 argument, got {}", args.len()),
+                &format!("write `{fix}`"),
             ));
         }
-        let mut vals = Vec::with_capacity(args.len());
-        for a in args {
-            vals.push(self.expr(a)?);
-        }
-        for line in lox.seq.split(';') {
-            self.emit_template_line(line, &vals, callee)?;
-        }
-        Ok(match self.intrinsics.returns(callee) {
-            Some(true) => {
-                let dst = self.fresh_vreg(VClass::Int);
-                let src = BadOperand::Name(ret_reg(VClass::Int).to_string());
-                self.emit_copy(&dst, src, VClass::Int)?;
-                Some(Lowered::temp_reg(dst, VClass::Int))
-            }
-            _ => None,
-        })
+        Ok(self.expr(&args[0])?.op)
     }
 
-    /// One `;`-separated template line: mnemonic + operand tokens, with
-    /// commas as pure separators.
-    fn emit_template_line(
-        &mut self,
-        line: &str,
-        vals: &[Lowered],
-        callee: &str,
-    ) -> Result<(), String> {
-        let line = line.trim();
-        if line.is_empty() {
-            return Ok(());
+    fn check_two_args(
+        &mut self, callee: &str, args: &[Expr], fix: &str,
+    ) -> Result<[BadOperand; 2], String> {
+        if args.len() != 2 {
+            return Err(self.fail(
+                &format!("`{callee}`"),
+                &format!("it takes 2 argument(s), got {}", args.len()),
+                &format!("write `{fix}`"),
+            ));
         }
-        let owned = line.replace(',', " ");
-        let mut tokens = owned.split_whitespace();
-        let Some(mn) = tokens.next() else {
-            return Ok(());
-        };
-        let mut ops = Vec::new();
-        for tok in tokens {
-            ops.push(self.template_operand(tok, vals, callee)?);
-        }
-        self.emit(mn, ops, VClass::Int)
+        Ok([self.expr(&args[0])?.op, self.expr(&args[1])?.op])
     }
 
-    /// One template operand: `$N` splices the argument's operand, `$N!`
-    /// additionally demands a compile-time constant (opcode-encoded
-    /// numbers), literal integers ride as immediates, everything else is
-    /// a verbatim name (a register the template author named).
-    fn template_operand(
-        &self,
-        tok: &str,
-        vals: &[Lowered],
-        callee: &str,
-    ) -> Result<BadOperand, String> {
-        let (spec, bare) = match tok.strip_suffix('!') {
-            Some(s) => (s, true),
-            None => (tok, false),
-        };
-        if let Some(idx) = spec.strip_prefix('$') {
-            let n: usize = idx.parse().map_err(|_| {
-                self.fail(
-                    &format!("engine verb `{callee}`"),
-                    &format!("its lowering names the malformed slot `{tok}`"),
-                    "report this — registry slots are $1, $2, …",
-                )
-            })?;
-            let v = vals.get(n - 1).ok_or_else(|| {
-                self.fail(
-                    &format!("engine verb `{callee}`"),
-                    &format!("its lowering names slot `{tok}`, beyond the argument count"),
-                    "report this — registry slots must match the arity",
-                )
-            })?;
-            if bare {
-                return match v.op {
-                    BadOperand::Int(_) | BadOperand::Float(_) => Ok(v.op.clone()),
-                    _ => Err(self.fail(
-                        &format!("call to `{callee}`"),
-                        &format!("argument #{n} must be a compile-time constant here — the machine encodes it in the instruction itself"),
-                        "pass a literal or a `const`",
-                    )),
-                };
+    /// `addr(label)` and `copyreg(rN)` — the two symbolic builtins that
+    /// emit a core op with a fresh virtual destination. `None` otherwise.
+    fn lower_special_call(
+        &mut self, callee: &str, args: &[Expr],
+    ) -> Result<Option<Lowered>, String> {
+        match callee {
+            "addr" => {
+                let label = self.bare_name_arg(args, "addr(label) with a data or code label")?;
+                let reg = self.fresh_vreg(VClass::Int);
+                self.emit(
+                    "addr",
+                    vec![BadOperand::Name(reg.clone()), BadOperand::Name(label)],
+                    VClass::Int,
+                )?;
+                Ok(Some(Lowered::temp_reg(reg, VClass::Int)))
             }
-            return Ok(v.op.clone());
+            "copyreg" => {
+                let name = self.bare_name_arg(args, "copyreg(r5)")?;
+                let (canon, class) = self.canonical_phys(&name)?;
+                let v = self.fresh_vreg(class);
+                self.body.reserved.push(canon.clone());
+                self.emit_copy(&v, BadOperand::Name(canon), class)?;
+                Ok(Some(Lowered::temp_reg(v, class)))
+            }
+            _ => Ok(None),
         }
-        if let Ok(n) = tok.parse::<i64>() {
-            return Ok(BadOperand::Int(n));
+    }
+
+    /// A one-argument call whose argument must be a bare identifier.
+    fn bare_name_arg(&mut self, args: &[Expr], fix: &str) -> Result<String, String> {
+        match args {
+            [Expr::Identifier(n)] => Ok(n.clone()),
+            [_] => Err(self.fail(
+                "this call",
+                "its argument must be a bare name",
+                &format!("write `{fix}` — not an expression"),
+            )),
+            _ => Err(self.fail(
+                "this call",
+                &format!("it takes one name, got {} argument(s)", args.len()),
+                &format!("write `{fix}`"),
+            )),
         }
-        Ok(BadOperand::Name(tok.to_string()))
     }
 
     fn lower_call(&mut self, callee: &str, args: &[Expr]) -> Result<Option<Lowered>, String> {
+        if let Some(v) = self.lower_special_call(callee, args)? {
+            return Ok(Some(v));
+        }
         if callee.contains('.') {
             return Err(self.fail(
                 &format!("call to `{callee}`"),
@@ -1891,19 +2185,12 @@ impl<'a> BldLowerer<'a> {
                 "call the bare name; its `import \"…\";` already brought it in",
             ));
         }
-        if self.intrinsics.is_intrinsic(callee) {
-            let lox = self.intrinsics.lookup(callee, &self.family).cloned().ok_or_else(|| {
-                let targets = self.intrinsics.targets(callee).join(", ");
-                self.fail(
-                    &format!("engine verb `{callee}`"),
-                    &format!("the `{}` target has no row for it", self.family),
-                    &format!(
-                        "write the sequence in a `bad {{ }}` block for `{}` — the verb provides: {targets}",
-                        self.family
-                    ),
-                )
-            })?;
-            return self.lower_intrinsic(callee, args, lox);
+        // Engine verbs from `std/bad/engine.bad` map 1:1 onto core ISA ops.
+        // They are normally inlined by the symbolic pass (`emit_engine_defn`),
+        // but a direct `Store`/`Load`/`ReadControlReg`/`WriteControlReg`
+        // call lands here — lower it to the core op without a config table.
+        if let Some(res) = self.lower_engine_verb(callee, args)? {
+            return Ok(res);
         }
         let sig = match self.sigs.get(callee) {
             Some(s) => s.clone(),
@@ -1954,6 +2241,29 @@ impl<'a> BldLowerer<'a> {
     /// needed source (`f(b, a)` with a and b already in argument regs).
     fn stage_args(&mut self, vals: &[Lowered], who: &str) -> Result<(), String> {
         let abi = ArgRegs::load(self.regs, &self.family);
+        // Direct moves when no source register is also a destination.
+        // This is the common case (immediates, virtual values) and avoids
+        // the old stage-through-a-temp dance.
+        let mut dests: Vec<String> = Vec::with_capacity(vals.len());
+        let mut cur = ArgCursor::default();
+        for v in vals {
+            let dst = match abi.next_slot(v.class, cur) {
+                Some(r) => r,
+                None => return Err(self.arg_budget_error(who, v.class, &cur, &abi)),
+            };
+            dests.push(dst);
+            cur.take(v.class);
+        }
+        let collides = vals.iter().any(|v| match &v.op {
+            BadOperand::Name(src) => dests.iter().any(|d| d == src),
+            _ => false,
+        });
+        if !collides {
+            for (v, dst) in vals.iter().zip(dests) {
+                self.emit_copy(&dst, v.op.clone(), v.class)?;
+            }
+            return Ok(());
+        }
         let staged = self.stage_each(vals, who, &abi)?;
         self.copy_staged_out(&staged, &abi)
     }
@@ -2136,6 +2446,111 @@ fn common_class(a: VClass, b: VClass) -> VClass {
 /// The fused compare-branch mnemonic: jump when `a OP b` matches
 /// `when_true`. Dual pairs keep the polarity table explicit — no
 /// arithmetic inversion to misread.
+/// Symbolic-only redundant-move removal (parity item 9): a compiler temp
+/// `v` defined by an instruction and read exactly once by the *next*
+/// instruction's `mov dst, v` collapses — the producer writes `dst`
+/// directly. This removes the result→temp→argument / result→return-reg
+/// round-trips a call chain produces. For a plain `mov v, src` producer it
+/// is copy propagation (`mov dst, src`).
+///
+/// Never touches raw instructions: raw code names physical registers,
+/// never the compiler-managed `vN`/`fvN` temps this pass requires.
+fn coalesce_adjacent_copies(items: &mut Vec<BadBodyItem>) {
+    let mut i = 0;
+    while i + 1 < items.len() {
+        if try_coalesce(items, i) {
+            items.remove(i + 1);
+            // Re-examine i: the rewritten producer may fuse with the next.
+            continue;
+        }
+        i += 1;
+    }
+}
+
+fn try_coalesce(items: &mut Vec<BadBodyItem>, i: usize) -> bool {
+    // Consumer: `mov d2, v`.
+    let Some((d2, s2)) = copy_pair(&items[i + 1]) else {
+        return false;
+    };
+    let BadOperand::Name(v) = &s2 else {
+        return false;
+    };
+    if !BldLowerer::is_virtual_name(v) || count_name(items, v) != 2 || d2 == *v {
+        return false;
+    }
+    // Producer: an instruction whose first operand it writes.
+    let BadBodyItem::Instr(prod) = &items[i] else {
+        return false;
+    };
+    if !writes_first_operand(&prod.mnemonic) {
+        return false;
+    }
+    let [BadOperand::Name(pv), ..] = prod.operands.as_slice() else {
+        return false;
+    };
+    if pv != v {
+        return false;
+    }
+    // `d2` may equal a source: every `writes_first_operand` op reads all
+    // sources before writing its destination, and the ISA templates
+    // handle dst == src (copy-then-op), so the in-place form is safe.
+    if let BadBodyItem::Instr(ins) = &mut items[i] {
+        ins.operands[0] = BadOperand::Name(d2);
+    }
+    true
+}
+
+/// Drop `mov X, X` / `fmov X, X` no-ops the coalescer can produce.
+fn remove_self_moves(items: &mut Vec<BadBodyItem>) {
+    items.retain(|it| {
+        let BadBodyItem::Instr(ins) = it else { return true };
+        if ins.mnemonic != "mov" && ins.mnemonic != "fmov" {
+            return true;
+        }
+        !matches!(ins.operands.as_slice(), [BadOperand::Name(a), BadOperand::Name(b)] if a == b)
+    });
+}
+
+/// Whether `mn`'s first operand is a destination (never `store`/`outb`).
+fn writes_first_operand(mn: &str) -> bool {
+    matches!(
+        mn,
+        "mov" | "fmov" | "load" | "addr" | "ldb" | "ldub" | "ldh" | "lduh"
+            | "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor"
+            | "shl" | "shr" | "sar" | "slt" | "sltu" | "not" | "neg"
+            | "mulhi" | "mulhiu" | "itof" | "ftoi" | "fadd" | "fsub"
+            | "fmul" | "fdiv" | "fneg" | "fabs" | "readcr"
+    )
+}
+
+/// `(dst-name, src-operand)` for a `mov`/`fmov` between two operands.
+fn copy_pair(item: &BadBodyItem) -> Option<(String, BadOperand)> {
+    let BadBodyItem::Instr(ins) = item else {
+        return None;
+    };
+    if ins.mnemonic != "mov" && ins.mnemonic != "fmov" {
+        return None;
+    }
+    let [BadOperand::Name(dst), src] = ins.operands.as_slice() else {
+        return None;
+    };
+    Some((dst.clone(), src.clone()))
+}
+
+/// Total occurrences of a named operand across the body's instructions.
+fn count_name(items: &[BadBodyItem], name: &str) -> usize {
+    let mut n = 0;
+    for it in items {
+        let BadBodyItem::Instr(ins) = it else { continue };
+        for op in &ins.operands {
+            if matches!(op, BadOperand::Name(x) if x == name) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn branch_op(op: BinaryOpKind, when_true: bool, is_float: bool) -> Option<&'static str> {
     let (i, f) = match op {
         BinaryOpKind::Eq => ("jz", "fjz"),
@@ -2300,6 +2715,8 @@ fn stmts_contain_call(stmts: &[BldStmt]) -> bool {
                 || otherwise.as_ref().map_or(false, |o| stmts_contain_call(o))
         }
         BldStmt::Loop { body, .. } | BldStmt::While { body, .. } => stmts_contain_call(body),
+        // Raw regions are opaque; assume they can call, so params stash.
+        BldStmt::RawClobber { .. } => true,
         _ => false,
     })
 }
@@ -2318,5 +2735,9 @@ fn stmt_span(st: &BldStmt) -> Span {
         | BldStmt::Continue { span }
         | BldStmt::Return { span, .. }
         | BldStmt::Bad { span, .. } => *span,
+        BldStmt::Instr(i) => i.span,
+        BldStmt::Bind { span, .. }
+        | BldStmt::WriteReg { span, .. }
+        | BldStmt::RawClobber { span, .. } => *span,
     }
 }

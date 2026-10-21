@@ -1,6 +1,7 @@
-// ── .bld (BILLD — Briev Intermediate Low-Level Dialect) parser ─────────
+// ── symbolic ENGINE parser (internal; .bld dialect retired) ────────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+// 2026-10-19: internal to .bad assembly+ lowering. No public .bld surface.
 // 2026-10-08 (BILLD plan, docs/plans/2026-10-08-billd-intermediate-dialect.md):
 // braced, Briev-shaped parser for .bld — the execution-recipe tier.
 // Shares the Briev TOKEN stream and the shared expression/type parsers;
@@ -41,6 +42,24 @@ pub fn parse_bld(source: &str) -> Result<BldProgram, SyntaxError> {
     })?;
     let mut p = Parser::new(tokens, source);
     p.parse_bld_program()
+}
+
+/// Parse one expression from `.bad` symbolic text using the shared Briev
+/// expression parser. Trailing tokens are an error.
+pub fn parse_bld_expr(source: &str) -> Result<Expr, SyntaxError> {
+    let tokens = crate::lexer::tokenize(source).map_err(|e| SyntaxError::InvalidExpression {
+        reason: format!("expression cannot be tokenized: {e}"),
+        span: crate::errors::Span::dummy(),
+    })?;
+    let mut p = Parser::new(tokens, source);
+    let expr = p.parse_expression()?;
+    if p.peek().is_some() {
+        return Err(SyntaxError::InvalidExpression {
+            reason: "trailing tokens after expression".to_string(),
+            span: crate::errors::Span::dummy(),
+        });
+    }
+    Ok(expr)
 }
 
 impl<'a> Parser<'a> {
