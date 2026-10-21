@@ -3171,6 +3171,11 @@ impl LlvmBackend {
         // after the field-init stores (a body may read state) and before any
         // node fires — mirrors emit_init_state for the inline-SROA path.
         self.emit_init_seeding_stores(out, indent);
+        // 2026-10-21 (pointer provenance): after the state fields are
+        // initialized, seed the Ptr-field cache. This is the main()/inline
+        // equivalent of the defn/txn entry preload; without it, repeated
+        // calls in a folded loop inttoptr separate loads of the same field.
+        self.preload_state_ptr_fields(out);
     }
 
     /// 2026-08-09 (init kind, Phase 2): seed every runtime-seeded invariant by
