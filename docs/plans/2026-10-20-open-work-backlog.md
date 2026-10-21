@@ -196,7 +196,9 @@ These are ranked by repeated evidence across fixtures and the suite.
   classifies them plain.
 - Added `compute_defn_needs_plain` (plain-only least fixpoint) and
   `defn_takes_plain`. No ABI change yet.
-- Next: `%PlainState` + context pointer ABI, print chain first, then a second
+- Next: normalize plain-let storage first (`Init` items, not
+  `plain_global_types` — that map is currently never populated), then
+  `%PlainState` + context pointer ABI, print chain first, then a second
   independent plain-state program. Machine `%State` must stay unescaped.
 - Design/rules:
   `docs/plans/2026-10-20-machine-backed-state-and-loop-emission.md`.

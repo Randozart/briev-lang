@@ -246,6 +246,21 @@ state**, not a response to a user keyword. The same applies to the machine-state
 4. If inference cannot prove an export/FFI/threading case, add the missing fact
    or keep an explicit assertion; do not reintroduce a performance keyword.
 
+## Implementation note — where plain lets actually live
+
+`plain let` declarations are parsed as `TopLevel::Init`, not as
+`Statement::Let`. The context prototype must therefore key off:
+
+- `ctx.plain_lets` for membership,
+- `ctx.inits` for the declared type + initializer,
+- deterministic sorted order of the plain names.
+
+`ctx.plain_global_types` is currently never populated; do not build the
+context on it without first either populating it from `Init` items or removing
+it. The existing plain-global emission in `emit_toplevel`/`mod.rs` reads
+`ctx.plain_global_types` and falls back to `ctx.inits` declarations; this is
+the first thing to normalize in the context slice.
+
 ## Rejected alternatives
 
 - **Stateful print / stateful stdout** — loses queue_drain/interval_step.
