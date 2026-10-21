@@ -90,5 +90,4 @@ It also keeps the mixed output-multiset and plain-context checks.
 | Commit | Change |
 |---|---|
 | `63f0e8ca` | carry experiment ported onto canonical base |
-| _pending_ | carry selector predicate + target-derived program mode |
-| _pending_ | guard three-way decisions + full-suite record |
+| `157470c3` | carry selector predicate + target-derived program mode; three-way guard; full-suite record |
