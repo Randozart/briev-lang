@@ -3623,7 +3623,17 @@ impl LlvmBackend {
                     .insert(conv.clone(), raw.to_string());
                 reg = conv;
             } else if param_llvm_ty == "i64" {
-                reg = raw;
+                reg = raw.clone();
+                // 2026-10-21 (pointer provenance): a Ptr<T> parameter uses the
+                // i64 address ABI. Seed ONE canonical ptr at entry so every
+                // index/deref in this function shares provenance instead of
+                // emitting a fresh inttoptr per access. This is the same
+                // dominance-safe rule used for ptr-typed ABI parameters above.
+                if matches!(t, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_)) {
+                    let p = self.fun.gen_reg();
+                    self.emit_inttoptr(out, "  ", &p, &raw);
+                    self.fun.canonical_ptrs.insert(raw.clone(), p);
+                }
                 // 2026-08-01 (B4): the SSO String-param {i64,i64} branch was
                 // retired — a String param is a ptr (handled above) or an i64
                 // address, never a fat pointer under the bits model.
