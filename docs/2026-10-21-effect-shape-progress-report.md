@@ -140,18 +140,23 @@ No selector-caused correctness failure was observed.
 1. **Per-loop mixed selection** — still program-level. A program with one
    carry-preferred and one escaped-preferred direct loop falls back to one
    shape. True per-loop needs the explicit effect-context work.
-2. **Canonical Local/effect context** — the long-term replacement for
+2. **Per-txn BatchShape** — `AnalysisResults.batch_shape` is a single
+   `Option<BatchShape>`; `detect_batch_shape` returns `None` when more than one
+   txn qualifies. Mixed direct-loop programs therefore have no countdown batch
+   for the carry path. The next structural step is a per-txn
+   `HashMap<String, BatchShape>`; `BatchShape.txn_name` already exists.
+3. **Canonical Local/effect context** — the long-term replacement for
    carry/escaped. Local fields should stay SSA; effect state should be a
    separate `noalias` context; no program-wide mode.
-3. **FP evaluation-order policy** — any shape that removes the guard from the
+4. **FP evaluation-order policy** — any shape that removes the guard from the
    hot loop changes float output under `fast` math. The canonical loop must
    pin or explicitly control this.
-4. **Controlled A/B for noisy rows** — telemetry, sweep_mid, ring, queue_sym.
+5. **Controlled A/B for noisy rows** — telemetry, sweep_mid, ring, queue_sym.
    Full-suite runs show a few percent variation; use interleaved A/B before
    calling any of them a regression.
-5. **Public API review** — `AnalysisResults` gained a field and
+6. **Public API review** — `AnalysisResults` gained a field and
    `LoopMaterializationPlan`; confirm no external constructor/plugin breakage.
-6. **Merge review** — after the A/B pass, merge the branch or keep it as a
+7. **Merge review** — after the A/B pass, merge the branch or keep it as a
    feature default with the documented limitations.
 
 ## Merge assessment
