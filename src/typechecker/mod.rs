@@ -11,6 +11,7 @@
 // - Variables → look up in scope
 
 mod output_inference;
+mod call_literals;
 mod validate;
 pub use validate::*;
 
@@ -2772,6 +2773,11 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
         let mut ctx = make_typecheck_context(env, universe);
         match item {
             TopLevel::Definition(d) => {
+                // 2026-10-21: elaboration must infer empty collection literals
+                // with the same declared-result context as check_item_body.
+                // Otherwise tuple accumulators become List<Int> when a generic
+                // call is revisited. Keep both passes' inference inputs aligned.
+                ctx.current_output_type = d.output_type.as_ref().map(output_type_to_type);
                 for (name, ty) in &d.parameters {
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
@@ -2791,6 +2797,7 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 }
             }
             TopLevel::Transaction(t) => {
+                ctx.current_output_type = t.output_type.as_ref().map(output_type_to_type);
                 for (name, ty) in &t.parameters {
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
@@ -2884,6 +2891,11 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
 }
 
 fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
+    elaborate_expr_children(expr, ctx, errors);
+    call_literals::elaborate(expr, ctx, errors);
+}
+
+fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
     match expr {
         Expr::Identifier(_) => {
             // 2026-08-06 (fix): closures are real first-class values now (a
