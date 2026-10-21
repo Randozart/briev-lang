@@ -261,6 +261,60 @@ it. The existing plain-global emission in `emit_toplevel`/`mod.rs` reads
 `ctx.plain_global_types` and falls back to `ctx.inits` declarations; this is
 the first thing to normalize in the context slice.
 
+## LLVM relationship — complement, never fight
+
+LLVM already performs SROA, GVN, LICM, loop reduction, vectorization, and
+register allocation. The C reference proves it: the C loop collapses to one
+`xmm0` accumulator and spills only around `fprintf`.
+
+The compiler's job is **fact exposure**, not register allocation:
+
+**Complement LLVM**
+- derive storage duration from cross-tick/contract/rollback/escape facts;
+- emit ordinary SSA values for non-observable, non-escaping state;
+- attach correct `noalias`, `readonly`, `argmemonly`, `memory`, alignment,
+  range, and invariance facts;
+- make effect boundaries explicit (distinct effect/plumbing context);
+- emit a canonical loop with clean liveness and no artificial state alias.
+
+**Fight LLVM**
+- a frontend register-budget model deciding how many phis survive;
+- manual phi caps or force-materialization to control spills;
+- opaque/launder barriers that block SROA;
+- manual accumulator formation when the input is already SSA;
+- `plain`/`state` as a performance toggle.
+
+The earlier phi-cap/global/launder prototypes failed precisely because they
+fought the optimizer. The C reference never needed a register budget; it
+exposed the loop.
+
+### Revised design rule
+
+> The compiler proves storage class/escape and emits SSA where the language
+> permits. LLVM decides registers, spills, reductions, and vectorization.
+> The compiler forces memory only where the language/ABI requires it.
+
+`LoopShape` remains a **semantic** analysis: cross-tick/ABI/observable
+boundaries, address-taken fields, contract visibility, required memory. It is
+not a register allocator.
+
+`PlainContext` is legitimate only as an **effect/alias boundary**: distinct,
+`noalias`, correct effect summary; machine state stays SSA where possible.
+If it only works by preventing SROA or forcing spills, reject it.
+
+### C-shape probe
+
+Before more context ABI work:
+
+1. Emit a Briev loop with the same local/SSA shape as C, no print/state
+   toggle.
+2. Compare Briev IR/asm with C: one accumulator in a register, no
+   per-iteration stack traffic.
+3. Add the print boundary; identify exactly what changes.
+4. If Briev IR is C-like but LLVM spills, fix metadata/effect facts. If not,
+   fix storage/loop emission.
+5. Record the IR/asm diff in the results file.
+
 ## Rejected alternatives
 
 - **Stateful print / stateful stdout** — loses queue_drain/interval_step.
