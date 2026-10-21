@@ -93,10 +93,9 @@ selector to diagnostics. Keep the checkpoint branch available until then.
 | Date | Commit | Change |
 |---|---|---|
 | 2026-10-21 | `3c1611d2` | effect-state-carry experiment (checkpoint branch) |
-| 2026-10-21 | `67973adc` | checkpoint doc/tag |
-| 2026-10-21 | _this branch_ | canonical direction doc |
-| 2026-10-21 | _this branch_ | Local classification: generic TopLevel walker + export regression test |
-| 2026-10-21 | _this branch_ | `ast::visit::walk_toplevel` now descends into `Export.inner` |
+| 2026-10-21 | `67973adc` | checkpoint doc + tag `checkpoint-effect-state-carry-2026-10-21` |
+| 2026-10-21 | `6c8ba811` | canonical direction doc; generic TopLevel Local walker; `Export.inner` descent; exported-field regression test |
+| 2026-10-21 | `main` / `a7fe6c3d` | branch point for canonical work (carry absent) |
 
 Update this table for every slice so the path from checkpoint to canonical
 model is auditable.
