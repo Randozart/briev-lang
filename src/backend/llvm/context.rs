@@ -1074,6 +1074,11 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-10-21 (effect-state-carry experiment): add loop-carried SSA
     /// phis for plain effect fields to the selected direct-Float loop.
     pub effect_carry: bool,
+    /// 2026-10-21 (ptr-provenance CI): raw Ptr<T> scalar accesses inside a
+    /// defn that takes a Ptr parameter are volatile. The canonical-pointer
+    /// path is insufficient across sibling inlined defns on LLVM 18; retire
+    /// this when interprocedural provenance is carried explicitly.
+    pub volatile_raw_ptr_params: bool,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1348,6 +1353,7 @@ impl FunctionContext {
         FunctionContext {
             plain_ptr: None,
             effect_carry: false,
+            volatile_raw_ptr_params: false,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1473,6 +1479,7 @@ impl FunctionContext {
         self.is_task_segment = false;
         self.plain_ptr = None;
         self.effect_carry = false;
+        self.volatile_raw_ptr_params = false;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

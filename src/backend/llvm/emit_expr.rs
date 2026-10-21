@@ -1601,8 +1601,13 @@ impl LlvmBackend {
                             indent, gep, elem_llvm, ptr, offset
                         )
                         .ok();
-                        let vol_prefix =
-                            if self.fun.volatile_read { "volatile " } else { "" };
+                        let vol_prefix = if self.fun.volatile_read
+                            || self.fun.volatile_raw_ptr_params
+                        {
+                            "volatile "
+                        } else {
+                            ""
+                        };
                         writeln!(
                             out,
                             "{}{} = load {}{}, ptr {}",
