@@ -6563,6 +6563,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
     ) -> bool {
         let bp = node.bounded_pre.as_ref().unwrap();
+        // 2026-10-21 (canonical Local/effect model): the frontend's
+        // materialization plan is the source of truth for Local fields. Fall
+        // back to the shape only when a caller built shapes without plans.
+        let planned_local: std::collections::HashSet<String> = analysis
+            .materialization
+            .get(&node.name)
+            .map(|plan| plan.local_fields().cloned().collect())
+            .unwrap_or_else(|| shape.local_fields.iter().cloned().collect());
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
                 "diag: txn='{}' local={:?} post_hoist_groups={} floats={} aggregates={} vector_groups={:?}",
@@ -6686,7 +6694,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if let Some(batch) = analysis.batch_shape.as_ref() {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
-                    self.fun.local_fields = shape.local_fields.iter().cloned().collect();
+                    self.fun.local_fields = planned_local.clone();
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
                         node.name, batch.batch_size, node.write_set.len()
@@ -6753,7 +6761,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.warnings.push(format!("info: txn '{}' dispatched via per-field phi ({}/{} fields written)", node.name, write_count, total_fields));
         }
         self.fun.pending_post_hoist = post_hoist;
-        self.fun.local_fields = shape.local_fields.iter().cloned().collect();
+        self.fun.local_fields = planned_local.clone();
         let is_decreasing = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         self.emit_countable_main(
             out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,

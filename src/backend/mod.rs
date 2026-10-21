@@ -41,6 +41,10 @@ pub struct AnalysisResults {
     // instead of re-deriving them with body re-walks. See
     // docs/plans/2026-07-31-frontend-driven-dispatch.md §6.
     pub loop_shapes: HashMap<String, LoopShape>,
+    /// 2026-10-21 (canonical Local/effect model): per-txn LoopMaterializationPlan,
+    /// derived from LoopShape.local_fields. The loop engine consumes this
+    /// instead of re-reading local_fields.
+    pub materialization: HashMap<String, crate::analysis::materialization::LoopMaterializationPlan>,
     pub swan_songs: HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once in the
     // frontend, consumed by the LLVM backend instead of re-walking bodies:
@@ -184,6 +188,8 @@ pub fn analyze_program(
             all_vars: std::collections::HashSet::new(),
         });
     let loop_shapes = crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width);
+    let materialization =
+        crate::analysis::materialization::build_materialization_plans(&loop_shapes);
     let swan_songs = build_swan_songs(items);
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once here so
     // every backend consumer reads frontend analysis instead of re-walking
@@ -333,6 +339,7 @@ pub fn analyze_program(
         region_analyzer: RegionAnalyzer::analyze(items),
         dependency_graph,
         loop_shapes,
+        materialization,
         swan_songs,
         density,
         modulo_partition,

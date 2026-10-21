@@ -732,6 +732,16 @@ mod tests {
         assert_eq!(shape.carried_float_count, 12);
         assert_eq!(shape.carried_scalar_count, 13);
         assert_eq!(shape.carried_aggregate_count, 0);
+        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
+        let plan = plans.get("tick").expect("tick plan");
+        assert_eq!(
+            plan.fields.get("p00"),
+            Some(&crate::analysis::materialization::StorageClass::Local)
+        );
+        assert_eq!(
+            plan.fields.get("count"),
+            Some(&crate::analysis::materialization::StorageClass::Machine)
+        );
     }
 
     #[test]
@@ -790,6 +800,12 @@ node tick [count < total][count == total] {
         assert!(!shape.local_fields.contains(&"f".to_string()),
             "a field referenced by an exported defn is not loop-local");
         assert!(!shape.local_fields.contains(&"count".to_string()));
+        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
+        let plan = plans.get("tick").expect("tick plan");
+        assert_eq!(
+            plan.fields.get("f"),
+            Some(&crate::analysis::materialization::StorageClass::Machine)
+        );
     }
 
     #[test]
