@@ -188,6 +188,19 @@ These are ranked by repeated evidence across fixtures and the suite.
 - No redundant `ptrtoint`/`inttoptr`/boxing in hot loops; suite unchanged or
   improved.
 
+### P2-9 — Storage-class inference and plain-context ABI
+
+**Status:** started 2026-10-20.
+
+- Removed explicit `plain` from `stdout_buf`/`stdout_fill`; inference still
+  classifies them plain.
+- Added `compute_defn_needs_plain` (plain-only least fixpoint) and
+  `defn_takes_plain`. No ABI change yet.
+- Next: `%PlainState` + context pointer ABI, print chain first, then a second
+  independent plain-state program. Machine `%State` must stay unescaped.
+- Design/rules:
+  `docs/plans/2026-10-20-machine-backed-state-and-loop-emission.md`.
+
 ### P2-8 — Performance regression triage
 
 **Evidence (fast `3c15268a` → current):**

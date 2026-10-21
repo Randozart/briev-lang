@@ -235,7 +235,12 @@ state**, not a response to a user keyword. The same applies to the machine-state
 ### Experiment order
 
 1. Remove `plain` from `stdout_buf`/`stdout_fill`; prove inference still selects
-   plain (globals/context, not `%State`). This is the first experiment.
+   plain (globals/context, not `%State`). **DONE 2026-10-20:** annotations
+   removed; `classify_plain_lets` still produces `@stdout_buf`/`@stdout_fill`
+   module globals and the 15-field `%State`; conformance + tier-1 E2E green.
+   No performance change expected from the annotation removal alone.
+   `compute_defn_needs_plain` + `defn_takes_plain` landed as the ABI analysis
+   foundation, with a transitive/plain-only unit test.
 2. Implement `needs_plain` and the plain-context ABI over derived plain fields.
 3. Validate on a second, independent plain-state program, not just print.
 4. If inference cannot prove an export/FFI/threading case, add the missing fact
