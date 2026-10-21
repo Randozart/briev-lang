@@ -227,7 +227,8 @@ dominated by run-to-run variance.
      `escaped_effect_cause`.
 6. **Mixed-program regression**
    - check `mixed_effect_shape` output multiset in the guard;
-   - remember the current program-level limitation and single `BatchShape`.
+   - remember the program-level selection limitation (per-txn batch is done;
+     per-loop carry/escaped mixing still needs effect-context work).
 7. **Rollback points**
    - `checkpoint-effect-state-carry-2026-10-21`
    - `checkpoint-effect-carry-selection-2026-10-21`
@@ -238,10 +239,11 @@ dominated by run-to-run variance.
 
 Follow-up plan: `docs/plans/2026-10-21-effect-shape-followups.md`.
 
-1. **Per-txn `BatchShape` map** — `AnalysisResults.batch_shape` is a single
-   `Option`; multiple qualifying txns return `None`. Mixed direct-loop programs
-   cannot use per-loop countdown/carry. `BatchShape.txn_name` is already in
-   place; the next slice is a `HashMap<String, BatchShape>`.
+1. **Per-txn `BatchShape` map — DONE (`118eb20c`).**
+   `AnalysisResults.batch_shapes` is a `HashMap<String, BatchShape>`;
+   `detect_batch_shapes` records every qualifying txn and countdown/carry use
+   the current txn's entry. `detect_batch_shape` remains the unique-shape
+   compatibility helper.
 2. **Per-loop carry/escaped mixing** — current mode is program-level. True
    per-loop selection needs explicit effect-context work.
 3. **Canonical Local/effect context** — loop-local fields stay SSA; effect

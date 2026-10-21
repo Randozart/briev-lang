@@ -99,6 +99,14 @@ direct-loop programs therefore lose countdown/carry and fall back to escaped.
 - Full suite + guard green; output MATCH.
 - No benchmark names or field prefixes.
 
+### Result
+
+DONE (`118eb20c`): `detect_batch_shapes()` returns a per-txn map;
+`detect_batch_shape()` remains the unique-shape compatibility helper.
+`AnalysisResults.batch_shapes` and countdown/carry dispatch use the entry for
+the current txn. Added a multiple-batch unit test. Full lib **3272 green**;
+timing guard PASS.
+
 ### Rollback
 
 The current single-`Option` gate remains the fallback; checkpoint branches
@@ -190,6 +198,6 @@ Direction doc: `docs/plans/2026-10-21-canonical-local-effect-model.md`.
 | 2026-10-21 | `7fdb2b10` | main merge: selection + Local foundation |
 | 2026-10-21 | `5c7e559b` | full research report |
 | 2026-10-21 | `dd007598` | F1 controlled A/B (no confirmed regression) |
-| 2026-10-21 | _pending_ | F2 per-txn BatchShape |
+| 2026-10-21 | `118eb20c` | F2 per-txn BatchShape |
 | 2026-10-21 | _pending_ | F3 dead batch emitter cleanup |
 | 2026-10-21 | _pending_ | F4 E1 retirement/formalization |
