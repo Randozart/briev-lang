@@ -1,0 +1,39 @@
+// arena_bump — bump-allocator throughput through std/memory/arena (fixture 3).
+//
+// One 1 MiB Arena; each step allocates 64 bytes, stores the step index, reads
+// it back, and accumulates. When the arena is full it resets and continues.
+// The recursive driver is tail-shaped; the contract-proven allocator stays in
+// the hot loop (no per-call capacity branch in the allocator itself).
+//
+// C reference: arena_bump_c.c
+import { Arena, arena_init, arena_alloc, arena_reset } from "std/memory/arena";
+
+const CAP: Int = 1048576;
+let N: Int = get_env_int!("BOUND");
+
+defn bump_fill(a: Arena, count: Int, i: Int, sum: Int) -> Int {
+    when count <= 0 {
+        term sum;
+    };
+    when a.offset + 64 > a.capacity {
+        when a.capacity >= 0 {
+            arena_reset(a);
+        };
+        term bump_fill(a, count, i, sum);
+    };
+    let addr: Int = arena_alloc(a, 64) as Int;
+    Store#(addr, i, 8);
+    let v: Int = Load#(addr, 8);
+    let next_sum: Int = sum + v;
+    when i % 5000000 == 0 {
+        println!("{}", next_sum);
+    };
+    term bump_fill(a, count - 1, i + 1, next_sum);
+};
+
+node run [beginprogram][true] {
+    let a: Arena = arena_init(1048576);
+    let total: Int = bump_fill(a, N, 0, 0);
+    println!("{}", total);
+    endprogram 0;
+};

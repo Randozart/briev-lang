@@ -6331,7 +6331,10 @@ mod probe_float_defect_tmp {
 
     #[test]
     fn probe_dot_row_check_stages() {
-        let fixture = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv").expect("fixture");
+        let Ok(fixture) = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv") else {
+            eprintln!("dot_row fixture absent — skipping temporary probe");
+            return;
+        };
         let float_bv = std::fs::read_to_string("lib/std/types/float.bv").expect("float.bv");
         let numeric_bv = std::fs::read_to_string("lib/std/numeric.bv").expect("numeric.bv");
         let tokens = crate::lexer::tokenize(&fixture).expect("lex");
@@ -6364,7 +6367,10 @@ mod probe_float_defect_tmp {
 
     #[test]
     fn probe_prelex_dot_row() {
-        let fixture = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv").expect("fixture");
+        let Ok(fixture) = std::fs::read_to_string("/tmp/opencode/dot_row_ref.abv") else {
+            eprintln!("dot_row fixture absent — skipping temporary probe");
+            return;
+        };
         let mut pm = crate::plugin::PluginManager::new();
         let opts = crate::pipeline::BuildOptions::default();
         pm = crate::pipeline::build_plugin_manager("/tmp/opencode/dot_row_ref.abv", &opts);

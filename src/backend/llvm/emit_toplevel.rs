@@ -3171,6 +3171,11 @@ impl LlvmBackend {
         // after the field-init stores (a body may read state) and before any
         // node fires — mirrors emit_init_state for the inline-SROA path.
         self.emit_init_seeding_stores(out, indent);
+        // 2026-10-21 (pointer provenance): after the state fields are
+        // initialized, seed the Ptr-field cache. This is the main()/inline
+        // equivalent of the defn/txn entry preload; without it, repeated
+        // calls in a folded loop inttoptr separate loads of the same field.
+        self.preload_state_ptr_fields(out);
     }
 
     /// 2026-08-09 (init kind, Phase 2): seed every runtime-seeded invariant by
@@ -3270,7 +3275,7 @@ impl LlvmBackend {
                     continue;
                 }
                 let reg = self.emit_expr(out, value, indent);
-                let llvm_ty = protocol_llvm_type(&ty, self.ctx.type_universe.as_ref());
+                let llvm_ty = self.plain_global_llvm_type(&ty);
                 writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, reg.name, name).ok();
             }
         }
@@ -3480,6 +3485,11 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
+            matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
+        });
+        let needs_plain = self.plain_context_active() && self.ctx.defn_takes_plain(&d.name);
+        self.fun.plain_ptr = needs_plain.then(|| "%plain".to_string());
         // 2026-10-16 (term-semantics plan §1): bare `term;` in this defn is
         // P-gated against the defn's postcondition.
         self.fun.item_post = Some(d.contract.post_condition.clone());
@@ -3528,8 +3538,14 @@ impl LlvmBackend {
         if needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
+        if needs_plain {
+            if needs_state {
+                let _ = write!(out, ", ");
+            }
+            write!(out, "ptr noundef noalias nocapture align 8 %plain").ok();
+        }
         for (i, (n, t)) in d.parameters.iter().enumerate() {
-            if needs_state || i > 0 {
+            if needs_state || needs_plain || i > 0 {
                 let _ = write!(out, ", ");
             }
             // 2026-07-04: dereferenceable(N) for Ptr<T> parameters.
@@ -3606,9 +3622,26 @@ impl LlvmBackend {
             if param_llvm_ty == "ptr" {
                 let conv = format!("%ac{}", i);
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", conv, raw).ok();
+                // 2026-10-20 (pointer provenance): the raw ABI pointer is
+                // already the canonical ptr for this argument; keep it instead
+                // of re-inttoptr-ing the i64 at every access. It is defined in
+                // the entry block, so it dominates all uses.
+                self.fun
+                    .canonical_ptrs
+                    .insert(conv.clone(), raw.to_string());
                 reg = conv;
             } else if param_llvm_ty == "i64" {
-                reg = raw;
+                reg = raw.clone();
+                // 2026-10-21 (pointer provenance): a Ptr<T> parameter uses the
+                // i64 address ABI. Seed ONE canonical ptr at entry so every
+                // index/deref in this function shares provenance instead of
+                // emitting a fresh inttoptr per access. This is the same
+                // dominance-safe rule used for ptr-typed ABI parameters above.
+                if matches!(t, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_)) {
+                    let p = self.fun.gen_reg();
+                    self.emit_inttoptr(out, "  ", &p, &raw);
+                    self.fun.canonical_ptrs.insert(raw.clone(), p);
+                }
                 // 2026-08-01 (B4): the SSO String-param {i64,i64} branch was
                 // retired — a String param is a ptr (handled above) or an i64
                 // address, never a fat pointer under the bits model.
@@ -3677,6 +3710,13 @@ impl LlvmBackend {
             reset_terminated: true,
             ..Default::default()
         });
+        // 2026-10-20 (pointer provenance): seed the per-function Ptr-field
+        // cache from the entry block. Entry definitions dominate every use;
+        // a store to the field invalidates its entry for the rest of the
+        // function (subsequent loads reload at their own site).
+        if needs_state {
+            self.preload_state_ptr_fields(out);
+        }
         let body_len = d.body.len();
         for (idx, s) in d.body.iter().enumerate() {
             if self.fun.terminated { break; }
@@ -3816,6 +3856,31 @@ impl LlvmBackend {
 
     // 2026-06-13: Added ptr %state param — definitions can access global state.
 
+    /// Emit one canonical `ptr` per Ptr state field at function entry.
+    /// `load_field_type` reuses the cache until `store_field_type` invalidates
+    /// that field; after invalidation the next load is emitted fresh and is not
+    /// cached again (so no cache value can be reused from a non-dominating
+    /// block). Zero runtime cost beyond one pointer load per field per call,
+    /// which LLVM dead-code-eliminates when unused.
+    fn preload_state_ptr_fields(&mut self, out: &mut String) {
+        let mut idxs: Vec<usize> = self
+            .ctx
+            .field_briev_types
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| matches!(t, Type::Ptr(_) | Type::PtrConst(_)))
+            .map(|(i, _)| i)
+            .collect();
+        idxs.sort_unstable();
+        for idx in idxs {
+            if let Some((val, _)) = self.load_field_type(out, "  ", idx) {
+                let ptr = self.canonical_ptr(out, "  ", &val);
+                self.fun.state_ptr_cache.insert(idx, (val.clone(), ptr.clone()));
+                self.fun.canonical_ptrs.insert(val, ptr);
+            }
+        }
+    }
+
 /// 2026-09-09 (Family C, briev-native runtime): does this defn body DIRECTLY
 /// call a raw-memory intrinsic? Load#/Store#/Alloc#/Free#/Copy#/Fill#/
 /// VolatileLoad#/VolatileStore#/SysCall# deref (or expose) inttoptr'd Int
@@ -3824,59 +3889,32 @@ impl LlvmBackend {
 /// int-address accesses. Helpers called with their own attrs are NOT scanned
 /// (the callee's attribute governs its own accesses).
 pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
-    // 2026-10-19 (fix: Malloc# omitted → defn wrapping it emitted memory(read)
-    // → LLVM CSE'd two identical-arg calls into one allocation, aliasing +
-    // double-free, BUGS.md): Malloc# is the allocating sibling of Alloc# and is
-    // observable (intrinsic registry) — a defn whose only raw-memory op is
-    // Malloc# (e.g. `ivec_new` = `Malloc#(n*8) as Int`) MUST get memory(readwrite)
-    // (#13) so LLVM cannot merge distinct allocations. Undo: remove "Malloc#"
-    // (reopens the two-identical-allocations-alias class under -O3 LTO).
+    // 2026-10-20 (pointer provenance): a raw `Ptr<T>` index/deref is memory
+    // access even when no `Load#`/`Store#` intrinsic spelling appears. The
+    // access lowers through `inttoptr`, so `memory(argmem)` is a lie: LLVM may
+    // hoist/CSE a sibling load across a store (the recommender `picked[]`
+    // stale read). Treat every index/deref as raw memory conservatively; the
+    // exhaustive visitor keeps this from drifting as Expr grows. Malloc# is
+    // the allocating sibling (two identical calls must stay distinct).
+    // Undo: replace this visitor with a type-aware Ptr-base check, never
+    // remove the raw-memory classification.
     const RAW: &[&str] = &[
         "Malloc#", "Load#", "Store#", "Alloc#", "Free#", "Copy#", "Fill#",
         "VolatileLoad#", "VolatileStore#", "SysCall#",
     ];
-    fn expr_has(e: &Expr, found: &mut bool) {
-        if *found { return; }
-        match e {
-            Expr::Call(name, args, _) => {
-                if RAW.iter().any(|r| *r == name.as_str()) {
-                    *found = true;
-                    return;
-                }
-                for a in args { expr_has(a, found); }
-            }
-            Expr::BinaryOp(_, l, r) => { expr_has(l, found); expr_has(r, found); }
-            Expr::UnaryOp(_, i) => expr_has(i, found),
-            Expr::Index(o, i) => { expr_has(o, found); expr_has(i, found); }
-            Expr::Field(o, _) => expr_has(o, found),
-            Expr::Cast(i, _) => expr_has(i, found),
-            Expr::Tuple(xs) | Expr::List(xs) => {
-                for x in xs { expr_has(x, found); }
-            }
-            _ => {}
-        }
-    }
-    fn stmt_has(s: &Statement, found: &mut bool) {
-        if *found { return; }
-        match s {
-            Statement::Assign(l, r) => { expr_has(l, found); expr_has(r, found); }
-            Statement::Expression(e) => expr_has(e, found),
-            Statement::Let { expr: Some(e), .. } => expr_has(e, found),
-            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => expr_has(e, found),
-            Statement::Guarded(_, b) | Statement::Block(b) | Statement::SyncBlock(b) => {
-                for x in b { stmt_has(x, found); }
-            }
-            Statement::Mutex(b) => {
-                for x in b { stmt_has(x, found); }
-            }
-            _ => {}
-        }
-    }
     let mut found = false;
-    for s in stmts {
-        stmt_has(s, &mut found);
-        if found { break; }
-    }
+    crate::ast::visit::walk_stmts(stmts, &mut |e| {
+        if found {
+            return;
+        }
+        match e {
+            Expr::Call(name, _, _) if RAW.iter().any(|r| *r == name.as_str()) => {
+                found = true;
+            }
+            Expr::Index(_, _) | Expr::Deref(_) => found = true,
+            _ => {}
+        }
+    });
     found
 }
     // Was missing the state pointer, causing invalid LLVM IR (SSA value out of scope).
@@ -4363,6 +4401,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             });
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
+            // 2026-10-21 (pointer provenance): seed the txn's Ptr-field cache
+            // once at entry. Otherwise each load of the same Ptr state field
+            // inside the loop produces a distinct inttoptr, and LTO can treat
+            // a sibling-defn load/store through those pointers as non-aliasing.
+            self.preload_state_ptr_fields(out);
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
             }
@@ -4619,6 +4662,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 reset_terminated: true,
                 ..Default::default()
             });
+            self.preload_state_ptr_fields(out);
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
@@ -7187,6 +7231,44 @@ mod tests {
             "the defn must NOT get the memory(read) attribute group that lets \
              LLVM CSE two distinct allocations: {def_line}"
         );
+    }
+
+    #[test]
+    fn defn_indexing_raw_ptr_is_memory_readwrite() {
+        // A defn whose only memory operation is `p[i] = 1` must carry #13
+        // (memory(readwrite)). Emitting #8 tells LTO it only touches memory
+        // through pointer arguments, but the access goes through an inttoptr'd
+        // i64 address; a sibling load can then be hoisted across the store.
+        let src = r#"
+            defn store_pick(p: Ptr<Int>, i: Int) {
+                p[i] = 1;
+            };
+            defn load_pick(p: Ptr<Int>, i: Int) -> Int {
+                term p[i];
+            };
+            node entry [beginprogram][true] {
+                let p: Ptr<Int> = Malloc#(16) as Ptr<Int>;
+                store_pick(p, 0);
+                endprogram load_pick(p, 0);
+            };
+        "#;
+        let program = parse(src);
+        let mut backend = LlvmBackend::new();
+        let ir = backend.generate(&program, None);
+        for name in ["@store_pick", "@load_pick"] {
+            let def_line = ir
+                .lines()
+                .find(|l| l.contains("define") && l.contains(name))
+                .unwrap_or_else(|| panic!("{name} definition line missing: {ir}"));
+            assert!(
+                def_line.contains("#13"),
+                "{name} must use the raw-memory (readwrite) attribute group: {def_line}"
+            );
+            assert!(
+                !def_line.contains("#8"),
+                "{name} must not claim argmem-only access: {def_line}"
+            );
+        }
     }
 }
 

@@ -260,6 +260,109 @@ fn net_stack_helpers_golden_output() {
     );
 }
 
+/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a
+/// write in a sibling defn must not be reordered by LTO. The first iteration
+/// reads the zero slot; every later iteration reads the previous store. This
+/// pins the behavioral side of the #13 effect-summary fix; #8 on either defn
+/// is exactly the attribute lie that lets LTO hoist the read.
+/// 2026-10-20 (Fixture 4, stdlib campaign): the TCP-subset FSM exercises
+/// closed enums, exhaustive nested matches, and Result-returning illegal
+/// edges. The integer-code boundary keeps the fixture on the stable import
+/// surface; the enum/match machinery lives in `lib/std/fsm.bv`.
+/// 2026-10-20 (Fixture 3, stdlib campaign): Arena is an obj so the bump
+/// offset survives the call. Pins reference semantics, 8-byte bump deltas,
+/// 16-byte alignment padding, and reset.
+/// 2026-10-20 (Fixture 2, stdlib campaign): SPSC ring with monotonic indices,
+/// power-of-two masking, release/acquire atomics. The reactor is
+/// single-threaded here, so this pins the atomic lowering and ring discipline,
+/// not a cross-thread race.
+/// 2026-10-20 (P1-1): an obj Ptr-typed field must round-trip the handle
+/// through the ptr slot. This is the Arena shape, restored to an honest
+/// `Ptr<Bit<8>>` field instead of `Int`.
+/// 2026-10-20 (P1-2): a `plain let` Ptr global stores/loads the i64 handle,
+/// then the raw index path recovers the pointer. Previously the global was
+/// declared `ptr` and loaded `ptr` into i64 consumers.
+#[test]
+fn plain_ptr_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("plain_ptr_smoke", "golden", &[]);
+    assert_eq!(out, "7", "plain Ptr global round-trip drifted: {out:?}");
+}
+
+#[test]
+fn ptr_field_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("ptr_field_smoke", "golden", &[]);
+    assert_eq!(out, "7", "obj Ptr-field round-trip drifted: {out:?}");
+}
+
+#[test]
+fn spsc_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("spsc_smoke", "golden", &[]);
+    assert_eq!(
+        out, "7|21|7|0|1",
+        "SPSC ring golden drifted: {out:?}"
+    );
+}
+
+#[test]
+fn arena_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("arena_smoke", "golden", &[]);
+    assert_eq!(
+        out, "16|8|24|16|0",
+        "arena bump/alignment/reset golden drifted: {out:?}"
+    );
+}
+
+/// 2026-10-20 (P1-3): a named import of an enum type plus a qualified
+/// payload constructor (`Result.Ok(7)`) must lower to the constructor call.
+#[test]
+fn enum_import_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("enum_import_smoke", "golden", &[]);
+    assert_eq!(out, "7", "named enum import/constructor drifted: {out:?}");
+}
+
+#[test]
+fn fsm_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("fsm_smoke", "golden", &[]);
+    assert_eq!(
+        out, "0|1|3|4|5|6|10|1",
+        "FSM transition golden drifted: {out:?}"
+    );
+}
+
+#[test]
+fn ptr_crossdefn_probe_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("ptr_crossdefn_probe", "golden", &[("BOUND", "8")]);
+    assert_eq!(out, "7\n", "cross-defn raw-pointer read/write drifted: {out:?}");
+}
+
 #[test]
 fn trait_generics_golden_output() {
     if !has("clang") {

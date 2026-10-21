@@ -24,7 +24,7 @@ import "std/float_fmt.bv";
 // 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
 // the lane parsers share one definition.
-defn byte_at(s: String, i: Int) [true][term >= 0] -> Int {
+defn byte_at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {
     let addr: Int = (s as Data) as Int;
     when i < 0 || i >= s .^Length {
         term 0;
@@ -45,7 +45,8 @@ defn byte_at(s: String, i: Int) [true][term >= 0] -> Int {
 // the equivalent Briev shape (arena memory is never freed).
 out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
     when n < 0 {
-        let cnt: Int = 1 + neg_digit_count(n, 0);
+        let nd: Int = neg_digit_count(n, 0);
+        let cnt: Int = 1 + nd;
         let buf: Int = Alloc#(8 + cnt + 1) as Int;
         Store#(buf, cnt, 8);
         Store#(buf + 8, 45, 1);
@@ -71,7 +72,10 @@ defn neg_digit_count(n: Int, acc: Int) [n <= 0 && acc >= 0][term >= 1] -> Int {
 
 // fill_pos — write n's digits into buf[stop-1 ..] backwards; returns buf.
 defn fill_pos(n: Int, buf: Int, stop: Int, buf_ret: Int)
-    [n >= 0 && stop >= 1][term >= 0] -> Int {
+    [n >= 0][term >= 0] -> Int {
+    when stop <= 0 {
+        term buf_ret;
+    };
     when n < 10 {
         Store#(buf + stop - 1, 48 + n, 1);
         term buf_ret;
@@ -82,7 +86,10 @@ defn fill_pos(n: Int, buf: Int, stop: Int, buf_ret: Int)
 
 // fill_neg — same for n <= 0 (srem keeps the sign; 48 - digit encodes).
 defn fill_neg(n: Int, buf: Int, stop: Int, buf_ret: Int)
-    [n <= 0 && stop >= 1][term >= 0] -> Int {
+    [n <= 0][term >= 0] -> Int {
+    when stop <= 0 {
+        term buf_ret;
+    };
     when n > -10 {
         Store#(buf + stop - 1, 48 - n, 1);
         term buf_ret;
@@ -302,10 +309,17 @@ defn pf_sign(s: String, i: Int, len: Int) [true][term >= -1 && term <= 1] -> (In
 // for the rounding headroom). First '.' enters frac mode; any other
 // non-digit ends the number (strtod's trailing-garbage stop).
 defn pf_num(s: String, i: Int, len: Int, m: Int, d: Int, frac: Int, seen: Int)
-    [true][term >= -1100 && term <= 1100]
+    [d >= -1100 && d <= 1100]
+    [term.0 >= 0 && term.0 < 1000000000000000000 && term.1 >= -1100 && term.1 <= 1100]
     -> (Int, Int, Int, Int)
 {
     when i >= len {
+        term (m, d, seen, i);
+    };
+    when d <= -1100 {
+        term (m, d, seen, i);
+    };
+    when d >= 1100 {
         term (m, d, seen, i);
     };
     let b: Int = byte_raw(s, i);
@@ -331,7 +345,8 @@ defn pf_num(s: String, i: Int, len: Int, m: Int, d: Int, frac: Int, seen: Int)
 // pf_exp — optional e/E exponent: (exponent, next index). e is clamped at
 // +/-1000 (f32 saturates near +/-45 anyway; the cap only guards i64 d).
 defn pf_exp(s: String, i: Int, len: Int, acc: Int)
-    [true][term >= -1000 && term <= 1000]
+    [acc >= 0 && acc <= 1000]
+    [term.0 >= -1000 && term.0 <= 1000 && term.1 >= 0]
     -> (Int, Int)
 {
     when i >= len {
@@ -374,7 +389,7 @@ defn pf_exp_digits(s: String, i: Int, len: Int, acc: Int, sg: Int)
 
 // pf_make — M x 10^-d with ONE correctly-rounded scaling: d > 0 divides by
 // 10^d (exact in f32 through 10^10 — 5^10 < 2^24), d < 0 multiplies.
-defn pf_make(m: Int, d: Int) [true][term >= 0.0 || term < 0.0] -> Float {
+defn pf_make(m: Int, d: Int) [d >= -2100 && d <= 2100][term >= 0.0 || term < 0.0] -> Float {
     let base: Float = m as Float;
     when d == 0 {
         term base;
@@ -388,7 +403,7 @@ defn pf_make(m: Int, d: Int) [true][term >= 0.0 || term < 0.0] -> Float {
 // pow10f — 10^k in f32. k in [0,10] via loop multiply (exact: each 10^j is
 // representable). Larger k recurses in exact 10^10 chunks — one rounding
 // per chunk, well inside f32 resolution.
-defn pow10f(k: Int) [k >= 0 && k <= 1100][term >= 0.0 || term < 0.0] -> Float {
+defn pow10f(k: Int) [k >= 0 && k <= 2100][term >= 0.0 || term < 0.0] -> Float {
     when k > 10 {
         term 10000000000.0 * pow10f(k - 10);
     };
@@ -492,7 +507,7 @@ defn when_hi(b: Int, len: Int) [true][term >= 0] -> Int {
 // advance it. Invalid lead bytes fall back to a raw byte (C mirror).
 out defn briev_str_next_char(s: String, off_ptr: Int) [true][term >= 0] -> Int {
     let addr: Int = (s as Data) as Int;
-    let len: Int = Load#(addr, 8);
+    let len: Int = str_len_bytes(s);
     let i: Int = Load#(off_ptr, 8);
     when i < 0 || i >= len {
         term 0;
@@ -524,7 +539,7 @@ out defn briev_str_next_char(s: String, off_ptr: Int) [true][term >= 0] -> Int {
 // decode_cont — accumulate `width-1` continuation bytes (stopping at the
 // payload end or a non-continuation byte).
 defn decode_cont(s: String, i: Int, len: Int, width: Int, cp: Int)
-    [i >= 0 && len >= 0 && width >= 2 && width <= 4 && cp >= 0]
+    [i >= 0 && len >= 0 && width >= 1 && width <= 4 && cp >= 0]
     [term >= 0]
     -> Int
 {
@@ -538,7 +553,8 @@ defn decode_cont(s: String, i: Int, len: Int, width: Int, cp: Int)
     when (b & 0xC0) != 0x80 {
         term cp;
     };
-    term decode_cont(s, i + 1, len, width - 1, (cp << 6) | (b & 0x3F));
+    let next_cp: Int = (cp << 6) | (b & 0x3F);
+    term decode_cont(s, i + 1, len, width - 1, next_cp);
 };
 
 // decode_width — how many bytes the decoder actually consumed (mirrors the
@@ -613,8 +629,8 @@ defn count_lead(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
 // keeps it out of %State, so the print chain carries no state pointer and
 // %State promotion in printing loops is never defeated (the
 // buffered-stdout regression, docs/plans/2026-10-17-state-plain-storage-class.md).
-plain let stdout_buf: Int = 0;
-plain let stdout_fill: Int = 0;
+let stdout_buf: Int = 0;
+let stdout_fill: Int = 0;
 const STDOUT_CAP: Int = 65536;
 
 out defn stdout_flush() [true][term >= 0] -> Int {

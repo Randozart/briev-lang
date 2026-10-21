@@ -1,0 +1,19 @@
+// E2E test: inop with meld type (Float-based)
+// Uses PrintFloat# intrinsic (not frgn print_float)
+meld Meters <:> Float { }
+
+inop half_meter(x: Meters) -> Float {
+  %res = fdiv float %x, 2.5;
+  term %res;
+} fallback x / 2.5;
+
+let tick: Int = 0;
+
+rct txn run [tick < 1][tick == 1] {
+    [tick == 0] {
+        let r: Float = HalfMeter#(10.0);
+        term! -> Print#(r);
+    };
+    &tick = tick + 1;
+    term;
+};

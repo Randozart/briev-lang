@@ -1,0 +1,16 @@
+// memcpy — assembly+ symbolic form (same kernel as memcpy_raw).
+section .text
+global _start
+_start:
+    let dst = 0x200000
+    let src = 0x300000
+    let n = 64
+    loop {
+        when n == 0: break
+        load b, src
+        store b, dst
+        dst += 1
+        src += 1
+        n -= 1
+    }
+    halt

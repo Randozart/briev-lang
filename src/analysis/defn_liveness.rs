@@ -1616,6 +1616,18 @@ fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::ba
                 BadBodyItem::Site(s) => out.extend(
                     s.rows.iter().flat_map(|r| r.body.iter().cloned()),
                 ),
+                // Symbolic statements are lowered before this analysis;
+                // if one reaches here it carries no BILLD instructions.
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {}
             }
         }
         out

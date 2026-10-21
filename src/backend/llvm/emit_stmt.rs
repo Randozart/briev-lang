@@ -1185,9 +1185,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // 2026-07-30: Ptr values are stored as i64 internally;
                     // convert back to LLVM ptr before storing through.
                     let store_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-                        let p = backend.fun.gen_reg();
-                        backend.emit_inttoptr(out, indent, &p, &ptr_reg.name);
-                        p.to_string()
+                        backend.canonical_ptr(out, indent, &ptr_reg.name)
                     } else {
                         ptr_reg.name.clone()
                     };
@@ -1243,8 +1241,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     }
                     if matches!(obj_reg.ty, Type::Ptr(_)) {
                         let idx_reg = backend.emit_expr(out, idx, indent);
-                        let ptr = backend.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, obj_reg.name).ok();
+                        // 2026-10-20 (pointer provenance): share the canonical
+                        // `ptr` with the matching read so BasicAA relates the
+                        // store to every load through the same address value.
+                        let ptr = backend.canonical_ptr(out, indent, &obj_reg.name);
                         let gep = backend.fun.gen_reg();
                         let offset = backend.fun.gen_reg();
                         // 2026-08-11 (wasm32 obj-member fix): the index is an
@@ -1283,7 +1283,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             Expr::Identifier(n) => backend.fun.volatile_locals.contains(n),
                             _ => false,
                         };
-                        let vol_prefix = if vol_obj { "volatile " } else { "" };
+                        let vol_prefix = if vol_obj || backend.fun.volatile_raw_ptr_params {
+                            "volatile "
+                        } else {
+                            ""
+                        };
                         if scalar_pointee {
                             writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, elem_llvm, ptr, offset).ok();
                             let universe = backend.ctx.type_universe.clone();

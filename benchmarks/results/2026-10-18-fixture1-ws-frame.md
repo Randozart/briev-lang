@@ -105,3 +105,23 @@ recorded, not excuses.
 | bridge_glue | done |  |  |  | MATCH |
 | bridge_multi | done |  |  |  | PASS |
 
+
+
+## Amendment 2026-10-20 — ws_frame regression recovered (1.48x)
+
+The 1.58x table above is the pre-contract-migration shape. The contract
+migration added a total-accessor guard to `get_u8` and a redundant guard to
+`ws_payload_byte`, plus a per-iteration guard in the benchmark's payload walk;
+the measured ratio drifted to **3.50x**. Root cause was the runtime guard on
+the per-byte path, not the loop itself.
+
+Fix (structural, no strategy keyword):
+
+- the call gate now learns `foreach i in a..b` item bounds (compiler change);
+- `ws_payload_byte` proves `off >= 0 && i < payload_len && whole-frame-fit`
+  from its contract and uses `Load#(buf.ptr + idx, 1)` directly — no runtime
+  index guard, no total-accessor call;
+- the redundant per-iteration guard is removed from `ws_frame.bv`.
+
+Measured: **0.0401s vs 0.0271s C = 1.48x**, correctness MATCH. This is better
+than the historical 1.58x and is the new reference for the fixture.

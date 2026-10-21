@@ -34,6 +34,11 @@ contradicting these means the gates are broken):
 needs gates re-run at the TARGET geometry — s8 passing says nothing
 about decode.
 
+**Open work backlog (2026-10-20):** `docs/plans/2026-10-20-open-work-backlog.md`
+— the consolidated P0–P4 list after the pointer-provenance fix and the four
+stdlib fixture first passes. Start there for the current queue; this index
+remains the map of the older umbrellas and live lanes.
+
 This index is the fresh-session orientation: the live foreign lanes, the
 active umbrella, every workstream's remaining work with pointers, the open
 bugs, and recommended starting points. Everything below is a map, not the
@@ -47,7 +52,7 @@ territory — read the linked plan before starting a workstream.
 |------|----------|--------|
 | `feat/e14a-intent-synthesis` | `../briev-e14a` | Electronics `.ebv` (component laws, tolerance model, ERC) — **C2's parked remainder belongs here** |
 | `feat/bad-dialect` | `../briv-compiler-bad-dialect` | Embedded / bad-dialect bootstrapper |
-| ~~`feat/billd-dialect`~~ | — | **MERGED into main 2026-10-08** (fast-forward at `ad5dde16`; all milestones M2–M8) — worktree and branch removed same day; history lives in main. Plan `2026-10-08-billd-intermediate-dialect.md`, ref `docs/architecture/bld-dialect.md` |
+| ~~`feat/billd-dialect`~~ | — | **MERGED 2026-10-08; RETIRED 2026-10-19** — `.bld` dialect deleted; symbolic assembly+ lives inside `.bad`. Plan `2026-10-08-billd-intermediate-dialect.md` (historical); retirement + forward plan `2026-10-19-bad-assembly-plus.md` |
 | (baseline) | `../briev-compiler-baseline` | Rule 12b A/B worktree — measure `main` only |
 
 Standing exclusion (`2026-09-24-followup-stages.md` §Exclusion): never merge,

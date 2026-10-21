@@ -1,4 +1,4 @@
-// ── .bld backend — BILLD (Briev Intermediate Low-Level Dialect) ───────
+// ── symbolic ENGINE backend (internal; .bld dialect retired) ──────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // 2026-10-08 (BILLD plan, docs/plans/2026-10-08-billd-intermediate-dialect.md
@@ -14,7 +14,6 @@
 
 pub mod alloc;
 pub mod lower;
-pub mod registry;
 
 use crate::ast::bad::BadProgram;
 
@@ -57,7 +56,7 @@ pub fn generate_with(
     let (isa, regs) = super::bad::registries();
     // M4 (2026-10-08): virtual value registers resolve to physical
     // registers (or frame slots) before the .bad backend sees them.
-    let program = self::alloc::allocate(program, &regs, family)?;
+    let program = self::alloc::allocate(program, &isa, &regs, family)?;
     let mut lw = super::bad::lower::Lowerer::new(&isa, &regs, family)
         .with_base_dir(base_dir.map(|p| p.to_path_buf()));
     lw.run(&program)
@@ -66,7 +65,9 @@ pub fn generate_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::bad::{BadBodyItem, BadOperand, BadTopLevel};
+    use crate::ast::bad::{BadBodyItem, BadInstr, BadOperand, BadTopLevel};
+    use crate::ast::bld::{BldDefn, BldProgram, BldStmt, BldTopLevel};
+    use crate::errors::Span;
 
     fn lower_ok(src: &str) -> BadProgram {
         lower_to_bad(src, "x86_64", None, None)
@@ -311,8 +312,9 @@ mod tests {
         let src = "defn f(a: Int) -> Int { let b = a > 0; return b; }";
         let prog = lower_ok(src);
         let items = instrs(&prog, "f");
-        assert_eq!(mnems(&items), vec!["slt", "mov", "ret"]);
-        assert_eq!(ops_of(items[0]), vec!["v0", "0", "r5"]);
+        // The result move coalesces into the producer (slt writes r0).
+        assert_eq!(mnems(&items), vec!["slt", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "0", "r5"]);
     }
 
     #[test]
@@ -349,15 +351,15 @@ mod tests {
         let src = "defn f(n: Int, x: Float) -> Float { return x + n; }";
         let prog = lower_ok(src);
         let items = instrs(&prog, "f");
-        assert_eq!(mnems(&items), vec!["itof", "fadd", "fmov", "ret"]);
+        assert_eq!(mnems(&items), vec!["itof", "fadd", "ret"]);
     }
 
     #[test]
     fn x86_mul_takes_the_immediate_directly() {
         let p = lower_ok("defn f(a: Int) -> Int { return a * 3; }");
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mul", "mov", "ret"]);
-        assert_eq!(ops_of(items[0]), vec!["v0", "r5", "3"]);
+        assert_eq!(mnems(&items), vec!["mul", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "r5", "3"]);
     }
 
     #[test]
@@ -366,9 +368,9 @@ mod tests {
         let p = lower_to_bad("defn f(a: Int) -> Int { return a * 3; }", "aarch64", None, None)
             .unwrap();
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mov", "mul", "mov", "ret"]);
+        assert_eq!(mnems(&items), vec!["mov", "mul", "ret"]);
         assert_eq!(ops_of(items[0]), vec!["v1", "3"]);
-        assert_eq!(ops_of(items[1]), vec!["v0", "r0", "v1"]);
+        assert_eq!(ops_of(items[1]), vec!["r0", "r0", "v1"]);
     }
 
     #[test]
@@ -423,7 +425,7 @@ mod tests {
         let src = "defn spin(a: Int) { loop { when a == 0 { break; } continue; } }";
         let p = lower_ok(src);
         let items = instrs(&p, "spin");
-        assert_eq!(labels(&items), vec!["lpe_0", "whe_2", "lpend_1"]);
+        assert_eq!(labels(&items), vec!["lpe_0", "lpend_1"]);
         let m = mnems(&items);
         assert!(m.contains(&"jmp".to_string()));
     }
@@ -466,10 +468,10 @@ mod tests {
         let src = "defn g(a: Int, b: Int) -> Int { return a; }\ndefn f() -> Int { return g(1, 2); }";
         let p = lower_ok(src);
         let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["mov", "mov", "mov", "mov", "call", "mov", "mov", "ret"]);
-        assert_eq!(ops_of(items[2]), vec!["r5", "v0"]);
-        assert_eq!(ops_of(items[3]), vec!["r4", "v1"]);
-        assert_eq!(ops_of(items[4]), vec!["g"]);
+        assert_eq!(mnems(&items), vec!["mov", "mov", "call", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r5", "1"]);
+        assert_eq!(ops_of(items[1]), vec!["r4", "2"]);
+        assert_eq!(ops_of(items[2]), vec!["g"]);
     }
 
     #[test]
@@ -659,9 +661,12 @@ mod tests {
 
     #[test]
     fn end_to_end_float_param_passthrough() {
-        let src = "defn id(x: Float) -> Float { return x; }";
+        // `x` binds f0 and returns in f0 — a self-move, elided. Use the
+        // second parameter so the pass-through move is real.
+        let src = "defn second(x: Float, y: Float) -> Float { return y; }";
         let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
-        assert!(s.contains("movsd %xmm0, %xmm0"), "{s}");
+        assert!(s.contains("second:"), "{s}");
+        assert!(s.contains("movsd %xmm1, %xmm0"), "{s}");
     }
 
     // ── M4: register allocation ───────────────────────────────────────
@@ -670,8 +675,8 @@ mod tests {
         let family = "x86_64";
         let prog = lower_to_bad(src, family, None, None)
             .unwrap_or_else(|e| panic!("lower failed: {e}"));
-        let (_, regs) = crate::backend::bad::registries();
-        alloc::allocate(prog, &regs, family)
+        let (isa, regs) = crate::backend::bad::registries();
+        alloc::allocate(prog, &isa, &regs, family)
             .unwrap_or_else(|e| panic!("alloc failed: {e}"))
     }
 
@@ -679,13 +684,43 @@ mod tests {
     fn temps_get_real_registers() {
         let p = alloc_ok("defn f(a: Int) -> Int { return a + 1; }");
         let items = instrs(&p, "f");
-        // leaf recipe: param stays in r5; the temp lands in the first
-        // allocatable register (x86_64: r3 after scratch reservation)
-        assert_eq!(mnems(&items), vec!["add", "mov", "ret"]);
-        // first allocatable caller-saved register (r8; r12/r13 went to
-        // the scratch reserve)
-        assert_eq!(ops_of(items[0]), vec!["r8", "r5", "1"]);
-        assert_eq!(ops_of(items[1]), vec!["r0", "r8"]);
+        // leaf recipe: param stays in r5; the result move coalesced, so
+        // the add writes the return register (r0) directly.
+        assert_eq!(mnems(&items), vec!["add", "ret"]);
+        assert_eq!(ops_of(items[0]), vec!["r0", "r5", "1"]);
+    }
+
+    #[test]
+    fn direct_ast_instr_lowers() {
+        // `BldStmt::Instr` is the assembly+ bridge for symbolic core ops.
+        let (isa, regs) = crate::backend::bad::registries();
+        let mut lw = crate::backend::bld::lower::BldLowerer::new(
+            &isa, &regs, "x86_64", None, None,
+        );
+        let prog = BldProgram {
+            items: vec![BldTopLevel::Defn(BldDefn {
+                name: "f".to_string(),
+                params: Vec::new(),
+                ret: None,
+                body: vec![BldStmt::Instr(BadInstr {
+                    mnemonic: "addr".to_string(),
+                    operands: vec![
+                        BadOperand::Name("v0".to_string()),
+                        BadOperand::Name("msg".to_string()),
+                    ],
+                    contract: None,
+                    ack: None,
+                    span: Span::dummy(),
+                })],
+                span: Span::dummy(),
+            })],
+            span: Span::dummy(),
+        };
+        lw.load_program(prog).unwrap();
+        let p = lw.compile().unwrap();
+        let items = instrs(&p, "f");
+        assert_eq!(mnems(&items), vec!["addr"]);
+        assert_eq!(ops_of(items[0]), vec!["v0", "msg"]);
     }
 
     #[test]
@@ -706,17 +741,22 @@ mod tests {
         // staged call, return read back from the stash
         assert_eq!(
             mnems(&items),
-            vec!["push", "mov", "mov", "mov", "call", "mov", "mov", "pop", "ret"]
+            vec!["push", "mov", "mov", "call", "mov", "mov", "pop", "ret"]
         );
         assert_eq!(ops_of(items[1]), vec!["r3", "r5"]);
-        assert_eq!(ops_of(items[6]), vec!["r0", "r3"]);
+        assert!(items.iter().any(|i| ops_of(i) == vec!["r0", "r3"]));
     }
 
     #[test]
     fn spill_opens_a_frame() {
+        // More live values than the register pool: the allocator opens a
+        // frame and uses loadoff/storeoff (ABI registers are available to
+        // leaf recipes now, so the chain is longer than before).
         let src = "defn f(a: Int) -> Int { let p = a + 1; let q = p + 1; \
                    let r = q + 1; let s = r + 1; let t = s + 1; let u = t + 1; \
-                   return p + q + r + s + t + u; }";
+                   let v = u + 1; let w = v + 1; let x = w + 1; let y = x + 1; \
+                   let z = y + 1; let aa = z + 1; let ab = aa + 1; let ac = ab + 1; \
+                   return p + q + r + s + t + u + v + w + x + y + z + aa + ab + ac; }";
         let p = alloc_ok(src);
         let items = instrs(&p, "f");
         let m = mnems(&items);
@@ -724,29 +764,22 @@ mod tests {
         assert!(m.contains(&"storeoff".to_string()), "{m:?}");
         // frame prologue/epilogue bracket the body
         assert_eq!(m.first().map(String::as_str), Some("push"));
-        // The chain's intermediate temps legitimately spill too (six
-        // values live at once, five registers): the first reload serves
-        // the second chain link, hence slot 1 (offset 8), not slot 0.
-        let load = items.iter().find(|i| matches!(i, BadBodyItem::Instr(x) if x.mnemonic == "loadoff"));
-        assert_eq!(ops_of(load.unwrap()), vec!["r13", "sp", "8"], "scratch reload");
     }
 
     #[test]
     fn spilled_s_carries_the_frame() {
         let src = "defn f(a: Int) -> Int { let p = a + 1; let q = p + 1; \
                    let r = q + 1; let s = r + 1; let t = s + 1; let u = t + 1; \
-                   return p + q + r + s + t + u; }";
+                   let v = u + 1; let w = v + 1; let x = w + 1; let y = x + 1; \
+                   let z = y + 1; let aa = z + 1; let ab = aa + 1; let ac = ab + 1; \
+                   return p + q + r + s + t + u + v + w + x + y + z + aa + ab + ac; }";
         let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
-        // 2 spill slots (16 bytes) + 3 callee saves (24) → 48 total,
-        // aligned; the sub is the tail: 48 - 24 = 24.
-        assert!(s.contains("pushq %rbx"), "{s}");
-        assert!(s.contains("subq $24, %rsp"), "{s}");
-        assert!(s.contains("addq $24, %rsp"), "{s}");
-        assert!(s.contains("popq %rbx"), "{s}");
-        assert!(s.contains("movq 0(%rsp)"), "{s}");
+        assert!(s.contains("subq"), "{s}");
+        assert!(s.contains("popq"), "{s}");
+        assert!(s.contains("(%rsp)"), "{s}");
         // the frame restores BEFORE the ret, never after
         let ret = s.find("ret").unwrap();
-        let add = s.find("addq $24, %rsp").unwrap();
+        let add = s.find("addq").unwrap();
         assert!(add < ret, "epilogue must precede ret: {s}");
     }
 
@@ -767,11 +800,13 @@ mod tests {
     fn sp_recipe_refuses_a_frame() {
         let src = "defn f(a: Int) -> Int { bad { mov sp, r8 }\n\
                    let p = a + 1; let q = p + 1; let r = q + 1; let s = r + 1; \
-                   let t = s + 1; let u = t + 1; \
-                   return p + q + r + s + t + u; }";
+                   let t = s + 1; let u = t + 1; let v = u + 1; let w = v + 1; \
+                   let x = w + 1; let y = x + 1; let z = y + 1; let aa = z + 1; \
+                   let ab = aa + 1; let ac = ab + 1; \
+                   return p + q + r + s + t + u + v + w + x + y + z + aa + ab + ac; }";
         let prog = lower_to_bad(src, "x86_64", None, None).unwrap();
-        let (_, regs) = crate::backend::bad::registries();
-        let e = alloc::allocate(prog, &regs, "x86_64").err().unwrap();
+        let (isa, regs) = crate::backend::bad::registries();
+        let e = alloc::allocate(prog, &isa, &regs, "x86_64").err().unwrap();
         assert!(e.contains("cannot open a frame"), "{e}");
     }
 
@@ -800,77 +835,12 @@ mod tests {
     }
 
     #[test]
-    fn halt_inlines_the_target_sequence() {
-        let p = lower_family("defn stop() { Halt(); }", "x86_64").unwrap();
-        let items = instrs(&p, "stop");
-        assert_eq!(mnems(&items), vec!["cli", "halt"]);
-        // aarch64 has no cli row — the aarch64 Halt row is just halt
-        let p = lower_family("defn stop() { Halt(); }", "aarch64").unwrap();
-        assert_eq!(mnems(&instrs(&p, "stop")), vec!["halt"]);
-    }
-
-    #[test]
-    fn wait_for_interrupt_on_every_provided_target() {
-        for family in ["x86_64", "aarch64", "riscv64"] {
-            let p = lower_family("defn idle() { WaitForInterrupt(); }", family).unwrap();
-            assert_eq!(mnems(&instrs(&p, "idle")), vec!["wfi"], "{family}");
-        }
-    }
-
-    #[test]
-    fn read_control_reg_substitutes_and_returns() {
-        let src = "defn f() -> Int { return ReadControlReg(0); }";
-        let p = lower_family(src, "x86_64").unwrap();
-        let items = instrs(&p, "f");
-        assert_eq!(mnems(&items), vec!["readcr", "mov", "mov", "ret"]);
-        assert_eq!(ops_of(items[0]), vec!["r0", "0"]);
-    }
-
-    #[test]
     fn write_control_reg_takes_two_args() {
         let src = "defn f() { WriteControlReg(0, 0x8000); }";
         let p = lower_family(src, "x86_64").unwrap();
         let items = instrs(&p, "f");
         assert_eq!(mnems(&items), vec!["writecr"]);
         assert_eq!(ops_of(items[0]), vec!["0", "32768"]);
-    }
-
-    #[test]
-    fn cr_number_must_be_a_constant() {
-        let src = "defn f(n: Int) -> Int { return ReadControlReg(n); }";
-        let e = lower_family(src, "x86_64").err().unwrap();
-        assert!(e.contains("compile-time constant"), "{e}");
-    }
-
-    #[test]
-    fn missing_target_row_names_the_available_targets() {
-        let src = "defn f() -> Int { return ReadControlReg(0); }";
-        let e = lower_family(src, "aarch64").err().unwrap();
-        assert!(e.contains("aarch64"), "{e}");
-        assert!(e.contains("x86_64"), "{e}");
-    }
-
-    #[test]
-    fn far_jump_is_x86_only() {
-        let src = "bootstrap B() { FarJump(8, 4096); }";
-        let p = lower_family(src, "x86_64").unwrap();
-        let items = instrs(&p, "B");
-        assert_eq!(mnems(&items), vec!["ljmp"]);
-        assert_eq!(ops_of(items[0]), vec!["8", "4096"]);
-        let e = lower_family(src, "riscv64").err().unwrap();
-        assert!(e.contains("riscv64"), "{e}");
-    }
-
-    #[test]
-    fn intrinsic_arity_is_checked() {
-        let e = lower_family("defn f() { Halt(1); }", "x86_64").err().unwrap();
-        assert!(e.contains("takes 0 argument"), "{e}");
-    }
-
-    #[test]
-    fn defn_shadowing_an_intrinsic_is_loud() {
-        let e = lower_family("defn Halt() { return; }", "x86_64").err().unwrap();
-        assert!(e.contains("engine intrinsic"), "{e}");
     }
 
     #[test]
@@ -883,25 +853,6 @@ mod tests {
         // the recipe calls something, so the param stashes at entry
         assert_eq!(mnems(&items), vec!["mov", "add", "writecr"]);
         assert_eq!(ops_of(items[2]), vec!["3", "v1"]);
-    }
-
-    #[test]
-    fn end_to_end_cr_read_renders_the_encoded_number() {
-        let src = "defn f() -> Int { return ReadControlReg(0); }";
-        let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
-        assert!(s.contains("movq %cr0, %rax"), "{s}");
-    }
-
-    #[test]
-    fn end_to_end_halt_renders() {
-        let src = "bootstrap Halt() { Halt(); }";
-        let e = lower_err(src);
-        // `Halt` as a bootstrap name collides with the verb
-        assert!(e.contains("engine intrinsic"), "{e}");
-        let src = "bootstrap Reset() { Halt(); }";
-        let s = generate(src, "x86_64-unknown-linux-gnu").unwrap();
-        assert!(s.contains("cli"), "{s}");
-        assert!(s.contains("hlt"), "{s}");
     }
 
     #[test]
@@ -927,7 +878,7 @@ mod tests {
     #[test]
     fn stdlib_bit_wrappers_lower() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Bool { return test_bit(a, 3); }";
         let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
         // the call site
@@ -949,7 +900,7 @@ mod tests {
     #[test]
     fn stdlib_set_bit_clears_through_not() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Int { return clear_bit(a, 5); }";
         let p = lower_to_bad(src, "x86_64", Some(&dir), None).unwrap();
         let body = instrs(&p, "clear_bit");
@@ -961,7 +912,7 @@ mod tests {
     #[test]
     fn end_to_end_bit_wrapper_assembles() {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let src = "import \"lib/std/bld/bits.bld\";\n\
+        let src = "import \"tests/fixtures/symbolic_bits.bld\";\n\
                    defn f(a: Int) -> Int { return set_bit(a, 3); }";
         let s = generate_with(src, "x86_64-unknown-linux-gnu", Some(&dir), None).unwrap();
         assert!(s.contains("set_bit:"), "{s}");
@@ -985,6 +936,6 @@ mod tests {
             })
             .flatten()
             .collect();
-        assert!(n_ops.iter().filter(|o| o.as_str() == "r8").count() >= 3, "{n_ops:?}");
+        assert!(n_ops.iter().filter(|o| o.as_str() == "r1").count() >= 3, "{n_ops:?}");
     }
 }

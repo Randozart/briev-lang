@@ -1,0 +1,16 @@
+// Call chain — raw physical form, using the same C ABI the symbolic
+// callable does (first arg in r5 = %rdi, result in r0 = %rax), so the
+// comparison is apples-to-apples. `inc` is called twice.
+section .text
+global _start
+_start:
+    mov r5, 5
+^ call inc
+    mov r5, r0
+^ call inc
+    mov r6, r0
+    halt
+inc:
+    mov r0, r5
+    add r0, r0, 1
+    ret

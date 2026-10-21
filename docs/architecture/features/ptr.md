@@ -1,7 +1,7 @@
 # `Ptr<T>` — Typed Memory Addresses
 
 **Date added:** 2026-06-25  
-**Last updated:** 2026-07-03  
+**Last updated:** 2026-10-20  
 **Status:** Active (Phases 1-6 complete)
 
 ## Purpose
@@ -10,9 +10,9 @@
 the address value at runtime and the pointee type `T` at the type level, enabling
 contract-proven safe MMIO and memory access without a borrow checker or GC.
 
-A `Ptr<T>` **cannot be dereferenced directly** — reading or writing through a
-pointer requires the `VolatileLoad#`/`VolatileStore#` intrinsics. This
-ensures all memory access is explicit and contract-verified.
+Pointer access is explicit: raw buffers use `p[i]` / `Load#` / `Store#`, and
+hardware-volatile access uses `VolatileLoad#` / `VolatileStore#`. All access
+is contract-verified; ordinary heap pointers are not volatile.
 
 ## Type representation
 
@@ -177,13 +177,39 @@ defn read_device(reg: Ptr<Int>) -> Int
 The expression `reg as Int` converts the pointer to its raw address for use
 in contract comparisons. The proof engine handles `>=` and `<` natively.
 
-## Runtime representation
+## Runtime representation and provenance
 
-All pointer forms are `u64`/`i64` in both the interpreter and LLVM backend —
-identical in size to `Int`. The pointee type exists only at the type level
-(`TypedRegister.ty` in the backend). The `inttoptr`/`ptrtoint` LLVM
-instructions are used at the MMIO boundary; pointer values in registers
-are plain `i64`.
+All pointer forms are `u64`/`i64` handles in both the interpreter and LLVM
+backend — identical in size to `Int`. The pointee type exists at the type level
+(`TypedRegister.ty` in the backend). LLVM sees a `Ptr<T>` value as `ptr` at
+function/ABI boundaries and as the i64 handle internally.
+
+Raw `Ptr<T>` index/deref accesses lower through `inttoptr`, so pointer
+provenance must be preserved explicitly. The backend does this without
+volatile and without per-access fences:
+
+- `canonical_ptr(int_reg)` (`src/backend/llvm/mod.rs`) reuses one `ptr` SSA
+  value for an address SSA value. Pointer arguments seed it from the entry
+  `%argN`; `%State` Ptr fields seed it once per function at entry
+  (`preload_state_ptr_fields`). A store to a Ptr field invalidates the field's
+  entry for the rest of the function; later loads are re-emitted at their own
+  site and are not re-cached.
+- Raw `Expr::Index`/`Expr::Deref` count as raw memory in
+  `definition_touches_raw_memory`, so such defns get
+  `#13 memory(readwrite)`, never the argmemonly `#8` lie.
+- Mutable Ptr fields do **not** get `!invariant.load`. A Ptr slot that can be
+  reassigned (e.g. a linked-list head) must not claim invariance.
+- Ptr-returning defns use the `ptr` ABI; the call site converts once to the
+  i64 handle (`ptrtoint`) at the boundary. Ptr parameters convert once from
+  `ptr` to i64 at entry.
+- `vol` / `VolatileLoad#` / `VolatileStore#` remain the explicit volatile
+  surface. Ordinary heap pointers are non-volatile and stay fully
+  optimizable.
+
+The canonical cache is dominance-safe: only values seeded at entry (arguments
+and preloaded state fields) are reused. Arbitrary block-local i64 values still
+receive a fresh conversion at the access site; a block-scoped cache is the
+remaining coverage work (see the open-work backlog).
 
 ## Intrinsics
 

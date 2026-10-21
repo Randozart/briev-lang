@@ -1,0 +1,39 @@
+// SPSC ring fixture smoke — monotonic indices, full/empty, masked wrap.
+import { SpscRing, sring_new, sring_push, sring_pop, sring_free } from "std/atomic";
+import { is_ok, is_err, unwrap } from "std/result";
+import { print_int } from "std/io";
+import { print_str } from "std/io";
+
+let pushed: Int = 0;
+let popped: Int = 0;
+let total: Int = 0;
+let overflow: Bool = false;
+let empty: Bool = false;
+let done: Bool = false;
+
+node run [done == false][done == true] {
+    let r: SpscRing = sring_new(8);
+    foreach i in 0..7 {
+        let ok: Bool = sring_push(r, i);
+        when ok {
+            pushed = pushed + 1;
+        };
+    };
+    overflow = sring_push(r, 99);
+    foreach i in 0..7 {
+        let x = sring_pop(r);
+        when is_ok(x) {
+            total = total + unwrap(x);
+            popped = popped + 1;
+        };
+    };
+    empty = is_err(sring_pop(r));
+    print_int(pushed); print_str("|");
+    print_int(total); print_str("|");
+    print_int(popped); print_str("|");
+    print_int(overflow as Int); print_str("|");
+    print_int(empty as Int);
+    sring_free(r);
+    done = true;
+    term;
+};

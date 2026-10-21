@@ -1,0 +1,13 @@
+// VGA text loop — raw physical form. Fills cells from 0xB8000 with
+// 'B'..'Z' (2 bytes/cell), then parks.
+section .text
+global _start
+_start:
+    mov r0, 0xB8000
+    mov r1, 66
+.loop:
+    store r1, r0
+    add r0, r0, 2
+    add r1, r1, 1
+    jnz r1, 91, .loop
+    halt

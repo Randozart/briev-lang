@@ -86,9 +86,12 @@ Patches are unacceptable. There is no "go fast and break things."
     table of ALL benchmark results at the current commit BEFORE changes, and the
     new results AFTER. Baseline from a clean `cargo build --release` +
     `bash benchmarks/build_and_bench.sh --runtime`.
-12b. **PERSISTENT BASELINE WORKTREE**: `../briv-compiler-baseline` holds the
-    baseline commit for controlled A/B regression detection
-    (`bash benchmarks/compare_baseline.sh <name>`). Never excuse a regression as
+12b. **PERSISTENT BASELINE WORKTREE**: `../briev-compiler-baseline` holds the
+    locked baseline commit for controlled A/B regression detection
+    (`bash benchmarks/compare_baseline.sh <name>`). The lock is
+    `benchmarks/BASELINE.lock` (tag `compiler-baseline-2026-10-21`, commit
+    `98f7fc42`); the script verifies it before timing. An intentional alternate
+    baseline needs `ALLOW_BASELINE_MISMATCH=1`. Never excuse a regression as
     "noise" without this experiment.
 13. **DOCUMENTATION MAINTENANCE IN PLANS**: Every plan must specify which doc
     comments, rationale comments, and architecture docs need updating, and how

@@ -768,10 +768,17 @@ impl LlvmBackend {
                         .get(name)
                         .cloned()
                         .unwrap_or((Type::int(), None));
-                    let llvm_ty = self.llvm_type(&ty);
+                    let llvm_ty = self.plain_global_llvm_type(&ty);
                     let r = self.fun.gen_reg();
-                    writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
-                        .ok();
+                    if self.plain_context_active() {
+                        let slot = self.emit_plain_slot_addr(out, indent, name)
+                            .expect("plain field missing from %PlainState index");
+                        writeln!(out, "{}{} = load {}, ptr {}, align 8", indent, r, llvm_ty, slot)
+                            .ok();
+                    } else {
+                        writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
+                            .ok();
+                    }
                     TypedRegister { name: r, ty }
                 } else if let Some(&idx) = self.ctx.field_index_map.get(name) {
                     // 2026-07-19: Load with native type from field_types (e.g. "float",
@@ -1520,26 +1527,37 @@ impl LlvmBackend {
                     || matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
                     || is_seq_literal
                 {
-                    let ptr = self.fun.gen_reg();
-                    // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
-                    // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
-                    // width, not hardcoded i64. 2026-08-12 (slice 4): a
-                    // COLLECTION data pointer (`inner.data`, a struct Ptr field)
-                    // loads/stores at i64 (the boxed-handle ABI), so inttoptr
-                    // at i64 when the receiver value is i64; a local Ptr handle
-                    // is i{int_bits}. Match the receiver register's LLVM type.
-                    let recv_llvm = self.llvm_type(&obj_reg.ty);
-                    let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
-                        "i64".to_string()
+                    // 2026-10-20 (pointer provenance): raw `Ptr<T>` reads
+                    // reuse one canonical `ptr` per address SSA value. The
+                    // fresh-inttoptr-per-access form gave the read and the
+                    // matching store independent provenance, so LTO could
+                    // hoist the read across the store. Collection handles keep
+                    // their own carrier conversion below.
+                    let ptr = if matches!(obj_reg.ty, Type::Ptr(_)) {
+                        self.canonical_ptr(out, indent, &obj_reg.name)
                     } else {
-                        format!("i{}", self.ctx.int_bits)
+                        let p = self.fun.gen_reg();
+                        // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
+                        // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
+                        // width, not hardcoded i64. 2026-08-12 (slice 4): a
+                        // COLLECTION data pointer (`inner.data`, a struct Ptr field)
+                        // loads/stores at i64 (the boxed-handle ABI), so inttoptr
+                        // at i64 when the receiver value is i64; a local Ptr handle
+                        // is i{int_bits}. Match the receiver register's LLVM type.
+                        let recv_llvm = self.llvm_type(&obj_reg.ty);
+                        let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
+                            "i64".to_string()
+                        } else {
+                            format!("i{}", self.ctx.int_bits)
+                        };
+                        writeln!(
+                            out,
+                            "{}{} = inttoptr {} {} to ptr",
+                            indent, p, hw, obj_reg.name
+                        )
+                        .ok();
+                        p
                     };
-                    writeln!(
-                        out,
-                        "{}{} = inttoptr {} {} to ptr",
-                        indent, ptr, hw, obj_reg.name
-                    )
-                    .ok();
                     let offset = self.fun.gen_reg();
                     // 2026-07-17: List/tuple types have a length header at
                     // slot 0 — elements start at index 1. Raw Ptr buffers
@@ -1583,8 +1601,13 @@ impl LlvmBackend {
                             indent, gep, elem_llvm, ptr, offset
                         )
                         .ok();
-                        let vol_prefix =
-                            if self.fun.volatile_read { "volatile " } else { "" };
+                        let vol_prefix = if self.fun.volatile_read
+                            || self.fun.volatile_raw_ptr_params
+                        {
+                            "volatile "
+                        } else {
+                            ""
+                        };
                         writeln!(
                             out,
                             "{}{} = load {}{}, ptr {}",
@@ -1951,9 +1974,7 @@ impl LlvmBackend {
                 // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
                 // LLVM ptr before loading.
                 let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-                    let p = self.fun.gen_reg();
-                    self.emit_inttoptr(out, indent, &p, &ptr_reg.name);
-                    p.to_string()
+                    self.canonical_ptr(out, indent, &ptr_reg.name)
                 } else {
                     ptr_reg.name.clone()
                 };
@@ -2846,8 +2867,13 @@ impl LlvmBackend {
                 out.push_str(&self.emit_packed_field_store(indent, &ptr_reg, &pf, &val));
                 continue;
             }
-            // Convert i64 to ptr if the field type expects a pointer
-            if val.ty == Type::int() && self.is_ptr_field(type_name, field_name) {
+            // Convert the i64 handle to ptr if the field type expects a
+            // pointer. Ptr<T> values are i64 handles in registers (the same
+            // representation as Int); storing the handle directly into a ptr
+            // slot is invalid IR (BUGS.md obj Ptr-field entry).
+            if self.is_ptr_field(type_name, field_name)
+                && (val.ty == Type::int() || matches!(val.ty, Type::Ptr(_)))
+            {
                 let conv = self.fun.gen_reg();
                 writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, conv, val.name).ok();
                 writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
@@ -6044,8 +6070,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // emitted without the state param and called without it — gating on
         // defn_takes_state instead of bare defn_params membership keeps the
         // ABI consistent (previously every defn call passed %state).
-        if is_defn && self.ctx.defn_takes_state(name) {
-            call_args.push("ptr %state".to_string());
+        let takes_state = is_defn && self.ctx.defn_takes_state(name);
+        let takes_plain = is_defn
+            && self.plain_context_active()
+            && self.ctx.defn_takes_plain(name);
+        if takes_state || takes_plain {
+            if takes_state {
+                call_args.push("ptr %state".to_string());
+            }
+            if takes_plain {
+                let p = self.emit_plain_ptr_value(out, indent);
+                call_args.push(format!("ptr {}", p));
+            }
             let param_tys = defn_param_tys.as_ref().unwrap();
             for (i, reg) in arg_regs.iter().enumerate() {
                 let reg_llvm_ty = self.llvm_type(&reg.ty);
@@ -6065,6 +6101,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // it into a later fn-typed param must inttoptr again (the 2026-08-03
                 // host-callback ABI kept llvm_type(Function)="ptr").
                 if param_llvm_ty == "ptr"
+                    && reg_llvm_ty == "i64"
+                    && matches!(reg.ty, Type::Ptr(_))
+                {
+                    // 2026-10-21 (pointer provenance): marshal a raw Ptr
+                    // argument through the SAME canonical ptr used by its
+                    // index/deref accesses. A fresh inttoptr per call gave two
+                    // sibling defns independent provenance, so LTO could hoist
+                    // a load across the store on clang 18.
+                    let conv = self.canonical_ptr(out, indent, &reg.name);
+                    call_args.push(format!("ptr {}", conv));
+                } else if param_llvm_ty == "ptr"
                     && (reg_llvm_ty == "i64"
                         || matches!(reg.ty, Type::Ptr(_))
                         || matches!(reg.ty, Type::Function(_, _)))
@@ -6086,8 +6133,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // defn_params) also need inttoptr for Ptr-typed arguments, since
                 // the register holds the i64 internal representation.
                 if matches!(reg.ty, Type::Ptr(_)) {
-                    let conv = self.fun.gen_reg();
-                    self.emit_inttoptr(out, indent, &conv, &reg.name);
+                    let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else {
                     call_args.push(format!("{} {}", self.llvm_type(&reg.ty), reg.name));
@@ -6139,6 +6185,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             call_args.join(", ")
         )
         .ok();
+        // 2026-10-20 (Arena fixture / Ptr ABI): a Ptr-returning defn uses the
+        // ptr ABI (llvm_ret_abi_type), while every Briev consumer treats Ptr
+        // as an i64 handle. Recover the i64 once at the call boundary — the
+        // same convention as Ptr params (ptr → i64 at entry / i64 → ptr at
+        // calls). Without this, a `term arena_alloc(...)` in a Ptr-returning
+        // helper emitted `inttoptr i64 <ptr>`, invalid IR.
+        if ret_llvm == "ptr" && matches!(ret_type, Type::Ptr(_) | Type::PtrConst(_)) {
+            let int_v = self.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, int_v, v).ok();
+            return TypedRegister {
+                name: int_v,
+                ty: ret_type,
+            };
+        }
         TypedRegister {
             name: v.to_string(),
             ty: ret_type,
@@ -7853,6 +7913,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
+                    let pl = if self.plain_context_active() && self.ctx.defn_takes_plain(fname) {
+                        let p = self.emit_plain_ptr_value(out, indent);
+                        format!("ptr {}, ", p)
+                    } else {
+                        String::new()
+                    };
                     // 2026-10-07 (frgn void): a void callee (result omitted
                     // from the frgn, or a defn with no `->`) DECLAREs `void`;
                     // emitting `call {dst_ll}` here produced `call i32
@@ -7861,8 +7927,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // a trap stub. Emit `call void` and define the lane's
                     // destination with a zero so later steps stay closed.
                     if self.callee_declares_void(fname) {
-                        writeln!(out, "{}call void @{}({}{} {})",
-                            indent, fname, st, arg_ll, arg).ok();
+                        writeln!(out, "{}call void @{}({}{}{} {})",
+                            indent, fname, st, pl, arg_ll, arg).ok();
                         let zero_ll = if dst_ll.starts_with('i') && dst_ll.len() > 1 {
                             dst_ll.as_str()
                         } else {
@@ -7870,8 +7936,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         };
                         writeln!(out, "{}{} = add {} 0, 0", indent, dst, zero_ll).ok();
                     } else {
-                        writeln!(out, "{}{} = call {} @{}({}{} {})",
-                            indent, dst, dst_ll, fn_name, st, arg_ll, arg).ok();
+                        writeln!(out, "{}{} = call {} @{}({}{}{} {})",
+                            indent, dst, dst_ll, fn_name, st, pl, arg_ll, arg).ok();
                     }
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {
@@ -7896,8 +7962,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
-                    writeln!(out, "{}{} = call {} @{}({}{} {})",
-                        indent, dst, dst_ll, symbol, st, cur_ll, cur).ok();
+                    let pl = if self.plain_context_active()
+                        && self.ctx.defn_takes_plain(fn_name.as_str())
+                    {
+                        let p = self.emit_plain_ptr_value(out, indent);
+                        format!("ptr {}, ", p)
+                    } else {
+                        String::new()
+                    };
+                    writeln!(out, "{}{} = call {} @{}({}{}{} {})",
+                        indent, dst, dst_ll, symbol, st, pl, cur_ll, cur).ok();
                 }
                 crate::casting::graph::LaneKind::ExtractData => {
                     writeln!(out, "{}{} = extractvalue {} {}, 0",
@@ -8039,8 +8113,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // %state; pass it only when the defn takes state. Mirrors the
                 // ExtCall arm in emit_cast_steps.
                 let st = if self.ctx.defn_takes_state(fn_name) { "ptr %state, " } else { "" };
-                writeln!(out, "{}{} = call i64 @{}({}{} {})",
-                    indent, dst, fn_name, st, src_ll, src_name).ok();
+                let pl = if self.plain_context_active()
+                    && self.ctx.defn_takes_plain(fn_name)
+                    && self.fun.plain_ptr.is_some()
+                {
+                    format!("ptr {}, ", self.fun.plain_ptr.as_ref().unwrap())
+                } else {
+                    String::new()
+                };
+                writeln!(out, "{}{} = call i64 @{}({}{}{} {})",
+                    indent, dst, fn_name, st, pl, src_ll, src_name).ok();
             }
             _ => {
                 writeln!(out, "{}{} = bitcast {} {} to i64",

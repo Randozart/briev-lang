@@ -35,15 +35,11 @@ let lower: Bool = uart_rx < uart_tx;
 
 // Contract-proven pointer safety
 defn read_uart(reg_addr: Ptr<Int>) -> Int
-    [reg_addr as Int >= UART0_BASE]
-    [reg_addr as Int <  UART0_END]
 {
     term Load#(reg_addr);
 };
 
 defn write_uart(reg_addr: Ptr<Int>, val: Int)
-    [reg_addr as Int >= UART0_BASE]
-    [reg_addr as Int <  UART0_END]
 {
     Store#(reg_addr, val);
 };

@@ -18,6 +18,7 @@ use super::comptime;
 use super::contracts;
 use super::registry::{BadIsa, BadRegisters, ImmHandling};
 use crate::ast::bad::*;
+use crate::parser::bad::parse_bad;
 use std::collections::HashMap;
 
 /// Max defn expansion depth (mutual-recursion guard). 64 matches the
@@ -57,8 +58,12 @@ pub struct Lowerer<'a> {
     structs: Vec<StructField>,
     /// The open `.struct` block, for `.field` context.
     current_struct: Option<String>,
-    /// Enclosing global label — scopes local labels (`.loop:`).
+    /// Enclosing global label — scopes local labels (`.loop:` / `local loop:`).
     current_label: Option<String>,
+    /// Local label names in the body currently being emitted. Plain
+    /// references (`jmp loop`) resolve through this set before falling
+    /// back to a global label/symbol.
+    current_locals: std::collections::HashSet<String>,
     /// Per-defn expansion counters (hygienic local-label gensym).
     defn_calls: HashMap<String, usize>,
     /// The active defn expansion scope, when inside one.
@@ -97,6 +102,10 @@ pub struct Lowerer<'a> {
     /// `.blockthreads` / `.sharedbytes` kernel geometry (ptx family).
     block_threads: Option<u32>,
     shared_bytes: Option<u32>,
+    /// `--warn-unused-values`: collect defined-but-never-read symbolic
+    /// values during symbolic lowering.
+    warn_unused: bool,
+    unused_values: Vec<crate::backend::bad::UnusedValue>,
 }
 
 /// One `.field name, size[, align]` inside a `.struct` block.
@@ -127,6 +136,7 @@ impl<'a> Lowerer<'a> {
             structs: Vec::new(),
             current_struct: None,
             current_label: None,
+            current_locals: std::collections::HashSet::new(),
             defn_calls: HashMap::new(),
             local_scope: None,
             label_names: std::collections::HashSet::new(),
@@ -147,6 +157,8 @@ impl<'a> Lowerer<'a> {
             instr_suffix: if family == "ptx" { ";" } else { "" },
             block_threads: None,
             shared_bytes: None,
+            warn_unused: false,
+            unused_values: Vec::new(),
         }
     }
 
@@ -181,6 +193,19 @@ impl<'a> Lowerer<'a> {
         self
     }
 
+    /// `--warn-unused-values`: collect defined-but-never-read symbolic
+    /// values during lowering.
+    pub fn with_warn_unused(mut self, warn: bool) -> Self {
+        self.warn_unused = warn;
+        self
+    }
+
+    /// The unused-value findings from the last run (empty unless
+    /// `with_warn_unused(true)`).
+    pub fn unused_values(&self) -> &[crate::backend::bad::UnusedValue] {
+        &self.unused_values
+    }
+
     /// Lower the whole program. First pass collects defns + aliases
     /// (forward references allowed); second pass emits.
     pub fn run(&mut self, program: &'a BadProgram) -> Result<String, String> {
@@ -200,6 +225,7 @@ impl<'a> Lowerer<'a> {
         }
         self.emit_items = pass1;
         self.layout_structs();
+        self.lower_symbolic_regions()?;
 
         // Pass 2: emission (take the vec — borrow split vs self.errors).
         let emit_items = std::mem::take(&mut self.emit_items);
@@ -228,6 +254,109 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Pass 2 emission: one match over the flattened items.
+    /// Lower symbolic label bodies through the BILLD expression/allocator
+    /// engine. Raw physical labels are untouched.
+    fn lower_symbolic_regions(&mut self) -> Result<(), String> {
+        let mut const_values = Vec::new();
+        for name in self.consts.keys().cloned().collect::<Vec<_>>() {
+            let v = self.const_value(&name, &[])?;
+            const_values.push((name, v));
+        }
+
+        // `std/bad/engine.bad` is the default-on engine-verb prelude (like
+        // the friendly alias sheet): its defns are the engine verbs, inlined
+        // at call sites. Its aliases (e.g. `WaitForInterrupt = wfi`) join
+        // the alias table so bare verb mnemonics canonicalize too.
+        let engine_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/std/bad/engine.bad"
+        ));
+        let engine_program = parse_bad(engine_src)
+            .map_err(|e| format!("engine.bad prelude: line {}: {}", e.line, e.message))?;
+        let mut engine_defns: std::collections::HashMap<String, BadDefn> =
+            std::collections::HashMap::new();
+        for item in &engine_program.items {
+            match item {
+                BadTopLevel::Defn(d) => {
+                    engine_defns.insert(d.name.clone(), d.clone());
+                }
+                BadTopLevel::Alias(a) => {
+                    self.aliases.insert(a.name.clone(), a.register.clone());
+                }
+                _ => {}
+            }
+        }
+        let global_pins: Vec<(String, String)> = self
+            .emit_items
+            .iter()
+            .filter_map(|i| match i {
+                BadTopLevel::Declarations(d) => Some(d.pins.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let mut extern_fns: Vec<crate::ast::bad::BadExternFn> = Vec::new();
+        let mut extern_data: Vec<String> = Vec::new();
+        let mut stack: Option<i64> = None;
+        for i in &self.emit_items {
+            if let BadTopLevel::Declarations(d) = i {
+                extern_fns.extend(d.extern_fns.iter().cloned());
+                extern_data.extend(d.extern_data.iter().cloned());
+                if let Some(s) = &d.stack {
+                    stack = Some(s.size);
+                }
+            }
+        }
+        // Extern data symbols are addressable labels in symbolic code.
+        let mut label_names = self.label_names.clone();
+        for name in &extern_data {
+            label_names.insert(name.clone());
+        }
+        let symdefs: std::collections::HashMap<String, crate::ast::bad::BadFn> = self
+            .emit_items
+            .iter()
+            .filter_map(|i| match i {
+                BadTopLevel::SymDefn(f) => {
+                    if engine_defns.contains_key(&f.name) {
+                        self.errors.push(format!(
+                            "inline defn `{}` shadows an engine verb - rename it",
+                            f.name
+                        ));
+                    }
+                    Some((f.name.clone(), f.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let ctx = crate::backend::bad::symbolic::SymCtx {
+            isa: self.isa,
+            regs: self.regs,
+            family: &self.family,
+            aliases: &self.aliases,
+            consts: &self.consts,
+            const_values: &const_values,
+            label_names: &label_names,
+            defns: &self.defns.keys().cloned().collect(),
+            symdefs: &symdefs,
+            bad_defns: &self.defns,
+            engine_defns: &engine_defns,
+            global_pins: &global_pins,
+            extern_fns: &extern_fns,
+            stack,
+            warn_unused: self.warn_unused,
+        };
+        let mut items = std::mem::take(&mut self.emit_items);
+        let res = crate::backend::bad::symbolic::lower_symbolic_labels(&mut items, &ctx);
+        self.emit_items = items;
+        match res {
+            Ok(unused) => {
+                self.unused_values = unused;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     fn emit_pass(&mut self, items: &[BadTopLevel]) {
         for item in items {
             match item {
@@ -238,11 +367,34 @@ impl<'a> Lowerer<'a> {
                     self.push_line(&format!("{}: {} {}", d.name, d.directive.name, args));
                 }
                 BadTopLevel::Alias(_) | BadTopLevel::Defn(_) => {}
+                BadTopLevel::Fn(f) => self.errors.push(format!(
+                    "`call defn {}` reached emission - the symbolic lowering pass did not run",
+                    f.name
+                )),
+                BadTopLevel::SymDefn(_) => {}
+                BadTopLevel::Declarations(d) => self.emit_stack(d),
                 BadTopLevel::Label(l) => self.emit_label(l),
                 BadTopLevel::RawBlock(b) => self.emit_raw_block(b),
             }
         }
     }
+
+    /// `declarations { stack N; }` — reserve an N-byte stack in `.bss` and
+    /// define `__bad_stack` (base) / `__bad_stack_top` (end). The author
+    /// still sets `sp` explicitly (`addr sp, __bad_stack_top`), which keeps
+    /// stack setup a deliberate, visible step.
+    fn emit_stack(&mut self, d: &BadDeclarations) {
+        let Some(s) = &d.stack else { return };
+        self.push_line(".section .bss");
+        self.push_line(".align 16");
+        self.push_line(".global __bad_stack");
+        self.push_line("__bad_stack:");
+        self.push_line(&format!("    .zero {}", s.size));
+        self.push_line(".global __bad_stack_top");
+        self.push_line("__bad_stack_top:");
+        self.push_line(".section .text");
+    }
+
 
     /// 2026-09-22: raw <target> ... end — verbatim for the active
     /// family, skipped otherwise. A named block emits its callable label
@@ -294,7 +446,26 @@ impl<'a> Lowerer<'a> {
                     let n = crate::backend::bad::notices::check_label(l, self.regs, &self.family);
                     self.notices.extend(n);
                 }
-                BadTopLevel::Defn(d) => {
+                BadTopLevel::Declarations(d) => {
+                let mut seen = std::collections::HashSet::new();
+                for (name, _) in &d.pins {
+                    if !seen.insert(name.clone()) {
+                        self.errors.push(format!(
+                            "declaration `{name}` is pinned twice - remove one"
+                        ));
+                    }
+                }
+            }
+            BadTopLevel::Fn(f) | BadTopLevel::SymDefn(f) => {
+                if !self.label_names.insert(f.name.clone()) {
+                    self.errors.push(format!(
+                        "fn `{}` is declared twice - functions share one symbol namespace \
+                         with labels; rename one",
+                        f.name
+                    ));
+                }
+            }
+            BadTopLevel::Defn(d) => {
                     let n = crate::backend::bad::notices::check_defn(d);
                     self.notices.extend(n);
                 }
@@ -353,6 +524,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
             BadTopLevel::Directive(d) => self.collect_directive(d),
+            // Data labels are symbols too; the symbolic-value inference
+            // must not mistake `mov r0, msg` for a virtual.
+            BadTopLevel::Data(d) => {
+                self.label_names.insert(d.name.clone());
+            }
             BadTopLevel::Label(l) if !l.local => {
                 if !self.label_names.insert(l.name.clone()) {
                     self.errors.push(format!(
@@ -731,6 +907,15 @@ impl<'a> Lowerer<'a> {
         if !l.local {
             self.current_label = Some(l.name.clone());
         }
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        self.current_locals = l
+            .body
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Local(x) => Some(x.name.clone()),
+                _ => None,
+            })
+            .collect();
         self.push_line(&format!("{}:", self.canonical_label(&l.name)));
         let proven = contracts::check_label_contracts(l, self.regs, &self.family, &mut self.errors);
         for note in &proven {
@@ -751,8 +936,22 @@ impl<'a> Lowerer<'a> {
                         self.errors.push(e);
                     }
                 }
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => self.errors.push(
+                    "symbolic statement reached emission - the symbolic lowering pass did not run"
+                        .to_string(),
+                ),
             }
         }
+        self.current_locals = saved_locals;
     }
 
     /// 2026-10-01 (plan `2026-10-01-bad-site-blocks.md`): lower a site —
@@ -921,6 +1120,116 @@ impl<'a> Lowerer<'a> {
         )
     }
 
+    /// Is this operand an immediate for form selection/materialization?
+    fn operand_is_immediate(
+        &self, op: &BadOperand, env: &HashMap<String, Bound>, instr: &BadInstr,
+    ) -> bool {
+        match op {
+            BadOperand::Int(_) | BadOperand::Float(_) => true,
+            BadOperand::Name(name) => {
+                self.consts.contains_key(name)
+                    || matches!(env.get(name), Some(Bound::Imm(_)))
+            }
+            BadOperand::Expr(e) => self.eval_operand_expr(e, env, instr).is_ok(),
+        }
+    }
+
+    /// Would materializing into `scratch` clobber a register operand?
+    fn scratch_conflicts(
+        &self, scratch: &str, instr: &BadInstr, env: &HashMap<String, Bound>,
+    ) -> bool {
+        let Some(token) = self.resolve_register(scratch) else { return false };
+        for op in &instr.operands {
+            let BadOperand::Name(name) = op else { continue };
+            if let Some(Bound::Token(t)) = env.get(name) {
+                if self.resolve_register(t) == Some(token) {
+                    return true;
+                }
+            }
+            if self.resolve_register(name) == Some(token) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn pick_scratch(
+        &mut self, instr: &BadInstr, env: &HashMap<String, Bound>, used: &[String],
+    ) -> Result<String, String> {
+        let mut candidates = Vec::new();
+        if let Some(s) = self.regs.scratch_int(&self.family) {
+            candidates.push(s);
+        }
+        if let Some(s) = self.regs.scratch_int2(&self.family) {
+            candidates.push(s);
+        }
+        for cand in candidates {
+            if used.iter().any(|u| u == cand) {
+                continue;
+            }
+            if self.scratch_conflicts(cand, instr, env) {
+                continue;
+            }
+            return Ok(cand.to_string());
+        }
+        Err(format!(
+            "`{}` (line {}) has immediate operand(s) with no free materialization \
+             scratch on `{}` - free one of the scratch registers or load the value \
+             into a register yourself",
+            instr.mnemonic, instr.span.line, self.family
+        ))
+    }
+
+    /// Replace every immediate operand with a scratch register holding it.
+    /// The scratch names are canonical portable registers, so the normal
+    /// register map resolves them. Disclosed clobber.
+    fn materialize_illegal_imms(
+        &mut self, instr: &mut BadInstr, env: &HashMap<String, Bound>, depth: usize,
+    ) -> Result<(), String> {
+        let indices: Vec<usize> = instr
+            .operands
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| self.operand_is_immediate(op, env, instr))
+            .map(|(i, _)| i)
+            .collect();
+        if indices.is_empty() {
+            return Ok(());
+        }
+        let mut used: Vec<String> = Vec::new();
+        for idx in indices {
+            let op = instr.operands[idx].clone();
+            if matches!(op, BadOperand::Float(_)) {
+                return Err(format!(
+                    "`{}` (line {}) has a float immediate with no generic scratch on \
+                     `{}` - load it into a float register first or use a `raw <target>` block",
+                    instr.mnemonic, instr.span.line, self.family
+                ));
+            }
+            let scratch = self.pick_scratch(instr, env, &used)?;
+            used.push(scratch.clone());
+            if self.trace {
+                eprintln!(
+                    "trace: `{}` (line {}) immediate #{} materialized in `{}`",
+                    instr.mnemonic,
+                    instr.span.line,
+                    idx + 1,
+                    scratch
+                );
+            }
+            let mov = BadInstr {
+                mnemonic: "mov".to_string(),
+                operands: vec![BadOperand::Name(scratch.clone()), op],
+                contract: None,
+                ack: None,
+                span: instr.span,
+            };
+            self.emit_instr(&mov, env, depth)?;
+            instr.operands[idx] = BadOperand::Name(scratch);
+        }
+        Ok(())
+    }
+
     /// Emit one instruction under `env` (defn param bindings). `depth`
     /// guards defn recursion.
     fn emit_instr(
@@ -938,7 +1247,8 @@ impl<'a> Lowerer<'a> {
             owned.mnemonic = canonical;
             owned
         };
-        let instr = &instr;
+        let mut owned = instr.clone();
+        let instr = &mut owned;
 
         // 1. Defn call → inline expansion.
         if !self.isa.is_core(&instr.mnemonic) {
@@ -958,7 +1268,7 @@ impl<'a> Lowerer<'a> {
         // target dispatch now lives in `site` blocks and branch defns.)
         self.check_call_shape(instr)?;
 
-        let lowering = match self.isa.lookup(&instr.mnemonic, &self.family) {
+        let lowering = match self.isa.lookup(&instr.mnemonic, &self.family).cloned() {
             Some(l) => l,
             None => {
                 return Err(format!(
@@ -970,9 +1280,13 @@ impl<'a> Lowerer<'a> {
         };
         let has_imm = instr.operands.iter().any(|o| match o {
             BadOperand::Int(_) | BadOperand::Float(_) => true,
-            // Const names resolve to immediates at substitution — they
-            // must pick the imm form too (aarch64 mul takes no #imm).
-            BadOperand::Name(name) => self.consts.contains_key(name),
+            // Const names and defn params bound to immediates resolve
+            // to immediates at substitution — they must pick the imm
+            // form too (aarch64 mul takes no #imm).
+            BadOperand::Name(name) => {
+                self.consts.contains_key(name)
+                    || matches!(env.get(name), Some(Bound::Imm(_)))
+            }
             // An Expr that EVALUATES to a constant (a bare hex literal
             // `0x40004008`) is an immediate; one that resolves to a label
             // (`addr + 8`) is not.
@@ -984,11 +1298,10 @@ impl<'a> Lowerer<'a> {
         let template = match (&lowering.imm, has_imm) {
             (ImmHandling::Form(t), true) => t,
             (ImmHandling::Illegal, true) => {
-                return Err(format!(
-                    "core op `{}` has no immediate form on `{}` - load the value into \
-                     a register first (the hardware has no immediate encoding)",
-                    instr.mnemonic, self.family
-                ));
+                // Predictable ceremony: materialize each immediate through
+                // the configured caller-saved scratch, then use the reg form.
+                self.materialize_illegal_imms(instr, env, depth)?;
+                &lowering.reg_form
             }
             _ => &lowering.reg_form,
         };
@@ -1100,6 +1413,14 @@ impl<'a> Lowerer<'a> {
     fn emit_sequence_body(
         &mut self, items: &[BadBodyItem], env: &HashMap<String, Bound>, depth: usize,
     ) -> Result<(), String> {
+        let saved_locals = std::mem::take(&mut self.current_locals);
+        self.current_locals = items
+            .iter()
+            .filter_map(|i| match i {
+                BadBodyItem::Local(x) => Some(x.name.clone()),
+                _ => None,
+            })
+            .collect();
         for item in items {
             match item {
                 BadBodyItem::Instr(instr) => {
@@ -1112,8 +1433,24 @@ impl<'a> Lowerer<'a> {
                 BadBodyItem::Site(site) => {
                     self.emit_site_in_defn(site, env, depth)?;
                 }
+                BadBodyItem::Let(_)
+                | BadBodyItem::Assign(_)
+                | BadBodyItem::When(_)
+                | BadBodyItem::Loop(_)
+                | BadBodyItem::While(_)
+                | BadBodyItem::Break(_)
+                | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {
+                    return Err(
+                        "symbolic statement inside a defn reached emission - the symbolic                          lowering pass did not run"
+                            .to_string(),
+                    )
+                }
             }
         }
+        self.current_locals = saved_locals;
         Ok(())
     }
 
@@ -1273,8 +1610,11 @@ impl<'a> Lowerer<'a> {
                     return self.syscall_number_token(name, instr);
                 }
                 // Check local env first, then fn-level param_env.
+                // A bare ref (`$N!`) demands the value with NO imm prefix
+                // — opcode-encoded slots (`%cr$2!`, `csrw $1!`) splice it
+                // into the mnemonic/CSR text.
                 if let Some(Bound::Imm(v)) = env.get(name).or_else(|| self.param_env.get(name)) {
-                    return Ok(format!("{imm}{v}"));
+                    return Ok(if r.bare { v.to_string() } else { format!("{imm}{v}") });
                 }
                 let (bound_name, param) = match env.get(name).or_else(|| self.param_env.get(name)) {
                     Some(Bound::Token(t)) => (t.as_str(), Some(name.as_str())),
@@ -1335,6 +1675,23 @@ impl<'a> Lowerer<'a> {
             let v = self.const_value(name, &[])?;
             return Ok(format!("{}{}", self.regs.imm_prefix(&self.family), v));
         }
+        // A real target spelling used on the wrong target: name the
+        // targets that have it instead of the generic "not a register".
+        let alias_targets = self.regs.alias_targets(name);
+        if !alias_targets.is_empty() {
+            let bound = param
+                .map(|p| format!(" (bound from param `{p}`)"))
+                .unwrap_or_default();
+            return Err(format!(
+                "operand `{name}`{bound} in `{mn}` (line {line}) is a target-specific \
+                 register on [{}], not on `{fam}` - use a portable register (r0-r15, \
+                 f0-f15) or a `raw <target>` block for target-only code",
+                alias_targets.join(", "),
+                mn = instr.mnemonic,
+                line = instr.span.line,
+                fam = self.family,
+            ));
+        }
         if allow_symbols {
             // Local-label reference: `.loop` inside label `foo` →
             // `Lfoo__loop`. A missing parent is a hard error (the
@@ -1351,6 +1708,15 @@ impl<'a> Lowerer<'a> {
                         instr.span.line
                     )),
                 };
+            }
+            // Plain local reference (`jmp loop` for `local loop:`).
+            if self.current_locals.contains(name) {
+                if let Some(scope) = &self.local_scope {
+                    return Ok(format!("{scope}__{name}"));
+                }
+                if let Some(parent) = &self.current_label {
+                    return Ok(format!("L{parent}__{name}"));
+                }
             }
             // Label aliases: `alias entry = _start` — references rewrite
             // to the canonical name (values naming registers or core ops
@@ -1381,12 +1747,13 @@ impl<'a> Lowerer<'a> {
         // (documented row semantics — riscv push/pop, x86 push2, ...).
         for part in text.split(';') {
             let part = part.trim();
-            if !part.is_empty() {
-                if self.instr_suffix.is_empty() {
-                    self.push_line(part);
-                } else {
-                    self.push_line(&format!("{part}{}", self.instr_suffix));
-                }
+            if part.is_empty() || is_self_move(part) {
+                continue;
+            }
+            if self.instr_suffix.is_empty() {
+                self.push_line(part);
+            } else {
+                self.push_line(&format!("{part}{}", self.instr_suffix));
             }
         }
     }
@@ -1430,7 +1797,9 @@ impl<'a> Lowerer<'a> {
     /// Resolve a name through aliases then the register table.
     fn resolve_register(&self, name: &str) -> Option<&'a str> {
         let canonical = self.aliases.get(name).map(|s| s.as_str()).unwrap_or(name);
-        self.regs.resolve(canonical, &self.family)
+        self.regs
+            .resolve(canonical, &self.family)
+            .or_else(|| self.regs.resolve_real(canonical, &self.family))
     }
 
     /// Portable register SYNTAX check for raw operands: `r14` on x86_64
@@ -1583,4 +1952,40 @@ fn find_word_start(s: &str) -> Option<usize> {
     s.char_indices()
         .find(|(_, c)| c.is_alphabetic() || *c == '_' || *c == '.')
         .map(|(i, _)| i)
+}
+
+/// True for a register-to-register move with identical operands
+/// (`movq %rax, %rax`, `mov x0, x0`, `mv a0, a0`, `fmov d0, d0`).
+///
+/// Template-generated core ops copy-then-op on some targets (`x86_64`
+/// `sub`/`and`/`or`/`xor`, the x86 `add` imm form). When the destination
+/// and source are already the same register the copy is dead. Raw blocks
+/// bypass this filter — `emit_raw_block` pushes lines verbatim.
+///
+/// Deliberately excludes flag-setting `movs` (thumb) and memory operands.
+fn is_self_move(part: &str) -> bool {
+    let mut toks = part.split_whitespace();
+    let Some(mn) = toks.next() else { return false };
+    let simple_mov = matches!(
+        mn,
+        "mov" | "movq" | "movl" | "movw" | "movb" | "mv" | "fmov" | "movsd" | "movss" | "movd"
+    );
+    if !simple_mov {
+        return false;
+    }
+    let ops: Vec<&str> = toks
+        .map(|t| t.trim_end_matches(','))
+        .filter(|t| !t.is_empty())
+        .collect();
+    if ops.len() != 2 {
+        return false;
+    }
+    let looks_like_register = |t: &str| {
+        !t.is_empty()
+            && !t.starts_with('$')
+            && !t.starts_with('#')
+            && !t.starts_with('=')
+            && !t.contains(['[', ']', '(', ')', ':', '+', '-'])
+    };
+    ops[0] == ops[1] && looks_like_register(ops[0])
 }

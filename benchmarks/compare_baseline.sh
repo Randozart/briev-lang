@@ -24,6 +24,18 @@ if [ ! -d "$BASELINE_DIR" ]; then
     exit 1
 fi
 
+if [ -f benchmarks/BASELINE.lock ] && [ "${ALLOW_BASELINE_MISMATCH:-0}" != "1" ]; then
+    expected=$(awk -F= '$1 == "commit" { print $2 }' benchmarks/BASELINE.lock)
+    actual=$(git -C "$BASELINE_DIR" rev-parse HEAD)
+    if [ "$actual" != "$expected" ]; then
+        echo "ERROR: baseline worktree is not at the locked commit." >&2
+        echo "  expected: $expected" >&2
+        echo "  actual:   $actual" >&2
+        echo "Set ALLOW_BASELINE_MISMATCH=1 only for an intentional experiment." >&2
+        exit 1
+    fi
+fi
+
 echo "=== Comparing $NAME ==="
 echo "Baseline: $(cd $BASELINE_DIR && git rev-parse --short HEAD)"
 echo "Current:  $(git rev-parse --short HEAD)"

@@ -66,6 +66,46 @@ pub fn compute_defn_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> 
     needs
 }
 
+/// 2026-10-20 (storage-class ABI): derive which defns need the `plain`
+/// context pointer. This is a separate least fixpoint from `needs_state`:
+/// machine state and plain/plumbing state are different memory domains, and
+/// a defn may need either, both, or neither. The walker is the same one used
+/// by `compute_defn_needs_state`, but its tracked field set is the plain set
+/// and txn/stateful-intrinsic leaves are excluded, so a defn that only uses
+/// machine state stays false here.
+pub fn compute_defn_needs_plain(
+    items: &[TopLevel],
+    plain: &HashSet<String>,
+) -> HashMap<String, bool> {
+    let (regular, _txns, _state_fields, _always) = index_program(items, plain);
+    let no_txns: HashSet<String> = HashSet::new();
+    let no_always: HashSet<String> = HashSet::new();
+    let no_locals: HashSet<String> = HashSet::new();
+    let mut needs: HashMap<String, bool> = regular.keys().map(|k| (k.clone(), false)).collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (name, d) in &regular {
+            if *needs.get(name).unwrap_or(&false) {
+                continue;
+            }
+            if body_needs_state(
+                &d.body,
+                &regular,
+                &no_txns,
+                plain,
+                &no_always,
+                &no_locals,
+                &needs,
+            ) {
+                needs.insert(name.clone(), true);
+                changed = true;
+            }
+        }
+    }
+    needs
+}
+
 /// Index the program into the sets the needs-state walker needs.
 fn index_program<'a>(
     items: &'a [TopLevel],
@@ -1247,5 +1287,28 @@ mod tests {
             "bump reads counter.ptr through the global state field and must \
              take %state"
         );
+    }
+}
+
+#[cfg(test)]
+mod plain_context_tests {
+    use super::*;
+
+    fn parse(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn plain_context_needs_plain_is_transitive() {
+        let items = parse(
+            "plain let plumbing: Int = 0;\n             let reactive: Int = 0;\n             defn put(x: Int) -> Int { plumbing = plumbing + x; term plumbing; };\n             defn caller(x: Int) -> Int { term put(x); };\n             defn stateful(x: Int) -> Int { reactive = reactive + x; term reactive; };\n",
+        );
+        let plain: HashSet<String> = ["plumbing".to_string()].into_iter().collect();
+        let needs = compute_defn_needs_plain(&items, &plain);
+        assert_eq!(needs.get("put"), Some(&true));
+        assert_eq!(needs.get("caller"), Some(&true));
+        assert_eq!(needs.get("stateful"), Some(&false));
     }
 }
