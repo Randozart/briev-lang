@@ -116,6 +116,9 @@ pub struct CompilerContext {
     /// a clean C ABI. Previously every regular defn carried state, forcing
     /// all callers to too.
     pub defn_needs_state: HashMap<String, bool>,
+    /// 2026-10-20 (storage-class ABI): per-defn verdict for the derived
+    /// PLAIN/plumbing context. Independent of `%state`; a defn may need both.
+    pub defn_needs_plain: HashMap<String, bool>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
     /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
@@ -528,6 +531,12 @@ impl CompilerContext {
     /// replaces the blanket `defn_params.contains_key(name)` at every
     /// call-site gate — pure helpers (cstr doors, arithmetic lanes) are
     /// emitted WITHOUT `%state` and must be called without it.
+    /// Does this defn take the derived plain/plumbing context pointer?
+    /// Separate from `defn_takes_state`: the two memory domains are orthogonal.
+    pub fn defn_takes_plain(&self, name: &str) -> bool {
+        self.defn_needs_plain.get(name).copied().unwrap_or(false)
+    }
+
     pub fn defn_takes_state(&self, name: &str) -> bool {
         self.defn_params.contains_key(name)
             && self.defn_needs_state.get(name).copied().unwrap_or(true)
@@ -606,6 +615,7 @@ impl CompilerContext {
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
+            defn_needs_plain: HashMap::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),

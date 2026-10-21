@@ -2845,6 +2845,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
+        self.ctx.defn_needs_plain =
+            crate::analysis::export_abi::compute_defn_needs_plain(items, &plain_lets);
         // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
         // raw-memory attribute set must be TRANSITIVE. A defn whose own body
         // has no raw intrinsic can still reach one through a callee
