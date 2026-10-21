@@ -132,6 +132,21 @@ not specialize per loop. It is retained only behind
 `BRIEV_DIAG_PLAIN_CONTEXT=1`. Next: E2 per-loop state materialization
 (`docs/plans/2026-10-21-per-loop-effect-abi.md`).
 
+## E2 preflight — alternate stateless loop engines (2026-10-21)
+
+Forcing the existing version-DAG or per-field stateless emitters
+(`BRIEV_DIAG_LOOP_ENGINE=version|perfield`, `BRIEV_DIAG_EFFECT=stateless`):
+
+| Benchmark | version | per-field | stateless countdown |
+|---|---:|---:|---:|
+| float_math | 0.1284s | 0.1241s | ~0.128s |
+| interval_step | 0.0407s | 0.0461s | ~0.041s |
+| matrix_pipeline | 0.512s | 0.519s | ~0.48s |
+
+No existing stateless loop engine reaches the 0.9x escaped shape on
+`float_math`. E2 needs a new materialized loop-state emitter or a per-loop
+effect context; engine selection alone is insufficient.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

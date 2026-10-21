@@ -71,6 +71,22 @@ Result:
 E1 is therefore **insufficient as the mixed-program solution**. It is retained
 only as a diagnostic experiment (`BRIEV_DIAG_PLAIN_CONTEXT=1`), default off.
 
+## E2 preflight — alternate loop engines (RUN 2026-10-21)
+
+Before building a new emitter, the existing alternate stateless loop shapes
+were forced with `BRIEV_DIAG_LOOP_ENGINE=version|perfield` (stateless print):
+
+| Benchmark | version | per-field | Current stateless countdown |
+|---|---:|---:|---:|
+| float_math | 0.1284s | 0.1241s | ~0.128s |
+| interval_step | 0.0407s | 0.0461s | ~0.041s |
+| matrix_pipeline | 0.512s | 0.519s | ~0.48s |
+
+All three stateless engine shapes remain ~2.8x on float_math. Engine selection
+alone is not state materialization; it cannot produce the escaped-shape result.
+The next meaningful E2 step is a new materialized loop-state emitter, not a
+dispatch toggle.
+
 ## E2 — per-loop state materialization (next)
 
 Keep **one stateless print ABI** and make the loop storage per-transaction.

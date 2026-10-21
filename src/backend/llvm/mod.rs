@@ -6676,7 +6676,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // bodies (which is why the batch's pure inner loop regressed fmn).
         // A/B vs the batch + version-DAG is recorded in the plan's §10.
         let is_decreasing_vd = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
-        if !is_decreasing_vd {
+        // BRIEV_DIAG_LOOP_ENGINE=version|perfield forces the alternate loop
+        // shapes for the E2 materialization experiment. Unset = production
+        // dispatch (countdown first).
+        let forced_engine = std::env::var("BRIEV_DIAG_LOOP_ENGINE").ok();
+        let allow_countdown = forced_engine.as_deref() != Some("version")
+            && forced_engine.as_deref() != Some("perfield");
+        if !is_decreasing_vd && allow_countdown {
             if let Some(batch) = analysis.batch_shape.as_ref() {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
@@ -6701,13 +6707,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // the guard-absent/guard-present emission and supersedes PerFieldPhi.
         // See docs/plans/2026-07-30-flat-node-decomposition.md §11.
         self.fun.pending_post_hoist = post_hoist.clone();
-        if self.emit_version_dag_main(
-            out, counter_idx, total_idx, total_const_name, bp.bound_literal,
-            &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
-            analysis.global_lifetime.free_after.get(&node.name)
-                .map(|v| v.as_slice()).unwrap_or(&[]),
-            &node.name, watchdog,
-        ) {
+        if forced_engine.as_deref() != Some("perfield")
+            && self.emit_version_dag_main(
+                out, counter_idx, total_idx, total_const_name, bp.bound_literal,
+                &body_stmts, &node.write_set, is_decreasing_vd, Some(&bp.var),
+                analysis.global_lifetime.free_after.get(&node.name)
+                    .map(|v| v.as_slice()).unwrap_or(&[]),
+                &node.name, watchdog,
+            )
+        {
             return true;
         }
         // 2026-07-31: version-DAG did not handle the body — remaining paths use the
