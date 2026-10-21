@@ -188,9 +188,12 @@ These are ranked by repeated evidence across fixtures and the suite.
 - No redundant `ptrtoint`/`inttoptr`/boxing in hot loops; suite unchanged or
   improved.
 
-### P2-9 — Storage-class inference and plain-context ABI
+### P2-9 — Storage-class inference, Local class, and plain-context ABI
 
-**Status:** started 2026-10-20.
+**Status:** revised 2026-10-20 after the C-shape probes. PlainContext is no
+longer the primary fix; a derived **Local** class / loop-local scalarization
+is. The goal is to expose the C-like SSA shape (register accumulator, spill
+only at the effect call), not to fight register allocation.
 
 - Removed explicit `plain` from `stdout_buf`/`stdout_fill`; inference still
   classifies them plain.

@@ -315,6 +315,43 @@ Before more context ABI work:
    fix storage/loop emission.
 5. Record the IR/asm diff in the results file.
 
+## Base truth 2026-10-20 — the C shape is already reachable
+
+Minimal Briev SSA probes (no `%State`, no plain/state toggle) show:
+
+- a pure local recursive accumulator compiles to a register-resident loop;
+- adding a periodic `println!(acc)` keeps the accumulator in `xmm0` across
+  the backedge and spills it only around `print_float`.
+
+Therefore Briev IR + LLVM already have the C capability. The failure is in
+**state/print materialization**, not in the optimizer.
+
+### Revised primary direction
+
+Add a derived **Local** storage class for bounded single-node state:
+
+- fields whose only lifetime is inside one bounded node/loop, with no
+  contract/rollback/export/async observation, are loop-local SSA values;
+- they are committed to `%State` only at a real observable boundary (or not
+  at all if the node never needs persistence);
+- print/effect calls receive scalar/local values through the normal ABI, not
+  a machine-state or plain-plumbing context that aliases the hot loop;
+- no `plain`/`state` performance toggle, no register budget, no phi cap.
+
+This is the C shape: locals + explicit effect boundary. `PlainContext` is
+demoted to a fallback for genuinely address-taken/plain effect plumbing; it is
+not the primary fix.
+
+### Next experiment
+
+1. Implement a minimal Local classification for bounded single-node fields
+   (analysis only; no emission change).
+2. Lower one test node's fields as loop-local SSA and compare the asm to the
+   SSA probes/C.
+3. If the shape matches, extend to `float_math`; if not, inspect the loop
+   emission/commit boundary.
+4. Only then revisit effect-context ABI.
+
 ## Rejected alternatives
 
 - **Stateful print / stateful stdout** — loses queue_drain/interval_step.

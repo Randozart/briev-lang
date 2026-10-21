@@ -213,3 +213,33 @@ context; the global-context variant does not. Next prototype must allocate
 (not fall back to `@__briev_plain` inside txns). If an alloca context also
 fails, the plain-context hypothesis is refuted and the work returns to explicit
 loop accumulator/state materialization.
+
+
+## Base-truth probe 2026-10-20 — Briev/LLVM can produce the C shape
+
+Two minimal Briev SSA probes (no `%State`, no plain/state toggle):
+
+1. **Pure local recursive accumulator** (`step(n,i,acc)`), no print:
+   - LLVM produced a register-resident accumulator (and vectorized the
+     add loop); no per-iteration stack traffic.
+2. **Same loop with a periodic `println!(acc)` inside it**:
+   - the accumulator stays in `xmm0` across the backedge;
+   - it spills only around `print_float`:
+     `vmovss %xmm0, 0x4(%rsp)` before the call, reload after.
+
+So Briev IR + LLVM already have the C capability: expose ordinary SSA locals,
+keep the hot accumulator in a register, spill only at the effect boundary.
+
+The failures are therefore in **state/print materialization**, not in Briev's
+IR or LLVM: `float_math` keeps its 13 loop fields in `%State`/plain-global
+form and the print path/ABI disrupts the hot accumulator's live range.
+
+This reframes the fix: add a derived **Local** class / loop-local
+scalarization for bounded single-node state, instead of toggling print storage
+or building a context ABI to trick register allocation. PlainContext remains
+only a possible effect/alias boundary if local scalarization alone cannot
+cover a required effect path.
+
+(An additional 13-float recursive probe was inconclusive — the periodic print
+was hoisted/optimized differently and the result was not a reliable loop-shape
+measurement; do not cite it as evidence.)
