@@ -160,8 +160,9 @@ the dominance errors but changed float output:
 The pure inner loop lets LLVM reassociate/vectorize the float32 accumulations
 under `fast` math. The local probe independently printed 1,434,824.38 at 5M,
 confirming shape-sensitive FP results. Output parity is mandatory, so the
-batch shape was removed from dispatch and left unused. E2 must preserve the
-guard-bearing FP evaluation order (or reproduce C's exact shape).
+batch shape was removed from dispatch; the dead emitter was later deleted in
+the effect-shape follow-up (F3). E2 must preserve the guard-bearing FP
+evaluation order (or reproduce C's exact shape).
 
 The existing guard-bearing alternates **do** preserve 5M output
 (`version`/`per-field` = 1449352.5) but remain ~2.9x. A single-latch shape

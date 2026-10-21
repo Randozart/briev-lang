@@ -130,6 +130,12 @@ Leaving it unused invites a future developer to wire a known-bad path.
 - Update the E2 preflight/results docs to point at the removal.
 - Ensure no warning/dead-code regression.
 
+### Result
+
+DONE: removed `emit_countable_batched_main` and its stale source comments.
+No live call site remains. Full lib/tests and guards must stay green; emitted
+IR for the suite is unchanged (the function was unreachable).
+
 ### Acceptance
 
 - `cargo test --lib` green.

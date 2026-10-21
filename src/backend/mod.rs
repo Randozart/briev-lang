@@ -69,7 +69,7 @@ pub struct AnalysisResults {
     pub node_inline_decisions: HashMap<String, crate::analysis::inline_cost::InlineDecision>,
     // 2026-07-31: Batch-loop decomposition (plan 2026-07-31-regain-kalman-float-
     // math-parity §5, Fix 2) — the io boundary interval derived from the guard
-    // precondition, consumed by the backend's emit_countable_batched_main.
+    // precondition; consumed by countdown dispatch and carry eligibility.
     pub batch_shapes: HashMap<String, crate::analysis::batch_shape::BatchShape>,
     // 2026-08-01 (D2): garbage scheduling — the frontend-computed proof of
     // each heap-backed state field's reactor-ordered last consumer, consumed
