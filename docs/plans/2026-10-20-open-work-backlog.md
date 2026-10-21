@@ -236,6 +236,15 @@ Immediate `ws_frame` slice is DONE: 3.50x → **1.48x**, better than the old
 1.58x, by removing per-byte guards and using a proven direct `Load#`. Full
 record: `benchmarks/results/2026-10-20-performance-regression-bisect.md`.
 
+**2026-10-21 correction:** the countdown loop itself spills the reduced
+accumulator to `0x24(%rsp)` every iteration; `post_hoist_groups=0` and no
+swan song, so the "pending post-hoist forces state seeds" explanation is
+withdrawn. A local `foreach` shape is 0.0559s vs C 0.0429s (1.30x) and keeps
+its accumulators in `xmm1`–`xmm3`, spilling only on the print path. State
+countdown is 0.1239s (2.89x). Next slice is the single-header/single-latch
+Local loop; `emit_countable_batched_main` is dead and dominance-invalid, not a
+shortcut.
+
 Do not call the remaining rows noise and do not blame provenance without an
 A/B. The open question is the state/plain stateless-print/`%State` interaction,
 not the matrix arithmetic.

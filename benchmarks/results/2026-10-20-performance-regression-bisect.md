@@ -300,3 +300,67 @@ The attempt was reverted rather than landed: it adds complexity without a
 measured win. The validated Local slice (`285356c0`: classification + dead
 exit-store elimination) stays. Next target is the post-hoist/guard split and
 the loop shape itself — the simple SSA probe remains the reference.
+
+## Diagnostic correction 2026-10-21 — countdown spills; post-hoist claim withdrawn
+
+Goal: establish the actual cause before rewriting the loop. No production
+codegen change; tree contains only the Local classification test and an
+env-gated `BRIEV_DIAG_LOOP` diagnostic.
+
+Interleaved medians, 5 runs each, `BOUND=50000000`, same host and C binary:
+
+| Variant | Median | vs C | Shape note |
+|---|---:|---:|---|
+| state countdown (current) | 0.1239s | 2.89x | stack accumulator every iteration |
+| local `foreach`, three-accumulator probe | 0.0559s | 1.30x | `xmm1`–`xmm3`, spill only on print |
+| local `foreach`, exact 12-field probe | 0.0564s | 1.32x | same shape; not parity |
+| C reference | 0.0429s | 1.00x | `xmm0`, spill only on print |
+
+`BRIEV_DIAG_LOOP=1` reports:
+
+```
+txn='tick' local=["p00", ..., "p22", "x0", "x1", "x2"]
+post_hoist_groups=0
+```
+
+`float_math` ends in `term;`; there is no swan song. The countdown IR already
+uses literal phi seeds and skips post-loop local `%State` stores. Therefore
+two earlier statements are withdrawn:
+
+1. "A pending post-loop hoist forces `%State` phi seeds" — false:
+   `post_hoist_groups=0`.
+2. "The countdown keeps the trace accumulator in `xmm0`" — false at this
+   HEAD: the hot loop reloads/stores `0x24(%rsp)` every iteration. The
+   register-resident result belongs to the fast-era *stateful-print* variant.
+   The local probe likewise uses `xmm1`–`xmm3`, not a single `xmm0`.
+
+Asm evidence:
+
+- State countdown (`/tmp/opencode/diag_countdown2/float_math`):
+  `vmovss 0x24(%rsp),%xmm0` → `vaddss` → `vmovss %xmm0,0x24(%rsp)` inside
+  the hot loop; then the batch/outer control (`dec %r14; jne`, `inc; cmp; je`).
+- Local foreach (`/tmp/opencode/fmls/float_math_local_single` and
+  `/tmp/opencode/fmle/float_math_local_exact`):
+  `vaddss` into `%xmm3/%xmm2/%xmm1` each iteration; the spills appear only
+  after the guard branch, on the print path; one header/latch backedge.
+- C: `vaddss %xmm1,%xmm0,%xmm0`; spill/reload only around `fprintf`.
+
+The local probes are **not parity results**: at 5M the exact probe prints
+`1434824.38` while C prints `1449352.500000000`. Only timing/shape comparisons
+are valid. The current countdown matches C at 5M (`1449352.5`).
+
+Root cause: the countdown's body → guard → latch batch loop with phi joins
+makes LLVM place the reduced accumulator in a stack slot. The local
+`foreach` shape lowers to allocas plus a single header/latch; SROA promotes
+the accumulators to registers and spills only in the guard-taken effect
+block. This is a loop-materialization issue, not Local classification, not
+post-hoist, and not print inlining.
+
+Dead shortcut: `emit_countable_batched_main` is unused and currently emits
+dominance-invalid IR for `float_math` (`%icn83`, `%t142`, etc.) when gated on.
+It must be repaired before it can be considered.
+
+Next: emit the single-header/single-latch Local loop (or equivalent
+alloca/SROA shape) with the effect block rejoining the latch once. Gate on
+byte/numeric parity at print boundaries, median <= 1.35x C at 50M, then the
+full benchmark suite.

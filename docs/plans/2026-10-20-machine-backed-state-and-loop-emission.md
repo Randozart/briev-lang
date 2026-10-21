@@ -474,20 +474,55 @@ current alloca/SROA path without touching the print chain.
 
 ## Local-SSA probe result (2026-10-20)
 
-A temporary local-let `foreach` variant of the float loop keeps the
-accumulator in `xmm0` and spills only at the print call; measured ~0.057s vs
-C ~0.043s (~1.33x), versus ~2.9x for the state path. The probe simplified the
-math for isolation, so it is a shape/timing result, not a parity result.
+A temporary local-let `foreach` variant of the float loop keeps its
+accumulators in registers (`xmm1`–`xmm3` in the exact probe) and spills only
+on the print path; measured ~0.056s vs C ~0.043s (~1.3x), versus ~2.9x for the
+state path. The probe is a shape/timing result, not a parity result.
 Next implementation target: derive a Local class for bounded single-node
 state and lower it as loop-local SSA.
 
 
-## Local slice result (2026-10-20)
+## Local slice result (2026-10-20; diagnosis corrected 2026-10-21)
 
 Local-field classification + dead exit-store elimination landed (`285356c0`).
 `float_math` stayed ~2.9x. A forced per-field/literal-seed variant also stayed
-~2.9x and was reverted: a pending post-loop hoist still forces `%State` phi
-seeds, and the body/guard/latch shape does not fold like the local-`foreach`
-probe. Next target is the post-hoist/guard split and the loop shape itself;
-the simple SSA probe remains the reference. No failing experiment is left in
-the tree.
+~2.9x and was reverted: its body/guard/latch shape does not fold like the
+local-`foreach` probe.
+
+The 2026-10-21 diagnostic run corrects two earlier statements:
+
+- `float_math` has **no swan song** (`term;`), and `post_hoist_groups=0`.
+  Literal phi seeds and skipped local exit stores are already active. The
+  "pending post-loop hoist forces `%State` seeds" explanation is withdrawn.
+- The current countdown loop does **not** keep the accumulator in `xmm0`. Its
+  hot loop reloads/stores `0x24(%rsp)` every iteration. The earlier
+  register-resident observation belongs to the stateful-print fast era, not
+  this shape.
+
+Interleaved medians at `BOUND=50000000` (5 runs each, same host):
+
+| Variant | Median | vs C |
+|---|---:|---:|
+| state countdown (current) | 0.1239s | 2.89x |
+| local `foreach`, three-accumulator probe | 0.0559s | 1.30x |
+| local `foreach`, exact 12-field probe | 0.0564s | 1.32x |
+| C reference | 0.0429s | 1.00x |
+
+The local probes are timing/shape probes, not parity results (their checksums
+do not match C). The state countdown does match C numerically at 5M.
+
+Root cause is the **loop materialization shape**: the countdown emits a
+body → guard → latch batch loop with phi joins, and LLVM allocates the reduced
+accumulator to a stack slot. The local `foreach` lowers to a single
+header/body/latch with guard-taken effects; SROA/regalloc keeps its accumulators
+in `xmm1`–`xmm3` and spills only in the guard-taken block. This is not state
+traffic, Local classification, or post-hoist.
+
+Do **not** wire the currently unused `emit_countable_batched_main` as the
+shortcut: gated on `float_math` it emits dominance-invalid IR (e.g. `%icn83`,
+`%t142`). It needs repair before use.
+
+Next target: implement a single-header/single-latch loop shape for Local fields
+(or the equivalent alloca/SROA shape without explicit batch phis), with the
+effect block rejoining the latch once. Acceptance: output parity at print
+boundaries and median <= 1.35x C at 50M, then the full suite.

@@ -6503,6 +6503,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
     ) -> bool {
         let bp = node.bounded_pre.as_ref().unwrap();
+        if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
+            eprintln!(
+                "diag: txn='{}' local={:?} post_hoist_groups={}",
+                node.name, shape.local_fields, post_hoist.len()
+            );
+        }
         // 2026-07-31: Bound resolution maps the structured Bound to the backend's
         // own index/const tables (field first, then const; literal/unknown →
         // neither) — mirroring the old total_idx / total_const_name lookup so

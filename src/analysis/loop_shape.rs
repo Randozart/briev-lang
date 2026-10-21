@@ -517,6 +517,27 @@ mod tests {
     }
 
     #[test]
+    fn test_float_math_local_fields() {
+        let src = include_str!("../../benchmarks/float_math.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape");
+        println!("float_math local_fields={:?}", shape.local_fields);
+        assert!(!shape.has_swan_song, "term; is not a swan song");
+        for f in [
+            "x0", "x1", "x2", "p00", "p01", "p02", "p10", "p11", "p12", "p20",
+            "p21", "p22",
+        ] {
+            assert!(
+                shape.local_fields.contains(&f.to_string()),
+                "{} should be loop-local, got {:?}", f, shape.local_fields
+            );
+        }
+        assert!(!shape.local_fields.contains(&"count".to_string()));
+        assert!(!shape.local_fields.contains(&"total".to_string()));
+    }
+
+    #[test]
     fn test_counter_only_writes_shape() {
         let (graph, items) = graph_and_items(
             "let bound: Int = 100;\n\
