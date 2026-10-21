@@ -471,3 +471,12 @@ Land each phase separately. If the explicit state plan is refuted by the
 Phase 0 prototype, return to the record and refine the pressure model; do not
 fall back to a benchmark-specific behavior. Reverting Phase 2/3 restores the
 current alloca/SROA path without touching the print chain.
+
+## Local-SSA probe result (2026-10-20)
+
+A temporary local-let `foreach` variant of the float loop keeps the
+accumulator in `xmm0` and spills only at the print call; measured ~0.057s vs
+C ~0.043s (~1.33x), versus ~2.9x for the state path. The probe simplified the
+math for isolation, so it is a shape/timing result, not a parity result.
+Next implementation target: derive a Local class for bounded single-node
+state and lower it as loop-local SSA.
