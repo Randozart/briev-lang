@@ -2,10 +2,16 @@
 
 **Date:** 2026-10-21
 **Branch:** `feat/local-effect-canonical`
-**Status:** ACTIVE — long-term direction; first correctness slices landed.
+**Status:** ACTIVE — long-term direction; first correctness slices + interim
+carry-selection policy landed.
 **Checkpoint to return to:** branch `experiment/effect-state-carry`, tag
 `checkpoint-effect-state-carry-2026-10-21`, commit `3c1611d2` (code) /
 `67973adc` (checkpoint doc).
+**Interim best-of-both:** effect-carry selection merged from
+`experiment/effect-carry-selection` (commit `910a9ca8`); see
+`docs/plans/2026-10-21-effect-carry-selection.md`. Full runtime suite MATCH:
+float_math 0.92x, float_math_nonzero 0.97x, kalman 0.86x, sweep_sparse 0.98x,
+queue 0.50x, interval 0.71x.
 
 ## Why
 
@@ -98,6 +104,9 @@ selector to diagnostics. Keep the checkpoint branch available until then.
 | 2026-10-21 | `486b5b48` | pin canonical branch commit log |
 | 2026-10-21 | `c273eedf` | `LoopMaterializationPlan` in `AnalysisResults`; backend consumes plan for `fun.local_fields`; plan tests for Local/Machine |
 | 2026-10-21 | `df361b6b` | `BRIEV_DIAG_LOOP` includes `temp_mediated` for feature-matrix work |
+| 2026-10-21 | `63f0e8ca` | carry experiment ported onto canonical base |
+| 2026-10-21 | `157470c3` | structural carry selector + target-derived program mode; three-way guard |
+| 2026-10-21 | `910a9ca8` | selection docs pinned; merged into canonical branch |
 | 2026-10-21 | `main` / `a7fe6c3d` | branch point for canonical work (carry absent) |
 
 Update this table for every slice so the path from checkpoint to canonical
