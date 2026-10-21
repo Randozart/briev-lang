@@ -4393,6 +4393,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             });
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
+            // 2026-10-21 (pointer provenance): seed the txn's Ptr-field cache
+            // once at entry. Otherwise each load of the same Ptr state field
+            // inside the loop produces a distinct inttoptr, and LTO can treat
+            // a sibling-defn load/store through those pointers as non-aliasing.
+            self.preload_state_ptr_fields(out);
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
             }
@@ -4649,6 +4654,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 reset_terminated: true,
                 ..Default::default()
             });
+            self.preload_state_ptr_fields(out);
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
