@@ -484,9 +484,10 @@ state and lower it as loop-local SSA.
 
 ## Local slice result (2026-10-20)
 
-Local-field classification + literal phi seeding + no post-loop store landed
-for the countdown path. `float_math` stayed at ~2.9x: the countdown body →
-guard → latch phi shape still blocks folding. The local-`foreach` probe folds
-because its loop shape is simpler. Next: an SSA loop strategy for
-local-heavy loops (or a countdown shape LLVM can reduce), not more
-state-materialization changes.
+Local-field classification + dead exit-store elimination landed (`285356c0`).
+`float_math` stayed ~2.9x. A forced per-field/literal-seed variant also stayed
+~2.9x and was reverted: a pending post-loop hoist still forces `%State` phi
+seeds, and the body/guard/latch shape does not fold like the local-`foreach`
+probe. Next target is the post-hoist/guard split and the loop shape itself;
+the simple SSA probe remains the reference. No failing experiment is left in
+the tree.

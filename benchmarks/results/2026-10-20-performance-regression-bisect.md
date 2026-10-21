@@ -286,3 +286,17 @@ probe (0.057s) used a simpler SSA loop and did fold.
 Conclusion: keep the Local classification/elimination (it is semantically
 sound and removes dead state traffic), but the performance fix needs an SSA
 loop strategy for local-heavy loops, not more state-materialization work.
+
+
+## Forced per-field/local SSA attempt 2026-10-20 — still no float gain
+
+Tried forcing the per-field (non-countdown) loop for local-heavy loops, plus
+literal phi seeds and no local exit stores. `float_math` stayed at
+~2.9x/2.65x. The per-field path still initializes local phis from `%State`
+because a pending post-loop hoist is present, and its body/guard/latch shape
+does not fold like the local-`foreach` probe.
+
+The attempt was reverted rather than landed: it adds complexity without a
+measured win. The validated Local slice (`285356c0`: classification + dead
+exit-store elimination) stays. Next target is the post-hoist/guard split and
+the loop shape itself — the simple SSA probe remains the reference.
