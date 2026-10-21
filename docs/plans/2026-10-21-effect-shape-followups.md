@@ -55,6 +55,12 @@ We have not proven whether any is a real merge regression.
 - If a regression is caused by the selection heuristic, add a synthetic case
   and adjust the structural predicate/config, not a benchmark name.
 
+### Result
+
+DONE: `benchmarks/results/2026-10-21-effect-shape-merge-ab.md`.
+No confirmed regression: telemetry +0.4%, sweep_mid +0.1%, ring −2.9%,
+queue_sym −3.1% (current/baseline).
+
 ### Rollback
 
 No code change expected. If a regression is found, revert only the selection
@@ -183,7 +189,7 @@ Direction doc: `docs/plans/2026-10-21-canonical-local-effect-model.md`.
 |---|---|---|
 | 2026-10-21 | `7fdb2b10` | main merge: selection + Local foundation |
 | 2026-10-21 | `5c7e559b` | full research report |
-| 2026-10-21 | _pending_ | F1 controlled A/B |
+| 2026-10-21 | _pending_ | F1 controlled A/B (result: no confirmed regression) |
 | 2026-10-21 | _pending_ | F2 per-txn BatchShape |
 | 2026-10-21 | _pending_ | F3 dead batch emitter cleanup |
 | 2026-10-21 | _pending_ | F4 E1 retirement/formalization |
