@@ -96,7 +96,7 @@ selector to diagnostics. Keep the checkpoint branch available until then.
 | 2026-10-21 | `67973adc` | checkpoint doc + tag `checkpoint-effect-state-carry-2026-10-21` |
 | 2026-10-21 | `6c8ba811` | canonical direction doc; generic TopLevel Local walker; `Export.inner` descent; exported-field regression test |
 | 2026-10-21 | `486b5b48` | pin canonical branch commit log |
-| 2026-10-21 | _pending_ | `LoopMaterializationPlan` in `AnalysisResults`; backend consumes plan for `fun.local_fields`; plan tests for Local/Machine |
+| 2026-10-21 | `c273eedf` | `LoopMaterializationPlan` in `AnalysisResults`; backend consumes plan for `fun.local_fields`; plan tests for Local/Machine |
 | 2026-10-21 | `main` / `a7fe6c3d` | branch point for canonical work (carry absent) |
 
 Update this table for every slice so the path from checkpoint to canonical
