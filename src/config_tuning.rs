@@ -27,6 +27,11 @@ use std::sync::{LazyLock, OnceLock};
 pub struct TargetSettings {
     /// Register-pressure budget for vector-phi promotion.
     pub float_registers: usize,
+    /// 2026-10-21 (target-pressure effect shape): FP registers reserved for
+    /// the loop accumulator, expression temporaries, and live effect-call
+    /// arguments. The effect-shape capability gate is
+    /// `float_registers - fp_reserved_temps`: zero disables the escaped shape.
+    pub fp_reserved_temps: usize,
     /// Cross-float-ops-per-field threshold for the `#11 → #0` downgrade.
     pub dense_compute_density: f64,
     /// Minimum isomorphic-group width for vector-phi promotion.
@@ -393,6 +398,7 @@ pub fn axiom_settings() -> &'static AxiomSettings {
 /// x86_64 defaults — also the fallback for unknown target prefixes.
 pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     float_registers: 16,
+    fp_reserved_temps: 4,
     dense_compute_density: 4.0,
     vector_min_width: 4,
     isr_mechanism: None,
@@ -883,6 +889,13 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
         let frame_limit_bytes = db
             .field_int(&key, 4)
             .map(|v| v as u64);
+        // 2026-10-21 (target-pressure effect shape): field 5 — FP registers
+        // reserved for the accumulator, expression temporaries, and effect
+        // arguments. The capability gate is float_registers - fp_reserved_temps.
+        let fp_reserved_temps = db
+            .field_int(&key, 5)
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_TARGET_SETTINGS.fp_reserved_temps);
         out.insert(
             prefix.to_string(),
             TargetSettings {
@@ -891,6 +904,7 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
                 vector_min_width,
                 isr_mechanism,
                 frame_limit_bytes,
+                fp_reserved_temps,
             },
         );
     }
@@ -1374,6 +1388,7 @@ vector_min_width = 0
     fn test_target_settings_x86_64() {
         let s = target_settings_for("x86_64-unknown-linux-gnu");
         assert_eq!(s.float_registers, 16);
+        assert_eq!(s.fp_reserved_temps, 4);
         assert_eq!(s.dense_compute_density, 4.0);
         assert_eq!(s.vector_min_width, 4);
         assert!(known_target_triple("x86_64-unknown-linux-gnu"));

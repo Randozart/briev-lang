@@ -245,6 +245,15 @@ countdown is 0.1239s (2.89x). Next slice is the single-header/single-latch
 Local loop; `emit_countable_batched_main` is dead and dominance-invalid, not a
 shortcut.
 
+**2026-10-21 effect-shape slice:** target-derived escaped-vs-stateless
+effect memory landed. The field-count crossover was falsified (escaped wins
+at every Float N); the selector now uses aggregate gate + direct arithmetic
+vs fully temp-mediated Float bodies. `float_math` 2.74x → **0.89–0.96x**,
+telemetry 1.48x → **0.96–0.98x**, pid 1.22x → **~1.00x**, matrix stays
+**0.96–0.97x**, queue stays **0.50–0.53x**, interval **0.71–0.75x**.
+Plan: `docs/plans/2026-10-21-target-pressure-effect-shape.md`; results:
+`benchmarks/results/2026-10-21-target-pressure-effect-shape.md`.
+
 Do not call the remaining rows noise and do not blame provenance without an
 A/B. The open question is the state/plain stateless-print/`%State` interaction,
 not the matrix arithmetic.

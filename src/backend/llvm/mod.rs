@@ -2802,7 +2802,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // scope globals). Declared `state`/`plain` annotations are checked
         // against this inference — a contradiction is a fatal error quoting
         // the contradicting reference.
-        let plain_lets = crate::analysis::storage_class::classify_plain_lets(
+        let mut plain_lets = crate::analysis::storage_class::classify_plain_lets(
             items,
             exit_condition.as_deref(),
             &self.ctx.view_bound_fields,
@@ -2814,6 +2814,50 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         ) {
             eprintln!("{}", err);
             std::process::exit(1);
+        }
+        // 2026-10-21 (target-pressure effect shape): select the effect-memory
+        // shape once, before the storage-class ABI is computed. A direct-Float
+        // loop needs the historical escaped/stateful-effect shape (float_math,
+        // telemetry, pid); aggregate loops and fully temp-mediated Float bodies
+        // keep stateless print (queue_drain/interval_step/matrix_pipeline). The
+        // selector is structural and target-gated; no benchmark names. Only
+        // inferred plain fields are demoted; an explicit `plain` assertion
+        // remains the author's semantic assertion.
+        let effect_settings = crate::config_tuning::target_settings_for(&self.ctx.target_triple);
+        // BRIEV_DIAG_EFFECT=stateless|escaped forces the shape for the
+        // crossover experiment. Unset/auto = the target-derived selector.
+        let forced_effect = std::env::var("BRIEV_DIAG_EFFECT").ok();
+        let effect_cause = match forced_effect.as_deref() {
+            Some("stateless") => None,
+            Some("escaped") => {
+                let mut names: Vec<&String> = analysis.loop_shapes.keys().collect();
+                names.sort();
+                names.into_iter().max_by_key(|n| {
+                    analysis.loop_shapes.get(*n).map(|s| s.carried_float_count).unwrap_or(0)
+                }).cloned()
+            }
+            _ => crate::analysis::loop_shape::escaped_effect_cause(
+                &analysis.loop_shapes,
+                effect_settings.float_registers,
+                effect_settings.fp_reserved_temps,
+            ),
+        };
+        if let Some(cause) = effect_cause {
+            let before = plain_lets.len();
+            plain_lets.retain(|n| {
+                crate::analysis::storage_class::declared_storage(items, n).is_some()
+            });
+            let demoted = before.saturating_sub(plain_lets.len());
+            self.warnings.push(format!(
+                "info: effect shape escaped for txn '{}' ({} carried floats, {} FP budget, {} reserved); {} inferred plain field(s) demoted to state",
+                cause,
+                analysis.loop_shapes.get(&cause)
+                    .map(|s| s.carried_float_count)
+                    .unwrap_or(0),
+                effect_settings.float_registers,
+                effect_settings.fp_reserved_temps,
+                demoted
+            ));
         }
         self.ctx.plain_lets = plain_lets.clone();
         // Bare lets that demoted: disclose the decision (the info: line is
@@ -6505,8 +6549,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let bp = node.bounded_pre.as_ref().unwrap();
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
-                "diag: txn='{}' local={:?} post_hoist_groups={}",
-                node.name, shape.local_fields, post_hoist.len()
+                "diag: txn='{}' local={:?} post_hoist_groups={} floats={} aggregates={} vector_groups={:?}",
+                node.name, shape.local_fields, post_hoist.len(), shape.carried_float_count,
+                shape.carried_aggregate_count, shape.vector_groups
             );
         }
         // 2026-07-31: Bound resolution maps the structured Bound to the backend's
