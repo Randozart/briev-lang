@@ -2837,9 +2837,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }).cloned()
             }
             _ => {
+                let batch_txns: std::collections::HashSet<String> =
+                    analysis.batch_shapes.keys().cloned().collect();
                 let carry_mode = crate::analysis::loop_shape::program_carry_mode(
                     &analysis.loop_shapes,
-                    analysis.batch_shape.as_ref().map(|b| b.txn_name.as_str()),
+                    &batch_txns,
                     effect_settings.float_registers,
                     effect_settings.vector_min_width,
                     effect_settings.effect_carry_temp_min,
@@ -6704,7 +6706,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let allow_countdown = forced_engine.as_deref() != Some("version")
             && forced_engine.as_deref() != Some("perfield");
         if !is_decreasing_vd && allow_countdown {
-            if let Some(batch) = analysis.batch_shape.as_ref() {
+            if let Some(batch) = analysis.batch_shapes.get(&node.name) {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
                     self.fun.local_fields = planned_local.clone();

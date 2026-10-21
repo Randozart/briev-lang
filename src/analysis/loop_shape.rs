@@ -555,7 +555,7 @@ pub fn all_direct_loops_prefer_carry(
 /// while emitting a loop engine that has no carry path.
 pub fn program_carry_mode(
     shapes: &HashMap<String, LoopShape>,
-    batch_txn: Option<&str>,
+    batch_txns: &HashSet<String>,
     float_registers: usize,
     vector_min_width: usize,
     temp_min: usize,
@@ -563,11 +563,8 @@ pub fn program_carry_mode(
     if !all_direct_loops_prefer_carry(shapes, float_registers, vector_min_width, temp_min) {
         return false;
     }
-    let Some(batch_txn) = batch_txn else {
-        return false;
-    };
     shapes.iter().all(|(name, shape)| {
-        shape.carried_float_count == 0 || name == batch_txn
+        shape.carried_float_count == 0 || batch_txns.contains(name)
     })
 }
 
@@ -919,13 +916,14 @@ node tick [count < total][count == total] {
                 expected,
                 "{file} direct-loop carry preference"
             );
+            let batch_txns: HashSet<String> = std::iter::once(txn.clone()).collect();
             assert_eq!(
-                program_carry_mode(&shapes, Some(txn.as_str()), 16, 4, 3),
+                program_carry_mode(&shapes, &batch_txns, 16, 4, 3),
                 expected,
                 "{file} countdown-gated program carry mode"
             );
             assert!(
-                !program_carry_mode(&shapes, None, 16, 4, 3),
+                !program_carry_mode(&shapes, &HashSet::new(), 16, 4, 3),
                 "{file} no-batch program must fall back to escaped"
             );
         }

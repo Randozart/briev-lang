@@ -70,7 +70,7 @@ pub struct AnalysisResults {
     // 2026-07-31: Batch-loop decomposition (plan 2026-07-31-regain-kalman-float-
     // math-parity §5, Fix 2) — the io boundary interval derived from the guard
     // precondition, consumed by the backend's emit_countable_batched_main.
-    pub batch_shape: Option<crate::analysis::batch_shape::BatchShape>,
+    pub batch_shapes: HashMap<String, crate::analysis::batch_shape::BatchShape>,
     // 2026-08-01 (D2): garbage scheduling — the frontend-computed proof of
     // each heap-backed state field's reactor-ordered last consumer, consumed
     // by the backend to emit a `Free#` exactly after that transaction's body.
@@ -202,7 +202,7 @@ pub fn analyze_program(
     // 2026-07-31: Batch-loop decomposition derived from the swan-song-stripped
     // bodies (what the backend emits). The io boundary is the guard's
     // `count % N == 0` precondition interval.
-    let batch_shape = crate::analysis::batch_shape::detect_batch_shape(&swan_songs);
+    let batch_shapes = crate::analysis::batch_shape::detect_batch_shapes(&swan_songs);
     // 2026-08-01 (D2): garbage scheduling — prove each heap-backed field's
     // reactor-ordered last consumer. Field initializers come from StateDecl +
     // top-level `let f: T = expr` (mirrors build_field_index); the node order
@@ -346,7 +346,7 @@ pub fn analyze_program(
         has_unguarded_ffi,
         inline_decisions,
         node_inline_decisions,
-        batch_shape,
+        batch_shapes,
         global_lifetime,
         observable_names,
         coll_safe_txns,
