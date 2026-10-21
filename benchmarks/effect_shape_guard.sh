@@ -39,6 +39,8 @@ FAIL=0
 shape_of() {
   if grep -Fq "info: effect shape escaped" "$1"; then
     echo escaped
+  elif grep -Fq "info: effect state carried" "$1"; then
+    echo carry
   else
     echo stateless
   fi
@@ -67,11 +69,12 @@ check_shape() {
 }
 
 check_shape float_math benchmarks/float_math.bv escaped
-check_shape float_math_nonzero benchmarks/float_math_nonzero.bv escaped
+check_shape float_math_nonzero benchmarks/float_math_nonzero.bv carry
+check_shape kalman_filter_runtime benchmarks/kalman_filter_runtime.bv carry
 check_shape telemetry_stream benchmarks/telemetry_stream.bv escaped
 check_shape pid_control benchmarks/pid_control.bv escaped
 check_shape accumulator_flush benchmarks/accumulator_flush.bv escaped
-check_shape sweep_sparse benchmarks/sweep_sparse.bv escaped
+check_shape sweep_sparse benchmarks/sweep_sparse.bv carry
 check_shape sweep_mid benchmarks/sweep_mid.bv escaped
 check_shape queue_drain benchmarks/queue_drain.bv stateless
 check_shape interval_step benchmarks/interval_step.bv stateless

@@ -499,6 +499,53 @@ fn carried_float_names(carried: &[String], items: &[TopLevel]) -> HashSet<String
         .collect()
 }
 
+/// 2026-10-21 (effect-carry selection experiment): decide whether a direct
+/// Float loop should carry its plain effect state through the loop. This is a
+/// structural cost model, not a benchmark name:
+///   - fully temp-mediated loops keep the stateless SROA/vector shape;
+///   - loops above the target FP register budget keep the escaped shape;
+///   - partial old-value capture (>= 3 temp-mediated fields) or a vector
+///     group at the target minimum width prefers the carry shape.
+pub fn prefer_effect_carry(
+    shape: &LoopShape,
+    float_registers: usize,
+    vector_min_width: usize,
+) -> bool {
+    if shape.carried_float_count == 0
+        || shape.temp_mediated_float_count >= shape.carried_float_count
+        || shape.carried_float_count > float_registers
+    {
+        return false;
+    }
+    let partial_capture = shape.temp_mediated_float_count >= 3;
+    let min_width_group = shape
+        .vector_groups
+        .iter()
+        .any(|g| g.width <= vector_min_width.max(1));
+    partial_capture || min_width_group
+}
+
+/// True when every direct-Float loop prefers the carry shape (and at least
+/// one exists). Used as the program-level effect-memory mode: all-carry
+/// programs keep stateless print; otherwise the escaped fallback is used.
+pub fn all_direct_loops_prefer_carry(
+    shapes: &HashMap<String, LoopShape>,
+    float_registers: usize,
+    vector_min_width: usize,
+) -> bool {
+    let mut any = false;
+    for shape in shapes.values() {
+        if shape.carried_float_count == 0 {
+            continue;
+        }
+        any = true;
+        if !prefer_effect_carry(shape, float_registers, vector_min_width) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Return the first transaction (sorted for determinism) that needs the
 /// escaped effect-memory shape.
 ///
@@ -806,6 +853,48 @@ node tick [count < total][count == total] {
             plan.fields.get("f"),
             Some(&crate::analysis::materialization::StorageClass::Machine)
         );
+    }
+
+    #[test]
+    fn test_effect_carry_selector_winners_and_losers() {
+        let cases = [
+            ("float_math", false),
+            ("float_math_nonzero", true),
+            ("kalman_filter_runtime", true),
+            ("sweep_sparse", true),
+            ("sweep_mid", false),
+            ("telemetry_stream", false),
+            ("accumulator_flush", false),
+            ("nbody_newton", false),
+            ("pid_control", false),
+        ];
+        for (file, expected) in cases {
+            let src = match file {
+                "float_math" => include_str!("../../benchmarks/float_math.bv"),
+                "float_math_nonzero" => include_str!("../../benchmarks/float_math_nonzero.bv"),
+                "kalman_filter_runtime" => include_str!("../../benchmarks/kalman_filter_runtime.bv"),
+                "sweep_sparse" => include_str!("../../benchmarks/sweep_sparse.bv"),
+                "sweep_mid" => include_str!("../../benchmarks/sweep_mid.bv"),
+                "telemetry_stream" => include_str!("../../benchmarks/telemetry_stream.bv"),
+                "accumulator_flush" => include_str!("../../benchmarks/accumulator_flush.bv"),
+                "nbody_newton" => include_str!("../../benchmarks/nbody_newton.bv"),
+                "pid_control" => include_str!("../../benchmarks/pid_control.bv"),
+                _ => unreachable!(),
+            };
+            let (graph, items) = graph_and_items(src);
+            let shapes = build_loop_shapes(&graph, &items, 4);
+            let (txn, shape) = shapes.iter().next().expect("shape");
+            assert_eq!(
+                prefer_effect_carry(shape, 16, 4),
+                expected,
+                "{file} ({txn}) carry selection"
+            );
+            assert_eq!(
+                all_direct_loops_prefer_carry(&shapes, 16, 4),
+                expected,
+                "{file} program-level carry mode"
+            );
+        }
     }
 
     #[test]

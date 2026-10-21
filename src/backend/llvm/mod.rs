@@ -2836,11 +2836,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     analysis.loop_shapes.get(*n).map(|s| s.carried_float_count).unwrap_or(0)
                 }).cloned()
             }
-            _ => crate::analysis::loop_shape::escaped_effect_cause(
-                &analysis.loop_shapes,
-                effect_settings.float_registers,
-                effect_settings.fp_reserved_temps,
-            ),
+            _ => {
+                let carry_mode = crate::analysis::loop_shape::all_direct_loops_prefer_carry(
+                    &analysis.loop_shapes,
+                    effect_settings.float_registers,
+                    effect_settings.vector_min_width,
+                );
+                if carry_mode {
+                    None
+                } else {
+                    crate::analysis::loop_shape::escaped_effect_cause(
+                        &analysis.loop_shapes,
+                        effect_settings.float_registers,
+                        effect_settings.fp_reserved_temps,
+                    )
+                }
+            }
         };
         if let Some(cause) = effect_cause {
             let before = plain_lets.len();
@@ -6695,9 +6706,31 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
                     self.fun.local_fields = planned_local.clone();
-                    self.fun.effect_carry = std::env::var_os("BRIEV_DIAG_EFFECT_CARRY").is_some()
-                        && shape.carried_float_count > 0
+                    let carry_env = std::env::var("BRIEV_DIAG_EFFECT_CARRY").ok();
+                    let direct_float = shape.carried_float_count > 0
                         && shape.temp_mediated_float_count < shape.carried_float_count;
+                    let effect_settings =
+                        crate::config_tuning::target_settings_for(&self.ctx.target_triple);
+                    self.fun.effect_carry = match carry_env.as_deref() {
+                        Some("off") => false,
+                        Some(_) => direct_float,
+                        None => crate::analysis::loop_shape::prefer_effect_carry(
+                            shape,
+                            effect_settings.float_registers,
+                            effect_settings.vector_min_width,
+                        ),
+                    };
+                    if self.fun.effect_carry {
+                        self.warnings.push(format!(
+                            "info: effect state carried for txn '{}' ({} floats, {} temp-mediated, {} groups, {} FP regs, min width {})",
+                            node.name,
+                            shape.carried_float_count,
+                            shape.temp_mediated_float_count,
+                            shape.vector_groups.len(),
+                            effect_settings.float_registers,
+                            effect_settings.vector_min_width
+                        ));
+                    }
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
                         node.name, batch.batch_size, node.write_set.len()
