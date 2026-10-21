@@ -16,9 +16,15 @@ explicit-effect architecture remains the long-term direction.
 Per program:
 
 ```
-all direct-Float loops prefer carry?  -> stateless print + carry selected loops
-otherwise                            -> escaped print (current fallback)
+all direct-Float loops prefer carry AND use countdown
+    -> stateless print + carry selected loops
+otherwise
+    -> escaped print (current fallback)
 ```
+
+The countdown requirement is enforced by `BatchShape.txn_name` +
+`program_carry_mode`: a no-batch direct loop falls back to escaped rather than
+suppressing escaped and emitting a stateless loop with no carry.
 
 Per direct-Float loop:
 
@@ -93,3 +99,4 @@ mode adds catastrophic ceilings for the carry winners (`float_math_nonzero`
 |---|---|
 | `63f0e8ca` | carry experiment ported onto canonical base |
 | `157470c3` | carry selector predicate + target-derived program mode; three-way guard; full-suite record |
+| `d1427095` | countdown-eligibility gate; `effect_carry_temp_min` target config |
