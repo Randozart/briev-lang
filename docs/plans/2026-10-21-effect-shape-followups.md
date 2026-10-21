@@ -214,4 +214,4 @@ Direction doc: `docs/plans/2026-10-21-canonical-local-effect-model.md`.
 | 2026-10-21 | `dd007598` | F1 controlled A/B (no confirmed regression) |
 | 2026-10-21 | `118eb20c` | F2 per-txn BatchShape |
 | 2026-10-21 | `9fddaaeb` | F3 dead batch emitter cleanup |
-| 2026-10-21 | _pending_ | F4 E1 formalized as diagnostic; removal deferred |
+| 2026-10-21 | `ea6c96a8` | F4 E1 formalized as diagnostic; removal deferred |
