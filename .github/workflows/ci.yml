@@ -17,10 +17,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install LLVM toolchain
+      - name: Install LLVM + SPIR-V tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential spirv-tools
+
+      - name: Prepare test directories
+        run: mkdir -p /tmp/opencode
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

@@ -282,6 +282,32 @@ pub fn toolchain_available(family: &str) -> bool {
     false
 }
 
+/// Whether the family has the full assemble → link → run toolchain used by
+/// the native cross tests. `toolchain_available` only proves the assembler is
+/// present; CI runners often have clang's integrated assembler but neither the
+/// cross linker nor QEMU. Those tests are documented as conditional on the
+/// full toolchain, so skip rather than fail with a misleading link error.
+#[cfg(test)]
+fn cross_run_available(family: &str) -> bool {
+    if !toolchain_available(family) {
+        return false;
+    }
+    let (_, regs) = registries();
+    let ld_ok = regs.cross_ld(family).is_some_and(|ld| {
+        std::process::Command::new(ld)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    });
+    let qemu_ok = std::process::Command::new(format!("qemu-{family}"))
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    ld_ok && qemu_ok
+}
+
 /// Assemble emitted text to an object file via the platform assembler.
 /// The toolchain comes from the `cross_as` row per family. For thumb/arm
 /// bare-metal targets, clang's integrated assembler is the fallback when
@@ -1784,8 +1810,8 @@ mod hardening_tests {
     #[test]
     fn hello_cross_verifies_on_installed_targets() {
         for family in ["x86_64", "aarch64", "riscv64"] {
-            if !toolchain_available(family) {
-                eprintln!("skip: {family} cross toolchain not installed");
+            if !cross_run_available(family) {
+                eprintln!("skip: {family} cross link/run toolchain not installed");
                 continue;
             }
             let asm = generate(HELLO, &format!("{family}-linux-gnu"))
@@ -1850,8 +1876,8 @@ mod phase3_hardening_tests {
     /// Generate → assemble → link → run one program on one target under
     /// qemu; asserts the stored f64 bit pattern of 1.5 + 2.25.
     fn fp_cross_verify(src: &str, family: &str) {
-        if !toolchain_available(family) {
-            eprintln!("skip: {family} cross toolchain not installed");
+        if !cross_run_available(family) {
+            eprintln!("skip: {family} cross link/run toolchain not installed");
             return;
         }
         let asm = generate(src, &format!("{family}-linux-gnu"))
