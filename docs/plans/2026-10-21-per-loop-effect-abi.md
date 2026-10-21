@@ -87,6 +87,24 @@ alone is not state materialization; it cannot produce the escaped-shape result.
 The next meaningful E2 step is a new materialized loop-state emitter, not a
 dispatch toggle.
 
+## E2 method attempt — batched pure inner loop (REJECTED 2026-10-21)
+
+A repaired batch emitter (`BRIEV_DIAG_LOOP_ENGINE=batch`) hoisted the periodic
+guard out of the hot loop to keep the accumulator register-resident. It was
+rejected on correctness:
+
+- `float_math` at BOUND=5M printed **1,497,752**; the C reference and the
+  current escaped countdown print **1,449,352.5**.
+- At BOUND=10M the batch shape printed **2,992,644.5** vs **2,699,352.5**.
+- The local `foreach` probe independent of this experiment also printed
+  **1,434,824.38**, showing the same shape sensitivity.
+
+The pure inner loop enables SLP/FP reassociation under `fast` math, changing
+the float32 accumulation result. Output parity is a hard benchmark gate, so
+the batch shape is not usable here. The batch dispatch was removed; the dead
+emitter remains unused. This also explains why the escaped guard-bearing loop
+matches C while the faster register-shaped local/batch probes did not.
+
 ## E2 — per-loop state materialization (next)
 
 Keep **one stateless print ABI** and make the loop storage per-transaction.

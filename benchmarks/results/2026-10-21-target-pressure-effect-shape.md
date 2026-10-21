@@ -147,6 +147,22 @@ No existing stateless loop engine reaches the 0.9x escaped shape on
 `float_math`. E2 needs a new materialized loop-state emitter or a per-loop
 effect context; engine selection alone is insufficient.
 
+## E2 method attempt — batched pure inner loop (REJECTED 2026-10-21)
+
+Repairing the dead batch emitter to store batch state before the guard removed
+the dominance errors but changed float output:
+
+| BOUND | Batch output | C / current escaped |
+|---:|---:|---:|
+| 5,000,000 | 1,497,752 | 1,449,352.5 |
+| 10,000,000 | 2,992,644.5 | 2,699,352.5 |
+
+The pure inner loop lets LLVM reassociate/vectorize the float32 accumulations
+under `fast` math. The local probe independently printed 1,434,824.38 at 5M,
+confirming shape-sensitive FP results. Output parity is mandatory, so the
+batch shape was removed from dispatch and left unused. E2 must preserve the
+guard-bearing FP evaluation order (or reproduce C's exact shape).
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.
