@@ -236,6 +236,8 @@ dominated by run-to-run variance.
 
 ## 9. Remaining work
 
+Follow-up plan: `docs/plans/2026-10-21-effect-shape-followups.md`.
+
 1. **Per-txn `BatchShape` map** — `AnalysisResults.batch_shape` is a single
    `Option`; multiple qualifying txns return `None`. Mixed direct-loop programs
    cannot use per-loop countdown/carry. `BatchShape.txn_name` is already in
