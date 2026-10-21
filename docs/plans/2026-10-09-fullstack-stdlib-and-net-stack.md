@@ -201,3 +201,19 @@ for anything found. New .bv stdlib files must pass the conformance sweep.
 
 (Compiler bugs found during implementation get a BUGS.md entry AND a line here with
 the date, the .bv snippet that triggered it, and the workaround.)
+
+### 2026-10-21 — relative code-import path bug (verification pending)
+
+Task 10.1 gate fails before typechecking: `../examples/recommender/udata.bv`
+becomes `///examples/recommender/udata.bv`. Minimal trigger is the first import
+in `scratch/udata_gate.bv`. The code resolver expands namespace dots inside
+filesystem-relative paths. Fix authored on `fix/relative-import-paths` with
+regression coverage; no application workaround. Human verification pending.
+
+### 2026-10-21 — relative import fix verified
+
+`fix/relative-import-paths`: preserve filesystem-relative path spelling via
+code_module_path; bare dotted module names retain their namespace expansion.
+Human reports post-refactor cargo check, cargo test --lib, and cargo build green;
+the native parser gate previously passed all six checks. Controlled Praetor
+before/after diagnostics match. Compiler PR is prepared before feature work resumes.

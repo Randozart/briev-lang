@@ -10651,3 +10651,20 @@ interpreter-side for the 7/16-bit forms.
 for this body shape (the reactor has its own Let/Foreach arms; the divergence
 is in which environment the nested defn call sees). Pinned by the ignored
 test `ws_encode_growth_interpreter`.
+
+## Relative code-import path corruption (FIXED 2026-10-21)
+
+Trigger: `scratch/udata_gate.bv` imports `../examples/recommender/udata.bv`.
+The resolver searches `///examples/recommender/udata.bv` and rejects the import.
+Root cause: `src/import_resolver.rs` expands every dot in the extension-stripped
+specifier before interpreting its documented filesystem-relative prefix.
+Fix authored on `fix/relative-import-paths`: preserve relative filesystem paths;
+retain dotted namespace expansion for bare imports. Regression tests exercise
+parent/current directory paths, extensionless imports, dotted filenames, and
+existing bare dotted namespaces.
+
+Verification update (2026-10-21): unit tests and debug build passed per human
+output; udata.bv checks OK and the native udata gate prints all six checks true.
+After extracting path conversion into a helper, the human reran cargo check,
+cargo test --lib, and cargo build: all green. The controlled before/after
+Praetor comparison reports identical diagnostics (no new diagnostics).

@@ -229,3 +229,11 @@ own `lib/std/` mirror.
 
 The `--disable-plugin prelude` flag replaces `--no-std` / `--no-stdlib`
 (kept as aliases for backward compatibility at the CLI level).
+
+### Relative code paths (2026-10-21)
+
+Code specifiers starting with `./` or `../` are filesystem paths relative to
+the importing source file: directory traversal and filename dots are preserved
+after removing a recognized code extension. Bare specifiers retain dotted
+namespace expansion. Import-resolver regression tests cover parent/current
+paths, extensionless imports, dotted filenames, and bare dotted namespaces.

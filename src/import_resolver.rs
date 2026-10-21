@@ -983,7 +983,7 @@ impl ImportResolver {
         // asset (`.css`/`.svg`), and `.bad` imports are handled by their own
         // arms above and never reach this search.
         let (raw_base, explicit_ext) = split_known_code_ext(import.path());
-        let module_path = raw_base.replace('.', "/");
+        let module_path = code_module_path(raw_base);
         // TypeScript-style import resolution:
         //   "./foo" or "../foo" → relative to importing file
         //   "foo/bar"           → relative to project root
@@ -1496,10 +1496,21 @@ impl ImportResolver {
     }
 }
 
-/// Lex a source string into a token vector with span information.
+fn code_module_path(raw_base: &str) -> String {
+    // 2026-10-21: relative imports are filesystem paths, not dotted
+    // module names. Preserve ./, ../ and filename dots; replacing them
+    // turned ../examples into ///examples. Keep namespace expansion for
+    // bare specifiers; remove this distinction only with a new path grammar.
+    if raw_base.starts_with("./") || raw_base.starts_with("../") {
+        return raw_base.to_string();
+    }
+    raw_base.replace('.', "/")
+}
+
 /// 2026-09-25 (Wave 1 C2): split a known CODE-dialect extension off an
 /// import specifier — `(base, Some(".bv"))` for explicit extensions,
-/// `(spec, None)` for extension-less. Callers map '.'→'/' over the base.
+/// `(spec, None)` for extension-less. Callers use code_module_path to preserve
+/// relative filesystem paths and expand dots in bare namespace specifiers.
 /// Data (`.dbv`/`.dbvl`), asset (`.css`/`.svg`), and `.bad` are not code
 /// dialects: their dedicated arms in `resolve_import` run first, so they
 /// never reach this split. `.bv` first in the list matters only for
@@ -1856,6 +1867,39 @@ mod tests {
         let result = resolver.resolve_imports(items, &src).unwrap();
         let defns: Vec<&TopLevel> = result.iter().filter(|i| matches!(i, TopLevel::Definition(_))).collect();
         assert_eq!(defns.len(), 1);
+    }
+
+    #[test]
+    fn relative_code_imports_preserve_filesystem_components() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(dir.path().join("value.bv"), "defn value -> Int { term 42; };").unwrap();
+        fs::write(nested.join("value.part.bv"), "defn dotted -> Int { term 7; };").unwrap();
+        let src = nested.join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        for specifier in ["../value.bv", "../value", "./value.part.bv", "./../value.bv"] {
+            let mut resolver = ImportResolver::new();
+            let items = import_program(specifier, vec![]);
+            let result = resolver.resolve_imports(items, &src)
+                .unwrap_or_else(|error| panic!("{specifier}: {error}"));
+            let count = result.iter().filter(|item| matches!(item, TopLevel::Definition(_))).count();
+            assert_eq!(count, 1, "{specifier} must load the requested definition");
+        }
+    }
+
+    #[test]
+    fn bare_dotted_code_import_still_expands_namespace() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir(dir.path().join("package")).unwrap();
+        fs::write(dir.path().join("package/value.bv"), "defn value -> Int { term 42; };").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(import_program("package.value", vec![]), &src).unwrap();
+        assert_eq!(result.iter().filter(|item| matches!(item, TopLevel::Definition(_))).count(), 1);
     }
 
     #[test]
