@@ -330,44 +330,22 @@ fn classify_local_fields(
         &mut external,
     );
     for item in items {
-        match item {
-            TopLevel::Transaction(other) if other.name != txn.name => {
-                crate::analysis::storage_class::collect_raw_idents(
-                    &other.contract.pre_condition,
-                    &mut external,
-                );
-                crate::analysis::storage_class::collect_raw_idents(
-                    &other.contract.post_condition,
-                    &mut external,
-                );
-                crate::ast::visit::walk_stmts(&other.body, &mut |e| {
-                    crate::analysis::storage_class::collect_raw_idents(e, &mut external)
-                });
+        if let TopLevel::Transaction(other) = item {
+            if other.name == txn.name {
+                // The current transaction's BODY is the loop itself; only its
+                // contract is an external observation. Every other top-level
+                // surface is walked below.
+                continue;
             }
-            TopLevel::Definition(d) => {
-                crate::analysis::storage_class::collect_raw_idents(
-                    &d.contract.pre_condition,
-                    &mut external,
-                );
-                crate::analysis::storage_class::collect_raw_idents(
-                    &d.contract.post_condition,
-                    &mut external,
-                );
-                crate::ast::visit::walk_stmts(&d.body, &mut |e| {
-                    crate::analysis::storage_class::collect_raw_idents(e, &mut external)
-                });
-            }
-            TopLevel::Statement(stmt) => {
-                crate::ast::visit::walk_stmts(
-                    std::slice::from_ref(stmt.as_ref()),
-                    &mut |e| crate::analysis::storage_class::collect_raw_idents(e, &mut external),
-                );
-            }
-            TopLevel::Constant(c) => {
-                crate::analysis::storage_class::collect_raw_idents(&c.expr, &mut external);
-            }
-            _ => {}
         }
+        // One generic walker covers every TopLevel form: other txns/defns,
+        // exports, cells, trigger bindings, when-laws, assertions, fuzzed
+        // items, type/operator bodies, compile-time items, cfg/sync groups,
+        // and initialization expressions. Missing a surface here would
+        // misclassify a field as Local and skip its exit store.
+        crate::ast::visit::walk_toplevel(item, &mut |e| {
+            crate::analysis::storage_class::collect_raw_idents(e, &mut external)
+        });
     }
     let mut local: Vec<String> = node
         .write_set
@@ -791,6 +769,27 @@ mod tests {
         map.insert("tick".to_string(), shape);
         assert_eq!(escaped_effect_cause(&map, 16, 4), None,
             "a fully temp-mediated body keeps the stateless SROA/vector shape");
+    }
+
+    #[test]
+    fn test_local_fields_export_keeps_state() {
+        let src = r#"
+let f: Float = 0.0;
+let count: Int = 0;
+let total: Int = 10;
+export defn read_f() -> Float [true][true] { term f; };
+node tick [count < total][count == total] {
+    f = f + 1.0;
+    count = count + 1;
+    term;
+};
+"#;
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let shape = shapes.get("tick").expect("tick shape");
+        assert!(!shape.local_fields.contains(&"f".to_string()),
+            "a field referenced by an exported defn is not loop-local");
+        assert!(!shape.local_fields.contains(&"count".to_string()));
     }
 
     #[test]

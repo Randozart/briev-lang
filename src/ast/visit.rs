@@ -371,8 +371,8 @@ pub fn walk_toplevel<F: FnMut(&Expr)>(item: &TopLevel, f: &mut F) {
         // type-only declarations; enums carry variant TYPES only; render/
         // fab/svg blocks are strings and placements; data tables and module
         // config are compile-time data.
+        TopLevel::Export(e) => walk_toplevel(&e.inner, f),
         TopLevel::Import(_)
-        | TopLevel::Export(_)
         | TopLevel::ForeignBinding(_)
         | TopLevel::Enum(_)
         | TopLevel::StateDecl(_)
