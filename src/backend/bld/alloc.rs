@@ -9,10 +9,11 @@
 // Shape of the pass, per recipe label:
 //
 // 1. EVENTS — one walk records per-virtual defs/uses, loop spans
-//    (`.head:` … `jmp .head`), call positions, and whether the recipe
-//    touches `sp`. Only the M3 lowering's own mnemonics carry virtuals;
-//    an unknown mnemonic (a `bad { }` block) naming a `vN` is loud —
-//    raw assembly works in physical registers.
+//    (`.head:` … `jmp .head`), call positions, whether the recipe
+//    touches `sp`, and the physical registers its ops clobber. Operand
+//    roles come from `config/bad-isa.dbvl` (`roles d1,u2,…`), never a
+//    hardcoded op list (Rule 15). An op with no roles row naming a `vN`
+//    is loud — raw assembly works in physical registers.
 // 2. INTERVALS — [first def, last def/use], extended to every loop's
 //    backedge when the value is defined before the loop and used inside
 //    it (loop-carried values must survive iterations; the extension is
@@ -24,11 +25,12 @@
 //    frame slot. Call-argument staging copies run BEFORE the call, so
 //    argument values' intervals end before the wall (no forced spill).
 // 4. POOLS — allocatable registers come from the registry (r0-r15/f0-f15
-//    that resolve on the family) minus the ABI argument registers and
-//    the return registers (r0/f0). Two scratch registers per class are
-//    reserved up front for spill reload/stores. Callee-saved registers
-//    are push/pop-saved in the prologue and restored in the epilogue —
-//    C-ABI callers own those registers.
+//    that resolve on the family) minus the ABI argument registers, the
+//    return registers (r0/f0), and every register an op's `clobbers` row
+//    names. Two scratch registers per class are reserved up front for
+//    spill reload/stores. Callee-saved registers are push/pop-saved in
+//    the prologue and restored in the epilogue — C-ABI callers own those
+//    registers.
 // 5. LINEAR SCAN — the pure core (`scan`): values sorted by interval
 //    start, caller-saved slots preferred for local values, callee-saved
 //    slots reserved for call-crossing values, exhaustion → spill (frame
@@ -52,7 +54,7 @@
 use crate::ast::bad::{
     BadBodyItem, BadBranch, BadInstr, BadLabel, BadOperand, BadProgram, BadSite, BadTopLevel,
 };
-use crate::backend::bad::registry::{BadRegisters, RegProp};
+use crate::backend::bad::registry::{BadIsa, BadRegisters, RegProp};
 use super::lower::BldLowerer;
 use std::collections::HashMap;
 
@@ -136,26 +138,29 @@ fn pick_slot(free: &[usize], crossing: bool, caller: usize) -> Option<usize> {
 /// The whole-program pass: allocate every label independently.
 pub fn allocate(
     prog: BadProgram,
+    isa: &BadIsa,
     regs: &BadRegisters,
     family: &str,
 ) -> Result<BadProgram, String> {
     let mut items = Vec::with_capacity(prog.items.len());
     for item in prog.items {
         items.push(match item {
-            BadTopLevel::Label(l) => BadTopLevel::Label(allocate_label(l, regs, family)?),
+            BadTopLevel::Label(l) => BadTopLevel::Label(allocate_label(l, isa, regs, family)?),
             other => other,
         });
     }
     Ok(BadProgram { items, span: prog.span })
 }
 
-fn allocate_label(l: BadLabel, regs: &BadRegisters, family: &str) -> Result<BadLabel, String> {
-    let analysis = analyze(&l.body)?;
+fn allocate_label(
+    l: BadLabel, isa: &BadIsa, regs: &BadRegisters, family: &str,
+) -> Result<BadLabel, String> {
+    let analysis = analyze(&l.body, isa)?;
     if analysis.order.is_empty() {
         return Ok(l); // no virtuals — physical recipe, untouched
     }
-    let plan = Plan::build(&analysis, regs, family, &l.name)?;
-    let body = rewrite(&l.body, &plan, l.span)?;
+    let plan = Plan::build(&analysis, regs, family, &l.name, &l.reserved_regs)?;
+    let body = rewrite(&l.body, &plan, isa, l.span)?;
     Ok(BadLabel { body, ..l })
 }
 
@@ -170,15 +175,18 @@ struct Analysis {
     /// Positions of `call` instructions.
     calls: Vec<u32>,
     sp_touched: bool,
+    /// Physical registers some used op's template clobbers.
+    clobbers: std::collections::HashSet<String>,
 }
 
-fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
+fn analyze(items: &[BadBodyItem], isa: &BadIsa) -> Result<Analysis, String> {
     let mut a = Analysis {
         order: Vec::new(),
         events: HashMap::new(),
         spans: Vec::new(),
         calls: Vec::new(),
         sp_touched: false,
+        clobbers: std::collections::HashSet::new(),
     };
     let mut heads: Vec<(String, u32)> = Vec::new();
     let mut jumps: Vec<(String, u32)> = Vec::new();
@@ -187,7 +195,9 @@ fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
         match item {
             BadBodyItem::Local(l) => heads.push((l.name.clone(), pos)),
             BadBodyItem::Instr(ins) => {
-                a.walk_instr(ins, pos)?;
+                a.walk_instr(ins, pos, isa)?;
+                a.clobbers
+                    .extend(isa.clobbers(&ins.mnemonic).iter().cloned());
                 if let Some(target) = jmp_target(ins) {
                     jumps.push((target.to_string(), pos));
                 }
@@ -198,16 +208,27 @@ fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
                     a.sp_touched = true;
                 }
             }
-            BadBodyItem::Site(site) => a.walk_site(site)?,
+            BadBodyItem::Site(site) => a.walk_site(site, isa)?,
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => {}
         }
     }
     // A loop's span ends at its LAST jump back to the head (the
     // structural backedge; `continue` jumps land before it).
     for (name, head) in &heads {
-        let dotted = format!(".{name}");
+        // `jmp_target` already strips the leading dot; compare the bare
+        // local name.
         let back = jumps
             .iter()
-            .filter(|j| j.0 == dotted && j.1 > *head)
+            .filter(|j| j.0 == *name && j.1 > *head)
             .map(|j| j.1)
             .max();
         if let Some(back) = back {
@@ -219,59 +240,49 @@ fn analyze(items: &[BadBodyItem]) -> Result<Analysis, String> {
 }
 
 impl Analysis {
-    fn walk_instr(&mut self, ins: &BadInstr, pos: u32) -> Result<(), String> {
-        match roles(&ins.mnemonic) {
-            Roles::Unknown => {
-                if let Some(name) = ins
-                    .operands
-                    .iter()
-                    .find_map(|o| match o {
-                        BadOperand::Name(n)
-                            if BldLowerer::is_virtual_name(n) =>
-                        {
-                            Some(n.clone())
-                        }
-                        _ => None,
-                    })
-                {
-                    return Err(format!(
-                        "instruction `{mn}` (line {line}) names `{name}`, a compiler-managed \
-                         value register - `bad {{ }}` blocks work in physical registers \
-                         (r0-r15, f0-f15); keep `vN` values in the recipe's own statements",
-                        mn = ins.mnemonic,
-                        line = ins.span.line,
-                        name = name,
-                    ));
-                }
+    fn walk_instr(&mut self, ins: &BadInstr, pos: u32, isa: &BadIsa) -> Result<(), String> {
+        let Some(roles) = isa.roles(&ins.mnemonic) else {
+            // Raw instruction (a `bad { }` block): virtuals are forbidden.
+            if let Some(name) = ins.operands.iter().find_map(|o| match o {
+                BadOperand::Name(n) if BldLowerer::is_virtual_name(n) => Some(n.clone()),
+                _ => None,
+            }) {
+                return Err(format!(
+                    "instruction `{mn}` (line {line}) names `{name}`, a compiler-managed \
+                     value register - `bad {{ }}` blocks work in physical registers \
+                     (r0-r15, f0-f15); keep `vN` values in the recipe's own statements",
+                    mn = ins.mnemonic,
+                    line = ins.span.line,
+                    name = name,
+                ));
             }
-            Roles::Def1Use1 => {
-                self.record_def(&ins.operands[0], pos)?;
-                self.record_use(&ins.operands[1], pos);
+            return Ok(());
+        };
+        // Operand roles come from config/bad-isa.dbvl — the compiler carries
+        // no per-op knowledge here.
+        for &d in &roles.defs {
+            if let Some(op) = ins.operands.get(d) {
+                self.record_def(op, pos)?;
             }
-            Roles::Def1Use2 => {
-                self.record_def(&ins.operands[0], pos)?;
-                self.record_use(&ins.operands[1], pos);
-                self.record_use(&ins.operands[2], pos);
+        }
+        for &u in &roles.uses {
+            if let Some(op) = ins.operands.get(u) {
+                self.record_use(op, pos);
             }
-            Roles::Use2 => {
-                self.record_use(&ins.operands[0], pos);
-                self.record_use(&ins.operands[1], pos);
-            }
-            Roles::None => {}
         }
         Ok(())
     }
 
-    fn walk_site(&mut self, site: &BadSite) -> Result<(), String> {
+    fn walk_site(&mut self, site: &BadSite, isa: &BadIsa) -> Result<(), String> {
         for row in &site.rows {
-            self.walk_branch(row)?;
+            self.walk_branch(row, isa)?;
         }
         Ok(())
     }
 
-    fn walk_branch(&mut self, branch: &BadBranch) -> Result<(), String> {
+    fn walk_branch(&mut self, branch: &BadBranch, isa: &BadIsa) -> Result<(), String> {
         for ins in &branch.body {
-            self.walk_instr(ins, 0)?;
+            self.walk_instr(ins, 0, isa)?;
         }
         Ok(())
     }
@@ -320,34 +331,6 @@ fn jmp_target(ins: &BadInstr) -> Option<&str> {
     }
 }
 
-/// The operand-shape roles of the mnemonics the .bld lowering emits.
-/// Anything else is raw assembly (a `bad { }` block) — physical only.
-enum Roles {
-    /// `op dst, a` — mov/fmov/neg/not/fneg/itof/ftoi.
-    Def1Use1,
-    /// `op dst, a, b` — the three-operand arithmetic.
-    Def1Use2,
-    /// `op a, b, .label` — the fused compare-branches.
-    Use2,
-    /// `jmp`/`call`/`ret` — no virtual operands.
-    None,
-    /// Raw assembly: virtuals are forbidden, everything else untouched.
-    Unknown,
-}
-
-fn roles(mn: &str) -> Roles {
-    match mn {
-        "mov" | "fmov" | "neg" | "not" | "fneg" | "itof" | "ftoi" => Roles::Def1Use1,
-        "add" | "sub" | "mul" | "div" | "mod" | "and" | "or" | "xor" | "shl" | "shr" | "slt"
-        | "fadd" | "fsub" | "fmul" | "fdiv" => Roles::Def1Use2,
-        "jz" | "jnz" | "jlt" | "jle" | "jgt" | "jge" | "fjz" | "fjnz" | "fjlt" | "fjle"
-        | "fjgt" | "fjge" | "store" => Roles::Use2,
-        "load" => Roles::Def1Use1,
-        "jmp" | "call" | "ret" => Roles::None,
-        _ => Roles::Unknown,
-    }
-}
-
 // ── phase 2-4: intervals, walls, pools, scan ──────────────────────────
 
 struct Plan {
@@ -366,8 +349,9 @@ impl Plan {
         regs: &BadRegisters,
         family: &str,
         label: &str,
+        reserved: &[String],
     ) -> Result<Plan, String> {
-        let pools = Pools::load(regs, family);
+        let pools = Pools::load(regs, family, reserved, &a.clobbers);
         let intervals = build_intervals(a)?;
         let homes = assign_homes(&intervals, &pools)?;
         // Deterministic lists: intervals carry first-appearance order —
@@ -478,23 +462,29 @@ struct Pools {
 }
 
 impl Pools {
-    fn load(regs: &BadRegisters, family: &str) -> Pools {
-        let abi_gp = regs.abi_args(family);
-        let abi_fp = regs.abi_args_fp(family);
+    fn load(
+        regs: &BadRegisters, family: &str, reserved: &[String],
+        clobbers: &std::collections::HashSet<String>,
+    ) -> Pools {
+        // ABI argument registers are usable as temporaries unless a
+        // parameter actually lives there (`reserved`). Call walls force
+        // live values to callee-saved/spill across calls.
         let mut int_pool: Vec<String> = (0..=15)
             .map(|i| format!("r{i}"))
             .filter(|r| {
                 regs.resolve(r, family).is_some()
-                    && !abi_gp.contains(r)
                     && r != "r0"
+                    && !reserved.contains(r)
+                    && !clobbers.contains(r)
             })
             .collect();
         let mut float_pool: Vec<String> = (0..=15)
             .map(|i| format!("f{i}"))
             .filter(|r| {
                 regs.resolve(r, family).is_some()
-                    && !abi_fp.contains(r)
                     && r != "f0"
+                    && !reserved.contains(r)
+                    && !clobbers.contains(r)
             })
             .collect();
         let scratch_int = take_scratches(&mut int_pool, regs, family);
@@ -680,6 +670,7 @@ fn assign_class(
 fn rewrite(
     items: &[BadBodyItem],
     plan: &Plan,
+    isa: &BadIsa,
     span: crate::errors::Span,
 ) -> Result<Vec<BadBodyItem>, String> {
     let mut out: Vec<BadBodyItem> = Vec::new();
@@ -708,9 +699,19 @@ fn rewrite(
                 if ins.mnemonic == "ret" {
                     push_epilogue(plan, &mut out, span);
                 }
-                rewrite_instr(ins, plan, span, &mut out)?;
+                rewrite_instr(ins, plan, isa, span, &mut out)?;
             }
             BadBodyItem::Site(_) => out.push(item.clone()),
+            BadBodyItem::Let(_)
+            | BadBodyItem::Assign(_)
+            | BadBodyItem::When(_)
+            | BadBodyItem::Loop(_)
+            | BadBodyItem::While(_)
+            | BadBodyItem::Break(_)
+            | BadBodyItem::Continue(_)
+        | BadBodyItem::CallStmt { .. }
+        | BadBodyItem::Return { .. }
+        | BadBodyItem::RawRegion { .. } => out.push(item.clone()),
         }
     }
     // Fall-off-the-end exit: restore the frame (no auto-ret — the naked
@@ -825,13 +826,14 @@ impl SpillCtx<'_> {
 fn rewrite_instr(
     ins: &BadInstr,
     plan: &Plan,
+    isa: &BadIsa,
     span: crate::errors::Span,
     out: &mut Vec<BadBodyItem>,
 ) -> Result<(), String> {
-    if matches!(roles(&ins.mnemonic), Roles::Unknown) {
+    let Some(roles) = isa.roles(&ins.mnemonic) else {
         out.push(BadBodyItem::Instr(ins.clone()));
         return Ok(());
-    }
+    };
     let is_float_instr = ins.mnemonic.starts_with('f');
     let scratches = if is_float_instr {
         &plan.scratches_float
@@ -840,13 +842,9 @@ fn rewrite_instr(
     };
     let mut ops = ins.operands.clone();
     // Per-instruction scratch assignment: distinct spilled slots load
-    // into distinct scratches; the def reuses scratch 0 (a destination
+    // into distinct scratches; a def reuses scratch 0 (a destination
     // may overlap a source — the instruction reads its sources before
     // writing the destination).
-    let def_count = match roles(&ins.mnemonic) {
-        Roles::Def1Use1 | Roles::Def1Use2 => 1usize,
-        _ => 0,
-    };
     let mut ctx = SpillCtx {
         homes: &plan.homes,
         scratches,
@@ -855,7 +853,7 @@ fn rewrite_instr(
         dst_spill: None,
     };
     for (idx, op) in ops.iter_mut().enumerate() {
-        ctx.resolve_operand(op, idx < def_count, span, out);
+        ctx.resolve_operand(op, roles.defs.contains(&idx), span, out);
     }
     let dst_spill = ctx.dst_spill;
     // A spilled `mov dst, src_reg` folds to a direct store.
@@ -897,4 +895,31 @@ fn rewrite_instr(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn all(p: &Pools) -> Vec<&String> {
+        p.caller_int
+            .iter()
+            .chain(p.callee_int.iter())
+            .chain(p.scratch_int.iter())
+            .chain(p.scratch_float.iter())
+            .collect()
+    }
+
+    #[test]
+    fn pools_exclude_clobbered_registers() {
+        let regs = BadRegisters::load();
+        let empty = std::collections::HashSet::new();
+        let base = Pools::load(&regs, "x86_64", &[], &empty);
+        assert!(all(&base).iter().any(|r| r.as_str() == "r2"));
+
+        let mut clob = std::collections::HashSet::new();
+        clob.insert("r2".to_string());
+        let excl = Pools::load(&regs, "x86_64", &[], &clob);
+        assert!(!all(&excl).iter().any(|r| r.as_str() == "r2"));
+    }
 }

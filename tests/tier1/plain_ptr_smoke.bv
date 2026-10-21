@@ -1,0 +1,10 @@
+plain let p: Ptr<Int> = 0 as Ptr<Int>;
+let done: Bool = false;
+import { print_int } from "std/io";
+node entry [beginprogram][done == true] {
+    p = Malloc#(8) as Ptr<Int>;
+    p[0] = 7;
+    print_int(p[0]);
+    done = true;
+    endprogram 0;
+};

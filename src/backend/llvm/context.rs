@@ -116,6 +116,9 @@ pub struct CompilerContext {
     /// a clean C ABI. Previously every regular defn carried state, forcing
     /// all callers to too.
     pub defn_needs_state: HashMap<String, bool>,
+    /// 2026-10-20 (storage-class ABI): per-defn verdict for the derived
+    /// PLAIN/plumbing context. Independent of `%state`; a defn may need both.
+    pub defn_needs_plain: HashMap<String, bool>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
     /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
@@ -161,6 +164,10 @@ pub struct CompilerContext {
     /// pre-reactor seeding beside the `init` invariants.
     pub plain_global_types:
         std::collections::HashMap<String, (crate::ast::Type, Option<crate::ast::Expr>)>,
+    /// 2026-10-21 (plain-context experiment): deterministic field order for
+    /// the stack `%PlainState` aggregate. Empty unless a plain-context
+    /// experiment is active.
+    pub plain_index_map: std::collections::HashMap<String, usize>,
     /// 2026-10-17 (readiness gate 1): async-dispatched nodes' watchdog specs
     /// for emit_async_phase's gate (name, spec) — populated from the txn list
     /// right before main emission; the phase needs &mut self, so the contracts
@@ -528,6 +535,12 @@ impl CompilerContext {
     /// replaces the blanket `defn_params.contains_key(name)` at every
     /// call-site gate — pure helpers (cstr doors, arithmetic lanes) are
     /// emitted WITHOUT `%state` and must be called without it.
+    /// Does this defn take the derived plain/plumbing context pointer?
+    /// Separate from `defn_takes_state`: the two memory domains are orthogonal.
+    pub fn defn_takes_plain(&self, name: &str) -> bool {
+        self.defn_needs_plain.get(name).copied().unwrap_or(false)
+    }
+
     pub fn defn_takes_state(&self, name: &str) -> bool {
         self.defn_params.contains_key(name)
             && self.defn_needs_state.get(name).copied().unwrap_or(true)
@@ -606,6 +619,7 @@ impl CompilerContext {
             internal_fold_txns: std::collections::HashSet::new(),
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
+            defn_needs_plain: HashMap::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
@@ -619,6 +633,7 @@ impl CompilerContext {
             view_bound_fields: std::collections::HashSet::new(),
             plain_lets: std::collections::HashSet::new(),
             plain_global_types: std::collections::HashMap::new(),
+            plain_index_map: std::collections::HashMap::new(),
             async_phase_watchdogs: Vec::new(),
             mmio_fields: HashMap::new(),
             mmio_initializers: HashMap::new(),
@@ -897,6 +912,10 @@ fn collect_free_stmts(
 
 #[derive(Debug, Clone)]
 pub struct FunctionContext {    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
+    /// 2026-10-20 (Local class): loop-local fields whose values are
+    /// unobservable after this bounded loop. Their phis stay local; no
+    /// post-loop %State store.
+    pub local_fields: std::collections::HashSet<String>,
     pub txn_counter: usize,
     pub within_counter: usize,
     pub metadata_counter: usize,
@@ -1049,6 +1068,12 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub fn_ret_ty: String,
     pub main_body: bool,
     pub in_callable_txn: bool,
+    /// 2026-10-21 (plain-context experiment): the `%plain` pointer parameter
+    /// for the current function/main. Plain loads/stores GEP through it.
+    pub plain_ptr: Option<String>,
+    /// 2026-10-21 (effect-state-carry experiment): add loop-carried SSA
+    /// phis for plain effect fields to the selected direct-Float loop.
+    pub effect_carry: bool,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1291,6 +1316,24 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // Consulted by Length# (reads remaining), Index# (adjusts offset/remaining),
     // and Deref# (bounds check against remaining).
     pub fat_ptrs: HashMap<String, (String, String, String)>,
+
+    /// 2026-10-20 (pointer provenance): one canonical `ptr` SSA value per
+    /// pointer-shaped i64 register. Raw `Ptr<T>` accesses used to emit a fresh
+    /// `inttoptr` per load/store; two independent conversions of the same
+    /// address carry no shared provenance, so BasicAA could hoist a load across
+    /// a store under -O3 LTO. Reusing the first conversion gives every access
+    /// through the same i64 SSA value one alias identity, with zero runtime
+    /// cost. Keyed by the i64 register name (SSA names are unique), value is the
+    /// `ptr` register. Never invalidated: the i64 SSA name is immutable; a
+    /// reassigned pointer gets a new name.
+    pub canonical_ptrs: HashMap<String, String>,
+
+    /// 2026-10-20 (pointer provenance): `%State` Ptr fields are loaded through
+    /// one cached (i64, ptr) pair per field index while no store to that field
+    /// intervenes. The old emission loaded the field afresh at every access,
+    /// producing distinct i64 SSA values and therefore distinct canonical
+    /// pointers. Invalidate on `store_field_type`.
+    pub state_ptr_cache: HashMap<usize, (String, String)>,
 }
 
 impl FunctionContext {
@@ -1303,6 +1346,9 @@ impl FunctionContext {
 
     pub fn new() -> Self {
         FunctionContext {
+            plain_ptr: None,
+            effect_carry: false,
+            local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
             metadata_counter: 100,
@@ -1387,6 +1433,8 @@ impl FunctionContext {
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
             fat_ptrs: HashMap::new(),
+            canonical_ptrs: HashMap::new(),
+            state_ptr_cache: HashMap::new(),
         }
     }
 
@@ -1423,6 +1471,8 @@ impl FunctionContext {
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;
+        self.plain_ptr = None;
+        self.effect_carry = false;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();
@@ -1441,6 +1491,11 @@ impl FunctionContext {
         // here isolates the passes.
         self.last_val_temps.clear();
         self.last_val_types.clear();
+        // 2026-10-20 (pointer provenance): canonical conversions are keyed by
+        // per-function SSA names and state-field cache entries; they must not
+        // leak across an emission pass or function.
+        self.canonical_ptrs.clear();
+        self.state_ptr_cache.clear();
     }
 
     /// Reset function state for a new function (keeps txn_counter if needed).
@@ -1465,6 +1520,9 @@ impl FunctionContext {
         self.pending_metadata.clear();
         self.pending_cleanup.clear();
         self.chimera_map.clear();
+        // 2026-10-20 (pointer provenance): caches are per-function SSA names.
+        self.canonical_ptrs.clear();
+        self.state_ptr_cache.clear();
     }
 }
 

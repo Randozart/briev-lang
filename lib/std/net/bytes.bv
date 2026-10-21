@@ -125,7 +125,7 @@ obj ByteBuf {
 // buf_new - allocate a buffer with room for cap bytes (cap >= 1).
 // The buffer starts empty (len 0). Malloc# gives us cap raw bytes; we hold the
 // returned pointer as an Int address.
-defn buf_new(cap: Int) [cap >= 1][term.cap >= cap && term.len == 0] -> ByteBuf {
+defn buf_new(cap: Int) [cap >= 1][term.cap == cap && term.len == 0] -> ByteBuf {
     let addr: Int = Malloc#(cap) as Int;
     term ByteBuf { ptr: addr, len: 0, cap: cap };
 };
@@ -245,10 +245,13 @@ defn grow_get_u8(buf: GrowBuf, off: Int)
 // return uninitialized memory, so the precondition forbids it. The result is a
 // single byte, hence 0..255.
 defn get_u8(buf: ByteBuf, off: Int)
-    [off >= 0 && off < buf.len]
+    [true]
     [term >= 0 && term <= 255]
     -> Int
 {
+    when off < 0 || off >= buf.len {
+        term 0;
+    };
     term Load#(buf.ptr + off, 1);
 };
 

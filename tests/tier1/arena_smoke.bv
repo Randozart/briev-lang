@@ -1,0 +1,37 @@
+// Arena fixture smoke — reference semantics, bump, alignment, reset.
+import { Arena, arena_init, arena_alloc, arena_alloc_aligned, arena_reset } from "std/memory/arena";
+import { print_int } from "std/io";
+import { print_str } from "std/io";
+
+// The allocator's contract is the static obligation; these guards make the
+// dynamic capacity boundary explicit at the fixture call sites (they never
+// fire for the 64-byte arena below).
+defn alloc8(a: Arena) -> Ptr<Bit<8>> {
+    when a.offset + 8 > a.capacity {
+        term 0 as Ptr<Bit<8>>;
+    };
+    term arena_alloc(a, 8);
+};
+
+defn alloc8_aligned16(a: Arena) -> Ptr<Bit<8>> {
+    when a.offset + 8 + 15 > a.capacity {
+        term 0 as Ptr<Bit<8>>;
+    };
+    term arena_alloc_aligned(a, 8, 16);
+};
+
+node entry [beginprogram][true] {
+    let a: Arena = arena_init(64);
+    let p0: Ptr<Bit<8>> = alloc8(a);
+    let p1: Ptr<Bit<8>> = alloc8(a);
+    print_int(a.offset); print_str("|");
+    print_int((p1 as Int) - (p0 as Int)); print_str("|");
+    let p2: Ptr<Bit<8>> = alloc8_aligned16(a);
+    print_int(a.offset); print_str("|");
+    print_int((p2 as Int) - (p0 as Int)); print_str("|");
+    when a.capacity >= 0 {
+        arena_reset(a);
+    };
+    print_int(a.offset);
+    endprogram 0;
+};

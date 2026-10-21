@@ -34,7 +34,7 @@ use std::collections::HashSet;
 /// Mirrors that function's variant coverage; a missed variant here would be
 /// a liveness-hole-style bug for the classification (a proof surface
 /// reference hidden in an unhandled form would wrongly demote a let).
-fn collect_raw_idents(expr: &Expr, out: &mut HashSet<String>) {
+pub(crate) fn collect_raw_idents(expr: &Expr, out: &mut HashSet<String>) {
     match expr {
         Expr::Identifier(name) => {
             out.insert(name.clone());

@@ -1,0 +1,174 @@
+// fsm — closed-set finite state machines with exhaustive, contract-gated edges.
+//
+// 2026-10-20 (stdlib fixture campaign, Fixture 4): the instance is a TCP
+// handshake/teardown subset (RFC 793). The point is the LANGUAGE shape:
+// closed enums, exhaustive match, and a Result-returning edge function — an
+// illegal edge is a value (Err), never UB. State/event payloads are empty in
+// v1; the next slice adds payloads when the match lowering is proven.
+import "std/result.bv";
+
+enum TcpState {
+    Closed,
+    Listen,
+    SynSent,
+    SynRcvd,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+}
+
+enum TcpEvent {
+    PassiveOpen,
+    ActiveOpen,
+    RecvSyn,
+    RecvSynAck,
+    RecvAck,
+    RecvFin,
+    Close,
+}
+
+enum FsmError {
+    IllegalTransition,
+}
+
+defn tcp_initial() -> TcpState {
+    term TcpState.Closed;
+};
+
+// tcp_step — one transition. Exhaustive over the state; each state's event
+// match either names the legal edges or returns IllegalTransition.
+defn tcp_step(state: TcpState, event: TcpEvent) -> Result<TcpState, FsmError> {
+    term match state {
+        TcpState.Closed => match event {
+            TcpEvent.PassiveOpen => Ok(TcpState.Listen),
+            TcpEvent.ActiveOpen => Ok(TcpState.SynSent),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.Listen => match event {
+            TcpEvent.RecvSyn => Ok(TcpState.SynRcvd),
+            TcpEvent.Close => Ok(TcpState.Closed),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.SynSent => match event {
+            TcpEvent.RecvSynAck => Ok(TcpState.Established),
+            TcpEvent.Close => Ok(TcpState.Closed),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.SynRcvd => match event {
+            TcpEvent.RecvAck => Ok(TcpState.Established),
+            TcpEvent.Close => Ok(TcpState.Closed),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.Established => match event {
+            TcpEvent.RecvFin => Ok(TcpState.CloseWait),
+            TcpEvent.Close => Ok(TcpState.FinWait1),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.FinWait1 => match event {
+            TcpEvent.RecvAck => Ok(TcpState.FinWait2),
+            TcpEvent.RecvFin => Ok(TcpState.Closing),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.FinWait2 => match event {
+            TcpEvent.RecvFin => Ok(TcpState.TimeWait),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.CloseWait => match event {
+            TcpEvent.Close => Ok(TcpState.LastAck),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.Closing => match event {
+            TcpEvent.RecvAck => Ok(TcpState.TimeWait),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.LastAck => match event {
+            TcpEvent.RecvAck => Ok(TcpState.Closed),
+            _ => Err(FsmError.IllegalTransition),
+        },
+        TcpState.TimeWait => match event {
+            TcpEvent.Close => Ok(TcpState.Closed),
+            _ => Err(FsmError.IllegalTransition),
+        },
+    };
+};
+
+// state_code — stable integer witness for tests/benchmarks. The mapping is
+// intentionally explicit; an added state must be handled here (exhaustive).
+defn state_code(state: TcpState) -> Int {
+    term match state {
+        TcpState.Closed => 0,
+        TcpState.Listen => 1,
+        TcpState.SynSent => 2,
+        TcpState.SynRcvd => 3,
+        TcpState.Established => 4,
+        TcpState.FinWait1 => 5,
+        TcpState.FinWait2 => 6,
+        TcpState.CloseWait => 7,
+        TcpState.Closing => 8,
+        TcpState.LastAck => 9,
+        TcpState.TimeWait => 10,
+    };
+};
+
+// Integer-code boundary for callers that do not import enum constructors
+// (named enum-type imports are not yet a stable surface). The internals stay
+// enum-typed; these wrappers are the fixture/benchmark ABI.
+defn tcp_state_from_code(code: Int) -> TcpState {
+    term match code {
+        0 => TcpState.Closed,
+        1 => TcpState.Listen,
+        2 => TcpState.SynSent,
+        3 => TcpState.SynRcvd,
+        4 => TcpState.Established,
+        5 => TcpState.FinWait1,
+        6 => TcpState.FinWait2,
+        7 => TcpState.CloseWait,
+        8 => TcpState.Closing,
+        9 => TcpState.LastAck,
+        _ => TcpState.TimeWait,
+    };
+};
+
+defn tcp_event_from_code(code: Int) -> TcpEvent {
+    term match code {
+        0 => TcpEvent.PassiveOpen,
+        1 => TcpEvent.ActiveOpen,
+        2 => TcpEvent.RecvSyn,
+        3 => TcpEvent.RecvSynAck,
+        4 => TcpEvent.RecvAck,
+        5 => TcpEvent.RecvFin,
+        _ => TcpEvent.Close,
+    };
+};
+
+defn tcp_step_code(state_code_in: Int, event_code: Int) -> Result<Int, FsmError> {
+    let s: TcpState = tcp_state_from_code(state_code_in);
+    let e: TcpEvent = tcp_event_from_code(event_code);
+    let r: Result<TcpState, FsmError> = tcp_step(s, e);
+    term match r {
+        Ok(next) => Ok(state_code(next)),
+        Err(err) => Err(err),
+    };
+};
+
+// fsm_run — the event-stream driver used by the benchmark. The loop stays
+// enum-typed; only the event index is decoded once per step.
+defn fsm_run(n: Int) -> Int {
+    term fsm_run_loop(n, 0, tcp_initial(), 0);
+};
+
+defn fsm_run_loop(n: Int, i: Int, state: TcpState, sum: Int) -> Int {
+    when i >= n {
+        term sum;
+    };
+    let ev: TcpEvent = tcp_event_from_code(i % 7);
+    let r: Result<TcpState, FsmError> = tcp_step(state, ev);
+    term match r {
+        Ok(next) => fsm_run_loop(n, i + 1, next, sum + state_code(next)),
+        Err(_) => fsm_run_loop(n, i + 1, state, sum + 1000000),
+    };
+};

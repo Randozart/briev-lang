@@ -21,6 +21,9 @@
       "include": "#top-level"
     },
     {
+      "include": "#control"
+    },
+    {
       "include": "#exceptions"
     },
     {
@@ -64,7 +67,11 @@
       "patterns": [
         {
           "name": "storage.type.bad",
-          "match": "^\\s*(defn|alias|import|export)\\b"
+          "match": "^\\s*(defn|alias|import|export|declarations|data|bootstrap)\\b"
+        },
+        {
+          "name": "storage.type.bad",
+          "match": "^\\s*(call\\s+defn)\\b"
         },
         {
           "name": "support.function.directive.bad",
@@ -77,6 +84,19 @@
         {
           "name": "variable.other.register.fp.bad",
           "match": "\\bf(?:[0-9]|1[0-5])\\b"
+        }
+      ]
+    },
+    "control": {
+      "comment": "2026-10-20 (bad assembly+ plan): assembly+ statements and the declarations block's extern/stack forms. Line-head anchored so they win over the generic mnemonic rule.",
+      "patterns": [
+        {
+          "name": "keyword.control.bad",
+          "match": "^\\s*(when|loop|while|break|continue|return|let|local)\\b"
+        },
+        {
+          "name": "keyword.other.declaration.bad",
+          "match": "^\\s*(extern\\s+fn|extern\\s+data|stack)\\b"
         }
       ]
     },

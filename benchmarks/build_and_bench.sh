@@ -145,6 +145,9 @@ TAG[hash_ops_idio]=runtime
 TAG[enemy_swarm]=runtime
 TAG[recommender]=runtime
 TAG[ws_frame]=runtime
+TAG[fsm_dispatch]=runtime
+TAG[arena_bump]=runtime
+TAG[spsc_ring]=runtime
 # 2026-10-09 (T2b): hot-loop-over-slice — measures the contiguous-slice
 # zero-copy VIEW vs the copy path. Self-contained (Briev vs Briev A/B); no C
 # reference, so it is NOT in the BENCHMARKS timing list (would SKIP on the
@@ -213,6 +216,9 @@ BENCHMARKS=(
     # and masked/unmasked; per-byte codec-call checksum. The gate that found
     # the sequential-guard fall-through bug (BUGS.md 2026-10-18).
     "ws_frame"
+    "fsm_dispatch"  # fixture 4: exhaustive TCP-subset FSM dispatch
+    "arena_bump"    # fixture 3: contract-proven bump allocator + reset
+    "spsc_ring"     # fixture 2: SPSC ring, acquire/release atomics
     "bridge_glue"
     "bridge_multi"
     # "gpu/saxpy"        # no .bv file exists

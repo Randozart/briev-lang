@@ -261,3 +261,216 @@ into the contract-true language.
 Per-workstream gates (house standard): `cargo test --lib`, sweep, harness
 re-run when codegen is touched, determinism quick gate, Praetor on changed
 dirs, BUGS.md entries, discovery-log updates, commits per logical step.
+
+## Bucket 2 execution plan (2026-10-20)
+
+**Baseline:** 39,865 announcements / 85 contracted fns at `f713ef45`
+(census `/tmp/opencode/census_b1c.log`).
+
+| Slice | Fns | Announcements |
+|---|---:|---:|
+| Integer/string lanes in `float_fmt.bv` | 11 | 24,552 |
+| Float-specific lanes in `float_fmt.bv` | 9 | 6,138 |
+| `cast_lanes.bv` numeric lanes | 11 | 8,866 |
+| `char.bv` conversions | 7 | 141 |
+| `sha1.bv` internals | 9 | 52 |
+| bits/shift/examples | 4 | 7 |
+| **Bucket 2** | **51** | **39,756** |
+| Bucket 3 + residue | 34 | 109 |
+
+The counts are announcements, not defects. Most of the 39,756 come from
+facts the prover cannot consume yet: callee postconditions, guard
+fall-through, strict integer bounds, and quotient/remainder/shift/mask
+intervals. The order is **proof-flow foundation first**, then the integer
+lanes, then float; rewriting stdlib guards before the prover can use them
+would turn a proof migration into a pile of hand-written assumptions.
+
+### Phase 0 — reproducible census
+
+Add `scripts/contract_census.sh`: a temporary `BRIEV_HOME` overlay with
+`config/contracts.dbvl` set to `policy: warn`, so the census never edits the
+tracked config and never risks the working tree. Emit the raw log plus a
+per-callee count. The script is diagnostic only; it is not a compiler
+feature.
+
+### Phase 1 — proof-flow foundation
+
+1. **Contracts carry both sides.** `fn_contracts` becomes
+   `FnContract { params, pre, post }`; register a defn when EITHER side is
+   nontrivial. The gate still proves only `pre`; `post` becomes facts for
+   callers.
+2. **Call-result facts.** `let r = f(args)` adds the callee's postcondition
+   with params substituted and `term` renamed to `r`. Only conjuncts that
+   mention `term` and whose other free names occur in the actual arguments
+   are accepted (avoids leaking callee locals into caller scope). Facts are
+   killed on rebinding, as today.
+3. **Guard fall-through facts.** After a compound statement whose body
+   unconditionally returns (defn context only), record the negation of the
+   guard: a single comparison, or the conjunction obtained by negating an
+   `||` disjunction. A negated `&&` is a disjunction and yields no facts.
+   This is the missing half of every recursive base case.
+4. **Predicate atoms.** Boolean facts such as `is_digit(c)` discharge an
+   identical goal by structural equality; a fact that is the literal
+   negation refutes it. Also prove literal `true`, refute literal `false`,
+   and close complement tautologies (`x == c || x != c`, `x < c || x >= c`).
+5. **Exact integer linear core.** Replace the `f64` coefficients/constants
+   with `i128` (checked arithmetic) so `2^60`/`10^18` boundaries are exact.
+   Add constant multiplication, strict-to-non-strict integer closure
+   (`T < c` ≡ `T <= c-1`), and the missing `(Lt, Le)` entailment.
+6. **Sound interval domain.** Derive atom bounds from facts, iterate to a
+   fixpoint, and evaluate expressions over intervals for:
+   `+ - *` (checked), division/remainder by a positive constant,
+   left/right shift, non-negative masks, and non-negative `|`/`^` lower
+   bounds. Signed/overflowing/unknown shapes stay `Unproven` — no guessing.
+   Interval and linear results compose; either may prove a conjunct.
+7. **Tests.** Unit tests for every new arm, including negative tests that
+   must stay `Unproven` (opaque atoms, signed division, overflow, unknown
+   shift). Integration tests for post-fact binding, fact invalidation,
+   guard fall-through, and predicate discharge. Kani/property coverage for
+   the interval evaluator if the shape is amenable; otherwise exhaustive
+   small-domain tests.
+
+### Phase 2 — integer/string lanes
+
+Migrate the 11 integer-lane functions in `float_fmt.bv` as one cluster:
+`zeros`, `pow10`, `pow2`, `pow2b`, `digit_char`, `digits_of_int`,
+`int_digit_count`, `sscale`, `int_leading_int`, `round_all`, `pad_digits`.
+Repair the contracts that are false for recursive states (audit each first;
+never weaken to `[true]`):
+
+- `frac_all_digits`: `m < 1<<24` is not preserved by `trunc(m*5)`; the
+  recursive invariant must be the one the body actually maintains.
+- `frac_digit_loop`: `m > 0` vs recursive `frac*5` reaching 0.
+- `frac_exp`: `b >= 1` vs recursion reaching `b == 0`.
+- `fill_pos`/`fill_neg`: `stop >= 1` vs recursive `stop - 1`.
+- `trunc` must expose positivity (`term >= 1` when `acc >= 1`), which
+  `sscale` needs.
+- `int_digit_count` needs the quotient/shift bound, not only `pow2b`'s
+  lower bound.
+
+After the cluster: warn census, diff against the baseline, migrate any
+callee that consumed a removed assumption, targeted parity for digit and
+parse cases, `cargo test --lib`.
+
+### Phase 3 — float-specific lanes
+
+`frac_all_digits`, `frac_digit_loop`, `frac_exp`, `float_rounded`,
+`exp_style`, `exp_style_mant`, `fixed_style`, `mantissa_val`,
+`exponent_val`. Use post facts and intervals; run the float formatter
+corpus byte-for-byte.
+
+### Phase 4 — cast/char/sha1/bits
+
+`cast_lanes` numeric lanes (fill, gather, decode), `char` conversions,
+`sha1` internals, `lshr32/64`, `set_bit`/`clear_bit`. Predicate facts clear
+the char checks; post facts and intervals clear the gather/sha1 lanes.
+Literal UART constants are resolved or the example contracts become
+explicit address comparisons; never runtime checks.
+
+### Phase 5 — bucket 3, residue, flip
+
+`env_var`/`run` → `Result`; `dirent_cstr_string` and the directory loop;
+L1 reader callers keep their bounds guards. Sweep the newly active files for
+bucket-1 noise (`str_to_c`, `len`, one-bracket contracts such as
+`rand_u64`). Then zero-warning warn census → full lib/bin tests → harness
+79/79 → determinism → `policy: deny`.
+
+### Gates for every phase
+
+Census diff (no new callee warnings), `cargo test --lib`, conformance sweep,
+targeted parity, Praetor on changed directories, ledger + BUGS.md updates.
+Codegen is untouched by these proofs; the harness gate is still run at the
+bucket checkpoint because guard restructuring can change emitted shapes.
+
+### Phase 0/1 result — 2026-10-20
+
+- `scripts/contract_census.sh` landed: temporary `BRIEV_HOME`, `policy: warn`,
+  raw log + per-callee counts; `--nocapture` is required or libtest swallows
+  the gate output.
+- Proof engine: `FnContract` pre+post; call-result facts; guard
+  fall-through; predicate atoms; complement tautologies; exact i128 linear
+  core; conservative interval domain. Integer `x != c` now tightens a bound
+  sitting on `c` (`n >= 0 && n != 0` ⇒ `n >= 1`) — the recursive base case.
+- Typechecker: post facts bind after `let`; guard fall-through records only
+  in defn context; own-precondition facts flow through both inference and
+  op elaboration.
+- Census: **39,865 / 85 fns → 22,727 / 62 fns**. `pow2` and other recursive
+  `n-1` calls now discharge. Residual is dominated by `zeros` (3,069),
+  `pow10` (2,046), `int_digit_count` (2,046), `digits_of_int` (2,046),
+  `pow10f`/`frac_digit_loop` (1,364 each).
+- Tests: 3,207 lib tests pass (including new post-fact, guard-fallthrough,
+  and `!=`-tightening pins). Logs:
+  `/tmp/opencode/census_b2_proof2.log` (+ `.summary.txt`).
+- Phase 2 blockers exposed by the census, to fix in the source (not by
+  weakening): `pow2b` is called from `when b > 60 || m < pow2b(b)` before
+  the `b <= 60` guard; `zeros`/`pow10` over-tight upper bounds; `pow10`'s
+  callers can exceed 18; `frac_digit_loop` recurses with `b - 1` into a
+  `b >= 0` contract when `frac == 0`.
+
+### Phase 2 result — 2026-10-20
+
+- Let-equality facts landed (`let x = e` records `x == e`; the prover tries
+  direct facts first, then expands the definition only as a fallback). This
+  was the missing link for `missing`, `shift`, `total`, `a2`, `v`, etc.
+- Literal constants are folded before atomization, so `1 << 24` and `10^18`
+  no longer become opaque atoms in bounds.
+- Interval multiplication/division now keep one-sided bounds
+  (`acc >= 1` ⇒ `acc * 2 >= 2`, `acc / 10 >= 1`); nonlinear shapes reach the
+  interval evaluator instead of being dropped when `normalize` declines.
+- Multi-value contract convention recorded in the typechecker: a `term`
+  postcondition on a tuple result describes the FIRST bound name. No second
+  component surface exists yet.
+- Source repairs: `zeros` no longer caps at 20; `pow10` callers use the
+  correct `nd`-relative shift (was `nd + k - want`); `pow2b` is guarded
+  before its `b <= 60` call; `trunc` exposes positivity and the 1e18 cap;
+  `sscale` keeps `acc < 1e18`; `float_format` derives `d` from the digit
+  string; `mantissa_val` exposes the 24-bit bound.
+- Census: **22,727 / 62 → 10,788 / 50**. Integer-lane residual is only
+  `int_digit_count` (682, float-lane callers) and `int_leading_int` (341,
+  second tuple component). `float_fmt_cases` parity PASS.
+- Remaining Phase 3 surface: `frac_exp`/`frac_digit_loop`/`frac_all_digits`/
+  `pow10f`/`decode_*`/`fill_*`/`exp_style_mant`/`fixed_style`/`exp_style`.
+
+### Phase 3 result — 2026-10-20
+
+- Tuple component posts are now real: `term.0`/`term.1` (and bare `term`
+  as component 0) bind each destructured name, in both inference and
+  elaboration. This closes the second-component gap noted above.
+- Prover additions: structurally identical facts prove reflection and other
+  opaque predicates (`.^Length`); `%` keeps a non-negative remainder when
+  the divisor is only known positive; a direct fact check runs before
+  linear/interval normalization.
+- Source repairs: `frac_digit_loop` is total over `m`/`count` (guards return
+  0 outside the digit window), so its recursion no longer requires
+  unprovable overflow bounds; `frac_all_digits`/`frac_exp` bind the scaled
+  tuple call so its post facts reach the recursive call; `int_digit_count`
+  accepts any non-negative Int; `pow2b` exposes its 2^60 cap; `pow10f`
+  covers the `pf_make` range; `pf_num` clamps its exponent adjustment;
+  `fill_pos`/`fill_neg` guard non-positive stop; `decode_cont` accepts
+  width 1; sign contracts use `0 <= sign <= 1`; `exp_style_mant` no longer
+  demands a non-empty mantissa; `float_format` uses the digit string length.
+- `cast_cases` regression found and fixed: the multi-digit integer branch
+  must run before the zero-fraction fast path. All six parity corpora PASS
+  (`cast`, `float`, `float_fmt`, `int`, `parse`, `string`).
+- Census: **10,788 / 50 → 217 / 37**; `float_fmt.bv` and `cast_lanes.bv`
+  reach **zero** contract warnings under `policy: warn`.
+- Remaining surface: char conversion (104 + 16 + 4 + 3), syscall lanes,
+  sha1/base64, bits/rand, and the bucket-3 dynamic boundaries.
+
+### Final result — 2026-10-20: deny
+
+- Remaining lanes migrated: char/codepoint, JSON parser positions, SHA-1
+  padded build, base64 loop, socket/address construction, UART/MMIO
+  examples, glue C-string boundary, and the socket/net-stack fixtures.
+- Prover: tuple component facts propagate through method receivers; field
+  atom definitions chain (`r.len == a.len + 1`); cancelled linear goals are
+  tautologies; non-negative `%` bounds, integer-preserving cast bounds, and
+  the stored-length non-negativity invariant are built in. Txn bodies now
+  assume their own precondition in both inference and elaboration.
+- Constant program literals fold at call goals (with local shadowing
+  respected); syscall numbers and MMIO addresses are literal at the call
+  site, so imported modules prove without depending on cross-module
+  constant visibility.
+- Census: **217 / 37 → 0 / 0**. `config/contracts.dbvl` now reads
+  `policy: deny;`. `cargo test --lib` (3,219) and the conformance sweep are
+  green under deny; all six parity corpora PASS.

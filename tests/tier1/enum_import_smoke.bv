@@ -1,0 +1,10 @@
+// Named enum-type import + qualified payload constructor (P1-3).
+import { Result, is_ok, unwrap } from "std/result";
+import { print_int } from "std/io";
+let done: Bool = false;
+node entry [beginprogram][done == true] {
+    let r: Result<Int, Int> = Result.Ok(7);
+    print_int(unwrap(r));
+    done = true;
+    endprogram 0;
+};

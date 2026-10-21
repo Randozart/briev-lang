@@ -137,12 +137,20 @@ pub struct TypecheckContext<'a> {
     fn_param_types: HashMap<String, Vec<Type>>,
     /// 2026-10-19 (contract tiers, Option 1): callee preconditions (name →
     /// param names + precondition) for the call-site proof gate.
-    fn_contracts: HashMap<String, (Vec<String>, crate::ast::Expr)>,
+    fn_contracts: HashMap<String, crate::proof_engine::callgate::FnContract>,
+    /// Compile-time constants (`const`/`export const`) with literal bodies.
+    /// Call goals fold them before proving, so `syscall(SYS_OPEN, ..)` sees
+    /// `2` rather than an opaque identifier.
+    constant_defs: HashMap<String, crate::ast::Expr>,
     /// 2026-10-19 (contract tiers): facts known at the current program
     /// point — guard conditions, `check` statements, and the enclosing
     /// defn's own precondition. Pushed/popped by infer_statement; killed
     /// (conservatively) when a variable is reassigned or shadowed.
     known_facts: Vec<crate::ast::Expr>,
+    /// 2026-10-20 (bucket 2): true while checking a DEFN body. Only a defn's
+    /// `term` is an unconditional return (a txn/node `term` is P-gated), so
+    /// guard fall-through facts are recorded only here.
+    in_defn: bool,
     /// 2026-07-31: The declared output type of the defn/txn currently being
     /// checked. Used to validate `term`/`term!` values.
     current_output_type: Option<Type>,
@@ -229,7 +237,9 @@ impl<'a> TypecheckContext<'a> {
             type_params: HashMap::new(),
             fn_param_types: HashMap::new(),
             fn_contracts: HashMap::new(),
+            constant_defs: HashMap::new(),
             known_facts: Vec::new(),
+            in_defn: false,
             current_output_type: None,
             type_protocols: HashMap::new(),
             type_max_bits: HashMap::new(),
@@ -2020,9 +2030,41 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
     // guard, or make the dynamic boundary explicit with Result/Option —
     // the ws_decode idiom). There is no runtime fallback: contracts are
     // pure static proofs.
-    if let Some((callee_params, pre)) = ctx.fn_contracts.get(name).cloned() {
-        let goal =
-            crate::proof_engine::callgate::substitute_params(&pre, &callee_params, args);
+    if let Some(contract) = ctx.fn_contracts.get(name).cloned() {
+        let mut goal = crate::proof_engine::callgate::substitute_params(
+            &contract.pre,
+            &contract.params,
+            args,
+        );
+        // Fold compile-time constants in the goal (`SYS_OPEN` → 2). Constants
+        // are immutable by declaration, so this is pure substitution.
+        if !ctx.constant_defs.is_empty() {
+            // Only unfold names that are not locally bound: a std helper's
+            // `total` parameter must not pick up a program-level `const total`.
+            let live: Vec<&String> = ctx
+                .constant_defs
+                .keys()
+                .filter(|n| !ctx.bindings.contains_key(*n))
+                .collect();
+            if !live.is_empty() {
+                let names: Vec<String> = live.iter().map(|n| (*n).clone()).collect();
+                let values: Vec<crate::ast::Expr> = names
+                    .iter()
+                    .map(|n| ctx.constant_defs[n].clone())
+                    .collect();
+                // Constants may be defined in terms of other constants
+                // (`UART_CR1 = UART_BASE + 0x0C`): unfold to a fixpoint.
+                for _ in 0..8 {
+                    let before = goal.clone();
+                    goal = crate::proof_engine::callgate::substitute_params(
+                        &goal, &names, &values,
+                    );
+                    if goal == before {
+                        break;
+                    }
+                }
+            }
+        }
         let verdict = crate::proof_engine::callgate::prove_precondition(&goal, &ctx.known_facts);
         if verdict != crate::proof_engine::callgate::Verdict::Proven {
             // Rollout stage (config/contracts.dbvl `policy:` row): `allow`
@@ -2775,7 +2817,12 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 for (name, ty) in &d.parameters {
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
+                ctx.known_facts.extend(
+                    crate::proof_engine::callgate::facts_of(&d.contract.pre_condition),
+                );
+                ctx.in_defn = true;
                 elaborate_stmts(&mut d.body, &mut ctx, &mut errors);
+                ctx.in_defn = false;
                 elaborate_expr(&mut d.contract.pre_condition, &mut ctx, &mut errors);
                 // 2026-08-14 (`term` canonical result placeholder): bind
                 // `term` to the declared output type while elaborating the
@@ -2794,7 +2841,12 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 for (name, ty) in &t.parameters {
                     ctx.bindings.insert(name.clone(), ty.clone());
                 }
+                let fact_base = ctx.known_facts.len();
+                ctx.known_facts.extend(
+                    crate::proof_engine::callgate::facts_of(&t.contract.pre_condition),
+                );
                 elaborate_stmts(&mut t.body, &mut ctx, &mut errors);
+                ctx.known_facts.truncate(fact_base);
                 elaborate_expr(&mut t.contract.pre_condition, &mut ctx, &mut errors);
                 let term_ty = t.output_type.as_ref().map(output_type_to_type);
                 let saved = ctx.bindings.insert("term".to_string(), term_ty.unwrap_or(Type::void()));
@@ -2844,6 +2896,13 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                         ctx.known_facts.push(f);
                     }
                 }
+                if names.len() == 1 {
+                    if let Some(f) =
+                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    {
+                        ctx.known_facts.push(f);
+                    }
+                }
             }
             if let Some(e) = expr {
                 elaborate_expr(e, ctx, errors);
@@ -2858,6 +2917,7 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                     ctx.bindings.insert(n.clone(), t.clone());
                 }
             }
+            record_component_post_facts(expr.as_ref(), names, ctx);
         }
         Statement::Assign(l, r) => {
             elaborate_expr(l, ctx, errors);
@@ -2869,15 +2929,35 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
         | Statement::EndProgram(Some(e))
         | Statement::Rollback(Some(e)) => elaborate_expr(e, ctx, errors),
         Statement::Expression(e) | Statement::Gate(e) => elaborate_expr(e, ctx, errors),
+        Statement::Check(cond) => {
+            elaborate_expr(cond, ctx, errors);
+            ctx.known_facts
+                .extend(crate::proof_engine::callgate::facts_of(cond));
+        }
         Statement::Guarded(cond, body) => {
             elaborate_expr(cond, ctx, errors);
+            let base = ctx.known_facts.len();
+            ctx.known_facts
+                .extend(crate::proof_engine::callgate::facts_of(cond));
             elaborate_stmts(body, ctx, errors);
+            ctx.known_facts.truncate(base);
+            if ctx.in_defn
+                && body
+                    .iter()
+                    .any(crate::analysis::termination::statement_always_terminates)
+            {
+                ctx.known_facts
+                    .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
+            }
         }
         Statement::Block(body) | Statement::SyncBlock(body)
         | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
-        Statement::Foreach { list, body, .. } => {
+        Statement::Foreach { item, list, body } => {
             elaborate_expr(list, ctx, errors);
+            let fact_base = ctx.known_facts.len();
+            ctx.known_facts.extend(foreach_range_facts(list, item));
             elaborate_stmts(body, ctx, errors);
+            ctx.known_facts.truncate(fact_base);
         }
         _ => {}
     }
@@ -3606,6 +3686,94 @@ fn unreachable_arm(what: &str, scrutinee: Type) -> TypeError {
     }
 }
 
+/// Record the facts a call result establishes. Only `let r = f(args)` can
+/// name the result; the callee postcondition is substituted with the actual
+/// arguments and `term := r`. Kept shared by inference and op elaboration so
+/// the two walkers see the same fact state.
+/// Contract and full argument list for a call-shaped expression. A method
+/// call resolves `Type::method` first (the receiver's concrete member) and
+/// falls back to the bare method name; the receiver is parameter 0.
+fn call_site(expr: &Expr, ctx: &mut TypecheckContext) -> Option<(crate::proof_engine::callgate::FnContract, Vec<Expr>)> {
+    match expr {
+        Expr::Call(callee, args, _) => {
+            let contract = ctx.fn_contracts.get(callee)?;
+            Some((contract.clone(), args.clone()))
+        }
+        Expr::MethodCall(receiver, name, args, _, _) => {
+            let mut full = vec![(**receiver).clone()];
+            full.extend(args.iter().cloned());
+            let typed = infer_type_only(receiver, ctx)
+                .ok()
+                .map(|ty| format!("{}::{}", ty, name));
+            let contract = typed
+                .and_then(|key| ctx.fn_contracts.get(&key))
+                .or_else(|| ctx.fn_contracts.get(name))?;
+            Some((contract.clone(), full))
+        }
+        _ => None,
+    }
+}
+
+fn record_component_post_facts(
+    expr: Option<&Expr>,
+    names: &[String],
+    ctx: &mut TypecheckContext,
+) {
+    let Some((contract, args)) = expr.and_then(|e| call_site(e, ctx)) else {
+        return;
+    };
+    let facts =
+        crate::proof_engine::callgate::post_facts_components(&contract, &args, names);
+    ctx.known_facts.extend(facts);
+}
+
+fn record_call_post_facts(
+    expr: Option<&Expr>,
+    binding: &str,
+    ctx: &mut TypecheckContext,
+) {
+    let Some((contract, args)) = expr.and_then(|e| call_site(e, ctx)) else {
+        return;
+    };
+    let facts =
+        crate::proof_engine::callgate::post_facts(&contract, &args, binding);
+    ctx.known_facts.extend(facts);
+}
+
+/// Range facts established inside `foreach i in a..b` (or `a..=b`): the loop
+/// item is bounded by the range endpoints. Only simple endpoints are used —
+/// an endpoint expression with effects could change while the fact is live.
+/// This is what lets a proven callee precondition (`i < payload_len`) discharge
+/// without a redundant per-iteration guard in the hot loop.
+fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
+    let Expr::Range { start, end, inclusive } = list else {
+        return Vec::new();
+    };
+    fn simple(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(_) | Expr::Decimal(_) => true,
+            Expr::Field(base, _) => simple(base),
+            Expr::Cast(inner, _) => simple(inner),
+            _ => false,
+        }
+    }
+    if !simple(start) || !simple(end) {
+        return Vec::new();
+    }
+    let lhs = Expr::Identifier(item.to_string());
+    let mut facts = vec![Expr::BinaryOp(
+        BinaryOpKind::Ge,
+        Box::new(lhs.clone()),
+        start.clone(),
+    )];
+    facts.push(Expr::BinaryOp(
+        if *inclusive { BinaryOpKind::Le } else { BinaryOpKind::Lt },
+        Box::new(lhs),
+        end.clone(),
+    ));
+    facts
+}
+
 /// Infer the type of a statement.
 pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(), TypeError> {
     match stmt {
@@ -3687,6 +3855,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 bound.push(&name);
                 for n in bound {
                     if let Some(f) = crate::proof_engine::callgate::initializer_fact(n, init) {
+                        ctx.known_facts.push(f);
+                    }
+                }
+                if names.len() == 1 {
+                    if let Some(f) =
+                        crate::proof_engine::callgate::initializer_equality(name, init)
+                    {
                         ctx.known_facts.push(f);
                     }
                 }
@@ -3840,6 +4015,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             let resolved = ty.clone().unwrap_or(inferred);
             ctx.bindings.insert(name.clone(), resolved);
+            record_call_post_facts(expr.as_ref(), name, ctx);
             Ok(())
         }
         Statement::Assign(lhs, rhs) => {
@@ -4193,6 +4369,19 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 infer_statement(stmt, ctx)?;
             }
             ctx.known_facts.truncate(base);
+            // 2026-10-20 (bucket 2): when the guard body ALWAYS returns, the
+            // code after it runs only when the guard is false — record the
+            // negation. This is the missing half of every recursive base case
+            // (`when n == 0 { term 1; }; term pow2(n-1)*2;`). Defn context
+            // only: a txn `term` is P-gated, not an unconditional return.
+            if ctx.in_defn
+                && body
+                    .iter()
+                    .any(crate::analysis::termination::statement_always_terminates)
+            {
+                ctx.known_facts
+                    .extend(crate::proof_engine::callgate::fallthrough_facts(cond));
+            }
             Ok(())
         }
         Statement::Gate(cond) => {
@@ -4222,14 +4411,18 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // hardcoded Int.
             let element_ty = foreach_item_type(ctx, &list_ty);
             ctx.bindings.insert(item.clone(), element_ty);
+            let fact_base = ctx.known_facts.len();
+            ctx.known_facts.extend(foreach_range_facts(list, item));
             ctx.foreach_depth += 1;
             for stmt in body {
                 if let Err(e) = infer_statement(stmt, ctx) {
                     ctx.foreach_depth -= 1;
+                    ctx.known_facts.truncate(fact_base);
                     return Err(e);
                 }
             }
             ctx.foreach_depth -= 1;
+            ctx.known_facts.truncate(fact_base);
             Ok(())
         }
         // 2026-08-17 (foreach break): `break;` is valid only lexically inside
@@ -4289,6 +4482,7 @@ fn check_let_destructure(
     for i in 0..count {
         ctx.bindings.insert(names[i].clone(), elem_types[i].clone());
     }
+    record_component_post_facts(expr.as_ref(), names, ctx);
     Ok(())
 }
 
@@ -4972,39 +5166,70 @@ pub fn check_program_with_target(
 
     // 2026-10-19 (contract tiers, Option 1 ruling — plan
     // 2026-10-19-contract-tiers-and-regularity.md): per-DEFN contracts for
-    // call-site discharge — name → (param names, precondition). A
-    // transaction's precondition is a reactive wake condition (scheduling
-    // obligation), NOT a call obligation — txn call sites are out of the
-    // gate's scope by design.
-    let fn_contracts: HashMap<String, (Vec<String>, crate::ast::Expr)> = items
+    // call-site discharge. A transaction's precondition is a reactive wake
+    // condition (scheduling obligation), NOT a call obligation — txn call
+    // sites are out of the gate's scope by design.
+    //
+    // 2026-10-20 (bucket 2): carry the POSTCONDITION too. A `let r = f(...)`
+    // turns the callee's post into facts about `r`; registration therefore
+    // happens when EITHER side is nontrivial (many lanes have `[true]` pre
+    // and a useful post).
+    fn defn_contract(
+        name: String,
+        d: &Definition,
+    ) -> Option<(String, crate::proof_engine::callgate::FnContract)> {
+        let pre_true = matches!(
+            d.contract.pre_condition,
+            crate::ast::Expr::Bool(true)
+        );
+        let post_true = matches!(
+            d.contract.post_condition,
+            crate::ast::Expr::Bool(true)
+        );
+        if pre_true && post_true {
+            return None;
+        }
+        Some((
+            name,
+            crate::proof_engine::callgate::FnContract {
+                params: d.parameters.iter().map(|(p, _)| p.clone()).collect(),
+                pre: d.contract.pre_condition.clone(),
+                post: d.contract.post_condition.clone(),
+            },
+        ))
+    }
+    // Methods count too: a chained `buf.put_u8(..).put_bytes(..)` establishes
+    // `.len`/`.cap` post facts only if the receiver's member contract is in
+    // the registry (the receiver becomes parameter 0).
+    let fn_contracts: HashMap<String, crate::proof_engine::callgate::FnContract> = items
         .iter()
-        .filter_map(|item| {
-            fn defn_contract(
-                name: String,
-                d: &Definition,
-            ) -> Option<(String, (Vec<String>, crate::ast::Expr))> {
-                if matches!(d.contract.pre_condition, crate::ast::Expr::Bool(true)) {
-                    return None;
-                }
-                Some((
-                    name,
-                    (
-                        d.parameters.iter().map(|(p, _)| p.clone()).collect(),
-                        d.contract.pre_condition.clone(),
-                    ),
-                ))
-            }
+        .flat_map(|item| -> Vec<(String, crate::proof_engine::callgate::FnContract)> {
             match item {
-                TopLevel::Definition(d) => defn_contract(d.name.clone(), d),
+                TopLevel::Definition(d) => {
+                    defn_contract(d.name.clone(), d).into_iter().collect()
+                }
                 TopLevel::Export(e) => match &*e.inner {
-                    TopLevel::Definition(d) => defn_contract(d.name.clone(), d),
-                    _ => None,
+                    TopLevel::Definition(d) => {
+                        defn_contract(d.name.clone(), d).into_iter().collect()
+                    }
+                    _ => Vec::new(),
                 },
-                _ => None,
+                TopLevel::TypeDef(t) => t
+                    .body
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        TopLevel::Definition(d) => defn_contract(
+                            format!("{}::{}", t.name, d.name),
+                            d,
+                        ),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
             }
         })
         .collect();
-
     // 2026-08-14 (generic `defn f<T>` dispatch): a defn's declared type params
     // (e.g. `["T"]` for `defn first<T>`), for call-site inference + substitution.
     let fn_type_params: HashMap<String, Vec<String>> = items
@@ -5413,6 +5638,27 @@ pub fn check_program_with_target(
         })
         .collect();
 
+    fn collect_constants(
+        items: &[TopLevel],
+        out: &mut HashMap<String, crate::ast::Expr>,
+    ) {
+        for item in items {
+            match item {
+                TopLevel::Constant(c) => {
+                    out.insert(c.name.clone(), c.expr.clone());
+                }
+                TopLevel::Export(e) => collect_constants(
+                    std::slice::from_ref(e.inner.as_ref()),
+                    out,
+                ),
+                TopLevel::TypeDef(t) => collect_constants(&t.body.members, out),
+                _ => {}
+            }
+        }
+    }
+    let mut constant_defs: HashMap<String, crate::ast::Expr> = HashMap::new();
+    collect_constants(items, &mut constant_defs);
+
     let env = CheckEnv {
         state_bindings: &state_bindings,
         init_bindings: &init_bindings,
@@ -5420,6 +5666,7 @@ pub fn check_program_with_target(
         optional_frgns: &optional_frgns,
         fn_param_types: &fn_param_types,
         fn_contracts: &fn_contracts,
+        constant_defs: &constant_defs,
         fn_type_params: &fn_type_params,
         fn_type_param_bounds: &fn_type_param_bounds,
         all_parse_bindings: &all_parse_bindings,
@@ -5565,11 +5812,13 @@ pub fn check_program_with_target(
                             mctx.bindings.insert(n.clone(), ty.clone());
                         }
                         mctx.current_output_type = d.output_type.as_ref().map(output_type_to_type);
+                        mctx.in_defn = true;
                         for stmt in &d.body {
                             if let Err(e) = infer_statement(stmt, &mut mctx) {
                                 errors.push(e);
                             }
                         }
+                        mctx.in_defn = false;
                     }
                     // 2026-08-12 (Iterable protocol, op-as-member): an operator
                     // member typechecks exactly like a defn member — self +
@@ -5579,11 +5828,13 @@ pub fn check_program_with_target(
                             mctx.bindings.insert(n.clone(), ty.clone());
                         }
                         mctx.current_output_type = d.output_type.as_ref().map(output_type_to_type);
+                        mctx.in_defn = true;
                         for stmt in &d.body {
                             if let Err(e) = infer_statement(stmt, &mut mctx) {
                                 errors.push(e);
                             }
                         }
+                        mctx.in_defn = false;
                     }
                     _ => {}
                 }
@@ -5648,11 +5899,13 @@ pub fn check_program_with_target(
                             mctx.bindings.insert(n.clone(), ty.clone());
                         }
                         mctx.current_output_type = d.output_type.as_ref().map(output_type_to_type);
+                        mctx.in_defn = true;
                         for stmt in &d.body {
                             if let Err(e) = infer_statement(stmt, &mut mctx) {
                                 errors.push(e);
                             }
                         }
+                        mctx.in_defn = false;
                     }
                     _ => {}
                 }
@@ -6230,7 +6483,8 @@ struct CheckEnv<'a> {
     fn_param_types: &'a HashMap<String, Vec<Type>>,
     /// 2026-10-19 (contract tiers, Option 1): callee preconditions for
     /// call-site discharge. Definitions only (txn pres are wake conditions).
-    fn_contracts: &'a HashMap<String, (Vec<String>, crate::ast::Expr)>,
+    fn_contracts: &'a HashMap<String, crate::proof_engine::callgate::FnContract>,
+    constant_defs: &'a HashMap<String, crate::ast::Expr>,
     /// 2026-08-14 (generic `defn f<T>`): declared type params per defn.
     fn_type_params: &'a HashMap<String, Vec<String>>,
     /// 2026-10-13 (static trait-constrained generics): per-defn type-param
@@ -6298,6 +6552,7 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     ctx.fn_param_types = env.fn_param_types.clone();
     ctx.fn_type_params = env.fn_type_params.clone();
     ctx.fn_type_param_bounds = env.fn_type_param_bounds.clone();
+    ctx.constant_defs = env.constant_defs.clone();
     ctx.type_protocols = env.all_type_protocols.clone();
     // 2026-09-02: width metadata for the float-literal admission gate.
     ctx.type_max_bits = env.all_type_max_bits.clone();
@@ -6402,9 +6657,11 @@ fn check_top_level<'a>(
             let own_pre = crate::proof_engine::callgate::facts_of(&defn.contract.pre_condition);
             let fact_base = ctx.known_facts.len();
             ctx.known_facts.extend(own_pre);
+            ctx.in_defn = true;
             for stmt in &defn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
+            ctx.in_defn = false;
             ctx.known_facts.truncate(fact_base);
             ctx.active_type_param_bounds.clear();
             Ok(())
@@ -6416,6 +6673,12 @@ fn check_top_level<'a>(
                 ctx.bindings.insert(name.clone(), ty.clone());
             }
             ctx.current_output_type = txn.output_type.as_ref().map(output_type_to_type);
+            // A transaction body may assume its own precondition, exactly as a
+            // defn body does; recursive txn calls then discharge from the
+            // contract instead of from an unstated caller invariant.
+            let own_pre =
+                crate::proof_engine::callgate::facts_of(&txn.contract.pre_condition);
+            ctx.known_facts.extend(own_pre);
             for stmt in &txn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
@@ -8156,6 +8419,129 @@ mod tests {
             errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
             "names the fix: {errs:#?}"
         );
+    }
+
+    /// A callee postcondition becomes a fact about the `let` binding: the
+    /// second call re-establishes `y >= 1` without a guard.
+    #[test]
+    fn call_postcondition_binds_result_fact() {
+        let _deny = DenyGate::install();
+        check(
+            "defn pos(x: Int) [x >= 1][term >= 1] -> Int { term x; }; \
+             defn caller(x: Int) [x >= 1] -> Int { let y: Int = pos(x); term pos(y); };",
+        )
+        .expect("the callee post must prove the nested call precondition");
+    }
+
+    /// `let m = len - s.Length` expands to its defining expression, so the
+    /// contract `s.Length <= len` proves `m >= 0`.
+    #[test]
+    fn let_equality_expands_in_contract_gate() {
+        let _deny = DenyGate::install();
+        check(
+            "defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(s: String, len: Int) [s .^Length <= len][term >= 0] -> Int { \
+                 let missing: Int = len - s .^Length; \
+                 term nonneg(missing); \
+             };",
+        )
+        .expect("the let equality plus length fact proves missing >= 0");
+    }
+
+    /// The let equality makes a multiplied intermediate provable.
+    #[test]
+    fn let_equality_multiplied_intermediate() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int) [acc >= 1][term >= 0] -> Int { \
+                 let a2: Int = acc * 2; \
+                 term need(a2); \
+             };",
+        )
+        .expect("a2 = acc * 2 and acc >= 1 prove a2 >= 1");
+    }
+
+    /// Guard fall-through of a large upper bound proves the recursive
+    /// transformed argument's positivity.
+    #[test]
+    fn guard_fallthrough_large_bound() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(x: Int) [x >= 1][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int) [acc >= 1][term >= 0] -> Int { \
+                 let a2: Int = acc * 2; \
+                 when a2 < 1000000000000000000 { term 0; }; \
+                 term need(a2); \
+             };",
+        )
+        .expect("fall-through gives a2 >= 1e18");
+    }
+
+    /// Foreach over a range establishes the item bounds for call-site proofs.
+    /// This is what lets a hot payload walk call a bounds-proven accessor
+    /// without a redundant per-iteration guard.
+    #[test]
+    fn foreach_range_proves_item_bounds() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(i: Int, n: Int) [i >= 0 && i < n][term >= 0] -> Int { term i; }; \
+             defn f(n: Int) [n >= 0][term >= 0] -> Int { \
+                 foreach i in 0..n { let x: Int = need(i, n); }; \
+                 term 0; \
+             };",
+        )
+        .expect("the foreach range facts prove the item bounds");
+    }
+
+    /// A post fact that a scale is positive proves a multiplied argument
+    /// non-negative.
+    /// A post fact that a scale is positive proves a multiplied argument
+    /// non-negative.
+    #[test]
+    fn post_fact_positive_product() {
+        let _deny = DenyGate::install();
+        check(
+            "defn scale(n: Int) [n >= 0 && n <= 18][term >= 1] -> Int { term n + 1; }; \
+             defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(acc: Int, shift: Int) [acc >= 1 && shift >= 0 && shift <= 18][term >= 0] -> Int { \
+                 let up: Int = scale(shift); \
+                 term nonneg(acc * up); \
+             };",
+        )
+        .expect("up >= 1 and acc >= 1 prove acc * up >= 0");
+    }
+
+    /// Tuple component posts bind per slot: `term.0` names the first bound
+    /// name and `term.1` the second, so both survive destructuring.
+    #[test]
+    fn tuple_component_posts_bind_both_names() {
+        let _deny = DenyGate::install();
+        check(
+            "defn pair(n: Int) [n >= 1][term.0 >= 1 && term.1 >= 2] -> (Int, Int) { \
+                 term (n, 2); \
+             }; \
+             defn nonneg(x: Int) [x >= 0][term >= 0] -> Int { term x; }; \
+             defn f(n: Int) [n >= 1][term >= 0] -> Int { \
+                 let (a, b): (Int, Int) = pair(n); \
+                 term nonneg(a) + nonneg(b); \
+             };",
+        )
+        .expect("term.0 -> a, term.1 -> b");
+    }
+
+    /// A guard whose body always returns establishes its negation on the
+    /// fall-through path: the recursive base case proves `n - 1 >= 0`.
+    #[test]
+    fn guard_fallthrough_proves_recursive_precondition() {
+        let _deny = DenyGate::install();
+        check(
+            "defn down(n: Int) [n >= 0 && n <= 2][term >= 0] -> Int { \
+                 when n == 0 { term 0; }; \
+                 term down(n - 1); \
+             };",
+        )
+        .expect("fall-through of `n == 0` gives `n >= 1`");
     }
 
     /// The migration stage (allow, the default) rejects nothing.

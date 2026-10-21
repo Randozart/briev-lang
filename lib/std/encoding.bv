@@ -170,7 +170,7 @@ defn url_decode_simple(s: String) [true][CharCount#(term) <= CharCount#(s)] -> S
 };
 
 // Check if char is hex digit
-defn is_hex_digit(c: String) [CharCount#(c) == 1][term == true || term == false] -> Bool {
+defn is_hex_digit(c: String) [true][term == true || term == false] -> Bool {
   when c >= "0" && c <= "9" { term true; };
   when c >= "a" && c <= "f" { term true; };
   when c >= "A" && c <= "F" { term true; };

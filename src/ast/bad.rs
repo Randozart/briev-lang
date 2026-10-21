@@ -35,6 +35,14 @@ pub enum BadTopLevel {
     Defn(BadDefn),
     /// `alias result = r0` — source-level register sugar.
     Alias(BadAlias),
+    /// `declarations { name: rN; … }` — file/recipe pins.
+    Declarations(BadDeclarations),
+    /// `call defn name(params) -> Ret { … }` — callable C-ABI function
+    /// with an assembly+ body. Lowered to a label by the symbolic pass.
+    Fn(BadFn),
+    /// `defn name(params) { … }` — INLINE symbolic definition. Expanded
+    /// at each call site; stack-free, no ABI, no `return`.
+    SymDefn(BadFn),
     /// `raw x86_64 ... end raw` — target-verbatim assembly block
     /// (2026-09-22; named close 2026-10-01). Lines pass through
     /// UNPARSED, emitted only when the active family matches the
@@ -85,6 +93,14 @@ pub struct BadLabel {
     /// Label-level contracts: `[pre: ...] [post: ...]` on the label line.
     pub contracts: Vec<BadContract>,
     pub body: Vec<BadBodyItem>,
+    /// ABI registers the recipe's parameters live in (leaf recipes that
+    /// bind params directly to argument registers). The allocator must
+    /// not assign a virtual there.
+    pub reserved_regs: Vec<String>,
+    /// True when the symbolic lowering pass produced this body. The
+    /// W-tier raw-register analysis is skipped: the allocator already
+    /// handled register lifetimes (call staging is ABI-correct).
+    pub symbolic: bool,
     pub span: Span,
 }
 
@@ -99,6 +115,93 @@ pub enum BadBodyItem {
     /// family — the matching `target =>` row, else the default row. The
     /// replacement for the retired attached-exception syntax.
     Site(BadSite),
+    /// `let name[: Type] = expr;` — a symbolic value binding.
+    Let(BadLet),
+    /// `name = expr;` / `name += expr;` — assignment or compound
+    /// assignment to a symbolic value.
+    Assign(BadAssign),
+    /// `when cond { … }` / `when cond: stmt` — one-way guard. `.bad` has
+    /// no `else`.
+    When(BadWhen),
+    /// `loop { … }` — unbounded loop.
+    Loop(BadLoop),
+    /// `while cond { … }` — guarded loop.
+    While(BadWhile),
+    /// `break` — exit the innermost structured loop.
+    Break(Span),
+    /// `continue` — next iteration of the innermost structured loop.
+    Continue(Span),
+    /// `name(args);` / `call name(args);` — a call statement (engine verb,
+    /// defn, or `fn`).
+    CallStmt { text: String, span: Span },
+    /// `return;` / `return expr;` — only legal inside a `call defn`.
+    Return { value: Option<String>, span: Span },
+    /// `raw [clobbers rN, ...] { … }` — verbatim physical instructions
+    /// inside a symbolic body. The clobber list is the boundary contract.
+    RawRegion {
+        text: String,
+        clobbers: Vec<String>,
+        span: Span,
+    },
+}
+
+/// `fn name(params) -> Ret { … }` — a callable function.
+#[derive(Debug, Clone)]
+pub struct BadFn {
+    pub name: String,
+    pub params: Vec<BadFnParam>,
+    pub ret: Option<String>,
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct BadFnParam {
+    pub name: String,
+    pub ty: String,
+}
+
+/// `let name[: Type] = expr;` — the value text is parsed by the shared
+/// Briev expression parser during symbolic lowering.
+#[derive(Debug, Clone)]
+pub struct BadLet {
+    pub name: String,
+    pub ty: Option<String>,
+    pub value: String,
+    pub span: Span,
+}
+
+/// `name = expr;` or `name += expr;` (`op` is empty for plain `=`,
+/// otherwise the compound operator without the `=`).
+#[derive(Debug, Clone)]
+pub struct BadAssign {
+    pub name: String,
+    pub op: String,
+    pub value: String,
+    pub span: Span,
+}
+
+/// `when cond { … }` — no else branch by design.
+#[derive(Debug, Clone)]
+pub struct BadWhen {
+    pub cond: String,
+    pub then: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+/// `loop { … }`.
+#[derive(Debug, Clone)]
+pub struct BadLoop {
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
+}
+
+/// `while cond { … }`.
+#[derive(Debug, Clone)]
+pub struct BadWhile {
+    pub cond: String,
+    pub body: Vec<BadBodyItem>,
+    pub span: Span,
 }
 
 /// A local label definition inside a label body: `.loop:`.
@@ -115,6 +218,41 @@ pub struct BadLocal {
 pub struct BadAlias {
     pub name: String,
     pub register: String,
+    pub span: Span,
+}
+
+/// `declarations { name: rN; extern fn …; extern data …; stack N; … }`
+/// — file-scoped pins plus the explicit boundary declarations.
+#[derive(Debug, Clone)]
+pub struct BadDeclarations {
+    pub pins: Vec<(String, String)>,
+    /// `extern fn name(params) -> Ret;` — a raw label / external symbol
+    /// declared as a C-ABI call target with a typed signature. `call
+    /// name(args)` then stages arguments per the ABI and emits `call`.
+    pub extern_fns: Vec<BadExternFn>,
+    /// `extern data name;` — an external data symbol, so `addr(name)` and
+    /// a bare data-label reference resolve to its address.
+    pub extern_data: Vec<String>,
+    /// `stack N;` — reserve an N-byte stack in `.bss` and define
+    /// `__bad_stack` (base) plus `__bad_stack_top` (base + N). The author
+    /// still sets `sp` explicitly (`addr sp, __bad_stack_top`).
+    pub stack: Option<BadStack>,
+    pub span: Span,
+}
+
+/// `extern fn name(params) -> Ret;` inside `declarations { }`.
+#[derive(Debug, Clone)]
+pub struct BadExternFn {
+    pub name: String,
+    pub params: Vec<BadFnParam>,
+    pub ret: Option<String>,
+    pub span: Span,
+}
+
+/// `stack N;` inside `declarations { }`.
+#[derive(Debug, Clone)]
+pub struct BadStack {
+    pub size: i64,
     pub span: Span,
 }
 

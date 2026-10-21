@@ -16,9 +16,13 @@
 
 pub mod contracts;
 pub mod comptime;
+pub mod lint;
 pub mod lower;
 pub mod notices;
 pub mod registry;
+pub mod symbolic;
+
+pub use lint::UnusedValue;
 
 use crate::ast::bad::BadProgram;
 use crate::parser::bad::parse_bad;
@@ -65,6 +69,27 @@ pub fn generate_with_notices(
     let asm = lowerer.run(&program)?;
     let notices = lowerer.notices().to_vec();
     Ok((asm, notices))
+}
+
+/// `--warn-unused-values`: lower and return the defined-but-never-read
+/// symbolic values alongside the assembly. `warn_unused` enables the
+/// lint; without it the vector is empty.
+pub fn generate_with_lints(
+    source: &str, target_triple: &str, trace: bool, base_dir: Option<&std::path::Path>,
+    friendly: bool, warn_unused: bool,
+) -> Result<(String, Vec<UnusedValue>), String> {
+    let program: BadProgram =
+        parse_bad(source).map_err(|e| format!("bad: line {}: {}", e.line, e.message))?;
+    let (isa, regs) = registries();
+    let family = target_triple.split('-').next().unwrap_or(target_triple);
+    let mut lowerer = lower::Lowerer::new(&isa, &regs, family)
+        .with_trace(trace)
+        .with_friendly(friendly)
+        .with_base_dir(base_dir.map(|p| p.to_path_buf()))
+        .with_warn_unused(warn_unused);
+    let asm = lowerer.run(&program)?;
+    let unused = lowerer.unused_values().to_vec();
+    Ok((asm, unused))
 }
 
 /// Request bundle for `generate_bad_fn` — six inputs, one struct (the
@@ -255,6 +280,32 @@ pub fn toolchain_available(family: &str) -> bool {
         return clang_available();
     }
     false
+}
+
+/// Whether the family has the full assemble → link → run toolchain used by
+/// the native cross tests. `toolchain_available` only proves the assembler is
+/// present; CI runners often have clang's integrated assembler but neither the
+/// cross linker nor QEMU. Those tests are documented as conditional on the
+/// full toolchain, so skip rather than fail with a misleading link error.
+#[cfg(test)]
+fn cross_run_available(family: &str) -> bool {
+    if !toolchain_available(family) {
+        return false;
+    }
+    let (_, regs) = registries();
+    let ld_ok = regs.cross_ld(family).is_some_and(|ld| {
+        std::process::Command::new(ld)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    });
+    let qemu_ok = std::process::Command::new(format!("qemu-{family}"))
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    ld_ok && qemu_ok
 }
 
 /// Assemble emitted text to an object file via the platform assembler.
@@ -561,6 +612,546 @@ mod tests {
         assert!(riscv.contains("li a0, 42"), "{}", riscv);
     }
 
+    fn engine_stdlib(triple: &str, src: &str) -> Result<String, String> {
+        generate_with(
+            src,
+            triple,
+            false,
+            Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+            true,
+        )
+    }
+
+    #[test]
+    fn engine_stdlib_verbs_inline() {
+        let src = "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n    \
+                   WriteControlReg 0, 1\n    ReadControlReg(0, r1)\n    Park\n";
+        let x86 = engine_stdlib("x86_64", src).unwrap();
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("movq $1, %rax"), "{x86}");
+        assert!(x86.contains("movq %rax, %cr0"), "{x86}");
+        assert!(x86.contains("movq %cr0"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+
+        let rv = engine_stdlib(
+            "riscv64",
+            "import \"std/bad/engine.bad\"\n_start:\n    WriteControlReg 768, 8\n",
+        )
+        .unwrap();
+        assert!(rv.contains("li t1, 8"), "{rv}");
+        assert!(rv.contains("csrw 768, t1"), "{rv}");
+    }
+
+    #[test]
+    fn raw_engine_defn_call_keeps_its_arity_form() {
+        let src = "import \"std/bad/engine.bad\"\n_start:\n    ReadControlReg 0, r1\n    ret\n";
+        let x86 = engine_stdlib("x86_64", src).unwrap();
+        assert!(x86.contains("movq %cr0, %rcx"), "{x86}");
+    }
+
+    #[test]
+    fn engine_stdlib_gap_is_loud() {
+        let err = engine_stdlib(
+            "aarch64",
+            "import \"std/bad/engine.bad\"\n_start:\n    DisableInterrupts\n",
+        )
+        .expect_err("aarch64 interrupt control has no verified row yet");
+        assert!(err.contains("aarch64"), "{err}");
+        assert!(err.contains("row"), "{err}");
+    }
+
+    #[test]
+    fn declarations_pin_is_file_scoped() {
+        let src = "declarations {\n    uart: r2\n}\n_start:\n    uart = 0x10000000\n    \
+                   Store(66, uart)\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $268435456, %rdx"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(x86.contains("(%rdx)"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_extern_fn_is_a_callable_signature() {
+        // An extern fn declares a C-ABI signature for a raw label /
+        // external symbol; a symbolic `call` stages its arguments and
+        // emits a real `call`.
+        let src = "declarations {\n    extern fn helper(a: Int, b: Int) -> Int\n}\n\
+                   bootstrap Entry {\n    let r = helper(1, 2)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("call helper"), "{x86}");
+        assert!(x86.contains("movq $1"), "{x86}");
+        assert!(x86.contains("movq $2"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_extern_fn_arity_is_checked() {
+        let err = generate(
+            "declarations {\n    extern fn helper(a: Int) -> Int\n}\n\
+             bootstrap Entry {\n    let r = helper(1, 2)\n    halt\n}\n",
+            "x86_64",
+        )
+        .expect_err("extern arity mismatch");
+        assert!(err.contains("takes 1 argument"), "{err}");
+    }
+
+    #[test]
+    fn declarations_extern_data_is_addressable() {
+        let src = "declarations {\n    extern data ticks\n}\n_start:\n    \
+                   let p = addr(ticks)\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq ticks(%rip)"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_stack_reserves_bss() {
+        let src = "declarations {\n    stack 4K\n}\n_start:\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .bss"), "{x86}");
+        assert!(x86.contains("__bad_stack:"), "{x86}");
+        assert!(x86.contains(".zero 4096"), "{x86}");
+        assert!(x86.contains("__bad_stack_top:"), "{x86}");
+    }
+
+    #[test]
+    fn declarations_stack_rejects_zero() {
+        let err = generate("declarations {\n    stack 0\n}\n_start:\n    halt\n", "x86_64")
+            .expect_err("zero stack");
+        assert!(err.contains("greater than zero"), "{err}");
+    }
+
+    #[test]
+    fn declarations_extern_bad_shape_is_loud() {
+        let err = generate("declarations {\n    extern foo\n}\n", "x86_64")
+            .expect_err("malformed extern");
+        assert!(err.contains("extern fn") && err.contains("extern data"), "{err}");
+    }
+
+    fn lint(src: &str, warn: bool) -> Vec<UnusedValue> {
+        generate_with_lints(src, "x86_64", false, None, true, warn)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .1
+    }
+
+    #[test]
+    fn unused_value_is_reported() {
+        let src = "_start:\n    let vgaa = 0xB8000\n    halt\n";
+        let unused = lint(src, true);
+        assert_eq!(unused.len(), 1, "{unused:?}");
+        assert_eq!(unused[0].name, "vgaa");
+        assert_eq!(unused[0].line, 2);
+    }
+
+    #[test]
+    fn used_value_is_not_reported() {
+        let src = "_start:\n    let vga = 0xB8000\n    let c = 66\n    store c, vga\n    halt\n";
+        assert!(lint(src, true).is_empty());
+    }
+
+    #[test]
+    fn underscore_prefixed_value_is_not_reported() {
+        let src = "_start:\n    let _scratch = 1\n    halt\n";
+        assert!(lint(src, true).is_empty());
+    }
+
+    #[test]
+    fn unused_lint_is_off_without_the_flag() {
+        let src = "_start:\n    let vgaa = 0xB8000\n    halt\n";
+        assert!(lint(src, false).is_empty());
+    }
+
+    #[test]
+    fn unused_inline_defn_param_is_reported() {
+        let src = "defn ignore(x: Int) {\n    halt\n}\nbootstrap E {\n    ignore(1)\n}\n";
+        let unused = lint(src, true);
+        assert!(unused.iter().any(|u| u.name == "x"), "{unused:?}");
+    }
+
+    #[test]
+    fn outb_lowers_to_x86_port_io() {
+        let src = "_start:\n    let port = 0x3F8\n    let c = 65\n    outb c, port\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("outb %al, %dx"), "{x86}");
+    }
+
+    #[test]
+    fn outb_is_a_loud_capability_error_off_x86() {
+        let err = generate(
+            "_start:\n    let port = 0x3F8\n    let c = 65\n    outb c, port\n    halt\n",
+            "riscv64",
+        )
+        .expect_err("outb is x86-only");
+        assert!(err.contains("riscv64") && err.contains("outb"), "{err}");
+    }
+
+    #[test]
+    fn x86_multiboot_example_lowers() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/bad/boot_plus_x86.bad"
+        ));
+        let x86 = generate(src, "x86_64").unwrap_or_else(|e| panic!("{e}"));
+        assert!(x86.contains("0x1BADB002"), "{x86}");
+        assert!(x86.contains("ljmp $0x08, $_start64") || x86.contains("ljmp $0x8"), "{x86}");
+        assert!(x86.contains("outb %al, %dx"), "{x86}");
+        assert!(x86.contains("gdt_desc:"), "{x86}");
+    }
+
+    #[test]
+    fn raw_boundary_copy_in_out_and_pin() {
+        let src = "_start:\n    raw clobbers r5 {\n        mov r5, 42\n    }\n    \
+                   let x = r5\n    x += 1\n    r6 = x\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $42, %rdi"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+
+        let pin = "_start:\n    let p = pin r5\n    p = 7\n    halt\n";
+        let x86 = lower_ok(pin, "x86_64");
+        assert!(x86.contains("movq $7, %rdi"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
+    fn raw_clobbers_are_reserved() {
+        let src = "_start:\n    mov x, 1\n    raw clobbers r3 {\n        mov r3, 2\n    }\n    \
+                   x += 1\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $2, %rbx"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+    }
+
+    #[test]
+    fn boundary_register_must_exist() {
+        let err = generate("_start:\n    let x = pin r99\n", "x86_64")
+            .expect_err("missing register");
+        assert!(err.contains("r99"), "{err}");
+    }
+
+    #[test]
+    fn symbolic_addr_and_label_as_address() {
+        let src = "call defn use_ptr(p: Ptr) -> Int {\n    return 0\n}\n\
+                   bootstrap Entry {\n    let a = addr(banner)\n    \
+                   let b = use_ptr(banner)\n    halt\n}\n\
+                   data {\n    banner: .asciz \"ok\\n\"\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq banner(%rip)"), "{x86}");
+        assert!(x86.contains("call use_ptr"), "{x86}");
+    }
+
+    #[test]
+    fn fn_calls_stage_abi_and_return() {
+        let src = "call defn add(a: Int, b: Int) -> Int {\n    return a + b\n}\n\
+                   bootstrap Entry {\n    let x = add(2, 3)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("add:"), "{x86}");
+        assert!(x86.contains("call add"), "{x86}");
+        assert!(x86.contains("movq $2, %rdi"), "{x86}");
+        assert!(x86.contains("movq $3, %rsi"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn fn_calls_another_fn_and_loop_body() {
+        let src = "call defn inc(a: Int) -> Int {\n    return a + 1\n}\n\
+                   call defn twice(a: Int) -> Int {\n    return inc(inc(a))\n}\n\
+                   bootstrap Entry {\n    let x = twice(1)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("call inc"), "{x86}");
+        assert!(x86.contains("call twice"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn fn_uart_puts_shape_lowers() {
+        let src = "call defn uart_puts(base: Ptr, msg: Ptr) -> Int {\n    let p = msg\n    \
+                   loop {\n        let ch = Load(p)\n        when ch == 0: break\n        \
+                   Store(ch, base)\n        p += 1\n    }\n    return 0\n}\n\
+                   bootstrap Entry {\n    let r = uart_puts(0x10000000, 0x1000)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("uart_puts:"), "{x86}");
+        assert!(x86.contains("call uart_puts"), "{x86}");
+        assert!(x86.contains("movq (%"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+    }
+
+    #[test]
+    fn fn_void_auto_returns_and_accepts_engine_verbs() {
+        let src = "call defn stop() {\n    DisableInterrupts\n    halt\n}\n\
+                   bootstrap Entry {\n    stop()\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("stop:"), "{x86}");
+        assert!(x86.contains("call stop"), "{x86}");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(x86.contains("ret"), "{x86}");
+    }
+
+    #[test]
+    fn non_void_fn_without_return_is_loud() {
+        let src = "call defn bad(a: Int) -> Int {\n    mov x, a\n}\n";
+        let err = generate(src, "x86_64").expect_err("missing return");
+        assert!(err.contains("no `return`"), "{err}");
+    }
+
+    #[test]
+    fn return_outside_fn_is_loud() {
+        let src = "_start:\n    return 1\n";
+        let err = generate(src, "x86_64").expect_err("return in a label");
+        assert!(err.contains("only legal inside a `call defn`"), "{err}");
+    }
+
+    #[test]
+    fn boot_checklist_inline_puts_lowers_stack_free() {
+        let src = "defn uart_puts(base: Ptr, msg: Ptr) {\n    let p = msg\n    \
+                   loop {\n        let ch = Load(p)\n        when ch == 0: break\n        \
+                   Store(ch, base)\n        p += 1\n    }\n}\n\
+                   bootstrap Reset_Handler {\n    DisableInterrupts\n    \
+                   uart_puts(0x10000000, banner)\n    halt\n}\n\
+                   data {\n    banner: .asciz \"ok\\n\"\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("leaq banner(%rip)"), "{x86}");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+        assert!(!x86.contains("call uart_puts"), "{x86}");
+        assert!(!x86.contains("uart_puts:"), "{x86}");
+        assert!(!x86.contains("pushq"), "{x86}");
+    }
+
+    #[test]
+    fn inline_defn_expands_without_a_call() {
+        let src = "defn grant_pmp() {\n    WriteControlReg(944, -1)\n    \
+                   WriteControlReg(928, 15)\n}\n\
+                   bootstrap Entry {\n    grant_pmp()\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $-1, %rax"), "{x86}");
+        assert!(x86.contains("movq $15, %rax"), "{x86}");
+        assert!(!x86.contains("call grant_pmp"), "{x86}");
+        assert!(!x86.contains("grant_pmp:"), "{x86}");
+    }
+
+    #[test]
+    fn trailing_break_fuses_into_the_back_edge() {
+        // A loop whose last statement is `when cond: break` is bottom-tested:
+        // one inverted conditional back-edge, no unconditional `jmp`.
+        let src = "_start:\n    let n = 0\n    loop {\n        n += 1\n        \
+                   when n == 10: break\n    }\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("jne L_start__lpe"), "{x86}");
+        assert!(!x86.contains("jmp L_start__lpe"), "{x86}");
+        assert!(!x86.contains("je L_start__lpend"), "{x86}");
+    }
+
+    #[test]
+    fn inline_defn_params_and_locals_expand() {
+        let src = "defn blink(base: Ptr) {\n    let c = 66\n    loop {\n        \
+                   when c > 68: break\n        Store(c, base)\n        c += 1\n    }\n}\n\
+                   bootstrap Entry {\n    blink(0xB8000)\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $753664"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(!x86.contains("call blink"), "{x86}");
+    }
+
+    #[test]
+    fn fn_keyword_is_rejected_with_fix() {
+        let err = generate("fn foo() {\n    halt\n}\n", "x86_64")
+            .expect_err("fn removed");
+        assert!(err.contains("`defn name(params)"), "{err}");
+        assert!(err.contains("call defn"), "{err}");
+    }
+
+    #[test]
+    fn inline_defn_return_is_rejected() {
+        let err = generate(
+            "defn bad() {\n    return\n}\nbootstrap Entry {\n    bad()\n}\n",
+            "x86_64",
+        )
+        .expect_err("inline return");
+        assert!(err.contains("only legal inside a `call defn`"), "{err}");
+    }
+
+    #[test]
+    fn bootstrap_emits_entry_and_lowers_body() {
+        let src = "bootstrap Reset_Handler {\n    mov x, 1\n    x += 1\n    halt\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".global Reset_Handler"), "{x86}");
+        assert!(x86.contains("Reset_Handler:"), "{x86}");
+        assert!(x86.contains("movq $1"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn duplicate_bootstrap_is_loud() {
+        let src = "bootstrap A {\n    halt\n}\nbootstrap B {\n    halt\n}\n";
+        let err = generate(src, "x86_64").expect_err("two bootstraps");
+        assert!(err.contains("at most ONE"), "{err}");
+    }
+
+    #[test]
+    fn data_block_infers_sections() {
+        let src = "data {\n    banner: .asciz \"ok\\n\"\n    ticks: .quad 0\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .rodata"), "{x86}");
+        assert!(x86.contains("banner: .asciz \"ok\\n\""), "{x86}");
+        assert!(x86.contains(".section .data"), "{x86}");
+        assert!(x86.contains("ticks: .quad 0"), "{x86}");
+    }
+
+    #[test]
+    fn data_block_explicit_section_wins() {
+        let src = "data {\n    section .custom\n    blob: .byte 1, 2\n}\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains(".section .custom"), "{x86}");
+        assert!(x86.contains("blob: .byte 1, 2"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_label_lowers_through_the_allocator() {
+        let src = "_start:\n    mov vga, 0xB8000\n    mov c, 66\n    loop {\n        \
+                   when c > 68: break\n        store c, vga\n        vga += 2\n        \
+                   c += 1\n    }\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $753664"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+        assert!(x86.contains("cmpq $68"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+        // No frame, no temp/copy: the parity fixes landed.
+        assert!(!x86.contains("pushq"), "{x86}");
+        assert!(x86.contains("addq $2"), "{x86}");
+        assert!(x86.contains("addq $1"), "{x86}");
+        assert!(x86.contains("jg L_start__lpend"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_park_matches_stdlib_name() {
+        let src = "_start:\n    Park\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn profile_import_supplies_constants_and_steps() {
+        let src = "import \"std/bad/profiles/rv64-qemu-virt.bad\"\n\
+                   defn banner(base: Ptr) {\n    uart_init(base)\n    uart_putc(base, 66)\n}\n\
+                   bootstrap Entry {\n    banner(UART0)\n    halt\n}\n";
+        let x86 = generate_with(
+            src,
+            "x86_64",
+            false,
+            Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+            true,
+        )
+        .unwrap();
+        // 0x10000000 + 0x30 materializes into a register, then stores 0x101.
+        assert!(x86.contains("movq $268435456"), "{x86}");
+        assert!(x86.contains("movq $66"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_body_allows_raw_zero_ops_and_engine_verbs() {
+        let src = "_start:\n    mov x, 1\n    DisableInterrupts\n    halt\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cli"), "{x86}");
+        assert!(x86.contains("hlt"), "{x86}");
+    }
+
+    #[test]
+    fn symbolic_while_lowers() {
+        let src = "_start:\n    mov n, 3\n    while n > 0 {\n        n -= 1\n    }\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("cmpq $0"), "{x86}");
+        assert!(x86.contains("subq $1"), "{x86}");
+        assert!(x86.contains("jmp"), "{x86}");
+    }
+
+    #[test]
+    fn else_is_rejected() {
+        let src = "_start:\n    when 1 {\n        mov x, 1\n    } else {\n        mov x, 2\n    }\n";
+        let err = generate(src, "x86_64").expect_err("`.bad` has no else");
+        assert!(err.contains("no `else`"), "{err}");
+    }
+
+    #[test]
+    fn symbolic_body_rejects_raw_instructions() {
+        let src = "_start:\n    mov x, 1\n    mov r0, 1\n";
+        let err = generate(src, "x86_64").expect_err("raw instruction in symbolic body");
+        assert!(err.contains("physical register destination"), "{err}");
+    }
+
+    #[test]
+    fn local_keyword_labels_scope_and_hygiene() {
+        // `local loop:` scopes to the enclosing global label; plain
+        // references resolve to the scoped symbol.
+        let src = "section .text\nglobal _start\n_start:\n    jmp loop\nlocal loop:\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("L_start__loop:"), "{x86}");
+        assert!(x86.contains("jmp L_start__loop"), "{x86}");
+        assert!(!x86.contains("jmp loop"), "{x86}");
+
+        // Defn locals stay hygienic per expansion.
+        let src = "defn f\n    jmp done\nlocal done:\n    ret\n\
+                   _start:\n    f\n    f\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("Lf__1__done:"), "{x86}");
+        assert!(x86.contains("Lf__2__done:"), "{x86}");
+        assert!(x86.contains("jmp Lf__1__done"), "{x86}");
+        assert!(x86.contains("jmp Lf__2__done"), "{x86}");
+    }
+
+    #[test]
+    fn local_label_outside_owner_is_loud() {
+        let err = generate("local loop:\n    ret\n", "x86_64")
+            .expect_err("local label outside an owner must be loud");
+        assert!(err.contains("outside any label"), "{err}");
+        assert!(err.contains("local name:"), "{err}");
+    }
+
+    #[test]
+    fn real_register_spellings_resolve_per_target() {
+        let x86 = lower_ok(
+            "_start:\n    mov rax, 1\n    mov rdi, 2\n    ret\n",
+            "x86_64",
+        );
+        assert!(x86.contains("movq $1, %rax"), "{x86}");
+        assert!(x86.contains("movq $2, %rdi"), "{x86}");
+
+        let arm = lower_ok("_start:\n    mov x0, 1\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x0, =1"), "{arm}");
+
+        let rv = lower_ok("_start:\n    mov a0, 1\n    ret\n", "riscv64");
+        assert!(rv.contains("li a0, 1"), "{rv}");
+    }
+
+    #[test]
+    fn real_register_on_wrong_target_is_loud() {
+        let err = generate("_start:\n    mov rax, 1\n    ret\n", "aarch64")
+            .expect_err("x86_64 register on aarch64 must be loud");
+        assert!(err.contains("target-specific register"), "{err}");
+        assert!(err.contains("x86_64"), "{err}");
+    }
+
+    #[test]
+    fn template_self_moves_are_elided_but_raw_blocks_are_verbatim() {
+        // Template-generated copy-then-op sequences drop the dead copy
+        // when destination == source. Raw blocks bypass the filter.
+        let asm = lower_ok(
+            "_start:\n    add r0, r0, 1\n    sub r1, r1, 2\n    ret\n",
+            "x86_64",
+        );
+        assert!(!asm.lines().any(|l| l.trim() == "movq %rax, %rax"), "{asm}");
+        assert!(!asm.lines().any(|l| l.trim() == "movq %rcx, %rcx"), "{asm}");
+
+        let raw = lower_ok(
+            "_start:\n    ret\nraw x86_64\n    movq %rax, %rax\nend raw\n",
+            "x86_64",
+        );
+        assert!(raw.lines().any(|l| l.trim() == "movq %rax, %rax"), "{raw}");
+    }
+
     #[test]
     fn site_row_swaps_only_on_matching_target() {
         // 2026-10-01 (bad-site-blocks plan): the retired attached
@@ -630,12 +1221,51 @@ mod tests {
     }
 
     #[test]
-    fn illegal_imm_is_a_loud_capability_error() {
-        // aarch64 mul has no immediate form (marked `|-` in bad-isa.dbvl).
-        let err = generate("_start:\n    mul r0, r1, 3\n    ret\n", "aarch64").unwrap_err();
-        assert!(err.contains("no immediate form"), "{}", err);
+    fn illegal_imm_materializes_through_scratch() {
+        // aarch64 mul has no immediate form (marked `|-` in bad-isa.dbvl);
+        // the assembler-plus path materializes it through x10, outside the
+        // row's own x9 scratch.
+        let arm = lower_ok("_start:\n    mul r0, r1, 3\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x10, =3"), "{}", arm);
+        assert!(arm.contains("mul x0, x1, x10"), "{}", arm);
         // The same op on x86_64 works (imulq takes immediates).
         lower_ok("_start:\n    mul r0, r1, 3\n    ret\n", "x86_64");
+    }
+
+    #[test]
+    fn store_immediate_materializes_per_target() {
+        let src = "_start:\n    store 66, r0\n    ret\n";
+        let x86 = lower_ok(src, "x86_64");
+        assert!(x86.contains("movq $66, %r11"), "{}", x86);
+        assert!(x86.contains("movq %r11, (%rax)"), "{}", x86);
+        let arm = lower_ok(src, "aarch64");
+        assert!(arm.contains("ldr x10, =66"), "{}", arm);
+        assert!(arm.contains("str x10, [x0]"), "{}", arm);
+        let rv = lower_ok(src, "riscv64");
+        assert!(rv.contains("li t2, 66"), "{}", rv);
+        assert!(rv.contains("sd t2, 0(a0)"), "{}", rv);
+        let thumb = lower_ok(src, "thumbv7m");
+        assert!(thumb.contains("ldr r12, =66"), "{}", thumb);
+        assert!(thumb.contains("str r12, [r0]"), "{}", thumb);
+    }
+
+    #[test]
+    fn immediate_address_and_two_immediates_materialize() {
+        // Address immediate: only the address rides a scratch.
+        let arm_addr = lower_ok("_start:\n    store r0, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_addr.contains("ldr x10, =4096"), "{}", arm_addr);
+        assert!(arm_addr.contains("str x0, [x10]"), "{}", arm_addr);
+
+        // Two immediates: value in scratch 1, address in scratch 2.
+        let arm_both = lower_ok("_start:\n    store 66, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_both.contains("ldr x10, =66"), "{}", arm_both);
+        assert!(arm_both.contains("ldr x11, =4096"), "{}", arm_both);
+        assert!(arm_both.contains("str x10, [x11]"), "{}", arm_both);
+
+        // Scratch 1 is the value register: the address takes scratch 2.
+        let arm_pick2 = lower_ok("_start:\n    store r10, 0x1000\n    ret\n", "aarch64");
+        assert!(arm_pick2.contains("ldr x11, =4096"), "{}", arm_pick2);
+        assert!(arm_pick2.contains("str x10, [x11]"), "{}", arm_pick2);
     }
 
     #[test]
@@ -777,9 +1407,12 @@ mod appgrade_tests {
     }
 
     #[test]
-    fn aarch64_mod_imm_is_a_capability_error() {
-        let err = generate("m:\n    mod r0, r1, 10\n    ret\n", "aarch64").unwrap_err();
-        assert!(err.contains("no immediate form"), "{}", err);
+    fn aarch64_mod_imm_materializes_through_scratch() {
+        let arm = lower_ok("m:\n    mod r0, r1, 10\n    ret\n", "aarch64");
+        assert!(arm.contains("ldr x10, =10"), "{}", arm);
+        // x9 remains the row's internal scratch; the divisor stays x10.
+        assert!(arm.contains("sdiv x9, x1, x10"), "{}", arm);
+        assert!(arm.contains("msub x0, x9, x10, x1"), "{}", arm);
     }
 
     #[test]
@@ -1177,8 +1810,8 @@ mod hardening_tests {
     #[test]
     fn hello_cross_verifies_on_installed_targets() {
         for family in ["x86_64", "aarch64", "riscv64"] {
-            if !toolchain_available(family) {
-                eprintln!("skip: {family} cross toolchain not installed");
+            if !cross_run_available(family) {
+                eprintln!("skip: {family} cross link/run toolchain not installed");
                 continue;
             }
             let asm = generate(HELLO, &format!("{family}-linux-gnu"))
@@ -1243,8 +1876,8 @@ mod phase3_hardening_tests {
     /// Generate → assemble → link → run one program on one target under
     /// qemu; asserts the stored f64 bit pattern of 1.5 + 2.25.
     fn fp_cross_verify(src: &str, family: &str) {
-        if !toolchain_available(family) {
-            eprintln!("skip: {family} cross toolchain not installed");
+        if !cross_run_available(family) {
+            eprintln!("skip: {family} cross link/run toolchain not installed");
             return;
         }
         let asm = generate(src, &format!("{family}-linux-gnu"))

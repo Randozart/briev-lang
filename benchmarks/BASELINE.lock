@@ -1,0 +1,4 @@
+# Compiler performance baseline lock.
+# Repoint deliberately with a new tag/report; do not silently move this.
+tag=compiler-baseline-2026-10-21
+commit=98f7fc421562fb4f60e616fb8db731afdb1e8f10

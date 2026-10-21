@@ -1,0 +1,9 @@
+// bit set/clear/test — raw physical form.
+section .text
+global _start
+_start:
+    mov r0, 0x1234
+    or r0, r0, 8
+    and r0, r0, -9
+    and r1, r0, 8
+    halt

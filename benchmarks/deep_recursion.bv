@@ -19,7 +19,9 @@ defn sum(n: Int) -> Int [n >= 0][n == 0] {
 };
 
 node run [!done][done] {
-    total = sum(N);
+    when N >= 0 {
+        total = sum(N);
+    };
     println!(total);
     done = true;
     term;

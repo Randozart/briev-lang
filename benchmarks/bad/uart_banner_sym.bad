@@ -1,0 +1,18 @@
+// UART banner — assembly+ symbolic form (same kernel as uart_banner_raw).
+section .text
+global _start
+_start:
+    let port = 0x3F8
+    let b = 66
+    outb b, port
+    b = 114
+    outb b, port
+    b = 105
+    outb b, port
+    b = 101
+    outb b, port
+    b = 118
+    outb b, port
+    b = 10
+    outb b, port
+    halt

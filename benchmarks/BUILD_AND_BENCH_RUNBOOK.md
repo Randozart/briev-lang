@@ -4,7 +4,9 @@ Run this before and after LLVM backend changes to detect regressions.
 
 ## Prerequisites
 
-- Baseline worktree at `../briev-compiler-baseline` (commit `be6583bc`)
+- Baseline worktree at `../briev-compiler-baseline` (locked to
+  `compiler-baseline-2026-10-21`, commit `98f7fc42`; see
+  `benchmarks/BASELINE.lock`)
 - Both worktrees built with `cargo build --release`
 
 ## Steps
@@ -39,6 +41,9 @@ bash benchmarks/build_and_bench.sh --runtime
 ```bash
 bash benchmarks/compare_baseline.sh <benchmark_name>
 ```
+
+`compare_baseline.sh` verifies the locked baseline commit before timing. An
+intentional alternate baseline requires `ALLOW_BASELINE_MISMATCH=1`.
 
 ## Policy
 

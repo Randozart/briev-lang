@@ -60,3 +60,68 @@ defn atomic_fetch_xor(ptr: Ptr<Int>, val: Int) -> Int
     when AtomicCas#(ptr, old, old ^ val) == 1 { term old; };
     term atomic_fetch_xor(ptr, val);
 };
+
+// ── SPSC ring (Fixture 2) ───────────────────────────────────────────────
+//
+// Single-producer/single-consumer ring with monotonic head/tail indices and
+// power-of-two capacity masking. The reactor is single-threaded today, so the
+// fixture validates the atomic lowering, ordering surface, and mask/index
+// proofs; true cross-thread races need the pthread lane (still a stub).
+import "std/result.bv";
+
+obj SpscRing {
+    base: Int;   // slot array address (Int handle, current ABI)
+    cap: Int;    // power of two
+    head: Int;   // atomic cell address
+    tail: Int;   // atomic cell address
+};
+
+defn sring_new(cap: Int)
+    [cap > 0 && (cap & (cap - 1)) == 0]
+    [term.cap == cap]
+    -> SpscRing
+{
+    let base: Int = Malloc#(cap * 8) as Int;
+    let head: Int = Malloc#(8) as Int;
+    let tail: Int = Malloc#(8) as Int;
+    Store#(head, 0, 8);
+    Store#(tail, 0, 8);
+    term SpscRing { base, cap, head, tail };
+};
+
+// sring_push — false when full. The producer writes the slot before publishing
+// the new tail with release ordering; the consumer acquires the tail.
+defn sring_push(r: SpscRing, v: Int) [r.cap > 0][term == true || term == false] -> Bool {
+    let h: Int = AtomicLoad#(r.head as Ptr<Int>, acquire);
+    let t: Int = AtomicLoad#(r.tail as Ptr<Int>, relaxed);
+    let next: Int = (t + 1) & (r.cap - 1);
+    when next == h {
+        term false;
+    };
+    Store#(r.base + t * 8, v, 8);
+    AtomicStore#(r.tail as Ptr<Int>, next, release);
+    term true;
+};
+
+// sring_pop — Err(0) when empty, Ok(value) otherwise. The consumer loads the
+// slot then publishes the new head with release ordering.
+defn sring_pop(r: SpscRing) [r.cap > 0]
+    [is_ok(term) || is_err(term)]
+    -> Result<Int, Int>
+{
+    let t: Int = AtomicLoad#(r.tail as Ptr<Int>, acquire);
+    let h: Int = AtomicLoad#(r.head as Ptr<Int>, relaxed);
+    when t == h {
+        term Err(0);
+    };
+    let v: Int = Load#(r.base + h * 8, 8);
+    let next: Int = (h + 1) & (r.cap - 1);
+    AtomicStore#(r.head as Ptr<Int>, next, release);
+    term Ok(v);
+};
+
+defn sring_free(r: SpscRing) {
+    Free#(r.base as Ptr<Bit<8>>);
+    Free#(r.head as Ptr<Bit<8>>);
+    Free#(r.tail as Ptr<Bit<8>>);
+};

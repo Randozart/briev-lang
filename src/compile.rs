@@ -433,6 +433,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // → 1D row-major arithmetic. MUST run before check_types (the marker is
     // a parse artifact, not a resolvable call) and before every analysis —
     // the shape detectors and backends only ever see plain Expr::Index.
+    briev_compiler::analysis::desugar::rewrite_enum_variant_access(&mut items)?;
     briev_compiler::analysis::desugar::rewrite_multi_index(&mut items)?;
     // 2026-10-05 (three-surfaces plan Phase 0.6a): `[*]` wildcard element
     // access → the explicit declaration-order lift (plan-decided default).
@@ -664,12 +665,6 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // pipeline — pure assembly, own parser/backend. Compiled via
             // `brievc bad <file.bad>`; this arm exists only to keep the
             // BackendKind match exhaustive.
-        }
-        BackendKind::Bld => {
-            // 2026-10-08 (BILLD plan): .bld lowers to a BadProgram and
-            // emits through the .bad backend — compiled via
-            // `brievc bld <file.bld>`; this arm keeps the match
-            // exhaustive.
         }
     }
 
@@ -2491,15 +2486,6 @@ fn codegen(
                     .to_string(),
             );
         }
-        BackendKind::Bld => {
-            // 2026-10-08 (BILLD plan): same lane shape as .bad — the
-            // `brievc bld <file.bld>` entry owns the route.
-            return Err(
-                "bld: route .bld programs through `brievc bld <file.bld>` - they do not \
-                 enter the .bv pipeline"
-                    .to_string(),
-            );
-        }
         BackendKind::Vm => {
             // 2026-07-25: VM backend emits .lair bytecode
             let mut b = briev_compiler::backend::vm::VmBackend::new();
@@ -3364,6 +3350,7 @@ node go [done == false][done == true] {
             view_bindings: vec![],
             ssr: false,
             dev: false,
+            split: false,
             accel_cpu_fallback: None,
             isr_mechanism: None,
             triple_override: None,
@@ -3372,6 +3359,7 @@ node go [done == false][done == true] {
             entry_override: None,
             raw_bin: false,
             no_link: false,
+            web_page_key: None,
         }
     }
 
@@ -3501,7 +3489,7 @@ node go [done == false][done == true] {
                     event: "click".to_string(),
                     txn: "bump".to_string(),
                     params: vec![],
-                    scope: crate::view_compiler::TriggerScope::Element,
+                    scope: briev_compiler::view_compiler::TriggerScope::Element,
                 },
             },
         ];
@@ -3557,6 +3545,7 @@ node go [done == false][done == true] {
                 metadata: std::collections::HashMap::new(),
                 derivation: None,
                 modifiers: vec![],
+                variadic_param: None,
                 span: None,
                 doc: None,
             },

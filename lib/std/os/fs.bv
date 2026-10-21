@@ -54,21 +54,21 @@ const MODE_0644: Int = 420;
 
 defn fs_open(path: Int, flags: Int, mode: Int)
     [true][term >= -4096] -> Int {
-    term syscall(SYS_OPEN, path, flags, mode);
+    term syscall(2, path, flags, mode);
 };
 
 defn fs_read(fd: Int, buf: Int, count: Int)
     [true][term >= -4096] -> Int {
-    term syscall(SYS_READ, fd, buf, count);
+    term syscall(0, fd, buf, count);
 };
 
 defn fs_write(fd: Int, buf: Int, count: Int)
     [true][term >= -4096] -> Int {
-    term syscall(SYS_WRITE, fd, buf, count);
+    term syscall(1, fd, buf, count);
 };
 
 defn fs_close(fd: Int)  -> Int {
-    term syscall(SYS_CLOSE, fd);
+    term syscall(3, fd);
 };
 
 // ── public API ────────────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ export defn file_exists(path: String) [true][term == true || term == false] -> B
 
 // fs_unlink — raw unlink(2) over a C-string path.
 defn fs_unlink(path: Int) [true][term >= -4096] -> Int {
-    term syscall(SYS_UNLINK, path);
+    term syscall(87, path);
 };
 
 // remove_file — delete a file by path. Ok(0) on success; Err(-errno) when

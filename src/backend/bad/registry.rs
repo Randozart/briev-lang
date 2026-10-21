@@ -32,6 +32,15 @@ pub struct BadIsaLowering {
     pub imm: ImmHandling,
 }
 
+/// Operand roles for one op: which operands it defines / reads. Indices
+/// are 0-based operand positions (`d1,u2` in config = def[0], use[1]).
+/// The register allocator reads these instead of hardcoding op names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpRoles {
+    pub defs: Vec<usize>,
+    pub uses: Vec<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BadIsaOp {
     pub arity: usize,
@@ -40,6 +49,14 @@ pub struct BadIsaOp {
     /// names there substitute verbatim; everywhere else an unresolvable
     /// name is a loud error (the `movq msg, %rdi` loads-memory footgun).
     pub sym: bool,
+    /// Operand roles (`"roles d1,u2,u3"`). `None` = the row author has not
+    /// declared roles; a symbolic use carrying a virtual is then a loud
+    /// error (raw code in physical registers still works).
+    pub roles: Option<OpRoles>,
+    /// Physical registers the row's template writes besides its operand
+    /// destinations (`"clobbers r0, r1"`). The allocator keeps values and
+    /// spill scratches out of these.
+    pub clobbers: Vec<String>,
 }
 
 /// config/bad-isa.dbvl — the portable core ISA. `Op: "<arity>";
@@ -60,10 +77,10 @@ impl BadIsa {
             else {
                 continue;
             };
-            let (lowerings, sym) = parse_isa_row(&db, &key);
+            let (lowerings, sym, roles, clobbers) = parse_isa_row(&db, &key);
             ops.insert(
                 key,
-                BadIsaOp { arity, lowerings, sym },
+                BadIsaOp { arity, lowerings, sym, roles, clobbers },
             );
         }
         BadIsa { ops }
@@ -97,18 +114,51 @@ impl BadIsa {
         v.sort();
         v
     }
+
+    /// Operand roles for `op`, if the row declares them.
+    pub fn roles(&self, op: &str) -> Option<&OpRoles> {
+        self.ops.get(op)?.roles.as_ref()
+    }
+
+    /// Physical registers `op`'s templates clobber (portable names).
+    pub fn clobbers(&self, op: &str) -> &[String] {
+        self.ops
+            .get(op)
+            .map(|o| o.clobbers.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 
 /// One ISA row: fields 1.. are `"target:reg-form|imm-form"` lowerings; a
-/// trailing `"sym"` field marks ops that take a label/symbol operand.
-fn parse_isa_row(db: &crate::dbriev::config_db::ConfigDb, key: &str) -> (Vec<BadIsaLowering>, bool) {
+/// trailing `"sym"` marks ops that take a label/symbol operand;
+/// `"roles d1,u2,…"` declares operand roles; `"clobbers r0, r1"`
+/// declares physical scratch the templates write.
+fn parse_isa_row(
+    db: &crate::dbriev::config_db::ConfigDb,
+    key: &str,
+) -> (Vec<BadIsaLowering>, bool, Option<OpRoles>, Vec<String>) {
     let mut lowerings = Vec::new();
     let mut sym = false;
+    let mut roles: Option<OpRoles> = None;
+    let mut clobbers = Vec::new();
     let mut idx = 1;
     while let Some(field) = db.field_string(key, idx) {
         if field == "sym" {
             sym = true;
+            idx += 1;
+            continue;
+        }
+        if field == "roles" || field.starts_with("roles ") {
+            roles = Some(parse_roles(key, field.strip_prefix("roles").unwrap_or("")));
+            idx += 1;
+            continue;
+        }
+        if field == "clobbers" || field.starts_with("clobbers ") {
+            clobbers.extend(
+                split_list(field.strip_prefix("clobbers").unwrap_or(""))
+                    .map(str::to_string),
+            );
             idx += 1;
             continue;
         }
@@ -128,7 +178,32 @@ fn parse_isa_row(db: &crate::dbriev::config_db::ConfigDb, key: &str) -> (Vec<Bad
         }
         idx += 1;
     }
-    (lowerings, sym)
+    (lowerings, sym, roles, clobbers)
+}
+
+/// ` d1,u2,u3` → `OpRoles { defs: [0], uses: [1, 2] }`.
+fn parse_roles(key: &str, rest: &str) -> OpRoles {
+    let mut roles = OpRoles::default();
+    for tok in split_list(rest) {
+        let (kind, num) = tok.split_at(1);
+        let n: usize = num.parse().unwrap_or_else(|_| {
+            panic!("config/bad-isa.dbvl `{key}`: bad role `{tok}` (want dN or uN)")
+        });
+        if n == 0 {
+            panic!("config/bad-isa.dbvl `{key}`: role `{tok}` is 1-based, got 0");
+        }
+        match kind {
+            "d" => roles.defs.push(n - 1),
+            "u" => roles.uses.push(n - 1),
+            _ => panic!("config/bad-isa.dbvl `{key}`: role `{tok}` (want dN or uN)"),
+        }
+    }
+    roles
+}
+
+fn split_list(rest: &str) -> impl Iterator<Item = &str> {
+    rest.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
 }
 
 
@@ -187,11 +262,25 @@ pub struct BadRegEntry {
     pub prop: RegProp,
 }
 
+/// One target-specific spelling of a portable register (`rax` → `r0`,
+/// `xmm0` → `f0`, `eax` → `r0` with width 32). Built from the same rows
+/// as the portable map — no second source of truth.
+#[derive(Debug, Clone)]
+pub struct RegAliasEntry {
+    pub target: String,
+    pub canonical: String,
+    /// `None` = full-width spelling (`rax`, `x0`); `Some(w)` = the
+    /// width-qualified row (`.w8`/`.w16`/`.w32`; 255 = aarch64 `wN`).
+    pub width: Option<u8>,
+}
+
 /// config/bad-registers.dbvl — portable register mapping + per-target
 /// scalar rows (`imm` prefix, `comment` prefix).
 #[derive(Debug, Clone)]
 pub struct BadRegisters {
     regs: HashMap<String, Vec<BadRegEntry>>,
+    /// Reverse index: source spelling (no `%`) → portable register(s).
+    aliases: HashMap<String, Vec<RegAliasEntry>>,
     scalars: HashMap<String, Vec<(String, String)>>,
 }
 
@@ -223,6 +312,8 @@ impl BadRegisters {
             "float_literal",
             "abi_stack_arg_base",
             "abi_reg_args",
+            "scratch_int",
+            "scratch_int2",
         ];
         for key in db.keys() {
             let is_scalar = SCALAR_ROWS.contains(&key.as_str());
@@ -233,7 +324,89 @@ impl BadRegisters {
                 regs.insert(key, entries);
             }
         }
-        BadRegisters { regs, scalars }
+        // Reverse target spellings: `%rax` → r0, `eax` → r0.w32,
+        // `xmm0` → f0. Identity spellings (`r0` on thumb) are skipped —
+        // the canonical name already means the right thing.
+        let mut aliases: HashMap<String, Vec<RegAliasEntry>> = HashMap::new();
+        for (key, entries) in &regs {
+            let (canonical, width) = match key.split_once(".w") {
+                Some((base, w)) => {
+                    let width: Option<u8> = if w.is_empty() { Some(255) } else { w.parse::<u8>().ok() };
+                    (base, width)
+                }
+                None => (key.as_str(), None),
+            };
+            for entry in entries {
+                // PTX rows name virtual registers directly (`%rd2`) and
+                // the raw-substitution pass already leaves them alone.
+                if entry.target == "ptx" {
+                    continue;
+                }
+                // Width-specific spellings (`eax`, `al`, `w0`) need
+                // width-aware instruction selection; they ride the
+                // `$N.w8` template refs instead for now. Only full-width
+                // real names are accepted as source aliases.
+                if width.is_some() {
+                    continue;
+                }
+                let alias = entry.token.trim_start_matches('%').to_string();
+                // Never let a target token shadow a canonical portable
+                // name (`r14` is a canonical row even though x86_64's
+                // %r14 maps to r12).
+                if alias.is_empty() || alias == canonical || regs.contains_key(&alias) {
+                    continue;
+                }
+                aliases.entry(alias).or_default().push(RegAliasEntry {
+                    target: entry.target.clone(),
+                    canonical: canonical.to_string(),
+                    width,
+                });
+            }
+        }
+        BadRegisters { regs, aliases, scalars }
+    }
+
+    /// Resolve a target-specific spelling (`rax`, `x0`, `eax`, `xmm0`)
+    /// to its portable register and width. Prefers the full-width
+    /// spelling when both exist (`x0` beats the `.w32` alias row).
+    pub fn resolve_alias(&self, name: &str, family: &str) -> Option<(String, Option<u8>)> {
+        let entries: Vec<&RegAliasEntry> = self
+            .aliases
+            .get(name)?
+            .iter()
+            .filter(|e| family.starts_with(e.target.as_str()))
+            .collect();
+        let pick = entries
+            .iter()
+            .find(|e| e.width.is_none())
+            .or_else(|| entries.iter().find(|e| e.width == Some(255)))
+            .or_else(|| entries.first())?;
+        Some((pick.canonical.clone(), pick.width))
+    }
+
+    /// Assembler token for a target-specific spelling (`rax`, `eax`,
+    /// `x0`, `w0`, `xmm0`) on `family`, or None when the family does not
+    /// have it. The returned token is width-correct (`%eax` for `eax`,
+    /// `w0` for `w0`).
+    pub fn resolve_real(&self, name: &str, family: &str) -> Option<&str> {
+        let (canonical, width) = self.resolve_alias(name, family)?;
+        match width {
+            Some(w) => self.resolve_w(&canonical, family, w),
+            None => self.resolve(&canonical, family),
+        }
+    }
+
+    /// Every target that knows this target-specific spelling — for the
+    /// "register exists only on X" diagnostic.
+    pub fn alias_targets(&self, name: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .aliases
+            .get(name)
+            .map(|es| es.iter().map(|e| e.target.clone()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// The assembler token for portable register `reg` on `family`.
@@ -305,6 +478,18 @@ impl BadRegisters {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Primary integer scratch for immediate materialization. Canonical
+    /// portable name (`r9` etc.) — resolved through the normal map.
+    pub fn scratch_int(&self, family: &str) -> Option<&'static str> {
+        self.scalar("scratch_int", family).map(leak_static)
+    }
+
+    /// Secondary integer scratch when the primary is live or two
+    /// operands need materialization.
+    pub fn scratch_int2(&self, family: &str) -> Option<&'static str> {
+        self.scalar("scratch_int2", family).map(leak_static)
     }
 
     /// The portable `push` stack decrement per target.
@@ -446,6 +631,35 @@ mod tests {
         assert!(!isa.is_sym("mov"));
         let l = isa.lookup("addr", "x86_64").expect("addr x86_64 lowering");
         assert!(l.reg_form.contains("leaq"));
+    }
+
+    #[test]
+    fn isa_roles_and_clobbers_load() {
+        let isa = BadIsa::load();
+        let defs = |op: &str| isa.roles(op).map(|r| r.defs.clone()).unwrap_or_default();
+        let uses = |op: &str| isa.roles(op).map(|r| r.uses.clone()).unwrap_or_default();
+        // mov dst, src — def[0], use[1]
+        assert_eq!(defs("mov"), vec![0]);
+        assert_eq!(uses("mov"), vec![1]);
+        // add dst, a, b — def[0], uses[1,2]
+        assert_eq!(defs("add"), vec![0]);
+        assert_eq!(uses("add"), vec![1, 2]);
+        // store value, addr — no defs, both uses
+        assert!(defs("store").is_empty());
+        assert_eq!(uses("store"), vec![0, 1]);
+        // jz a, b, label — two uses (the label is neither)
+        assert_eq!(uses("jz"), vec![0, 1]);
+        // inb port, dst — use[0], def[1] (a non-leading destination)
+        assert_eq!(defs("inb"), vec![1]);
+        assert_eq!(uses("inb"), vec![0]);
+        // no-operand ops still declare (empty) roles = known.
+        assert_eq!(isa.roles("ret"), Some(&OpRoles::default()));
+        assert_eq!(isa.roles("not-an-op"), None);
+        // div's templates clobber %rax/%rcx/%rdx (portable r0/r1/r2).
+        for r in ["r0", "r1", "r2"] {
+            assert!(isa.clobbers("div").iter().any(|c| c == r), "div clobbers {r}");
+        }
+        assert!(isa.clobbers("mov").is_empty());
     }
 
     #[test]

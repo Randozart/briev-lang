@@ -1,0 +1,26 @@
+// CRC-8/ATM over 32 bytes at 0x200000 — assembly+ symbolic form.
+section .text
+global _start
+_start:
+    let p = 0x200000
+    let len = 32
+    let crc = 0
+    let i = 0
+    loop {
+        when i == len: break
+        load b, p
+        crc = crc ^ b
+        let j = 0
+        loop {
+            when j == 8: break
+            let hi = crc & 128
+            crc = crc << 1
+            when hi != 0 {
+                crc = crc ^ 7
+            }
+            j += 1
+        }
+        p += 1
+        i += 1
+    }
+    halt

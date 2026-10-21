@@ -1,0 +1,62 @@
+// mixed_effect_shape — regression fixture for the effect-shape selector.
+// Two sync-group loops in one program:
+//   * `direct` is direct Float arithmetic -> escaped effect context;
+//   * `temp`  captures old values in lets first    -> stateless SROA shape.
+// The program-level selector picks escaped because `direct` is present; the
+// guard checks that both loop shapes still run and produce the same multiset
+// of output regardless of the effect shape.
+let d0: Float = 1.0;
+let d1: Float = 0.5;
+let d2: Float = 0.25;
+let d3: Float = 0.125;
+let d4: Float = 0.0625;
+let d5: Float = 0.03125;
+let d6: Float = 0.015625;
+let d7: Float = 0.0078125;
+let t0: Float = 1.0;
+let t1: Float = 0.5;
+let t2: Float = 0.25;
+let t3: Float = 0.125;
+let t4: Float = 0.0625;
+let t5: Float = 0.03125;
+let t6: Float = 0.015625;
+let t7: Float = 0.0078125;
+let ca: Int = 0;
+let cb: Int = 0;
+let total: Int = get_env_int!("BOUND");
+
+sync<mixed> node direct [ca < total][ca == total] {
+    d0 = d0 * 0.5 + d1 * 0.25 + 0.125;
+    d1 = d1 * 0.5 + d2 * 0.25 + 0.125;
+    d2 = d2 * 0.5 + d3 * 0.25 + 0.125;
+    d3 = d3 * 0.5 + d4 * 0.25 + 0.125;
+    d4 = d4 * 0.5 + d5 * 0.25 + 0.125;
+    d5 = d5 * 0.5 + d6 * 0.25 + 0.125;
+    d6 = d6 * 0.5 + d7 * 0.25 + 0.125;
+    d7 = d7 * 0.5 + d0 * 0.25 + 0.125;
+    ca = ca + 1;
+    when ca % 1000000 == 0 { println!(d0 + d1 + d2 + d3 + d4 + d5 + d6 + d7); };
+    term;
+};
+
+sync<mixed> node temp [cb < total][cb == total] {
+    let n0: Float = t0 * 0.5 + t1 * 0.25 + 0.125;
+    let n1: Float = t1 * 0.5 + t2 * 0.25 + 0.125;
+    let n2: Float = t2 * 0.5 + t3 * 0.25 + 0.125;
+    let n3: Float = t3 * 0.5 + t4 * 0.25 + 0.125;
+    let n4: Float = t4 * 0.5 + t5 * 0.25 + 0.125;
+    let n5: Float = t5 * 0.5 + t6 * 0.25 + 0.125;
+    let n6: Float = t6 * 0.5 + t7 * 0.25 + 0.125;
+    let n7: Float = t7 * 0.5 + t0 * 0.25 + 0.125;
+    t0 = n0;
+    t1 = n1;
+    t2 = n2;
+    t3 = n3;
+    t4 = n4;
+    t5 = n5;
+    t6 = n6;
+    t7 = n7;
+    cb = cb + 1;
+    when cb % 1000000 == 0 { println!(t0 + t1 + t2 + t3 + t4 + t5 + t6 + t7); };
+    term;
+};

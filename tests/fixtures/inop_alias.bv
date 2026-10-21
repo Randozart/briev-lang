@@ -1,0 +1,19 @@
+// E2E test: inop with type alias
+// Uses PrintInt# intrinsic (not frgn print_int)
+type MyInt <: Int { }
+
+inop double(x: MyInt) -> Int {
+  %res = add i64 %x, %x;
+  term %res;
+} fallback x + x;
+
+let tick: Int = 0;
+
+rct txn run [tick < 1][tick == 1] {
+    [tick == 0] {
+        let r: Int = Double#(7);
+        term! -> Print#(r);
+    };
+    &tick = tick + 1;
+    term;
+};

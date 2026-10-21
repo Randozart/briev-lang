@@ -1,0 +1,18 @@
+// UART banner — raw physical form. Writes "Briev\n" to COM1 (0x3f8).
+section .text
+global _start
+_start:
+    mov r2, 0x3F8
+    mov r0, 66
+    outb r0, r2
+    mov r0, 114
+    outb r0, r2
+    mov r0, 105
+    outb r0, r2
+    mov r0, 101
+    outb r0, r2
+    mov r0, 118
+    outb r0, r2
+    mov r0, 10
+    outb r0, r2
+    halt

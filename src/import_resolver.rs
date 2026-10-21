@@ -157,6 +157,7 @@ fn item_name(item: &TopLevel) -> Option<&str> {
         TopLevel::Constant(c) => Some(c.name.as_str()),
         TopLevel::Obj(s) => Some(s.name.as_str()),
         TopLevel::TypeDef(t) => Some(t.name.as_str()),
+        TopLevel::Enum(e) => Some(e.name.as_str()),
         TopLevel::Trait(t) => Some(t.name.as_str()),
         TopLevel::Impl(i) => Some(i.target.as_str()),
         TopLevel::StaticStruct(s) => Some(s.name.as_str()),

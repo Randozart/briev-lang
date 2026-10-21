@@ -1,6 +1,8 @@
-// ── .bld (BILLD — Briev Intermediate Low-Level Dialect) AST ────────────
+// ── symbolic ENGINE AST (formerly the .bld dialect) ────────────────────
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+// 2026-10-19: internal to the .bad assembly+ symbolic lowering. The user-
+// facing .bld dialect is retired; only .bad exists. Kept as the engine AST.
 // 2026-10-08 (BILLD plan, docs/plans/2026-10-08-billd-intermediate-dialect.md):
 // AST for .bld programs — the execution-recipe tier between .bv (proven,
 // bounded, reactor) and .bad (physical registers, line-oriented).
@@ -21,6 +23,7 @@
 // src/ast/mod.rs and src/parser/mod.rs, and drop the five compound-assign
 // tokens from src/lexer.rs.
 
+use crate::ast::bad::BadInstr;
 use crate::ast::{Expr, Type};
 use crate::errors::Span;
 
@@ -45,6 +48,10 @@ pub enum BldTopLevel {
     /// `bootstrap Reset_Handler() { … }` — the authored machine entry.
     /// Exactly one per file; the body IS the reset-vector recipe.
     Bootstrap(BldBootstrap),
+    /// `extern fn name(params) -> Ret;` — a raw label / external symbol
+    /// declared as a C-ABI call target. Registers a signature only; no
+    /// body, no emission.
+    ExternFn(BldExternFn),
 }
 
 /// `import "path";`
@@ -79,6 +86,17 @@ pub struct BldDefn {
 pub struct BldBootstrap {
     pub name: String,
     pub body: Vec<BldStmt>,
+    pub span: Span,
+}
+
+/// `extern fn name(params) -> Ret;` — a typed signature for an external
+/// raw label / symbol. Params must be annotated; the call stages
+/// arguments per the C ABI.
+#[derive(Debug, Clone)]
+pub struct BldExternFn {
+    pub name: String,
+    pub params: Vec<BldParam>,
+    pub ret: Option<Type>,
     pub span: Span,
 }
 
@@ -166,4 +184,15 @@ pub enum BldStmt {
         text: String,
         span: Span,
     },
+    /// A core instruction with symbolic operands — built by the .bad
+    /// assembly+ pass, never parsed from `.bld` source. The allocator
+    /// resolves `vN`/`fvN` operands through the ISA role table.
+    Instr(BadInstr),
+    /// `let x = pin r5` — bind a symbolic name to a physical register.
+    Bind { name: String, register: String, span: Span },
+    /// `r5 = x` — copy a symbolic value back to a physical register.
+    WriteReg { register: String, value: Expr, span: Span },
+    /// `raw clobbers rN { … }` — verbatim physical region. The clobbers
+    /// are reserved for the whole recipe.
+    RawClobber { text: String, clobbers: Vec<String>, span: Span },
 }

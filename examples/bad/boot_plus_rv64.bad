@@ -1,0 +1,25 @@
+// Pure .bad assembly+ boot — QEMU virt rv64.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// Demonstrates the end-state: named inline steps, profile constants,
+// engine verbs, no calls, no compiler frame, no .bld.
+
+import "std/bad/profiles/rv64-qemu-virt.bad"
+
+defn banner(base: Ptr) {
+    uart_init(base)
+    uart_putc(base, 66)    // B
+    uart_putc(base, 114)   // r
+    uart_putc(base, 105)   // i
+    uart_putc(base, 101)   // e
+    uart_putc(base, 118)   // v
+    uart_putc(base, 10)    // \n
+}
+
+bootstrap _start {
+    // PMP: grant U-mode fetch/load/store.
+    WriteControlReg(944, -1)   // pmpaddr0
+    WriteControlReg(928, 15)   // pmpcfg0
+    banner(UART0)
+    Park
+}

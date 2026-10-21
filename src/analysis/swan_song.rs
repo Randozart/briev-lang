@@ -134,8 +134,8 @@ pub fn hoist_swan_song(
 }
 
 /// Recursively remap identifiers in a statement using the let-to-field map.
-/// 2026-07-31: pub(crate) — the batch-loop emission (emit_countable_batched_main)
-/// remaps guard-body identifiers to state fields at the boundary.
+/// 2026-07-31: pub(crate) — the countdown loop remaps guard-body identifiers
+/// to state fields at the boundary.
 pub(crate) fn remap_stmt_identifiers(s: &mut Statement, map: &HashMap<String, String>) {
     match s {
         Statement::Assign(_, expr) => {

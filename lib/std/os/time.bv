@@ -20,7 +20,7 @@ const CLOCK_MONOTONIC: Int = 1;
 // unreachable and the postcondition says so).
 defn now_ns() -> Int [true][term >= 0] {
     let ts: Int = Alloc#(16) as Int;
-    let r: Int = syscall(SYS_CLOCK_GETTIME, CLOCK_MONOTONIC, ts);
+    let r: Int = syscall(228, CLOCK_MONOTONIC, ts);
     // Load#/Store# are (addr, byte-width) — addressing is pointer
     // arithmetic (the fs.bv convention): sec at ts+0, nsec at ts+8.
     let sec: Int = Load#(ts, 8);
@@ -40,7 +40,7 @@ defn sleep_ms(ms: Int) -> Int [ms >= 0][term <= 0] {
     let req: Int = Alloc#(16) as Int;
     Store#(req, ms / 1000, 8);
     Store#(req + 8, (ms % 1000) * 1000000, 8);
-    let r: Int = syscall(SYS_NANOSLEEP, req, 0);
+    let r: Int = syscall(35, req, 0);
     Free#(req as Ptr<Bit<8>>);
     when r != 0 {
         term r;

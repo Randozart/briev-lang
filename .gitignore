@@ -231,6 +231,9 @@ benchmarks/nbody_sqrt_c
 # Scratch
 scratch/
 
+# Archived/stale tests preserved outside the default Cargo gate
+tests/archive/
+
 # Smoke build artifacts
 .smoke/out/
 
@@ -358,3 +361,28 @@ benchmarks/recommender
 benchmarks/recommender_c
 examples/gpu/.tmp_quad/
 examples/gpu/briev_*_test_*.abv
+
+# Fixture-campaign benchmark binaries (2026-10-20)
+benchmarks/fsm_dispatch
+benchmarks/fsm_dispatch_c
+benchmarks/arena_bump
+benchmarks/arena_bump_c
+benchmarks/spsc_ring
+benchmarks/spsc_ring_c
+benchmarks/ws_frame
+benchmarks/ws_frame_c
+
+# Tracked-by-accident generated benchmark binaries/outputs (2026-10-20 sweep)
+benchmarks/bit_clear_c
+benchmarks/cancel_math_c
+benchmarks/global_lifetime_c
+benchmarks/hash_ops_c
+benchmarks/hash_ops_idio_c
+benchmarks/interval_step
+benchmarks/interval_step_c
+benchmarks/linked_list_c
+benchmarks/nbody_sqrt_idio_c
+benchmarks/queue_drain_c
+benchmarks/series_converge_c
+benchmarks/utf8_ops_c
+benchmarks/parity/_out/

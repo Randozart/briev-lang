@@ -93,9 +93,13 @@ defn b64_pad_or_char(n: Int, shift: Int, avail: Int, need: Int)
 // `off` advances by 3 each step; `avail` is len - off (real bytes left). Tail
 // recursion; stops when off reaches len.
 txn b64_loop(buf: ByteBuf, acc: String, off: Int)
-    [off < buf.len][off >= buf.len] -> String
+    [off >= 0 && off < buf.len][off >= buf.len] -> String
 {
     let avail: Int = buf.len - off;
+    when avail < 1 {
+        term acc;
+    };
+    check off >= 0 && avail >= 1 && off + 1 <= buf.len;
     acc = acc + b64_group(buf, off, avail);
     off = off + 3;
     term acc;

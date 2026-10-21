@@ -11,7 +11,13 @@ lexer, typecheck, or reactor). Compile with:
 
 ```sh
 brievc bad <file.bad> [--target <triple>] [--emit-asm]
+         [--linker-script <path>] [--raw-bin] [--run] [--warn-unused-values]
 ```
+
+`--warn-unused-values` reports symbolic values that are defined but never
+read (a probable typo like `vga` vs `vgaa`). It is advisory and never
+blocks compilation; prefix a name with `_` to mark it intentionally
+unused. Pins and physical-register bindings are not flagged.
 
 ## The one-page program
 
@@ -50,7 +56,7 @@ section .data
 msg: .asciz "hello from .bad\n"
 ```
 
-## Grammar (strictly line-oriented, zero braces)
+## Grammar (line-oriented; braces group structured blocks)
 
 | Line shape | Meaning |
 |---|---|
@@ -59,8 +65,16 @@ msg: .asciz "hello from .bad\n"
 | `target => instr; instr` | target row — inside a `site` block or a branch defn (2026-10-01: the attached-exception form was retired; `target =>` after an instruction is a parse error pointing at `site`) |
 | `default => ...` | default row (universal core syntax) — in a site or a branch defn |
 | `site` ... `end site` | anonymous branch site — exactly one row lowers per family: the matching target row, else the default; leading bare lines are the default row; no default = loud capability error on unmatched families (see Sites) |
-| `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts) |
-| `defn name params` | defn head — owns following lines until next top-level line |
+| `name: [c] [c]` | code label — contract groups are POSITIONAL: one group = postcondition, two groups = pre then post. No `pre:`/`post:` keywords (see Contracts). Bare labels remain global for compatibility. |
+| `local name:` | dot-free local label — scoped to the enclosing global label (or the enclosing defn expansion). References are plain names (`jmp name`); the compiler emits a hygienic symbol. `.name:` remains the legacy explicit local form. |
+| `bootstrap Name { … }` | authored machine entry — emits `global Name` + `Name:` + body; exactly one per image |
+| `data { … }` | data block — labels/directives; section inferred from each directive (explicit `section` wins) |
+| `declarations { name: rN; … }` | file/recipe pins — the name is bound to the physical register in every symbolic body |
+| `defn name params` | inline RAW definition — owns following lines until the next top-level item |
+| `defn name(params: T, …) { … }` | inline SYMBOLIC definition — expanded at each call site; no ABI, no `return` |
+| `call defn name(params: T, …) -> R { … }` | callable C-ABI function; omitted return = void |
+| `return;` / `return expr;` | only inside `call defn`; value writes the ABI return register |
+| `name(args)` / `call name(args)` | call statement (engine verb, `fn`, or defn) |
 | `section .x` / `global n` / `.dir args` | top-level directives |
 | `msg: .asciz "..."` | data label + directive |
 | `[expr]` | inline contract for the next instruction |
@@ -68,12 +82,44 @@ msg: .asciz "hello from .bad\n"
 | `raw <target>` ... `end raw` | verbatim assembly block for ONE target — lines pass through unparsed; emitted only when the active family matches (see Raw blocks) |
 | `raw <target> <name>` ... `end raw` | NAMED raw block — also emits a callable `<name>:` label on the matching family (per-arch stdlib entries) |
 | `alias x = r0` | register, mnemonic, or label alias — resolved in that order |
+| `let name[: Type] = expr;` | symbolic value binding (assembly+ body) |
+| `name = expr;` / `name op= expr;` | assignment / compound assignment to a symbolic value |
+| `when cond: stmt` / `when cond { … }` | one-way guard. **No `else`**; write a second `when` or use a `local` label |
+| `loop { … }` / `while cond { … }` | structured loops; `break` / `continue` |
 
 Friendly mnemonic aliases (`Move`, `Add`, `JumpIfGreaterOrEqual`, …) load
 by default from `std/bad/friendly.bad` (the prelude); `brievc bad --raw`
 opts out. Raw core names always work — aliases are additive and
 self-describing. `_start` is the one genuinely universal name and has NO
 alias.
+## Engine verbs — `std/bad/engine.bad`
+
+Named hardware verbs are ordinary `.bad` defns, loaded as a prelude (like
+the friendly alias sheet); `brievc bad --raw` skips the friendly aliases
+but the engine verbs stay available because they are plain stdlib defns.
+They inline at the call site — no call, no stack.
+
+```bad
+_start:
+    DisableInterrupts
+    WriteControlReg 768, 8
+    Park
+```
+
+- `DisableInterrupts` / `EnableInterrupts` — x86 `cli`/`sti`; riscv
+  `csrc`/`csrs` on `mstatus`. No aarch64 row until verified DAIF
+  encodings land: a loud capability error there, never a guess.
+- `Park` — x86 `cli; halt`; `default => halt` elsewhere.
+- `ReadControlReg n, dst` / `WriteControlReg n, value` — the CR/CSR
+  number is opcode-encoded; pass a literal or `.const`.
+- Aliases for no-sequence ops: `WaitForInterrupt`, `MemoryBarrier`,
+  `InvalidateTlb`, `LoadGdt`, `FarJump`.
+- A verb is a `defn`: branch-shaped verbs pick the matching `target =>`
+  row (else `default =>`), sequence-shaped verbs inline directly. A defn
+  with `ret` cannot inline; use a `raw` block or a callable label.
+- There is no Rust/config verb table: verbs are data in `engine.bad`, so
+  adding one is editing stdlib, never the compiler.
+
 ## Sites — anonymous target dispatch (2026-10-01)
 
 Plan: `docs/plans/2026-10-01-bad-site-blocks.md`. A `site` is the
@@ -138,8 +184,11 @@ per-target `"target:reg-form|imm-form"` fields:
   `mov x0, #42`).
 - **`|form`** — distinct immediate form (`mv|li`, `add|addi`,
   `sub|addi(-)`).
-- **`|-`** — the hardware has no immediate form; an immediate operand is
-  a loud capability error (`mul` on aarch64/riscv64).
+- **`|-`** — the hardware has no immediate form. The assembler-plus
+  front-end materializes the immediate through the configured
+  `scratch_int`/`scratch_int2` register (caller-saved, disclosed) and
+  emits the reg form. Exhausting both scratches, or a float immediate
+  with no float scratch, is a loud error.
 - A trailing **`"sym"`** field marks ops that take a label/symbol operand
   (`jmp jz jnz call addr`). Everywhere else an unresolvable name is a loud
   error — `mov r0, msg` on x86 would load MEMORY, not the address; the
@@ -159,6 +208,151 @@ width-token register rows (x86 `%al`, aarch64 `w`-regs). Template refs:
 `$N.w8` = width-qualified register; `$N!` = raw substitute (no imm
 prefix — x86 displacements are bare).
 
+## Bootstrap entry
+
+```bad
+bootstrap Reset_Handler {
+    DisableInterrupts
+    mov stack, 0x90000
+    halt
+}
+```
+
+Expands to `global Reset_Handler` + `Reset_Handler:` + the body. Exactly one
+`bootstrap` per image; a second is a loud error. The body is naked: no
+compiler prologue, no auto-`ret`; the author owns stack setup and handoff.
+
+## Data blocks
+
+```bad
+data {
+    banner: .asciz "Briev rv64 boot\n"   // inferred .rodata
+    ticks:  .quad 0                       // inferred .data
+}
+```
+
+- `.asciz`/`.string`/`.ascii`/`.float`/`.double` → `.rodata`
+- `.zero`/`.space`/`.skip`/`.comm`/`.lcomm` → `.bss`
+- everything else → `.data`
+- An explicit `section .name` inside the block sets the section for the
+  following labels; explicit beats inferred.
+- `global` and other directives are allowed in the block.
+- Data labels are known symbols for `addr`/raw use.
+
+## Definitions — `defn` and `call defn`
+
+```bad
+defn grant_pmp() {                 // INLINE: expanded at each call; no stack
+    WriteControlReg(944, -1)
+    WriteControlReg(928, 15)
+}
+
+call defn uart_puts(base: Ptr, msg: Ptr) -> Int {
+    let p = msg
+    loop {
+        let ch = Load(p)
+        when ch == 0: break
+        Store(ch, base)
+        p += 1
+    }
+    return 0
+}
+
+bootstrap Reset_Handler {
+    grant_pmp()
+    let r = uart_puts(UART0, banner)
+    halt
+}
+```
+
+- `defn name(params) { … }` — inline symbolic macro. Parameters bind at the
+  call site; locals are block-scoped. Stack-free, no return address.
+  `return` is illegal; it would exit the caller.
+- `call defn name(params) -> Ret { … }` — real callable label with C-ABI
+  parameters/return. Calls stage arguments; a frame is opened only when
+  needed. `return` is the function exit.
+- Raw `defn name params` remains an inline raw-line definition.
+- `fn` does not exist. Neither does `else`.
+- Inline defns can call other inline defns; depth is capped at 64.
+  Use `call defn` for recursion or code-size sharing.
+- Call-site syntax is uniform: `name(args)`. The definition kind decides
+  inline expansion vs real call. `call name(args)` forces a call.
+
+## Symbolic bodies (assembly+)
+
+A label body that contains a symbolic statement (`let`, assignment, `when`,
+`loop`, `while`, `break`, `continue`) or a symbolic operand on a supported
+instruction is lowered through the symbolic expression/allocator engine and the
+register allocator, then spliced back as physical instructions.
+
+Supported instructions in a symbolic body:
+
+`mov`, `add`, `sub`, `mul`, `div`, `mod`, `and`, `or`, `xor`, `shl`, `shr`,
+`store`, `load`, `stb`, `sth`.
+
+Operandless raw splices: `ret`, `halt`, `nop`, `cli`, `sti`, `wfi`, `fence`,
+`tlbflush`, `mret`. Engine verbs (`DisableInterrupts`, `WriteControlReg`,
+`Store`, `Halt`, …) are statement calls; value-returning verbs are used in
+`let`/assignment.
+
+Rules:
+
+- Symbolic values are label-local. They are not visible in another label.
+- A raw instruction **with operands** cannot mix into a symbolic body —
+  put it in its own label (the allocator would not know its clobbers).
+- `when` has no `else`. Two-way branching is two `when`s or a `local` label.
+- A `ret`/`halt` splices after the symbolic code; the allocator inserts a
+  frame epilogue before any `ret` it can see.
+- Symbolic `defn` bodies are a follow-up; keep defns raw and call them from
+  a raw label for now.
+- The allocator treats loop-backedges as extending live ranges, reserves
+  parameter ABI registers, and uses the remaining ABI registers as temps
+  for leaf code (no frame unless pressure demands it).
+- In-place assignment (`x = x op k`, `x += k`) emits directly into `x`'s
+  register. `when cond: break` / `continue` emits one inverted branch.
+- `addr(label)` produces a label address. A known data/code label in a
+  symbolic value position also means its address (`uart_puts(UART0, banner)`);
+  raw `mov rN, label` still errors and points at `addr`.
+- Boundary handoff:
+  - `let x = r5` copies a physical register into a symbolic value.
+  - `r5 = x` copies a symbolic value back to a physical register.
+  - `let p = pin r5` binds a symbolic name directly to `r5`; assignments
+    write the register (no copy).
+  - `raw clobbers r3, r4 { … }` splices verbatim physical instructions.
+    The clobber list is reserved for the whole symbolic body; undeclared
+    clobbers are the author's contract. Raw regions cannot reference
+    symbolic values.
+  - `declarations { uart: r2; … }` pins a name to a physical register for
+    every symbolic body in the file.
+
+### `declarations { }` — the explicit boundary
+
+`declarations` holds the things that are deliberately visible rather than
+inferred:
+
+```bad
+declarations {
+    uart: r2                                  // pin a symbolic name to a register
+    extern fn memcpy(dst: Ptr, src: Ptr, n: Int) -> Ptr
+    extern data _stack_top                    // an external data symbol
+    stack 16K                                 // reserve a .bss stack
+}
+```
+
+- **`extern fn name(params) -> Ret;`** — a raw label or external symbol
+  declared as a C-ABI call target. `call name(args)` stages arguments per
+  the ABI (register window then stack) and emits `call name`. Arity is
+  checked against the declaration; params must be annotated (`Int`,
+  `Float`, `Bool`, `Ptr`). This is how a symbolic body calls a raw label
+  that has no symbolic signature of its own.
+- **`extern data name;`** — an external data symbol; `addr(name)` and a
+  bare `name` in a value position resolve to its address (label-as-value).
+- **`stack N;`** — reserve an N-byte stack in `.bss`, defining
+  `__bad_stack` (base) and `__bad_stack_top` (end), both global. Stack
+  setup stays explicit: write `addr sp, __bad_stack_top` where you want
+  `sp` initialized. `N` accepts decimal, `0x` hex, and `K`/`M` suffixes.
+- **`name: rN;`** — a file-scoped pin (see the boundary handoff above).
+
 ## Registers
 
 `config/bad-registers.dbvl` maps the built-in portable set —
@@ -170,8 +364,45 @@ properties (`caller` / `callee` / `ro`):
   error, never a silent remap.
 - Properties feed the contract proofs, never codegen branches.
 - `alias result = r0` is source sugar resolved before mapping.
+- **Real target spellings are source names too**: `rax`, `x0`, `a0`,
+  `xmm0`, `rsp`, `rip` (the forum's full-width token with a leading `%`
+  stripped). They resolve through the same registry rows — one source of
+  truth. Using one on a target that does not have it is a loud error
+  naming the targets that do; there is no silent remap or fallback.
+  Width-specific spellings (`eax`, `al`, `w0`) are not source aliases
+  yet; use a `raw <target>` block or a width template ref.
+- `scratch_int` / `scratch_int2` name the caller-saved registers used to
+  materialize immediates for `|-` rows (`%r11`/`%r10`, `x10`/`x11`,
+  `t2`/`t3`, `r12`/`r3`). They are disclosed clobbers: raw code must not
+  keep a live value there across such an instruction; the symbolic
+  allocator reserves them.
 - The `imm` row holds each target's immediate prefix (`$` / `#` / empty);
   the `comment` row its GAS comment prefix.
+
+## ISA metadata — roles and clobbers
+
+`config/bad-isa.dbvl` rows carry two trailing metadata fields so the
+register allocator carries no per-op knowledge (Rule 15):
+
+```text
+mov:  "2"; …; "roles d1,u2";
+add:  "3"; …; "roles d1,u2,u3";
+store:"2"; …; "roles u1,u2";
+inb:  "2"; …; "roles u1,d2"; "clobbers r0, r2";
+div:  "3"; …; "roles d1,u2,u3"; "clobbers r0, r1, r2";
+```
+
+- **`roles dN`/`uN`** (1-based) — operand N is a destination (`d`) or a
+  read (`u`). The allocator builds liveness and spill decisions from
+  these. `"roles"` with no indices marks a no-virtual op (e.g. `ret`) as
+  known; a symbolic use of an op with **no** roles row is a loud error
+  (raw code in physical registers still works).
+- **`clobbers r0, r1`** — physical registers a template writes besides
+  its operand destinations (portable names). The allocator keeps live
+  values and spill scratches out of them. Templates that name physical
+  registers directly must declare them here.
+- The `mul` x86 template copies its source before multiplying
+  (`movq $2, $1; imulq $3, $1`) so it never destroys a source operand.
 
 ## Contracts
 
@@ -207,7 +438,7 @@ properties (`caller` / `callee` / `ro`):
    code), a target row emits raw on match.
 
 Params bind positionally; recursion is cycle-guarded (depth 64). Local
-labels (`.name:`) are legal inside defn bodies with **hygienic per-call-
+labels (`local name:` or the legacy `.name:`) are legal inside defn bodies with **hygienic per-call-
 site gensym** (`L<defn>__<local>__<n>`) — double invocation never
 collides. Invocation is at the instruction position (`ChargeGuest r1`);
 a `Return` inside an inlined defn exits the ENCLOSING function (a
@@ -308,8 +539,8 @@ The alternative — one `x86_64 => <line>` exception per line — cannot
 carry directives (`.code32` in an exception row is an unknown-mnemonic
 error) and is unergonomic for whole preambles. Raw blocks fix both.
 Used by the x86 real-mode MBR body (`examples/bad/boot_mbr.bad`, with
-the `int` core op for BIOS software interrupts) and the multiboot2 32-bit
-prologue (`examples/bad/boot_multiboot.bad`). A bare `raw` with no target
+the `int` core op for BIOS software interrupts) and the multiboot 32-bit
+prologue (`examples/bad/boot_plus_x86.bad`). A bare `raw` with no target
 or an unterminated block before EOF is a loud error.
 
 ## Per-arch stdlib boot entries (named raw blocks)
@@ -444,6 +675,28 @@ The two-stage pattern (`examples/bad/boot_stage1.bv`) shows a bootloader
 that does machine setup then CALLS a `kernel` routine in the same image
 — the load-and-handoff bootstrapper, verified from the flat `.bin`.
 
+### x86 multiboot boot (`boot_plus_x86.bad`)
+
+`tests/bare/qemu-x86-multiboot-bad.sh` boots a pure `.bad` multiboot
+image and asserts the banner. Two QEMU constraints shape it:
+
+- QEMU's loader (`hw/i386/multiboot.c`) only takes **multiboot1**.
+- It rejects ELF64 (`Cannot load x86-64 image, give a 32bit one`), so a
+  64-bit kernel must use the multiboot1 **a.out kludge** (flags bit 16):
+  the 32-byte header carries `header_addr`/`load_addr`/`entry_addr` and
+  the image is a flat `--raw-bin` binary. `lib/targets/multiboot-x86_64.ld`
+  places `.text` at 1 MiB so the header lands at flat offset 0.
+
+The 32-bit prologue prints `Briev` over COM1, builds identity page
+tables in `.data`, switches to long mode, and jumps to a symbolic 64-bit
+body that prints `R64` and parks — proving both the boot path and the
+assembly+ lowering. `lgdt` needs a **6-byte pseudo-descriptor**
+(`.word limit; .long base`), not the GDT entries themselves.
+
+Port I/O uses the `outb` / `inb` core ops (x86_64 only; other families
+get the loud capability error). They pin the hardware's `%al`/`%dx`, so
+the rows stage both and disclose the clobber.
+
 ## The acknowledge tier — predicting, not blocking
 
 `.bad` **predicts** probable errors and lets the author **veto loudly**.
@@ -489,7 +742,7 @@ toolchain is absent — never a silent pass. aarch64 `addr` rides
 
 Every failure is loud with what/why/fix: unknown mnemonic (names the core
 set), arity mismatch, missing target lowering (points at the config row or
-the `target =>` gate), missing immediate form, unmapped register (lists
+the `target =>` gate), no free immediate-materialization scratch, unmapped register (lists
 the targets that have it), unprovable contract (states the property that
 blocks it). No silent remaps, no silent substitutions.
 
