@@ -10744,3 +10744,43 @@ output; udata.bv checks OK and the native udata gate prints all six checks true.
 After extracting path conversion into a helper, the human reran cargo check,
 cargo test --lib, and cargo build: all green. The controlled before/after
 Praetor comparison reports identical diagnostics (no new diagnostics).
+
+## Generic-call collection literal loses its element type (FIXED 2026-10-21)
+
+Task 10 schema gate fails native linking: pg_decode_fields emits a string
+pointer `%t28` from a string constant, then `store volatile i64 %t28` at
+scratch/recommender_schema_gate.ll:6879. The dynamic text singleton later in
+the function has the same mismatch. Both come from List<String> construction.
+The indexed-store conversion path exists but fails to convert these values;
+the exact cause remains under investigation. No stdlib workaround applied.
+Controlled Int/String singleton probes are authored under scratch/list_literal_*
+for human execution. Investigation: docs/plans/2026-10-21-pointer-valued-collection-store.md.
+
+Investigation update (2026-10-21): isolated Int AND String singleton literals
+both build/run correctly. General string-list literal failure is refuted.
+Next controlled probe isolates the failing decoder's fields + [text] expression
+(inline RHS singleton plus list concatenation), without the database stack.
+
+
+Root cause isolated (2026-10-21): Int fields + [value] succeeds; String
+fields + [text] reproduces the ptr/i64 failure. Generic-call codegen constructs
+inline literals with an unspecialized parameter type before call specialization.
+Fix authored on fix/generic-call-literal-types: frontend elaboration preserves
+the inferred collection parameter in a typed value block, for both direct and
+operator-generated generic calls. Regression tests authored; human verification
+pending. No stdlib workaround and no backend mutation.
+
+2026-10-21 verification found a real regression in the authored fix: re-inference
+in elaborate_ops lacked current_output_type, rejecting empty tuple accumulators
+in iter_enumerate/iter_zip and their importing programs. Corrected by seeding
+both defn/txn elaboration contexts from their declared outputs, matching the
+ordinary checker. Added regression coverage; human retest pending. Known
+hardware/toolchain failures are not used to excuse these new failures.
+
+Final verification (2026-10-21): human reports full cargo test --lib green after
+return-context correction. Rebuilt native String concatenation probe prints
+concat_count/concat_first/concat_text/concat_empty all true; Int control prints
+concat_count/concat_values both true. The original reduced ptr/i64 failure is
+resolved. Praetor adds no diagnostics or increased metrics (existing walker
+renamed). Full schema-gate verification follows integration; commit approval
+pending per WORKFLOW.md.

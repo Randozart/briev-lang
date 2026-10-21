@@ -217,3 +217,36 @@ code_module_path; bare dotted module names retain their namespace expansion.
 Human reports post-refactor cargo check, cargo test --lib, and cargo build green;
 the native parser gate previously passed all six checks. Controlled Praetor
 before/after diagnostics match. Compiler PR is prepared before feature work resumes.
+
+### 2026-10-21 — schema gate exposes pointer-valued collection store (OPEN)
+
+Native schema-gate build fails inside pg_decode_fields before any DB connection:
+a singleton List<String> stores its ptr-valued element as i64 without conversion.
+Generated IR proves the type mismatch for both literal and decoded text.
+Controlled Int/String singleton probes authored, human verification pending.
+No pg.bv workaround. See the pointer-valued-collection-store investigation plan.
+
+
+### 2026-10-21 — generic literal argument type loss isolated
+
+Int list concatenation succeeds; String list concatenation reproduces the
+schema-gate ptr/i64 failure without net/db imports. The compiler constructs
+inline generic-call arguments using unspecialized List<T>. Frontend fix authored
+on fix/generic-call-literal-types, preserving the inferred collection type in a
+typed value block. Generic-call and operator-call paths share the helper.
+Unit/native verification pending human execution; application code unchanged.
+
+### 2026-10-21 — generic literal fix regression corrected, retest pending
+
+Full-suite output exposed empty tuple accumulators losing their declared return
+context during elaboration. Initialize current_output_type for defns and txns
+as ordinary typechecking already does. Dedicated accumulator regression added;
+no tests disabled or stdlib workarounds. Human filtered/full-suite reruns pending.
+
+### 2026-10-21 — generic literal argument fix verified
+
+Human reports full suite green after declared-return context correction. Native
+String concat gate: four true checks; Int control: two true checks. Reduced
+original failure is resolved without stdlib changes. Praetor has no increased
+metrics or added diagnostics. Commit/PR approval pending; full schema gate will
+be rerun on the integration branch after the separate compiler PR handoff.
