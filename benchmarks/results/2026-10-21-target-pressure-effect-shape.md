@@ -184,7 +184,9 @@ accumulator spill. The harness LTO pipeline refutes that:
 `.cdl_47.thread` / `.cdb_47.backedge` loop rotation around the stdout flush,
 while the stateless loop is a simple `.cdb_45 → .cdl_45` loop. The cause is
 therefore **stateful print path → LTO loop rotation/RA**, not phi count alone.
-All further claims must use the linked `-O3 -flto` pipeline.
+Forcing `opt -passes=loop-rotate` on the stateless IR (metadata stripped) also
+left the reload in place; the print-path split is specific. All further claims
+must use the linked `-O3 -flto` pipeline.
 
 ## Acceptance
 
