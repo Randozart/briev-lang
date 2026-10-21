@@ -159,6 +159,14 @@ pid, and matrix. It is useful history, but it is hidden production surface.
 Prefer removal if no active experiment depends on it; the historical result is
 already recorded in the full report and checkpoint docs.
 
+### Result
+
+FORMALIZED, removal deferred: the E1 plain-context path remains default-off
+and is covered by the quick guard's `plain-context float_math` output check.
+Removal is a broad ABI diff across `emit_expr`/`helpers`/`intrinsics`/
+`emit_toplevel` and should be done with the canonical effect-context work, not
+as a standalone cleanup. Checkpoint branches retain the full experiment.
+
 ### Acceptance
 
 - Default compiler behavior unchanged.
@@ -206,4 +214,4 @@ Direction doc: `docs/plans/2026-10-21-canonical-local-effect-model.md`.
 | 2026-10-21 | `dd007598` | F1 controlled A/B (no confirmed regression) |
 | 2026-10-21 | `118eb20c` | F2 per-txn BatchShape |
 | 2026-10-21 | `9fddaaeb` | F3 dead batch emitter cleanup |
-| 2026-10-21 | _pending_ | F4 E1 retirement/formalization |
+| 2026-10-21 | _pending_ | F4 E1 formalized as diagnostic; removal deferred |
