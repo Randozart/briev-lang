@@ -169,6 +169,78 @@ register pressure. This preserves the queue/interval wins.
   phi/memory split regardless of clang's SROA mood.
 - It does not add a user-facing keyword or require a source hint.
 
+## Storage-class inference is the source of truth
+
+The programmer states **semantics and contracts**. The compiler derives storage
+class and materialization. `plain` and `state` are not performance choices; they
+are optional assertions for cases inference cannot prove, plus `vol` for genuine
+hardware volatility.
+
+### Semantic classes
+
+- **Const/Local** — immutable or not live beyond one invocation; no address
+  escape.
+- **Plain/plumbing** — address-taken, FFI-visible, or shared through helpers,
+  but not reactor state: no cross-tick liveness, no contract surface, no
+  rollback/snapshot obligation.
+- **Machine state** — read/written across reactive ticks/nodes, referenced by a
+  contract surface, part of rollback/snapshot, exported, or shared with
+  async/multi-node execution.
+- **Volatile** — externally mutated hardware; not derivable, remains the
+  explicit `vol` correctness tag.
+
+### Derivation facts
+
+The compiler must derive the class from observable behavior, not names:
+
+- cross-tick and cross-node read/write liveness,
+- contract pre/post reference surfaces,
+- rollback/snapshot participation,
+- address-of / FFI / export escape,
+- async/multi-node sharing,
+- local/SSA lifetime and mutability.
+
+If a value is only used inside one node and does not escape, it should remain
+local/SSA — neither `plain` nor `state`. `Plain` is selected only when
+persistence/addressability is required but reactor visibility is not. Machine
+state is selected when any cross-tick/contract/rollback/export/async fact
+requires it. Uncertainty falls back to machine state; never silently choose
+plain for speed.
+
+### Annotations are assertions, not hints
+
+- `state let` asserts “must be reactor-visible”; the compiler diagnoses a
+  contradiction.
+- `plain let` asserts “must not be reactor-visible”; the compiler diagnoses a
+  contradiction.
+- Neither annotation may be required to make ordinary code fast.
+- `vol` remains the only explicit hardware-volatility tag.
+- Library annotations are temporary scaffolding; remove them once inference is
+  proven. A benchmark that only wins with an annotation is a compiler bug.
+
+### Materialization is derived
+
+Given the semantic class and the target model, the compiler chooses:
+
+- local/SSA,
+- stack alloca,
+- plain context pointer,
+- machine `%State`,
+- global/thread-local where exports/threads require it.
+
+The `PlainContext` ABI is therefore a **materialization of derived Plain
+state**, not a response to a user keyword. The same applies to the machine-state
+`HotPhi`/`Memory` plan.
+
+### Experiment order
+
+1. Remove `plain` from `stdout_buf`/`stdout_fill`; prove inference still selects
+   plain (globals/context, not `%State`). This is the first experiment.
+2. Implement `needs_plain` and the plain-context ABI over derived plain fields.
+3. Validate on a second, independent plain-state program, not just print.
+4. If inference cannot prove an export/FFI/threading case, add the missing fact
+   or keep an explicit assertion; do not reintroduce a performance keyword.
+
 ## Rejected alternatives
 
 - **Stateful print / stateful stdout** — loses queue_drain/interval_step.
