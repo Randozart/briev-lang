@@ -1601,8 +1601,13 @@ impl LlvmBackend {
                             indent, gep, elem_llvm, ptr, offset
                         )
                         .ok();
-                        let vol_prefix =
-                            if self.fun.volatile_read { "volatile " } else { "" };
+                        let vol_prefix = if self.fun.volatile_read
+                            || self.fun.volatile_raw_ptr_params
+                        {
+                            "volatile "
+                        } else {
+                            ""
+                        };
                         writeln!(
                             out,
                             "{}{} = load {}{}, ptr {}",
@@ -6096,6 +6101,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // it into a later fn-typed param must inttoptr again (the 2026-08-03
                 // host-callback ABI kept llvm_type(Function)="ptr").
                 if param_llvm_ty == "ptr"
+                    && reg_llvm_ty == "i64"
+                    && matches!(reg.ty, Type::Ptr(_))
+                {
+                    // 2026-10-21 (pointer provenance): marshal a raw Ptr
+                    // argument through the SAME canonical ptr used by its
+                    // index/deref accesses. A fresh inttoptr per call gave two
+                    // sibling defns independent provenance, so LTO could hoist
+                    // a load across the store on clang 18.
+                    let conv = self.canonical_ptr(out, indent, &reg.name);
+                    call_args.push(format!("ptr {}", conv));
+                } else if param_llvm_ty == "ptr"
                     && (reg_llvm_ty == "i64"
                         || matches!(reg.ty, Type::Ptr(_))
                         || matches!(reg.ty, Type::Function(_, _)))
@@ -6117,8 +6133,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // defn_params) also need inttoptr for Ptr-typed arguments, since
                 // the register holds the i64 internal representation.
                 if matches!(reg.ty, Type::Ptr(_)) {
-                    let conv = self.fun.gen_reg();
-                    self.emit_inttoptr(out, indent, &conv, &reg.name);
+                    let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
                 } else {
                     call_args.push(format!("{} {}", self.llvm_type(&reg.ty), reg.name));

@@ -1283,7 +1283,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             Expr::Identifier(n) => backend.fun.volatile_locals.contains(n),
                             _ => false,
                         };
-                        let vol_prefix = if vol_obj { "volatile " } else { "" };
+                        let vol_prefix = if vol_obj || backend.fun.volatile_raw_ptr_params {
+                            "volatile "
+                        } else {
+                            ""
+                        };
                         if scalar_pointee {
                             writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, elem_llvm, ptr, offset).ok();
                             let universe = backend.ctx.type_universe.clone();

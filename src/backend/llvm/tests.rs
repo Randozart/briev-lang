@@ -5356,7 +5356,7 @@ fn test_struct_param_ptrtoint_at_entry() {
 }
 
 #[test]
-fn test_call_with_ptr_arg_emits_inttoptr() {
+fn test_call_with_ptr_arg_passes_canonical_ptr() {
     let mut backend = LlvmBackend::new().with_force_emit_all(true);
     let program = vec![
         TopLevel::Definition(Definition {
@@ -5399,8 +5399,11 @@ fn test_call_with_ptr_arg_emits_inttoptr() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("inttoptr"),
-        "Call with Ptr arg should emit inttoptr before the call.\nGot:\n{}", output);
+    assert!(
+        output.contains("@callee(ptr %arg0)"),
+        "Call with Ptr arg should pass the canonical ptr directly, not a fresh inttoptr.\nGot:\n{}",
+        output
+    );
 }
 
 

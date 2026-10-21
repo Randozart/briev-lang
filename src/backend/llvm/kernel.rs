@@ -588,14 +588,16 @@ mod tests {
     /// `-filetype=asm` produces. Probe-gated on llc presence.
     #[test]
     fn compile_to_spirv_emits_binary_magic() {
-        if std::process::Command::new("llc")
+        let llc_version = std::process::Command::new("llc")
             .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
+            .output();
+        let Ok(llc_version) = llc_version else {
             eprintln!("llc not found — skipping");
+            return;
+        };
+        let version_text = String::from_utf8_lossy(&llc_version.stdout);
+        if !version_text.contains("spirv64") {
+            eprintln!("llc has no SPIR-V target — skipping");
             return;
         }
         let ir = "target triple = \"spirv64-unknown-unknown\"\ndefine i32 @main() { ret i32 0 }\n";

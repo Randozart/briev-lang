@@ -57,8 +57,10 @@ fixture is FP-order sensitive across escaped/stateless shapes. Fix that first.
 
 | Commit | Change |
 |---|---|
-| _pending_ | deterministic mixed fixture |
-| _pending_ | CI test-dir/toolchain repair |
+| `86771f0a` | dyadic mixed fixture (first attempt) |
+| `8037758b` | integer mixed output (guard parity) |
+| `a2a663b1` | CI test dirs, spirv-tools, full cross-run detection |
+| `755de732` | skip optional SPIR-V/PTX probes when absent |
 | _pending_ | PR #30 merge |
 | _pending_ | PR #31 merge |
 | _pending_ | PR #32 merge |

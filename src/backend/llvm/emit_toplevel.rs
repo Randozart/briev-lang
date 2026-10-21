@@ -3171,6 +3171,11 @@ impl LlvmBackend {
         // after the field-init stores (a body may read state) and before any
         // node fires — mirrors emit_init_state for the inline-SROA path.
         self.emit_init_seeding_stores(out, indent);
+        // 2026-10-21 (pointer provenance): after the state fields are
+        // initialized, seed the Ptr-field cache. This is the main()/inline
+        // equivalent of the defn/txn entry preload; without it, repeated
+        // calls in a folded loop inttoptr separate loads of the same field.
+        self.preload_state_ptr_fields(out);
     }
 
     /// 2026-08-09 (init kind, Phase 2): seed every runtime-seeded invariant by
@@ -3480,6 +3485,9 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
+            matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
+        });
         let needs_plain = self.plain_context_active() && self.ctx.defn_takes_plain(&d.name);
         self.fun.plain_ptr = needs_plain.then(|| "%plain".to_string());
         // 2026-10-16 (term-semantics plan §1): bare `term;` in this defn is
@@ -3623,7 +3631,17 @@ impl LlvmBackend {
                     .insert(conv.clone(), raw.to_string());
                 reg = conv;
             } else if param_llvm_ty == "i64" {
-                reg = raw;
+                reg = raw.clone();
+                // 2026-10-21 (pointer provenance): a Ptr<T> parameter uses the
+                // i64 address ABI. Seed ONE canonical ptr at entry so every
+                // index/deref in this function shares provenance instead of
+                // emitting a fresh inttoptr per access. This is the same
+                // dominance-safe rule used for ptr-typed ABI parameters above.
+                if matches!(t, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_)) {
+                    let p = self.fun.gen_reg();
+                    self.emit_inttoptr(out, "  ", &p, &raw);
+                    self.fun.canonical_ptrs.insert(raw.clone(), p);
+                }
                 // 2026-08-01 (B4): the SSO String-param {i64,i64} branch was
                 // retired — a String param is a ptr (handled above) or an i64
                 // address, never a fat pointer under the bits model.
@@ -4383,6 +4401,11 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             });
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
+            // 2026-10-21 (pointer provenance): seed the txn's Ptr-field cache
+            // once at entry. Otherwise each load of the same Ptr state field
+            // inside the loop produces a distinct inttoptr, and LTO can treat
+            // a sibling-defn load/store through those pointers as non-aliasing.
+            self.preload_state_ptr_fields(out);
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
             }
@@ -4639,6 +4662,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 reset_terminated: true,
                 ..Default::default()
             });
+            self.preload_state_ptr_fields(out);
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
