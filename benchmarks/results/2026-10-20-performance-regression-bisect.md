@@ -243,3 +243,24 @@ cover a required effect path.
 (An additional 13-float recursive probe was inconclusive — the periodic print
 was hoisted/optimized differently and the result was not a reliable loop-shape
 measurement; do not cite it as evidence.)
+
+
+## Local-SSA loop probe 2026-10-20 — the target shape is faster
+
+A temporary Briev variant of `float_math` uses ordinary local lets in a
+`foreach` loop (no `%State`, no plain/state toggle), with the same periodic
+`Print#` boundary:
+
+| Variant | Briev | C | Ratio |
+|---|---:|---:|---:|
+| current state path | 0.123s | 0.043s | ~2.9x |
+| local-SSA foreach probe | **0.057s** | 0.043s | **~1.33x** |
+
+The local probe's asm keeps the accumulator in `xmm0` and spills only around
+the print call — the C shape. The probe's math was simplified for isolation,
+so its printed checksum is not a parity result; the timing/shape comparison is
+the evidence.
+
+Conclusion: lowering bounded single-node state to **loop-local SSA** is the
+promising path. It is not a register-budget heuristic and does not rely on
+context/global tricks.
