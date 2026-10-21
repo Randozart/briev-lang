@@ -2837,10 +2837,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 }).cloned()
             }
             _ => {
-                let carry_mode = crate::analysis::loop_shape::all_direct_loops_prefer_carry(
+                let carry_mode = crate::analysis::loop_shape::program_carry_mode(
                     &analysis.loop_shapes,
+                    analysis.batch_shape.as_ref().map(|b| b.txn_name.as_str()),
                     effect_settings.float_registers,
                     effect_settings.vector_min_width,
+                    effect_settings.effect_carry_temp_min,
                 );
                 if carry_mode {
                     None
@@ -6718,6 +6720,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             shape,
                             effect_settings.float_registers,
                             effect_settings.vector_min_width,
+                            effect_settings.effect_carry_temp_min,
                         ),
                     };
                     if self.fun.effect_carry {

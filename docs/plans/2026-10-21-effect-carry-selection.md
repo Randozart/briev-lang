@@ -26,7 +26,7 @@ Per direct-Float loop:
 carried_float_count > 0
 and not fully temp-mediated
 and carried_float_count <= target.float_registers
-and (temp_mediated_float_count >= 3
+and (temp_mediated_float_count >= target.effect_carry_temp_min
      or any vector group width <= target.vector_min_width)
 ```
 

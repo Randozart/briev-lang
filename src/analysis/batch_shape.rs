@@ -20,6 +20,10 @@ use std::collections::HashMap;
 /// A batch-loop decomposition of a reactive txn.
 #[derive(Debug, Clone)]
 pub struct BatchShape {
+    /// The transaction that owns this batch loop. Used by the effect-shape
+    /// selector to require that every carry-selected loop is actually emitted
+    /// by the countdown engine.
+    pub txn_name: String,
     /// The loop counter variable name (e.g. "count").
     pub counter: String,
     /// The io boundary interval N from `count % N == 0`.
@@ -54,8 +58,8 @@ pub fn detect_batch_shape(
     swan_songs: &HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>,
 ) -> Option<BatchShape> {
     let mut result: Option<BatchShape> = None;
-    for (_name, (stripped, _hoisted)) in swan_songs {
-        if let Some(bs) = detect_for_body(stripped) {
+    for (name, (stripped, _hoisted)) in swan_songs {
+        if let Some(bs) = detect_for_body(name, stripped) {
             if result.is_some() {
                 return None; // ambiguous — more than one batch-qualifying txn
             }
@@ -72,7 +76,7 @@ pub fn detect_batch_shape(
 /// guard placement (the increment precedes the guard). The guard may sit
 /// mid-body; the inner loop runs ALL compute (pre+post) and the guard fires at
 /// the boundary.
-fn detect_for_body(body: &[Statement]) -> Option<BatchShape> {
+fn detect_for_body(txn_name: &str, body: &[Statement]) -> Option<BatchShape> {
     let segments = split_into_segments(body);
     let mut guard: Option<Statement> = None;
     let mut guard_body: Vec<Statement> = Vec::new();
@@ -126,6 +130,7 @@ fn detect_for_body(body: &[Statement]) -> Option<BatchShape> {
     }
 
     Some(BatchShape {
+        txn_name: txn_name.to_string(),
         counter,
         batch_size,
         guard,

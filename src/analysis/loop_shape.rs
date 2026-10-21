@@ -504,12 +504,14 @@ fn carried_float_names(carried: &[String], items: &[TopLevel]) -> HashSet<String
 /// structural cost model, not a benchmark name:
 ///   - fully temp-mediated loops keep the stateless SROA/vector shape;
 ///   - loops above the target FP register budget keep the escaped shape;
-///   - partial old-value capture (>= 3 temp-mediated fields) or a vector
-///     group at the target minimum width prefers the carry shape.
+///   - partial old-value capture (`temp_mediated_float_count >=
+///     target.effect_carry_temp_min`) or a vector group at the target minimum
+///     width prefers the carry shape.
 pub fn prefer_effect_carry(
     shape: &LoopShape,
     float_registers: usize,
     vector_min_width: usize,
+    temp_min: usize,
 ) -> bool {
     if shape.carried_float_count == 0
         || shape.temp_mediated_float_count >= shape.carried_float_count
@@ -517,7 +519,7 @@ pub fn prefer_effect_carry(
     {
         return false;
     }
-    let partial_capture = shape.temp_mediated_float_count >= 3;
+    let partial_capture = shape.temp_mediated_float_count >= temp_min.max(1);
     let min_width_group = shape
         .vector_groups
         .iter()
@@ -532,6 +534,7 @@ pub fn all_direct_loops_prefer_carry(
     shapes: &HashMap<String, LoopShape>,
     float_registers: usize,
     vector_min_width: usize,
+    temp_min: usize,
 ) -> bool {
     let mut any = false;
     for shape in shapes.values() {
@@ -539,11 +542,33 @@ pub fn all_direct_loops_prefer_carry(
             continue;
         }
         any = true;
-        if !prefer_effect_carry(shape, float_registers, vector_min_width) {
+        if !prefer_effect_carry(shape, float_registers, vector_min_width, temp_min) {
             return false;
         }
     }
     any
+}
+
+/// Program-level carry mode. Carry is safe only when every direct-Float loop
+/// actually uses the countdown engine: `BatchShape` names the owning txn, so a
+/// no-batch program falls back to the escaped shape instead of suppressing it
+/// while emitting a loop engine that has no carry path.
+pub fn program_carry_mode(
+    shapes: &HashMap<String, LoopShape>,
+    batch_txn: Option<&str>,
+    float_registers: usize,
+    vector_min_width: usize,
+    temp_min: usize,
+) -> bool {
+    if !all_direct_loops_prefer_carry(shapes, float_registers, vector_min_width, temp_min) {
+        return false;
+    }
+    let Some(batch_txn) = batch_txn else {
+        return false;
+    };
+    shapes.iter().all(|(name, shape)| {
+        shape.carried_float_count == 0 || name == batch_txn
+    })
 }
 
 /// Return the first transaction (sorted for determinism) that needs the
@@ -885,14 +910,23 @@ node tick [count < total][count == total] {
             let shapes = build_loop_shapes(&graph, &items, 4);
             let (txn, shape) = shapes.iter().next().expect("shape");
             assert_eq!(
-                prefer_effect_carry(shape, 16, 4),
+                prefer_effect_carry(shape, 16, 4, 3),
                 expected,
                 "{file} ({txn}) carry selection"
             );
             assert_eq!(
-                all_direct_loops_prefer_carry(&shapes, 16, 4),
+                all_direct_loops_prefer_carry(&shapes, 16, 4, 3),
                 expected,
-                "{file} program-level carry mode"
+                "{file} direct-loop carry preference"
+            );
+            assert_eq!(
+                program_carry_mode(&shapes, Some(txn.as_str()), 16, 4, 3),
+                expected,
+                "{file} countdown-gated program carry mode"
+            );
+            assert!(
+                !program_carry_mode(&shapes, None, 16, 4, 3),
+                "{file} no-batch program must fall back to escaped"
             );
         }
     }
