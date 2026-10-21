@@ -6573,9 +6573,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .unwrap_or_else(|| shape.local_fields.iter().cloned().collect());
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
-                "diag: txn='{}' local={:?} post_hoist_groups={} floats={} aggregates={} vector_groups={:?}",
+                "diag: txn='{}' local={:?} post_hoist_groups={} floats={} temp_mediated={} aggregates={} vector_groups={:?}",
                 node.name, shape.local_fields, post_hoist.len(), shape.carried_float_count,
-                shape.carried_aggregate_count, shape.vector_groups
+                shape.temp_mediated_float_count, shape.carried_aggregate_count, shape.vector_groups
             );
         }
         // 2026-07-31: Bound resolution maps the structured Bound to the backend's
