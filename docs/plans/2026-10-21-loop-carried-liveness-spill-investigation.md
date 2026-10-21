@@ -84,6 +84,10 @@ changing LTO loop rotation / register allocation**, not to a simple phi count.
 Adding phis or an escaping dummy alloca is insufficient; the guard/print path
 must participate.
 
+A forced `opt -passes=loop-rotate` run on the stateless IR (with loop metadata
+stripped) also left the stack reload in place. Generic rotation is not the
+missing ingredient; the stateful print path’s specific rotation/split is.
+
 ## Open question
 
 What is the minimal trigger?
