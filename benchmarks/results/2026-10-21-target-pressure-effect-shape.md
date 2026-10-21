@@ -94,6 +94,23 @@ These are **not** attributed to the selector by controlled A/B:
   `vmovss` reload; the remainder is the countdown loop shape, not the effect
   memory.
 
+## Mixed-program coverage
+
+`tests/tier1/mixed_effect_shape.bv` places a direct-Float loop and a
+temp-mediated Float loop in one `sync<mixed>` program. The program-level
+selector chooses escaped (the direct loop needs it); the quick guard compiles
+the fixture auto and forced-stateless and compares sorted output. This pins
+both correctness and the current program-level policy while per-loop ABI
+specialization remains future work.
+
+## Regression guard
+
+`benchmarks/effect_shape_guard.sh --quick` asserts the expected shape for 12
+representative programs and the mixed-program output multiset. CI runs it
+after the release build. `--timing` adds catastrophic-regression ceilings for
+the primary cases. The expected-decision table and diagnosis guide live in
+`docs/architecture/effect-shape-selection.md`.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

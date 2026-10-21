@@ -794,6 +794,24 @@ mod tests {
     }
 
     #[test]
+    fn test_effect_shape_mixed_program_shape_facts() {
+        let src = include_str!("../../tests/tier1/mixed_effect_shape.bv");
+        let (graph, items) = graph_and_items(src);
+        let shapes = build_loop_shapes(&graph, &items, 4);
+        let direct = shapes.get("direct").expect("direct shape");
+        let temp = shapes.get("temp").expect("temp shape");
+        assert_eq!(direct.temp_mediated_float_count, 0,
+            "direct arithmetic is not temp-mediated");
+        assert_eq!(temp.temp_mediated_float_count, temp.carried_float_count,
+            "temp loop captures every next value in a let");
+        assert_eq!(
+            escaped_effect_cause(&shapes, 16, 4),
+            Some("direct".to_string()),
+            "the mixed program selects escaped because the direct loop needs it"
+        );
+    }
+
+    #[test]
     fn test_effect_shape_selector_no_float_and_capability_gates() {
         let src = include_str!("../../benchmarks/float_math.bv");
         let (graph, items) = graph_and_items(src);

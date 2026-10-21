@@ -91,6 +91,37 @@ current benchmark set.
 - LLVM backend computes the selector before `plain_lets` / needs-state ABI;
   demotes inferred plain fields only; emits an `info:` line with the cause.
 
+## Mixed-program coverage
+
+`tests/tier1/mixed_effect_shape.bv` contains two sync-group loops in one
+program: `direct` (direct Float arithmetic -> escaped) and `temp` (old-value
+lets -> stateless-preferred). The program-level selector chooses escaped
+because `direct` is present. Coverage is pinned three ways:
+
+- `test_effect_shape_mixed_program_shape_facts` asserts the per-loop shape
+  facts and the program-level cause;
+- `benchmarks/effect_shape_guard.sh --quick` compiles the fixture auto and
+  forced-stateless and compares sorted output multisets;
+- the tier-1 daily-use smoke test compiles and runs the fixture.
+
+Per-loop effect ABI specialization remains the follow-up; the mixed fixture is
+the semantic pin for that change.
+
+## Regression guard
+
+`benchmarks/effect_shape_guard.sh` is the standing guard:
+
+- default/`--quick` (CI): expected shape for 12 representative programs,
+  plus the mixed-program auto-vs-stateless output check;
+- `--timing` (local): wide catastrophic ceilings on the primary cases
+  (`float_math` ≤1.25x, telemetry ≤1.25x, pid ≤1.20x, matrix ≤1.15x,
+  queue ≤0.80x, interval ≤0.90x).
+
+CI runs the quick guard after the release compiler build. A shape flip is
+diagnosed with `BRIEV_DIAG_LOOP=1`; A/B with `BRIEV_DIAG_EFFECT=...`.
+Architecture and diagnosis guide:
+`docs/architecture/effect-shape-selection.md`.
+
 ## Experiment record
 
 **Synthetic N=1..20 Float loops** (same periodic print, stateless vs escaped,

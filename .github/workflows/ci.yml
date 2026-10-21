@@ -28,6 +28,9 @@ jobs:
       - name: Build release compiler
         run: cargo build --release --bin brievc
 
+      - name: Effect-shape guard (quick)
+        run: bash benchmarks/effect_shape_guard.sh --quick
+
       - name: Library tests
         run: cargo test --lib
 
