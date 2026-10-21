@@ -188,6 +188,26 @@ Forcing `opt -passes=loop-rotate` on the stateless IR (metadata stripped) also
 left the reload in place; the print-path split is specific. All further claims
 must use the linked `-O3 -flto` pipeline.
 
+## Effect-state-carry experiment (branch `experiment/effect-state-carry`)
+
+Carrying the plain effect fields as loop-carried SSA phis (no `%State` escape,
+no ABI split) removes the accumulator stack reload. Linked-LTO results:
+
+| Benchmark | carry/latch | carry/exit | current |
+|---|---:|---:|---:|
+| float_math | 0.98x | 0.97–0.99x | 0.89–0.96x |
+| telemetry_stream | 0.99x | 1.01–1.03x | 0.96–0.98x |
+| pid_control | 0.99x | 1.00–1.01x | 0.99–1.01x |
+| sweep_sparse | 0.97x | 0.98x | 1.31–1.33x |
+| queue_drain | 0.50x | 0.51–0.56x | 0.50–0.53x |
+| interval_step | 0.69x | 0.75x | 0.71–0.75x |
+| matrix_pipeline | 0.96x | 0.97x | 0.96–0.97x |
+
+Full runtime suite: all MATCH. The carry is a real regression/win tradeoff,
+not a default change: it wins `sweep_sparse` strongly, is close on float, and
+is slightly slower on telemetry. Kept on the experiment branch behind
+`BRIEV_DIAG_EFFECT_CARRY`; main/default unchanged.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

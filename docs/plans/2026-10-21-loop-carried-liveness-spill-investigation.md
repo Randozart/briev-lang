@@ -99,6 +99,44 @@ What is the minimal trigger?
 - does a semantically real loop-carried value (`stdout_buf`/`stdout_fill`)
   reproduce it without an artificial dummy?
 
+## Effect-state-carry experiment (branch `experiment/effect-state-carry`)
+
+Implemented behind `BRIEV_DIAG_EFFECT_CARRY=1|latch|exit`:
+
+- only direct-Float loops (the existing `temp_mediated_float_count` gate);
+- plain effect fields (`stdout_buf`/`stdout_fill`, from `plain_lets`, no names)
+  become loop-carried SSA phis;
+- the guard path reloads them after print; the latch merges the post-print
+  value with the unchanged body value;
+- `latch` writes the identity back every iteration; `exit` writes only after
+  the loop.
+
+Results (BOUND=50M, linked LTO, output MATCH):
+
+| Benchmark | carry/latch | carry/exit | current selected |
+|---|---:|---:|---:|
+| float_math | 0.98x | **0.97–0.99x** | 0.89–0.96x |
+| telemetry_stream | 0.99x | 1.01–1.03x | 0.96–0.98x |
+| pid_control | 0.99x | 1.00–1.01x | 0.99–1.01x |
+| sweep_sparse | 0.97x | **0.98x** | 1.31–1.33x |
+| queue_drain | 0.50x | 0.51–0.56x | 0.50–0.53x |
+| interval_step | 0.69x | 0.75x | 0.71–0.75x |
+| matrix_pipeline | 0.96x | 0.97x | 0.96–0.97x |
+| mixed fixture | 0.228s | — | 0.205s (escaped) |
+
+The hot loop no longer reloads the accumulator from the stack; `float_math`
+stays correct. This confirms the causal model: carrying the effect state
+through the loop reproduces the RA/liveness shape **without `%State` escape
+or an effect-context ABI**.
+
+It is **not promoted to default** yet: float/telemetry are slightly slower
+than the current escaped selector, and the mixed fixture is slower. The
+experiment branch is isolated; `main` is unchanged.
+
+Rollback: `git switch main` (or delete the experiment branch). The only
+default-path changes are the additive `effect_carry` field and env-gated
+branches; with the env unset the existing behavior is unchanged.
+
 ## Aims and plan
 
 Experiments are evaluated on **output parity + regressions first**. A shape is

@@ -1153,6 +1153,31 @@ impl LlvmBackend {
         // IR to today).
         let init_pred = self.fun.cur_block.clone()
             .unwrap_or_else(|| "entry".to_string());
+
+        // 2026-10-21 (effect-state-carry experiment): carry the plain effect
+        // fields (stdout buffer/fill) through the outer loop as SSA values.
+        // The print path still uses the globals; this only changes the loop's
+        // liveness shape. A per-iteration identity store keeps the carried
+        // values live without changing their value. Default-off; selected only
+        // for direct-Float loops by BRIEV_DIAG_EFFECT_CARRY=1.
+        let carry_store_mode = std::env::var("BRIEV_DIAG_EFFECT_CARRY").unwrap_or_default();
+        let mut plain_carry: Vec<(String, String, String)> = Vec::new();
+        if self.fun.effect_carry {
+            let mut names: Vec<String> = self.ctx.plain_lets.iter().cloned().collect();
+            names.sort();
+            for name in names {
+                let Some((ty, _)) = self.ctx.plain_global_types.get(&name) else {
+                    continue;
+                };
+                let llvm_ty = self.plain_global_llvm_type(ty);
+                if !matches!(llvm_ty.as_str(), "i64" | "i32" | "float" | "double" | "ptr") {
+                    continue;
+                }
+                let init = self.fun.gen_reg();
+                writeln!(out, "  {} = load {}, ptr @{}, align 8", init, llvm_ty, name).ok();
+                plain_carry.push((name, llvm_ty, init));
+            }
+        }
         // 2026-08-01 (D2): a `within N ms` watchdog deadline captures the
         // monotonic clock at loop entry; the .cdw_ check fires when the
         // elapsed time exceeds the deadline even if the liveliness condition
@@ -1217,6 +1242,19 @@ impl LlvmBackend {
                 f_reg, phi_ty, init_f, init_pred, f_be, c0).ok();
             self.fun.phi_field_regs.insert((*fname).clone(), f_reg);
             self.fun.backedge_field_regs.insert((*fname).clone(), f_be);
+        }
+
+        // Effect-state-carry header phis (one per carried plain field). The
+        // backedge names are filled by the latch below.
+        let mut plain_header: HashMap<String, String> = HashMap::new();
+        let mut plain_backedge: HashMap<String, String> = HashMap::new();
+        for (name, ty, init) in &plain_carry {
+            let phi = self.fun.next_reg_with_prefix("pef");
+            let be = self.fun.next_reg_with_prefix("peb");
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %.cdl_{} ]",
+                phi, ty, init, init_pred, be, c0).ok();
+            plain_header.insert(name.clone(), phi);
+            plain_backedge.insert(name.clone(), be);
         }
 
         // Exit check — continue while count < bound.
@@ -1382,6 +1420,14 @@ impl LlvmBackend {
         writeln!(out, "  {} = add i64 0, {}", rem_reset, batch_size).ok();
         let mut empty2 = Vec::new();
         self.emit_countable_body(out, &guard_body, write_set, &mut empty2);
+        // Reload the plain effect fields after the guard/print so the latch can
+        // carry the updated stdout state into the next iteration.
+        let mut plain_guard_next: HashMap<String, String> = HashMap::new();
+        for (name, ty, _) in &plain_carry {
+            let next = self.fun.gen_reg();
+            writeln!(out, "  {} = load {}, ptr @{}, align 8", next, ty, name).ok();
+            plain_guard_next.insert(name.clone(), next);
+        }
         writeln!(out, "  br label %.cdl_{}", c0).ok();
 
         // ── Latch ──────────────────────────────────────────────
@@ -1411,6 +1457,26 @@ impl LlvmBackend {
                     .cloned().unwrap_or_else(|| body_val.clone());
                 writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
                     be_f, field_ty, body_val, body_final, guard_val, guard_pred).ok();
+            }
+        }
+        // Effect-state-carry latch phis: non-firing body keeps the header
+        // value; the guard path carries the post-print reload. The identity
+        // store keeps the value live into the next loop iteration.
+        for (name, ty, _) in &plain_carry {
+            let body_val = plain_header.get(name)
+                .cloned().unwrap_or_else(|| "0".to_string());
+            let guard_val = plain_guard_next.get(name)
+                .cloned().unwrap_or_else(|| body_val.clone());
+            let be = plain_backedge.get(name)
+                .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("peb"));
+            writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                be, ty, body_val, body_final, guard_val, guard_pred).ok();
+        }
+        if carry_store_mode != "exit" {
+            for (name, ty, _) in &plain_carry {
+                if let Some(be) = plain_backedge.get(name) {
+                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, be, name).ok();
+                }
             }
         }
         // Counter increment (native width) — the counter's backedge.
@@ -1488,6 +1554,13 @@ impl LlvmBackend {
         // Routed through rt_free so the benchmark can assert frees ==
         // allocs (no leak).
         self.emit_scheduled_frees(out, free_after);
+        if carry_store_mode == "exit" {
+            for (name, ty, _) in &plain_carry {
+                if let Some(val) = plain_header.get(name) {
+                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, val, name).ok();
+                }
+            }
+        }
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
         // returns — the tail bytes reach the fd. Gated: bare/no-stdlib
         // programs have no stdout_flush and get neither call nor declare.
