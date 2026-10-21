@@ -132,9 +132,9 @@ Leaving it unused invites a future developer to wire a known-bad path.
 
 ### Result
 
-DONE: removed `emit_countable_batched_main` and its stale source comments.
-No live call site remains. Full lib/tests and guards must stay green; emitted
-IR for the suite is unchanged (the function was unreachable).
+DONE (`9fddaaeb`): removed `emit_countable_batched_main` and its stale source
+comments. No live call site remains. The function was unreachable, so suite
+IR is unchanged.
 
 ### Acceptance
 
@@ -161,8 +161,9 @@ already recorded in the full report and checkpoint docs.
 
 ### Result
 
-FORMALIZED, removal deferred: the E1 plain-context path remains default-off
-and is covered by the quick guard's `plain-context float_math` output check.
+FORMALIZED (`ea6c96a8`), removal deferred: the E1 plain-context path remains
+default-off and is covered by the quick guard's `plain-context float_math`
+output check.
 Removal is a broad ABI diff across `emit_expr`/`helpers`/`intrinsics`/
 `emit_toplevel` and should be done with the canonical effect-context work, not
 as a standalone cleanup. Checkpoint branches retain the full experiment.
@@ -193,6 +194,17 @@ Direction doc: `docs/plans/2026-10-21-canonical-local-effect-model.md`.
 4. F4 — E1 retirement/formalization.
 5. Re-run full suite, guards, and update the research report.
 6. Only then consider F5 design work.
+
+## Follow-up verification
+
+After F1–F4:
+
+- `cargo test --lib`: **3272 passed**
+- quick/timing guard: **PASS**
+- full runtime suite: **all MATCH**
+- selected ratios: float_math 0.98x, float_math_nonzero 0.95x, kalman 0.88x,
+  sweep_sparse 1.00x, queue 0.54x, interval 0.76x, telemetry 0.98x,
+  matrix 0.97x.
 
 ## Verification checklist (every slice)
 

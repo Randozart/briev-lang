@@ -181,13 +181,18 @@ Library tests: **3271 passed**. Quick and timing guards: **PASS**.
 No confirmed selector-caused correctness failure. Remaining small spread is
 dominated by run-to-run variance.
 
+Follow-up verification after F1–F4: `cargo test --lib` 3272 passed; quick and
+timing guards PASS; full runtime suite all MATCH. Selected ratios: float_math
+0.98x, float_math_nonzero 0.95x, kalman 0.88x, sweep_sparse 1.00x,
+queue_drain 0.54x, interval_step 0.76x, telemetry 0.98x, matrix 0.97x.
+
 ## 7. Code map
 
 | Area | Location |
 |---|---|
 | Loop facts, Local classification, carry predicate | `src/analysis/loop_shape.rs` |
 | StorageClass + LoopMaterializationPlan | `src/analysis/materialization.rs`, `src/backend/mod.rs` |
-| BatchShape owner | `src/analysis/batch_shape.rs` |
+| BatchShape owner (per-txn map) | `src/analysis/batch_shape.rs`, `AnalysisResults.batch_shapes` |
 | Carry emission | `src/backend/llvm/loop_engine/counter.rs` |
 | Carry/effect selection | `src/backend/llvm/mod.rs` |
 | Target config | `src/config_tuning.rs`, `config/targets.dbvl` |
