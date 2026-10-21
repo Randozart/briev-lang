@@ -168,6 +168,24 @@ The existing guard-bearing alternates **do** preserve 5M output
 still requires field backedge copies (header before body SSA), so the likely
 remaining lever is per-loop effect context, not another stateless engine.
 
+## LTO ablation — phi hypothesis corrected (2026-10-21)
+
+A first non-LTO IR probe suggested extra loop-carried phis prevent the
+accumulator spill. The harness LTO pipeline refutes that:
+
+| Variant (LTO linked) | per-iteration reload |
+|---|---:|
+| stateless baseline | 1 |
+| one/two dummy i64 phis | 1 |
+| float phi / pointer phi | 1 |
+| escaping dummy alloca | 1 |
+
+`save-temps` LTO IR shows the real difference: the escaped print path creates
+`.cdl_47.thread` / `.cdb_47.backedge` loop rotation around the stdout flush,
+while the stateless loop is a simple `.cdb_45 → .cdl_45` loop. The cause is
+therefore **stateful print path → LTO loop rotation/RA**, not phi count alone.
+All further claims must use the linked `-O3 -flto` pipeline.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.
