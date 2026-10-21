@@ -629,8 +629,8 @@ defn count_lead(s: String, i: Int, len: Int) [true][term >= 0] -> Int {
 // keeps it out of %State, so the print chain carries no state pointer and
 // %State promotion in printing loops is never defeated (the
 // buffered-stdout regression, docs/plans/2026-10-17-state-plain-storage-class.md).
-plain let stdout_buf: Int = 0;
-plain let stdout_fill: Int = 0;
+let stdout_buf: Int = 0;
+let stdout_fill: Int = 0;
 const STDOUT_CAP: Int = 65536;
 
 out defn stdout_flush() [true][term >= 0] -> Int {
