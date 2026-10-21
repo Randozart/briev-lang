@@ -2627,12 +2627,14 @@ impl LlvmBackend {
             // chain (flush included) is stateless. A hardcoded `ptr %state`
             // here emitted a call whose signature MISMATCHED the stateless
             // definition (invalid IR the linker tolerated as UB).
-            let st = if self.ctx.defn_takes_state("stdout_flush") {
-                "ptr %state"
-            } else {
-                ""
-            };
-            writeln!(out, "  %__flush = call i64 @stdout_flush({})", st).ok();
+            let mut args: Vec<&str> = Vec::new();
+            if self.ctx.defn_takes_state("stdout_flush") {
+                args.push("ptr %state");
+            }
+            if self.plain_context_active() && self.ctx.defn_takes_plain("stdout_flush") {
+                args.push("ptr %plain");
+            }
+            writeln!(out, "  %__flush = call i64 @stdout_flush({})", args.join(", ")).ok();
         }
     }
 }

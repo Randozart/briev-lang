@@ -770,8 +770,15 @@ impl LlvmBackend {
                         .unwrap_or((Type::int(), None));
                     let llvm_ty = self.plain_global_llvm_type(&ty);
                     let r = self.fun.gen_reg();
-                    writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
-                        .ok();
+                    if self.plain_context_active() {
+                        let slot = self.emit_plain_slot_addr(out, indent, name)
+                            .expect("plain field missing from %PlainState index");
+                        writeln!(out, "{}{} = load {}, ptr {}, align 8", indent, r, llvm_ty, slot)
+                            .ok();
+                    } else {
+                        writeln!(out, "{}{} = load {}, ptr @{}, align 8", indent, r, llvm_ty, name)
+                            .ok();
+                    }
                     TypedRegister { name: r, ty }
                 } else if let Some(&idx) = self.ctx.field_index_map.get(name) {
                     // 2026-07-19: Load with native type from field_types (e.g. "float",
@@ -6058,8 +6065,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // emitted without the state param and called without it — gating on
         // defn_takes_state instead of bare defn_params membership keeps the
         // ABI consistent (previously every defn call passed %state).
-        if is_defn && self.ctx.defn_takes_state(name) {
-            call_args.push("ptr %state".to_string());
+        let takes_state = is_defn && self.ctx.defn_takes_state(name);
+        let takes_plain = is_defn
+            && self.plain_context_active()
+            && self.ctx.defn_takes_plain(name);
+        if takes_state || takes_plain {
+            if takes_state {
+                call_args.push("ptr %state".to_string());
+            }
+            if takes_plain {
+                let p = self.emit_plain_ptr_value(out, indent);
+                call_args.push(format!("ptr {}", p));
+            }
             let param_tys = defn_param_tys.as_ref().unwrap();
             for (i, reg) in arg_regs.iter().enumerate() {
                 let reg_llvm_ty = self.llvm_type(&reg.ty);
@@ -7881,6 +7898,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
+                    let pl = if self.plain_context_active() && self.ctx.defn_takes_plain(fname) {
+                        let p = self.emit_plain_ptr_value(out, indent);
+                        format!("ptr {}, ", p)
+                    } else {
+                        String::new()
+                    };
                     // 2026-10-07 (frgn void): a void callee (result omitted
                     // from the frgn, or a defn with no `->`) DECLAREs `void`;
                     // emitting `call {dst_ll}` here produced `call i32
@@ -7889,8 +7912,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // a trap stub. Emit `call void` and define the lane's
                     // destination with a zero so later steps stay closed.
                     if self.callee_declares_void(fname) {
-                        writeln!(out, "{}call void @{}({}{} {})",
-                            indent, fname, st, arg_ll, arg).ok();
+                        writeln!(out, "{}call void @{}({}{}{} {})",
+                            indent, fname, st, pl, arg_ll, arg).ok();
                         let zero_ll = if dst_ll.starts_with('i') && dst_ll.len() > 1 {
                             dst_ll.as_str()
                         } else {
@@ -7898,8 +7921,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         };
                         writeln!(out, "{}{} = add {} 0, 0", indent, dst, zero_ll).ok();
                     } else {
-                        writeln!(out, "{}{} = call {} @{}({}{} {})",
-                            indent, dst, dst_ll, fn_name, st, arg_ll, arg).ok();
+                        writeln!(out, "{}{} = call {} @{}({}{}{} {})",
+                            indent, dst, dst_ll, fn_name, st, pl, arg_ll, arg).ok();
                     }
                 }
                 crate::casting::graph::LaneKind::ExtCallDyn(fn_name) => {
@@ -7924,8 +7947,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
-                    writeln!(out, "{}{} = call {} @{}({}{} {})",
-                        indent, dst, dst_ll, symbol, st, cur_ll, cur).ok();
+                    let pl = if self.plain_context_active()
+                        && self.ctx.defn_takes_plain(fn_name.as_str())
+                    {
+                        let p = self.emit_plain_ptr_value(out, indent);
+                        format!("ptr {}, ", p)
+                    } else {
+                        String::new()
+                    };
+                    writeln!(out, "{}{} = call {} @{}({}{}{} {})",
+                        indent, dst, dst_ll, symbol, st, pl, cur_ll, cur).ok();
                 }
                 crate::casting::graph::LaneKind::ExtractData => {
                     writeln!(out, "{}{} = extractvalue {} {}, 0",
@@ -8067,8 +8098,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // %state; pass it only when the defn takes state. Mirrors the
                 // ExtCall arm in emit_cast_steps.
                 let st = if self.ctx.defn_takes_state(fn_name) { "ptr %state, " } else { "" };
-                writeln!(out, "{}{} = call i64 @{}({}{} {})",
-                    indent, dst, fn_name, st, src_ll, src_name).ok();
+                let pl = if self.plain_context_active()
+                    && self.ctx.defn_takes_plain(fn_name)
+                    && self.fun.plain_ptr.is_some()
+                {
+                    format!("ptr {}, ", self.fun.plain_ptr.as_ref().unwrap())
+                } else {
+                    String::new()
+                };
+                writeln!(out, "{}{} = call i64 @{}({}{}{} {})",
+                    indent, dst, fn_name, st, pl, src_ll, src_name).ok();
             }
             _ => {
                 writeln!(out, "{}{} = bitcast {} {} to i64",

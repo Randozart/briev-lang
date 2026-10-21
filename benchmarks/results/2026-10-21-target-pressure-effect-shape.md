@@ -111,6 +111,27 @@ after the release build. `--timing` adds catastrophic-regression ceilings for
 the primary cases. The expected-decision table and diagnosis guide live in
 `docs/architecture/effect-shape-selection.md`.
 
+## Mixed-program / per-loop E1 experiment (2026-10-21)
+
+The stack plain-context experiment (`BRIEV_DIAG_PLAIN_CONTEXT=1`, `%PlainState`
++ `ptr %plain` ABI) was run on the same host/BOUND. It keeps machine `%State`
+unescaped by the print path.
+
+| Benchmark | E1 | C | E1 ratio | Current selected |
+|---|---:|---:|---:|---:|
+| float_math | 0.0479s | 0.0477s | 1.00x | 0.89–0.96x |
+| queue_drain | 0.0337s | 0.0603s | 0.56x | 0.50–0.53x |
+| interval_step | 0.0899s | 0.0633s | 1.42x | 0.71–0.75x |
+| telemetry_stream | 0.1572s | 0.1576s | 1.00x | 0.96–0.98x |
+| pid_control | 0.4276s | 0.3478s | 1.23x | 0.99–1.01x |
+| matrix_pipeline | 0.5181s | 0.4927s | 1.05x | 0.96–0.97x |
+| mixed fixture | 0.2282s | — | — | 0.201–0.204s |
+
+E1 recovers float from ~2.9x to ~1.0x, but loses interval/pid/matrix and does
+not specialize per loop. It is retained only behind
+`BRIEV_DIAG_PLAIN_CONTEXT=1`. Next: E2 per-loop state materialization
+(`docs/plans/2026-10-21-per-loop-effect-abi.md`).
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

@@ -418,6 +418,28 @@ impl LlvmBackend {
         } else {
             writeln!(out, "  %state = alloca %State, align 8").ok();
         }
+        // 2026-10-21 (plain-context experiment): allocate and zero the
+        // separate plain aggregate, then publish its address. Only literal
+        // zero/false initializers are admitted by plain_context_active(), so
+        // a zero store is the correct initializer for this experiment.
+        if self.plain_context_active() {
+            writeln!(out, "  %plain = alloca %PlainState, align 8").ok();
+            writeln!(out, "  store ptr %plain, ptr @__briev_plain_ptr, align 8").ok();
+            self.fun.plain_ptr = Some("%plain".to_string());
+            let mut names: Vec<String> = self.ctx.plain_index_map.keys().cloned().collect();
+            names.sort_by_key(|n| self.ctx.plain_index_map[n]);
+            for name in names {
+                let (ty, _) = self.ctx.plain_global_types.get(&name).unwrap();
+                let llvm_ty = self.plain_global_llvm_type(ty);
+                let zero = match llvm_ty.as_str() {
+                    "float" | "double" | "half" => "0.0",
+                    "ptr" => "null",
+                    _ => "0",
+                };
+                let slot = self.emit_plain_slot_addr(out, "  ", &name).unwrap();
+                writeln!(out, "  store {} {}, ptr {}, align 8", llvm_ty, zero, slot).ok();
+            }
+        }
     }
 
     /// Emit a `main()` that stores final precomputed values and returns.
@@ -2499,6 +2521,59 @@ impl LlvmBackend {
         }
     }
 
+    /// 2026-10-21 (plain-context experiment): when enabled, plain fields are
+    /// lowered through a stack `%PlainState` aggregate whose address is stashed
+    /// in `@__briev_plain_ptr`, not through module-scope globals. This keeps
+    /// the effect memory separate from machine `%State` for the mixed-loop
+    /// experiment. Gated by `BRIEV_DIAG_PLAIN_CONTEXT=1`; unsupported
+    /// non-literal plain initializers fall back to globals.
+    pub(crate) fn plain_context_active(&self) -> bool {
+        if std::env::var_os("BRIEV_DIAG_PLAIN_CONTEXT").is_none()
+            || self.ctx.plain_index_map.is_empty()
+        {
+            return false;
+        }
+        self.ctx.plain_global_types.values().all(|(_, init)| {
+            init.as_ref().map_or(true, |e| match e {
+                crate::ast::Expr::Decimal(0) => true,
+                crate::ast::Expr::Float(f) => *f == 0.0,
+                crate::ast::Expr::Bool(false) => true,
+                _ => false,
+            })
+        })
+    }
+
+    /// A usable `ptr` to the plain aggregate: the current `%plain` parameter
+    /// when present, otherwise load the main-published pointer. Txn/cold
+    /// bodies without a plain parameter use the latter during the experiment.
+    pub(crate) fn emit_plain_ptr_value(&mut self, out: &mut String, indent: &str) -> String {
+        if let Some(p) = &self.fun.plain_ptr {
+            return p.clone();
+        }
+        let r = self.fun.gen_reg();
+        writeln!(out, "{}{} = load ptr, ptr @__briev_plain_ptr, align 8", indent, r).ok();
+        r
+    }
+
+    /// Address of one field in the stack `%PlainState` aggregate.
+    pub(crate) fn emit_plain_slot_addr(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        name: &str,
+    ) -> Option<String> {
+        let idx = *self.ctx.plain_index_map.get(name)?;
+        let base = self.emit_plain_ptr_value(out, indent);
+        let slot = self.fun.gen_reg();
+        writeln!(
+            out,
+            "{}{} = getelementptr %PlainState, ptr {}, i32 0, i32 {}",
+            indent, slot, base, idx
+        )
+        .ok();
+        Some(slot)
+    }
+
     /// Store a value to a state field with the native LLVM type.
     /// The value should match the field's LLVM type (float, double, i64, etc.).
     pub(crate) fn emit_state_store_i64(
@@ -2519,7 +2594,12 @@ impl LlvmBackend {
                 .map(|(t, _)| t.clone())
                 .unwrap_or(crate::ast::Type::int());
             let llvm_ty = self.plain_global_llvm_type(&ty);
-            writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();
+            if self.plain_context_active() {
+                let slot = self.emit_plain_slot_addr(out, indent, name)?;
+                writeln!(out, "{}store {} {}, ptr {}, align 8", indent, llvm_ty, val, slot).ok();
+            } else {
+                writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();
+            }
             return Some(());
         }
         let idx = *self.ctx.field_index_map.get(name)?;

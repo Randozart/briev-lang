@@ -4418,6 +4418,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if !self.ctx.plain_global_types.is_empty() { writeln!(out).ok(); }
 
         self.declare_state_type(&mut out);
+        // 2026-10-21 (plain-context experiment): a separate stack aggregate
+        // for derived plain/plumbing fields. The effect path receives its
+        // address through @__briev_plain_ptr, so machine %State stays
+        // unescaped. Gated by BRIEV_DIAG_PLAIN_CONTEXT=1.
+        if self.plain_context_active() {
+            let mut names: Vec<&String> = self.ctx.plain_index_map.keys().collect();
+            names.sort_by_key(|n| self.ctx.plain_index_map[*n]);
+            let fields: Vec<String> = names
+                .iter()
+                .filter_map(|n| self.ctx.plain_global_types.get(*n))
+                .map(|(ty, _)| self.plain_global_llvm_type(ty))
+                .collect();
+            writeln!(out, "%PlainState = type {{ {} }}", fields.join(", ")).ok();
+            writeln!(out, "@__briev_plain_ptr = global ptr null").ok();
+            writeln!(out).ok();
+        }
         // %State no longer has a module-level global. Instead, main()
         // allocates it on the stack as an alloca and passes it to all
         // internal functions as a noalias nocapture parameter. This
@@ -7704,6 +7720,14 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                 self.ctx.field_initializers.insert(slot.clone(), Some(init.clone()));
             }
         }
+
+        self.ctx.plain_index_map.clear();
+        let mut plain_names: Vec<&String> = self.ctx.plain_global_types.keys().collect();
+        plain_names.sort();
+        for (i, name) in plain_names.into_iter().enumerate() {
+            self.ctx.plain_index_map.insert(name.clone(), i);
+        }
+
     }
 
     /// 2026-08-07 (object instance pools): register a base's allocator counter

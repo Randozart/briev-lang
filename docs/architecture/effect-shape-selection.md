@@ -138,6 +138,20 @@ BRIEV_DIAG_EFFECT=escaped   brievc build <bench> --out /tmp/escaped
 
 These force the shape for A/B only; unset uses the selector.
 
+## Mixed-program / per-loop follow-up (2026-10-21)
+
+The selector is still program-level. A mixed fixture
+(`tests/tier1/mixed_effect_shape.bv`) contains a direct-Float loop and a
+temp-mediated loop; the quick guard pins both its output and the current
+program-level decision.
+
+Experiment E1 (stack `%PlainState` + `ptr %plain` ABI, env
+`BRIEV_DIAG_PLAIN_CONTEXT=1`) recovered `float_math` to ~1.00x but regressed
+`interval_step` to 1.42x and `pid_control` to 1.23x; it cannot specialize per
+loop. It is default-off. The next step is E2: per-loop state materialization
+with a stateless print ABI. Full plan:
+`docs/plans/2026-10-21-per-loop-effect-abi.md`.
+
 ## Known limitations / next steps
 
 - Program-level plain demotion can over-apply to a mixed program. Per-loop

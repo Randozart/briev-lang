@@ -164,6 +164,10 @@ pub struct CompilerContext {
     /// pre-reactor seeding beside the `init` invariants.
     pub plain_global_types:
         std::collections::HashMap<String, (crate::ast::Type, Option<crate::ast::Expr>)>,
+    /// 2026-10-21 (plain-context experiment): deterministic field order for
+    /// the stack `%PlainState` aggregate. Empty unless a plain-context
+    /// experiment is active.
+    pub plain_index_map: std::collections::HashMap<String, usize>,
     /// 2026-10-17 (readiness gate 1): async-dispatched nodes' watchdog specs
     /// for emit_async_phase's gate (name, spec) — populated from the txn list
     /// right before main emission; the phase needs &mut self, so the contracts
@@ -629,6 +633,7 @@ impl CompilerContext {
             view_bound_fields: std::collections::HashSet::new(),
             plain_lets: std::collections::HashSet::new(),
             plain_global_types: std::collections::HashMap::new(),
+            plain_index_map: std::collections::HashMap::new(),
             async_phase_watchdogs: Vec::new(),
             mmio_fields: HashMap::new(),
             mmio_initializers: HashMap::new(),
@@ -1063,6 +1068,9 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub fn_ret_ty: String,
     pub main_body: bool,
     pub in_callable_txn: bool,
+    /// 2026-10-21 (plain-context experiment): the `%plain` pointer parameter
+    /// for the current function/main. Plain loads/stores GEP through it.
+    pub plain_ptr: Option<String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1335,6 +1343,7 @@ impl FunctionContext {
 
     pub fn new() -> Self {
         FunctionContext {
+            plain_ptr: None,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1458,6 +1467,7 @@ impl FunctionContext {
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;
+        self.plain_ptr = None;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

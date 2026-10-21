@@ -79,6 +79,26 @@ check_shape matrix_pipeline benchmarks/matrix_pipeline.bv stateless
 check_shape sweep_dense benchmarks/sweep_dense.bv stateless
 check_shape mixed_effect_shape tests/tier1/mixed_effect_shape.bv escaped
 
+# E1 diagnostic path: the stack plain-context ABI must remain semantically
+# correct (it is default-off, but the experiment code is still compiled).
+plain_float="$TMP/plain_float"
+mkdir -p "$plain_float"
+if ! BRIEV_DIAG_PLAIN_CONTEXT=1 BRIEV_DIAG_EFFECT=stateless \
+    "$BRIEVC" build benchmarks/float_math.bv --out "$plain_float" \
+    >"$plain_float/build.log" 2>&1; then
+  echo "FAIL plain-context float_math: build failed" >&2
+  FAIL=1
+else
+  BOUND=5000001 "$TMP/shape_float_math/float_math" >"$TMP/auto_float.out"
+  BOUND=5000001 "$plain_float/float_math" >"$TMP/plain_float.out"
+  if ! cmp -s "$TMP/auto_float.out" "$TMP/plain_float.out"; then
+    echo "FAIL plain-context float_math: output differs from default" >&2
+    FAIL=1
+  else
+    echo "ok   plain-context float_math: output matches default"
+  fi
+fi
+
 # Mixed program coverage: the program-level selector escapes because `direct`
 # is present, but the same program forced stateless must produce the same
 # multiset of output. This catches a divergence between the two effect-memory
