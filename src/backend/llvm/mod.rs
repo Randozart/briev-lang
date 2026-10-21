@@ -6613,6 +6613,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if let Some(batch) = analysis.batch_shape.as_ref() {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
+                    self.fun.local_fields = shape.local_fields.iter().cloned().collect();
                     self.warnings.push(format!(
                         "info: txn '{}' dispatched via countdown loop (N={}, {} fields)",
                         node.name, batch.batch_size, node.write_set.len()
@@ -6677,6 +6678,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.warnings.push(format!("info: txn '{}' dispatched via per-field phi ({}/{} fields written)", node.name, write_count, total_fields));
         }
         self.fun.pending_post_hoist = post_hoist;
+        self.fun.local_fields = shape.local_fields.iter().cloned().collect();
         let is_decreasing = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         self.emit_countable_main(
             out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,

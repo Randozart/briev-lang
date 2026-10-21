@@ -763,8 +763,36 @@ impl LlvmBackend {
         let mut phi_field_init: HashMap<String, String> = HashMap::new();
         for fname in &sorted_fields {
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
-                let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
-                phi_field_init.insert((*fname).clone(), init_f);
+                // 2026-10-20 (Local class): a loop-local field with a literal
+                // initializer starts from that constant, not a %State load.
+                // The state load keeps the value opaque to LLVM (it cannot
+                // prove the initialized zero), preventing independent-update
+                // folding and causing needless live phis/register pressure.
+                let local_ok = self.fun.local_fields.contains(fname.as_str())
+                    && self.fun.pending_post_hoist.is_empty();
+                let literal_init = if local_ok {
+                    self.ctx.field_initializers.get(fname.as_str()).and_then(|e| {
+                        let field_ty = self.ctx.field_types.get(idx).cloned()?;
+                        match e {
+                            Some(crate::ast::Expr::Float(v)) => {
+                                Some(crate::backend::llvm::float_to_llvm_str(*v, &field_ty))
+                            }
+                            Some(crate::ast::Expr::Decimal(n)) => Some(n.to_string()),
+                            Some(crate::ast::Expr::Bool(b)) => {
+                                Some((if *b { "true" } else { "false" }).to_string())
+                            }
+                            _ => None,
+                        }
+                    })
+                } else {
+                    None
+                };
+                if let Some(v) = literal_init {
+                    phi_field_init.insert((*fname).clone(), v);
+                } else {
+                    let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
+                    phi_field_init.insert((*fname).clone(), init_f);
+                }
             }
         }
         let init_name = phi_field_init.get(counter_var)
@@ -1086,8 +1114,29 @@ impl LlvmBackend {
         let mut phi_field_init: HashMap<String, String> = HashMap::new();
         for fname in &sorted_fields {
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
-                let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
-                phi_field_init.insert((*fname).clone(), init_f);
+                let literal_init = if self.fun.local_fields.contains(fname.as_str()) {
+                    self.ctx.field_initializers.get(fname.as_str()).and_then(|e| {
+                        let field_ty = self.ctx.field_types.get(idx).cloned()?;
+                        match e {
+                            Some(crate::ast::Expr::Float(v)) => {
+                                Some(crate::backend::llvm::float_to_llvm_str(*v, &field_ty))
+                            }
+                            Some(crate::ast::Expr::Decimal(n)) => Some(n.to_string()),
+                            Some(crate::ast::Expr::Bool(b)) => {
+                                Some((if *b { "true" } else { "false" }).to_string())
+                            }
+                            _ => None,
+                        }
+                    })
+                } else {
+                    None
+                };
+                if let Some(v) = literal_init {
+                    phi_field_init.insert((*fname).clone(), v);
+                } else {
+                    let (init_f, _) = self.emit_state_load_i64_by_idx(out, "  ", idx);
+                    phi_field_init.insert((*fname).clone(), init_f);
+                }
             }
         }
         let init_name = phi_field_init.get(counter_var)
@@ -1406,8 +1455,17 @@ impl LlvmBackend {
         self.fun.reg_float_cache.clear();
         self.fun.last_val_temps.clear();
         self.fun.last_val_types.clear();
-        // Store final phi values so a post-loop hoist can read them from %State.
+        // Store final phi values so a post-loop hoist can read them from
+        // %State. 2026-10-20 (Local class): loop-local fields are unobservable
+        // after the loop — leaving them register/SSA lets LLVM collapse
+        // independent updates (the C shape) instead of treating every field
+        // as an individually live state value.
         for fname in &sorted_fields {
+            if self.fun.local_fields.contains(fname.as_str())
+                && self.fun.pending_post_hoist.is_empty()
+            {
+                continue;
+            }
             let val = self.fun.phi_field_regs.get(fname.as_str())
                 .cloned().unwrap_or_else(|| "0".to_string());
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {

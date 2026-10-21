@@ -79,6 +79,12 @@ pub struct LoopShape {
     pub counter_only_writes: bool,
     /// Loop-carried fields in deterministic (sorted) order — the minimal phi set.
     pub carried_fields: Vec<String>,
+    /// 2026-10-20 (Local class): written fields whose only reads are inside
+    /// this transaction's loop body/guards. They need phis for the loop and
+    /// guard, but no post-loop %State commit: once the loop ends, their values
+    /// are unobservable. Excludes any field read by a contract, another txn,
+    /// a defn, or a top-level expression.
+    pub local_fields: Vec<String>,
     /// Isomorphic field groups eligible for vector-phi promotion.
     pub vector_groups: Vec<VectorGroup>,
     /// True when the body ends with a swan song (`term! -> print`).
@@ -133,7 +139,7 @@ pub fn build_loop_shapes(
         let Some(txn) = txns.get(&node.name) else {
             continue;
         };
-        shapes.insert(node.name.clone(), build_shape(node, txn, &names, min_width));
+        shapes.insert(node.name.clone(), build_shape(node, txn, &names, min_width, items));
     }
     shapes
 }
@@ -212,11 +218,13 @@ fn build_shape(
     txn: &Transaction,
     names: &ItemNames,
     min_width: usize,
+    items: &[TopLevel],
 ) -> LoopShape {
     let bp = node.bounded_pre.as_ref().unwrap();
     let bound = resolve_bound(bp, names);
     let counter_only_writes = node.write_set.len() == 1 && node.write_set.contains(&bp.var);
     let carried_fields = classify_carried(node.write_set.clone(), txn);
+    let local_fields = classify_local_fields(node, txn, items);
     let vector_groups = detect_vector_groups_structural(txn, node.write_set.clone(), &names.state_fields, min_width);
     let has_swan = swan_song::has_swan_song(&txn.body);
     let is_pure = node.is_pure_body || node.is_effectively_pure;
@@ -227,6 +235,7 @@ fn build_shape(
         direction: bp.direction,
         counter_only_writes,
         carried_fields,
+        local_fields,
         vector_groups,
         has_swan_song: has_swan,
         is_pure,
@@ -275,6 +284,76 @@ impl ItemNames {
             inits: collect_init_names(items),
         }
     }
+}
+
+/// 2026-10-20 (Local class): fields written by the loop whose values are
+/// unobservable after it. A field is local only when every reference outside
+/// this txn's BODY is absent; its contract references still count as
+/// observable, and any other txn/defn/top-level expression that names it
+/// keeps it machine state.
+fn classify_local_fields(
+    node: &crate::analysis::transition_graph::ReactorNode,
+    txn: &Transaction,
+    items: &[TopLevel],
+) -> Vec<String> {
+    let mut external: HashSet<String> = HashSet::new();
+    // This txn's contract is observable.
+    crate::analysis::storage_class::collect_raw_idents(
+        &txn.contract.pre_condition,
+        &mut external,
+    );
+    crate::analysis::storage_class::collect_raw_idents(
+        &txn.contract.post_condition,
+        &mut external,
+    );
+    for item in items {
+        match item {
+            TopLevel::Transaction(other) if other.name != txn.name => {
+                crate::analysis::storage_class::collect_raw_idents(
+                    &other.contract.pre_condition,
+                    &mut external,
+                );
+                crate::analysis::storage_class::collect_raw_idents(
+                    &other.contract.post_condition,
+                    &mut external,
+                );
+                crate::ast::visit::walk_stmts(&other.body, &mut |e| {
+                    crate::analysis::storage_class::collect_raw_idents(e, &mut external)
+                });
+            }
+            TopLevel::Definition(d) => {
+                crate::analysis::storage_class::collect_raw_idents(
+                    &d.contract.pre_condition,
+                    &mut external,
+                );
+                crate::analysis::storage_class::collect_raw_idents(
+                    &d.contract.post_condition,
+                    &mut external,
+                );
+                crate::ast::visit::walk_stmts(&d.body, &mut |e| {
+                    crate::analysis::storage_class::collect_raw_idents(e, &mut external)
+                });
+            }
+            TopLevel::Statement(stmt) => {
+                crate::ast::visit::walk_stmts(
+                    std::slice::from_ref(stmt.as_ref()),
+                    &mut |e| crate::analysis::storage_class::collect_raw_idents(e, &mut external),
+                );
+            }
+            TopLevel::Constant(c) => {
+                crate::analysis::storage_class::collect_raw_idents(&c.expr, &mut external);
+            }
+            _ => {}
+        }
+    }
+    let mut local: Vec<String> = node
+        .write_set
+        .iter()
+        .filter(|f| !external.contains(*f))
+        .cloned()
+        .collect();
+    local.sort();
+    local
 }
 
 /// Classify the loop-carried field set (minimal-state, deterministic order).

@@ -264,3 +264,25 @@ the evidence.
 Conclusion: lowering bounded single-node state to **loop-local SSA** is the
 promising path. It is not a register-budget heuristic and does not rely on
 context/global tricks.
+
+
+## Local-field classification + literal init (2026-10-20) — no float gain yet
+
+Implemented the first Local slice:
+
+- classify fields written by a loop whose only references are inside that
+  txn's body/guards (contracts/other txns/defns/top-level expressions keep them
+  machine state);
+- loop-local fields skip the post-loop `%State` store;
+- loop-local fields with literal initializers seed their phis from the literal
+  instead of a `%State` load.
+
+Result: `float_math` **2.94x** — no improvement. The IR now has literal phi
+seeds and no exit stores, but LLVM still does not collapse the independent
+updates. The next variable is the **countdown loop shape itself** (body →
+cold guard block → latch phis), not the state commit. The local-`foreach`
+probe (0.057s) used a simpler SSA loop and did fold.
+
+Conclusion: keep the Local classification/elimination (it is semantically
+sound and removes dead state traffic), but the performance fix needs an SSA
+loop strategy for local-heavy loops, not more state-materialization work.

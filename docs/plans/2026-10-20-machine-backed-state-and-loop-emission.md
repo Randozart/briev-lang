@@ -480,3 +480,13 @@ C ~0.043s (~1.33x), versus ~2.9x for the state path. The probe simplified the
 math for isolation, so it is a shape/timing result, not a parity result.
 Next implementation target: derive a Local class for bounded single-node
 state and lower it as loop-local SSA.
+
+
+## Local slice result (2026-10-20)
+
+Local-field classification + literal phi seeding + no post-loop store landed
+for the countdown path. `float_math` stayed at ~2.9x: the countdown body →
+guard → latch phi shape still blocks folding. The local-`foreach` probe folds
+because its loop shape is simpler. Next: an SSA loop strategy for
+local-heavy loops (or a countdown shape LLVM can reduce), not more
+state-materialization changes.

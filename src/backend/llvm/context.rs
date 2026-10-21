@@ -907,6 +907,10 @@ fn collect_free_stmts(
 
 #[derive(Debug, Clone)]
 pub struct FunctionContext {    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
+    /// 2026-10-20 (Local class): loop-local fields whose values are
+    /// unobservable after this bounded loop. Their phis stay local; no
+    /// post-loop %State store.
+    pub local_fields: std::collections::HashSet<String>,
     pub txn_counter: usize,
     pub within_counter: usize,
     pub metadata_counter: usize,
@@ -1331,6 +1335,7 @@ impl FunctionContext {
 
     pub fn new() -> Self {
         FunctionContext {
+            local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
             metadata_counter: 100,
