@@ -685,3 +685,12 @@ These are resolved by `resolve_llvm_type()` in the casting graph. Never hardcode
 4. Add protocol arm in `type_to_protocol` priority chain.
 5. Add LLVM type resolution in `resolve_llvm_type`.
 6. **No name-based matching in the backend.**
+
+### Match result probing and terminating arms (2026-10-21)
+
+Only arms reaching a match's value merge contribute result types. The existing
+lowering termination flag distinguishes a trap/return (no merge edge) from a
+continuing Void expression. Match probing snapshots and restores that flag in
+addition to its binding, alloca, and block state; each arm starts independently.
+A terminating Void arm cannot suppress another arm's value phi. Continuing Void
+and all-arms-terminate behavior retain their existing lowering paths.

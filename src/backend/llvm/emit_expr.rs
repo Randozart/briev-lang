@@ -6233,6 +6233,52 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         }
     }
 
+    fn probe_match_result_types(
+        &mut self,
+        arms: &[crate::ast::MatchArm],
+        scrut: &TypedRegister,
+        indent: &str,
+    ) -> Vec<Type> {
+        let saved_alloca_len = self.fun.pending_struct_allocas.len();
+        let saved_block = self.fun.cur_block.clone();
+        let saved_terminated = self.fun.terminated;
+        // 2026-10-05 (json.bv): the probe MUST bind each arm's patterns
+        // before emitting its body — otherwise `frame.value` (a field
+        // access on a payload binding) resolves `frame` to an unbound
+        // Int default and panics in emit_field_access. Bindings live in
+        // the function's name maps, so snapshot and restore them around
+        // the probe (the real arm emission re-binds for real).
+        let saved_temps = self.fun.last_val_temps.clone();
+        let saved_temp_types = self.fun.last_val_types.clone();
+        let saved_bind = self.fun.let_bindings.clone();
+        let saved_bind_types = self.fun.let_binding_types.clone();
+        let saved_orig_types = self.fun.let_original_types.clone();
+        let mut sink = String::new();
+        let mut tys = Vec::with_capacity(arms.len());
+        for arm in arms {
+            // 2026-10-21: only arms reaching the merge contribute a value
+            // type. A trap/return arm has no merge edge, so its Void result
+            // must not erase another arm's value. Use the emitter's termination
+            // proof, including nested control flow, rather than AST shape.
+            // Undo only when match lowering carries frontend control-flow facts.
+            self.fun.terminated = false;
+            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
+            let reg = self.emit_expr(&mut sink, &arm.body, indent);
+            if !self.fun.terminated {
+                tys.push(reg.ty);
+            }
+        }
+        self.fun.last_val_temps = saved_temps;
+        self.fun.last_val_types = saved_temp_types;
+        self.fun.let_bindings = saved_bind;
+        self.fun.let_binding_types = saved_bind_types;
+        self.fun.let_original_types = saved_orig_types;
+        self.fun.pending_struct_allocas.truncate(saved_alloca_len);
+        self.fun.cur_block = saved_block;
+        self.fun.terminated = saved_terminated;
+        tys
+    }
+
         /// 2026-08-06 (Phase 7): lower a match expression. The scrutinee is
     /// evaluated once; each arm's pattern condition branches to the arm block
     /// or the next arm; the arm block binds pattern names, evaluates the
@@ -6297,36 +6343,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // deferred-alloca queue truncates back and the tracked block is
         // restored. Pattern BINDING lives outside emit_expr, so name maps
         // are untouched by the probe.
-        let probe_types: Vec<crate::ast::Type> = {
-            let saved_alloca_len = self.fun.pending_struct_allocas.len();
-            let saved_block = self.fun.cur_block.clone();
-            // 2026-10-05 (json.bv): the probe MUST bind each arm's patterns
-            // before emitting its body — otherwise `frame.value` (a field
-            // access on a payload binding) resolves `frame` to an unbound
-            // Int default and panics in emit_field_access. Bindings live in
-            // the function's name maps, so snapshot and restore them around
-            // the probe (the real arm emission re-binds for real).
-            let saved_temps = self.fun.last_val_temps.clone();
-            let saved_temp_types = self.fun.last_val_types.clone();
-            let saved_bind = self.fun.let_bindings.clone();
-            let saved_bind_types = self.fun.let_binding_types.clone();
-            let saved_orig_types = self.fun.let_original_types.clone();
-            let mut sink = String::new();
-            let mut tys = Vec::with_capacity(n);
-            for arm in arms {
-                self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
-                let reg = self.emit_expr(&mut sink, &arm.body, indent);
-                tys.push(reg.ty);
-            }
-            self.fun.last_val_temps = saved_temps;
-            self.fun.last_val_types = saved_temp_types;
-            self.fun.let_bindings = saved_bind;
-            self.fun.let_binding_types = saved_bind_types;
-            self.fun.let_original_types = saved_orig_types;
-            self.fun.pending_struct_allocas.truncate(saved_alloca_len);
-            self.fun.cur_block = saved_block;
-            tys
-        };
+        let probe_types = self.probe_match_result_types(arms, &scrut, indent);
         // 2026-10-05 (json.bv): canonicalize enum-handle probe types. An enum
         // CONSTRUCTOR (`Err(e)`) reports `Type::int()` (the i64 handle) while
         // an enum-returning CALL (`finish_number(..)`) reports the declared

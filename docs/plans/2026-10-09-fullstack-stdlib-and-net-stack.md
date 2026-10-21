@@ -201,3 +201,14 @@ for anything found. New .bv stdlib files must pass the conformance sweep.
 
 (Compiler bugs found during implementation get a BUGS.md entry AND a line here with
 the date, the .bv snippet that triggered it, and the workaround.)
+
+### 2026-10-21 — terminating match arm suppresses value merge (OPEN)
+
+After loading 100,000 baseline ratings, engine-adapter verification exposed a
+compiler defect independent of Result/app code: a match with one trap arm loses
+the continuing arm's result phi. Minimal value/value control compiles, value/trap
+fails LLVM. Fix/tests authored on fix/match-terminating-arm-values; human cargo
+verification pending. Feature work is preserved in the documented scratch patch.
+
+Verification: four focused regressions and native value/trap gates pass; cargo
+build passes. Full suite: 3157 passed, 38 known failure names, none added.

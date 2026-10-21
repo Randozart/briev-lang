@@ -18,6 +18,8 @@ pub mod vector_phi;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod match_termination_tests;
 
 
 pub use builder::LLVMBuilder;
