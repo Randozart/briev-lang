@@ -108,7 +108,7 @@ selector to diagnostics. Keep the checkpoint branch available until then.
 | 2026-10-21 | `157470c3` | structural carry selector + target-derived program mode; three-way guard |
 | 2026-10-21 | `910a9ca8` | selection docs pinned; merged into canonical branch |
 | 2026-10-21 | `d1427095` | countdown-eligibility gate; target `effect_carry_temp_min` |
-| 2026-10-21 | _report_ | full progress report: `docs/2026-10-21-effect-shape-progress-report.md` |
+| 2026-10-21 | `a2178afe` | full progress report: `docs/2026-10-21-effect-shape-progress-report.md` |
 | 2026-10-21 | `main` / `a7fe6c3d` | branch point for canonical work (carry absent) |
 
 Update this table for every slice so the path from checkpoint to canonical
