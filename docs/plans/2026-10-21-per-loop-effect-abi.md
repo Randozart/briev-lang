@@ -105,6 +105,13 @@ the batch shape is not usable here. The batch dispatch was removed; the dead
 emitter remains unused. This also explains why the escaped guard-bearing loop
 matches C while the faster register-shaped local/batch probes did not.
 
+The existing guard-bearing alternates (version-DAG and per-field) do preserve
+output at 5M (`1449352.5`), but both remain ~2.9x. A single-latch variant would
+still need the per-field backedge copies (the header is emitted before the
+body SSA names exist), so the remaining cost is not just the latch block. The
+experiment therefore points back to the per-loop effect-context idea as the
+only route that both preserves FP order and changes the RA shape.
+
 ## E2 — per-loop state materialization (next)
 
 Keep **one stateless print ABI** and make the loop storage per-transaction.

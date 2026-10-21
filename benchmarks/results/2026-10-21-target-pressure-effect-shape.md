@@ -163,6 +163,11 @@ confirming shape-sensitive FP results. Output parity is mandatory, so the
 batch shape was removed from dispatch and left unused. E2 must preserve the
 guard-bearing FP evaluation order (or reproduce C's exact shape).
 
+The existing guard-bearing alternates **do** preserve 5M output
+(`version`/`per-field` = 1449352.5) but remain ~2.9x. A single-latch shape
+still requires field backedge copies (header before body SSA), so the likely
+remaining lever is per-loop effect context, not another stateless engine.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.
