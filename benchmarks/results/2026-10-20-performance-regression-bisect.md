@@ -192,3 +192,24 @@ the fast stateful-print variant accidentally exercised, while keeping machine
 
 The next prototype must implement the context, not simulate it with an unused
 pointer, dummy fields, or global state.
+
+
+## Plain-context prototype 2026-10-20 — global context pointer is not enough
+
+Prototype: `%PlainState` aggregate + `@__briev_plain` global, print functions
+take `ptr %plain` (or `ptr @__briev_plain` from txns), GEP accesses. Machine
+`%State` remains unescaped.
+
+| Metric | Value |
+|---|---:|
+| float_math | **2.87x** |
+| Correctness | MATCH |
+| queue/interval | not rerun (global-context path failed the primary check) |
+
+A **global plain context** passed as a pointer does not reproduce the fast
+stateful-print shape. The fast experiment used an **alloca-backed** `%state`
+context; the global-context variant does not. Next prototype must allocate
+`%plain` on the stack in main and thread it through the transaction/defn ABI
+(not fall back to `@__briev_plain` inside txns). If an alloca context also
+fails, the plain-context hypothesis is refuted and the work returns to explicit
+loop accumulator/state materialization.

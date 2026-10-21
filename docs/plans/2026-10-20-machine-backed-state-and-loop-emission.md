@@ -283,6 +283,11 @@ Remaining before implementation:
 0. Prototype the **plain context pointer** for the print family on 5aa:
    group stdout_buf/fill into a context, pass `ptr` to print functions, keep
    machine `%State` unescaped. Measure float_math + queue/interval.
+   **Negative result 2026-10-20:** a `%PlainState` **module global** passed as
+   `ptr @__briev_plain` (including from txns) leaves float_math at **2.87x**.
+   The next prototype must use a **stack alloca `%plain` in main** and thread
+   that pointer through the transaction + defn ABI. Global-context fallback is
+   not equivalent to the fast alloca state shape.
 1. Prototype the **state plan + capped phis** on the actual IR for float_math:
    - keep stateless print;
    - cap hot phis to the target budget + reserved accumulator/temps;
