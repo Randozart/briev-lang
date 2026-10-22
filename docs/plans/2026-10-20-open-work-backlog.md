@@ -35,6 +35,31 @@ change the historical result files or superseded plans.
   - `benchmarks/results/2026-10-20-fixture2-spsc.md`
   - `benchmarks/results/2026-10-18-fixture1-ws-frame.md`
 
+## 2026-10-21 status addendum
+
+- Effect-shape regression work is **closed**. The interim carry/escaped/
+  stateless selector is merged on `main`; full runtime suite MATCH, library
+  tests 3,284 green, CI green, quick/timing guard PASS.
+- Current anchors: float_math ~0.9–1.0x, queue_drain ~0.50x,
+  interval_step ~0.71–0.75x, telemetry ~0.98x, matrix ~0.97x,
+  sweep_sparse ~0.98x, kalman ~0.86x.
+- Canonical `%EffectCtx` ABI was **abandoned**; see
+  `docs/2026-10-21-canonical-effect-abi-negative-result.md`. Branch/tag:
+  `feat/canonical-effect-abi`, `abandoned/canonical-effect-abi-2026-10-21`.
+- P2-4’s “effect-shape” evidence below is historical: the loop/state-shape
+  part is fixed by the selector. Remaining P2-4 work is genuine vectorization
+  and alias/alignment facts, not the old materialization regression.
+- P2-9’s plain-context ABI direction is retired. Local classification +
+  `LoopMaterializationPlan` landed; the carry selector is the interim effect
+  model.
+- A narrow volatile fence remains for raw accesses inside Ptr-parameter defns
+  (LLVM-18 CI correctness). Completing P1-4/P1-6 interprocedural provenance is
+  the prerequisite to removing it.
+
+**Recommended next sequence:** P1-4/P1-6 provenance coverage (retire the
+fence), then P2-1 small-sum unboxing, then P2-2 inlining/scalar replacement,
+then the remaining P2-4 vectorization gaps.
+
 ## Priority definitions
 
 - **P0** — must be done before calling the current campaign complete: default
@@ -66,7 +91,7 @@ change the historical result files or superseded plans.
 | P1-1 | `obj` literal with a Ptr-typed field stores i64 into a ptr slot. **DONE 2026-10-20**: literal store inttoptrs the handle; field load remains ptr; `ptr_field_smoke` pin; Arena restored to `Ptr<Bit<8>>`. | `BUGS.md`; `tests/tier1/ptr_field_smoke.bv` | Keep the regression; do not reintroduce i64→ptr field stores. |
 | P1-2 | `plain let` Ptr load emits `ptr` where consumers expect i64. **DONE 2026-10-20**: plain Ptr globals use the i64 handle representation consistently; `plain_ptr_smoke` pin. | `BUGS.md`; `tests/tier1/plain_ptr_smoke.bv` | Keep declaration/store/load in lockstep. |
 | P1-3 | Named imports of enum types/variants are undefined. **DONE 2026-10-20**: import keep-set recognizes enums; pre-typecheck `rewrite_enum_variant_access` lowers importer-qualified constructors; `fsm_smoke` and `enum_import_smoke` pins. | `BUGS.md`; tests | Keep the desugar before typecheck in both build/check pipelines. |
-| P1-4 | Canonical pointer coverage is partial: arbitrary local/block i64 values still get a fresh inttoptr. | `canonical_ptr` only seeds args and `%State` Ptr fields | A block-scoped or provenance-threaded cache covers locals and mixed access paths without non-dominating SSA. |
+| P1-4 | Canonical pointer coverage is partial: arbitrary local/block i64 values still get a fresh inttoptr. A narrow volatile fence currently covers raw accesses in Ptr-parameter defns (LLVM-18 CI). | `canonical_ptr` seeds args/`%State` Ptr fields; CI `ptr_crossdefn_probe` | A block-scoped or provenance-threaded cache covers locals and mixed access paths without non-dominating SSA; then remove the fence. |
 | P1-5 | Validate against the original external recommender repro. | `examples/recommender/reference.bv` is not in this tree; PR #29 used it | A checked-in behavioral repro (or a linked external harness) confirms the `picked[]` stale read is gone under `-O3 -flto`. |
 | P1-6 | Mixed raw-memory access paths: `Load#`/`Store#`/`Copy#`/`Set#`, String/List carriers, `%State`, runtime helpers, and raw `Ptr<T>` index/deref. | D+C only made the raw index/deref pair canonical | Tests prove mixed paths cannot alias stale data, or a documented invariant states why they cannot. |
 | P1-7 | `!invariant.load` audit beyond Ptr fields. | We removed it for Ptr state fields because they are mutable; other metadata may still lie | Every `!invariant.load`/`!range`/alignment metadata is justified by a proof or removed. |
@@ -145,6 +170,10 @@ These are ranked by repeated evidence across fixtures and the suite.
 
 ### P2-4 — Loop/vectorization gaps
 
+**Status 2026-10-21:** the effect-shape/materialization regression described
+below is fixed by the carry/escaped selector; remaining work is genuine
+vectorization/alias facts.
+
 **Evidence (P0 full rerun)**
 - `float_math` 2.74x C, `float_math_nonzero` 1.48x.
 - `sweep_sparse` 1.49x, `sweep_mid` 1.31x, `sweep_dense` 1.05x.
@@ -189,6 +218,11 @@ These are ranked by repeated evidence across fixtures and the suite.
   improved.
 
 ### P2-9 — Storage-class inference, Local class, and plain-context ABI
+
+**Status 2026-10-21:** Local classification + `LoopMaterializationPlan` landed;
+the canonical `%EffectCtx` ABI was abandoned after measured regressions. The
+carry/escaped selector is the interim effect model. Further work only on new
+measured evidence.
 
 **Status:** revised 2026-10-20 after the C-shape probes. PlainContext is no
 longer the primary fix; a derived **Local** class / loop-local scalarization
