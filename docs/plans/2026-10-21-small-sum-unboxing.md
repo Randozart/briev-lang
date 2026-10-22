@@ -192,5 +192,5 @@ merge a partial representation.
 | `b3ef0b4a` | plan |
 | `8a27a77f` | enum representation/escape analysis + tests |
 | `29d9e0c4` | InlineLocal lowering + local_enum_smoke |
-| `_this commit_` | ReturnedSmall sret ABI |
+| `cab089b9` | ReturnedSmall sret ABI |
 | _pending_ | match/destructuring coverage |
