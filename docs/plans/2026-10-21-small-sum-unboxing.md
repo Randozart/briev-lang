@@ -150,7 +150,13 @@ Results:
 
 Remaining opportunity: inline the nested enum payload (e.g. `Ok(TcpState.X)`)
 without a callee-frame scratch slot, and allow sret passthrough through local
-enum lets; that is the next measured slice, not a blanket ABI change.
+enum lets.
+
+**Negative experiment (2026-10-21):** attempted nested payload slot at
+`%enum_out+2` plus returned-local sret passthrough. BOUND=5 output matched, but
+BOUND=50M `fsm_dispatch` and `ws_frame` segfaulted (caller-frame/slot lifetime
+bug). Reverted to `cab089b9`; the attempt is preserved on branch
+`experiment/nested-sret` (`2ed66530`) for reference. Do not merge it.
 
 ## Phase D — match/destructuring
 
