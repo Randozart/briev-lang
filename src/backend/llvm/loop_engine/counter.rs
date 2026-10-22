@@ -102,6 +102,13 @@ impl LlvmBackend {
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
     ) {
         let c0 = self.fun.txn_counter;
+        // 2026-10-21 (canonical effect ABI): effect calls inside the loop
+        // body need `ptr %effect`. Version-DAG emission is always main-mode
+        // (the caller has already allocated/seeded %EffectCtx); re-seed the
+        // cached name because body emission may clear FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         // 2026-10-17 (readiness gate 1): a watchdog `within N ms` deadline
         // captures the loop-entry clock here (mirrors emit_countable_main's
         // cm_start). The gate itself sits between the bound check and the
@@ -257,6 +264,13 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): seed the context pointer after
+        // main initialization so folded-loop effect calls use the alloca,
+        // not the violation placeholder. emit_state_base allocated it; the
+        // prologue may have reset FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         self.emit_folded_loop(out, txn_name, counter_idx, total_idx, total_const_name,
             ".fmain", use_phi, body, 1, false, bound_literal, counter_var, watchdog);
         // 2026-09-11 (buffered stdout): flush the stdlib buffer before main
@@ -341,10 +355,25 @@ impl LlvmBackend {
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
         is_main: bool,
     ) {
+        // 2026-10-21 (canonical effect ABI): internal countdown loops have no
+        // %EffectCtx parameter in this slice. Seed the violation placeholder
+        // unconditionally, then let main-mode seeding overwrite it with the
+        // real alloca pointer after state initialization.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect.intf".to_string());
+            writeln!(out, "  %effect.intf = inttoptr i64 0 to ptr ; canonical effect ABI violation").ok();
+        }
         if is_main {
             self.emit_main_header(out, "#0", true);
             self.emit_state_base(out);
             self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): seed the context pointer after
+        // main initialization so folded-loop effect calls use the alloca,
+        // not the violation placeholder. emit_state_base allocated it; the
+        // prologue may have reset FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
             // 2026-09-07 (init-block phi predecessor fix): a state field's
             // `op Init` may emit blocks (HashMap.init's match). In MAIN mode
             // the loop header's single predecessor is `entry` (reached by a
@@ -724,6 +753,13 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): seed the context pointer after
+        // main initialization so folded-loop effect calls use the alloca,
+        // not the violation placeholder. emit_state_base allocated it; the
+        // prologue may have reset FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         // 2026-09-07 (swan-song dominance fix): the post-hoist (.cde_ block)
         // reads body let-locals (e.g. hash_ops_idio's `sum`) whose SSA
         // registers live in .cdb_ and do NOT dominate .cde_ (a header
@@ -1327,6 +1363,14 @@ impl LlvmBackend {
         use crate::analysis::node_decompose::{PredicateClass, Segment, split_into_segments};
         let segments = split_into_segments(body);
 
+        // 2026-10-21 (canonical effect ABI): this is a main-mode emission;
+        // main has already allocated/seeded %EffectCtx. Re-seed the cached
+        // pointer because this function may run after other emitters cleared
+        // FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
+
         // Locate the single runtime guard and collect [pre] / [post] statements.
         let mut pre: Vec<Statement> = Vec::new();
         let mut post: Vec<Statement> = Vec::new();
@@ -1379,6 +1423,13 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): seed the context pointer after
+        // main initialization so folded-loop effect calls use the alloca,
+        // not the violation placeholder. emit_state_base allocated it; the
+        // prologue may have reset FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         // 2026-09-07 (init-block phi predecessor fix): a state field's `op
         // Init` may emit blocks (HashMap.init's match). The version-DAG
         // header's single predecessor is `entry`, so reset the stale block.
@@ -1728,6 +1779,16 @@ impl LlvmBackend {
         write_set: &HashSet<String>,
         hoisted: &mut Vec<Vec<Statement>>,
     ) {
+        // 2026-10-21 (canonical effect ABI): countdown bodies call effect
+        // defns with `ptr %effect`. The enclosing emission (main fold, ssa
+        // main, assume-shape txn, or internal-fold txn copy) has seeded the
+        // name — including the `%effect.intf` placeholder for non-threaded
+        // txn copies. Do NOT clear it mid-body; nested clear_locals already
+        // no longer resets the pointer.
+        if self.effect_context_active() && self.fun.effect_ptr.is_none() {
+            self.warnings.push("internal: countdown body found no effect pointer".to_string());
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         let mut i = 0;
         while i < body.len() {
             let stmt = &body[i];

@@ -1485,7 +1485,9 @@ impl FunctionContext {
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;
-        self.effect_ptr = None;
+        // effect_ptr survives clear_locals: it is seeded per top-level
+        // emission (main/txn/defn), not per statement group. Seeding sites
+        // overwrite it for each new function.
         self.effect_carry = false;
         self.volatile_raw_ptr_params = false;
         self.pending_consumes.clear();

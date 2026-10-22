@@ -116,6 +116,10 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): modulo-dispatch main.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         let counter_idx = self.ctx.field_index_map.get(counter_name).copied().unwrap_or(0);
         let (c_val, _) = self.emit_state_load_i64_by_idx(out, "  ", counter_idx);
         let mod_val = self.fun.next_reg_with_prefix("msm");
@@ -344,6 +348,13 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): seed the effect-context pointer
+        // after main initialization; node bodies inlined below emit effect
+        // calls that reference `%effect`. Re-seed after nested emitters may
+        // have reset FunctionContext (bootstrap node, prealloc, etc.).
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         // 2026-09-14 (machine-entry plan): the authored bootstrap node runs
         // ONCE here — after the state initializer, before the first dispatch
         // pass. Its typed stores ARE the handoff state its postcondition
@@ -354,6 +365,11 @@ impl LlvmBackend {
                 if self.fun.terminated { break; }
                 self.emit_statement(out, stmt, "  ");
             }
+        }
+        // 2026-10-21 (canonical effect ABI): re-seed after the bootstrap body
+        // in case nested emitters reset FunctionContext.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
         }
         self.emit_ssa_mt_prealloc(out, txns);
         // 2026-07-18: Convergence check — if no wake triggers and no async,
@@ -629,6 +645,10 @@ impl LlvmBackend {
         self.emit_main_header(out, "#0", true);
         self.emit_state_base(out);
         self.emit_inline_init_stores(out, "%state");
+        // 2026-10-21 (canonical effect ABI): folded multi-txn main.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         let bound_reg = if let Some(lit) = bound_literal {
             // 2026-08-08: a shared compile-time literal bound — the fold loop
             // must run to the literal, not the `counter < 1` fallback.

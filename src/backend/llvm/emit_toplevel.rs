@@ -4372,6 +4372,13 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // %body, label %rollback` made the rollback block (and its
         // exit/run/escape action handling) unreachable dead code; both removed.
         // The assume_shape modifier still selects this emission path.
+        // 2026-10-21 (canonical effect ABI): the direct-SSA main replay
+        // inlines reactive txn bodies into main(), which owns the `%effect`
+        // alloca. Seed the cached name before any txn-function emission so
+        // effect calls in the replayed body resolve to main's pointer.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect".to_string());
+        }
         if assume_action.is_some() {
             // 2026-07-17: Use @txn_<name> prefix so call sites in emit_ssa_loop
             // and emit_folded_multi_main can reference the function (they call
@@ -4382,6 +4389,9 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             self.fun.cur_block = None;
             writeln!(out, "define void @txn_{}({}) local_unnamed_addr {}{}{} {{", name, self.ctx.state_ptr_param, txn_attr, alwaysinline, meta_attrs).ok();
             writeln!(out, "  entry:").ok();
+            // 2026-10-21 (canonical effect ABI): assume-shape txns carry no
+            // %EffectCtx parameter in this slice; seed the placeholder so
+            // folded effect calls do not fabricate an undefined SSA use.
             // Arena for body emission — same rationale as the standard path:
             // the reactor dispatch calls @txn_name as a separate function,
             // so arena allocas must live here, not in main().
@@ -4401,11 +4411,15 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             });
             self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
-            // 2026-10-21 (pointer provenance): seed the txn's Ptr-field cache
-            // once at entry. Otherwise each load of the same Ptr state field
-            // inside the loop produces a distinct inttoptr, and LTO can treat
-            // a sibling-defn load/store through those pointers as non-aliasing.
+            // 2026-10-21 (pointer provenance + canonical effect ABI): seed the
+            // txn's Ptr-field cache and effect-context pointer once at entry.
+            // The direct-SSA main replay inlines this body, so the call sites
+            // must reference main's `%effect` SSA name.
             self.preload_state_ptr_fields(out);
+            if self.effect_context_active() {
+                self.fun.effect_ptr = Some("%effect.intf".to_string());
+                writeln!(out, "  %effect.intf = inttoptr i64 0 to ptr ; canonical effect ABI placeholder").ok();
+            }
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");
             }
@@ -4663,6 +4677,10 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 ..Default::default()
             });
             self.preload_state_ptr_fields(out);
+            if self.effect_context_active() {
+                self.fun.effect_ptr = Some("%effect.intf".to_string());
+                writeln!(out, "  %effect.intf = inttoptr i64 0 to ptr ; canonical effect ABI placeholder").ok();
+            }
             self.emit_arena_init(out, "  ");
             if !matches!(txn.contract.pre_condition, Expr::Bool(true)) {
                 self.emit_precondition_check(out, &txn.contract.pre_condition, "  ");

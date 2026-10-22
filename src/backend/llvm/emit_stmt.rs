@@ -1963,12 +1963,17 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // garbage. `defn_takes_state` (2026-09-23) is the shared
             // call-site gate; this site was never migrated to it.
             if backend.ctx.defn_params.contains_key("exit_prog") {
-                let st = if backend.ctx.defn_takes_state("exit_prog") {
-                    "ptr %state, "
-                } else {
-                    ""
-                };
-                writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
+                let mut args = String::new();
+                if backend.ctx.defn_takes_state("exit_prog") {
+                    args.push_str("ptr %state, ");
+                }
+                if backend.effect_context_active()
+                    && backend.ctx.defn_takes_effect("exit_prog")
+                {
+                    let p = backend.emit_effect_ptr_value(out, indent);
+                    args.push_str(&format!("ptr {}, ", p));
+                }
+                writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, args, code).ok();
             } else {
                 writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
             }

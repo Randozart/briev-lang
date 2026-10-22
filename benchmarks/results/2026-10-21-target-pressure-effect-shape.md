@@ -209,6 +209,23 @@ not a default change: it wins `sweep_sparse` strongly, is close on float, and
 is slightly slower on telemetry. Kept on the experiment branch behind
 `BRIEV_DIAG_EFFECT_CARRY`; main/default unchanged.
 
+## Canonical %EffectCtx experiment (2026-10-21)
+
+`BRIEV_DIAG_EFFECT_CTX=1` (stack effect context, no `%State` escape) full
+runtime suite: all MATCH, but the carry-winning loops regress:
+
+| Benchmark | EffectCtx | carry selection |
+|---|---:|---:|
+| float_math_nonzero | 1.25x | 0.97x |
+| kalman_filter_runtime | 1.03x | 0.86x |
+| sweep_sparse | 1.32x | 0.98x |
+| float_math | 0.91–0.99x | 0.89–0.96x |
+| queue_drain | 0.51x | 0.50x |
+
+The context ABI removes state escape but also removes the carry loop-carried
+shape. It is not a replacement for carry/Local-loop materialization by itself.
+Default off; not promoted.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

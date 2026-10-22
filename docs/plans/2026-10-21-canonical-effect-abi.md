@@ -183,6 +183,37 @@ regresses, check that `%State` is truly unescaped.
 - Language-level decision: how do programs declare strict FP?
 - Not part of this implementation; record as a follow-up plan.
 
+## S2/S3 experiment result (2026-10-21)
+
+Implemented behind `BRIEV_DIAG_EFFECT_CTX=1`: stack `%EffectCtx` alloca,
+`ptr noalias nocapture %effect` defn parameter, effect-context plan consumption,
+no program-level escaped demotion, and guard-bearing countdown loops.
+
+The gate **fails** for the carry-winning direct loops:
+
+| Benchmark | `%EffectCtx` | current carry selection | C |
+|---|---:|---:|---:|
+| float_math_nonzero | 1.25x | 0.97x | 1.00x |
+| kalman_filter_runtime | 1.03x | 0.86x | 1.00x |
+| sweep_sparse | 1.32x | 0.98x | 1.00x |
+| float_math | ~0.91–0.99x | 0.89–0.96x | 1.00x |
+| queue_drain | 0.51x | 0.50x | 1.00x |
+
+Interpretation: the explicit effect context removes the `%State` escape, but
+by itself it restores the **stateless SROA/vector shape**, which is wrong for
+the carry-winning loops. It is the E1 tradeoff again, now with a clean ABI.
+The canonical ABI is necessary but not sufficient; the Local-loop
+materialization/carry shape must coexist with it.
+
+The experiment also required placeholder `%effect.intf` values in dead txn
+copies (the direct-SSA main replay owns the real alloca). That is acceptable
+only for a gated experiment; a production version must thread the context
+through txn/task/async ABIs explicitly.
+
+Status: **not promoted**; default behavior unchanged. This branch records the
+negative result and the ABI scaffolding for the next attempt (Local-loop
+materialization + context), or a decision to keep the interim selector.
+
 ## Experiments / measurements
 
 Every slice runs:

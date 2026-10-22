@@ -6523,6 +6523,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.fun.in_callable_txn = false;
         self.fun.returns_i64 = false;
         self.fun.fn_ret_ty = "void".to_string();
+        // 2026-10-21 (canonical effect ABI): the internal countdown txn has
+        // no %EffectCtx parameter. This function is dead under direct-SSA
+        // dispatch (main replays the body inline), but its IR must still be
+        // defined — emit the violation placeholder instead of referencing
+        // main's `%effect` alloca.
+        if self.effect_context_active() {
+            self.fun.effect_ptr = Some("%effect.intf".to_string());
+            writeln!(out, "  %effect.intf = inttoptr i64 0 to ptr ; canonical effect ABI violation").ok();
+        }
         self.emit_arena_init(out, "  ");
         // The swan-song-stripped body + post-loop hoist, mirroring the
         // single-node fold (analysis.swan_songs).
