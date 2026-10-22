@@ -22,6 +22,8 @@ pub struct EnumLayout {
     pub image_words: usize,
     /// Per-variant payload word count, in declaration order.
     pub variant_payload_words: Vec<usize>,
+    /// Per-variant flag: payload is a nested enum image laid out inline.
+    pub variant_payload_inline: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,19 +104,34 @@ impl EnumLayoutPlanner {
             .zip(args.iter().cloned())
             .collect();
         let mut variant_payload_words = Vec::with_capacity(def.variants.len());
+        let mut variant_payload_inline = Vec::with_capacity(def.variants.len());
         for (_, payload) in &def.variants {
             let concrete = if subst.is_empty() {
                 payload.clone()
             } else {
                 crate::typechecker::substitute_type(payload, &subst)
             };
+            let inline = self.is_inline_enum(&concrete, depth + 1);
+            variant_payload_inline.push(inline);
             variant_payload_words.push(self.payload_words(&concrete, depth + 1));
         }
         let payload_words = variant_payload_words.iter().copied().max().unwrap_or(0).max(1);
         Some(EnumLayout {
             image_words: 1 + payload_words,
             variant_payload_words,
+            variant_payload_inline,
         })
+    }
+
+    fn is_inline_enum(&self, ty: &Type, depth: usize) -> bool {
+        if depth >= self.max_depth {
+            return false;
+        }
+        match ty {
+            Type::Custom(n) => self.enums.contains_key(n),
+            Type::Applied(n, _) => self.enums.contains_key(n),
+            _ => false,
+        }
     }
 
     fn payload_words(&self, ty: &Type, depth: usize) -> usize {
@@ -178,6 +195,7 @@ mod tests {
         // TcpState image = 2, FsmError image = 2 -> Result image = 3.
         assert_eq!(layout.image_words, 3);
         assert_eq!(layout.variant_payload_words, vec![2, 2]);
+        assert_eq!(layout.variant_payload_inline, vec![true, true]);
     }
 
     #[test]

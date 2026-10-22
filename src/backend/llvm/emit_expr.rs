@@ -5789,13 +5789,45 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             );
         }
         if payload_expected.is_some() {
-            self.fun.expected_enum_type = payload_expected;
+            self.fun.expected_enum_type = payload_expected.clone();
         }
+
+        // 2026-10-21 (B3 nested enum layout): a direct nested enum payload is
+        // written into the outer image's payload words; the outer payload word
+        // is the nested tag, not a handle. Non-constructor/variable payloads
+        // still store a handle.
+        let layout = saved_expected_enum
+            .as_ref()
+            .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)));
+        let arg_is_ctor = args.len() == 1
+            && match &args[0] {
+                Expr::Call(n, _, _) => self.enum_variant_ctor(n).is_some(),
+                Expr::Field(_, n) => self.enum_variant_ctor(n).is_some(),
+                _ => false,
+            };
+        let inline_payload = layout
+            .as_ref()
+            .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
+            .unwrap_or(false)
+            && arg_is_ctor;
 
         // Payload: single argument stored in its boxed-i64 representation;
         // zero-payload variants store 0.
         let payload_i64 = if args.is_empty() {
-            "0".to_string()
+            Some("0".to_string())
+        } else if inline_payload {
+            let nested = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i64, ptr {}, i64 1",
+                indent, nested, img
+            )
+            .ok();
+            let saved_slot = self.fun.enum_construct_slot.take();
+            self.fun.enum_construct_slot = Some(nested);
+            let _ = self.emit_expr(out, &args[0], indent);
+            self.fun.enum_construct_slot = saved_slot;
+            None
         } else {
             let preg = if args.len() == 1 {
                 self.emit_expr(out, &args[0], indent)
@@ -5809,16 +5841,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // i64 (struct literals box to i64) — emitting `ptrtoint ptr <i64>`
             // and breaking clang. adapt_to_i64 is the protocol-driven source
             // of truth (pass-through for handles, bitcast for Float, …).
-            self.adapt_to_i64(out, indent, &preg)
+            Some(self.adapt_to_i64(out, indent, &preg))
         };
-        let payload_slot = self.fun.gen_reg();
-        writeln!(
-            out,
-            "{}{} = getelementptr i64, ptr {}, i64 1",
-            indent, payload_slot, img
-        )
-        .ok();
-        writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
+        if let Some(payload_i64) = payload_i64 {
+            let payload_slot = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i64, ptr {}, i64 1",
+                indent, payload_slot, img
+            )
+            .ok();
+            writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
+        }
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, raw).ok();
         self.fun.expected_enum_type = saved_expected_enum;
@@ -6867,7 +6901,33 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // handle as its i64 box. (A raw i64 typed `String` made
                     // `Err(e)` re-box `ptrtoint ptr <i64>` — invalid IR.)
                     let pty = declared.unwrap_or(Type::int());
-                    let payload = self.unwrap_union_payload(out, indent, scrut, &pty);
+                    let tag_idx = self
+                        .enum_variant_ctor(vname)
+                        .map(|(_, idx)| idx)
+                        .unwrap_or(usize::MAX);
+                    let inline_payload = self
+                        .ctx
+                        .enum_layout_planner
+                        .as_ref()
+                        .and_then(|p| p.layout_for(scrut_ty))
+                        .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
+                        .unwrap_or(false);
+                    let payload = if inline_payload {
+                        let base = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, scrut).ok();
+                        let nested = self.fun.gen_reg();
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr i64, ptr {}, i64 1",
+                            indent, nested, base
+                        )
+                        .ok();
+                        let handle = self.fun.gen_reg();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, nested).ok();
+                        TypedRegister { name: handle, ty: pty.clone() }
+                    } else {
+                        self.unwrap_union_payload(out, indent, scrut, &pty)
+                    };
                     for sp in subpats {
                         if let crate::ast::Pattern::Binding(bn) = sp {
                             self.fun.last_val_temps.insert(bn.clone(), payload.name.clone());

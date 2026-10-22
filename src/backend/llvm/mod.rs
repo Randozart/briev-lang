@@ -3135,8 +3135,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // sret slot; everything else keeps the boxed ABI.
         self.ctx.defn_sret.clear();
         let enum_plan = crate::analysis::enum_repr::build_enum_representation_plan(&reordered_items);
+        if std::env::var_os("BRIEV_DIAG_ENUM_TYPE").is_some() {
+            eprintln!("diag plan: {:?}", enum_plan);
+        }
         for name in crate::analysis::enum_repr::sret_safe_defns(&reordered_items, &enum_plan) {
             self.ctx.defn_sret.insert(name);
+        }
+        if std::env::var_os("BRIEV_DIAG_ENUM_TYPE").is_some() {
+            eprintln!("diag sret: {:?}", self.ctx.defn_sret);
         }
         // 2026-10-21 (B1 nested enum layout): concrete instance planner.
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
