@@ -5,7 +5,7 @@ Run this before and after LLVM backend changes to detect regressions.
 ## Prerequisites
 
 - Baseline worktree at `../briev-compiler-baseline` (locked to
-  `compiler-baseline-2026-10-21`, commit `98f7fc42`; see
+  `compiler-baseline-2026-10-21-carrier`, commit `5a1a0532`; see
   `benchmarks/BASELINE.lock`)
 - Both worktrees built with `cargo build --release`
 
