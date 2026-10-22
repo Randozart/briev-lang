@@ -119,6 +119,9 @@ pub struct CompilerContext {
     /// 2026-10-20 (storage-class ABI): per-defn verdict for the derived
     /// PLAIN/plumbing context. Independent of `%state`; a defn may need both.
     pub defn_needs_plain: HashMap<String, bool>,
+    /// 2026-10-21 (P2-1 ReturnedSmall): internal enum-returning defns whose
+    /// return forms are constructor-shaped; they take a hidden ptr out slot.
+    pub defn_sret: std::collections::HashSet<String>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
     /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
@@ -620,6 +623,7 @@ impl CompilerContext {
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
             defn_needs_plain: HashMap::new(),
+            defn_sret: std::collections::HashSet::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
@@ -1084,6 +1088,15 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub enum_inline_slots: HashMap<String, String>,
     /// Active slot while emitting one eligible constructor initializer.
     pub enum_construct_slot: Option<String>,
+    /// 2026-10-21 (P2-1 ReturnedSmall): hidden caller slot for an
+    /// enum-returning defn, active only in return context.
+    pub enum_out_slot: Option<String>,
+    pub enum_return_context: bool,
+    pub enum_out_busy: bool,
+    /// Caller slots for enum-returning sret calls bound to local lets.
+    pub sret_call_slots: HashMap<String, String>,
+    /// Active slot while marshaling one eligible sret call.
+    pub sret_call_slot: Option<String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1361,6 +1374,11 @@ impl FunctionContext {
             volatile_raw_ptr_params: false,
             enum_inline_slots: HashMap::new(),
             enum_construct_slot: None,
+            enum_out_slot: None,
+            enum_return_context: false,
+            enum_out_busy: false,
+            sret_call_slots: HashMap::new(),
+            sret_call_slot: None,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1488,6 +1506,10 @@ impl FunctionContext {
         self.effect_carry = false;
         self.volatile_raw_ptr_params = false;
         self.enum_construct_slot = None;
+        self.enum_out_slot = None;
+        self.enum_return_context = false;
+        self.enum_out_busy = false;
+        self.sret_call_slot = None;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

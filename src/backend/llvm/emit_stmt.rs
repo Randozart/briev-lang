@@ -432,6 +432,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(slot) = &inline_enum_slot {
                 backend.fun.enum_construct_slot = Some(slot.clone());
             }
+            let sret_slot = backend.fun.sret_call_slots.get(name).cloned();
+            if let Some(slot) = &sret_slot {
+                backend.fun.sret_call_slot = Some(slot.clone());
+            }
             let mut val = match expr {
                 Some(crate::ast::Expr::Identifier(alias))
                     if backend.fun.closure_lets.contains_key(alias) =>
@@ -726,6 +730,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 }
             };
             backend.fun.enum_construct_slot = None;
+            backend.fun.sret_call_slot = None;
             // 2026-08-17 (tuple correctness, plan
             // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
             // DESTRUCTURE `let (a, b) = t`. The parser + typechecker already
@@ -1782,7 +1787,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // exits (term is a successful completion).
             backend.flush_defer_cleanup(out, indent);
             if let Some(val) = val {
+                let saved_enum_ret = backend.fun.enum_return_context;
+                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some();
                 let mut reg = backend.emit_expr(out, val, indent);
+                backend.fun.enum_return_context = saved_enum_ret;
                 // 2026-08-01 (C3): a boxed Float param returned from a defn
                 // (`term v`) is an i64 handle — unbox through the float cache so
                 // `ret float` receives the actual float, not the handle.

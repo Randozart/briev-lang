@@ -3130,6 +3130,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
         }
         self.build_field_index(&reordered_items);
+        // 2026-10-21 (P2-1 ReturnedSmall): classify enum-returning defns from
+        // the structural plan. Only constructor-shaped returns take the hidden
+        // sret slot; everything else keeps the boxed ABI.
+        self.ctx.defn_sret.clear();
+        let enum_plan = crate::analysis::enum_repr::build_enum_representation_plan(&reordered_items);
+        for name in crate::analysis::enum_repr::sret_safe_defns(&reordered_items, &enum_plan) {
+            self.ctx.defn_sret.insert(name);
+        }
 
         // Scan for cell-to-cell wires from TrgBinding statements
         self.scan_cell_wires(items);

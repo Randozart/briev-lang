@@ -84,7 +84,9 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
     let variant_set: HashMap<&str, ()> = variants.iter().map(|v| (v.as_str(), ())).collect();
     let enum_set: HashMap<&str, ()> = enum_names.iter().map(|n| (n.as_str(), ())).collect();
     let mut defns = BTreeMap::new();
+    let mut candidates: HashMap<String, ()> = HashMap::new();
 
+    // Seed: enum-returning defns whose returns are constructors.
     for item in items {
         let TopLevel::Definition(d) = item else { continue; };
         let return_is_enum = defn_return_type(d)
@@ -93,15 +95,74 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
         if !return_is_enum {
             continue;
         }
-        let class = if all_return_forms_constructor(d, &variant_set) {
-            EnumRepresentation::ReturnedSmallCandidate
-        } else {
-            EnumRepresentation::Boxed
-        };
-        defns.insert(d.name.clone(), class);
+        if all_return_forms_constructor(d, &variant_set, &candidates) {
+            candidates.insert(d.name.clone(), ());
+        }
+        defns.insert(d.name.clone(), EnumRepresentation::Boxed);
+    }
+
+    // Fixpoint: an enum-returning defn that returns a call to an sret
+    // candidate is itself an sret passthrough (`ws_decode` -> `ws_decode_mask`).
+    loop {
+        let mut changed = false;
+        for item in items {
+            let TopLevel::Definition(d) = item else { continue; };
+            if candidates.contains_key(&d.name) {
+                continue;
+            }
+            let return_is_enum = defn_return_type(d)
+                .map(|t| type_is_enum(&t, &enum_set))
+                .unwrap_or(false);
+            if return_is_enum && all_return_forms_constructor(d, &variant_set, &candidates) {
+                candidates.insert(d.name.clone(), ());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    for name in candidates.keys() {
+        if let Some(class) = defns.get_mut(name) {
+            *class = EnumRepresentation::ReturnedSmallCandidate;
+        }
     }
 
     EnumRepresentationPlan { defns, variants }
+}
+
+/// Conservative sret eligibility: a candidate must not be called from another
+/// enum-returning defn. That caller may hold the returned handle in a local
+/// let and return it, which would dangle the caller-frame slot. Keeping such
+/// callees boxed is safe; SC (single-caller node) remains sret.
+pub fn sret_safe_defns(
+    items: &[TopLevel],
+    plan: &EnumRepresentationPlan,
+) -> Vec<String> {
+    use crate::ast::visit::walk_stmts;
+    let enum_defs: HashMap<&str, ()> = plan.defns.keys().map(|n| (n.as_str(), ())).collect();
+    let mut unsafe_names: HashMap<String, ()> = HashMap::new();
+    for item in items {
+        let TopLevel::Definition(d) = item else { continue; };
+        if !enum_defs.contains_key(d.name.as_str()) {
+            continue;
+        }
+        walk_stmts(&d.body, &mut |e| {
+            if let Expr::Call(callee, _, _) = e {
+                if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {
+                    unsafe_names.insert(callee.clone(), ());
+                }
+            }
+        });
+    }
+    plan.defns
+        .iter()
+        .filter(|(name, class)| {
+            **class == EnumRepresentation::ReturnedSmallCandidate
+                && !unsafe_names.contains_key(*name)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 fn defn_return_type(d: &crate::ast::Definition) -> Option<crate::ast::Type> {
@@ -123,6 +184,7 @@ fn type_is_enum(ty: &crate::ast::Type, enum_set: &HashMap<&str, ()>) -> bool {
 fn all_return_forms_constructor(
     d: &crate::ast::Definition,
     variants: &HashMap<&str, ()>,
+    sret_calls: &HashMap<String, ()>,
 ) -> bool {
     let mut saw = false;
     for stmt in &d.body {
@@ -132,7 +194,7 @@ fn all_return_forms_constructor(
         };
         if let Some(e) = ret {
             saw = true;
-            if !constructor_shaped_return(e, variants) {
+            if !constructor_shaped_return(e, variants, sret_calls) {
                 return false;
             }
         }
@@ -142,13 +204,19 @@ fn all_return_forms_constructor(
 
 /// A return expression is constructor-shaped when it is a constructor call,
 /// a qualified variant field, or a match whose every arm is constructor-shaped.
-fn constructor_shaped_return(expr: &Expr, variants: &HashMap<&str, ()>) -> bool {
+fn constructor_shaped_return(
+    expr: &Expr,
+    variants: &HashMap<&str, ()>,
+    sret_calls: &HashMap<String, ()>,
+) -> bool {
     match expr {
-        Expr::Call(name, _, _) => is_variant_name(name, variants),
+        Expr::Call(name, _, _) => {
+            is_variant_name(name, variants) || sret_calls.contains_key(name)
+        }
         Expr::Field(_, name) => is_variant_name(name, variants),
         Expr::Match(_, arms) => arms
             .iter()
-            .all(|arm| constructor_shaped_return(&arm.body, variants)),
+            .all(|arm| constructor_shaped_return(&arm.body, variants, sret_calls)),
         Expr::Block(stmts) => stmts
             .iter()
             .rev()
@@ -156,7 +224,7 @@ fn constructor_shaped_return(expr: &Expr, variants: &HashMap<&str, ()>) -> bool 
                 Statement::Expression(e) | Statement::Term(Some(e)) => Some(e),
                 _ => None,
             })
-            .map(|e| constructor_shaped_return(e, variants))
+            .map(|e| constructor_shaped_return(e, variants, sret_calls))
             .unwrap_or(false),
         _ => false,
     }
@@ -206,6 +274,19 @@ mod tests {
             plan.defn_class("f"),
             EnumRepresentation::ReturnedSmallCandidate
         );
+    }
+
+    #[test]
+    fn sret_candidate_called_by_enum_returning_defn_is_filtered() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn inner(x: Int) -> R { term Ok(x); };\n\
+             defn outer(x: Int) -> R { let r: R = inner(x); term r; };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        let safe = sret_safe_defns(&items, &plan);
+        assert!(!safe.contains(&"inner".to_string()),
+            "enum-returning caller can return a caller-frame handle");
     }
 
     #[test]

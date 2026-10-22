@@ -3532,10 +3532,73 @@ impl LlvmBackend {
         out
     }
 
+    /// 2026-10-21 (P2-1 ReturnedSmall): find local `let r = enum_call(...)`
+    /// bindings where the callee takes the hidden sret slot and every use of
+    /// `r` is a local match/tag/payload consumer.
+    fn find_sret_call_lets(&self, d: &crate::ast::Definition) -> Vec<String> {
+        use crate::ast::visit::walk_stmts;
+        let mut out = Vec::new();
+        for stmt in &d.body {
+            let crate::ast::Statement::Let { name, expr: Some(init), .. } = stmt else {
+                continue;
+            };
+            let crate::ast::Expr::Call(callee, _, _) = init else {
+                continue;
+            };
+            if !self.ctx.defn_sret.contains(callee) {
+                continue;
+            }
+            let mut uses = 0usize;
+            let mut allowed = 0usize;
+            walk_stmts(&d.body, &mut |e| match e {
+                crate::ast::Expr::Identifier(n) if n == name => uses += 1,
+                crate::ast::Expr::Match(scrut, _)
+                    if matches!(scrut.as_ref(), crate::ast::Expr::Identifier(n) if n == name) =>
+                {
+                    uses += 1;
+                    allowed += 1;
+                }
+                crate::ast::Expr::Call(fn_name, args, _)
+                    if matches!(fn_name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_err")
+                        && args.iter().any(|a| matches!(a, crate::ast::Expr::Identifier(n) if n == name)) =>
+                {
+                    // Count each occurrence below via the Identifier arm; this
+                    // only marks the call context as allowed.
+                }
+                _ => {}
+            });
+            // The walker counts the identifier inside match scrutinees and
+            // ordinary identifier leaves exactly once. Recount allowed call
+            // arguments separately because walk_expr visits the call and the
+            // identifier child.
+            let mut allowed_calls = 0usize;
+            walk_stmts(&d.body, &mut |e| {
+                if let crate::ast::Expr::Call(fn_name, args, _) = e {
+                    if matches!(fn_name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_err") {
+                        allowed_calls += args
+                            .iter()
+                            .filter(|a| matches!(a, crate::ast::Expr::Identifier(n) if n == name))
+                            .count();
+                    }
+                }
+            });
+            if uses > 0 && allowed + allowed_calls == uses {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
         self.fun.enum_inline_slots.clear();
+        self.fun.sret_call_slots.clear();
+        self.fun.enum_out_slot = None;
+        let sret_enum = self.ctx.defn_sret.contains(&d.name);
+        if sret_enum {
+            self.fun.enum_out_slot = Some("%enum_out".to_string());
+        }
         self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
             matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
         });
@@ -3595,8 +3658,14 @@ impl LlvmBackend {
             }
             write!(out, "ptr noundef noalias nocapture align 8 %plain").ok();
         }
+        if sret_enum {
+            if needs_state || needs_plain {
+                let _ = write!(out, ", ");
+            }
+            write!(out, "ptr noalias nocapture align 8 %enum_out").ok();
+        }
         for (i, (n, t)) in d.parameters.iter().enumerate() {
-            if needs_state || needs_plain || i > 0 {
+            if needs_state || needs_plain || sret_enum || i > 0 {
                 let _ = write!(out, ", ");
             }
             // 2026-07-04: dereferenceable(N) for Ptr<T> parameters.
@@ -3767,6 +3836,14 @@ impl LlvmBackend {
             let slot = self.fun.next_reg_with_prefix("einl");
             writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
             self.fun.enum_inline_slots.insert(name, slot);
+        }
+        // 2026-10-21 (P2-1 ReturnedSmall): caller slots for enum-returning
+        // sret calls whose bound let is consumed only by local match/tag/
+        // payload operations.
+        for name in self.find_sret_call_lets(d) {
+            let slot = self.fun.next_reg_with_prefix("esrt");
+            writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
+            self.fun.sret_call_slots.insert(name, slot);
         }
         // 2026-10-20 (pointer provenance): seed the per-function Ptr-field
         // cache from the entry block. Entry definitions dominate every use;

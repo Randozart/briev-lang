@@ -10666,8 +10666,14 @@ defn make() -> Option {
         "enum param must be the i64 handle: {}",
         &ir[..ir.len().min(3000)]
     );
-    // Construction boxes {tag=0, payload} — the Some arm's malloc image.
-    assert!(ir.contains("call ptr @malloc(i64 16)"), "boxed image missing");
+    // 2026-10-21 (P2-1 ReturnedSmall): `make` has only constructor-shaped
+    // returns, so it now takes the hidden sret slot instead of boxing.
+    assert!(
+        ir.contains("define i64 @make(ptr noalias nocapture align 8 %enum_out)"),
+        "constructor-returning defn should use the sret enum slot:\n{}",
+        &ir[..ir.len().min(4000)]
+    );
+    assert!(!ir.contains("call ptr @malloc(i64 16)"), "enum result should be unboxed");
 }
 
 /// 2026-09-24 (stateless-defn × arena): in a program whose %State carries

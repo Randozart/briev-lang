@@ -125,6 +125,33 @@ Use a hidden `sret` pointer, not a two-word return struct:
 - A nested call in return context passes the caller's slot to the callee.
 - Any non-return use ignores the slot and boxes.
 
+### Phase C result (2026-10-21)
+
+Landed the hidden `sret` enum ABI:
+
+- internal enum-returning defns with constructor-shaped returns take
+  `ptr %enum_out`;
+- constructors in return context write tag/payload into the caller slot;
+- eligible local `let r = enum_call(...)` callers allocate the slot and match
+  it locally;
+- **sret candidates called from another enum-returning defn are filtered out**
+  (conservative safety: a caller can return a caller-frame handle; ws_decode →
+  ws_decode_mask exposed this);
+- nested enum payloads remain boxed for now (outer Result box removed; inner
+  payload enum still boxes).
+
+Results:
+- `spsc_ring`: `malloc(i64 16)` count **0**; ratio **1.90x**.
+- `fsm_dispatch`: output correct; sret filtered for `tcp_step` because
+  `tcp_step_code` is enum-returning; ratio **2.86x**.
+- `ws_frame`: correct; 1.56x; no dangling slot.
+- Full runtime suite: all MATCH.
+- `cargo test --lib`: 3,287 green; quick guard PASS.
+
+Remaining opportunity: inline the nested enum payload (e.g. `Ok(TcpState.X)`)
+without a callee-frame scratch slot, and allow sret passthrough through local
+enum lets; that is the next measured slice, not a blanket ABI change.
+
 ## Phase D — match/destructuring
 
 Support:
@@ -165,5 +192,5 @@ merge a partial representation.
 | `b3ef0b4a` | plan |
 | `8a27a77f` | enum representation/escape analysis + tests |
 | `29d9e0c4` | InlineLocal lowering + local_enum_smoke |
-| _pending_ | ReturnedSmall sret ABI |
+| `_this commit_` | ReturnedSmall sret ABI |
 | _pending_ | match/destructuring coverage |

@@ -5739,7 +5739,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let payload_exprs: Vec<Expr> = args.to_vec();
         let _ = payload_exprs;
         let inline_slot = self.fun.enum_construct_slot.take();
+        let out_used = inline_slot.is_none()
+            && self.fun.enum_return_context
+            && !self.fun.enum_out_busy
+            && self.fun.enum_out_slot.is_some();
+        if out_used {
+            self.fun.enum_out_busy = true;
+        }
         let (raw, img) = if let Some(slot) = inline_slot {
+            (slot.clone(), slot)
+        } else if out_used {
+            let slot = self.fun.enum_out_slot.clone().unwrap();
             (slot.clone(), slot)
         } else {
             let raw = self.fun.gen_reg();
@@ -5786,6 +5796,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, raw).ok();
+        if out_used {
+            self.fun.enum_out_busy = false;
+        }
         TypedRegister { name: handle, ty: Type::int() }
     }
 
@@ -6080,13 +6093,28 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let takes_plain = is_defn
             && self.plain_context_active()
             && self.ctx.defn_takes_plain(name);
-        if takes_state || takes_plain {
+        let takes_sret = is_defn && self.ctx.defn_sret.contains(name);
+        if takes_state || takes_plain || takes_sret {
             if takes_state {
                 call_args.push("ptr %state".to_string());
             }
             if takes_plain {
                 let p = self.emit_plain_ptr_value(out, indent);
                 call_args.push(format!("ptr {}", p));
+            }
+            if takes_sret {
+                let slot = self.fun.sret_call_slot.clone().or_else(|| {
+                    if self.fun.enum_return_context {
+                        self.fun.enum_out_slot.clone()
+                    } else {
+                        None
+                    }
+                }).unwrap_or_else(|| {
+                    let s = self.fun.next_reg_with_prefix("esrt");
+                    writeln!(out, "{}{} = alloca i64, i64 2", indent, s).ok();
+                    s
+                });
+                call_args.push(format!("ptr {}", slot));
             }
             let param_tys = defn_param_tys.as_ref().unwrap();
             for (i, reg) in arg_regs.iter().enumerate() {
