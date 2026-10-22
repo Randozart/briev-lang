@@ -188,6 +188,6 @@ After tail lowering is accepted:
 |---|---|
 | `9aceb86e` | plan |
 | `31efb33c` | tail-recursion analysis + tests |
-| _this commit_ | TCO-safe hoisted sret fallback |
+| `e3b6d914` | TCO-safe hoisted sret fallback |
 | _pending_ | FSM/CI verification |
 | _pending_ | B3 re-enable |
