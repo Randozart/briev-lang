@@ -154,6 +154,29 @@ TCO-safe bridge that lets nested B3 be retried.
 - `tcp_step` sret slot allocated once per loop frame.
 - `malloc(16)` count for FSM reaches 0 after B3 re-enable.
 
+## B3 retry over hoisted sret — REJECTED (2026-10-21)
+
+Applied the B3 nested-inline patch on top of hoisted sret slots.
+
+- BOUND=0/1/2 matched C.
+- From BOUND=3 onward FSM diverged; BOUND=5 Briev printed `4000001` vs C
+  `2000008`.
+- Cause: the bound `next` state is an interior pointer into the hoisted
+  `tcp_step` sret slot. On the next recursive iteration, `tcp_step` reuses that
+  same slot, destroying the incoming `state` before/while computing the new
+  result.
+- Zero `malloc(16)` is therefore unsafe: a mutable temporary cannot own a
+  loop-carried state value.
+
+Preserved on `experiment/nested-b3-hoist` (`2805db65`), not mergeable. Safe
+state remains `366ad30a`.
+
+A correct design needs loop-carried ownership: when an inline nested enum
+becomes a state/phi value, copy it into a stable loop slot or lower the
+tail-recursive defn to a loop with dedicated phi storage. Reboxing at the
+binding would restore correctness but retain one allocation per transition, so
+it is not a valid zero-box optimization.
+
 ## Re-enable nested layout
 
 After tail lowering is accepted:
@@ -190,4 +213,4 @@ After tail lowering is accepted:
 | `31efb33c` | tail-recursion analysis + tests |
 | `e3b6d914` | TCO-safe hoisted sret fallback |
 | _pending_ | FSM/CI verification |
-| _pending_ | B3 re-enable |
+| `experiment/nested-b3-hoist` | B3 retry over hoisted sret — rejected (slot aliasing) |
