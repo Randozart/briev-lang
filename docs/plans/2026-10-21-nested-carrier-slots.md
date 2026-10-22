@@ -162,12 +162,30 @@ Add `src/analysis/tail_carrier.rs`:
 - Failed predecessor: `experiment/nested-b3-hoist` (`2805db65`).
 - This branch can be abandoned without touching the safe state.
 
+## Result (2026-10-21)
+
+Carrier slots landed and validated:
+
+- FSM output matches C at BOUND `0..8`, `1_000_000`, and `50_000_000`.
+- FSM enum `malloc(16)` count: **0**.
+- FSM ratio: **1.48–1.49x** (down from 3.08x).
+- SPSC: **1.89x**, 0 enum boxes.
+- WS: **0.27–0.29x**, Briev wins.
+- Full runtime suite: all MATCH.
+- `cargo test --lib`: **3,296 passed**.
+- Effect-shape quick guard: PASS.
+
+The stable carrier removes the aliasing failure without per-transition malloc.
+The implementation is intentionally conservative: only direct self-tail
+recursion with a local sret result and a destructured nested payload is
+eligible.
+
 ## Commit log
 
 | Commit | Change |
 |---|---|
-| _pending_ | plan |
-| _pending_ | C1 carrier analysis + tests |
-| _pending_ | C2 carrier ABI |
-| _pending_ | C3 ownership copy |
-| _pending_ | validation/results |
+| `92508278` | plan |
+| `_analysis_commit_` | C1 carrier analysis + tests |
+| `_abi_commit_` | C2 carrier ABI |
+| `_copy_commit_` | C3 ownership copy + nested layout |
+| `_results_commit_` | validation/results |

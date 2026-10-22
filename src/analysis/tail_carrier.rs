@@ -60,12 +60,6 @@ pub fn build_tail_carrier_plan(items: &[TopLevel]) -> TailCarrierPlan {
             continue;
         }
         let self_calls = tail_self_calls_in_body(&d.body, &d.name);
-        if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
-            eprintln!(
-                "diag carrier: {} self_calls={:?} enum_plan={:?}",
-                d.name, self_calls, enum_plan
-            );
-        }
         if self_calls.is_empty() {
             continue;
         }
@@ -75,9 +69,6 @@ pub fn build_tail_carrier_plan(items: &[TopLevel]) -> TailCarrierPlan {
             let mut result_local = String::new();
             let mut sret_callee = String::new();
             let sret_locals = sret_local_bindings(d, &enum_plan);
-            if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
-                eprintln!("diag carrier locals: {:?} params={:?}", sret_locals, d.parameters);
-            }
             for args in &self_calls {
                 let Some(arg) = args.get(param_index) else {
                     classes.push(CarrierArgClass::Unsupported);

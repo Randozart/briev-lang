@@ -199,12 +199,34 @@ fn all_return_forms_constructor(
         };
         if let Some(e) = ret {
             saw = true;
-            if !constructor_shaped_return(e, variants, sret_calls) {
+            if !return_shaped(e, d, variants, sret_calls) {
                 return false;
             }
         }
     }
     saw
+}
+
+/// Return expression shaped like a constructor or an sret call, including a
+/// local let initialized by either (`let r = inner(x); term r`).
+fn return_shaped(
+    expr: &Expr,
+    d: &crate::ast::Definition,
+    variants: &HashMap<&str, ()>,
+    sret_calls: &HashMap<String, ()>,
+) -> bool {
+    if constructor_shaped_return(expr, variants, sret_calls) {
+        return true;
+    }
+    let Expr::Identifier(local) = expr else { return false; };
+    d.body
+        .iter()
+        .find_map(|s| match s {
+            Statement::Let { name, expr: Some(init), .. } if name == local => Some(init),
+            _ => None,
+        })
+        .map(|init| constructor_shaped_return(init, variants, sret_calls))
+        .unwrap_or(false)
 }
 
 /// A return expression is constructor-shaped when it is a constructor call,
@@ -282,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn sret_candidate_called_by_enum_returning_defn_is_filtered() {
+    fn sret_passthrough_caller_keeps_callee_safe() {
         let items = parse(
             "enum R { Ok(Int), Err(Int) };\n\
              defn inner(x: Int) -> R { term Ok(x); };\n\
@@ -290,8 +312,10 @@ mod tests {
         );
         let plan = build_enum_representation_plan(&items);
         let safe = sret_safe_defns(&items, &plan);
-        assert!(!safe.contains(&"inner".to_string()),
-            "enum-returning caller can return a caller-frame handle");
+        assert!(safe.contains(&"inner".to_string()),
+            "sret caller can pass its out slot through");
+        assert!(safe.contains(&"outer".to_string()),
+            "local return of an sret value is an sret passthrough");
     }
 
     #[test]

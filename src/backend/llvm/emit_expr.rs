@@ -5789,13 +5789,45 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             );
         }
         if payload_expected.is_some() {
-            self.fun.expected_enum_type = payload_expected;
+            self.fun.expected_enum_type = payload_expected.clone();
         }
+
+        // 2026-10-21 (B3 nested enum layout): a direct nested enum payload is
+        // written into the outer image's payload words; the outer payload word
+        // is the nested tag, not a handle. Non-constructor/variable payloads
+        // still store a handle.
+        let layout = saved_expected_enum
+            .as_ref()
+            .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)));
+        let arg_is_ctor = args.len() == 1
+            && match &args[0] {
+                Expr::Call(n, _, _) => self.enum_variant_ctor(n).is_some(),
+                Expr::Field(_, n) => self.enum_variant_ctor(n).is_some(),
+                _ => false,
+            };
+        let inline_payload = layout
+            .as_ref()
+            .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
+            .unwrap_or(false)
+            && arg_is_ctor;
 
         // Payload: single argument stored in its boxed-i64 representation;
         // zero-payload variants store 0.
         let payload_i64 = if args.is_empty() {
-            "0".to_string()
+            Some("0".to_string())
+        } else if inline_payload {
+            let nested = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i64, ptr {}, i64 1",
+                indent, nested, img
+            )
+            .ok();
+            let saved_slot = self.fun.enum_construct_slot.take();
+            self.fun.enum_construct_slot = Some(nested);
+            let _ = self.emit_expr(out, &args[0], indent);
+            self.fun.enum_construct_slot = saved_slot;
+            None
         } else {
             let preg = if args.len() == 1 {
                 self.emit_expr(out, &args[0], indent)
@@ -5809,16 +5841,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // i64 (struct literals box to i64) — emitting `ptrtoint ptr <i64>`
             // and breaking clang. adapt_to_i64 is the protocol-driven source
             // of truth (pass-through for handles, bitcast for Float, …).
-            self.adapt_to_i64(out, indent, &preg)
+            Some(self.adapt_to_i64(out, indent, &preg))
         };
-        let payload_slot = self.fun.gen_reg();
-        writeln!(
-            out,
-            "{}{} = getelementptr i64, ptr {}, i64 1",
-            indent, payload_slot, img
-        )
-        .ok();
-        writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
+        if let Some(payload_i64) = payload_i64 {
+            let payload_slot = self.fun.gen_reg();
+            writeln!(
+                out,
+                "{}{} = getelementptr i64, ptr {}, i64 1",
+                indent, payload_slot, img
+            )
+            .ok();
+            writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
+        }
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, raw).ok();
         self.fun.expected_enum_type = saved_expected_enum;
@@ -6105,14 +6139,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         indent: &str,
     ) -> TypedRegister {
         let name = callee;
-        if std::env::var_os("BRIEV_DIAG_TAIL").is_some() && name == "fsm_run_loop" {
-            eprintln!(
-                "diag finish user call: {} map={:?} tail_fn={:?}",
-                name,
-                self.ctx.defn_hoisted_sret.get(name),
-                self.fun.tail_loop_fn
-            );
-        }
         // 2026-07-17: Look up defn parameter types for type adaptation.
         let defn_param_tys = self.ctx.defn_params.get(name).cloned();
         let is_defn = defn_param_tys.is_some();
@@ -6149,17 +6175,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // uses caller/recursive stable storage. At the ownership boundary,
         // copy the temporary nested image into the carrier; unchanged carrier
         // args pass the carrier directly.
+        let mut carrier_replace: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let self_call_carrier_replace = self.fun.tail_loop_fn.as_deref() == Some(name);
         if let Some(carriers) = self.ctx.tail_carrier.info(name) {
-            if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
-                eprintln!(
-                    "diag carrier call: {} carriers={:?} self={:?} params={:?}",
-                    name,
-                    carriers,
-                    self.fun.tail_loop_fn,
-                    self.fun.carrier_params
-                );
-            }
-            let self_call = self.fun.tail_loop_fn.as_deref() == Some(name);
+            let self_call = self_call_carrier_replace;
             for carrier in &carriers.carriers {
                 let Some(arg) = arg_regs.get(carrier.param_index) else {
                     continue;
@@ -6184,6 +6203,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 let original = format!("%arg{}", carrier.param_index);
                 if arg.name == original {
                     call_args.push(format!("ptr {}", hidden));
+                    carrier_replace.insert(carrier.param_index);
                     continue;
                 }
                 let words = self
@@ -6205,9 +6225,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     writeln!(out, "{}store i64 {}, ptr {}", indent, value, store_slot).ok();
                 }
                 call_args.push(format!("ptr {}", hidden));
-            }
-            if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
-                eprintln!("diag carrier done: args={:?}", call_args);
+                carrier_replace.insert(carrier.param_index);
             }
         }
         if takes_state || takes_plain || takes_sret {
@@ -6237,6 +6255,15 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             }
             let param_tys = defn_param_tys.as_ref().unwrap();
             for (i, reg) in arg_regs.iter().enumerate() {
+                // 2026-10-21 (nested carrier slots): in a recursive self-call,
+                // the loop-carried argument *is* the carrier slot.
+                if let Some(hidden) = self.fun.carrier_params.get(&i) {
+                    call_args.push(format!("ptr {}", hidden));
+                    continue;
+                }
+                if carrier_replace.contains(&i) {
+                    continue;
+                }
                 let reg_llvm_ty = self.llvm_type(&reg.ty);
                 // 2026-07-17: Get the function's expected parameter type.
                 // If available, use llvm_type() to determine the expected
@@ -6281,7 +6308,14 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             }
         } else {
-            for reg in arg_regs {
+            for (i, reg) in arg_regs.iter().enumerate() {
+                // 2026-10-21 (nested carrier slots): recursive self-calls can
+                // take the hidden-prefix path as non-defn when generic/type
+                // metadata is absent; loop-carried args use the carrier.
+                if let Some(hidden) = self.fun.carrier_params.get(&i) {
+                    call_args.push(format!("ptr {}", hidden));
+                    continue;
+                }
                 // 2026-07-30: Non-defn calls (or calls where defn not found in
                 // defn_params) also need inttoptr for Ptr-typed arguments, since
                 // the register holds the i64 internal representation.
@@ -6959,7 +6993,33 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // handle as its i64 box. (A raw i64 typed `String` made
                     // `Err(e)` re-box `ptrtoint ptr <i64>` — invalid IR.)
                     let pty = declared.unwrap_or(Type::int());
-                    let payload = self.unwrap_union_payload(out, indent, scrut, &pty);
+                    let tag_idx = self
+                        .enum_variant_ctor(vname)
+                        .map(|(_, idx)| idx)
+                        .unwrap_or(usize::MAX);
+                    let inline_payload = self
+                        .ctx
+                        .enum_layout_planner
+                        .as_ref()
+                        .and_then(|p| p.layout_for(scrut_ty))
+                        .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
+                        .unwrap_or(false);
+                    let payload = if inline_payload {
+                        let base = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, scrut).ok();
+                        let nested = self.fun.gen_reg();
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr i64, ptr {}, i64 1",
+                            indent, nested, base
+                        )
+                        .ok();
+                        let handle = self.fun.gen_reg();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, nested).ok();
+                        TypedRegister { name: handle, ty: pty.clone() }
+                    } else {
+                        self.unwrap_union_payload(out, indent, scrut, &pty)
+                    };
                     for sp in subpats {
                         if let crate::ast::Pattern::Binding(bn) = sp {
                             self.fun.last_val_temps.insert(bn.clone(), payload.name.clone());
