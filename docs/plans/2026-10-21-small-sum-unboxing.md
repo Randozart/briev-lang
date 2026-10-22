@@ -163,6 +163,6 @@ merge a partial representation.
 |---|---|
 | `b3ef0b4a` | plan |
 | `8a27a77f` | enum representation/escape analysis + tests |
-| `_this commit_` | InlineLocal lowering + local_enum_smoke |
+| `29d9e0c4` | InlineLocal lowering + local_enum_smoke |
 | _pending_ | ReturnedSmall sret ABI |
 | _pending_ | match/destructuring coverage |
