@@ -120,3 +120,4 @@ pub fn effective_txns<'a>(items: &'a [crate::ast::TopLevel]) -> Vec<&'a crate::a
 pub mod enum_repr;
 pub mod enum_layout;
 pub mod tail_recursion;
+pub mod tail_carrier;

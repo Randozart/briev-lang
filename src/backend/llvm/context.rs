@@ -128,6 +128,9 @@ pub struct CompilerContext {
     pub defn_hoisted_sret: HashMap<String, Vec<String>>,
     /// 2026-10-21 (TCO-safe sret): direct self-tail-recursive defns.
     pub tail_recursive: std::collections::HashSet<String>,
+    /// 2026-10-21 (nested carrier slots): loop-carried inline nested enum
+    /// ownership plan for direct self-tail-recursive defns.
+    pub tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan,
     /// 2026-10-21 (nested enum layout): concrete enum image planner.
     pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
@@ -634,6 +637,7 @@ impl CompilerContext {
             defn_sret: std::collections::HashSet::new(),
             defn_hoisted_sret: HashMap::new(),
             tail_recursive: std::collections::HashSet::new(),
+            tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan::default(),
             enum_layout_planner: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
@@ -1119,6 +1123,8 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub hoisted_sret_params: HashMap<String, String>,
     /// Current defn when emitting a hoisted recursive body.
     pub tail_loop_fn: Option<String>,
+    /// Hidden carrier slot per loop-carried parameter index.
+    pub carrier_params: HashMap<usize, String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1405,6 +1411,7 @@ impl FunctionContext {
             sret_call_slot: None,
             hoisted_sret_params: HashMap::new(),
             tail_loop_fn: None,
+            carrier_params: HashMap::new(),
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1540,6 +1547,7 @@ impl FunctionContext {
         self.sret_call_slot = None;
         self.hoisted_sret_params.clear();
         self.tail_loop_fn = None;
+        self.carrier_params.clear();
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

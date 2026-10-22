@@ -3169,9 +3169,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 self.ctx.defn_hoisted_sret.insert(d.name.clone(), callees);
             }
         }
+        self.ctx.tail_carrier =
+            crate::analysis::tail_carrier::build_tail_carrier_plan(&reordered_items);
         if std::env::var_os("BRIEV_DIAG_TAIL").is_some() {
             eprintln!("diag tail: {:?}", tail_plan);
             eprintln!("diag hoisted sret: {:?}", self.ctx.defn_hoisted_sret);
+            eprintln!("diag carriers: {:?}", self.ctx.tail_carrier);
         }
 
         // Scan for cell-to-cell wires from TrgBinding statements

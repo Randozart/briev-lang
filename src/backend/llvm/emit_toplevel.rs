@@ -3685,8 +3685,22 @@ impl LlvmBackend {
             let _ = callee;
             write!(out, "ptr align 8 %hsret{}", i).ok();
         }
-        for (i, (n, t)) in d.parameters.iter().enumerate() {
+        // 2026-10-21 (nested carrier slots): stable loop-carried storage for
+        // inline nested state passed through recursive self-calls.
+        let tail_carriers = self
+            .ctx
+            .tail_carrier
+            .info(&d.name)
+            .map(|info| info.carriers.clone())
+            .unwrap_or_default();
+        for (i, carrier) in tail_carriers.iter().enumerate() {
             if needs_state || needs_plain || sret_enum || !hoisted_sret.is_empty() || i > 0 {
+                let _ = write!(out, ", ");
+            }
+            write!(out, "ptr align 8 %carrier{}", i).ok();
+        }
+        for (i, (n, t)) in d.parameters.iter().enumerate() {
+            if needs_state || needs_plain || sret_enum || !hoisted_sret.is_empty() || !tail_carriers.is_empty() || i > 0 {
                 let _ = write!(out, ", ");
             }
             // 2026-07-04: dereferenceable(N) for Ptr<T> parameters.
@@ -3739,6 +3753,11 @@ impl LlvmBackend {
         let attr_idx = if d.name == "exit_prog" { "#14" } else { attr_idx };
         writeln!(out, ") local_unnamed_addr {}{} {{", attr_idx, section_attr).ok();
         writeln!(out, "  entry:").ok();
+        for (i, carrier) in tail_carriers.iter().enumerate() {
+            self.fun
+                .carrier_params
+                .insert(carrier.param_index, format!("%carrier{}", i));
+        }
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
         for (i, (n, t)) in d.parameters.iter().enumerate() {

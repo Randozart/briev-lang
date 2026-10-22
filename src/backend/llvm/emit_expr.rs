@@ -6145,6 +6145,71 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 call_args.push(format!("ptr {}", slot));
             }
         }
+        // 2026-10-21 (nested carrier slots): loop-carried inline nested state
+        // uses caller/recursive stable storage. At the ownership boundary,
+        // copy the temporary nested image into the carrier; unchanged carrier
+        // args pass the carrier directly.
+        if let Some(carriers) = self.ctx.tail_carrier.info(name) {
+            if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
+                eprintln!(
+                    "diag carrier call: {} carriers={:?} self={:?} params={:?}",
+                    name,
+                    carriers,
+                    self.fun.tail_loop_fn,
+                    self.fun.carrier_params
+                );
+            }
+            let self_call = self.fun.tail_loop_fn.as_deref() == Some(name);
+            for carrier in &carriers.carriers {
+                let Some(arg) = arg_regs.get(carrier.param_index) else {
+                    continue;
+                };
+                if !self_call {
+                    let words = self
+                        .ctx
+                        .defn_params
+                        .get(name)
+                        .and_then(|tys| tys.get(carrier.param_index))
+                        .map(|ty| self.enum_image_words(Some(ty)))
+                        .unwrap_or(2);
+                    let slot = self.fun.gen_reg();
+                    writeln!(out, "{}{} = alloca i64, i64 {}", indent, slot, words).ok();
+                    call_args.push(format!("ptr {}", slot));
+                    continue;
+                }
+                let Some(hidden) = self.fun.carrier_params.get(&carrier.param_index).cloned()
+                else {
+                    continue;
+                };
+                let original = format!("%arg{}", carrier.param_index);
+                if arg.name == original {
+                    call_args.push(format!("ptr {}", hidden));
+                    continue;
+                }
+                let words = self
+                    .ctx
+                    .defn_params
+                    .get(name)
+                    .and_then(|tys| tys.get(carrier.param_index))
+                    .map(|ty| self.enum_image_words(Some(ty)))
+                    .unwrap_or(2);
+                let src = self.fun.gen_reg();
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, arg.name).ok();
+                for w in 0..words {
+                    let load = self.fun.gen_reg();
+                    let store_slot = self.fun.gen_reg();
+                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, load, src, w).ok();
+                    let value = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load i64, ptr {}", indent, value, load).ok();
+                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, store_slot, hidden, w).ok();
+                    writeln!(out, "{}store i64 {}, ptr {}", indent, value, store_slot).ok();
+                }
+                call_args.push(format!("ptr {}", hidden));
+            }
+            if std::env::var_os("BRIEV_DIAG_TAIL_CARRIER").is_some() {
+                eprintln!("diag carrier done: args={:?}", call_args);
+            }
+        }
         if takes_state || takes_plain || takes_sret {
             if takes_state {
                 call_args.push("ptr %state".to_string());
