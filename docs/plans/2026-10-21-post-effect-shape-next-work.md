@@ -42,6 +42,21 @@ gets a same-commit correctness gate.
   - `emit_enum_construct` / match tag-payload loads
 - Record the inventory in this plan's experiment log.
 
+### Result — baseline and inventory (2026-10-21)
+
+- `cargo test --lib`: 3,282 green on `main`/fence branch.
+- Effect-shape quick/timing guard: PASS.
+- Latest full runtime run after PR merges and pointer fixes: all MATCH
+  (`/tmp/opencode/full_after_otto.log`); selected ratios: float_math 1.03x,
+  float_math_nonzero 0.97x, kalman 0.86x, sweep_sparse 0.97x, queue 0.51x,
+  interval 0.71x, ws_frame 1.52x.
+- Pointer inventory: ~482 `inttoptr`/`ptrtoint`/canonical-pointer sites across
+  the LLVM backend; the hot cross-defn path is covered by the Ptr-arg fence.
+- Enum inventory: `emit_enum_construct` always mallocs a 16-byte
+  `{tag,payload}`; FSM/SPSC compile through `Result` constructors and match.
+  First P2-1 slice will target `InlineLocal`, then internal `ReturnedSmall`
+  (`sret`) values.
+
 ### Acceptance
 
 Baseline table and inventory committed. No code change.
@@ -222,7 +237,7 @@ Only after P2-1/P2-2; they may remove the remaining losses.
 | Date | Commit | Change |
 |---|---|---|
 | 2026-10-21 | `dca482b0` | abandoned canonical effect ABI + next queue |
-| _pending_ | Phase 0 baseline/inventory |
+| `eb297ee8` | Phase 0 baseline/inventory recorded |
 | `c626c2dc` | Phase 1 fence-removal probe (refuted; fence restored `f2a580cc`) |
 | deferred | Phase 1B interprocedural provenance |
 | _pending_ | Phase 2 P2-1 enum representation inventory |
