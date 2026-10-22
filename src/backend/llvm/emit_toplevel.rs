@@ -3485,9 +3485,13 @@ impl LlvmBackend {
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
-        self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
-            matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
-        });
+        // 2026-10-21 (P1-4 experiment): the narrow volatile fence for raw
+        // accesses in Ptr-parameter defns is disabled while we test whether
+        // canonical Ptr call marshaling + entry preloading are sufficient on
+        // LLVM 18. Re-enable here if CI ptr_crossdefn fails.
+        // self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
+        //     matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
+        // });
         let needs_plain = self.plain_context_active() && self.ctx.defn_takes_plain(&d.name);
         self.fun.plain_ptr = needs_plain.then(|| "%plain".to_string());
         // 2026-10-16 (term-semantics plan §1): bare `term;` in this defn is
