@@ -148,6 +148,20 @@ construction, match, size calculation, or `malloc`.
 - Boxed fallback uses the same layout, so nested inlines remain valid inside
   heap images.
 
+### B2 result (2026-10-21)
+
+Image sizing now consumes the concrete layout:
+
+- boxed enum `malloc` uses `image_words * 8`;
+- sret caller slots use the callee return instance's `image_words`;
+- inline-local slots are allocated at 4 words pending B3;
+- tag remains word 0 and payload word 1 (nested payloads remain boxed until B3).
+
+Validation:
+- fsm BOUND=5 and BOUND=50M correct, no segfault; 3.00x.
+- spsc 1.94x, 0 boxes.
+- ws BOUND=5/50M correct; 1.47x.
+
 ### Gate
 
 No `malloc(i64 16)` or `alloca i64, i64 2` assumption remains for enum images;
@@ -238,7 +252,7 @@ all offsets derived from the plan.
 | `c61533d4` | plan + B0 typed construction/match context |
 | _this commit_ | B0 typed construction/match context |
 | `b6e57e82` | B1 EnumLayoutPlan |
-| _pending_ | B2 layout-aware images/match |
+| _this commit_ | B2 layout-aware images/match |
 | _pending_ | B3 nested construction/passthrough |
 | _pending_ | B4 tuple/generic |
 | _pending_ | B5 promotion |

@@ -2574,6 +2574,31 @@ impl LlvmBackend {
         Some(slot)
     }
 
+    /// 2026-10-21 (B2 nested enum layout): image width in i64 words for a
+    /// concrete enum type. Unknown/non-enum types use the legacy 2-word
+    /// `{tag,payload}` floor.
+    pub(crate) fn enum_image_words(&self, ty: Option<&crate::ast::Type>) -> usize {
+        ty.and_then(|t| {
+            self.ctx
+                .enum_layout_planner
+                .as_ref()
+                .and_then(|p| p.layout_for(t))
+        })
+        .map(|l| l.image_words)
+        .unwrap_or(2)
+        .max(2)
+    }
+
+    /// Image width for an enum-returning defn's declared return type.
+    pub(crate) fn enum_image_words_for_defn(&self, name: &str) -> usize {
+        self.ctx
+            .defn_return_types
+            .get(name)
+            .and_then(|v| v.first())
+            .map(|t| self.enum_image_words(Some(t)))
+            .unwrap_or(2)
+    }
+
     /// Store a value to a state field with the native LLVM type.
     /// The value should match the field's LLVM type (float, double, i64, etc.).
     pub(crate) fn emit_state_store_i64(

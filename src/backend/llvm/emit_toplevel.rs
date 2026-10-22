@@ -3839,7 +3839,7 @@ impl LlvmBackend {
         // constructor whose sole use is a local match/tag/payload consumer.
         for name in self.find_inline_enum_lets(d) {
             let slot = self.fun.next_reg_with_prefix("einl");
-            writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
+            writeln!(out, "  {} = alloca i64, i64 4", slot).ok();
             self.fun.enum_inline_slots.insert(name, slot);
         }
         // 2026-10-21 (P2-1 ReturnedSmall): caller slots for enum-returning
@@ -3847,7 +3847,8 @@ impl LlvmBackend {
         // payload operations.
         for name in self.find_sret_call_lets(d) {
             let slot = self.fun.next_reg_with_prefix("esrt");
-            writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
+            let words = self.enum_image_words_for_defn(&name);
+            writeln!(out, "  {} = alloca i64, i64 {}", slot, words).ok();
             self.fun.sret_call_slots.insert(name, slot);
         }
         // 2026-10-20 (pointer provenance): seed the per-function Ptr-field

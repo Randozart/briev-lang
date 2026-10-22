@@ -5756,8 +5756,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             let slot = self.fun.enum_out_slot.clone().unwrap();
             (slot.clone(), slot)
         } else {
+            let bytes = self.enum_image_words(self.fun.expected_enum_type.as_ref()) * 8;
             let raw = self.fun.gen_reg();
-            writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, raw).ok();
+            writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, raw, bytes).ok();
             let img = self.fun.gen_reg();
             writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, img, raw).ok();
             (raw, img)
@@ -6136,7 +6137,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     }
                 }).unwrap_or_else(|| {
                     let s = self.fun.next_reg_with_prefix("esrt");
-                    writeln!(out, "{}{} = alloca i64, i64 2", indent, s).ok();
+                    let words = self.enum_image_words_for_defn(name);
+                    writeln!(out, "{}{} = alloca i64, i64 {}", indent, s, words).ok();
                     s
                 });
                 call_args.push(format!("ptr {}", slot));
