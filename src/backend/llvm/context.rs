@@ -1079,6 +1079,11 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// path is insufficient across sibling inlined defns on LLVM 18; retire
     /// this when interprocedural provenance is carried explicitly.
     pub volatile_raw_ptr_params: bool,
+    /// 2026-10-21 (P2-1 InlineLocal): preallocated entry slots for local
+    /// enum constructors whose uses are local match/tag/payload consumers.
+    pub enum_inline_slots: HashMap<String, String>,
+    /// Active slot while emitting one eligible constructor initializer.
+    pub enum_construct_slot: Option<String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1354,6 +1359,8 @@ impl FunctionContext {
             plain_ptr: None,
             effect_carry: false,
             volatile_raw_ptr_params: false,
+            enum_inline_slots: HashMap::new(),
+            enum_construct_slot: None,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1480,6 +1487,7 @@ impl FunctionContext {
         self.plain_ptr = None;
         self.effect_carry = false;
         self.volatile_raw_ptr_params = false;
+        self.enum_construct_slot = None;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

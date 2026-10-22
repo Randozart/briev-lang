@@ -79,6 +79,21 @@ No codegen change in Phase A.
 
 Acceptance: local constructor/match IR has no `malloc`; suite MATCH.
 
+### Phase B result (2026-10-21)
+
+Landed `InlineLocal` for defn-local enum constructors:
+
+- a local `let x = EnumCtor(...)` whose sole use is a local `match` or
+  `is_ok`/`is_err`/`unwrap`/`unwrap_err` gets a 16-byte entry alloca;
+- the constructor writes tag/payload into that slot, no `malloc(16)`;
+- match reads the same slot; other uses/escapes fall back to the boxed path;
+- `Find_inline_enum_lets` is conservative (exactly one use, same function).
+
+Fixture `tests/tier1/local_enum_smoke.bv` golden-pins output `42\n`.
+IR for `f` shows `%einl0 = alloca i64, i64 2` and no `malloc(i64 16)`.
+
+Full lib 3,286 green; effect-shape quick guard PASS.
+
 ## Phase C — ReturnedSmall (`sret`) ABI
 
 For internal defns whose return classification is `ReturnedSmallCandidate`:
@@ -148,6 +163,6 @@ merge a partial representation.
 |---|---|
 | `b3ef0b4a` | plan |
 | `8a27a77f` | enum representation/escape analysis + tests |
-| _pending_ | InlineLocal lowering |
+| `_this commit_` | InlineLocal lowering + local_enum_smoke |
 | _pending_ | ReturnedSmall sret ABI |
 | _pending_ | match/destructuring coverage |

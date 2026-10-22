@@ -428,6 +428,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 }
             }
             let mut via_scaffolded_construction = false;
+            let inline_enum_slot = backend.fun.enum_inline_slots.get(name).cloned();
+            if let Some(slot) = &inline_enum_slot {
+                backend.fun.enum_construct_slot = Some(slot.clone());
+            }
             let mut val = match expr {
                 Some(crate::ast::Expr::Identifier(alias))
                     if backend.fun.closure_lets.contains_key(alias) =>
@@ -721,6 +725,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     })
                 }
             };
+            backend.fun.enum_construct_slot = None;
             // 2026-08-17 (tuple correctness, plan
             // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
             // DESTRUCTURE `let (a, b) = t`. The parser + typechecker already

@@ -3482,9 +3482,60 @@ impl LlvmBackend {
         }
     }
 
+    /// 2026-10-21 (P2-1 InlineLocal): find local enum constructor bindings
+    /// whose sole use is a local match/tag/payload consumer. Conservative:
+    /// exactly one use, constructor initializer, same function.
+    fn find_inline_enum_lets(&self, d: &crate::ast::Definition) -> Vec<String> {
+        use crate::ast::visit::walk_stmts;
+        let mut out = Vec::new();
+        for stmt in &d.body {
+            let crate::ast::Statement::Let { name, expr: Some(init), .. } = stmt else {
+                continue;
+            };
+            let is_ctor = match init {
+                crate::ast::Expr::Call(n, _, _) => self.enum_variant_ctor(n).is_some(),
+                crate::ast::Expr::Field(_, n) => self.enum_variant_ctor(n).is_some(),
+                _ => false,
+            };
+            if !is_ctor {
+                continue;
+            }
+            let mut uses = 0usize;
+            walk_stmts(&d.body, &mut |e| {
+                if matches!(e, crate::ast::Expr::Identifier(n) if n == name) {
+                    uses += 1;
+                }
+            });
+            if uses != 1 {
+                continue;
+            }
+            let mut allowed = false;
+            walk_stmts(&d.body, &mut |e| match e {
+                crate::ast::Expr::Match(scrut, _)
+                    if matches!(scrut.as_ref(), crate::ast::Expr::Identifier(n) if n == name) =>
+                {
+                    allowed = true;
+                }
+                crate::ast::Expr::Call(fn_name, args, _)
+                    if matches!(fn_name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_err")
+                        && args.len() == 1
+                        && matches!(&args[0], crate::ast::Expr::Identifier(n) if n == name) =>
+                {
+                    allowed = true;
+                }
+                _ => {}
+            });
+            if allowed {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
+        self.fun.enum_inline_slots.clear();
         self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
             matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
         });
@@ -3710,6 +3761,13 @@ impl LlvmBackend {
             reset_terminated: true,
             ..Default::default()
         });
+        // 2026-10-21 (P2-1 InlineLocal): one entry slot per local enum
+        // constructor whose sole use is a local match/tag/payload consumer.
+        for name in self.find_inline_enum_lets(d) {
+            let slot = self.fun.next_reg_with_prefix("einl");
+            writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
+            self.fun.enum_inline_slots.insert(name, slot);
+        }
         // 2026-10-20 (pointer provenance): seed the per-function Ptr-field
         // cache from the entry block. Entry definitions dominate every use;
         // a store to the field invalidates its entry for the rest of the

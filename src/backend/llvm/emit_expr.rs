@@ -5738,10 +5738,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // sub-patterns extract elements from that image symmetrically.
         let payload_exprs: Vec<Expr> = args.to_vec();
         let _ = payload_exprs;
-        let raw = self.fun.gen_reg();
-        writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, raw).ok();
-        let img = self.fun.gen_reg();
-        writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, img, raw).ok();
+        let inline_slot = self.fun.enum_construct_slot.take();
+        let (raw, img) = if let Some(slot) = inline_slot {
+            (slot.clone(), slot)
+        } else {
+            let raw = self.fun.gen_reg();
+            writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, raw).ok();
+            let img = self.fun.gen_reg();
+            writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, img, raw).ok();
+            (raw, img)
+        };
         let tag_slot = self.fun.gen_reg();
         writeln!(
             out,

@@ -1,0 +1,17 @@
+enum Pick {
+    Some(Int),
+    None
+};
+
+defn pick(x: Int) -> Int {
+    let p: Pick = Some(x);
+    term match p {
+        Some(v) => v + 1,
+        None => 0,
+    };
+};
+
+node entry [beginprogram][true] {
+    println!("{}", pick(41));
+    endprogram 0;
+};

@@ -331,6 +331,16 @@ fn arena_smoke_golden_output() {
 /// 2026-10-20 (P1-3): a named import of an enum type plus a qualified
 /// payload constructor (`Result.Ok(7)`) must lower to the constructor call.
 #[test]
+fn local_enum_smoke_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("local_enum_smoke", "golden", &[]);
+    assert_eq!(out, "42\n", "local enum constructor/match drifted: {out:?}");
+}
+
+#[test]
 fn enum_import_smoke_golden_output() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");
