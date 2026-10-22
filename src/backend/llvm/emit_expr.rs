@@ -6105,6 +6105,14 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         indent: &str,
     ) -> TypedRegister {
         let name = callee;
+        if std::env::var_os("BRIEV_DIAG_TAIL").is_some() && name == "fsm_run_loop" {
+            eprintln!(
+                "diag finish user call: {} map={:?} tail_fn={:?}",
+                name,
+                self.ctx.defn_hoisted_sret.get(name),
+                self.fun.tail_loop_fn
+            );
+        }
         // 2026-07-17: Look up defn parameter types for type adaptation.
         let defn_param_tys = self.ctx.defn_params.get(name).cloned();
         let is_defn = defn_param_tys.is_some();
@@ -6120,6 +6128,23 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             && self.plain_context_active()
             && self.ctx.defn_takes_plain(name);
         let takes_sret = is_defn && self.ctx.defn_sret.contains(name);
+        // 2026-10-21 (TCO-safe sret): hoisted slots are a separate hidden
+        // prefix and apply even when the recursive defn needs no state/plain/
+        // sret parameter.
+        if let Some(callees) = self.ctx.defn_hoisted_sret.get(name) {
+            let self_call = self.fun.tail_loop_fn.as_deref() == Some(name);
+            for callee in callees {
+                let slot = if self_call {
+                    self.fun.hoisted_sret_params.get(callee).cloned().unwrap_or_else(|| "%hsret0".to_string())
+                } else {
+                    let s = self.fun.next_reg_with_prefix("hsrt");
+                    let words = self.enum_image_words_for_defn(callee);
+                    writeln!(out, "{}{} = alloca i64, i64 {}", indent, s, words).ok();
+                    s
+                };
+                call_args.push(format!("ptr {}", slot));
+            }
+        }
         if takes_state || takes_plain || takes_sret {
             if takes_state {
                 call_args.push("ptr %state".to_string());
@@ -6129,12 +6154,14 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 call_args.push(format!("ptr {}", p));
             }
             if takes_sret {
-                let slot = self.fun.sret_call_slot.clone().or_else(|| {
-                    if self.fun.enum_return_context {
-                        self.fun.enum_out_slot.clone()
-                    } else {
-                        None
-                    }
+                let slot = self.fun.hoisted_sret_params.get(name).cloned().or_else(|| {
+                    self.fun.sret_call_slot.clone().or_else(|| {
+                        if self.fun.enum_return_context {
+                            self.fun.enum_out_slot.clone()
+                        } else {
+                            None
+                        }
+                    })
                 }).unwrap_or_else(|| {
                     let s = self.fun.next_reg_with_prefix("esrt");
                     let words = self.enum_image_words_for_defn(name);

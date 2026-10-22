@@ -122,6 +122,12 @@ pub struct CompilerContext {
     /// 2026-10-21 (P2-1 ReturnedSmall): internal enum-returning defns whose
     /// return forms are constructor-shaped; they take a hidden ptr out slot.
     pub defn_sret: std::collections::HashSet<String>,
+    /// 2026-10-21 (TCO-safe sret): tail-recursive defns whose sret call
+    /// slots are hoisted to the non-recursive caller. Value = ordered hidden
+    /// sret callee names; each becomes one `ptr` parameter.
+    pub defn_hoisted_sret: HashMap<String, Vec<String>>,
+    /// 2026-10-21 (TCO-safe sret): direct self-tail-recursive defns.
+    pub tail_recursive: std::collections::HashSet<String>,
     /// 2026-10-21 (nested enum layout): concrete enum image planner.
     pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
@@ -626,6 +632,8 @@ impl CompilerContext {
             defn_needs_state: HashMap::new(),
             defn_needs_plain: HashMap::new(),
             defn_sret: std::collections::HashSet::new(),
+            defn_hoisted_sret: HashMap::new(),
+            tail_recursive: std::collections::HashSet::new(),
             enum_layout_planner: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
@@ -1106,6 +1114,11 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub sret_call_slots: HashMap<String, String>,
     /// Active slot while marshaling one eligible sret call.
     pub sret_call_slot: Option<String>,
+    /// Hidden hoisted sret slot parameter for the current tail-recursive
+    /// defn, keyed by the sret callee.
+    pub hoisted_sret_params: HashMap<String, String>,
+    /// Current defn when emitting a hoisted recursive body.
+    pub tail_loop_fn: Option<String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
@@ -1390,6 +1403,8 @@ impl FunctionContext {
             item_return_type: None,
             sret_call_slots: HashMap::new(),
             sret_call_slot: None,
+            hoisted_sret_params: HashMap::new(),
+            tail_loop_fn: None,
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
             within_counter: 0,
@@ -1523,6 +1538,8 @@ impl FunctionContext {
         self.expected_enum_type = None;
         self.item_return_type = None;
         self.sret_call_slot = None;
+        self.hoisted_sret_params.clear();
+        self.tail_loop_fn = None;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
         self.struct_literal_allocas.clear();

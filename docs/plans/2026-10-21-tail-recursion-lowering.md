@@ -107,6 +107,30 @@ Tests:
 
 Diagnostic: `BRIEV_DIAG_TAIL=1` prints the classification for each defn.
 
+## Fallback result — TCO-safe hoisted sret slots (2026-10-21)
+
+Implemented the fallback first because it directly removes the per-frame
+allocation that blocked TCO:
+
+- `TailRecursionPlan` classifies direct self-tail recursion.
+- Tail-recursive defns with sret callees receive hidden caller-owned
+  `%hsretN` slots.
+- Recursive self-calls pass the same slots; non-recursive callers allocate
+  them.
+- Sret calls inside the recursive body use the hoisted slot.
+- Hidden params intentionally do **not** use `noalias nocapture`: recursive
+  calls keep the pointers live across the call, and LLVM-optimized miscompiled
+  FSM output when those attributes were present.
+- Sret candidate callers that are themselves sret are allowed to pass through.
+
+Results:
+- FSM BOUND=5/1M/50M correct (`2000008`, `571428714296`); no stack overflow.
+- Harness: fsm 2.95x, spsc 1.87x, ws 1.61x; no correctness failures.
+- Full lib 3,293 green; quick guard PASS.
+
+The tail-lowering pass remains the long-term cleanup; this hoist is the
+TCO-safe bridge that lets nested B3 be retried.
+
 ## Lowering slice (second)
 
 - Implement `TailRecursionLowering` as a first-class frontend/backend pass:
@@ -164,6 +188,6 @@ After tail lowering is accepted:
 |---|---|
 | `9aceb86e` | plan |
 | `31efb33c` | tail-recursion analysis + tests |
-| _pending_ | lowering pass (gated) |
+| _this commit_ | TCO-safe hoisted sret fallback |
 | _pending_ | FSM/CI verification |
 | _pending_ | B3 re-enable |

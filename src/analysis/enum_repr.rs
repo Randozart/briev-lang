@@ -147,6 +147,11 @@ pub fn sret_safe_defns(
         if !enum_defs.contains_key(d.name.as_str()) {
             continue;
         }
+        // An sret caller that is itself sret can pass its out slot through;
+        // only non-candidate enum callers are unsafe.
+        if plan.defn_class(&d.name) == EnumRepresentation::ReturnedSmallCandidate {
+            continue;
+        }
         walk_stmts(&d.body, &mut |e| {
             if let Expr::Call(callee, _, _) = e {
                 if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {

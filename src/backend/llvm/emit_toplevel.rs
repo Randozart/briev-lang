@@ -3669,8 +3669,24 @@ impl LlvmBackend {
             }
             write!(out, "ptr noalias nocapture align 8 %enum_out").ok();
         }
-        for (i, (n, t)) in d.parameters.iter().enumerate() {
+        // 2026-10-21 (TCO-safe sret): tail-recursive bodies receive their
+        // sret call slots from the non-recursive caller. No per-frame alloca,
+        // so LLVM can keep the self-call in tail position.
+        let hoisted_sret = self
+            .ctx
+            .defn_hoisted_sret
+            .get(&d.name)
+            .cloned()
+            .unwrap_or_default();
+        for (i, callee) in hoisted_sret.iter().enumerate() {
             if needs_state || needs_plain || sret_enum || i > 0 {
+                let _ = write!(out, ", ");
+            }
+            let _ = callee;
+            write!(out, "ptr align 8 %hsret{}", i).ok();
+        }
+        for (i, (n, t)) in d.parameters.iter().enumerate() {
+            if needs_state || needs_plain || sret_enum || !hoisted_sret.is_empty() || i > 0 {
                 let _ = write!(out, ", ");
             }
             // 2026-07-04: dereferenceable(N) for Ptr<T> parameters.
@@ -3835,6 +3851,15 @@ impl LlvmBackend {
             reset_terminated: true,
             ..Default::default()
         });
+        if !hoisted_sret.is_empty() {
+            for (i, callee) in hoisted_sret.iter().enumerate() {
+                self.fun
+                    .hoisted_sret_params
+                    .insert(callee.clone(), format!("%hsret{}", i));
+            }
+            self.fun.tail_loop_fn = Some(d.name.clone());
+        }
+
         // 2026-10-21 (P2-1 InlineLocal): one entry slot per local enum
         // constructor whose sole use is a local match/tag/payload consumer.
         for name in self.find_inline_enum_lets(d) {

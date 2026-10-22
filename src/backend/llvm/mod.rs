@@ -3143,9 +3143,35 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .max_enum_inline_depth;
         self.ctx.enum_layout_planner =
             Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
+        let tail_plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
+        self.ctx.tail_recursive = tail_plan
+            .defns
+            .iter()
+            .filter(|(_, c)| **c == crate::analysis::tail_recursion::TailRecursionClass::TailRecursive)
+            .map(|(n, _)| n.clone())
+            .collect();
+        self.ctx.defn_hoisted_sret.clear();
+        for item in &reordered_items {
+            let TopLevel::Definition(d) = item else { continue };
+            if !self.ctx.tail_recursive.contains(&d.name) {
+                continue;
+            }
+            let mut callees: Vec<String> = Vec::new();
+            crate::ast::visit::walk_stmts(&d.body, &mut |e| {
+                if let crate::ast::Expr::Call(callee, _, _) = e {
+                    if self.ctx.defn_sret.contains(callee) && !callees.contains(callee) {
+                        callees.push(callee.clone());
+                    }
+                }
+            });
+            callees.sort();
+            if !callees.is_empty() {
+                self.ctx.defn_hoisted_sret.insert(d.name.clone(), callees);
+            }
+        }
         if std::env::var_os("BRIEV_DIAG_TAIL").is_some() {
-            let plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
-            eprintln!("diag tail: {:?}", plan);
+            eprintln!("diag tail: {:?}", tail_plan);
+            eprintln!("diag hoisted sret: {:?}", self.ctx.defn_hoisted_sret);
         }
 
         // Scan for cell-to-cell wires from TrgBinding statements
