@@ -2,7 +2,14 @@
 
 **Date:** 2026-10-21
 **Branch:** `feat/canonical-effect-abi` (from `main` at `54a24cc4`)
-**Status:** ACTIVE — design + implementation plan.
+**Status:** ABANDONED 2026-10-21 — negative result; branch retained, not merged.
+**Abandonment note:** the `%EffectCtx` ABI is technically correct but does not
+preserve the measured carry shape. S2/S3 and context+carry both regressed the
+carry-winning loops (float_math_nonzero 1.25x, kalman 1.17x, sweep_sparse
+1.35x vs 0.97x/0.86x/0.98x). The carry win depends on shared/global effect
+memory interacting with LTO, not merely loop-carried effect values. Keeping the
+interim carry/escaped selector is the better production choice. Branch and tag
+`abandoned/canonical-effect-abi-2026-10-21` preserve the full experiment.
 **Supersedes:** carry/escaped selection, E1 plain-context, narrow volatile fence.
 **Checkpoint (rollback):**
 - `effect-shape-research-2026-10-21` (merged research on `main`)
