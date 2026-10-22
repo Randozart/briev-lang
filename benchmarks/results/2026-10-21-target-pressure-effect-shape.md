@@ -226,6 +226,14 @@ The context ABI removes state escape but also removes the carry loop-carried
 shape. It is not a replacement for carry/Local-loop materialization by itself.
 Default off; not promoted.
 
+## %EffectCtx + effect-carry (2026-10-21)
+
+Combining the canonical context with context-owned loop-carried effect phis
+still fails the gate: float_math_nonzero 1.25x, kalman 1.17x, sweep_sparse
+1.35x versus 0.97x/0.86x/0.98x for the interim carry selection. The carry win
+depends on the shared/global effect-memory shape, not merely loop-carried
+values. %EffectCtx is not a drop-in replacement.
+
 ## Acceptance
 
 - [x] `float_math` recovered from ~2.9x to ≤1.0x.

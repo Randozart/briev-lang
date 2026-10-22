@@ -214,6 +214,35 @@ Status: **not promoted**; default behavior unchanged. This branch records the
 negative result and the ABI scaffolding for the next attempt (Local-loop
 materialization + context), or a decision to keep the interim selector.
 
+## S3b: context + effect-carry (2026-10-21)
+
+Attempted the obvious combination: keep `%EffectCtx` and also carry the
+context-owned stdout buffer/fill as loop-carried SSA phis (same shape as the
+interim carry experiment, but reading/writing `%EffectCtx` instead of globals).
+
+Result: **still fails the S3 gate.**
+
+| Benchmark | context+carry | current carry selection |
+|---|---:|---:|
+| float_math_nonzero | 1.25x | 0.97x |
+| kalman_filter_runtime | 1.17x | 0.86x |
+| sweep_sparse | 1.35x | 0.98x |
+
+Conclusion: the carry win is not merely “effect values are loop-carried”.
+It depends on the **shared/global effect memory shape** interacting with LTO.
+Moving the same values into a context alloca changes the shape enough that
+carrying phis does not restore it. Therefore `%EffectCtx` cannot simply be
+combined with carry as-is.
+
+This tightens the long-term decision:
+
+- keep the interim carry/escaped selection as the production policy; or
+- design a loop-local effect-state model that reproduces the carry shape
+  without the context alloca (the remaining canonical research question).
+
+No further speculative ABI combination is warranted without a new measured
+hypothesis.
+
 ## Experiments / measurements
 
 Every slice runs:

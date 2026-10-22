@@ -845,7 +845,13 @@ impl LlvmBackend {
                     continue;
                 }
                 let init = self.fun.gen_reg();
-                writeln!(out, "  {} = load {}, ptr @{}, align 8", init, llvm_ty, name).ok();
+                if self.effect_context_active() {
+                    let slot = self.emit_effect_slot_addr(out, "  ", &name)
+                        .unwrap_or_else(|| format!("@{name}"));
+                    writeln!(out, "  {} = load {}, ptr {}, align 8", init, llvm_ty, slot).ok();
+                } else {
+                    writeln!(out, "  {} = load {}, ptr @{}, align 8", init, llvm_ty, name).ok();
+                }
                 plain_carry.push((name, llvm_ty, init));
             }
         }
@@ -1096,7 +1102,13 @@ impl LlvmBackend {
         let mut plain_guard_next: HashMap<String, String> = HashMap::new();
         for (name, ty, _) in &plain_carry {
             let next = self.fun.gen_reg();
-            writeln!(out, "  {} = load {}, ptr @{}, align 8", next, ty, name).ok();
+            if self.effect_context_active() {
+                let slot = self.emit_effect_slot_addr(out, "  ", name)
+                    .unwrap_or_else(|| format!("@{name}"));
+                writeln!(out, "  {} = load {}, ptr {}, align 8", next, ty, slot).ok();
+            } else {
+                writeln!(out, "  {} = load {}, ptr @{}, align 8", next, ty, name).ok();
+            }
             plain_guard_next.insert(name.clone(), next);
         }
         writeln!(out, "  br label %.cdl_{}", c0).ok();
@@ -1146,7 +1158,13 @@ impl LlvmBackend {
         if carry_store_mode != "exit" {
             for (name, ty, _) in &plain_carry {
                 if let Some(be) = plain_backedge.get(name) {
-                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, be, name).ok();
+                    if self.effect_context_active() {
+                        let slot = self.emit_effect_slot_addr(out, "  ", name)
+                            .unwrap_or_else(|| format!("@{name}"));
+                        writeln!(out, "  store {} {}, ptr {}, align 8", ty, be, slot).ok();
+                    } else {
+                        writeln!(out, "  store {} {}, ptr @{}, align 8", ty, be, name).ok();
+                    }
                 }
             }
         }
@@ -1228,7 +1246,13 @@ impl LlvmBackend {
         if carry_store_mode == "exit" {
             for (name, ty, _) in &plain_carry {
                 if let Some(val) = plain_header.get(name) {
-                    writeln!(out, "  store {} {}, ptr @{}, align 8", ty, val, name).ok();
+                    if self.effect_context_active() {
+                        let slot = self.emit_effect_slot_addr(out, "  ", name)
+                            .unwrap_or_else(|| format!("@{name}"));
+                        writeln!(out, "  store {} {}, ptr {}, align 8", ty, val, slot).ok();
+                    } else {
+                        writeln!(out, "  store {} {}, ptr @{}, align 8", ty, val, name).ok();
+                    }
                 }
             }
         }
