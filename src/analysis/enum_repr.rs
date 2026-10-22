@@ -147,6 +147,13 @@ pub fn sret_safe_defns(
         if !enum_defs.contains_key(d.name.as_str()) {
             continue;
         }
+        // An enum-returning caller that is itself sret can pass its out slot
+        // through; only non-candidate callers are unsafe.
+        let caller_candidate = plan.defn_class(&d.name)
+            == EnumRepresentation::ReturnedSmallCandidate;
+        if caller_candidate {
+            continue;
+        }
         walk_stmts(&d.body, &mut |e| {
             if let Expr::Call(callee, _, _) = e {
                 if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {
@@ -194,7 +201,7 @@ fn all_return_forms_constructor(
         };
         if let Some(e) = ret {
             saw = true;
-            if !constructor_shaped_return(e, variants, sret_calls) {
+            if !return_shaped(e, d, variants, sret_calls) {
                 return false;
             }
         }
@@ -204,6 +211,26 @@ fn all_return_forms_constructor(
 
 /// A return expression is constructor-shaped when it is a constructor call,
 /// a qualified variant field, or a match whose every arm is constructor-shaped.
+fn return_shaped(
+    expr: &Expr,
+    d: &crate::ast::Definition,
+    variants: &HashMap<&str, ()>,
+    sret_calls: &HashMap<String, ()>,
+) -> bool {
+    if constructor_shaped_return(expr, variants, sret_calls) {
+        return true;
+    }
+    let Expr::Identifier(local) = expr else { return false; };
+    d.body
+        .iter()
+        .find_map(|s| match s {
+            Statement::Let { name, expr: Some(init), .. } if name == local => Some(init),
+            _ => None,
+        })
+        .map(|init| constructor_shaped_return(init, variants, sret_calls))
+        .unwrap_or(false)
+}
+
 fn constructor_shaped_return(
     expr: &Expr,
     variants: &HashMap<&str, ()>,
@@ -277,7 +304,20 @@ mod tests {
     }
 
     #[test]
-    fn sret_candidate_called_by_enum_returning_defn_is_filtered() {
+    fn local_return_of_constructor_value_is_candidate() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn f(x: Int) -> R { let r: R = Ok(x); term r; };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        assert_eq!(
+            plan.defn_class("f"),
+            EnumRepresentation::ReturnedSmallCandidate
+        );
+    }
+
+    #[test]
+    fn sret_passthrough_caller_keeps_callee_safe() {
         let items = parse(
             "enum R { Ok(Int), Err(Int) };\n\
              defn inner(x: Int) -> R { term Ok(x); };\n\
@@ -285,8 +325,10 @@ mod tests {
         );
         let plan = build_enum_representation_plan(&items);
         let safe = sret_safe_defns(&items, &plan);
-        assert!(!safe.contains(&"inner".to_string()),
-            "enum-returning caller can return a caller-frame handle");
+        assert!(safe.contains(&"inner".to_string()),
+            "sret caller can pass its out slot through");
+        assert!(safe.contains(&"outer".to_string()),
+            "local return of an sret value is an sret passthrough");
     }
 
     #[test]

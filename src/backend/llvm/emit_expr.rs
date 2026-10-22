@@ -5739,17 +5739,30 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let payload_exprs: Vec<Expr> = args.to_vec();
         let _ = payload_exprs;
         let inline_slot = self.fun.enum_construct_slot.take();
-        let out_used = inline_slot.is_none()
+        let out_slot = self.fun.enum_out_slot.clone();
+        let inline_is_out = inline_slot.as_deref().is_some()
+            && inline_slot.as_deref() == out_slot.as_deref();
+        let out_used = inline_is_out
+            || (inline_slot.is_none()
+                && self.fun.enum_return_context
+                && !self.fun.enum_out_busy
+                && out_slot.is_some());
+        let nested_used = !out_used
+            && inline_slot.is_none()
             && self.fun.enum_return_context
-            && !self.fun.enum_out_busy
-            && self.fun.enum_out_slot.is_some();
+            && self.fun.enum_out_busy
+            && out_slot.is_some();
         if out_used {
             self.fun.enum_out_busy = true;
         }
         let (raw, img) = if let Some(slot) = inline_slot {
             (slot.clone(), slot)
         } else if out_used {
-            let slot = self.fun.enum_out_slot.clone().unwrap();
+            let slot = out_slot.clone().unwrap();
+            (slot.clone(), slot)
+        } else if nested_used {
+            let slot = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr i64, ptr %enum_out, i64 2", indent, slot).ok();
             (slot.clone(), slot)
         } else {
             let raw = self.fun.gen_reg();
@@ -6111,7 +6124,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     }
                 }).unwrap_or_else(|| {
                     let s = self.fun.next_reg_with_prefix("esrt");
-                    writeln!(out, "{}{} = alloca i64, i64 2", indent, s).ok();
+                    writeln!(out, "{}{} = alloca i64, i64 4", indent, s).ok();
                     s
                 });
                 call_args.push(format!("ptr {}", slot));

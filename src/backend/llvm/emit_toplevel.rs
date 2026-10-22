@@ -3532,6 +3532,30 @@ impl LlvmBackend {
         out
     }
 
+    /// 2026-10-21 (P2-1 ReturnedSmall): local enum lets that are directly
+    /// returned (`term r`/`Tail r`). In an sret defn they bind the caller's
+    /// out slot so an sret call result is passed through, not copied from a
+    /// callee-frame scratch slot.
+    fn find_returned_enum_locals(&self, d: &crate::ast::Definition) -> Vec<String> {
+        let mut out = Vec::new();
+        for stmt in &d.body {
+            let ret = match stmt {
+                crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::Tail(e) => Some(e),
+                _ => None,
+            };
+            let Some(crate::ast::Expr::Identifier(name)) = ret else {
+                continue;
+            };
+            let has_let = d.body.iter().any(|s| {
+                matches!(s, crate::ast::Statement::Let { name: n, expr: Some(_), .. } if n == name)
+            });
+            if has_let && !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
     /// 2026-10-21 (P2-1 ReturnedSmall): find local `let r = enum_call(...)`
     /// bindings where the callee takes the hidden sret slot and every use of
     /// `r` is a local match/tag/payload consumer.
@@ -3832,17 +3856,32 @@ impl LlvmBackend {
         });
         // 2026-10-21 (P2-1 InlineLocal): one entry slot per local enum
         // constructor whose sole use is a local match/tag/payload consumer.
+        let returned_enum_locals = if sret_enum {
+            self.find_returned_enum_locals(d)
+        } else {
+            Vec::new()
+        };
         for name in self.find_inline_enum_lets(d) {
+            if returned_enum_locals.contains(&name) {
+                continue;
+            }
             let slot = self.fun.next_reg_with_prefix("einl");
             writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
             self.fun.enum_inline_slots.insert(name, slot);
+        }
+        for name in returned_enum_locals {
+            self.fun.enum_inline_slots.insert(name.clone(), "%enum_out".to_string());
+            self.fun.sret_call_slots.insert(name, "%enum_out".to_string());
         }
         // 2026-10-21 (P2-1 ReturnedSmall): caller slots for enum-returning
         // sret calls whose bound let is consumed only by local match/tag/
         // payload operations.
         for name in self.find_sret_call_lets(d) {
+            if self.fun.sret_call_slots.contains_key(&name) {
+                continue;
+            }
             let slot = self.fun.next_reg_with_prefix("esrt");
-            writeln!(out, "  {} = alloca i64, i64 2", slot).ok();
+            writeln!(out, "  {} = alloca i64, i64 4", slot).ok();
             self.fun.sret_call_slots.insert(name, slot);
         }
         // 2026-10-20 (pointer provenance): seed the per-function Ptr-field
