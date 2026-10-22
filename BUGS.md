@@ -10784,3 +10784,16 @@ concat_count/concat_values both true. The original reduced ptr/i64 failure is
 resolved. Praetor adds no diagnostics or increased metrics (existing walker
 renamed). Full schema-gate verification follows integration; commit approval
 pending per WORKFLOW.md.
+
+## Match with a terminating arm loses its continuing result (FIXED 2026-10-21)
+
+A minimal Bool match returning 42 in one arm and trapping in the other passes
+checking but emits ret i64 of an undefined register. Ordinary value/value match
+compiles. Match type probing included the terminating arm's Void, suppressing
+the merge phi even though that arm never reaches it. Probe termination state
+also leaked between arms. Fix authored separately on
+fix/match-terminating-arm-values: preserve the existing probe snapshots, reset
+termination per probe, exclude terminated arms' types, and restore the flag.
+Tests cover both orders, pointer values, nested termination, and a continuing
+Void control; all four regressions and native value/trap gates pass. Feature progress and
+stdlib changes are preserved separately, not included in this compiler PR.

@@ -696,3 +696,12 @@ codegen from constructing a literal using a raw List<T> before specializing the
 callee. No function or element type name is recognized. This bridge can retire
 when inferred expression types are carried directly into lowering. Existing
 constructor and ABI paths remain the source of truth for representation.
+
+### Match result probing and terminating arms (2026-10-21)
+
+Only arms reaching a match's value merge contribute result types. The existing
+lowering termination flag distinguishes a trap/return (no merge edge) from a
+continuing Void expression. Match probing snapshots and restores that flag in
+addition to its binding, alloca, and block state; each arm starts independently.
+A terminating Void arm cannot suppress another arm's value phi. Continuing Void
+and all-arms-terminate behavior retain their existing lowering paths.

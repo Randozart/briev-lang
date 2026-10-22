@@ -250,3 +250,14 @@ String concat gate: four true checks; Int control: two true checks. Reduced
 original failure is resolved without stdlib changes. Praetor has no increased
 metrics or added diagnostics. Commit/PR approval pending; full schema gate will
 be rerun on the integration branch after the separate compiler PR handoff.
+
+### 2026-10-21 — terminating match arm suppresses value merge (OPEN)
+
+After loading 100,000 baseline ratings, engine-adapter verification exposed a
+compiler defect independent of Result/app code: a match with one trap arm loses
+the continuing arm's result phi. Minimal value/value control compiles, value/trap
+fails LLVM. Fix/tests authored on fix/match-terminating-arm-values; human cargo
+verification pending. Feature work is preserved in the documented scratch patch.
+
+Verification: four focused regressions and native value/trap gates pass; cargo
+build passes. Full suite: 3157 passed, 38 known failure names, none added.
