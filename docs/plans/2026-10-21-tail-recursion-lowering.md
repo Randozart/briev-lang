@@ -163,7 +163,7 @@ After tail lowering is accepted:
 | Commit | Change |
 |---|---|
 | _pending_ | plan |
-| _pending_ | tail-recursion analysis + tests |
+| `_this commit_` | tail-recursion analysis + tests |
 | _pending_ | lowering pass (gated) |
 | _pending_ | FSM/CI verification |
 | _pending_ | B3 re-enable |

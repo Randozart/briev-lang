@@ -3143,6 +3143,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .max_enum_inline_depth;
         self.ctx.enum_layout_planner =
             Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
+        if std::env::var_os("BRIEV_DIAG_TAIL").is_some() {
+            let plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
+            eprintln!("diag tail: {:?}", plan);
+        }
 
         // Scan for cell-to-cell wires from TrgBinding statements
         self.scan_cell_wires(items);
