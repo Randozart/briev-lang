@@ -1093,6 +1093,12 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub enum_out_slot: Option<String>,
     pub enum_return_context: bool,
     pub enum_out_busy: bool,
+    /// 2026-10-21 (B0 nested enum layout): concrete enum instance expected at
+    /// the current expression site (empty = unknown/boxed fallback).
+    pub expected_enum_type: Option<crate::ast::Type>,
+    /// Declared Briev return type of the current defn, used to seed
+    /// `expected_enum_type` for term/tail expressions.
+    pub item_return_type: Option<crate::ast::Type>,
     /// Caller slots for enum-returning sret calls bound to local lets.
     pub sret_call_slots: HashMap<String, String>,
     /// Active slot while marshaling one eligible sret call.
@@ -1377,6 +1383,8 @@ impl FunctionContext {
             enum_out_slot: None,
             enum_return_context: false,
             enum_out_busy: false,
+            expected_enum_type: None,
+            item_return_type: None,
             sret_call_slots: HashMap::new(),
             sret_call_slot: None,
             local_fields: std::collections::HashSet::new(),
@@ -1509,6 +1517,8 @@ impl FunctionContext {
         self.enum_out_slot = None;
         self.enum_return_context = false;
         self.enum_out_busy = false;
+        self.expected_enum_type = None;
+        self.item_return_type = None;
         self.sret_call_slot = None;
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();

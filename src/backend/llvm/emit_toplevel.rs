@@ -3639,6 +3639,11 @@ impl LlvmBackend {
         let is_float_fn = ll_ret_ty == "float" || ll_ret_ty == "double";
         self.fun.fn_ret_ty = ll_ret_ty.clone();
         self.fun.returns_i64 = has_ret;
+        self.fun.item_return_type = d
+            .output_type
+            .as_ref()
+            .and_then(|ot| ot.all_types().into_iter().next())
+            .or_else(|| d.outputs.first().cloned());
         // 2026-08-05 (Phase 6): there is no `main` in Briev. The entry point is
         // whichever node fires first (reactor-driven). User declarations named
         // `main` are rejected by name-collision with the runtime `@main`, so no

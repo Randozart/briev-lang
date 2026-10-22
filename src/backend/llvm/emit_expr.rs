@@ -918,7 +918,11 @@ impl LlvmBackend {
                 // typechecker already lets user fns shadow).
                 else if let Some((_enum_name, tag_idx)) = self.enum_variant_ctor(name)
                 {
-                    self.emit_enum_construct(out, v, tag_idx, args, indent)
+                    // 2026-10-21 (B0): pass the VARIANT NAME, not the
+                    // destination register. The old call passed `v`, so
+                    // payload-type lookup always missed (diagnosed by
+                    // BRIEV_DIAG_ENUM_TYPE).
+                    self.emit_enum_construct(out, name, tag_idx, args, indent)
                 } else if self.ctx.struct_types.contains_key(name) {
                     // 2026-07-31 (A5): struct constructor call — `Stack()` /
                     // `Person("Alice", 30)` — emits a struct literal with the
@@ -5767,6 +5771,23 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         .ok();
         writeln!(out, "{}store i64 {}, ptr {}", indent, tag_idx, tag_slot).ok();
 
+        // 2026-10-21 (B0 nested enum layout): propagate the concrete enum
+        // instance to payload constructors. `Ok(TcpState.X)` sees
+        // TcpState, not the generic T payload.
+        let saved_expected_enum = self.fun.expected_enum_type.clone();
+        let payload_expected = saved_expected_enum
+            .as_ref()
+            .and_then(|t| self.enum_payload_type(t, v));
+        if std::env::var_os("BRIEV_DIAG_ENUM_TYPE").is_some() {
+            eprintln!(
+                "diag enum: variant='{}' expected={:?} payload={:?}",
+                v, saved_expected_enum, payload_expected
+            );
+        }
+        if payload_expected.is_some() {
+            self.fun.expected_enum_type = payload_expected;
+        }
+
         // Payload: single argument stored in its boxed-i64 representation;
         // zero-payload variants store 0.
         let payload_i64 = if args.is_empty() {
@@ -5796,6 +5817,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         writeln!(out, "{}store i64 {}, ptr {}", indent, payload_i64, payload_slot).ok();
         let handle = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, raw).ok();
+        self.fun.expected_enum_type = saved_expected_enum;
         if out_used {
             self.fun.enum_out_busy = false;
         }

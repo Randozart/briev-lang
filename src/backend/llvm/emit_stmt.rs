@@ -13,6 +13,13 @@ use std::fmt::Write;
 /// 2026-10-05 (json.bv): is `ty` a declared enum whose value is an i64 handle?
 /// An enum constructor reports `Type::int()` while the declared type is the
 /// enum name — the two must be treated as the same handle in type gates.
+fn type_bare_name(ty: &Type) -> &str {
+    match ty {
+        Type::Custom(n) | Type::Applied(n, _) => n,
+        _ => "",
+    }
+}
+
 fn is_enum_handle_type(backend: &LlvmBackend, ty: &Type) -> bool {
     match ty {
         Type::Custom(n) | Type::Applied(n, _) => backend.ctx.enum_handle_types.contains(n),
@@ -436,6 +443,12 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(slot) = &sret_slot {
                 backend.fun.sret_call_slot = Some(slot.clone());
             }
+            let saved_expected_enum = backend.fun.expected_enum_type.clone();
+            if let Some(t) = ty {
+                if backend.ctx.enum_handle_types.contains(type_bare_name(t)) {
+                    backend.fun.expected_enum_type = Some(t.clone());
+                }
+            }
             let mut val = match expr {
                 Some(crate::ast::Expr::Identifier(alias))
                     if backend.fun.closure_lets.contains_key(alias) =>
@@ -731,6 +744,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             };
             backend.fun.enum_construct_slot = None;
             backend.fun.sret_call_slot = None;
+            backend.fun.expected_enum_type = saved_expected_enum;
             // 2026-08-17 (tuple correctness, plan
             // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
             // DESTRUCTURE `let (a, b) = t`. The parser + typechecker already
@@ -1788,9 +1802,16 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             backend.flush_defer_cleanup(out, indent);
             if let Some(val) = val {
                 let saved_enum_ret = backend.fun.enum_return_context;
+                let saved_expected_enum = backend.fun.expected_enum_type.clone();
                 backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some();
+                if let Some(t) = backend.fun.item_return_type.clone() {
+                    if backend.ctx.enum_handle_types.contains(type_bare_name(&t)) {
+                        backend.fun.expected_enum_type = Some(t);
+                    }
+                }
                 let mut reg = backend.emit_expr(out, val, indent);
                 backend.fun.enum_return_context = saved_enum_ret;
+                backend.fun.expected_enum_type = saved_expected_enum;
                 // 2026-08-01 (C3): a boxed Float param returned from a defn
                 // (`term v`) is an i64 handle — unbox through the float cache so
                 // `ret float` receives the actual float, not the handle.
