@@ -185,7 +185,7 @@ eligible.
 | Commit | Change |
 |---|---|
 | `92508278` | plan |
-| `_analysis_commit_` | C1 carrier analysis + tests |
-| `_abi_commit_` | C2 carrier ABI |
-| `_copy_commit_` | C3 ownership copy + nested layout |
-| `_results_commit_` | validation/results |
+| `cbbd4d5e` | C1 carrier analysis + C2 ABI |
+| `2805db65` | predecessor nested layout (rebased here) |
+| `04dd1681` | C3 ownership copy + nested layout |
+| _next_ | results pin |
