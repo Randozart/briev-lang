@@ -92,7 +92,8 @@ Landed `InlineLocal` for defn-local enum constructors:
 Fixture `tests/tier1/local_enum_smoke.bv` golden-pins output `42\n`.
 IR for `f` shows `%einl0 = alloca i64, i64 2` and no `malloc(i64 16)`.
 
-Full lib 3,286 green; effect-shape quick guard PASS.
+Full lib 3,286 green; effect-shape quick guard PASS. Full runtime suite after
+the change: all MATCH (fsm 3.13x, spsc 2.00x unchanged; no benchmark regression).
 
 ## Phase C — ReturnedSmall (`sret`) ABI
 
