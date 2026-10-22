@@ -119,6 +119,9 @@ pub struct CompilerContext {
     /// 2026-10-20 (storage-class ABI): per-defn verdict for the derived
     /// PLAIN/plumbing context. Independent of `%state`; a defn may need both.
     pub defn_needs_plain: HashMap<String, bool>,
+    /// 2026-10-21 (canonical effect ABI, S1/S2): canonical context ownership
+    /// and ABI reach. The backend consumes this instead of re-deriving.
+    pub effect_ctx: Option<crate::analysis::effect_context::EffectContextPlan>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
     /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
@@ -165,9 +168,9 @@ pub struct CompilerContext {
     pub plain_global_types:
         std::collections::HashMap<String, (crate::ast::Type, Option<crate::ast::Expr>)>,
     /// 2026-10-21 (plain-context experiment): deterministic field order for
-    /// the stack `%PlainState` aggregate. Empty unless a plain-context
+    /// the stack `%EffectCtx` aggregate. Empty unless a plain-context
     /// experiment is active.
-    pub plain_index_map: std::collections::HashMap<String, usize>,
+    pub effect_index_map: std::collections::HashMap<String, usize>,
     /// 2026-10-17 (readiness gate 1): async-dispatched nodes' watchdog specs
     /// for emit_async_phase's gate (name, spec) — populated from the txn list
     /// right before main emission; the phase needs &mut self, so the contracts
@@ -535,9 +538,13 @@ impl CompilerContext {
     /// replaces the blanket `defn_params.contains_key(name)` at every
     /// call-site gate — pure helpers (cstr doors, arithmetic lanes) are
     /// emitted WITHOUT `%state` and must be called without it.
-    /// Does this defn take the derived plain/plumbing context pointer?
-    /// Separate from `defn_takes_state`: the two memory domains are orthogonal.
-    pub fn defn_takes_plain(&self, name: &str) -> bool {
+    /// Does this defn take the canonical effect-context pointer? S1/S2
+    /// consume the frontend plan when present; the pre-S2 map remains as a
+    /// fallback for callers that have not built the plan.
+    pub fn defn_takes_effect(&self, name: &str) -> bool {
+        if let Some(plan) = &self.effect_ctx {
+            return plan.defn_takes_effect(name);
+        }
         self.defn_needs_plain.get(name).copied().unwrap_or(false)
     }
 
@@ -620,6 +627,7 @@ impl CompilerContext {
             export_needs_state: HashMap::new(),
             defn_needs_state: HashMap::new(),
             defn_needs_plain: HashMap::new(),
+            effect_ctx: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
@@ -633,7 +641,7 @@ impl CompilerContext {
             view_bound_fields: std::collections::HashSet::new(),
             plain_lets: std::collections::HashSet::new(),
             plain_global_types: std::collections::HashMap::new(),
-            plain_index_map: std::collections::HashMap::new(),
+            effect_index_map: std::collections::HashMap::new(),
             async_phase_watchdogs: Vec::new(),
             mmio_fields: HashMap::new(),
             mmio_initializers: HashMap::new(),
@@ -1068,9 +1076,9 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub fn_ret_ty: String,
     pub main_body: bool,
     pub in_callable_txn: bool,
-    /// 2026-10-21 (plain-context experiment): the `%plain` pointer parameter
+    /// 2026-10-21 (canonical effect ABI): the `%effect` pointer parameter
     /// for the current function/main. Plain loads/stores GEP through it.
-    pub plain_ptr: Option<String>,
+    pub effect_ptr: Option<String>,
     /// 2026-10-21 (effect-state-carry experiment): add loop-carried SSA
     /// phis for plain effect fields to the selected direct-Float loop.
     pub effect_carry: bool,
@@ -1351,7 +1359,7 @@ impl FunctionContext {
 
     pub fn new() -> Self {
         FunctionContext {
-            plain_ptr: None,
+            effect_ptr: None,
             effect_carry: false,
             volatile_raw_ptr_params: false,
             local_fields: std::collections::HashSet::new(),
@@ -1477,7 +1485,7 @@ impl FunctionContext {
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;
-        self.plain_ptr = None;
+        self.effect_ptr = None;
         self.effect_carry = false;
         self.volatile_raw_ptr_params = false;
         self.pending_consumes.clear();

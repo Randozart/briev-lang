@@ -420,14 +420,13 @@ impl LlvmBackend {
         }
         // 2026-10-21 (plain-context experiment): allocate and zero the
         // separate plain aggregate, then publish its address. Only literal
-        // zero/false initializers are admitted by plain_context_active(), so
+        // zero/false initializers are admitted by effect_context_active(), so
         // a zero store is the correct initializer for this experiment.
-        if self.plain_context_active() {
-            writeln!(out, "  %plain = alloca %PlainState, align 8").ok();
-            writeln!(out, "  store ptr %plain, ptr @__briev_plain_ptr, align 8").ok();
-            self.fun.plain_ptr = Some("%plain".to_string());
-            let mut names: Vec<String> = self.ctx.plain_index_map.keys().cloned().collect();
-            names.sort_by_key(|n| self.ctx.plain_index_map[n]);
+        if self.effect_context_active() {
+            writeln!(out, "  %effect = alloca %EffectCtx, align 8").ok();
+            self.fun.effect_ptr = Some("%effect".to_string());
+            let mut names: Vec<String> = self.ctx.effect_index_map.keys().cloned().collect();
+            names.sort_by_key(|n| self.ctx.effect_index_map[n]);
             for name in names {
                 let (ty, _) = self.ctx.plain_global_types.get(&name).unwrap();
                 let llvm_ty = self.plain_global_llvm_type(ty);
@@ -436,7 +435,7 @@ impl LlvmBackend {
                     "ptr" => "null",
                     _ => "0",
                 };
-                let slot = self.emit_plain_slot_addr(out, "  ", &name).unwrap();
+                let slot = self.emit_effect_slot_addr(out, "  ", &name).unwrap();
                 writeln!(out, "  store {} {}, ptr {}, align 8", llvm_ty, zero, slot).ok();
             }
         }
@@ -2521,16 +2520,17 @@ impl LlvmBackend {
         }
     }
 
-    /// 2026-10-21 (plain-context experiment): when enabled, plain fields are
-    /// lowered through a stack `%PlainState` aggregate whose address is stashed
-    /// in `@__briev_plain_ptr`, not through module-scope globals. This keeps
-    /// the effect memory separate from machine `%State` for the mixed-loop
-    /// experiment. Gated by `BRIEV_DIAG_PLAIN_CONTEXT=1`; unsupported
-    /// non-literal plain initializers fall back to globals.
-    pub(crate) fn plain_context_active(&self) -> bool {
-        if std::env::var_os("BRIEV_DIAG_PLAIN_CONTEXT").is_none()
-            || self.ctx.plain_index_map.is_empty()
-        {
+    /// 2026-10-21 (canonical effect ABI, S2): when enabled, effect-owned
+    /// plain fields are lowered through the stack `%EffectCtx` aggregate.
+    /// The context pointer is a parameter/alloca, never a module global, so
+    /// machine `%State` stays unescaped. Gated by
+    /// `BRIEV_DIAG_EFFECT_CTX=1`; unsupported non-literal plain initializers
+    /// fall back to globals until S2 initialization matures.
+    pub(crate) fn effect_context_active(&self) -> bool {
+        if std::env::var_os("BRIEV_DIAG_EFFECT_CTX").is_none() {
+            return false;
+        }
+        if self.ctx.effect_index_map.is_empty() {
             return false;
         }
         self.ctx.plain_global_types.values().all(|(_, init)| {
@@ -2543,31 +2543,33 @@ impl LlvmBackend {
         })
     }
 
-    /// A usable `ptr` to the plain aggregate: the current `%plain` parameter
-    /// when present, otherwise load the main-published pointer. Txn/cold
-    /// bodies without a plain parameter use the latter during the experiment.
-    pub(crate) fn emit_plain_ptr_value(&mut self, out: &mut String, indent: &str) -> String {
-        if let Some(p) = &self.fun.plain_ptr {
+    /// A usable `ptr` to the canonical effect aggregate. Callers without a
+    /// parameter are a backend invariant violation under the canonical ABI;
+    /// return an identifiable invalid pointer rather than silently falling
+    /// back to a global.
+    pub(crate) fn emit_effect_ptr_value(&mut self, out: &mut String, indent: &str) -> String {
+        if let Some(p) = &self.fun.effect_ptr {
             return p.clone();
         }
         let r = self.fun.gen_reg();
-        writeln!(out, "{}{} = load ptr, ptr @__briev_plain_ptr, align 8", indent, r).ok();
+        writeln!(out, "{}{} = inttoptr i64 0 to ptr ; canonical effect ABI violation", indent, r).ok();
+        self.warnings.push("internal: effect-context pointer missing in caller; emitted null placeholder".to_string());
         r
     }
 
-    /// Address of one field in the stack `%PlainState` aggregate.
-    pub(crate) fn emit_plain_slot_addr(
+    /// Address of one field in the stack `%EffectCtx` aggregate.
+    pub(crate) fn emit_effect_slot_addr(
         &mut self,
         out: &mut String,
         indent: &str,
         name: &str,
     ) -> Option<String> {
-        let idx = *self.ctx.plain_index_map.get(name)?;
-        let base = self.emit_plain_ptr_value(out, indent);
+        let idx = *self.ctx.effect_index_map.get(name)?;
+        let base = self.emit_effect_ptr_value(out, indent);
         let slot = self.fun.gen_reg();
         writeln!(
             out,
-            "{}{} = getelementptr %PlainState, ptr {}, i32 0, i32 {}",
+            "{}{} = getelementptr %EffectCtx, ptr {}, i32 0, i32 {}",
             indent, slot, base, idx
         )
         .ok();
@@ -2594,8 +2596,8 @@ impl LlvmBackend {
                 .map(|(t, _)| t.clone())
                 .unwrap_or(crate::ast::Type::int());
             let llvm_ty = self.plain_global_llvm_type(&ty);
-            if self.plain_context_active() {
-                let slot = self.emit_plain_slot_addr(out, indent, name)?;
+            if self.effect_context_active() {
+                let slot = self.emit_effect_slot_addr(out, indent, name)?;
                 writeln!(out, "{}store {} {}, ptr {}, align 8", indent, llvm_ty, val, slot).ok();
             } else {
                 writeln!(out, "{}store {} {}, ptr @{}, align 8", indent, llvm_ty, val, name).ok();

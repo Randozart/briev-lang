@@ -3488,8 +3488,8 @@ impl LlvmBackend {
         self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
             matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))
         });
-        let needs_plain = self.plain_context_active() && self.ctx.defn_takes_plain(&d.name);
-        self.fun.plain_ptr = needs_plain.then(|| "%plain".to_string());
+        let needs_plain = self.effect_context_active() && self.ctx.defn_takes_effect(&d.name);
+        self.fun.effect_ptr = needs_plain.then(|| "%effect".to_string());
         // 2026-10-16 (term-semantics plan §1): bare `term;` in this defn is
         // P-gated against the defn's postcondition.
         self.fun.item_post = Some(d.contract.post_condition.clone());
@@ -3542,7 +3542,7 @@ impl LlvmBackend {
             if needs_state {
                 let _ = write!(out, ", ");
             }
-            write!(out, "ptr noundef noalias nocapture align 8 %plain").ok();
+            write!(out, "ptr noundef noalias nocapture align 8 %effect").ok();
         }
         for (i, (n, t)) in d.parameters.iter().enumerate() {
             if needs_state || needs_plain || i > 0 {

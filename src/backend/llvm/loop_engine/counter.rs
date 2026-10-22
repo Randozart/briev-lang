@@ -2339,8 +2339,8 @@ impl LlvmBackend {
             if self.ctx.defn_takes_state("stdout_flush") {
                 args.push("ptr %state");
             }
-            if self.plain_context_active() && self.ctx.defn_takes_plain("stdout_flush") {
-                args.push("ptr %plain");
+            if self.effect_context_active() && self.ctx.defn_takes_effect("stdout_flush") {
+                args.push("ptr %effect");
             }
             writeln!(out, "  %__flush = call i64 @stdout_flush({})", args.join(", ")).ok();
         }

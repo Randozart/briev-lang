@@ -770,9 +770,9 @@ impl LlvmBackend {
                         .unwrap_or((Type::int(), None));
                     let llvm_ty = self.plain_global_llvm_type(&ty);
                     let r = self.fun.gen_reg();
-                    if self.plain_context_active() {
-                        let slot = self.emit_plain_slot_addr(out, indent, name)
-                            .expect("plain field missing from %PlainState index");
+                    if self.effect_context_active() {
+                        let slot = self.emit_effect_slot_addr(out, indent, name)
+                            .expect("plain field missing from %EffectCtx index");
                         writeln!(out, "{}{} = load {}, ptr {}, align 8", indent, r, llvm_ty, slot)
                             .ok();
                     } else {
@@ -6072,14 +6072,14 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // ABI consistent (previously every defn call passed %state).
         let takes_state = is_defn && self.ctx.defn_takes_state(name);
         let takes_plain = is_defn
-            && self.plain_context_active()
-            && self.ctx.defn_takes_plain(name);
+            && self.effect_context_active()
+            && self.ctx.defn_takes_effect(name);
         if takes_state || takes_plain {
             if takes_state {
                 call_args.push("ptr %state".to_string());
             }
             if takes_plain {
-                let p = self.emit_plain_ptr_value(out, indent);
+                let p = self.emit_effect_ptr_value(out, indent);
                 call_args.push(format!("ptr {}", p));
             }
             let param_tys = defn_param_tys.as_ref().unwrap();
@@ -7930,8 +7930,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
-                    let pl = if self.plain_context_active() && self.ctx.defn_takes_plain(fname) {
-                        let p = self.emit_plain_ptr_value(out, indent);
+                    let pl = if self.effect_context_active() && self.ctx.defn_takes_effect(fname) {
+                        let p = self.emit_effect_ptr_value(out, indent);
                         format!("ptr {}, ", p)
                     } else {
                         String::new()
@@ -7979,10 +7979,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         ""
                     };
-                    let pl = if self.plain_context_active()
-                        && self.ctx.defn_takes_plain(fn_name.as_str())
+                    let pl = if self.effect_context_active()
+                        && self.ctx.defn_takes_effect(fn_name.as_str())
                     {
-                        let p = self.emit_plain_ptr_value(out, indent);
+                        let p = self.emit_effect_ptr_value(out, indent);
                         format!("ptr {}, ", p)
                     } else {
                         String::new()
@@ -8130,11 +8130,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // %state; pass it only when the defn takes state. Mirrors the
                 // ExtCall arm in emit_cast_steps.
                 let st = if self.ctx.defn_takes_state(fn_name) { "ptr %state, " } else { "" };
-                let pl = if self.plain_context_active()
-                    && self.ctx.defn_takes_plain(fn_name)
-                    && self.fun.plain_ptr.is_some()
+                let pl = if self.effect_context_active()
+                    && self.ctx.defn_takes_effect(fn_name)
+                    && self.fun.effect_ptr.is_some()
                 {
-                    format!("ptr {}, ", self.fun.plain_ptr.as_ref().unwrap())
+                    format!("ptr {}, ", self.fun.effect_ptr.as_ref().unwrap())
                 } else {
                     String::new()
                 };

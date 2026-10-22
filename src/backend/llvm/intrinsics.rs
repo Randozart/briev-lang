@@ -2685,7 +2685,7 @@ fn defn_state_prefix(backend: &LlvmBackend, sym: &str) -> &'static str {
 }
 
 /// 2026-10-21 (plain-context experiment): hidden state + plain prefixes for a
-/// print-family call. Emits the `%plain` pointer load when the caller has no
+/// print-family call. Emits the `%effect` pointer when the caller has no
 /// plain parameter (txns/cold bodies).
 fn defn_call_prefix(
     backend: &mut LlvmBackend,
@@ -2697,8 +2697,8 @@ fn defn_call_prefix(
     if backend.ctx.defn_takes_state(sym) {
         prefix.push_str("ptr %state, ");
     }
-    if backend.plain_context_active() && backend.ctx.defn_takes_plain(sym) {
-        let p = backend.emit_plain_ptr_value(out, indent);
+    if backend.effect_context_active() && backend.ctx.defn_takes_effect(sym) {
+        let p = backend.emit_effect_ptr_value(out, indent);
         prefix.push_str(&format!("ptr {}, ", p));
     }
     prefix

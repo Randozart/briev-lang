@@ -86,7 +86,7 @@ check_shape mixed_effect_shape tests/tier1/mixed_effect_shape.bv escaped
 # correct (it is default-off, but the experiment code is still compiled).
 plain_float="$TMP/plain_float"
 mkdir -p "$plain_float"
-if ! BRIEV_DIAG_PLAIN_CONTEXT=1 BRIEV_DIAG_EFFECT=stateless \
+if ! BRIEV_DIAG_EFFECT_CTX=1 BRIEV_DIAG_EFFECT=stateless \
     "$BRIEVC" build benchmarks/float_math.bv --out "$plain_float" \
     >"$plain_float/build.log" 2>&1; then
   echo "FAIL plain-context float_math: build failed" >&2
