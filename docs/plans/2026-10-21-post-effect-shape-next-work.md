@@ -93,6 +93,18 @@ Add P1-6 mixed-path tests:
 - Ptr local + state mixed
 - String/List carrier boundary
 
+### Result — Experiment 1A refuted (2026-10-21)
+
+Branch `feat/ptr-provenance-fence-retirement`, commit `c626c2dc`: fence
+disabled, local LLVM 23 and full lib green, but LLVM-18 CI failed
+`ptr_crossdefn_probe` with `0` instead of `7`. Fence restored in
+`f2a580cc`; draft PR #33 closed without merge.
+
+Conclusion: canonical Ptr call marshaling + entry preloading are insufficient
+on LLVM 18. Interprocedural provenance (1B) is still required; it is a larger
+design effort and is **deferred behind P2-1** so the correctness fence stays in
+place while performance work proceeds.
+
 ### Acceptance
 
 - `ptr_crossdefn_probe` passes under LLVM 18.
@@ -211,8 +223,8 @@ Only after P2-1/P2-2; they may remove the remaining losses.
 |---|---|---|
 | 2026-10-21 | `dca482b0` | abandoned canonical effect ABI + next queue |
 | _pending_ | Phase 0 baseline/inventory |
-| _pending_ | Phase 1 fence-removal probe |
-| _pending_ | Phase 1 provenance (if needed) |
+| `c626c2dc` | Phase 1 fence-removal probe (refuted; fence restored `f2a580cc`) |
+| deferred | Phase 1B interprocedural provenance |
 | _pending_ | Phase 2 P2-1 enum representation inventory |
 | _pending_ | Phase 2 P2-1 InlineLocal |
 | _pending_ | Phase 2 P2-1 ReturnedSmall |
