@@ -235,9 +235,9 @@ all offsets derived from the plan.
 
 | Commit | Change |
 |---|---|
-| `_plan_commit_` | plan |
+| `c61533d4` | plan + B0 typed construction/match context |
 | _this commit_ | B0 typed construction/match context |
-| _this commit_ | B1 EnumLayoutPlan |
+| `b6e57e82` | B1 EnumLayoutPlan |
 | _pending_ | B2 layout-aware images/match |
 | _pending_ | B3 nested construction/passthrough |
 | _pending_ | B4 tuple/generic |
