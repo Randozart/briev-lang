@@ -43,6 +43,18 @@ fixture is FP-order sensitive across escaped/stateless shapes. Fix that first.
 7. **Post-merge** — full lib/bin/tier-1, quick+timing guard, update report and
    commit log.
 
+## Results
+
+- Main CI green at `9d809af7` and after all three merges.
+- PRs #30, #31, #32 merged in order; #29 closed as superseded.
+- Pointer provenance CI failure on LLVM 18 was fixed by txn/main Ptr-state
+  preloading plus canonical Ptr argument marshaling; a narrow volatile fence
+  remains for raw accesses inside Ptr-parameter defns.
+- Full runtime suite after merges: all MATCH.
+  float_math 1.03x, float_math_nonzero 0.97x, kalman 0.86x,
+  sweep_sparse 0.97x, queue 0.51x, interval 0.71x, ws_frame 1.52x.
+- `cargo test --lib` green in CI; local full suite green.
+
 ## Acceptance
 
 - Main CI no longer fails on the mixed fixture or missing `/tmp/opencode` /
@@ -61,7 +73,13 @@ fixture is FP-order sensitive across escaped/stateless shapes. Fix that first.
 | `8037758b` | integer mixed output (guard parity) |
 | `a2a663b1` | CI test dirs, spirv-tools, full cross-run detection |
 | `755de732` | skip optional SPIR-V/PTX probes when absent |
-| _pending_ | PR #30 merge |
-| _pending_ | PR #31 merge |
-| _pending_ | PR #32 merge |
-| _pending_ | PR #29 close record |
+| `a2a663b1` | CI test dirs, spirv-tools, full cross-run detection |
+| `755de732` | optional SPIR-V/PTX probe skips |
+| `1e141c58` | seed Ptr params at entry |
+| `a790e637` | canonical-Ptr call marshaling |
+| `e3280c9d` | main Ptr-state preload after init |
+| `9d809af7` | narrow Ptr-parameter raw-access fence |
+| `9fc2aa6e` | PR #30 merged |
+| `412d84c1` | PR #31 merged |
+| `e6c59d4c` | PR #32 merged |
+| PR #29 | closed as superseded |
