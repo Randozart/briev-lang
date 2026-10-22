@@ -164,6 +164,8 @@ Add `src/analysis/tail_carrier.rs`:
 
 ## Result (2026-10-21)
 
+Milestone record: `docs/2026-10-21-nested-carrier-slots-milestone.md`.
+
 Carrier slots landed and validated:
 
 - FSM output matches C at BOUND `0..8`, `1_000_000`, and `50_000_000`.
