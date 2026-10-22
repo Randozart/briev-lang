@@ -188,6 +188,24 @@ all offsets derived from the plan.
   not the outer image;
 - fall back to boxed on any doubt.
 
+### B3 attempt result — REJECTED (2026-10-21)
+
+Attempted inline nested payloads plus sret candidate-caller passthrough:
+
+- BOUND=5 output correct; FSM `malloc(16)` count reached 0.
+- BOUND=1M+ `fsm_dispatch` stack-overflowed in `fsm_run_loop` (gdb backtrace
+  shows unbounded recursive frames). The sret per-frame slot means LLVM no
+  longer tail-call-optimizes the recursive self-call.
+- `ws_frame` at BOUND=50M stayed correct, but FSM cannot accept this shape.
+
+Preserved on `experiment/nested-enum-b3` (`9a922d04`), not mergeable. B2
+(`d65fa78c`) remains the safe state.
+
+Conclusion: nested inline layout must preserve tail-call eligibility. The next
+design must either:
+1. hoist the sret slot out of recursive frames (caller/main-owned context), or
+2. lower tail-recursive FSM-like defns to loops before sret allocation.
+
 ### Gate
 
 - `fsm_dispatch`: `malloc(16)` count 0, BOUND=5 and BOUND=50M correct, no
@@ -253,6 +271,6 @@ all offsets derived from the plan.
 | _this commit_ | B0 typed construction/match context |
 | `b6e57e82` | B1 EnumLayoutPlan |
 | `e7b83136` | B2 layout-aware images/match |
-| _pending_ | B3 nested construction/passthrough |
+| `9a922d04` (experiment) | B3 nested construction/passthrough — rejected (TCO) |
 | _pending_ | B4 tuple/generic |
 | _pending_ | B5 promotion |
