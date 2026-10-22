@@ -147,7 +147,7 @@ merge a partial representation.
 | Commit | Change |
 |---|---|
 | `b3ef0b4a` | plan |
-| _this commit_ | enum representation/escape analysis + tests |
+| `8a27a77f` | enum representation/escape analysis + tests |
 | _pending_ | InlineLocal lowering |
 | _pending_ | ReturnedSmall sret ABI |
 | _pending_ | match/destructuring coverage |
