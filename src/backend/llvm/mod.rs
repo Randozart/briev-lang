@@ -3138,6 +3138,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         for name in crate::analysis::enum_repr::sret_safe_defns(&reordered_items, &enum_plan) {
             self.ctx.defn_sret.insert(name);
         }
+        // 2026-10-21 (B1 nested enum layout): concrete instance planner.
+        let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
+            .max_enum_inline_depth;
+        self.ctx.enum_layout_planner =
+            Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
 
         // Scan for cell-to-cell wires from TrgBinding statements
         self.scan_cell_wires(items);

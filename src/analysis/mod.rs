@@ -118,3 +118,4 @@ pub fn effective_txns<'a>(items: &'a [crate::ast::TopLevel]) -> Vec<&'a crate::a
     out
 }
 pub mod enum_repr;
+pub mod enum_layout;

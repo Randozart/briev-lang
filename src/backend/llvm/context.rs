@@ -122,6 +122,8 @@ pub struct CompilerContext {
     /// 2026-10-21 (P2-1 ReturnedSmall): internal enum-returning defns whose
     /// return forms are constructor-shaped; they take a hidden ptr out slot.
     pub defn_sret: std::collections::HashSet<String>,
+    /// 2026-10-21 (nested enum layout): concrete enum image planner.
+    pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
     /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
     /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
@@ -624,6 +626,7 @@ impl CompilerContext {
             defn_needs_state: HashMap::new(),
             defn_needs_plain: HashMap::new(),
             defn_sret: std::collections::HashSet::new(),
+            enum_layout_planner: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),

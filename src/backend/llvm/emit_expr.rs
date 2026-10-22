@@ -5779,9 +5779,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .as_ref()
             .and_then(|t| self.enum_payload_type(t, v));
         if std::env::var_os("BRIEV_DIAG_ENUM_TYPE").is_some() {
+            let layout = saved_expected_enum
+                .as_ref()
+                .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)));
             eprintln!(
-                "diag enum: variant='{}' expected={:?} payload={:?}",
-                v, saved_expected_enum, payload_expected
+                "diag enum: variant='{}' expected={:?} payload={:?} layout={:?}",
+                v, saved_expected_enum, payload_expected, layout
             );
         }
         if payload_expected.is_some() {

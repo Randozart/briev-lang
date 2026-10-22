@@ -36,6 +36,9 @@ pub struct TargetSettings {
     /// Float fields that selects the carry shape for a direct loop. Target
     /// config so a different backend/ABI can move the boundary without code.
     pub effect_carry_temp_min: usize,
+    /// 2026-10-21 (nested enum layout): maximum inline enum nesting depth.
+    /// Beyond this, nested enum payloads consume a boxed handle word.
+    pub max_enum_inline_depth: usize,
     /// Cross-float-ops-per-field threshold for the `#11 → #0` downgrade.
     pub dense_compute_density: f64,
     /// Minimum isomorphic-group width for vector-phi promotion.
@@ -404,6 +407,7 @@ pub const DEFAULT_TARGET_SETTINGS: TargetSettings = TargetSettings {
     float_registers: 16,
     fp_reserved_temps: 4,
     effect_carry_temp_min: 3,
+    max_enum_inline_depth: 2,
     dense_compute_density: 4.0,
     vector_min_width: 4,
     isr_mechanism: None,
@@ -907,6 +911,11 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
             .field_int(&key, 6)
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_TARGET_SETTINGS.effect_carry_temp_min);
+        // 2026-10-21 (nested enum layout): field 7 — max inline enum depth.
+        let max_enum_inline_depth = db
+            .field_int(&key, 7)
+            .map(|v| v as usize)
+            .unwrap_or(DEFAULT_TARGET_SETTINGS.max_enum_inline_depth);
         out.insert(
             prefix.to_string(),
             TargetSettings {
@@ -917,6 +926,7 @@ fn load_target_settings() -> HashMap<String, TargetSettings> {
                 frame_limit_bytes,
                 fp_reserved_temps,
                 effect_carry_temp_min,
+                max_enum_inline_depth,
             },
         );
     }
@@ -1402,6 +1412,7 @@ vector_min_width = 0
         assert_eq!(s.float_registers, 16);
         assert_eq!(s.fp_reserved_temps, 4);
         assert_eq!(s.effect_carry_temp_min, 3);
+        assert_eq!(s.max_enum_inline_depth, 2);
         assert_eq!(s.dense_compute_density, 4.0);
         assert_eq!(s.vector_min_width, 4);
         assert!(known_target_triple("x86_64-unknown-linux-gnu"));

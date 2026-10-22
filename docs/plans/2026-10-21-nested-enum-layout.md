@@ -111,6 +111,23 @@ Plan key: canonical concrete type key (`Enum<args>`), not the bare enum name.
 - recursive `Option<Option<...>>` → inline until cap, then boxed.
 - layout equality/determinism across map order.
 
+### B1 result (2026-10-21)
+
+Landed `src/analysis/enum_layout.rs`:
+
+- concrete-instance key by `Enum<args>`;
+- `image_words = 1 + max(payload words)`;
+- nested enum payloads inline while under `max_enum_inline_depth`;
+- tuples sum words; known scalars/handles consume one; recursive/deeper/unknown
+  payloads consume a boxed handle word;
+- `max_enum_inline_depth` is target config (field 7, default 2).
+
+Diagnostics (`BRIEV_DIAG_ENUM_TYPE=1`) on FSM:
+`Result<TcpState,FsmError>` → `image_words: 3`, payloads `[2, 2]`;
+`TcpState`/`FsmError` → `image_words: 2`.
+
+No image size or offset change yet; B2 consumes the plan.
+
 ### Gate
 
 Layout covers every enum in the corpus; no fixed 16-byte assumption remains in
@@ -220,7 +237,7 @@ all offsets derived from the plan.
 |---|---|
 | `_plan_commit_` | plan |
 | _this commit_ | B0 typed construction/match context |
-| _pending_ | B1 EnumLayoutPlan |
+| _this commit_ | B1 EnumLayoutPlan |
 | _pending_ | B2 layout-aware images/match |
 | _pending_ | B3 nested construction/passthrough |
 | _pending_ | B4 tuple/generic |
