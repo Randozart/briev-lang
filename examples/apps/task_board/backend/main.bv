@@ -1,0 +1,123 @@
+// Briev Task Board backend — /health vertical.
+//
+// A0 deliberately serves exactly one request. This keeps the first HTTP
+// socket boundary deterministic while the campaign adds the sequential
+// request loop as its own slice. Routing is intentionally tiny: /health is
+// the only valid route; every other path gets the app's structured JSON 404.
+import "std/net/socket.bv";
+import "std/net/http.bv";
+
+const HEALTH_BODY: String = "{\"ok\":true}";
+const NOT_FOUND_BODY: String = "{\"error\":\"not_found\"}";
+const SERVER_PORT: Int = 18367;
+const MAX_REQUEST_BYTES: Int = 4096;
+
+// Read one byte at a time until HTTP framing is complete. `sock_recv` fills
+// from the start of a buffer, so a one-byte scratch buffer is the honest v0
+// append primitive. The request limit is proven by the recursive parameter.
+defn read_request(conn: Socket, buf: ByteBuf, fed: Int)
+    [conn.fd >= -4096 && fed >= 0 && fed <= buf.cap]
+    [term.len >= 0 && term.len <= term.cap]
+    -> ByteBuf
+{
+    when fed <= buf.len {
+        let parsed: HttpParse = http_parse_request(buf, fed);
+        when parsed.status == HTTP_COMPLETE {
+            term buf;
+        };
+    };
+    when fed >= buf.cap {
+        term buf;
+    };
+    let chunk: ByteBuf = buf_new(1);
+    check chunk.cap >= 1;
+    let got: Int = sock_recv(conn, chunk, 1);
+    when got <= 0 {
+        term buf;
+    };
+    let byte: Int = get_u8(chunk, 0);
+    buf_free(chunk);
+    let next: ByteBuf = buf.put_u8(byte);
+    term read_request(conn, next, fed + 1);
+};
+
+// Send a complete HTTP response and report whether every body/header byte
+// reached the kernel. The caller owns and frees the response buffer.
+defn send_response(conn: Socket, response: GrowBuf)
+    [conn.fd >= -4096 && response.len >= 0]
+    -> Int
+{
+    check response.len <= response.len;
+    let wire: ByteBuf = ByteBuf {
+        ptr: response.ptr,
+        len: response.len,
+        cap: response.cap,
+    };
+    when response.len <= wire.len {
+        let sent: Int = sock_send(conn, wire, response.len);
+        when sent == response.len {
+            term 1;
+        };
+    };
+    term 0;
+};
+
+// Build the listener without a deferred local write: a plain reactive node
+// that assigns and later reads a local is a self-edge to the causality pass.
+// Errors use the Socket fd's existing -errno convention.
+defn open_listener() [true][term.fd >= -4096] -> Socket {
+    let listener: Socket = sock_tcp();
+    when listener.fd >= -4096 && SERVER_PORT >= 0 && SERVER_PORT <= 65535 && 4 >= 0 {
+        let bound: Int = sock_bind_listen(listener, SERVER_PORT, 4);
+        when bound < 0 {
+            term Socket { fd: bound };
+        };
+    };
+    term listener;
+};
+
+node entry [beginprogram][true] {
+    let listener: Socket = open_listener();
+    when listener.fd < 0 {
+        endprogram Print#(listener.fd);
+    };
+
+    let conn: Socket = sock_accept(listener);
+    when conn.fd < 0 {
+        sock_close(listener);
+        endprogram Print#(conn.fd);
+    };
+
+    let empty: ByteBuf = buf_new(4096);
+    let request: ByteBuf = read_request(conn, empty, 0);
+    let received: Int = request.len;
+    when received <= 0 {
+        buf_free(request);
+        sock_close(conn);
+        sock_close(listener);
+        endprogram Print#(received);
+    };
+
+    check received <= request.len;
+    when received > 0 {
+        let parsed: HttpParse = http_parse_request(request, received);
+        when parsed.request.method == "GET" && parsed.request.path == "/health" {
+            let response: GrowBuf = http_json_response(200, HEALTH_BODY);
+            let ok: Int = send_response(conn, response);
+            grow_free(response);
+            buf_free(request);
+            sock_close(conn);
+            sock_close(listener);
+            endprogram Print#(ok);
+        };
+        when parsed.request.method != "GET" || parsed.request.path != "/health" {
+            let response: GrowBuf = http_json_response(404, NOT_FOUND_BODY);
+            let ok: Int = send_response(conn, response);
+            grow_free(response);
+            buf_free(request);
+            sock_close(conn);
+            sock_close(listener);
+            endprogram Print#(ok);
+        };
+    };
+};
