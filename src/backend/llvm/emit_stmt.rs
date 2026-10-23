@@ -1810,6 +1810,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     }
                 }
                 let mut reg = backend.emit_expr(out, val, indent);
+                // 2026-10-23 (tail-loop lowering): a lowered recursive tail
+                // has already emitted the loop backedge; it must not receive
+                // a second `ret` terminator.
+                if backend.fun.tail_loop_backedge {
+                    backend.fun.enum_return_context = saved_enum_ret;
+                    backend.fun.expected_enum_type = saved_expected_enum;
+                    return TypedRegister { name: reg.name, ty: reg.ty };
+                }
                 backend.fun.enum_return_context = saved_enum_ret;
                 backend.fun.expected_enum_type = saved_expected_enum;
                 // 2026-08-01 (C3): a boxed Float param returned from a defn

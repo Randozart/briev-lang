@@ -6124,6 +6124,74 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         self.finish_user_call(out, v, name, &arg_regs, indent)
     }
 
+    /// 2026-10-23 (tail-loop lowering): turn a direct self-call in a lowered
+    /// defn into the loop backedge. Every parameter slot holds one i64 word;
+    /// a carrier parameter additionally receives an ownership copy of the
+    /// nested image before its stable handle is installed.
+    fn try_emit_tail_loop_backedge(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        arg_regs: &[TypedRegister],
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        let v = self.fun.gen_reg();
+        if self.fun.tail_loop_fn.as_deref() != Some(name) {
+            return None;
+        }
+        let header = self.fun.tail_loop_header.clone()?;
+        let slots = self.fun.tail_param_slots.clone();
+        if slots.len() != arg_regs.len() {
+            return None;
+        }
+        let param_tys = self.ctx.defn_params.get(name).cloned()?;
+        let carriers = self.ctx.tail_carrier.info(name)
+            .map(|info| info.carriers.clone())
+            .unwrap_or_default();
+        let mut carrier_slots = std::collections::HashMap::new();
+        for carrier in carriers {
+            let Some(hidden) = self.fun.carrier_params.get(&carrier.param_index).cloned() else {
+                continue;
+            };
+            let words = param_tys.get(carrier.param_index)
+                .map(|ty| self.enum_image_words(Some(ty)))
+                .unwrap_or(2);
+            carrier_slots.insert(carrier.param_index, (hidden, words));
+        }
+        for (index, reg) in arg_regs.iter().enumerate() {
+            let Some((_, slot)) = slots.get(index) else {
+                return None;
+            };
+            let value = self.adapt_to_i64(out, indent, reg);
+            if let Some((hidden, words)) = carrier_slots.get(&index).cloned() {
+                let src = self.fun.gen_reg();
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, value).ok();
+                for word in 0..words {
+                    let item = self.fun.gen_reg();
+                    let src_gep = self.fun.gen_reg();
+                    let dst_gep = self.fun.gen_reg();
+                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, src_gep, src, word).ok();
+                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, dst_gep, hidden, word).ok();
+                    writeln!(out, "{}{} = load i64, ptr {}", indent, item, src_gep).ok();
+                    writeln!(out, "{}store i64 {}, ptr {}", indent, item, dst_gep).ok();
+                }
+                let handle = self.fun.gen_reg();
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, hidden).ok();
+                writeln!(out, "{}store i64 {}, ptr {}", indent, handle, slot).ok();
+            } else {
+                writeln!(out, "{}store i64 {}, ptr {}", indent, value, slot).ok();
+            }
+        }
+        writeln!(out, "{}br label %{}", indent, header).ok();
+        self.fun.cur_block = Some(header);
+        self.fun.terminated = true;
+        self.fun.tail_loop_backedge = true;
+        let ty = self.ctx.defn_return_types.get(name)
+            .and_then(|types| types.first().cloned())
+            .unwrap_or_else(Type::int);
+        Some(TypedRegister { name: v.to_string(), ty })
+    }
+
     /// 2026-10-13 (refactor for S6): the ABI-adapting call tail of
     /// `emit_user_call`, keyed by `callee`. Shared by the ordinary user-call
     /// path and the monomorphized-generic path (which passes the specialized
@@ -6139,6 +6207,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         indent: &str,
     ) -> TypedRegister {
         let name = callee;
+        if self.fun.tail_loop_fn.as_deref() == Some(name)
+            && self.fun.tail_loop_header.is_some()
+        {
+            if let Some(reg) = self.try_emit_tail_loop_backedge(out, name, arg_regs, indent) {
+                return reg;
+            }
+        }
         // 2026-07-17: Look up defn parameter types for type adaptation.
         let defn_param_tys = self.ctx.defn_params.get(name).cloned();
         let is_defn = defn_param_tys.is_some();
@@ -6489,6 +6564,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let saved_alloca_len = self.fun.pending_struct_allocas.len();
         let saved_block = self.fun.cur_block.clone();
         let saved_terminated = self.fun.terminated;
+        let saved_tail_backedge = self.fun.tail_loop_backedge;
         // 2026-10-05 (json.bv): the probe MUST bind each arm's patterns
         // before emitting its body — otherwise `frame.value` (a field
         // access on a payload binding) resolves `frame` to an unbound
@@ -6509,6 +6585,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // proof, including nested control flow, rather than AST shape.
             // Undo only when match lowering carries frontend control-flow facts.
             self.fun.terminated = false;
+            self.fun.tail_loop_backedge = false;
             self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
             let reg = self.emit_expr(&mut sink, &arm.body, indent);
             if !self.fun.terminated {
@@ -6523,6 +6600,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         self.fun.pending_struct_allocas.truncate(saved_alloca_len);
         self.fun.cur_block = saved_block;
         self.fun.terminated = saved_terminated;
+        self.fun.tail_loop_backedge = saved_tail_backedge;
         tys
     }
 
@@ -6637,6 +6715,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // `terminated`; without the reset every later arm inherits it and
             // the merge is mis-emitted.
             self.fun.terminated = false;
+            self.fun.tail_loop_backedge = false;
             self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
             let body_reg;
             if let Some(guard) = &arm.guard {

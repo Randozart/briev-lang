@@ -967,6 +967,31 @@ impl LlvmBackend {
         format!("i{}", self.ctx.int_bits)
     }
 
+    /// 2026-10-23 (tail-loop lowering): whether a parameter can live in one
+    /// i64 loop slot with the exact representation already used by its body.
+    /// Native floats and sub-i64 scalars are deferred; their header reload
+    /// needs a typed cache alongside the existing float parameter cache.
+    pub(super) fn tail_loop_i64_binding(&self, ty: &Type) -> bool {
+        // Boxed Float keeps a native register cache at parameter entry; the
+        // loop header reload would need the same typed-cache rebuild, so keep
+        // those recursive defns on the existing path for now.
+        if self.is_protocol_member(ty, "Float") {
+            return false;
+        }
+        matches!(self.llvm_type(ty).as_str(), "i64" | "ptr") || self.is_boxed_type(ty)
+    }
+
+    pub(super) fn tail_loop_enabled(&self, d: &crate::ast::Definition) -> bool {
+        // 2026-10-23 (regression gate): plain tail recursion is already TCO'd
+        // cheaply by LLVM. Lowering every recursive stdlib helper changed the
+        // register/stack shape enough to regress ws_frame 1.45x. This first
+        // slice is limited to loop-carried nested-enum state, the ownership
+        // shape that needed the carrier ABI in the first place.
+        self.ctx.tail_loop.is_lowerable(&d.name)
+            && self.ctx.tail_carrier.info(&d.name).is_some()
+            && d.parameters.iter().all(|(_, ty)| self.tail_loop_i64_binding(ty))
+    }
+
     pub(super) fn llvm_type(&self, ty: &Type) -> String {
         // 2026-08-22 (spec-conformance Phase 3b): a structural sum
         // (`Int | String`) is a TAGGED HANDLE — i64 pointing at a 16-byte
@@ -3535,7 +3560,7 @@ impl LlvmBackend {
     /// 2026-10-21 (P2-1 ReturnedSmall): find local `let r = enum_call(...)`
     /// bindings where the callee takes the hidden sret slot and every use of
     /// `r` is a local match/tag/payload consumer.
-    fn find_sret_call_lets(&self, d: &crate::ast::Definition) -> Vec<String> {
+    fn find_sret_call_lets(&self, d: &crate::ast::Definition) -> Vec<(String, String)> {
         use crate::ast::visit::walk_stmts;
         let mut out = Vec::new();
         for stmt in &d.body {
@@ -3583,7 +3608,7 @@ impl LlvmBackend {
                 }
             });
             if uses > 0 && allowed + allowed_calls == uses {
-                out.push(name.clone());
+                out.push((name.clone(), callee.clone()));
             }
         }
         out
@@ -3889,9 +3914,9 @@ impl LlvmBackend {
         // 2026-10-21 (P2-1 ReturnedSmall): caller slots for enum-returning
         // sret calls whose bound let is consumed only by local match/tag/
         // payload operations.
-        for name in self.find_sret_call_lets(d) {
+        for (name, callee) in self.find_sret_call_lets(d) {
             let slot = self.fun.next_reg_with_prefix("esrt");
-            let words = self.enum_image_words_for_defn(&name);
+            let words = self.enum_image_words_for_defn(&callee);
             writeln!(out, "  {} = alloca i64, i64 {}", slot, words).ok();
             self.fun.sret_call_slots.insert(name, slot);
         }
@@ -3901,6 +3926,65 @@ impl LlvmBackend {
         // function (subsequent loads reload at their own site).
         if needs_state {
             self.preload_state_ptr_fields(out);
+        }
+        // 2026-10-23 (tail-loop lowering): lower an eligible direct
+        // self-tail-recursive defn to an explicit loop. The recursive call
+        // becomes a store-to-parameter-slot backedge; the body is emitted
+        // once after the header. Entry allocas stay above the branch, so no
+        // stack growth remains to disable tail-call elimination.
+        let tail_loop_enabled = self.tail_loop_enabled(d);
+        if tail_loop_enabled {
+            let header = format!(".tail_header_{}", self.fun.txn_counter);
+            // A loop-carried nested enum cannot point into a reusable sret
+            // temporary. Seed the proven carrier image from the incoming
+            // state, then make the parameter binding refer to that carrier.
+            for carrier in &tail_carriers {
+                let Some((name, ty)) = d.parameters.get(carrier.param_index) else {
+                    continue;
+                };
+                let Some(initial) = self.fun.let_bindings.get(name).cloned() else {
+                    continue;
+                };
+                let Some(hidden) = self.fun.carrier_params.get(&carrier.param_index).cloned()
+                else {
+                    continue;
+                };
+                let words = self.enum_image_words(Some(ty));
+                let src = self.fun.gen_reg();
+                writeln!(out, "  {} = inttoptr i64 {} to ptr", src, initial).ok();
+                for word in 0..words {
+                    let load = self.fun.gen_reg();
+                    let gep_src = self.fun.gen_reg();
+                    let gep_dst = self.fun.gen_reg();
+                    writeln!(out, "  {} = getelementptr i64, ptr {}, i64 {}", gep_src, src, word).ok();
+                    writeln!(out, "  {} = getelementptr i64, ptr {}, i64 {}", gep_dst, hidden, word).ok();
+                    writeln!(out, "  {} = load i64, ptr {}", load, gep_src).ok();
+                    writeln!(out, "  store i64 {}, ptr {}", load, gep_dst).ok();
+                }
+                let handle = self.fun.gen_reg();
+                writeln!(out, "  {} = ptrtoint ptr {} to i64", handle, hidden).ok();
+                self.fun.let_bindings.insert(name.clone(), handle);
+            }
+            let mut param_slots = Vec::with_capacity(d.parameters.len());
+            for (name, _) in &d.parameters {
+                let slot = self.fun.next_reg_with_prefix("tpsl");
+                let value = self.fun.let_bindings.get(name).cloned().unwrap_or_else(|| "0".to_string());
+                writeln!(out, "  {} = alloca i64, align 8", slot).ok();
+                writeln!(out, "  store i64 {}, ptr {}", value, slot).ok();
+                param_slots.push((name.clone(), slot));
+            }
+            self.fun.tail_param_slots = param_slots;
+            writeln!(out, "  br label %{}", header).ok();
+            writeln!(out, "{}:", header).ok();
+            self.fun.cur_block = Some(header.clone());
+            self.fun.tail_loop_header = Some(header.clone());
+            self.fun.tail_loop_fn = Some(d.name.clone());
+            self.fun.tail_loop_backedge = false;
+            for (name, slot) in self.fun.tail_param_slots.clone() {
+                let value = self.fun.gen_reg();
+                writeln!(out, "  {} = load i64, ptr {}", value, slot).ok();
+                self.fun.let_bindings.insert(name, value);
+            }
         }
         let body_len = d.body.len();
         for (idx, s) in d.body.iter().enumerate() {

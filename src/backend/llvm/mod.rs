@@ -3144,6 +3144,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.ctx.enum_layout_planner =
             Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
         let tail_plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
+        self.ctx.tail_loop =
+            crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);
         self.ctx.tail_recursive = tail_plan
             .defns
             .iter()
@@ -3175,6 +3177,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             eprintln!("diag tail: {:?}", tail_plan);
             eprintln!("diag hoisted sret: {:?}", self.ctx.defn_hoisted_sret);
             eprintln!("diag carriers: {:?}", self.ctx.tail_carrier);
+            eprintln!("diag tail loop: {:?}", self.ctx.tail_loop);
         }
 
         // Scan for cell-to-cell wires from TrgBinding statements
