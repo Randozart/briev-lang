@@ -1,7 +1,7 @@
 # Fullstack application validation campaign — Briev Task Board
 
 **Date:** 2026-10-23
-**Status:** ACTIVE — A1 `/health` vertical complete.
+**Status:** ACTIVE — A2/A3 in-memory CRUD and sequential loop complete.
 **Base:** `main` at `45b8850a`.
 **Umbrella:** `docs/plans/2026-10-09-fullstack-stdlib-and-net-stack.md`.
 
@@ -219,24 +219,55 @@ Historical result files are never rewritten.
 
 ### A1 — backend `/health` (2026-10-23)
 
-Landed in `examples/apps/task_board`:
+Landed first and committed as `f5998fa7`:
 
-- backend binds `0.0.0.0:18367`, accepts one HTTP connection, reads bytes
-  incrementally, parses the request, routes `GET /health`, sends JSON, closes,
-  and exits;
-- non-health routes return a structured JSON 404;
-- `tests/api_gate.sh` builds/checks through `brievc`, starts the backend on the
-  isolated test port, polls readiness, asserts status line, content type, and
-  exact body, and fails on stderr/timeout/mismatch.
+- one-shot HTTP server;
+- `GET /health` exact JSON;
+- integration gate.
 
-Gate result: `task board: /health PASS`.
+### A2/A3 — in-memory CRUD and sequential loop (2026-10-23)
 
-Discovery during A1:
+Landed:
 
-- **AUTHORING ERROR** — the first read loop returned only a count while
-  advancing a value-typed `ByteBuf`. The outer binding kept `len == 0`, so
-  routing never ran. Corrected the application to return the advanced buffer.
-  No compiler or stdlib workaround was introduced.
-- No SPEC violation was established in this slice.
+- sequential accept loop with one request per connection;
+- `Task` / `TaskStore` objects and state across requests;
+- API:
+  - `GET /health`;
+  - `GET /api/tasks`;
+  - `POST /api/tasks`;
+  - `POST /api/tasks/:id/toggle`;
+  - `DELETE /api/tasks/:id`;
+- JSON request parsing and JSON response serialization;
+- structured 400/404 responses;
+- bounded one-byte read loop with 4 KiB request ceiling.
 
-Next: A2/A3 — in-memory task store plus the sequential accept/request loop.
+Gate result: `task board: sequential loop PASS`.
+
+The gate exercises health, empty list, create, persistence across requests,
+toggle, invalid body, unknown route, and delete.
+
+### Strict-protocol discoveries
+
+1. **AUTHORING ERROR** — A1 initially returned only a count while advancing a
+   value-typed `ByteBuf`; corrected to return the advanced buffer.
+2. **SPEC VIOLATION — FIXED** — nested enum payload construction/match layouts
+   disagreed, so nested match returned the no-match default. Fixed in the
+   compiler with regression fixture
+   `tests/tier1/nested_enum_payload_match.bv`.
+3. **IMPLEMENTATION BUG — FIXED** — String-concat cleanup blocks inside a
+   nested match arm left a stale phi predecessor. Fixed in the backend with
+   `tests/tier1/string_match_cleanup_phi.bv`.
+4. **STDLIB BUG — FIXED** — `json_get` on an empty object dereferenced an
+   uninitialized result because `find_pair` never ran. `handle_object` now
+   returns `Err` for the empty-object boundary, pinned by
+   `tests/tier1/json_empty_object_lookup.bv`.
+
+No app workaround was added for any compiler/stdlib defect.
+
+## Next
+
+A4 — frontend read-only vertical:
+- compile `.rbv` task list;
+- render `GET /api/tasks`;
+- empty/error states;
+- existing router/browser gates.

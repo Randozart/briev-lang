@@ -6,8 +6,8 @@ PostgreSQL persistence.
 
 ## Status
 
-Backend `/health` vertical. The first server intentionally handles one request
-and exits; the sequential request loop is the next slice.
+In-memory CRUD backend with a sequential request loop. Frontend and PostgreSQL
+are the next slices.
 
 ## Backend
 
@@ -16,9 +16,18 @@ and exits; the sequential request loop is the next slice.
 ./backend/main
 ```
 
-The server binds `127.0.0.1`, serves one `GET /health`, returns
-`{"ok":true}`, and exits. This narrow scope makes the first network boundary
-deterministic.
+The server binds port `18367` and handles one request per TCP connection
+sequentially. State persists in memory across requests until the process exits.
+
+## API
+
+```text
+GET    /health
+GET    /api/tasks
+POST   /api/tasks                   {"title":"..."}
+POST   /api/tasks/:id/toggle
+DELETE /api/tasks/:id
+```
 
 ## Gate
 
@@ -26,6 +35,6 @@ deterministic.
 bash tests/api_gate.sh
 ```
 
-The gate builds the app, starts the backend on an isolated port, polls for
-readiness, asserts the exact HTTP response and JSON body, and fails on any
-stderr output, mismatch, or timeout.
+The gate builds the app, starts the backend, polls for readiness, and asserts
+health, empty list, create, persistence, toggle, invalid body, unknown route,
+and delete.

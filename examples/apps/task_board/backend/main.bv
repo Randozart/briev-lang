@@ -1,20 +1,137 @@
-// Briev Task Board backend — /health vertical.
+// Briev Task Board backend — in-memory task API.
 //
-// A0 deliberately serves exactly one request. This keeps the first HTTP
-// socket boundary deterministic while the campaign adds the sequential
-// request loop as its own slice. Routing is intentionally tiny: /health is
-// the only valid route; every other path gets the app's structured JSON 404.
+// One request per connection, sequential accept loop. The task store is passed
+// through the loop, so state survives across requests. App scope is deliberately
+// single-user and in-memory; PostgreSQL is a later campaign slice.
 import "std/net/socket.bv";
 import "std/net/http.bv";
+import "std/json.bv";
+import "std/string_builder.bv";
+import { starts_with, ends_with, find, trim_str } from "std/string.bv";
 
 const HEALTH_BODY: String = "{\"ok\":true}";
 const NOT_FOUND_BODY: String = "{\"error\":\"not_found\"}";
+const INVALID_BODY: String = "{\"error\":\"invalid_request\"}";
 const SERVER_PORT: Int = 18367;
-const MAX_REQUEST_BYTES: Int = 4096;
 
-// Read one byte at a time until HTTP framing is complete. `sock_recv` fills
-// from the start of a buffer, so a one-byte scratch buffer is the honest v0
-// append primitive. The request limit is proven by the recursive parameter.
+obj Task {
+    id: Int;
+    title: String;
+    done: Int;
+};
+
+obj TaskStore {
+    tasks: List<Task>;
+    next_id: Int;
+};
+
+defn new_store() -> TaskStore {
+    let empty: List<Task> = [];
+    term TaskStore { tasks: empty, next_id: 1 };
+};
+
+defn json_escape(s: String) -> String {
+    let sb: StringBuilder = new_builder();
+    let n: Int = s .^Length;
+    foreach i in 0..n {
+        let c: Char = char_at(s, i);
+        when c == '"' {
+            sb = append_str(sb, "\\\"");
+        };
+        when c == '\\' {
+            sb = append_str(sb, "\\\\");
+        };
+        when c == '\n' {
+            sb = append_str(sb, "\\n");
+        };
+        when c == '\r' {
+            sb = append_str(sb, "\\r");
+        };
+        when c == '\t' {
+            sb = append_str(sb, "\\t");
+        };
+        when c != '"' && c != '\\' && c != '\n' && c != '\r' && c != '\t' {
+            sb = append_char(sb, c);
+        };
+    };
+    term sb.to_string();
+};
+
+defn task_json(task: Task) -> String {
+    let done: String = match task.done {
+        1 => "true",
+        _ => "false",
+    };
+    term "{\"id\":" + (task.id as String) + ",\"title\":\"" + json_escape(task.title) + "\",\"done\":" + done + "}";
+};
+
+defn tasks_json(store: TaskStore) -> String {
+    let sb: StringBuilder = new_builder();
+    sb = append_str(sb, "[");
+    let n: Int = store.tasks.Count#();
+    foreach i in 0..n {
+        when i > 0 {
+            sb = append_str(sb, ",");
+        };
+        sb = append_str(sb, task_json(store.tasks[i]));
+    };
+    sb = append_str(sb, "]");
+    term sb.to_string();
+};
+
+defn store_add(store: TaskStore, title: String) -> Task {
+    let task: Task = Task { id: store.next_id, title: title, done: 0 };
+    let tasks: List<Task> = store.tasks;
+    tasks <- task;
+    store.tasks = tasks;
+    store.next_id = store.next_id + 1;
+    term task;
+};
+
+defn store_toggle(store: TaskStore, id: Int) -> Int {
+    let found: Int = 0;
+    let n: Int = store.tasks.Count#();
+    foreach i in 0..n {
+        let task: Task = store.tasks[i];
+        when task.id == id {
+            task.done = 1 - task.done;
+            found = 1;
+        };
+    };
+    term found;
+};
+
+defn store_delete(store: TaskStore, id: Int) -> Int {
+    let kept: List<Task> = [];
+    let found: Int = 0;
+    let n: Int = store.tasks.Count#();
+    foreach i in 0..n {
+        let task: Task = store.tasks[i];
+        when task.id == id {
+            found = 1;
+        };
+        when task.id != id {
+            kept <- task;
+        };
+    };
+    when found == 1 {
+        store.tasks = kept;
+    };
+    term found;
+};
+
+defn task_id_from_path(path: String) -> Int {
+    let prefix: String = "/api/tasks/";
+    let rest: String = path[prefix .^Length:path .^Length];
+    let slash: Int = find(rest, "/");
+    when slash < 0 {
+        term rest as Int;
+    };
+    term rest[0:slash] as Int;
+};
+
+// Read one byte at a time until HTTP framing is complete. The advanced ByteBuf
+// is returned: it is a value, so the caller must observe its new len.
 defn read_request(conn: Socket, buf: ByteBuf, fed: Int)
     [conn.fd >= -4096 && fed >= 0 && fed <= buf.cap]
     [term.len >= 0 && term.len <= term.cap]
@@ -41,8 +158,6 @@ defn read_request(conn: Socket, buf: ByteBuf, fed: Int)
     term read_request(conn, next, fed + 1);
 };
 
-// Send a complete HTTP response and report whether every body/header byte
-// reached the kernel. The caller owns and frees the response buffer.
 defn send_response(conn: Socket, response: GrowBuf)
     [conn.fd >= -4096 && response.len >= 0]
     -> Int
@@ -62,9 +177,120 @@ defn send_response(conn: Socket, response: GrowBuf)
     term 0;
 };
 
+defn respond_json(conn: Socket, status: Int, body: String)
+    [conn.fd >= -4096]
+    -> Void
+{
+    when status >= 100 && status <= 599 {
+        let response: GrowBuf = http_json_response(status, body);
+        let ok: Int = send_response(conn, response);
+        grow_free(response);
+        when ok == 0 {
+            Print#(0 - ok);
+        };
+    };
+    term;
+};
+
+defn handle_api(conn: Socket, request: HttpRequest, store: TaskStore)
+    [conn.fd >= -4096]
+    -> Void
+{
+    let method: String = request.method;
+    let path: String = request.path;
+    let handled: Int = 0;
+    let prefix: String = "/api/tasks/";
+
+    when handled == 0 && method == "GET" && path == "/api/tasks" {
+        respond_json(conn, 200, tasks_json(store));
+        handled = 1;
+    };
+
+    when handled == 0 && method == "POST" && path == "/api/tasks" {
+        let body_result: Result<JsonValue, String> = json_parse(request.body);
+        let title: String = match body_result {
+            Ok(value) => match json_get(value, "title") {
+                Ok(text) => trim_str(text),
+                Err(_) => "",
+            },
+            Err(_) => "",
+        };
+        when title .^Length == 0 {
+            respond_json(conn, 400, INVALID_BODY);
+            handled = 1;
+        };
+        when title .^Length > 0 {
+            let task: Task = store_add(store, title);
+            respond_json(conn, 200, task_json(task));
+            handled = 1;
+        };
+    };
+
+    when handled == 0 && method == "POST" && starts_with(path, prefix) && ends_with(path, "/toggle") {
+        let id: Int = task_id_from_path(path);
+        when id <= 0 {
+            respond_json(conn, 404, NOT_FOUND_BODY);
+            handled = 1;
+        };
+        when id > 0 {
+            let found: Int = store_toggle(store, id);
+            when found == 0 {
+                respond_json(conn, 404, NOT_FOUND_BODY);
+                handled = 1;
+            };
+            when found == 1 {
+                respond_json(conn, 200, tasks_json(store));
+                handled = 1;
+            };
+        };
+    };
+
+    when handled == 0 && method == "DELETE" && starts_with(path, prefix) {
+        let rest: String = path[prefix .^Length:path .^Length];
+        when find(rest, "/") >= 0 {
+            respond_json(conn, 404, NOT_FOUND_BODY);
+            handled = 1;
+        };
+        when find(rest, "/") < 0 {
+            let id: Int = rest as Int;
+            let found: Int = store_delete(store, id);
+            when found == 0 {
+                respond_json(conn, 404, NOT_FOUND_BODY);
+                handled = 1;
+            };
+            when found == 1 {
+                respond_json(conn, 200, tasks_json(store));
+                handled = 1;
+            };
+        };
+    };
+
+    when handled == 0 {
+        respond_json(conn, 404, NOT_FOUND_BODY);
+        handled = 1;
+    };
+};
+
+defn handle_connection(conn: Socket, store: TaskStore) [conn.fd >= -4096] -> Void {
+    let empty: ByteBuf = buf_new(4096);
+    let request: ByteBuf = read_request(conn, empty, 0);
+    let received: Int = request.len;
+    check received <= request.len;
+    when received > 0 {
+        let parsed: HttpParse = http_parse_request(request, received);
+        when parsed.request.method == "GET" && parsed.request.path == "/health" {
+            respond_json(conn, 200, HEALTH_BODY);
+        };
+        when parsed.request.method != "GET" || parsed.request.path != "/health" {
+            handle_api(conn, parsed.request, store);
+        };
+    };
+    buf_free(request);
+    sock_close(conn);
+};
+
 // Build the listener without a deferred local write: a plain reactive node
 // that assigns and later reads a local is a self-edge to the causality pass.
-// Errors use the Socket fd's existing -errno convention.
 defn open_listener() [true][term.fd >= -4096] -> Socket {
     let listener: Socket = sock_tcp();
     when listener.fd >= -4096 && SERVER_PORT >= 0 && SERVER_PORT <= 65535 && 4 >= 0 {
@@ -76,48 +302,20 @@ defn open_listener() [true][term.fd >= -4096] -> Socket {
     term listener;
 };
 
+defn serve(listener: Socket, store: TaskStore) [listener.fd >= -4096] -> Void {
+    let conn: Socket = sock_accept(listener);
+    when conn.fd >= 0 {
+        handle_connection(conn, store);
+    };
+    serve(listener, store);
+};
+
 node entry [beginprogram][true] {
     let listener: Socket = open_listener();
     when listener.fd < 0 {
         endprogram Print#(listener.fd);
     };
-
-    let conn: Socket = sock_accept(listener);
-    when conn.fd < 0 {
-        sock_close(listener);
-        endprogram Print#(conn.fd);
-    };
-
-    let empty: ByteBuf = buf_new(4096);
-    let request: ByteBuf = read_request(conn, empty, 0);
-    let received: Int = request.len;
-    when received <= 0 {
-        buf_free(request);
-        sock_close(conn);
-        sock_close(listener);
-        endprogram Print#(received);
-    };
-
-    check received <= request.len;
-    when received > 0 {
-        let parsed: HttpParse = http_parse_request(request, received);
-        when parsed.request.method == "GET" && parsed.request.path == "/health" {
-            let response: GrowBuf = http_json_response(200, HEALTH_BODY);
-            let ok: Int = send_response(conn, response);
-            grow_free(response);
-            buf_free(request);
-            sock_close(conn);
-            sock_close(listener);
-            endprogram Print#(ok);
-        };
-        when parsed.request.method != "GET" || parsed.request.path != "/health" {
-            let response: GrowBuf = http_json_response(404, NOT_FOUND_BODY);
-            let ok: Int = send_response(conn, response);
-            grow_free(response);
-            buf_free(request);
-            sock_close(conn);
-            sock_close(listener);
-            endprogram Print#(ok);
-        };
-    };
+    let store: TaskStore = new_store();
+    serve(listener, store);
+    term;
 };
