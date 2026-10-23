@@ -790,6 +790,54 @@ fn test_foreach_string_emits_char_decode_lane() {
         "the decoded codepoint must be truncated to Char's native i32; got:\n{output}");
 }
 
+/// 2026-10-23 (tail-loop lowering): the loop-carried nested-enum shape
+/// becomes a backedge, not a recursive LLVM call. Plain tail recursion stays
+/// on LLVM TCO because it was already fast (ws_frame regression gate).
+#[test]
+fn direct_tail_recursion_lowers_to_loop() {
+    let src = r#"
+enum R { Ok(Int), Err(Int) };
+enum S { A };
+defn step(s: S) -> R { term Ok(1); };
+defn loop(n: Int, state: S, sum: Int) -> Int {
+    when n <= 0 { term sum; };
+    let r: R = step(state);
+    term match r {
+        Ok(next) => loop(n - 1, next, sum + state_code(next)),
+        Err(_) => loop(n - 1, state, sum + 1000000),
+    };
+};
+defn state_code(state: S) -> Int { term 1; };
+defn plain(n: Int) -> Int {
+    when n <= 0 { term 0; };
+    term plain(n - 1);
+};
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let unused: Int = loop(3, S.A, 0);
+    let unused_plain: Int = plain(3);
+    tick = 1;
+    endprogram;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let mut backend = LlvmBackend::new();
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains(".tail_header_"), "carrier tail recursion must emit a loop header; got:\n{ir}");
+    let fn_start = ir.find("define i64 @loop(").expect("lowered function must be emitted");
+    let fn_end = fn_start + ir[fn_start..].find("\n}\n").expect("lowered function must close");
+    let fn_ir = &ir[fn_start..fn_end];
+    assert!(!fn_ir.contains("call i64 @loop("), "the lowered function must contain no recursive self-call; got:\n{fn_ir}");
+    let plain_start = ir.find("define i64 @plain(").expect("plain recursive function must be emitted");
+    let plain_end = plain_start + ir[plain_start..].find("\n}\n").expect("plain function must close");
+    assert!(
+        !ir[plain_start..plain_end].contains(".tail_header_"),
+        "plain tail recursion must stay on LLVM TCO (ws_frame regression gate)"
+    );
+}
+
 /// 2026-08-14 (boundary plan, SPEC §17.3): the four bit intrinsics dispatch
 /// to their LLVM lanes — `Popcount#` → ctpop, `LeadingZeros#` → ctlz,
 /// `TrailingZeros#` → cttz, `BitReverse#` → bitreverse.

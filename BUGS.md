@@ -10797,3 +10797,12 @@ termination per probe, exclude terminated arms' types, and restore the flag.
 Tests cover both orders, pointer values, nested termination, and a continuing
 Void control; all four regressions and native value/trap gates pass. Feature progress and
 stdlib changes are preserved separately, not included in this compiler PR.
+
+## sret caller slots sized by the bound local's name (FIXED 2026-10-23)
+
+`find_sret_call_lets` returned only the local binding name; slot allocation
+then called `enum_image_words_for_defn(name)`, passing the local (`r`) where
+the enum-returning callee was required. Nested-result layouts therefore fell
+back to the two-word floor instead of their concrete image width. Return the
+`(local, callee)` pair and size the caller slot from the callee's declared
+return type. FSM parity at bounds 0..8, 1M, and 50M; full library tests green.

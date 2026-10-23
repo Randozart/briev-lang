@@ -128,6 +128,9 @@ pub struct CompilerContext {
     pub defn_hoisted_sret: HashMap<String, Vec<String>>,
     /// 2026-10-21 (TCO-safe sret): direct self-tail-recursive defns.
     pub tail_recursive: std::collections::HashSet<String>,
+    /// 2026-10-23 (direct tail-loop lowering): defns lowered to an explicit
+    /// loop instead of a recursive self-call.
+    pub tail_loop: crate::analysis::tail_recursion::TailLoopPlan,
     /// 2026-10-21 (nested carrier slots): loop-carried inline nested enum
     /// ownership plan for direct self-tail-recursive defns.
     pub tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan,
@@ -637,6 +640,7 @@ impl CompilerContext {
             defn_sret: std::collections::HashSet::new(),
             defn_hoisted_sret: HashMap::new(),
             tail_recursive: std::collections::HashSet::new(),
+            tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
             tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan::default(),
             enum_layout_planner: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
@@ -1123,6 +1127,13 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub hoisted_sret_params: HashMap<String, String>,
     /// Current defn when emitting a hoisted recursive body.
     pub tail_loop_fn: Option<String>,
+    /// Direct self-tail-recursion lowering: current loop header and the
+    /// per-parameter alloca slots. `(slot, internal LLVM type)`.
+    pub tail_loop_header: Option<String>,
+    pub tail_param_slots: Vec<(String, String)>,
+    /// The just-emitted expression ended in a lowered tail backedge; the
+    /// enclosing `term` must not add a second block terminator.
+    pub tail_loop_backedge: bool,
     /// Hidden carrier slot per loop-carried parameter index.
     pub carrier_params: HashMap<usize, String>,
     /// 2026-09-14 (machine-entry plan): the last Expression statement's value
@@ -1411,6 +1422,9 @@ impl FunctionContext {
             sret_call_slot: None,
             hoisted_sret_params: HashMap::new(),
             tail_loop_fn: None,
+            tail_loop_header: None,
+            tail_param_slots: Vec::new(),
+            tail_loop_backedge: false,
             carrier_params: HashMap::new(),
             local_fields: std::collections::HashSet::new(),
             txn_counter: 0,
@@ -1547,6 +1561,9 @@ impl FunctionContext {
         self.sret_call_slot = None;
         self.hoisted_sret_params.clear();
         self.tail_loop_fn = None;
+        self.tail_loop_header = None;
+        self.tail_param_slots.clear();
+        self.tail_loop_backedge = false;
         self.carrier_params.clear();
         self.pending_consumes.clear();
         self.let_binding_allocas.clear();
