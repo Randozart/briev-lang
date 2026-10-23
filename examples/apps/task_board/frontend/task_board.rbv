@@ -1,0 +1,71 @@
+// Briev Task Board frontend — read-only API vertical (A4).
+//
+// The page starts in `loading`, asks the browser host for `/api/tasks`, and
+// exposes the response through reactive view state. `b-window:load` is a real
+// window trigger; the Refresh button remains as a deterministic fallback and
+// makes the host boundary testable without depending on page-load ordering.
+import "std/web/fetch.bv";
+
+let tasks_json: String = "[]";
+let status: String = "loading";
+let loaded: Int = 0;
+
+txn refresh [loaded == 0][loaded == 1] {
+    tasks_json = fetch("http://127.0.0.1:18367/api/tasks");
+    status = "ready";
+    loaded = 1;
+    term;
+};
+
+<view>
+  <main class="board">
+    <header>
+      <h1>Task Board</h1>
+      <p><span b-text="status">loading</span></p>
+      <button b-trigger:click="refresh">Refresh</button>
+      <button b-window:load="refresh"></button>
+    </header>
+    <pre class="tasks" b-text="tasks_json">[]</pre>
+  </main>
+</view>
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6fb;
+    color: #172033;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+  }
+  .board {
+    width: min(720px, calc(100vw - 32px));
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 18px 50px rgba(20, 32, 60, .14);
+    padding: 32px;
+  }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  p { color: #596579; margin-bottom: 18px; }
+  button {
+    border: 0;
+    border-radius: 8px;
+    background: #3056d3;
+    color: white;
+    padding: 10px 16px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .tasks {
+    margin-top: 20px;
+    padding: 16px;
+    border-radius: 10px;
+    background: #111827;
+    color: #d1fae5;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-height: 80px;
+  }
+</style>

@@ -10844,3 +10844,18 @@ Regression fixtures:
 Validation: `cargo test --lib` 3,302 green, three daily-use golden tests green,
 Task Board CRUD gate PASS, effect-shape guard PASS, LLVM determinism quick gate
 PASS, full runtime suite all MATCH.
+
+## wasm32 obj-init IR types i32 state slot as i64 (OPEN 2026-10-23)
+
+Found while validating the Task Board frontend: `tests/fixtures/obj_init.rbv`
+fails the existing web surface gate in wasm32 with
+
+```text
+%t10 = inttoptr i64 %t9 to ptr
+error: '%t9' defined with type 'i32' but expected 'i64'
+```
+
+The failure is pre-existing: the pinned pre-A4 compiler reproduces it at the
+same IR line. It blocks `rbv_gate.sh` after the router runtime checks, but is
+independent of the frontend fetch boundary. Task Board uses string state and
+its own real-browser gate passes.

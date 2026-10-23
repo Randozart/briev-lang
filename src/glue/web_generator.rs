@@ -229,9 +229,9 @@ impl TypeTag {
 
     fn decoder_expr(&self) -> &'static str {
         match self {
-            TypeTag::Int => "mem.getInt32(valPtr, true)",
-            TypeTag::Float => "mem.getFloat64(valPtr, true)",
-            TypeTag::Bool => "mem.getUint8(valPtr, true) !== 0",
+            TypeTag::Int => "mem.getInt32(Number(valPtr), true)",
+            TypeTag::Float => "mem.getFloat64(Number(valPtr), true)",
+            TypeTag::Bool => "mem.getUint8(Number(valPtr), true) !== 0",
             TypeTag::String => {
                 "valLen > 0 ? new TextDecoder().decode(new Uint8Array(mem.buffer, valPtr, valLen)) : null"
             }
@@ -459,6 +459,7 @@ export class WasmDomRuntime {{
     this._generationOffset = {generation_offset};
     this._flushBufferOffset = {flush_buffer_offset};
     this._maxFlushEntries = {max_flush_entries};
+    this._heapPtr = 0;
     // 2026-10-08 (Phase 3.1 stranger probe): keep the init promise so
     // createApp can await it — reading `_instance.exports` before init
     // resolved threw "Cannot read properties of null (reading 'exports')".
@@ -495,8 +496,25 @@ export class WasmDomRuntime {{
       __web_flush_state: (updatesPtr, count) => {{
         this._applyFlush(updatesPtr, count);
       }},
+      // LLVM lowers libc malloc to an env import on wasm32. The runtime
+      // owns a bump allocator so user host boundaries do not depend on Emscripten.
+      malloc: (size) => this._malloc(size),
 {imports_js}
     }};
+  }}
+
+  _malloc(size) {{
+    const need = (Number(size) + 7) & ~7;
+    const memory = this._memory || this._instance?.exports.memory;
+    if (!memory) throw new Error("malloc before WebAssembly memory was ready");
+    if (!this._heapPtr) this._heapPtr = memory.buffer.byteLength;
+    if (this._heapPtr + need > memory.buffer.byteLength) {{
+      const pages = Math.ceil((this._heapPtr + need - memory.buffer.byteLength) / 65536);
+      memory.grow(pages);
+    }}
+    const ptr = this._heapPtr;
+    this._heapPtr += need;
+    return ptr;
   }}
 
   _loadStateLayout() {{
@@ -528,6 +546,9 @@ export class WasmDomRuntime {{
 
   _makeBinding(handle, fieldOff, fieldSize, typeTag) {{
     const _this = this;
+    // Field offsets are RELATIVE to %State. The backend flush records valPtr
+    // as the state pointer + offset; bind that base once so every decoder sees
+    // the same address space regardless of where the state chunk lands.
     // 2026-08-10: type-aware value decoding. The flush record's value_ptr
     // points at the field's %State slot: scalars decode from the slot bytes
     // (Int/Float/Bool), String dereferences the pointer stored in the slot.
@@ -535,25 +556,25 @@ export class WasmDomRuntime {{
     if (typeTag === 1) {{
       decode = (valPtr, valLen) => {{
         const mem = new DataView(_this._memory.buffer);
-        return mem.getFloat64(valPtr, true);
+        return mem.getFloat64(Number(valPtr), true);
       }};
     }} else if (typeTag === 2) {{
       decode = (valPtr, valLen) => {{
         const mem = new DataView(_this._memory.buffer);
-        return mem.getUint8(valPtr, true) !== 0;
+        return mem.getUint8(Number(valPtr), true) !== 0;
       }};
     }} else if (typeTag === 3) {{
       decode = (valPtr, valLen) => {{
         // The slot holds the string ADDRESS (i64); read it, then the
         // [len][bytes] payload at that address.
         const mem = new DataView(_this._memory.buffer);
-        const strPtr = Number(mem.getBigUint64(valPtr, true));
+        const strPtr = Number(mem.getBigUint64(Number(valPtr), true));
         return _this._readString(strPtr);
       }};
     }} else {{
       decode = (valPtr, valLen) => {{
         const mem = new DataView(_this._memory.buffer);
-        return mem.getInt32(valPtr, true);
+        return mem.getInt32(Number(valPtr), true);
       }};
     }}
     return {{
@@ -587,9 +608,7 @@ export class WasmDomRuntime {{
     // and return the pointer. Uses Module.malloc or pre-allocated buffer.
     const encoder = new TextEncoder();
     const bytes = encoder.encode(str);
-    const ptr = this._instance.exports.malloc
-      ? this._instance.exports.malloc(8 + bytes.length + 1)
-      : this._allocateStatic(8 + bytes.length + 1);
+    const ptr = this._malloc(8 + bytes.length + 1);
     const mem = new DataView(this._memory.buffer);
     mem.setBigUint64(ptr, BigInt(bytes.length), true);
     const arr = new Uint8Array(this._memory.buffer);
@@ -1078,9 +1097,16 @@ export async function createApp(wasmBytes) {{
                     format!(", {}", args.join(", "))
                 };
                 if *scope == crate::view_compiler::TriggerScope::Window {
+                    // The shim boots asynchronously, so `load`/DOMContentLoaded
+                    // can finish before this listener exists. Fire an already
+                    //-missed document readiness event once after boot.
                     format!(
                         "(() => {{\n\
-                         \x20         window.addEventListener({event:?}, () => this._txn({txn:?})({arg_str}));\n\
+                         \x20         const fire = () => this._txn({txn:?})({arg_str});\n\
+                         \x20         window.addEventListener({event:?}, fire);\n\
+                         \x20         const ready = document.readyState;\n\
+                         \x20         if (({event:?} === 'load' && ready === 'complete') ||\n\
+                         \x20             ({event:?} === 'DOMContentLoaded' && ready !== 'loading')) fire();\n\
                          \x20       }})();"
                     )
                 } else {
@@ -2204,13 +2230,13 @@ mod tests {
         let g = make_empty_generator();
         let output = g.generate().unwrap();
         let shim = &output.dom_shim;
-        assert!(shim.contains("typeTag === 1") && shim.contains("getFloat64(valPtr, true)"),
+        assert!(shim.contains("typeTag === 1") && shim.contains("getFloat64(Number(valPtr), true)"),
             "Float decode must be emitted; got:\n{shim}");
-        assert!(shim.contains("typeTag === 2") && shim.contains("getUint8(valPtr, true)"),
+        assert!(shim.contains("typeTag === 2") && shim.contains("getUint8(Number(valPtr), true)"),
             "Bool decode must be emitted; got:\n{shim}");
         assert!(shim.contains("typeTag === 3") && shim.contains("_readString(strPtr)"),
             "String decode must dereference the slot pointer; got:\n{shim}");
-        assert!(shim.contains("getInt32(valPtr, true)"),
+        assert!(shim.contains("getInt32(Number(valPtr), true)"),
             "Int decode must be emitted; got:\n{shim}");
         assert!(shim.contains("binding.decode ? binding.decode(valPtr, valLen) : null"),
             "_applyFlush must use the type-aware decoder; got:\n{shim}");
@@ -2247,6 +2273,40 @@ mod tests {
         fb.inputs = inputs;
         fb.success_output = outputs;
         fb
+    }
+
+    #[test]
+    fn web_host_fetch_shim_provides_malloc_and_missed_readiness() {
+        // lib/std/web/fetch.bv declares a host-module path; string-returning
+        // host calls require wasm malloc, and async shim boot can miss `load`.
+        let mut frgn = make_web_frgn(
+            "fetch_url",
+            vec![("url".to_string(), crate::ast::Type::string())],
+            vec![("body".to_string(), crate::ast::Type::string())],
+        );
+        frgn.from = crate::ast::FromSpec::Literal(std::path::PathBuf::from("glue/web/web.js"));
+        let bindings = vec![crate::view_compiler::Binding {
+            element_id: "load-trigger".to_string(),
+            directive: crate::view_compiler::Directive::Trigger {
+                event: "load".to_string(),
+                txn: "refresh".to_string(),
+                params: vec![],
+                scope: crate::view_compiler::TriggerScope::Window,
+            },
+        }];
+        let g = GlueWebGenerator::new(
+            Vec::new(), bindings,
+            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            HashMap::new(),
+            vec![frgn],
+        );
+        let out = g.generate().unwrap();
+        assert!(out.dom_shim.contains("malloc: (size) => this._malloc(size)"),
+            "wasm32 malloc import missing:\n{}", out.dom_shim);
+        assert!(out.dom_shim.contains("_malloc(size)"),
+            "bump allocator missing:\n{}", out.dom_shim);
+        assert!(out.dom_shim.contains("document.readyState"),
+            "missed readiness-event recovery missing:\n{}", out.dom_shim);
     }
 
     #[test]

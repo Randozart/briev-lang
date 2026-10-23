@@ -1,7 +1,7 @@
 # Fullstack application validation campaign — Briev Task Board
 
 **Date:** 2026-10-23
-**Status:** ACTIVE — A2/A3 in-memory CRUD and sequential loop complete.
+**Status:** ACTIVE — A4 frontend read-only vertical complete.
 **Base:** `main` at `45b8850a`.
 **Umbrella:** `docs/plans/2026-10-09-fullstack-stdlib-and-net-stack.md`.
 
@@ -264,10 +264,46 @@ toggle, invalid body, unknown route, and delete.
 
 No app workaround was added for any compiler/stdlib defect.
 
+## A4 — frontend read-only vertical (2026-10-23)
+
+Landed:
+
+- `frontend/task_board.rbv`;
+- reactive `tasks_json`, `status`, and `loaded` state;
+- real host `fetch_url` boundary;
+- visible Refresh trigger and `b-window:load` wiring;
+- generated wasm/html/css/js split artifact.
+
+Gate: `examples/apps/task_board/tests/frontend_gate.sh`.
+
+The gate builds the backend and frontend, seeds one task through the native
+API, serves the frontend, then uses real Chromium to click Refresh and assert:
+
+- no page errors;
+- no console errors;
+- status becomes `ready`;
+- exact backend JSON reaches the Briev view state:
+  `[{"id":1,"title":"browser read test","done":false}]`.
+
+Web runtime fixes required for the boundary:
+
+- wasm32 host-string returns now have a runtime bump `malloc` import;
+- missed `load`/DOMContentLoaded events fire once after async shim boot;
+- flush decoders use explicit numeric addressing for wasm32.
+
+Validation: browser gate PASS; web-generator tests 29 green;
+`cargo test --lib` 3,303 green.
+
+## Existing failure found
+
+`rbv_gate.sh` is currently blocked by pre-existing wasm32 `obj_init` bad IR
+(`i32` value used as `i64` pointer). The pinned pre-A4 compiler reproduces the
+same failure; recorded in BUGS.md. It is independent of the frontend gate.
+
 ## Next
 
-A4 — frontend read-only vertical:
-- compile `.rbv` task list;
-- render `GET /api/tasks`;
-- empty/error states;
-- existing router/browser gates.
+A5 — frontend mutation fetch:
+- extend host module beyond synchronous GET;
+- typed POST/toggle/delete wrappers;
+- structured request errors;
+- browser CRUD actions and deterministic browser gate.
