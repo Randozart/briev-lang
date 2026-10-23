@@ -64,7 +64,11 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
                 }
             }
             TopLevel::TypeDef(td) => {
-                let is_enum = td.body.slots.iter().any(|s| s.name.starts_with("__variant_"));
+                let is_enum = td
+                    .body
+                    .slots
+                    .iter()
+                    .any(|s| s.name.starts_with("__variant_"));
                 if is_enum {
                     enum_names.push(td.name.clone());
                     for slot in &td.body.slots {
@@ -88,7 +92,9 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
 
     // Seed: enum-returning defns whose returns are constructors.
     for item in items {
-        let TopLevel::Definition(d) = item else { continue; };
+        let TopLevel::Definition(d) = item else {
+            continue;
+        };
         let return_is_enum = defn_return_type(d)
             .map(|t| type_is_enum(&t, &enum_set))
             .unwrap_or(false);
@@ -106,7 +112,9 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
     loop {
         let mut changed = false;
         for item in items {
-            let TopLevel::Definition(d) = item else { continue; };
+            let TopLevel::Definition(d) = item else {
+                continue;
+            };
             if candidates.contains_key(&d.name) {
                 continue;
             }
@@ -135,31 +143,11 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
 /// enum-returning defn. That caller may hold the returned handle in a local
 /// let and return it, which would dangle the caller-frame slot. Keeping such
 /// callees boxed is safe; SC (single-caller node) remains sret.
-pub fn sret_safe_defns(
-    items: &[TopLevel],
-    plan: &EnumRepresentationPlan,
-) -> Vec<String> {
-    use crate::ast::visit::walk_stmts;
+pub fn sret_safe_defns(items: &[TopLevel], plan: &EnumRepresentationPlan) -> Vec<String> {
     let enum_defs: HashMap<&str, ()> = plan.defns.keys().map(|n| (n.as_str(), ())).collect();
+    let enum_names = collect_enum_names(items);
     let mut unsafe_names: HashMap<String, ()> = HashMap::new();
-    for item in items {
-        let TopLevel::Definition(d) = item else { continue; };
-        if !enum_defs.contains_key(d.name.as_str()) {
-            continue;
-        }
-        // An sret caller that is itself sret can pass its out slot through;
-        // only non-candidate enum callers are unsafe.
-        if plan.defn_class(&d.name) == EnumRepresentation::ReturnedSmallCandidate {
-            continue;
-        }
-        walk_stmts(&d.body, &mut |e| {
-            if let Expr::Call(callee, _, _) = e {
-                if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {
-                    unsafe_names.insert(callee.clone(), ());
-                }
-            }
-        });
-    }
+    scan_unsafe_sret_callers(items, plan, &enum_defs, &enum_names, &mut unsafe_names);
     plan.defns
         .iter()
         .filter(|(name, class)| {
@@ -168,6 +156,139 @@ pub fn sret_safe_defns(
         })
         .map(|(name, _)| name.clone())
         .collect()
+}
+
+fn scan_unsafe_sret_callers(
+    items: &[TopLevel],
+    plan: &EnumRepresentationPlan,
+    enum_defs: &HashMap<&str, ()>,
+    enum_names: &HashMap<&str, ()>,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    for item in items {
+        match item {
+            TopLevel::Definition(d) => {
+                scan_definition_sret_callers(d, plan, enum_defs, unsafe_names);
+            }
+            TopLevel::Transaction(t) => {
+                scan_transaction_return_calls(t, plan, enum_names, unsafe_names);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_definition_sret_callers(
+    d: &crate::ast::Definition,
+    plan: &EnumRepresentationPlan,
+    enum_defs: &HashMap<&str, ()>,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    if !enum_defs.contains_key(d.name.as_str()) {
+        return;
+    }
+    if plan.defn_class(&d.name) == EnumRepresentation::ReturnedSmallCandidate {
+        return;
+    }
+    use crate::ast::visit::walk_stmts;
+    walk_stmts(&d.body, &mut |e| {
+        mark_sret_candidate_call(e, plan, unsafe_names);
+    });
+}
+
+fn scan_transaction_return_calls(
+    t: &crate::ast::Transaction,
+    plan: &EnumRepresentationPlan,
+    enum_names: &HashMap<&str, ()>,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    let returns_enum = txn_return_type(t)
+        .map(|ty| type_is_enum(&ty, enum_names))
+        .unwrap_or(false);
+    if !returns_enum || plan.defn_class(&t.name) == EnumRepresentation::ReturnedSmallCandidate {
+        return;
+    }
+    collect_txn_return_calls(&t.body, plan, unsafe_names);
+}
+
+fn mark_sret_candidate_call(
+    expr: &Expr,
+    plan: &EnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    if let Expr::Call(callee, _, _) = expr {
+        if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {
+            unsafe_names.insert(callee.clone(), ());
+        }
+    }
+}
+
+fn collect_enum_names(items: &[TopLevel]) -> HashMap<&str, ()> {
+    let mut names = HashMap::new();
+    for item in items {
+        match item {
+            TopLevel::Enum(e) => {
+                names.insert(e.name.as_str(), ());
+            }
+            TopLevel::TypeDef(td)
+                if td
+                    .body
+                    .slots
+                    .iter()
+                    .any(|slot| slot.name.starts_with("__variant_")) =>
+            {
+                names.insert(td.name.as_str(), ());
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn collect_txn_return_calls(
+    stmts: &[crate::ast::Statement],
+    plan: &EnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    for stmt in stmts {
+        match stmt {
+            crate::ast::Statement::Term(Some(expr)) | crate::ast::Statement::Tail(expr) => {
+                collect_return_expr_calls(expr, plan, unsafe_names);
+            }
+            crate::ast::Statement::Guarded(_, body)
+            | crate::ast::Statement::Block(body)
+            | crate::ast::Statement::SyncBlock(body)
+            | crate::ast::Statement::Mutex(body)
+            | crate::ast::Statement::Foreach { body, .. } => {
+                collect_txn_return_calls(body, plan, unsafe_names);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_return_expr_calls(
+    expr: &Expr,
+    plan: &EnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    match expr {
+        Expr::Call(callee, _, _) => mark_sret_candidate_call(expr, plan, unsafe_names),
+        Expr::Match(_, arms) => {
+            for arm in arms {
+                collect_return_expr_calls(&arm.body, plan, unsafe_names);
+            }
+        }
+        Expr::Block(stmts) => collect_txn_return_calls(stmts, plan, unsafe_names),
+        _ => {}
+    }
+}
+
+fn txn_return_type(t: &crate::ast::Transaction) -> Option<crate::ast::Type> {
+    if let Some(ot) = &t.output_type {
+        return ot.all_types().into_iter().next();
+    }
+    t.outputs.first().cloned()
 }
 
 fn defn_return_type(d: &crate::ast::Definition) -> Option<crate::ast::Type> {
@@ -218,11 +339,17 @@ fn return_shaped(
     if constructor_shaped_return(expr, variants, sret_calls) {
         return true;
     }
-    let Expr::Identifier(local) = expr else { return false; };
+    let Expr::Identifier(local) = expr else {
+        return false;
+    };
     d.body
         .iter()
         .find_map(|s| match s {
-            Statement::Let { name, expr: Some(init), .. } if name == local => Some(init),
+            Statement::Let {
+                name,
+                expr: Some(init),
+                ..
+            } if name == local => Some(init),
             _ => None,
         })
         .map(|init| constructor_shaped_return(init, variants, sret_calls))
@@ -237,9 +364,7 @@ fn constructor_shaped_return(
     sret_calls: &HashMap<String, ()>,
 ) -> bool {
     match expr {
-        Expr::Call(name, _, _) => {
-            is_variant_name(name, variants) || sret_calls.contains_key(name)
-        }
+        Expr::Call(name, _, _) => is_variant_name(name, variants) || sret_calls.contains_key(name),
         Expr::Field(_, name) => is_variant_name(name, variants),
         Expr::Match(_, arms) => arms
             .iter()
@@ -312,10 +437,29 @@ mod tests {
         );
         let plan = build_enum_representation_plan(&items);
         let safe = sret_safe_defns(&items, &plan);
-        assert!(safe.contains(&"inner".to_string()),
-            "sret caller can pass its out slot through");
-        assert!(safe.contains(&"outer".to_string()),
-            "local return of an sret value is an sret passthrough");
+        assert!(
+            safe.contains(&"inner".to_string()),
+            "sret caller can pass its out slot through"
+        );
+        assert!(
+            safe.contains(&"outer".to_string()),
+            "local return of an sret value is an sret passthrough"
+        );
+    }
+
+    #[test]
+    fn enum_returning_txn_cannot_leak_callee_sret_slot() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn inner(x: Int) -> R { term Ok(x); };\n\
+             txn outer(x: Int) [x >= 0][true] -> R { term inner(x); };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        let safe = sret_safe_defns(&items, &plan);
+        assert!(
+            !safe.contains(&"inner".to_string()),
+            "enum-returning txn returns a pointer to the callee frame slot"
+        );
     }
 
     #[test]

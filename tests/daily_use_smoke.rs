@@ -248,6 +248,36 @@ fn obj_globals_golden_output() {
 }
 
 #[test]
+fn nested_enum_payload_match_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("nested_enum_payload_match", "golden", &[]);
+    assert_eq!(out, "1|2|8", "nested enum payload layout drifted: {out:?}");
+}
+
+#[test]
+fn string_match_cleanup_phi_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("string_match_cleanup_phi", "golden", &[]);
+    assert_eq!(out, "x|", "match cleanup phi drifted: {out:?}");
+}
+
+#[test]
+fn json_empty_object_lookup_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("json_empty_object_lookup", "golden", &[]);
+    assert_eq!(out, "missing|", "empty-object lookup drifted: {out:?}");
+}
+
+#[test]
 fn net_stack_helpers_golden_output() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");

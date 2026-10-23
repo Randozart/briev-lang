@@ -1,0 +1,25 @@
+// 2026-10-23: construction and match lowering must agree on nested enum
+// payload layout. Expected A=1, B=2, Err=8.
+import "std/result.bv";
+import "std/io";
+
+enum J { A(Int), B(String) };
+
+defn classify(r: Result<J, String>) -> Int {
+    let kind: Int = match r {
+        Ok(v) => match v {
+            A(_) => 1,
+            B(_) => 2,
+        },
+        Err(_) => 8,
+    };
+    term kind;
+};
+
+node entry [beginprogram][true] {
+    Print#(classify(Ok(A(7))));
+    print_str("|");
+    Print#(classify(Ok(B("s"))));
+    print_str("|");
+    endprogram Print#(classify(Err("x")));
+};

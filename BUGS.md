@@ -10806,3 +10806,41 @@ the enum-returning callee was required. Nested-result layouts therefore fell
 back to the two-word floor instead of their concrete image width. Return the
 `(local, callee)` pair and size the caller slot from the callee's declared
 return type. FSM parity at bounds 0..8, 1M, and 50M; full library tests green.
+
+## Nested enum payload layout and JSON cleanup bugs (2026-10-23, FIXED)
+
+**SPEC violation.** SPEC §11.3 allows a nested `match` as a match-arm body.
+`Ok(A(7))` constructed one boxed layout while `match` read an inline layout, so
+the nested match selected no arm and returned the default (`0`). Expected
+`1|2|8`; the old compiler returned `0|0|8`.
+
+Four related correctness gaps were found and fixed:
+
+1. **Call-argument enum context.** Enum-typed call arguments now inherit the
+   callee parameter's concrete type, so a nested constructor chooses the same
+   image layout the callee reads.
+2. **Inline enum payload copy.** A non-constructor enum payload (variable,
+   field, function result) is copied image-to-image into an inline payload.
+   The declared variant payload type is used even when a local erased it.
+3. **Callable-txn sret lifetime.** An enum-returning txn that returns the
+   result of an sret candidate would leak the callee's frame slot. Such
+   callees are now kept boxed. The scan is return-shaped, not every call in
+   the txn body.
+4. **String-cleanup phi predecessor.** String concatenation emits conditional
+   cleanup blocks inside a match arm. The emitter now records the after-free
+   block as the current block, so the match phi cites a real predecessor.
+
+The JSON API also exposed an empty-object boundary: `find_pair` is a
+convergence txn and never runs for an empty list, leaving `handle_object` to
+return an uninitialized result. `handle_object` now returns `Err` directly for
+the empty object.
+
+Regression fixtures:
+
+- `tests/tier1/nested_enum_payload_match.bv` — `1|2|8`
+- `tests/tier1/string_match_cleanup_phi.bv` — `x|`
+- `tests/tier1/json_empty_object_lookup.bv` — `missing|`
+
+Validation: `cargo test --lib` 3,302 green, three daily-use golden tests green,
+Task Board CRUD gate PASS, effect-shape guard PASS, LLVM determinism quick gate
+PASS, full runtime suite all MATCH.

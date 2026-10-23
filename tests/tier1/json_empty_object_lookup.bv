@@ -1,0 +1,21 @@
+// 2026-10-23: a missing key in an EMPTY object must return Err; find_pair's
+// convergence loop never runs, so handle_object owns the empty boundary.
+import "std/json.bv";
+import "std/io";
+
+defn lookup() -> String {
+    let empty: List<(String, JsonValue)> = [];
+    let object: JsonValue = Object(empty);
+    let result: Result<String, String> = json_get(object, "title");
+    let text: String = match result {
+        Ok(value) => value,
+        Err(_) => "missing",
+    };
+    term text;
+};
+
+node entry [beginprogram][true] {
+    print_str(lookup());
+    print_str("|");
+    endprogram 0;
+};

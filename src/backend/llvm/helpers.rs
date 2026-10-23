@@ -1202,6 +1202,10 @@ impl LlvmBackend {
         }
         writeln!(out, "{}br label %{}", indent, afl).ok();
         writeln!(out, "{}{}:", indent, afl).ok();
+        // 2026-10-23 (match phi predecessor): concat cleanup creates blocks
+        // inside the current expression. The continuation now starts at the
+        // after-free block; stale arm labels are invalid phi predecessors.
+        self.fun.cur_block = Some(afl);
     }
 
     /// Box a concat result pointer to i64 with temporary tag (bit 1 set).

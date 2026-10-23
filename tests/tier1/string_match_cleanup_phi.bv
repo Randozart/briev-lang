@@ -1,0 +1,25 @@
+// 2026-10-23: String-concat cleanup blocks inside a nested match arm must
+// become the phi predecessor; stale arm labels are invalid IR.
+import "std/json.bv";
+import "std/io";
+
+defn title(s: String) -> String {
+    let parsed: Result<JsonValue, String> = json_parse(s);
+    let text: String = match parsed {
+        Ok(v) => {
+            let field: Result<String, String> = json_get(v, "title");
+            match field {
+                Ok(value) => value,
+                Err(e) => "E" + e,
+            }
+        },
+        Err(e) => "P" + e,
+    };
+    term text;
+};
+
+node entry [beginprogram][true] {
+    print_str(title("{\"title\":\"x\"}"));
+    print_str("|");
+    endprogram 0;
+};

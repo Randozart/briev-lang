@@ -5805,17 +5805,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 Expr::Field(_, n) => self.enum_variant_ctor(n).is_some(),
                 _ => false,
             };
-        let inline_payload = layout
+        let inline_layout = layout
             .as_ref()
             .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
-            .unwrap_or(false)
-            && arg_is_ctor;
+            .unwrap_or(false);
 
-        // Payload: single argument stored in its boxed-i64 representation;
-        // zero-payload variants store 0.
+        // Payload: zero-payload variants store 0. An inline enum payload is
+        // written directly when it is a constructor, or copied image-to-image
+        // when it is an existing value (variable/field/function result).
+        // Everything else stores its boxed i64 representation. Construction and
+        // match lowering MUST agree: a layout marked inline is never left
+        // holding a boxed handle.
         let payload_i64 = if args.is_empty() {
             Some("0".to_string())
-        } else if inline_payload {
+        } else if inline_layout {
             let nested = self.fun.gen_reg();
             writeln!(
                 out,
@@ -5823,11 +5826,48 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 indent, nested, img
             )
             .ok();
-            let saved_slot = self.fun.enum_construct_slot.take();
-            self.fun.enum_construct_slot = Some(nested);
-            let _ = self.emit_expr(out, &args[0], indent);
-            self.fun.enum_construct_slot = saved_slot;
-            None
+            if arg_is_ctor {
+                let saved_slot = self.fun.enum_construct_slot.take();
+                self.fun.enum_construct_slot = Some(nested);
+                let _ = self.emit_expr(out, &args[0], indent);
+                self.fun.enum_construct_slot = saved_slot;
+                None
+            } else {
+                let preg = self.emit_expr(out, &args[0], indent);
+                // Prefer the variant's DECLARED payload type. An unannotated
+                // local (`let found = pair.1`) can carry an erased i64 type,
+                // but the outer variant still knows the concrete nested enum.
+                let nested_layout = payload_expected
+                    .as_ref()
+                    .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)))
+                    .or_else(|| {
+                        self.ctx
+                            .enum_layout_planner
+                            .as_ref()
+                            .and_then(|p| p.layout_for(&preg.ty))
+                    });
+                match nested_layout {
+                    Some(nested_layout) => {
+                        let handle = self.adapt_to_i64(out, indent, &preg);
+                        let src = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, handle).ok();
+                        for word in 0..nested_layout.image_words {
+                            let src_gep = self.fun.gen_reg();
+                            let dst_gep = self.fun.gen_reg();
+                            let value = self.fun.gen_reg();
+                            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, src_gep, src, word).ok();
+                            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, dst_gep, nested, word).ok();
+                            writeln!(out, "{}{} = load i64, ptr {}", indent, value, src_gep).ok();
+                            writeln!(out, "{}store i64 {}, ptr {}", indent, value, dst_gep).ok();
+                        }
+                        None
+                    }
+                    // The layout said inline but the value's concrete type is
+                    // not a known enum image. Keep the boxed fallback rather
+                    // than writing a partial image.
+                    None => Some(self.adapt_to_i64(out, indent, &preg)),
+                }
+            }
         } else {
             let preg = if args.len() == 1 {
                 self.emit_expr(out, &args[0], indent)
@@ -6087,7 +6127,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                             }
                         }
                     }
+                    // 2026-10-23 (nested enum layout): an enum-typed
+                    // argument inherits the callee parameter's concrete type,
+                    // so nested constructors choose the same inline image the
+                    // callee's match lowering will read.
+                    let saved_expected = self.fun.expected_enum_type.clone();
+                    if let Some(pt) = fn_params.as_ref().and_then(|p| p.get(i)) {
+                        if self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(pt)).is_some() {
+                            self.fun.expected_enum_type = Some(pt.clone());
+                        }
+                    }
                     let emitted = self.emit_expr(out, a, indent);
+                    self.fun.expected_enum_type = saved_expected;
                     // 2026-08-22 (Phase 3b): a member flowing into a
                     // structural-sum parameter is boxed into the tagged
                     // union representation at the boundary.
