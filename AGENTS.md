@@ -89,8 +89,8 @@ Patches are unacceptable. There is no "go fast and break things."
 12b. **PERSISTENT BASELINE WORKTREE**: `../briev-compiler-baseline` holds the
     locked baseline commit for controlled A/B regression detection
     (`bash benchmarks/compare_baseline.sh <name>`). The lock is
-    `benchmarks/BASELINE.lock` (tag `compiler-baseline-2026-10-21-carrier`, commit
-    `5a1a0532`); the script verifies it before timing. An intentional alternate
+    `benchmarks/BASELINE.lock` (tag `compiler-baseline-2026-10-23-tail-loop`, commit
+    `42279aaf`); the script verifies it before timing. An intentional alternate
     baseline needs `ALLOW_BASELINE_MISMATCH=1`. Never excuse a regression as
     "noise" without this experiment.
 13. **DOCUMENTATION MAINTENANCE IN PLANS**: Every plan must specify which doc
