@@ -870,6 +870,10 @@ impl LlvmBackend {
                             name: v.to_string(),
                             ty: ty.clone(),
                         }
+                    } else if *ty == Type::int() {
+                        let hw = format!("i{}", self.ctx.int_bits);
+                        writeln!(out, "{}{} = load {}, ptr @{}", indent, v, hw, name).ok();
+                        TypedRegister { name: v.to_string(), ty: Type::int() }
                     } else {
                         writeln!(out, "{}{} = load i64, ptr @{}", indent, v, name).ok();
                         TypedRegister {
@@ -3077,7 +3081,12 @@ impl LlvmBackend {
             panic!("field access '.{}': no field '{}' on '{}'", name, name, type_name)
         });
         let ptr = self.fun.gen_reg();
-        writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, ptr, recv_reg.name).ok();
+        let recv_llvm = self.llvm_type(&recv_reg.ty);
+        let recv_hw = match recv_llvm.as_str() {
+            "i8" | "i16" | "i32" | "i64" => recv_llvm.clone(),
+            _ => "i64".to_string(),
+        };
+        writeln!(out, "{}  {} = inttoptr {} {} to ptr", indent, ptr, recv_hw, recv_reg.name).ok();
         let gep = self.fun.gen_reg();
         writeln!(out, "{}  {} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, offset).ok();
         // 2026-08-13 (Phase 5): an `atomic` field reads with an atomic load
@@ -3102,14 +3111,18 @@ impl LlvmBackend {
             let val = self.emit_packed_field_load(out, indent, &gep, &pf);
             return TypedRegister { name: val, ty: Type::Bits(pf.bits) };
         }
-        // 2026-08-01 (D3): a Ptr-typed struct field stores the i64 HANDLE
-        // (ptrtoint at store) — load i64, not `ptr`, so the downstream
-        // inttoptr consumers (inner.data[len]) work unchanged.
-        let llvm_ty = if matches!(field_ty, Type::Ptr(_)) {
-            "i64".to_string()
-        } else {
-            self.llvm_type(&field_ty)
-        };
+        // 2026-10-23 (generic collections): a Ptr-typed member is a real
+        // `ptr` slot. Load it as ptr, then return the target-width integer
+        // handle the rest of the collection/index machinery consumes.
+        let llvm_ty = self.llvm_type(&field_ty);
+        if matches!(field_ty, Type::Ptr(_)) {
+            let raw = self.fun.gen_reg();
+            writeln!(out, "{}  {} = load ptr, ptr {}", indent, raw, gep).ok();
+            let hw = format!("i{}", self.ctx.int_bits);
+            let handle = self.fun.gen_reg();
+            writeln!(out, "{}  {} = ptrtoint ptr {} to {}", indent, handle, raw, hw).ok();
+            return TypedRegister { name: handle, ty: field_ty };
+        }
         // 2026-08-23 (bugfix): an ARRAY/vector field returns a POINTER to its
         // storage (row view) — loading `[4096 x i64]` by value is invalid in
         // this register model, and a following `data[i]` must GEP into the
@@ -3900,15 +3913,16 @@ impl LlvmBackend {
             if let Some((base, member)) = slot_name.split_once('.') {
                 if let Some(offsets) = self.ctx.boxed_offsets.get(base) {
                     if let Some((off, mty)) = offsets.get(member) {
+                        // 2026-10-23 (wasm generic collections): the boxed
+                        // instance handle and `Ptr<T>` members use the target
+                        // pointer width; loading a 4-byte pointer as i64 was
+                        // the List construction failure.
+                        let hw = format!("i{}", self.ctx.int_bits);
                         let ptr = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, row_reg).ok();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, row_reg).ok();
                         let gep = self.fun.gen_reg();
                         writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, off).ok();
-                        let llvm_ty = if matches!(mty, Type::Ptr(_)) {
-                            "i64".to_string()
-                        } else {
-                            self.llvm_type(mty)
-                        };
+                        let llvm_ty = self.llvm_type(mty);
                         return (gep, mty.clone(), llvm_ty);
                     }
                 }
@@ -4422,16 +4436,28 @@ impl LlvmBackend {
                  // count is the `CharCount#` intrinsic (a computed scan; SPEC
                  // §17.1/§17.3).
                  ty if self.is_string_operand(ty) => {
-                     let r = self.fun.gen_reg();
-                     writeln!(out, "{}{} = load i64, ptr {}", indent, r, recv_reg.name).ok();
+                     let full = self.fun.gen_reg();
+                     writeln!(out, "{}{} = load i64, ptr {}", indent, full, recv_reg.name).ok();
+                     let hw = format!("i{}", self.ctx.int_bits);
+                     let r = if hw == "i64" { full } else {
+                         let narrow = self.fun.gen_reg();
+                         writeln!(out, "{}{} = trunc i64 {} to {}", indent, narrow, full, hw).ok();
+                         narrow
+                     };
                      TypedRegister { name: r, ty: Type::int() }
                  }
                  // 2026-08-06 (Phase 7): `x.^Length` on a Blob — the byte length
                  // is the [len] header of the [len][bytes] handle (O(1), no
                  // codepoint scan). Data values are ptr handles like Strings.
                  ty if matches!(ty, Type::Custom(n) if n == "Blob") => {
-                     let r = self.fun.gen_reg();
-                     writeln!(out, "{}{} = load i64, ptr {}", indent, r, recv_reg.name).ok();
+                     let full = self.fun.gen_reg();
+                     writeln!(out, "{}{} = load i64, ptr {}", indent, full, recv_reg.name).ok();
+                     let hw = format!("i{}", self.ctx.int_bits);
+                     let r = if hw == "i64" { full } else {
+                         let narrow = self.fun.gen_reg();
+                         writeln!(out, "{}{} = trunc i64 {} to {}", indent, narrow, full, hw).ok();
+                         narrow
+                     };
                      TypedRegister { name: r, ty: Type::int() }
                  }
                  // 2026-08-04 (compiler-in-Briev): a String value boxed to an
@@ -4443,8 +4469,14 @@ impl LlvmBackend {
                  // the STORED byte count; `CharCount#` is the char scan.
                  other if self.is_semantic_string(recv, &recv_reg) => {
                      let p = self.string_ptr(out, indent, &recv_reg);
-                     let r = self.fun.gen_reg();
-                     writeln!(out, "{}{} = load i64, ptr {}", indent, r, p).ok();
+                     let full = self.fun.gen_reg();
+                     writeln!(out, "{}{} = load i64, ptr {}", indent, full, p).ok();
+                     let hw = format!("i{}", self.ctx.int_bits);
+                     let r = if hw == "i64" { full } else {
+                         let narrow = self.fun.gen_reg();
+                         writeln!(out, "{}{} = trunc i64 {} to {}", indent, narrow, full, hw).ok();
+                         narrow
+                     };
                      TypedRegister { name: r, ty: Type::int() }
                  }
                  // 2026-08-15 (coll plan §3.4.6): `x.^Length` on a `coll` type
@@ -7870,7 +7902,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     };
                     writeln!(out, "{}{} = fsub {} -0.0, {}", indent, v, fty, operand.name).ok();
                 } else {
-                    writeln!(out, "{}{} = sub i64 0, {}", indent, v, operand.name).ok();
+                    let ity = self.llvm_type(&operand.ty);
+                    writeln!(out, "{}{} = sub {} 0, {}", indent, v, ity, operand.name).ok();
                 }
                 TypedRegister {
                     name: v.to_string(),

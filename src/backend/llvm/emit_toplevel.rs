@@ -1665,6 +1665,28 @@ impl LlvmBackend {
             }
             return false;
         }
+        // A collection-valued initializer (`let xs: List<T> = make_items()`)
+        // binds the constructed handle DIRECTLY. Wrapping it through `op Init`
+        // would build a fresh one-element collection containing the handle.
+        let mut pre_emitted: Option<crate::backend::llvm::TypedRegister> = None;
+        if !matches!(init_expr, Some(crate::ast::Expr::List(_))) {
+            if let Some(e) = init_expr {
+                let tmp = self.fun.gen_reg();
+                let vr = self.emit_expr_inner(out, &tmp, e, indent);
+                if self.resolve_obj_key(&vr.ty).as_deref() == Some(type_key.as_str()) {
+                    let gep = self.fun.gen_reg();
+                    writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}", indent, gep, idx).ok();
+                    let field_ty = self.ctx.field_types.get(idx).cloned().unwrap_or_else(|| "i64".to_string());
+                    let store_val = self.ensure_typed_value(
+                        out, indent, &field_ty, &vr.name, Some(vr.ty.clone()),
+                        self.ctx.type_universe.clone().as_ref(),
+                    );
+                    writeln!(out, "{}store {} {}, ptr {}", indent, field_ty, store_val, gep).ok();
+                    return true;
+                }
+                pre_emitted = Some(vr);
+            }
+        }
         // Allocate the instance storage and pass its address as `self`.
         let size = self.struct_type_size(&type_key);
         let inst = self.fun.gen_reg();
@@ -1803,7 +1825,9 @@ impl LlvmBackend {
             let _ = field_name;
             return true;
         }
-        if let Some(e) = init_expr {
+        if let Some(vr) = pre_emitted {
+            arg_regs.push((vr.name, vr.ty));
+        } else if let Some(e) = init_expr {
             let tmp = self.fun.gen_reg();
             let vr = self.emit_expr_inner(out, &tmp, e, indent);
             arg_regs.push((vr.name, vr.ty));

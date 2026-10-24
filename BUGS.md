@@ -10901,3 +10901,20 @@ preflight before route dispatch.
 Regression gates: backend tests `webstack_int_frgn_uses_wasm32_abi` and
 `webstack_stateless_defn_does_not_flush_state`, full `rbv_gate.sh`, and the
 Task Board Chromium CRUD gate.
+
+
+## List<T> op registry is keyed by the base name, not the monomorph (OPEN 2026-10-23)
+
+`obj_members` / `operator_defs` register `List<T>` under `"List"`, so two
+instantiations in one unit share one scaffold. A single `List<Int>` works after
+the wasm pointer-width fixes; adding `List<TaskItem>` produces an invalid
+element store (`trunc i64 <i32 handle>`). The fix is to key the scaffolded
+members/bindings by the resolved monomorph key and instantiate element ABI per
+`T`.
+
+## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
+
+After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
+the parser but later prelude helpers (`await_*` function-pointer paths) still
+emit mixed i64/i32 conversions. Compiled app gates and Task Board remain green;
+JSON-to-`List<Task>` on wasm is deferred until the prelude ABI sweep.

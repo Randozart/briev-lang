@@ -1358,16 +1358,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                                 let gep = backend.fun.gen_reg();
                                 writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}", indent, gep, col_ty, base_gep, row_reg).ok();
                                 let field_ty = backend.ctx.field_briev_types[idx].clone();
-                                let llvm_ty = if matches!(field_ty, Type::Ptr(_)) {
-                                    "i64".to_string()
+                                let llvm_ty = backend.llvm_type(&field_ty);
+                                if matches!(field_ty, Type::Ptr(_)) {
+                                    let handle = backend.pointer_handle_of(out, indent, &val);
+                                    let ptr = backend.pointer_from_handle(out, indent, &handle);
+                                    writeln!(out, "{}store ptr {}, ptr {}", indent, ptr, gep).ok();
                                 } else {
-                                    backend.llvm_type(&field_ty)
-                                };
-                                let store_val = backend.ensure_typed_value(
-                                    out, indent, &llvm_ty, &val.name, Some(val.ty.clone()),
-                                    backend.ctx.type_universe.clone().as_ref(),
-                                );
-                                writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, store_val, gep).ok();
+                                    let store_val = backend.ensure_typed_value(
+                                        out, indent, &llvm_ty, &val.name, Some(val.ty.clone()),
+                                        backend.ctx.type_universe.clone().as_ref(),
+                                    );
+                                    writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, store_val, gep).ok();
+                                }
                                 return TypedRegister { name: val.name, ty: Type::void() };
                             }
                         }
@@ -1385,7 +1387,12 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     };
                     let offset = backend.lookup_field_offset(&obj_key, name);
                     let ptr = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, obj_reg.name).ok();
+                    let recv_llvm = backend.llvm_type(&obj_reg.ty);
+                    let recv_hw = match recv_llvm.as_str() {
+                        "i8" | "i16" | "i32" | "i64" => recv_llvm.clone(),
+                        _ => "i64".to_string(),
+                    };
+                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, recv_hw, obj_reg.name).ok();
                     let gep = backend.fun.gen_reg();
                     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, offset).ok();
                     // 2026-08-13 (Phase 5): an `atomic` state-field store.
@@ -1442,16 +1449,22 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         .and_then(|f| f.iter().find(|(n, _)| n == name))
                         .map(|(_, ty)| ty.clone())
                         .unwrap_or_else(|| Type::int());
-                    let llvm_ty = if matches!(field_ty, Type::Ptr(_)) {
-                        "i64".to_string()
+                    // 2026-10-23 (generic collections): a Ptr member stores a
+                    // real `ptr` slot; loading/storing it as i64 truncated or
+                    // over-read 4-byte wasm pointers and desynchronized the
+                    // List data field from its read path.
+                    let llvm_ty = backend.llvm_type(&field_ty);
+                    if matches!(field_ty, Type::Ptr(_)) {
+                        let handle = backend.pointer_handle_of(out, indent, &val);
+                        let ptr = backend.pointer_from_handle(out, indent, &handle);
+                        writeln!(out, "{}store ptr {}, ptr {}", indent, ptr, gep).ok();
                     } else {
-                        backend.llvm_type(&field_ty)
-                    };
-                    let store_val = backend.ensure_typed_value(
-                        out, indent, &llvm_ty, &val.name, Some(val.ty.clone()),
-                        backend.ctx.type_universe.clone().as_ref(),
-                    );
-                    writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, store_val, gep).ok();
+                        let store_val = backend.ensure_typed_value(
+                            out, indent, &llvm_ty, &val.name, Some(val.ty.clone()),
+                            backend.ctx.type_universe.clone().as_ref(),
+                        );
+                        writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, store_val, gep).ok();
+                    }
                     }
                 }
                 _ => {}
@@ -2248,7 +2261,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             let body_lbl = format!("foreach.body{}", label_n);
             let end_lbl = format!("foreach.end{}", label_n);
             let slot = backend.fun.gen_reg();
-            writeln!(out, "{}{} = alloca i64", indent, slot).ok();
+            // Counter-style loops use the target Int width. String/Data lanes
+            // keep the i64 byte cursor their runtime helpers consume.
+            let compact_counter = matches!(
+                iter,
+                IterKind::Counter { .. } | IterKind::OpCollection { .. } | IterKind::VectorField { .. }
+            );
+            let slot_ty = if compact_counter {
+                format!("i{}", backend.ctx.int_bits)
+            } else {
+                "i64".to_string()
+            };
+            writeln!(out, "{}{} = alloca {}", indent, slot, slot_ty).ok();
             // Header compare setup. Tier 1 (cursor) stores the Iter() result
             // and checks IsEnd (a bool exit); the counter/tier-2 forms use the
             // icmp bound compare.
@@ -2261,25 +2285,24 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     writeln!(out, "{}{} = add i64 0, 0", indent, zero).ok();
                     (zero, len.clone(), "slt")
                 }
-                IterKind::OpCollection { count, .. } => {
+                IterKind::OpCollection { count, .. } | IterKind::VectorField { count, .. } => {
                     let zero = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = add i64 0, 0", indent, zero).ok();
-                    (zero, count.clone(), "slt")
+                    writeln!(out, "{}{} = add {} 0, 0", indent, zero, slot_ty).ok();
+                    let bound = backend.ensure_typed_value(
+                        out, indent, &slot_ty, count, Some(Type::int()),
+                        backend.ctx.type_universe.clone().as_ref(),
+                    );
+                    (zero, bound, "slt")
                 }
                 IterKind::Tier1Cursor { iter_reg, .. } => {
                     (iter_reg.clone(), String::new(), "")
                 }
-                IterKind::VectorField { count, .. } => {
-                    let zero = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = add i64 0, 0", indent, zero).ok();
-                    (zero, count.clone(), "slt")
-                }
             };
-            writeln!(out, "{}store i64 {}, ptr {}", indent, init_reg, slot).ok();
+            writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, init_reg, slot).ok();
             writeln!(out, "{}br label %{}", indent, header).ok();
             writeln!(out, "{}{}:", indent, header).ok();
             let cur = backend.fun.gen_reg();
-            writeln!(out, "{}{} = load i64, ptr {}", indent, cur, slot).ok();
+            writeln!(out, "{}{} = load {}, ptr {}", indent, cur, slot_ty, slot).ok();
             if let IterKind::Tier1Cursor { list, .. } = &iter {
                 // Tier 1: exit when the cursor is past the end — the IsEnd op.
                 let cur_tmp = "__foreach_cur".to_string();
@@ -2298,8 +2321,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 let cmp = backend.fun.gen_reg();
                 writeln!(
                     out,
-                    "{}{} = icmp {} i64 {}, {}",
-                    indent, cmp, cmp_op, cur, bound_reg
+                    "{}{} = icmp {} {} {}, {}",
+                    indent, cmp, cmp_op, slot_ty, cur, bound_reg
                 )
                 .ok();
                 writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cmp, body_lbl, end_lbl).ok();
@@ -2317,7 +2340,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // is i64 but the At INDEX param is Int (i32 on wasm32) —
                     // truncate before the call so the member body's i32 index
                     // matches (a raw i64 arg typed Int produced `sext i32 <i64>`).
-                    let cur_i = if backend.ctx.int_bits == 32 {
+                    let cur_i = if compact_counter {
+                        cur.clone()
+                    } else if backend.ctx.int_bits == 32 {
                         let t = backend.fun.gen_reg();
                         writeln!(out, "{}{} = trunc i64 {} to i32", indent, t, cur).ok();
                         t
@@ -2496,10 +2521,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     step.name
                 } else {
                     let n = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = add i64 {}, 1", indent, n, cur).ok();
+                    writeln!(out, "{}{} = add {} {}, 1", indent, n, slot_ty, cur).ok();
                     n
                 };
-                writeln!(out, "{}store i64 {}, ptr {}", indent, next, slot).ok();
+                writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, next, slot).ok();
                 writeln!(out, "{}br label %{}", indent, header).ok();
             }
             writeln!(out, "{}{}:", indent, end_lbl).ok();

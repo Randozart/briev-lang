@@ -1,0 +1,14 @@
+import "std/collections.bv";
+
+defn make_numbers() -> List<Int> {
+    let values: List<Int> = [1, 2];
+    term values;
+};
+
+let numbers: List<Int> = make_numbers();
+
+<view>
+  <ul>
+    <li b-each:item="numbers" b-key="item"><span b-text="item">x</span></li>
+  </ul>
+</view>

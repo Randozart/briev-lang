@@ -849,7 +849,7 @@ export async function createApp(wasmBytes) {{
                     TypeTag::String => format!(
                         "const __w{index} = Number(dv.getBigInt64(__row + {offset}, true));\
                          const __sp{index} = Number(BigInt.asUintN(32, BigInt(__w{index})));\
-                         item[{}] = _this._readString(__sp{index});",
+                         item[{}] = this._readString(__sp{index});",
                         serde_json::to_string(&field.name).unwrap_or_else(|_| "\"\"".to_string()),
                     ),
                     TypeTag::Bool => format!(

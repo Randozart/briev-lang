@@ -4379,7 +4379,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_constants.sort();
         for name in &sorted_constants {
             let (ty, expr) = &self.ctx.constants[name];
-            let llvm_ty = protocol_llvm_type(ty, self.ctx.type_universe.as_ref());
+            let llvm_ty = if *ty == Type::int() {
+                format!("i{}", self.ctx.int_bits)
+            } else {
+                protocol_llvm_type(ty, self.ctx.type_universe.as_ref())
+            };
             let key = match expr {
                 Expr::Float(f) => format!("{}:{}", llvm_ty, float_to_llvm_str(*f, &llvm_ty)),
                 Expr::Decimal(n) => format!("{}:{}", llvm_ty, n),

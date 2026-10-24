@@ -530,6 +530,24 @@ fn emit_arg(backend: &mut LlvmBackend, out: &mut String, arg: &Expr, indent: &st
     backend.emit_expr(out, arg, indent).name
 }
 
+/// Emit an expression and adapt it to the i64 C-runtime ABI slot.
+fn emit_arg_i64(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    arg: &Expr,
+    indent: &str,
+) -> String {
+    let reg = backend.emit_expr(out, arg, indent);
+    backend.ensure_typed_value(
+        out,
+        indent,
+        "i64",
+        &reg.name,
+        Some(reg.ty),
+        backend.ctx.type_universe.clone().as_ref(),
+    )
+}
+
 /// 2026-08-10: Truncate an i64-valued Int intrinsic result to the target int
 /// width (i{int_bits}). C-runtime intrinsics (Now#, syscall, sysconf, atol)
 /// return i64, but an Int-typed register is i{int_bits} (i32 on wasm32) — an
@@ -1221,12 +1239,19 @@ fn emit_resize(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let h = emit_arg(backend, out, &args[0], indent);
-    let cap = emit_arg(backend, out, &args[1], indent);
+    let hreg = backend.emit_expr(out, &args[0], indent);
+    let creg = backend.emit_expr(out, &args[1], indent);
+    let h = backend.pointer_handle_of(out, indent, &hreg);
+    let hw = format!("i{}", backend.ctx.int_bits);
+    let cap = backend.ensure_typed_value(
+        out, indent, &hw, &creg.name, Some(creg.ty.clone()),
+        backend.ctx.type_universe.clone().as_ref(),
+    );
     let call = backend.fun.gen_reg();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
-    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, call, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, cap).ok();
+    let ret = backend.defn_call_ret_ll(&rsym);
+    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, call, ret, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, cap).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -1238,8 +1263,14 @@ fn emit_ensure_cap(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let h = emit_arg(backend, out, &args[0], indent);
-    let n = emit_arg(backend, out, &args[1], indent);
+    let hreg = backend.emit_expr(out, &args[0], indent);
+    let nreg = backend.emit_expr(out, &args[1], indent);
+    let h = backend.pointer_handle_of(out, indent, &hreg);
+    let hw = format!("i{}", backend.ctx.int_bits);
+    let n = backend.ensure_typed_value(
+        out, indent, &hw, &nreg.name, Some(nreg.ty.clone()),
+        backend.ctx.type_universe.clone().as_ref(),
+    );
     let p = backend.fun.gen_reg();
     let cap_gep = backend.fun.gen_reg();
     let cur_cap = backend.fun.gen_reg();
@@ -1248,15 +1279,16 @@ fn emit_ensure_cap(
     let after = backend.fun.gen_reg();
     let target = backend.fun.gen_reg();
     let call = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, hw, h).ok();
     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, cap_gep, p).ok();
-    writeln!(out, "{}{} = load i64, ptr {}", indent, cur_cap, cap_gep).ok();
-    writeln!(out, "{}{} = icmp ult i64 {}, {}", indent, cmp, cur_cap, n).ok();
-    writeln!(out, "{}{} = add i64 0, 0", indent, grow).ok();
-    writeln!(out, "{}{} = select i1 {}, i64 {}, i64 {}", indent, after, cmp, n, cur_cap).ok();
+    writeln!(out, "{}{} = load {}, ptr {}", indent, cur_cap, hw, cap_gep).ok();
+    writeln!(out, "{}{} = icmp ult {} {}, {}", indent, cmp, hw, cur_cap, n).ok();
+    writeln!(out, "{}{} = add {} 0, 0", indent, grow, hw).ok();
+    writeln!(out, "{}{} = select i1 {}, {} {}, {} {}", indent, after, cmp, hw, n, hw, cur_cap).ok();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
-    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, target, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, after).ok();
+    let ret = backend.defn_call_ret_ll(&rsym);
+    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, target, ret, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, after).ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, call, target).ok();
     let _ = (grow, call);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -1269,17 +1301,20 @@ fn emit_trim_cap(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
 ) -> BTypedRegister {
-    let h = emit_arg(backend, out, &args[0], indent);
+    let hreg = backend.emit_expr(out, &args[0], indent);
+    let h = backend.pointer_handle_of(out, indent, &hreg);
+    let hw = format!("i{}", backend.ctx.int_bits);
     let p = backend.fun.gen_reg();
     let len_gep = backend.fun.gen_reg();
     let len = backend.fun.gen_reg();
     let call = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
+    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, hw, h).ok();
     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, len_gep, p).ok();
-    writeln!(out, "{}{} = load i64, ptr {}", indent, len, len_gep).ok();
+    writeln!(out, "{}{} = load {}, ptr {}", indent, len, hw, len_gep).ok();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
-    writeln!(out, "{}{} = call i64 @{}({}i64 {}, i64 {})", indent, call, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, h, len).ok();
+    let ret = backend.defn_call_ret_ll(&rsym);
+    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, call, ret, &rsym,
+            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, len).ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
     BTypedRegister { name: v.to_string(), ty: Type::void() }
@@ -1703,18 +1738,15 @@ fn emit_syscall(
             // probe lesson. Fall through to the ordinary argument emit.
             match resolve_syscall_number(op, &backend.ctx.target_triple) {
                 Some(n) => n.to_string(),
-                None => emit_arg(backend, out, &args[0], indent),
+                None => emit_arg_i64(backend, out, &args[0], indent),
             }
         }
-        _ => {
-            let reg = emit_arg(backend, out, &args[0], indent);
-            reg
-        }
+        _ => emit_arg_i64(backend, out, &args[0], indent),
     };
     // Emit remaining args as i64, padding to 7 total (num + 6 args)
     let mut all_args = vec![format!("i64 {}", num_reg)];
     for i in 1..args.len() {
-        let reg = emit_arg(backend, out, &args[i], indent);
+        let reg = emit_arg_i64(backend, out, &args[i], indent);
         all_args.push(format!("i64 {}", reg));
     }
     while all_args.len() < 7 {

@@ -2550,6 +2550,8 @@ impl LlvmBackend {
     pub(crate) fn plain_global_llvm_type(&self, ty: &Type) -> String {
         if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) {
             "i64".to_string()
+        } else if *ty == Type::int() {
+            format!("i{}", self.ctx.int_bits)
         } else {
             protocol_llvm_type(ty, self.ctx.type_universe.as_ref())
         }
@@ -2842,6 +2844,40 @@ impl LlvmBackend {
             return val.clone();
         }
         crate::backend::llvm::TypedRegister { name: r.to_string(), ty: want_ty.clone() }
+    }
+
+    /// Normalize a value register to the target pointer-sized integer handle.
+    pub(crate) fn pointer_handle_of(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &crate::backend::llvm::TypedRegister,
+    ) -> String {
+        // A `Ptr<T>` VALUE is an integer handle by internal convention even
+        // though llvm_type(Ptr) spells "ptr"; adapt_to_i64 returns that handle
+        // unchanged and converts genuine String/Blob ptr registers.
+        let wide = self.adapt_to_i64(out, indent, reg);
+        let hw = format!("i{}", self.ctx.int_bits);
+        if hw == "i64" {
+            wide
+        } else {
+            let narrow = self.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to {}", indent, narrow, wide, hw).ok();
+            narrow
+        }
+    }
+
+    /// Emit an inttoptr from a pointer-sized handle.
+    pub(crate) fn pointer_from_handle(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        handle: &str,
+    ) -> String {
+        let ptr = self.fun.gen_reg();
+        let hw = format!("i{}", self.ctx.int_bits);
+        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, handle).ok();
+        ptr
     }
 
     pub(crate) fn ensure_typed_value(
