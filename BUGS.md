@@ -10917,8 +10917,9 @@ subtree swallowed the rest of the view and later containers received no ID.
 ## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
 
 After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
-the parser. `TaskCall#` now uses target-width addresses/return. The next failure
-is `std/float_fmt.bv`'s tuple-returning `sscale` (`(Int, Int)` return emitted as
-an i64 pointer handle against an i32 return). Compiled app gates and Task Board
-remain green; JSON-to-`List<Task>` on wasm is deferred until the tuple-return
-ABI is fixed.
+the parser. Tuple returns/destructuring, enum handle/payload construction,
+match payload extraction, String slice bounds, boxed Bool/Char call arguments,
+and same-width cast lanes now use target widths on wasm32. The next failure is
+a local-alloca dominance bug in `field_of`: the reassigned `JsonValue` local is
+alloca'd inside a match arm and loaded outside it. Compiled app gates and Task
+Board remain green; JSON-to-`List<Task>` remains deferred.

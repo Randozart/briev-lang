@@ -768,7 +768,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     _ => vec![Type::int(); names.len()],
                 };
                 let handle_p = backend.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, handle_p, val.name).ok();
+                let hw = format!("i{}", backend.ctx.int_bits);
+                writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, handle_p, hw, val.name).ok();
                 for (i, n) in names.iter().enumerate() {
                     let slot = backend.fun.gen_reg();
                     writeln!(
@@ -778,8 +779,17 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     )
                     .ok();
                     let elem = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = load i64, ptr {}", indent, elem, slot).ok();
                     let elem_ty = elem_tys.get(i).cloned().unwrap_or_else(Type::int);
+                    // 2026-10-23 (wasm tuple ABI): tuple slots are i64, but
+                    // scalar elements (Int/Bool/Char and enum/obj handles) are
+                    // consumed at their target width.
+                    let elem_llvm = backend.llvm_type(&elem_ty);
+                    let load_ty = if matches!(elem_llvm.as_str(), "i8" | "i16" | "i32") {
+                        elem_llvm.clone()
+                    } else {
+                        "i64".to_string()
+                    };
+                    writeln!(out, "{}{} = load {}, ptr {}", indent, elem, load_ty, slot).ok();
                     let bound = unbox_tuple_float_element(backend, out, indent, &elem, &elem_ty);
                     backend.fun.let_bindings.insert(n.clone(), bound.clone());
                     backend.fun.let_binding_types.insert(n.clone(), elem_ty.clone());
