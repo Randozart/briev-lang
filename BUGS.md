@@ -10919,7 +10919,8 @@ subtree swallowed the rest of the view and later containers received no ID.
 After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
 the parser. Tuple returns/destructuring, enum handle/payload construction,
 match payload extraction, String slice bounds, boxed Bool/Char call arguments,
-and same-width cast lanes now use target widths on wasm32. The next failure is
-a local-alloca dominance bug in `field_of`: the reassigned `JsonValue` local is
-alloca'd inside a match arm and loaded outside it. Compiled app gates and Task
-Board remain green; JSON-to-`List<Task>` remains deferred.
+and same-width cast lanes now use target widths on wasm32. The local-alloca dominance bug in
+`field_of` is fixed by scanning expression blocks for reassigned lets. JSON now
+compiles to wasm, but the browser runtime crashes inside the parser
+(`parse_tasks`/`parse_string`). Compiled app gates and Task Board remain green;
+JSON-to-`List<Task>` remains deferred until the runtime crash is minimized.

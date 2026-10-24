@@ -541,6 +541,13 @@ export class WasmDomRuntime {{
       // LLVM lowers libc malloc to an env import on wasm32. The runtime
       // owns a bump allocator so user host boundaries do not depend on Emscripten.
       malloc: (size) => this._malloc(size),
+      // C-backed Data→String door: copy a NUL-terminated byte sequence into a
+      // Briev [len][bytes] string owned by wasm memory.
+      briev_bits_to_str: (ptr) => this._bitsToString(ptr),
+      // Native syscall shim: browser programs do not use file/OS syscalls.
+      // The symbol may remain rooted by the shared prelude; a callable stub
+      // keeps the wasm module instantiable without pretending to implement IO.
+      briev_syscall: (..._args) => 0,
 {imports_js}
     }};
   }}
@@ -643,6 +650,22 @@ export class WasmDomRuntime {{
     const len = Number(lenView.getBigUint64(ptr, true));
     const bytes = mem.slice(Number(ptr) + 8, Number(ptr) + 8 + len);
     return new TextDecoder().decode(bytes);
+  }}
+
+  _bitsToString(ptr) {{
+    if (!ptr) return 0;
+    let src = new Uint8Array(this._memory.buffer);
+    let end = Number(ptr);
+    while (end < src.length && src[end] !== 0) end += 1;
+    const len = end - Number(ptr);
+    // _malloc may grow memory and detach the buffer; re-acquire views after.
+    const out = this._malloc(8 + len + 1);
+    src = new Uint8Array(this._memory.buffer);
+    const dv = new DataView(this._memory.buffer);
+    dv.setBigUint64(out, BigInt(len), true);
+    src.set(src.subarray(Number(ptr), end), out + 8);
+    src[out + 8 + len] = 0;
+    return out;
   }}
 
   _writeString(str) {{

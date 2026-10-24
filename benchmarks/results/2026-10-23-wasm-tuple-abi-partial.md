@@ -22,6 +22,7 @@
 
 ## Remaining
 
-JSON ingestion now reaches `field_of` and fails LLVM dominance verification:
-a reassigned `JsonValue` local is alloca'd inside a match arm and read outside
-it. This is the next isolated blocker.
+JSON ingestion now compiles through wasm and `llc`. The browser target crashes
+inside `parse_tasks`/`parse_string` at runtime. The tuple ABI fixes themselves
+pass their wasm regression; the JSON parser runtime is the next isolated
+blocker.

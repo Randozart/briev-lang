@@ -1,7 +1,7 @@
 # wasm32 tuple / enum-return ABI
 
 **Date:** 2026-10-23
-**Status:** PARTIAL — tuple/enum ABI fixed; JSON still blocked on local-alloca dominance.
+**Status:** PARTIAL — tuple/enum ABI fixed; JSON builds but runtime-crashes in browser.
 **Branch:** `fix/wasm-tuple-abi`
 
 ## Problem
@@ -39,10 +39,11 @@ numeric field access, and `float_fmt` import for wasm32.
 
 ## Remaining blocker
 
-`std/json.bv` now reaches `field_of` but fails LLVM dominance verification:
-the reassigned `JsonValue` local (`found`) is alloca'd inside a match arm and
-used outside it. This is a local-demotion/prologue issue independent of tuple
-widths.
+`std/json.bv` now compiles to wasm. The browser runtime then crashes inside
+`parse_tasks`/`parse_string` (target crash), after the tuple, char-length,
+boxed-Bool, and host imports were fixed. This is a runtime parser issue, not a
+compile failure. It needs a minimized fixture before any Task Board integration
+is attempted.
 
 ## Gates
 

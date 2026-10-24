@@ -6540,16 +6540,25 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // 2026-07-30: Non-defn calls (or calls where defn not found in
                 // defn_params) also need inttoptr for Ptr-typed arguments, since
                 // the register holds the i64 internal representation.
-                let original_boxed = self
+                let original_ty = self
                     .fun
                     .let_bindings
                     .iter()
                     .find(|(_, value)| *value == &reg.name)
                     .and_then(|(binding, _)| self.fun.let_original_types.get(binding))
+                    .cloned();
+                let original_boxed = original_ty
+                    .as_ref()
                     .map(|ty| self.is_boxed_int_type(ty))
                     .unwrap_or(false);
                 if (self.fun.boxed_scalar_regs.contains(&reg.name) || original_boxed) && reg.name.starts_with("%ac") {
-                    let dst = self.llvm_type(&reg.ty);
+                    let dst = match original_ty.as_ref() {
+                        Some(ty) if self.is_protocol_member(ty, "Bool") => "i8".to_string(),
+                        Some(ty) if self.is_protocol_member(ty, "Char") => {
+                            format!("i{}", self.ctx.int_bits)
+                        }
+                        _ => self.llvm_type(&reg.ty),
+                    };
                     if dst != "i64" && dst.starts_with('i') {
                         let conv = self.fun.gen_reg();
                         writeln!(out, "{}{} = trunc i64 {} to {}", indent, conv, reg.name, dst).ok();
@@ -8364,7 +8373,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // 2026-08-13: a native Char source (i32, from a boxed Char
                     // param unboxed at read) must be widened to the boxed i64
                     // the runtime helpers expect (`char_to_str(int64_t)`).
-                    let (arg_ll, arg) = if cur_ll == "i32" && self.is_protocol_member(&src.ty, "Char") {
+                    // A registered Briev defn already uses the target ABI
+                    // (Char → i32 on wasm32); only a C-runtime helper needs
+                    // the legacy i64 char widening.
+                    let c_char = cur_ll == "i32"
+                        && self.is_protocol_member(&src.ty, "Char")
+                        && !self.ctx.defn_params.contains_key(&fn_name.to_string());
+                    let (arg_ll, arg) = if c_char {
                         let w = self.fun.gen_reg();
                         writeln!(out, "{}{} = zext i32 {} to i64", indent, w, cur).ok();
                         ("i64".to_string(), w)
