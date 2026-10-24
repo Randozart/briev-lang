@@ -3342,13 +3342,14 @@ impl LlvmBackend {
             .get(name)
             .cloned()
             .unwrap_or_else(|| "0".to_string());
-        let handle = if self.llvm_type(&val.ty) == "i64" {
-            val.name.clone()
-        } else {
-            self.adapt_to_i64(out, indent, val)
-        };
+        // 2026-10-23 (wasm32 obj-init): an obj VALUE handle is pointer-sized
+        // (`i32` on wasm32), and a struct literal stores members at their
+        // NATIVE LLVM types. The old path forced the handle and every member
+        // read through i64, which read past 4-byte pointer slots on wasm32.
+        let hw = format!("i{}", self.ctx.int_bits);
+        let handle = self.ensure_typed_value(out, indent, &hw, &val.name, Some(val.ty.clone()), self.ctx.type_universe.clone().as_ref());
         let hp = self.fun.gen_reg();
-        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, hp, handle).ok();
+        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, hp, hw, handle).ok();
         for (fname, fty) in fields {
             let slot = format!("{}.{}", base, fname);
             let Some(&idx) = self.ctx.field_index_map.get(&slot) else {
@@ -3368,9 +3369,10 @@ impl LlvmBackend {
                 indent, gep, hp, off
             )
             .ok();
-            let word = self.fun.gen_reg();
-            writeln!(out, "{}{} = load i64, ptr {}", indent, word, gep).ok();
-            let native = self.adapt_from_i64(out, indent, &word, &fty);
+            let slot_ty = self.llvm_type(&fty);
+            let native = self.fun.gen_reg();
+            writeln!(out, "{}{} = load {}, ptr {}", indent, native, slot_ty, gep).ok();
+            let native_reg = TypedRegister { name: native.clone(), ty: fty.clone() };
             let (row_p, _ty, load_ty) =
                 self.emit_instance_column_row(out, indent, idx, &row);
             // The column's element type is not necessarily the member's
@@ -3379,14 +3381,10 @@ impl LlvmBackend {
             // expose native types and need no conversion. (`ensure_typed_value`
             // deliberately passes ptr-typed values through unchanged, so the
             // word path is explicit here.)
-            let native_ty = self.llvm_type(&fty);
+            let native_ty = slot_ty;
             let store_val = match () {
                 _ if native_ty == load_ty => native,
-                _ if load_ty == "i64" => self.adapt_to_i64(
-                    out,
-                    indent,
-                    &TypedRegister { name: native, ty: fty.clone() },
-                ),
+                _ if load_ty == "i64" => self.adapt_to_i64(out, indent, &native_reg),
                 _ => {
                     let universe = self.ctx.type_universe.clone();
                     self.ensure_typed_value(

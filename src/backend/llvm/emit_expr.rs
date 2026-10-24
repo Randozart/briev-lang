@@ -393,15 +393,16 @@ impl LlvmBackend {
                     // handle + GEP the byte offset.
                     if let Some(offsets) = self.ctx.boxed_offsets.get(prefix.as_str()) {
                         if let Some((off, mty)) = offsets.get(name) {
+                            // 2026-10-23 (wasm32 obj-init): boxed obj handles
+                            // and pointer-sized member slots follow
+                            // `ctx.int_bits`; the native i64 boxed-word form
+                            // is invalid on wasm32.
+                            let hw = format!("i{}", self.ctx.int_bits);
                             let ptr = self.fun.gen_reg();
-                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, row_reg).ok();
+                            writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, row_reg).ok();
                             let gep = self.fun.gen_reg();
                             writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, off).ok();
-                            let llvm_ty = if matches!(mty, Type::Ptr(_)) {
-                                "i64".to_string()
-                            } else {
-                                self.llvm_type(mty)
-                            };
+                            let llvm_ty = self.llvm_type(mty);
                             let loaded = self.fun.gen_reg();
                             writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, llvm_ty, gep).ok();
                             return TypedRegister { name: loaded, ty: mty.clone() };
@@ -3014,15 +3015,18 @@ impl LlvmBackend {
                 // the member byte offset.
                 if let Some(offsets) = self.ctx.boxed_offsets.get(base.as_str()) {
                     if let Some((off, mty)) = offsets.get(name) {
+                        // 2026-10-23 (wasm32 obj-init): a boxed obj handle is
+                        // pointer-sized (`i32` on wasm32), and a pointer-typed
+                        // member stores a real `ptr` slot. Both were hardcoded
+                        // to the native i64 boxed-word ABI here, producing
+                        // `inttoptr i64 <i32>` and an 8-byte load from a
+                        // 4-byte wasm pointer slot.
+                        let hw = format!("i{}", self.ctx.int_bits);
                         let ptr = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, row_reg).ok();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, row_reg).ok();
                         let gep = self.fun.gen_reg();
                         writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, off).ok();
-                        let llvm_ty = if matches!(mty, Type::Ptr(_)) {
-                            "i64".to_string()
-                        } else {
-                            self.llvm_type(mty)
-                        };
+                        let llvm_ty = self.llvm_type(mty);
                         let loaded = self.fun.gen_reg();
                         writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, llvm_ty, gep).ok();
                         return TypedRegister { name: loaded, ty: mty.clone() };

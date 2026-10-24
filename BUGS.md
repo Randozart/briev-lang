@@ -10845,17 +10845,35 @@ Validation: `cargo test --lib` 3,302 green, three daily-use golden tests green,
 Task Board CRUD gate PASS, effect-shape guard PASS, LLVM determinism quick gate
 PASS, full runtime suite all MATCH.
 
-## wasm32 obj-init IR types i32 state slot as i64 (OPEN 2026-10-23)
+## wasm32 obj-init IR types i32 state slot as i64 (FIXED 2026-10-23)
 
-Found while validating the Task Board frontend: `tests/fixtures/obj_init.rbv`
-fails the existing web surface gate in wasm32 with
+`tests/fixtures/obj_init.rbv` failed wasm32 object emission:
 
-```text
-%t10 = inttoptr i64 %t9 to ptr
-error: '%t9' defined with type 'i32' but expected 'i64'
+```llvm
+%t9  = ptrtoint ptr %t5 to i32
+%t10 = inttoptr i64 %t9 to ptr   ; error: i32 value in an i64 conversion
+%t12 = load i64, ptr %t11        ; 8-byte read from a 4-byte pointer slot
 ```
 
-The failure is pre-existing: the pinned pre-A4 compiler reproduces it at the
-same IR line. It blocks `rbv_gate.sh` after the router runtime checks, but is
-independent of the frontend fetch boundary. Task Board uses string state and
-its own real-browser gate passes.
+Root cause: `emit_instance_seed_from_value` treated obj handles and struct
+members as native-i64 boxed words. On wasm32 an obj value handle is
+pointer-sized (`i32`), and a struct literal stores a pointer member as a real
+`ptr`. The same wrong assumption existed in boxed-instance member reads.
+
+Fix:
+
+- convert obj value handles with `ctx.int_bits`;
+- load struct-literal members at their declared LLVM types;
+- let the existing store boundary adapt to the instance column type;
+- use `ctx.int_bits` and native member types in boxed-instance reads.
+
+New IR is:
+
+```llvm
+%t10 = inttoptr i32 %t9 to ptr
+%t12 = load ptr, ptr %t11
+```
+
+Regression: `tests/rbv_obj_init_wasm32.rs` builds the fixture, checks the
+target-width conversions, and runs `llc -filetype=obj`. Full `rbv_gate.sh`
+(including the real-browser counter smoke) passes.
