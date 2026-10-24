@@ -339,7 +339,15 @@ defn open_listener() [true][term.fd >= -4096] -> Socket {
 defn serve(listener: Socket, store: TaskStore) [listener.fd >= -4096] -> Void {
     let conn: Socket = sock_accept(listener);
     when conn.fd >= 0 {
-        handle_connection(conn, store);
+        // A 2-second receive budget bounds the sequential loop: a client that
+        // opens a connection and stops sending cannot pin the server forever.
+        let timeout: Int = sock_set_recv_timeout(conn, 2);
+        when timeout >= 0 {
+            handle_connection(conn, store);
+        };
+        when timeout < 0 {
+            sock_close(conn);
+        };
     };
     serve(listener, store);
 };

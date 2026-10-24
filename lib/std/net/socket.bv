@@ -316,6 +316,7 @@ const O_NONBLOCK:  Int = 2048;
 // setsockopt(2) levels/options.
 const SOL_SOCKET:   Int = 1;
 const SO_REUSEADDR: Int = 2;
+const SO_RCVTIMEO:  Int = 20;
 
 // sock_set_nonblocking - put the socket into non-blocking mode so a single
 // connection never stalls the event loop's poll sweep. The correct sequence is
@@ -337,6 +338,25 @@ defn sock_set_reuseaddr(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
     // optval = 1 as a 4-byte little-endian int: low byte 1, then three zeros.
     let opt: ByteBuf = buf_new(4).put_u8(1).put_u8(0).put_u8(0).put_u8(0);
     let rc: Int = syscall(54, s.fd, SOL_SOCKET, SO_REUSEADDR, opt.ptr, 4);
+    Free#(opt.ptr as Ptr);
+    term rc;
+};
+
+// sock_set_recv_timeout - bound a blocking recv so a slow/idle client cannot
+// pin a sequential server forever. Linux timeval is two machine words:
+// { tv_sec, tv_usec } little-endian. Build the 16-byte option value, pass it to
+// setsockopt(SO_RCVTIMEO), then free it. Returns 0 or -errno.
+defn sock_set_recv_timeout(s: Socket, seconds: Int)
+    [s.fd >= -4096 && seconds >= 0 && seconds <= 3600][term >= -4096]
+    -> Int
+{
+    let opt: ByteBuf = buf_new(16)
+        .put_u8(seconds & 255).put_u8((seconds >> 8) & 255)
+        .put_u8((seconds >> 16) & 255).put_u8((seconds >> 24) & 255)
+        .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
+        .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
+        .put_u8(0).put_u8(0).put_u8(0).put_u8(0);
+    let rc: Int = syscall(54, s.fd, SOL_SOCKET, SO_RCVTIMEO, opt.ptr, 16);
     Free#(opt.ptr as Ptr);
     term rc;
 };

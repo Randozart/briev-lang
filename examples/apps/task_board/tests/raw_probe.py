@@ -9,6 +9,8 @@ def main() -> int:
     mode = sys.argv[2]
     if mode == "truncated":
         payload = b"GET /health HTTP/1.1\r\nHost: probe\r\n"
+    elif mode == "idle":
+        payload = b"GET /health HTTP/1.1\r\nHost: probe\r\n"
     elif mode == "oversized":
         body = b"a" * 5000
         payload = (
@@ -22,9 +24,14 @@ def main() -> int:
         return 2
 
     sock = socket.create_connection(("127.0.0.1", port), timeout=2)
-    sock.settimeout(2)
+    sock.settimeout(4 if mode == "idle" else 2)
     sock.sendall(payload)
-    sock.shutdown(socket.SHUT_WR)
+    if mode == "idle":
+        # Exceed the backend's 2-second receive budget without closing our side.
+        import time
+        time.sleep(2.5)
+    else:
+        sock.shutdown(socket.SHUT_WR)
     chunks = []
     while True:
         try:

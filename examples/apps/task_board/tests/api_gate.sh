@@ -101,6 +101,9 @@ rg -q '"error":"bad_request"' "$TMP/truncated.response"
 python3 "$APP/tests/raw_probe.py" "$PORT" oversized >"$TMP/oversized.response"
 rg -q 'HTTP/1.1 413 Payload Too Large' "$TMP/oversized.response"
 rg -q '"error":"payload_too_large"' "$TMP/oversized.response"
+python3 "$APP/tests/raw_probe.py" "$PORT" idle >"$TMP/idle.response"
+rg -q 'HTTP/1.1 400 Bad Request' "$TMP/idle.response"
+rg -q '"error":"bad_request"' "$TMP/idle.response"
 
 fetch GET /missing missing
 test "$(status_of missing)" = "HTTP/1.1 404 Not Found"

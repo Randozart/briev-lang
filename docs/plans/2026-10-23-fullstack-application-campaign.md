@@ -1,7 +1,7 @@
 # Fullstack application validation campaign — Briev Task Board
 
 **Date:** 2026-10-23
-**Status:** ACTIVE — A6 hardening in progress.
+**Status:** ACTIVE — A6a hardening complete; A6b blocked on webstack collection elements.
 **Base:** `main` at `45b8850a`.
 **Umbrella:** `docs/plans/2026-10-09-fullstack-stdlib-and-net-stack.md`.
 
@@ -348,7 +348,7 @@ and stateless webstack defn emission.
 
 ## A6 — hardening (in progress, 2026-10-23)
 
-### A6a — request framing and mutation errors
+### A6a — request framing, limits, and idle-connection budget
 
 Landed:
 
@@ -356,7 +356,10 @@ Landed:
 - incomplete/truncated requests return structured `400 bad_request` and never
   enter route dispatch;
 - over-limit requests return structured `413 payload_too_large`;
-- server survives both failures and continues serving the same process;
+- 2-second receive timeout (`SO_RCVTIMEO`) so idle connections cannot pin the
+  sequential server;
+- server survives framing and idle failures and continues serving the same
+  process;
 - title length limit (120 chars) with structured `400 title_too_long`;
 - frontend maps 400/413 to useful mutation notices.
 
@@ -367,17 +370,29 @@ API gate now covers:
 - overlong title;
 - truncated raw connection;
 - oversized raw request;
+- idle raw connection past the receive budget;
 - post-failure health request proving loop survival.
 
 Validation: API gate PASS; browser CRUD gate PASS; conformance sweep green.
 
-### Remaining A6
+### A6b — structured rendering status: BLOCKED
 
-- replace raw JSON display with structured task-list rendering;
-- loading/empty/error presentation states;
-- clean shutdown/connection timeout policy;
-- WebSocket live updates once CRUD rendering is stable.
+The current webstack `b-each` supports:
+
+- fixed vectors (`[N x T]`);
+- generic collections whose element type is `String` or scalar `Int`.
+
+It does **not** support generic collections of struct/obj elements, so
+`List<Task>` cannot be iterated with per-item field bindings
+(`item.title`, `item.done`). This is a documented webstack follow-up, not a
+SPEC violation, but it blocks the planned list rendering.
+
+No backend HTML or app-specific workaround will be added. The raw JSON view
+remains until the general element model lands.
 
 ## Next
 
-A6b — structured task rendering and UI states.
+1. Extend collection `b-each` to struct/obj elements with per-item field
+   projection, or expose a general dynamic vector view.
+2. Then land A6b structured task rendering and UI states.
+3. Then A7 PostgreSQL wire protocol.
