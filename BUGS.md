@@ -10925,14 +10925,14 @@ compiles to wasm, but the browser runtime crashes inside the parser
 (`parse_tasks`/`parse_string`). Compiled app gates and Task Board remain green;
 JSON-to-`List<Task>` remains deferred until the runtime crash is minimized.
 
-## wasm JSON object BoolVal payload reads false (OPEN 2026-10-23)
+## wasm JSON BoolVal payload (RESOLVED 2026-10-23)
 
-On wasm32, `json_parse("{\"done\":true}")` returns an Object whose `done`
-value has the `BoolVal` tag but a **false payload**. The same
-`parse_keyword("true", ...)` called directly returns `BoolVal(true)`, and
-`json_parse("true")` also returns true. The corruption appears when the value
-passes through object pair storage (`pairs <- (key, vf.value)`).
+The earlier "BoolVal payload reads false" symptom came from a flattened
+top-level `TaskItem.done` view probe, not from JSON object parsing. Once enum
+sret slots were typed and Data→String copied `[len][bytes]` correctly,
+parsed object/list `done:true` values reach `b-each` correctly.
 
-Status: parser now compiles and runs on wasm; structured Task Board rendering
-is preserved on `experiment/task-board-structured` and blocked on this bug.
-No app workaround added.
+Remaining UI issue is separate: after a toggle txn, the parsed
+`List<TaskItem>` contains `done=true` and the raw task JSON is true, but the
+existing keyed `b-each` DOM row still shows false. Tracked in
+`docs/plans/2026-10-23-wasm-json-runtime.md`.
