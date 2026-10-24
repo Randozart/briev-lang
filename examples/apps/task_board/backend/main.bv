@@ -12,7 +12,12 @@ import { starts_with, ends_with, find, trim_str } from "std/string.bv";
 const HEALTH_BODY: String = "{\"ok\":true}";
 const NOT_FOUND_BODY: String = "{\"error\":\"not_found\"}";
 const INVALID_BODY: String = "{\"error\":\"invalid_request\"}";
+const BAD_REQUEST_BODY: String = "{\"error\":\"bad_request\"}";
+const TOO_LARGE_BODY: String = "{\"error\":\"payload_too_large\"}";
+const TITLE_TOO_LONG_BODY: String = "{\"error\":\"title_too_long\"}";
 const SERVER_PORT: Int = 18367;
+const MAX_REQUEST_BYTES: Int = 4096;
+const MAX_TITLE_CHARS: Int = 120;
 
 obj Task {
     id: Int;
@@ -231,7 +236,11 @@ defn handle_api(conn: Socket, request: HttpRequest, store: TaskStore)
             respond_json(conn, 400, INVALID_BODY);
             handled = 1;
         };
-        when title .^Length > 0 {
+        when title .^Length > MAX_TITLE_CHARS {
+            respond_json(conn, 400, TITLE_TOO_LONG_BODY);
+            handled = 1;
+        };
+        when title .^Length > 0 && title .^Length <= MAX_TITLE_CHARS {
             let task: Task = store_add(store, title);
             respond_json(conn, 200, task_json(task));
             handled = 1;
@@ -290,11 +299,24 @@ defn handle_connection(conn: Socket, store: TaskStore) [conn.fd >= -4096] -> Voi
     check received <= request.len;
     when received > 0 {
         let parsed: HttpParse = http_parse_request(request, received);
-        when parsed.request.method == "GET" && parsed.request.path == "/health" {
-            respond_json(conn, 200, HEALTH_BODY);
+        // Framing failures never enter routing. This keeps a truncated or
+        // oversized request from being interpreted as an API call, and lets
+        // the sequential loop survive to the next connection.
+        when parsed.status != HTTP_COMPLETE {
+            when received >= MAX_REQUEST_BYTES {
+                respond_json(conn, 413, TOO_LARGE_BODY);
+            };
+            when received < MAX_REQUEST_BYTES {
+                respond_json(conn, 400, BAD_REQUEST_BODY);
+            };
         };
-        when parsed.request.method != "GET" || parsed.request.path != "/health" {
-            handle_api(conn, parsed.request, store);
+        when parsed.status == HTTP_COMPLETE {
+            when parsed.request.method == "GET" && parsed.request.path == "/health" {
+                respond_json(conn, 200, HEALTH_BODY);
+            };
+            when parsed.request.method != "GET" || parsed.request.path != "/health" {
+                handle_api(conn, parsed.request, store);
+            };
         };
     };
     buf_free(request);

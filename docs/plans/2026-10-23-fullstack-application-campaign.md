@@ -1,7 +1,7 @@
 # Fullstack application validation campaign — Briev Task Board
 
 **Date:** 2026-10-23
-**Status:** ACTIVE — A5 browser mutation vertical complete.
+**Status:** ACTIVE — A6 hardening in progress.
 **Base:** `main` at `45b8850a`.
 **Umbrella:** `docs/plans/2026-10-09-fullstack-stdlib-and-net-stack.md`.
 
@@ -346,13 +346,38 @@ all MATCH.
 Regression pins added in `src/backend/llvm/tests.rs` for wasm32 Int frgn ABI
 and stateless webstack defn emission.
 
+## A6 — hardening (in progress, 2026-10-23)
+
+### A6a — request framing and mutation errors
+
+Landed:
+
+- explicit 4 KiB request ceiling shared by the read loop and framing check;
+- incomplete/truncated requests return structured `400 bad_request` and never
+  enter route dispatch;
+- over-limit requests return structured `413 payload_too_large`;
+- server survives both failures and continues serving the same process;
+- title length limit (120 chars) with structured `400 title_too_long`;
+- frontend maps 400/413 to useful mutation notices.
+
+API gate now covers:
+
+- valid CRUD;
+- malformed JSON body;
+- overlong title;
+- truncated raw connection;
+- oversized raw request;
+- post-failure health request proving loop survival.
+
+Validation: API gate PASS; browser CRUD gate PASS; conformance sweep green.
+
+### Remaining A6
+
+- replace raw JSON display with structured task-list rendering;
+- loading/empty/error presentation states;
+- clean shutdown/connection timeout policy;
+- WebSocket live updates once CRUD rendering is stable.
+
 ## Next
 
-A6 — application hardening:
-- request/connection limits and malformed-input survival;
-- structured error display in the UI;
-- deterministic rendering instead of raw JSON (list items);
-- title validation at the client boundary;
-- WebSocket live updates only after CRUD is stable.
-
-A7 then adds PostgreSQL wire protocol and persistence.
+A6b — structured task rendering and UI states.

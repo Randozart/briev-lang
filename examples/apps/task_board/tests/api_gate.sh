@@ -89,6 +89,19 @@ fetch POST /api/tasks invalid '{}'
 test "$(status_of invalid)" = "HTTP/1.1 400 Bad Request"
 test "$(cat "$TMP/invalid.body")" = '{"error":"invalid_request"}'
 
+long_title="$(printf 'a%.0s' $(seq 1 121))"
+fetch POST /api/tasks too_long "{\"title\":\"$long_title\"}"
+test "$(status_of too_long)" = "HTTP/1.1 400 Bad Request"
+test "$(cat "$TMP/too_long.body")" = '{"error":"title_too_long"}'
+
+# Framing failures must not enter routing; the sequential loop must survive.
+python3 "$APP/tests/raw_probe.py" "$PORT" truncated >"$TMP/truncated.response"
+rg -q 'HTTP/1.1 400 Bad Request' "$TMP/truncated.response"
+rg -q '"error":"bad_request"' "$TMP/truncated.response"
+python3 "$APP/tests/raw_probe.py" "$PORT" oversized >"$TMP/oversized.response"
+rg -q 'HTTP/1.1 413 Payload Too Large' "$TMP/oversized.response"
+rg -q '"error":"payload_too_large"' "$TMP/oversized.response"
+
 fetch GET /missing missing
 test "$(status_of missing)" = "HTTP/1.1 404 Not Found"
 test "$(cat "$TMP/missing.body")" = '{"error":"not_found"}'
@@ -96,6 +109,11 @@ test "$(cat "$TMP/missing.body")" = '{"error":"not_found"}'
 fetch DELETE /api/tasks/1 deleted
 test "$(status_of deleted)" = "HTTP/1.1 200 OK"
 test "$(cat "$TMP/deleted.body")" = '[]'
+
+# The same process must still answer after malformed/oversized connections.
+fetch GET /health survived
+test "$(status_of survived)" = "HTTP/1.1 200 OK"
+test "$(cat "$TMP/survived.body")" = '{"ok":true}'
 
 kill -9 "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true

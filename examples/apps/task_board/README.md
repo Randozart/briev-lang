@@ -18,6 +18,9 @@ PostgreSQL persistence and richer rendering are the next slices.
 
 The server binds port `18367` and handles one request per TCP connection
 sequentially. State persists in memory across requests until the process exits.
+Requests are capped at 4 KiB; truncated and oversized requests receive
+structured 400/413 responses and do not enter API routing. Task titles are
+limited to 120 characters.
 
 ## API
 

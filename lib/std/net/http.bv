@@ -370,6 +370,9 @@ defn http_status_text(status: Int) [true][CharCount#(term) >= 1] -> String {
     when status == 404 {
         term "Not Found";
     };
+    when status == 413 {
+        term "Payload Too Large";
+    };
     when status == 500 {
         term "Internal Server Error";
     };
