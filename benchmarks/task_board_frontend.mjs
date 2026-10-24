@@ -1,4 +1,4 @@
-// Task Board A5 browser mutation gate.
+// Task Board A6 structured browser CRUD gate.
 //
 // Usage: node benchmarks/task_board_frontend.mjs <page-url>
 //
@@ -21,7 +21,7 @@ const pageErrors = [];
 page.on('console', (message) => {
     if (message.type() === 'error') consoleErrors.push(message.text());
 });
-page.on('pageerror', (error) => pageErrors.push(String(error)));
+page.on('pageerror', (error) => pageErrors.push(error.stack || String(error)));
 
 let failures = 0;
 function check(name, ok, detail = '') {
@@ -30,46 +30,63 @@ function check(name, ok, detail = '') {
     console.log(`${passed ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`);
 }
 
-async function tasksText() {
-    return ((await page.locator('#rbv-pre-9').textContent()) || '').trim();
+async function taskRows() {
+    return {
+        ids: await page.locator('ul.task-list li .task-id').allTextContents(),
+        titles: await page.locator('ul.task-list li .task-title').allTextContents(),
+        done: await page.locator('ul.task-list li .task-done').allTextContents(),
+    };
 }
 
-async function waitForTasks(expected, timeoutMs = 3000) {
+async function waitForRows(expectedCount, timeoutMs = 3000) {
     const deadline = Date.now() + timeoutMs;
-    let text = await tasksText();
-    while (text !== expected && Date.now() < deadline) {
+    let rows = await taskRows();
+    while (rows.ids.length !== expectedCount && Date.now() < deadline) {
         await page.waitForTimeout(50);
-        text = await tasksText();
+        rows = await taskRows();
     }
-    return text;
+    return rows;
 }
 
 await page.goto(pageUrl, { waitUntil: 'load' });
 // The shim boots asynchronously; a b-window:load listener can miss the event.
 // The visible Refresh button is the deterministic boundary trigger.
 await page.locator('#rbv-button-2').click();
-let text = await waitForTasks('[]');
+let rows = await waitForRows(0);
 check('page loads without page errors', pageErrors.length === 0,
     pageErrors.join(' | '));
 check('page loads without console errors', consoleErrors.length === 0,
     consoleErrors.join(' | '));
-check('initial GET reaches the view', text === '[]', `got=${JSON.stringify(text)}`);
+check('initial GET renders an empty structured list', rows.ids.length === 0,
+    `got=${JSON.stringify(rows)}`);
 
 await page.locator('#rbv-input-4').fill('browser made this');
 await page.locator('#rbv-button-5').click();
-text = await waitForTasks('[{"id":1,"title":"browser made this","done":false}]');
-check('POST creates a task and refreshes state', text === '[{"id":1,"title":"browser made this","done":false}]',
-    `got=${JSON.stringify(text)}`);
+rows = await waitForRows(1);
+check('POST creates a rendered task',
+    rows.ids.join('|') === '1'
+        && rows.titles.join('|') === 'browser made this'
+        && rows.done.join('|') === 'false',
+    `got=${JSON.stringify(rows)}`);
 
 await page.locator('#rbv-input-6').fill('1');
 await page.locator('#rbv-button-7').click();
-text = await waitForTasks('[{"id":1,"title":"browser made this","done":true}]');
-check('toggle POST updates backend state', text === '[{"id":1,"title":"browser made this","done":true}]',
-    `got=${JSON.stringify(text)}`);
+const deadline = Date.now() + 3000;
+while (Date.now() < deadline) {
+    rows = await taskRows();
+    if (rows.done.join('|') === 'true') break;
+    await page.waitForTimeout(50);
+}
+check('toggle updates the rendered task',
+    rows.ids.join('|') === '1'
+        && rows.titles.join('|') === 'browser made this'
+        && rows.done.join('|') === 'true',
+    `got=${JSON.stringify(rows)}`);
 
 await page.locator('#rbv-button-8').click();
-text = await waitForTasks('[]');
-check('DELETE removes backend state', text === '[]', `got=${JSON.stringify(text)}`);
+rows = await waitForRows(0);
+check('DELETE removes the rendered task', rows.ids.length === 0,
+    `got=${JSON.stringify(rows)}`);
 
 await browser.close();
 

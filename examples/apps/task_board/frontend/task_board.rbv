@@ -1,4 +1,4 @@
-// Briev Task Board frontend — browser mutation vertical (A5).
+// Briev Task Board frontend — structured browser CRUD (A6).
 //
 // The read-only A4 page proved that real Chromium can load native API state.
 // This page completes the browser loop: a title input creates a task, and a
@@ -11,10 +11,68 @@
 // from one host and replace this constant.
 import "std/web/fetch.bv";
 import "std/web/json.bv";
+import "std/collections.bv";
+import "std/json.bv";
 
 const API_ORIGIN: String = "http://127.0.0.1:18367";
 
+obj TaskItem {
+    id: Int;
+    title: String;
+    done: Bool;
+};
+
+// Decode the authoritative API array into renderable structs. No local
+// mutation patches the list: every action re-fetches and re-parses.
+defn field_of(v: JsonValue, key: String) -> JsonValue {
+    let found: JsonValue = Null();
+    match v {
+        Object(pairs) => {
+            let n: Int = pairs.Count#();
+            foreach i in 0..n {
+                let pair: (String, JsonValue) = pairs[i];
+                let k: String = pair.0;
+                let fv: JsonValue = pair.1;
+                when k == key { found = fv; };
+            };
+        },
+        _ => { found = Null(); },
+    };
+    term found;
+};
+
+defn task_from_json(v: JsonValue) -> TaskItem {
+    let iv: JsonValue = field_of(v, "id");
+    let tv: JsonValue = field_of(v, "title");
+    let dv: JsonValue = field_of(v, "done");
+    let id: Int = match iv { IntVal(n) => n, _ => 0 };
+    let title: String = match tv { StrVal(s) => s, _ => "" };
+    let done: Bool = match dv { BoolVal(b) => b, _ => false };
+    term TaskItem { id: id, title: title, done: done };
+};
+
+defn parse_tasks(text: String) -> List<TaskItem> {
+    let result_tasks: List<TaskItem> = [];
+    let parsed: Result<JsonValue, String> = json_parse(text);
+    match parsed {
+        Ok(value) => match value {
+            Array(items) => {
+                let n: Int = items.Count#();
+                foreach i in 0..n {
+                    let item: JsonValue = items[i];
+                    let task: TaskItem = task_from_json(item);
+                    result_tasks <- task;
+                };
+            },
+            _ => {},
+        },
+        Err(_) => {},
+    };
+    term result_tasks;
+};
+
 let tasks_json: String = "[]";
+let tasks: List<TaskItem> = parse_tasks("[]");
 let status: String = "loading";
 let notice: String = "";
 let loaded: Int = 0;
@@ -33,6 +91,7 @@ defn task_body(title: String) -> String {
 
 txn refresh [loaded == 0][loaded == 1] {
     tasks_json = load_tasks();
+    tasks = parse_tasks(tasks_json);
     status = "ready";
     loaded = 1;
     term;
@@ -47,6 +106,7 @@ txn create_task [revision >= 0][revision >= 0] {
     let code: Int = last_http_status();
     when code == 200 {
         tasks_json = load_tasks();
+        tasks = parse_tasks(tasks_json);
         notice = "Task created";
     };
     when code == 400 {
@@ -69,6 +129,7 @@ txn toggle_task [true][revision >= 0] {
     let code: Int = last_http_status();
     when code == 200 {
         tasks_json = load_tasks();
+        tasks = parse_tasks(tasks_json);
         notice = "Task toggled";
     };
     when code != 200 {
@@ -85,6 +146,7 @@ txn delete_task [true][revision >= 0] {
     let code: Int = last_http_status();
     when code == 200 {
         tasks_json = load_tasks();
+        tasks = parse_tasks(tasks_json);
         notice = "Task deleted";
     };
     when code != 200 {
@@ -125,7 +187,13 @@ txn set_task_id(value: String) [true][task_id == value] {
       <button type="button" b-trigger:click="delete_task">Delete</button>
     </form>
 
-    <pre class="tasks" b-text="tasks_json">[]</pre>
+    <ul class="task-list">
+      <li b-each:item="tasks" b-key="item.id">
+        <span class="task-id" b-text="item.id"></span>
+        <span class="task-title" b-text="item.title"></span>
+        <span class="task-done" b-text="item.done"></span>
+      </li>
+    </ul>
   </main>
 </view>
 
@@ -166,15 +234,23 @@ txn set_task_id(value: String) [true][task_id == value] {
     font: inherit;
   }
   .mutator button { background: #245b73; }
-  .tasks {
+  .task-list {
+    list-style: none;
     margin-top: 18px;
-    padding: 16px;
+    display: grid;
+    gap: 8px;
+  }
+  .task-list li {
+    display: grid;
+    grid-template-columns: 40px 1fr 70px;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 14px;
     border-radius: 10px;
     background: #111827;
     color: #d1fae5;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    white-space: pre-wrap;
-    word-break: break-word;
-    min-height: 80px;
   }
+  .task-id { color: #93c5fd; }
+  .task-done { text-align: right; color: #fbbf24; }
 </style>
