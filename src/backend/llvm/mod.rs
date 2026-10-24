@@ -1129,6 +1129,28 @@ fn sort_tbaa_groups(universe: Option<&crate::type_universe::TypeUniverse>, group
     }
 }
 
+/// Target-aware LLVM ABI type for a foreign-boundary Briev value.
+/// `protocol_llvm_type` gives the storage convention, but the platform `Int`
+/// primordial follows `ctx.int_bits` at ABI boundaries: i64 on native, i32 on
+/// wasm32. Narrow/wide explicit integers keep their declared widths.
+pub(super) fn frgn_llvm_type(
+    ty: &Type,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+    int_bits: u64,
+) -> String {
+    let storage = protocol_llvm_type(ty, universe);
+    if matches!(ty, Type::Custom(name) if name == "Int") && int_bits == 32 {
+        return "i32".to_string();
+    }
+    storage
+}
+
+impl LlvmBackend {
+    pub(super) fn frgn_abi_type(&self, ty: &Type) -> String {
+        frgn_llvm_type(ty, self.ctx.type_universe.as_ref(), self.ctx.int_bits)
+    }
+}
+
 pub(super) fn tbaa_node(ty_str: &str, universe: Option<&crate::type_universe::TypeUniverse>) -> i32 {
     // Map string to TBAA group name
     let group = match ty_str {
@@ -4014,11 +4036,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else {
                 // 2026-07-26: Use protocol-driven LLVM type.
                 let first_ret = sig.result_type.return_type().expect("non-void frgn result");
-                protocol_llvm_type(&first_ret, self.ctx.type_universe.as_ref())
+                self.frgn_abi_type(&first_ret)
             };
             let param_tys: Vec<String> = sig.inputs.iter().map(|(_, t)| {
                 // 2026-07-26: Use protocol-driven LLVM type.
-                protocol_llvm_type(t, self.ctx.type_universe.as_ref())
+                self.frgn_abi_type(t)
             }).collect();
             write!(out, "declare {} @{}(", ret_ty, sig.name).ok();
             for (pi, pt) in param_tys.iter().enumerate() {

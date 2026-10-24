@@ -1607,6 +1607,12 @@ export async function createApp(wasmBytes) {{
                 crate::ast::Type::Custom(s) if s == "Bool" => {
                     stmts.push("return _result ? 1 : 0;".to_string());
                 }
+                // 2026-10-23 (webstack Int ABI): Briev `Int` is i32 on wasm32.
+                // Host integers can exceed that (e.g. HTTP status from the
+                // browser platform), so normalize through Number/Uint32.
+                crate::ast::Type::Custom(s) if s == "Int" => {
+                    stmts.push("return Number(_result) >>> 0;".to_string());
+                }
                 _ if matches!(ty, crate::ast::Type::Void) => {} // void — no return statement
                 _ => {
                     stmts.push("return _result;".to_string());

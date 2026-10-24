@@ -901,8 +901,22 @@ impl LlvmBackend {
     ) -> TypedRegister {
         // 2026-08-01 (B4): the SSO concat path was retired — a String is a
         // ptr to [len][bytes] under the bits model.
-        let a_boxed = self.adapt_to_i64(out, indent, a);
-        let b_boxed = self.adapt_to_i64(out, indent, b);
+        // 2026-10-23 (wasm32 concat): string operands are pointer-sized
+        // handles, not the generic i64 boxed-word ABI. Box them at
+        // ctx.int_bits so wasm32 gets a valid i32 conversion; native remains
+        // i64. The result arena handle is likewise narrowed before inttoptr.
+        let mut pointer_handle = |reg: &TypedRegister| -> String {
+            if self.llvm_type(&reg.ty) == "ptr" {
+                let boxed = self.fun.gen_reg();
+                let hw = format!("i{}", self.ctx.int_bits);
+                writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, boxed, reg.name, hw).ok();
+                boxed
+            } else {
+                self.adapt_to_i64(out, indent, reg)
+            }
+        };
+        let a_boxed = pointer_handle(a);
+        let b_boxed = pointer_handle(b);
         let a_clean = self.emit_mask_tag(out, indent, &a_boxed, "cam");
         let b_clean = self.emit_mask_tag(out, indent, &b_boxed, "cbm");
         let ha = self.emit_inttoptr_reg(out, indent, "cha", &a_clean);
@@ -913,13 +927,15 @@ impl LlvmBackend {
         let alloc_size = self.compute_alloc_size(out, indent, &total, "chs", "cas");
         let result_i64 = self.emit_arena_alloc(out, indent, &alloc_size);
         // 2026-07-19: emit_arena_alloc returns i64 — inttoptr to ptr for helpers.
+        let result_handle = self.fun.gen_reg();
+        let hw = format!("i{}", self.ctx.int_bits);
+        if hw == "i32" {
+            writeln!(out, "{}{} = trunc i64 {} to i32", indent, result_handle, result_i64).ok();
+        } else {
+            writeln!(out, "{}{} = add i64 0, {}", indent, result_handle, result_i64).ok();
+        }
         let result_ptr = self.fun.next_reg_with_prefix("crp");
-        writeln!(
-            out,
-            "{}{} = inttoptr i64 {} to ptr",
-            indent, result_ptr, result_i64
-        )
-        .ok();
+        self.emit_inttoptr(out, indent, &result_ptr, &result_handle);
         self.emit_write_header(out, indent, &result_ptr, &total, "chp", "cls");
         // First data copy: dest = result + 8 (after length prefix)
         let dest1 = self.fun.next_reg_with_prefix("cd1");
@@ -942,8 +958,9 @@ impl LlvmBackend {
         // 2026-08-01 (B4): the SSO 3-bit tagging was retired — a String is an
         // untagged ptr under the bits model; only the legacy 2-bit temp flag
         // remains (bit 1 = temporary concat result).
-        let mask = -4i64;
-        writeln!(out, "{}{} = and i64 {}, {}", indent, r, val, mask).ok();
+        // 2026-10-23 (wasm32 concat): masked handles follow the pointer width.
+        let hw = format!("i{}", self.ctx.int_bits);
+        writeln!(out, "{}{} = and {} {}, -4", indent, r, hw, val).ok();
         r
     }
 
@@ -1142,10 +1159,12 @@ impl LlvmBackend {
         let tag = self.fun.next_reg_with_prefix(tag_prefix);
         // 2026-08-01 (B4): the SSO bit-2 temporary flag was retired; only the
         // legacy bit-1 (value 2) temporary-concat-result flag remains.
-        let temp_bit = 2i64;
-        writeln!(out, "{}{} = and i64 {}, {}", indent, tag, boxed, temp_bit).ok();
+        // 2026-10-23 (wasm32 concat): the boxed handle and its temporary tag
+        // share the pointer width. The tag bit itself remains value 2.
+        let hw = format!("i{}", self.ctx.int_bits);
+        writeln!(out, "{}{} = and {} {}, 2", indent, tag, hw, boxed).ok();
         let is_temp = self.fun.next_reg_with_prefix(is_prefix);
-        writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, is_temp, tag).ok();
+        writeln!(out, "{}{} = icmp ne {} {}, 0", indent, is_temp, hw, tag).ok();
         let fl = format!("{}_{}", free_label, self.fun.txn_counter);
         let afl = format!("{}_{}", after_label, self.fun.txn_counter);
         self.fun.txn_counter += 1;
@@ -1184,14 +1203,19 @@ impl LlvmBackend {
             // `clean` is the address as an i64 int (emit_mask_tag); adapt it
             // to the defn's param LLVM type (i64 → no-op, ptr → inttoptr,
             // narrower iN → trunc). i64 is the widest — never zext here.
-            let p = if param_ll == "i64" {
+            let clean_ll = format!("i{}", self.ctx.int_bits);
+            let p = if param_ll == clean_ll {
                 clean.clone()
+            } else if param_ll == "i64" {
+                let t = self.fun.gen_reg();
+                writeln!(out, "{}{} = zext {} {} to i64", indent, t, clean_ll, clean).ok();
+                t
             } else {
                 let t = self.fun.gen_reg();
                 if param_ll == "ptr" {
                     self.emit_inttoptr(out, indent, &t, &clean);
                 } else {
-                    writeln!(out, "{}{} = trunc i64 {} to {}", indent, t, clean, param_ll).ok();
+                    writeln!(out, "{}{} = trunc {} {} to {}", indent, t, clean_ll, clean, param_ll).ok();
                 }
                 t
             };
@@ -2488,6 +2512,12 @@ impl LlvmBackend {
         state_ptr: &str,
         idx: usize,
     ) -> String {
+        // 2026-10-23 (webstack stateless fn): callable wrappers and pure defns
+        // are emitted without %state. Web flush only applies to machine-state
+        // transactions; stale webstack_enabled made LLVM reject their IR.
+        if state_ptr == "%state" && self.fun.stateless_body {
+            return String::new();
+        }
         let r = self.fun.gen_reg();
         writeln!(
             out,

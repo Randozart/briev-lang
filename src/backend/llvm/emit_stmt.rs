@@ -72,6 +72,13 @@ pub(super) fn emit_web_flush_batch(backend: &mut LlvmBackend, out: &mut String, 
         return;
     }
     let txn_name = backend.fun.txn_name.clone();
+    // 2026-10-23 (webstack stateless fn): wrapper/defn emission is not a
+    // state-machine transaction. A stateless body has no %state parameter, so
+    // flushing there emits undefined IR. Only real txn/reactive drivers set
+    // txn_name and are eligible.
+    if txn_name.is_empty() || backend.fun.stateless_body {
+        return;
+    }
     // 2026-08-10: the write_set is frontend analysis — sorted by field index
     // for deterministic IR (AGENTS.md HashMap iteration rule).
     let mut written: Vec<usize> = backend.ctx.transition_graph.as_ref()

@@ -1,0 +1,7 @@
+// Browser JSON string escaping for webstack host boundaries.
+//
+// The webstack target intentionally has no OS/libc string ABI. The browser
+// host owns JavaScript's native JSON escaper and exposes exactly the string
+// operation needed to build a small request object without importing the
+// native-oriented string lanes.
+frgn json_escape_string(value: String) -> String : json_escape_string from "glue/web/web.js";

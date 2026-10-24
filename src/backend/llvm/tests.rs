@@ -11936,3 +11936,72 @@ node tick [count < 9][count == 9] ?[count < 4] -> report(count) {
         "the version-DAG-dispatched watchdog must fire report(4); got:\n{out:?}"
     );
 }
+
+#[test]
+fn webstack_int_frgn_uses_wasm32_abi() {
+    // 2026-10-23 (A5): a webstack Int frgn must declare and call i32. The
+    // storage mapper previously used Int's native i64 bytes, producing an
+    // LLVM signature mismatch that LLVM lowered to a runtime trap stub.
+    let mut fb = ForeignBinding::new(
+        "last_http_status".to_string(),
+        None,
+        FromSpec::Literal(std::path::PathBuf::from("glue/web/web.js")),
+        ForeignTarget::Native,
+    );
+    fb.success_output = vec![("status".to_string(), Type::int())];
+    let program = vec![TopLevel::ForeignBinding(fb)];
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi");
+    let ir = backend.generate(&program, None);
+    assert!(
+        ir.contains("declare i32 @last_http_status()"),
+        "wasm32 Int frgn declare must be i32; got:\n{ir}"
+    );
+}
+
+#[test]
+fn webstack_stateless_defn_does_not_flush_state() {
+    // 2026-10-23 (A5): web flush is a machine-state transaction commit, not a
+    // side effect of every callable wrapper. A stateless defn has no %state
+    // parameter and must not emit the flush buffer at all.
+    let src = r#"
+defn make_status() -> Int {
+    term 200;
+};
+let tick: Int = 0;
+node run [tick == 0][tick == 1] {
+    when make_status() == 200 {
+        tick = 1;
+    };
+    term;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("define i32 @make_status()"),
+        "stateless defn must omit %state; got:\n{ir}"
+    );
+    let function_start = ir
+        .find("define i32 @make_status()")
+        .expect("stateless defn must be emitted");
+    let function_end = function_start
+        + ir[function_start..]
+            .find("\n}\n")
+            .expect("stateless defn must close");
+    let function_ir = &ir[function_start..function_end];
+    assert!(
+        !function_ir.contains("@__web_flush_state"),
+        "stateless webstack defn must not flush machine state; got:\n{function_ir}"
+    );
+}

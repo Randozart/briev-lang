@@ -10877,3 +10877,27 @@ New IR is:
 Regression: `tests/rbv_obj_init_wasm32.rs` builds the fixture, checks the
 target-width conversions, and runs `llc -filetype=obj`. Full `rbv_gate.sh`
 (including the real-browser counter smoke) passes.
+
+
+## wasm32 web host ABI and stateless flush (FIXED 2026-10-23)
+
+The A5 browser-mutation app exposed three webstack/ABI defects:
+
+1. **Stateless defns flushed machine state.** `emit_web_flush_batch` ran for
+   callable wrappers/pure defns that have no `%state` parameter, producing
+   undefined `%state` and an Emscripten-style runtime trap. Flush now requires
+   a real machine-state transaction; stateless state GEPs are skipped.
+2. **wasm32 Int frgn ABI was i64.** Browser host functions returning `Int`
+   were declared `i64` while the wasm32 call/ABI expected `i32`. Frgn ABI
+   mapping now follows `ctx.int_bits` for the platform `Int` primordial.
+3. **String concat assumed i64 pointer handles.** Masking, temp tagging,
+   arena-result narrowing, and free calls hardcoded `i64`. They now use the
+   target pointer width.
+
+Also fixed: generated web shim marshals host `Int` through
+`Number(...) >>> 0`, and the Task Board backend now answers CORS `OPTIONS`
+preflight before route dispatch.
+
+Regression gates: backend tests `webstack_int_frgn_uses_wasm32_abi` and
+`webstack_stateless_defn_does_not_flush_state`, full `rbv_gate.sh`, and the
+Task Board Chromium CRUD gate.
