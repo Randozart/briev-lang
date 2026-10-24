@@ -12005,3 +12005,34 @@ node run [tick == 0][tick == 1] {
         "stateless webstack defn must not flush machine state; got:\n{function_ir}"
     );
 }
+
+#[test]
+fn webstack_task_call_uses_target_width() {
+    // 2026-10-23 (wasm collection ABI): TaskCall# boxes three addresses and
+    // returns the task status. On wasm32 those addresses and the return are
+    // i32, not the old hardcoded i64.
+    let src = r#"
+defn call_segment(seg: Int, argv: Int, outc: Int) -> Int {
+    term TaskCall#(seg, argv, outc);
+};
+let tick: Int = 0;
+node run [tick == 0][tick == 1] {
+    let _v: Int = call_segment(1, 2, 3);
+    tick = 1;
+    term;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(ir.contains("inttoptr i32"), "TaskCall args must use i32 pointers:\n{ir}");
+    assert!(ir.contains("call i32"), "TaskCall result must be i32:\n{ir}");
+    assert!(!ir.contains("call i64 %"), "stale i64 TaskCall remains:\n{ir}");
+}

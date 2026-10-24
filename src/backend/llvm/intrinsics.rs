@@ -182,17 +182,18 @@ pub fn emit_intrinsic_call(
         // whose body may call state-taking runtime defns (Print# etc.).
         // The machine passes i64 addresses; widen to the ptr ABI.
         "TaskCall#" => {
-            let seg = emit_arg(backend, out, &args[0], indent);
-            let argv = emit_arg(backend, out, &args[1], indent);
-            let outc = emit_arg(backend, out, &args[2], indent);
-            let seg_p = backend.fun.gen_reg();
-            let argv_p = backend.fun.gen_reg();
-            let outc_p = backend.fun.gen_reg();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, seg_p, seg).ok();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, argv_p, argv).ok();
-            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, outc_p, outc).ok();
-            writeln!(out, "{}{} = call i64 {}(ptr %state, ptr {}, ptr {})",
-                indent, v, seg_p, argv_p, outc_p).ok();
+            let seg_r = backend.emit_expr(out, &args[0], indent);
+            let argv_r = backend.emit_expr(out, &args[1], indent);
+            let outc_r = backend.emit_expr(out, &args[2], indent);
+            let seg = backend.pointer_handle_of(out, indent, &seg_r);
+            let argv = backend.pointer_handle_of(out, indent, &argv_r);
+            let outc = backend.pointer_handle_of(out, indent, &outc_r);
+            let seg_p = backend.pointer_from_handle(out, indent, &seg);
+            let argv_p = backend.pointer_from_handle(out, indent, &argv);
+            let outc_p = backend.pointer_from_handle(out, indent, &outc);
+            let hw = format!("i{}", backend.ctx.int_bits);
+            writeln!(out, "{}{} = call {} {}(ptr %state, ptr {}, ptr {})",
+                indent, v, hw, seg_p, argv_p, outc_p).ok();
             return BTypedRegister { name: v.to_string(), ty: Type::int() };
         }
         // 2026-08-03: host cancellation flag (process-global atomic).

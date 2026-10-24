@@ -10917,6 +10917,8 @@ subtree swallowed the rest of the view and later containers received no ID.
 ## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
 
 After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
-the parser but later prelude helpers (`await_*` function-pointer paths) still
-emit mixed i64/i32 conversions. Compiled app gates and Task Board remain green;
-JSON-to-`List<Task>` on wasm is deferred until the prelude ABI sweep.
+the parser. `TaskCall#` now uses target-width addresses/return. The next failure
+is `std/float_fmt.bv`'s tuple-returning `sscale` (`(Int, Int)` return emitted as
+an i64 pointer handle against an i32 return). Compiled app gates and Task Board
+remain green; JSON-to-`List<Task>` on wasm is deferred until the tuple-return
+ABI is fixed.
