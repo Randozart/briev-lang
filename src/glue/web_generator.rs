@@ -193,6 +193,34 @@ pub struct FieldLayout {
     pub type_tag: TypeTag,
 }
 
+/// One projected field of a struct/obj collection element used by `b-each`.
+/// The materializer flattens these fields row-major into the snapshot; the
+/// shim reconstructs a plain JS item object (`item.title`, `item.done`, ...).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectionElementField {
+    pub name: String,
+    pub type_tag: TypeTag,
+}
+
+/// Map a primitive value type to the webstack decoder tag. Struct-collection
+/// projections include only these fields; aggregate/nested fields are omitted
+/// rather than decoded incorrectly.
+pub fn web_view_field_tag(ty: &crate::ast::Type) -> Option<TypeTag> {
+    use crate::ast::Type;
+    if *ty == Type::string() || *ty == Type::char_() || *ty == Type::blob() {
+        return Some(TypeTag::String);
+    }
+    if *ty == Type::bool_() {
+        return Some(TypeTag::Bool);
+    }
+    if *ty == Type::int() {
+        return Some(TypeTag::Int);
+    }
+    // Float fields are a follow-up: the snapshot is an integer word, so
+    // decoding a float without an explicit bitcast would be a false render.
+    None
+}
+
 /// Type tag for interpreting state field values.
 /// 2026-07-26: Phase 3 — Used by JS shim to decode value bytes appropriately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +328,10 @@ pub struct GlueWebGenerator {
     /// 2026-08-12 (slice 4): the subset whose ELEMENT type is String — the
     /// shim decodes each snapshot word as a `[len][bytes]` string pointer.
     collection_string_iterables: HashSet<String>,
+    /// 2026-10-23 (struct b-each): per-iterable field projections for generic
+    /// collections whose element is a struct/obj. The snapshot is row-major:
+    /// one i64 word per projected field per item.
+    collection_struct_iterables: HashMap<String, Vec<CollectionElementField>>,
     /// 2026-10-06 (web host-JS shipping): `name -> JS function expression` for
     /// the web runtime's platform surface. Retained for the legacy
     /// config-driven path; the current browser host module is a `.js` file
@@ -368,6 +400,7 @@ impl GlueWebGenerator {
             bind_routes: HashMap::new(),
             collection_iterables: HashSet::new(),
             collection_string_iterables: HashSet::new(),
+            collection_struct_iterables: HashMap::new(),
             host_fns: HashMap::new(),
             host_module_src: String::new(),
         }
@@ -393,6 +426,15 @@ impl GlueWebGenerator {
     /// type is String — the shim decodes snapshot words as strings.
     pub fn with_collection_string_iterables(mut self, fields: HashSet<String>) -> Self {
         self.collection_string_iterables = fields;
+        self
+    }
+
+    /// 2026-10-23 (struct b-each): install per-iterable struct-field projections.
+    pub fn with_collection_struct_iterables(
+        mut self,
+        fields: HashMap<String, Vec<CollectionElementField>>,
+    ) -> Self {
+        self.collection_struct_iterables = fields;
         self
     }
 
@@ -753,7 +795,9 @@ export async function createApp(wasmBytes) {{
         key_expr: &str,
         el: &str,
     ) -> String {
-        if key_expr.trim() != item_name {
+        let key = key_expr.trim();
+        let item_prefix = format!("{}.", item_name);
+        if key != item_name && !key.starts_with(&item_prefix) {
             return String::new();
         }
         let Some(handle) = self.field_handle_for_signal(iterable) else {
@@ -794,7 +838,34 @@ export async function createApp(wasmBytes) {{
         // string POINTERS — the shim reads each `[len][bytes]` string. An Int
         // element is the raw number.
         let is_string_items = self.collection_string_iterables.contains(iterable);
-        let item_reader = if is_string_items {
+        let item_reader = if let Some(fields) = self.collection_struct_iterables.get(iterable) {
+            let mut js = format!(
+                "const __row = snapPtr + 8 + i * {} * 8;\n             const item = {{}};",
+                fields.len()
+            );
+            for (index, field) in fields.iter().enumerate() {
+                let offset = index * 8;
+                let assign = match field.type_tag {
+                    TypeTag::String => format!(
+                        "const __w{index} = Number(dv.getBigInt64(__row + {offset}, true));\
+                         const __sp{index} = Number(BigInt.asUintN(32, BigInt(__w{index})));\
+                         item[{}] = _this._readString(__sp{index});",
+                        serde_json::to_string(&field.name).unwrap_or_else(|_| "\"\"".to_string()),
+                    ),
+                    TypeTag::Bool => format!(
+                        "item[{}] = Number(dv.getBigInt64(__row + {offset}, true)) !== 0;",
+                        serde_json::to_string(&field.name).unwrap_or_else(|_| "\"\"".to_string()),
+                    ),
+                    TypeTag::Int | TypeTag::Float => format!(
+                        "item[{}] = Number(dv.getBigInt64(__row + {offset}, true));",
+                        serde_json::to_string(&field.name).unwrap_or_else(|_| "\"\"".to_string()),
+                    ),
+                };
+                js.push_str("\n             ");
+                js.push_str(&assign);
+            }
+            js
+        } else if is_string_items {
             "const __word = Number(dv.getBigInt64(snapPtr + 8 + i * 8, true));\
              const __sp = Number(BigInt.asUintN(32, BigInt(__word)));\
              const __len = Number(dv.getBigInt64(__sp, true));\
@@ -813,14 +884,24 @@ export async function createApp(wasmBytes) {{
              \x20         const templateInner = {template_html:?};\n\
              \x20         anchor.remove();\n\
              \x20         const itemBindings = {ibs_js};\n\
+             \x20         const itemValue = (token, item) => {{\n\
+             \x20           if (token === {item_name:?}) return item;\n\
+             \x20           const prefix = {item_name:?} + \".\";\n\
+             \x20           if (token.startsWith(prefix)) return item[token.slice(prefix.length)];\n\
+             \x20           if (token === \"true\") return true;\n\
+             \x20           if (token === \"false\") return false;\n\
+             \x20           if (token !== \"\" && !Number.isNaN(Number(token))) return Number(token);\n\
+             \x20           return undefined;\n\
+             \x20         }};\n\
              \x20         const evalItem = (expr, item) => {{\n\
-             \x20           if (expr === {item_name:?}) return Boolean(item);\n\
+             \x20           const e = expr.trim();\n\
+             \x20           const direct = itemValue(e, item);\n\
+             \x20           if (direct !== undefined) return direct;\n\
              \x20           for (const op of [\"==\", \"!=\", \"<=\", \">=\", \"<\", \">\"]) {{\n\
-             \x20             const i = expr.indexOf(op);\n\
+             \x20             const i = e.indexOf(op);\n\
              \x20             if (i < 0) continue;\n\
-             \x20             const l = expr.slice(0, i).trim(), r = expr.slice(i + op.length).trim();\n\
-             \x20             const lv = l === {item_name:?} ? item : Number(l);\n\
-             \x20             const rv = r === {item_name:?} ? item : Number(r);\n\
+             \x20             const l = e.slice(0, i).trim(), r = e.slice(i + op.length).trim();\n\
+             \x20             const lv = itemValue(l, item), rv = itemValue(r, item);\n\
              \x20             switch (op) {{\n\
              \x20               case \"==\": return lv === rv;\n\
              \x20               case \"!=\": return lv !== rv;\n\
@@ -832,6 +913,10 @@ export async function createApp(wasmBytes) {{
              \x20           }}\n\
              \x20           return Boolean(item);\n\
              \x20         }};\n\
+             \x20         const itemKey = (expr, item) => {{\n\
+             \x20           const v = itemValue(expr.trim(), item);\n\
+             \x20           return String(v === undefined ? item : v);\n\
+             \x20         }};\n
              \x20         const applyItem = (el, item) => {{\n\
              \x20           for (const ib of itemBindings) {{\n\
              \x20             const target = ib.marker === 0 ? el : el.querySelector('[data-itm=\"' + ib.marker + '\"]');\n\
@@ -853,7 +938,7 @@ export async function createApp(wasmBytes) {{
               \x20           const seen = new Set();\n\
               \x20           for (let i = 0; i < n; i++) {{\n\
               \x20             {item_reader}\n\
-              \x20             const key = String(item);\n\
+              \x20             const key = itemKey({key_expr:?}, item);\n\
               \x20             seen.add(key);\n\
               \x20             let el2 = rendered.get(key);\n\
               \x20             if (!el2) {{\n\
@@ -876,6 +961,7 @@ export async function createApp(wasmBytes) {{
             template_html = template_html,
             materializer = materializer,
             item_reader = item_reader,
+            key_expr = key_expr,
         )
     }
 

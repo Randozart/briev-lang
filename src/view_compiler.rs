@@ -876,7 +876,7 @@ impl ViewCompiler {
     /// violation.
     fn check_item_expr(&self, expr: &str, item_name: &str) -> Result<(), String> {
         let e = expr.trim();
-        if e == item_name {
+        if e == item_name || Self::is_item_field(e, item_name) {
             return Ok(());
         }
         // Find the operator by scanning for its first character (no loop —
@@ -899,11 +899,26 @@ impl ViewCompiler {
             };
             let (l, r) = (e[..i].trim(), e[i + op.len()..].trim());
             let ok_lit = |s: &str| s.parse::<f64>().is_ok() || s == "true" || s == "false";
-            if (l == item_name && ok_lit(r)) || (r == item_name && ok_lit(l)) {
+            let item_side = |s: &str| s == item_name || Self::is_item_field(s, item_name);
+            if (item_side(l) && ok_lit(r)) || (item_side(r) && ok_lit(l)) {
                 return Ok(());
             }
         }
         Err(self.unsupported_item_msg(expr, item_name))
+    }
+
+    /// Is `expr` a direct field projection of the current b-each item
+    /// (`item.title`)? Field decode happens from the materialized item object.
+    fn is_item_field(expr: &str, item_name: &str) -> bool {
+        expr.strip_prefix(item_name)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .map(|field| {
+                !field.is_empty()
+                    && field
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_')
+            })
+            .unwrap_or(false)
     }
 
     fn unsupported_item_msg(&self, expr: &str, item_name: &str) -> String {

@@ -104,6 +104,10 @@ pub struct CompiledView {
     /// 2026-08-12 (slice 4): the subset whose ELEMENT type is String — the
     /// shim decodes each snapshot word as a `[len][bytes]` string pointer.
     pub collection_string_iterables: std::collections::HashSet<String>,
+    /// 2026-10-23 (struct b-each): generic collections whose element is an
+    /// obj/struct. The materializer flattens these primitive fields per item.
+    pub collection_struct_iterables:
+        std::collections::HashMap<String, Vec<crate::glue::web_generator::CollectionElementField>>,
     pub warnings: Vec<String>,
 }
 
@@ -461,6 +465,7 @@ pub fn compile_view(
             modified_html: opts.view_html.clone(),
             collection_iterables: std::collections::HashSet::new(),
             collection_string_iterables: std::collections::HashSet::new(),
+            collection_struct_iterables: std::collections::HashMap::new(),
             warnings: Vec::new(),
         });
     };
@@ -532,9 +537,30 @@ pub fn compile_view(
             _ => None,
         })
         .collect();
+    // Struct/obj field declarations, used to project element fields for a
+    // collection `b-each`. Only primitive fields are published to the shim;
+    // aggregate fields stay out rather than being decoded incorrectly.
+    let struct_fields: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> = items
+        .iter()
+        .filter_map(|item| match item {
+            crate::ast::TopLevel::TypeDef(td) => Some((
+                td.name.clone(),
+                td.body
+                    .slots
+                    .iter()
+                    .map(|slot| (slot.name.clone(), slot.ty.clone()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
     let mut warnings: Vec<String> = diagnostics.iter().skip(validation_count).cloned().collect();
     let mut collection_iterables: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut collection_string_iterables: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut collection_struct_iterables: std::collections::HashMap<
+        String,
+        Vec<crate::glue::web_generator::CollectionElementField>,
+    > = std::collections::HashMap::new();
     for binding in &bindings {
         if let crate::view_compiler::Directive::Each { iterable, .. } = &binding.directive {
             let ty = field_types.get(iterable);
@@ -563,6 +589,30 @@ pub fn compile_view(
                     }).unwrap_or(false);
                     if is_string_elem {
                         collection_string_iterables.insert(iterable.clone());
+                    }
+                    let elem_base = ty.and_then(|t| match t {
+                        crate::ast::Type::Applied(_, args) => args.first().and_then(|elem| match elem {
+                            crate::ast::Type::Custom(base)
+                            | crate::ast::Type::Applied(base, _) => Some(base.clone()),
+                            _ => None,
+                        }),
+                        _ => None,
+                    });
+                    if let Some(fields) = elem_base.and_then(|base| struct_fields.get(&base)) {
+                        let projected: Vec<_> = fields
+                            .iter()
+                            .filter_map(|(name, field_ty)| {
+                                crate::glue::web_generator::web_view_field_tag(field_ty).map(
+                                    |type_tag| crate::glue::web_generator::CollectionElementField {
+                                        name: name.clone(),
+                                        type_tag,
+                                    },
+                                )
+                            })
+                            .collect();
+                        if !projected.is_empty() {
+                            collection_struct_iterables.insert(iterable.clone(), projected);
+                        }
                     }
                 } else {
                     warnings.push(format!(
@@ -601,6 +651,7 @@ pub fn compile_view(
         modified_html: Some(modified_html),
         collection_iterables,
         collection_string_iterables,
+        collection_struct_iterables,
         warnings,
     })
 }

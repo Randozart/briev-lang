@@ -940,6 +940,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             modified_html: None,
             collection_iterables: std::collections::HashSet::new(),
             collection_string_iterables: std::collections::HashSet::new(),
+            collection_struct_iterables: std::collections::HashMap::new(),
             warnings: Vec::new(),
         }
     };
@@ -948,6 +949,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     let modified_view_html = compiled_view.modified_html.clone();
     let collection_iterables = compiled_view.collection_iterables.clone();
     let collection_string_iterables = compiled_view.collection_string_iterables.clone();
+    let collection_struct_iterables = compiled_view.collection_struct_iterables.clone();
     let view_signals = view_root_signals(&view_bindings);
 
     // ── Code generation ───────────────────────────────────────────────
@@ -1345,6 +1347,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 .with_bind_routes(resolved_routes)
                 .with_collection_iterables(collection_iterables.clone())
                 .with_collection_string_iterables(collection_string_iterables.clone())
+                .with_collection_struct_iterables(collection_struct_iterables.clone())
                 // 2026-10-07 (host-boundary decision record, D7): the browser
                 // host module's source (from the `frgn ... from "<path>.js"`
                 // file) is inlined into the shim at module scope.

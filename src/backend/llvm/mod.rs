@@ -6251,6 +6251,67 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         KEPT.iter().any(|s| line.contains(&format!("@{s}(")))
     }
 
+    /// 2026-10-23 (struct b-each): primitive fields projected for a collection
+    /// whose element is an obj/struct. Empty for scalar/string elements.
+    fn view_item_fields(&self, field_ty: &crate::ast::Type) -> Vec<(String, crate::ast::Type)> {
+        let crate::ast::Type::Applied(_, args) = field_ty else {
+            return Vec::new();
+        };
+        let Some(elem) = args.first() else {
+            return Vec::new();
+        };
+        let base = match elem {
+            crate::ast::Type::Custom(base) | crate::ast::Type::Applied(base, _) => base,
+            _ => return Vec::new(),
+        };
+        let Some(slots) = self.ctx.struct_types.get(base) else {
+            return Vec::new();
+        };
+        let fields: Vec<_> = slots
+            .iter()
+            .filter(|(_, ty)| {
+                crate::glue::web_generator::web_view_field_tag(ty).is_some()
+            })
+            .cloned()
+            .collect();
+        if fields.len() > 127 {
+            Vec::new()
+        } else {
+            fields
+        }
+    }
+
+    /// Box a projected field/scalar register into the i64 snapshot word.
+    fn view_projection_word(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        reg: &crate::backend::llvm::TypedRegister,
+    ) -> String {
+        let llvm_ty = self.llvm_type(&reg.ty);
+        if llvm_ty == "i64" {
+            return reg.name.clone();
+        }
+        let r = self.fun.gen_reg();
+        match llvm_ty.as_str() {
+            "ptr" => {
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, r, reg.name).ok();
+            }
+            "float" => {
+                let bits = self.fun.gen_reg();
+                writeln!(out, "{}{} = bitcast float {} to i32", indent, bits, reg.name).ok();
+                writeln!(out, "{}{} = zext i32 {} to i64", indent, r, bits).ok();
+            }
+            "double" => {
+                writeln!(out, "{}{} = bitcast double {} to i64", indent, r, reg.name).ok();
+            }
+            _ => {
+                writeln!(out, "{}{} = sext {} {} to i64", indent, r, llvm_ty, reg.name).ok();
+            }
+        }
+        r
+    }
+
     /// 2026-08-12 (Iterable protocol, slice 4): for each `b-each` iterable that
     /// is a Tier-2 collection (op Count + op At as op-as-member members), emit a
     /// `__view_items_<field>(ptr %state)` snapshot materializer. It drives the
@@ -6281,6 +6342,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if !(has("Count") && has("At")) {
                 continue;
             }
+            let item_fields = self.view_item_fields(&briev_ty);
+            let row_size = item_fields.len();
             let fn_name = format!("__view_items_{}", field);
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
@@ -6312,25 +6375,38 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
             let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], &[], "  ");
-            // 2026-08-12 (slice 4, String elements): a String/Data element's At
-            // return is a PTR (the [len][bytes] address) — box it to the i64
-            // snapshot word via adapt_to_i64 (ptrtoint); an Int element zexts
-            // from i32 on wasm32.
-            let word64 = if self.llvm_type(&word.ty) == "i64" {
-                word.name.clone()
-            } else if self.is_string_operand(&word.ty) || self.is_blob_operand(&word.ty) {
-                let p = self.fun.gen_reg();
-                writeln!(out, "  {} = ptrtoint {} {} to i64", p, self.llvm_type(&word.ty), word.name).ok();
-                p
+            if row_size == 0 {
+                // Scalar/string element collection: one snapshot word per item.
+                let word64 = self.view_projection_word(out, "  ", &word);
+                writeln!(out, "  %w32 = add i32 %c, 1").ok();
+                writeln!(out, "  %w = sext i32 %w32 to i64").ok();
+                writeln!(out, "  %p = getelementptr [1024 x i64], ptr @__web_view_buf, i64 0, i64 %w").ok();
+                writeln!(out, "  store i64 {}, ptr %p", word64).ok();
             } else {
-                let z = self.fun.gen_reg();
-                writeln!(out, "  {} = zext i32 {} to i64", z, word.name).ok();
-                z
-            };
-            writeln!(out, "  %w32 = add i32 %c, 1").ok();
-            writeln!(out, "  %w = sext i32 %w32 to i64").ok();
-            writeln!(out, "  %p = getelementptr [1024 x i64], ptr @__web_view_buf, i64 0, i64 %w").ok();
-            writeln!(out, "  store i64 {}, ptr %p", word64).ok();
+                // Struct/obj element: bind the boxed element handle and project
+                // the primitive fields row-major into the snapshot.
+                let item_tmp = "__view_item".to_string();
+                self.fun.let_bindings.insert(item_tmp.clone(), word.name.clone());
+                self.fun.let_binding_types.insert(item_tmp.clone(), word.ty.clone());
+                self.fun.let_original_types.insert(item_tmp.clone(), word.ty.clone());
+                for (col, (fname, _)) in item_fields.iter().enumerate() {
+                    let field_expr = crate::ast::Expr::Field(
+                        Box::new(crate::ast::Expr::Identifier(item_tmp.clone())),
+                        fname.clone(),
+                    );
+                    let fv = self.emit_expr(out, &field_expr, "  ");
+                    let word64 = self.view_projection_word(out, "  ", &fv);
+                    let row = self.fun.gen_reg();
+                    let idx = self.fun.gen_reg();
+                    let wid = self.fun.gen_reg();
+                    let slot = self.fun.gen_reg();
+                    writeln!(out, "  {} = mul i32 %c, {}", row, row_size).ok();
+                    writeln!(out, "  {} = add i32 {}, {}", idx, row, col + 1).ok();
+                    writeln!(out, "  {} = sext i32 {} to i64", wid, idx).ok();
+                    writeln!(out, "  {} = getelementptr [1024 x i64], ptr @__web_view_buf, i64 0, i64 {}", slot, wid).ok();
+                    writeln!(out, "  store i64 {}, ptr {}", word64, slot).ok();
+                }
+            }
             writeln!(out, "  %next = add i32 %c, 1").ok();
             writeln!(out, "  store i32 %next, ptr %hdr").ok();
             writeln!(out, "  br label %hlbl").ok();
