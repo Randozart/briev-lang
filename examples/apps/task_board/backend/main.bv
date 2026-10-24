@@ -196,6 +196,18 @@ defn handle_api(conn: Socket, request: HttpRequest, store: TaskStore)
     [conn.fd >= -4096]
     -> Void
 {
+    // Browsers send a CORS preflight before Content-Type-bearing mutations.
+    // It is transport authorization, not API state, and must succeed even on
+    // an empty in-memory store.
+    when request.method == "OPTIONS" {
+        let response: GrowBuf = http_json_response(200, "");
+        let ok: Int = send_response(conn, response);
+        grow_free(response);
+        when ok == 0 {
+            Print#(0 - ok);
+        };
+    };
+
     let method: String = request.method;
     let path: String = request.path;
     let handled: Int = 0;

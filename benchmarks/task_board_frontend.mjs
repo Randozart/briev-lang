@@ -1,17 +1,16 @@
-// Task Board A4 browser gate.
+// Task Board A5 browser mutation gate.
 //
-// Usage: node benchmarks/task_board_frontend.mjs <page-url> <expected-json>
+// Usage: node benchmarks/task_board_frontend.mjs <page-url>
 //
-// The page is served by a static file server; `/api/tasks` is fetched
-// cross-origin from the native Briev backend. The backend sends the CORS
-// headers, so this proves the real browser boundary rather than stubbing
-// `fetch_url`.
+// The page is served by a static file server; all HTTP actions go cross-origin
+// to the native Briev backend. This proves create/toggle/delete through the
+// real browser host boundary and asserts the backend remains the source of
+// truth after every mutation.
 import { chromium } from 'playwright';
 
 const pageUrl = process.argv[2];
-const expectedJson = process.argv[3];
-if (!pageUrl || !expectedJson) {
-    console.error('usage: node task_board_frontend.mjs <page-url> <expected-json>');
+if (!pageUrl) {
+    console.error('usage: node task_board_frontend.mjs <page-url>');
     process.exit(2);
 }
 
@@ -31,30 +30,46 @@ function check(name, ok, detail = '') {
     console.log(`${passed ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`);
 }
 
+async function tasksText() {
+    return ((await page.locator('#rbv-pre-9').textContent()) || '').trim();
+}
+
+async function waitForTasks(expected, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    let text = await tasksText();
+    while (text !== expected && Date.now() < deadline) {
+        await page.waitForTimeout(50);
+        text = await tasksText();
+    }
+    return text;
+}
+
 await page.goto(pageUrl, { waitUntil: 'load' });
 // The shim boots asynchronously; a b-window:load listener can miss the event.
 // The visible Refresh button is the deterministic boundary trigger.
-await page.locator('#rbv-button-1').click();
-
-const status = page.locator('#rbv-span-0');
-const tasks = page.locator('#rbv-pre-3');
-let statusText = '';
-let taskText = '';
-for (let attempt = 0; attempt < 50; attempt += 1) {
-    statusText = ((await status.textContent()) || '').trim();
-    taskText = ((await tasks.textContent()) || '').trim();
-    if (statusText === 'ready' && taskText === expectedJson) break;
-    await page.waitForTimeout(100);
-}
-
+await page.locator('#rbv-button-2').click();
+let text = await waitForTasks('[]');
 check('page loads without page errors', pageErrors.length === 0,
     pageErrors.join(' | '));
 check('page loads without console errors', consoleErrors.length === 0,
     consoleErrors.join(' | '));
-check('load trigger fetches the API', statusText === 'ready',
-    `got=${JSON.stringify(statusText)}`);
-check('task JSON reaches reactive view state', taskText === expectedJson,
-    `got=${JSON.stringify(taskText)} want=${JSON.stringify(expectedJson)}`);
+check('initial GET reaches the view', text === '[]', `got=${JSON.stringify(text)}`);
+
+await page.locator('#rbv-input-4').fill('browser made this');
+await page.locator('#rbv-button-5').click();
+text = await waitForTasks('[{"id":1,"title":"browser made this","done":false}]');
+check('POST creates a task and refreshes state', text === '[{"id":1,"title":"browser made this","done":false}]',
+    `got=${JSON.stringify(text)}`);
+
+await page.locator('#rbv-input-6').fill('1');
+await page.locator('#rbv-button-7').click();
+text = await waitForTasks('[{"id":1,"title":"browser made this","done":true}]');
+check('toggle POST updates backend state', text === '[{"id":1,"title":"browser made this","done":true}]',
+    `got=${JSON.stringify(text)}`);
+
+await page.locator('#rbv-button-8').click();
+text = await waitForTasks('[]');
+check('DELETE removes backend state', text === '[]', `got=${JSON.stringify(text)}`);
 
 await browser.close();
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Task Board A4 gate: real Chromium reads native-backend state through CORS.
+# Task Board A5 gate: real Chromium drives backend create/toggle/delete.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
@@ -61,15 +61,7 @@ for _ in $(seq 1 60); do
 done
 test "$ready" = 1
 
-# Seed one task so the browser gate proves actual API content, not merely a
-# successful empty response.
-create_status="$(timeout -s KILL 3s curl -sS --max-time 2 -o "$TMP/create.body" -w '%{http_code}' \
-    -X POST -H 'Content-Type: application/json' \
-    --data '{"title":"browser read test"}' \
-    "http://127.0.0.1:$API_PORT/api/tasks")"
-test "$create_status" = "200"
-test "$(cat "$TMP/create.body")" = '{"id":1,"title":"browser read test","done":false}'
-
+# Start from the empty store; the browser performs every mutation itself.
 (
     cd "$FRONTEND"
     exec python3 -m http.server "$WEB_PORT" --bind 127.0.0.1
@@ -77,9 +69,8 @@ test "$(cat "$TMP/create.body")" = '{"id":1,"title":"browser read test","done":f
 WEB_PID=$!
 sleep 0.2
 
-expected='[{"id":1,"title":"browser read test","done":false}]'
-timeout -s KILL 60s node "$ROOT/benchmarks/task_board_frontend.mjs" \
-    "http://127.0.0.1:$WEB_PORT/task_board.html" "$expected"
+timeout -s KILL 90s node "$ROOT/benchmarks/task_board_frontend.mjs" \
+    "http://127.0.0.1:$WEB_PORT/task_board.html"
 
 kill -9 "$BACKEND_PID" "$WEB_PID" 2>/dev/null || true
 BACKEND_PID=""

@@ -1,19 +1,101 @@
-// Briev Task Board frontend — read-only API vertical (A4).
+// Briev Task Board frontend — browser mutation vertical (A5).
 //
-// The page starts in `loading`, asks the browser host for `/api/tasks`, and
-// exposes the response through reactive view state. `b-window:load` is a real
-// window trigger; the Refresh button remains as a deterministic fallback and
-// makes the host boundary testable without depending on page-load ordering.
+// The read-only A4 page proved that real Chromium can load native API state.
+// This page completes the browser loop: a title input creates a task, and a
+// numeric task ID drives toggle/delete. Every mutating action uses the method
+// aware HTTP host boundary and refreshes the authoritative list from GET.
+//
+// The API origin is explicit for the campaign's split-process gate: the page
+// is served statically while the native backend owns the API origin. The
+// backend returns CORS headers; production deployment can serve both origins
+// from one host and replace this constant.
 import "std/web/fetch.bv";
+import "std/web/json.bv";
+
+const API_ORIGIN: String = "http://127.0.0.1:18367";
 
 let tasks_json: String = "[]";
 let status: String = "loading";
+let notice: String = "";
 let loaded: Int = 0;
+let revision: Int = 0;
+let new_title: String = "";
+let task_id: String = "1";
+
+// The backend is the source of truth; mutations never patch local JSON.
+defn load_tasks() -> String {
+    term http_get(API_ORIGIN + "/api/tasks");
+};
+
+defn task_body(title: String) -> String {
+    term "{\"title\":\"" + json_escape_string(title) + "\"}";
+};
 
 txn refresh [loaded == 0][loaded == 1] {
-    tasks_json = fetch("http://127.0.0.1:18367/api/tasks");
+    tasks_json = load_tasks();
     status = "ready";
     loaded = 1;
+    term;
+};
+
+// Every mutation commits a revision increment. The increment is the visible
+// commit proof for the browser gate and prevents a failed request from being
+// mistaken for a committed state change.
+txn create_task [revision >= 0][revision >= 0] {
+    let title: String = new_title;
+    let response: String = http_post(API_ORIGIN + "/api/tasks", task_body(title));
+    let code: Int = last_http_status();
+    when code == 200 {
+        tasks_json = load_tasks();
+        notice = "Task created";
+    };
+    when code != 200 {
+        notice = "Create failed";
+    };
+    revision = revision + 1;
+    status = "ready";
+    term;
+};
+
+txn toggle_task [true][revision >= 0] {
+    let path: String = API_ORIGIN + "/api/tasks/" + task_id + "/toggle";
+    let response: String = http_post(path, "");
+    let code: Int = last_http_status();
+    when code == 200 {
+        tasks_json = load_tasks();
+        notice = "Task toggled";
+    };
+    when code != 200 {
+        notice = "Toggle failed";
+    };
+    revision = revision + 1;
+    status = "ready";
+    term;
+};
+
+txn delete_task [true][revision >= 0] {
+    let path: String = API_ORIGIN + "/api/tasks/" + task_id;
+    let response: String = http_delete(path);
+    let code: Int = last_http_status();
+    when code == 200 {
+        tasks_json = load_tasks();
+        notice = "Task deleted";
+    };
+    when code != 200 {
+        notice = "Delete failed";
+    };
+    revision = revision + 1;
+    status = "ready";
+    term;
+};
+
+txn set_new_title(value: String) [true][new_title == value] {
+    new_title = value;
+    term;
+};
+
+txn set_task_id(value: String) [true][task_id == value] {
+    task_id = value;
     term;
 };
 
@@ -21,10 +103,22 @@ txn refresh [loaded == 0][loaded == 1] {
   <main class="board">
     <header>
       <h1>Task Board</h1>
-      <p><span b-text="status">loading</span></p>
+      <p><span b-text="status">loading</span> <span b-text="notice"></span></p>
       <button b-trigger:click="refresh">Refresh</button>
       <button b-window:load="refresh"></button>
     </header>
+
+    <form class="composer">
+      <input type="text" placeholder="New task title" b-bind:value="new_title" />
+      <button type="button" b-trigger:click="create_task">Create</button>
+    </form>
+
+    <form class="mutator">
+      <input type="number" placeholder="Task ID" b-bind:value="task_id" />
+      <button type="button" b-trigger:click="toggle_task">Toggle</button>
+      <button type="button" b-trigger:click="delete_task">Delete</button>
+    </form>
+
     <pre class="tasks" b-text="tasks_json">[]</pre>
   </main>
 </view>
@@ -40,7 +134,7 @@ txn refresh [loaded == 0][loaded == 1] {
     place-items: center;
   }
   .board {
-    width: min(720px, calc(100vw - 32px));
+    width: min(760px, calc(100vw - 32px));
     background: white;
     border-radius: 16px;
     box-shadow: 0 18px 50px rgba(20, 32, 60, .14);
@@ -57,8 +151,17 @@ txn refresh [loaded == 0][loaded == 1] {
     font: inherit;
     cursor: pointer;
   }
+  form { display: flex; gap: 10px; margin-bottom: 12px; }
+  input {
+    flex: 1;
+    border: 1px solid #ccd3e0;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: inherit;
+  }
+  .mutator button { background: #245b73; }
   .tasks {
-    margin-top: 20px;
+    margin-top: 18px;
     padding: 16px;
     border-radius: 10px;
     background: #111827;

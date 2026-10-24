@@ -6,8 +6,8 @@ PostgreSQL persistence.
 
 ## Status
 
-In-memory CRUD backend and a read-only browser frontend. PostgreSQL and
-browser mutations are the next slices.
+In-memory CRUD backend and a browser frontend with create/toggle/delete.
+PostgreSQL persistence and richer rendering are the next slices.
 
 ## Backend
 
@@ -35,8 +35,9 @@ DELETE /api/tasks/:id
 bash tests/frontend_gate.sh
 ```
 
-Builds the `.rbv` page and backend, seeds one task, serves the frontend, and
-uses real Chromium to prove the browser reads native API state through CORS.
+Builds the `.rbv` page and backend, serves the frontend, and uses real
+Chromium to drive create, toggle, and delete through the native API and CORS
+preflight boundary.
 
 ## API gate
 

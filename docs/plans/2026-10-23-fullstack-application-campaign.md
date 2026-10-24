@@ -1,7 +1,7 @@
 # Fullstack application validation campaign — Briev Task Board
 
 **Date:** 2026-10-23
-**Status:** ACTIVE — A4 frontend read-only vertical complete.
+**Status:** ACTIVE — A5 browser mutation vertical complete.
 **Base:** `main` at `45b8850a`.
 **Umbrella:** `docs/plans/2026-10-09-fullstack-stdlib-and-net-stack.md`.
 
@@ -300,10 +300,59 @@ Validation: browser gate PASS; web-generator tests 29 green;
 (`i32` value used as `i64` pointer). The pinned pre-A4 compiler reproduces the
 same failure; recorded in BUGS.md. It is independent of the frontend gate.
 
+## A5 — frontend mutation vertical (2026-10-23)
+
+Landed:
+
+- method-aware browser HTTP boundary in `lib/std/web/fetch.bv`:
+  `http_get`, `http_post`, `http_put`, `http_delete`, plus
+  `last_http_status`;
+- host implementations in `lib/glue/web/web.js`;
+- browser JSON string escaping (`lib/std/web/json.bv`);
+- Task Board title input and create action;
+- Task ID input and toggle/delete actions;
+- backend CORS `OPTIONS` handling;
+- real Chromium CRUD gate.
+
+Gate: `examples/apps/task_board/tests/frontend_gate.sh`:
+
+1. loads the page and proves empty GET;
+2. fills a title and clicks Create → exact new task JSON;
+3. fills ID `1` and clicks Toggle → exact completed JSON;
+4. clicks Delete → exact empty list;
+5. requires zero page/console errors throughout.
+
+Validation: browser gate PASS; API gate PASS; full `rbv_gate.sh` PASS;
+`cargo test --lib` green; determinism quick gate PASS; full runtime suite
+all MATCH.
+
+### A5 compiler/runtime defects found and fixed
+
+- **Stateless webstack defns emitted `%state` flushes.** Callable wrappers and
+  pure defns have no state parameter. `emit_web_flush_batch` now requires a
+  real machine-state transaction, and state GEPs are skipped in stateless
+  bodies.
+- **wasm32 Int frgn ABI used i64.** Frgn declarations now map platform `Int`
+  through `ctx.int_bits`, so browser host functions declare/call `i32` on
+  wasm32.
+- **String-concat pointer handling used i64.** Operand handles, temp masks,
+  mask tags, arena-result narrowing, and free calls now follow the target
+  pointer width.
+- **Host integer marshalling returned a raw JS Number.** Generated shim
+  marshals Briev `Int` through `Number(...) >>> 0` for wasm32.
+- **CORS preflight was not handled.** The app backend now answers `OPTIONS`
+  before route dispatch.
+
+Regression pins added in `src/backend/llvm/tests.rs` for wasm32 Int frgn ABI
+and stateless webstack defn emission.
+
 ## Next
 
-A5 — frontend mutation fetch:
-- extend host module beyond synchronous GET;
-- typed POST/toggle/delete wrappers;
-- structured request errors;
-- browser CRUD actions and deterministic browser gate.
+A6 — application hardening:
+- request/connection limits and malformed-input survival;
+- structured error display in the UI;
+- deterministic rendering instead of raw JSON (list items);
+- title validation at the client boundary;
+- WebSocket live updates only after CRUD is stable.
+
+A7 then adds PostgreSQL wire protocol and persistence.
