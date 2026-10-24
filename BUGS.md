@@ -10903,14 +10903,16 @@ Regression gates: backend tests `webstack_int_frgn_uses_wasm32_abi` and
 Task Board Chromium CRUD gate.
 
 
-## List<T> op registry is keyed by the base name, not the monomorph (OPEN 2026-10-23)
+## List<T> op registry is keyed by the base name, not the monomorph (FIXED 2026-10-23)
 
 `obj_members` / `operator_defs` register `List<T>` under `"List"`, so two
-instantiations in one unit share one scaffold. A single `List<Int>` works after
-the wasm pointer-width fixes; adding `List<TaskItem>` produces an invalid
-element store (`trunc i64 <i32 handle>`). The fix is to key the scaffolded
-members/bindings by the resolved monomorph key and instantiate element ABI per
-`T`.
+instantiations in one unit shared one scaffold. `construct_local_collection`
+now resolves member bodies from the resolved monomorph key first (falling back
+to the base). `List<Int>`, `List<TaskItem>`, and both in one unit build for
+wasm32 and render through `b-each`.
+
+Also fixed: `inject_ids` never parsed closing tags, so the first `b-each`
+subtree swallowed the rest of the view and later containers received no ID.
 
 ## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
 

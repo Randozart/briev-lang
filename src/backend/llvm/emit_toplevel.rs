@@ -1996,7 +1996,18 @@ impl LlvmBackend {
             Type::Applied(n, a) => (n.clone(), a.clone()),
             _ => return None,
         };
-        let members = self.ctx.obj_members.get(&base).cloned().unwrap_or_default();
+        let type_key = self.resolve_obj_key(briev_ty).unwrap_or_else(|| base.clone());
+        // Resolve the concrete monomorph's member bodies. `ensure_mono`
+        // installs `List<T>`-substituted ops; using the base `List` bodies
+        // here runs the generic element ABI against a concrete element type
+        // (the invalid `trunc i64 <i32 handle>` list store).
+        let members = self
+            .ctx
+            .obj_members
+            .get(&type_key)
+            .cloned()
+            .or_else(|| self.ctx.obj_members.get(&base).cloned())
+            .unwrap_or_default();
         let has = |op: &str| {
             members.iter().any(|m| matches!(m, TopLevel::TypeDefOperator(d) if d.name == op))
         };
@@ -2029,7 +2040,6 @@ impl LlvmBackend {
         if !(has("Count") && has("At")) && !has_construct_ops {
             return None;
         }
-        let type_key = self.resolve_obj_key(briev_ty).unwrap_or_else(|| base.clone());
         let defs = self.ctx.operator_defs.get(&base).cloned().unwrap_or_default();
         let size = self.struct_type_size(&type_key);
         let inst = self.fun.gen_reg();

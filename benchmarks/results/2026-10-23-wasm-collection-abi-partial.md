@@ -1,4 +1,4 @@
-# wasm32 collection ABI — partial slice
+# wasm32 collection ABI — List<T> slice
 
 **Date:** 2026-10-23
 
@@ -18,11 +18,19 @@
 - passes `llc -filetype=obj`;
 - renders `1, 2` through `b-each` in Chromium.
 
+## Multi-instantiation result
+
+`List<Int>`, `List<TaskItem>`, and both in one unit:
+- build for wasm32;
+- pass `llc -filetype=obj`;
+- render correctly in Chromium (`1, 2` and `one/false`, `two/true`).
+
+The monomorphized member lookup and the `b-each` closing-tag parser were the
+two blockers.
+
 ## Remaining
 
-- `List<T>` monomorphized op registry (base name `"List"` keys collide);
-- struct-element list store with concrete element types;
-- web JSON ingestion (`std/json` prelude ABI).
+- web JSON ingestion (`std/json` prelude function-pointer ABI).
 
 ## Gates
 
@@ -30,5 +38,6 @@
 - full `rbv_gate.sh`: PASS
 - Task Board API gate: PASS
 - Task Board Chromium CRUD gate: PASS
-- new `tests/rbv_list_each_wasm.rs`: PASS
+- new `tests/rbv_list_each_wasm.rs`: PASS (List<Int>, List<TaskItem>, and both in one unit)
+- full runtime suite: all MATCH
 - full runtime suite: all MATCH

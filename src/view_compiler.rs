@@ -153,6 +153,10 @@ pub struct ViewCompiler {
     /// is item-scoped, handled by extract_bindings (global directive
     /// extraction must not leak item-scoped bindings like `b-text="item"`).
     each_depth: usize,
+    /// Matching close-tag names for the active `b-each` containers. Inner
+    /// closing tags must not end the each subtree (only the container's own
+    /// `</li>`/`</div>` does).
+    each_close_tags: Vec<String>,
     /// 2026-08-11 (Phase 2b, SPEC 21.3): `render Name { ... }` view fragments,
     /// keyed by struct name — the RAW fragment html. A `<Name />` tag in the
     /// view mounts a fragment at compile time (inlined + ID-injected like any
@@ -199,6 +203,7 @@ impl ViewCompiler {
             id_counter: 0,
             each_context: Vec::new(),
             each_depth: 0,
+            each_close_tags: Vec::new(),
             render_blocks: HashMap::new(),
             component_specs: HashMap::new(),
             instance_specs: HashMap::new(),
@@ -479,7 +484,7 @@ impl ViewCompiler {
             if bytes[pos] == b'<'
                 && bytes
                     .get(pos + 1)
-                    .map(|&b| b.is_ascii_alphabetic() || b == b'!')
+                    .map(|&b| b.is_ascii_alphabetic() || b == b'!' || b == b'/')
                     .unwrap_or(false)
             {
                 if let Some((tag, end_pos)) = self.parse_tag(&html[pos..]) {
@@ -587,7 +592,21 @@ impl ViewCompiler {
                         // 2026-08-11 (Phase 2a3): a closing tag decrements the
                         // b-each nesting depth.
                         if tag_str.starts_with("</") && self.each_depth > 0 {
-                            self.each_depth -= 1;
+                            let close_name = tag_str
+                                .trim_start_matches("</")
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or("")
+                                .trim_end_matches('>');
+                            let matched = self
+                                .each_close_tags
+                                .last()
+                                .map(|open| open.eq_ignore_ascii_case(close_name))
+                                .unwrap_or(false);
+                            if matched {
+                                self.each_close_tags.pop();
+                                self.each_depth -= 1;
+                            }
                         }
                         result.push_str(tag_str);
                         pos += end_pos;
@@ -661,6 +680,11 @@ impl ViewCompiler {
 
                         if is_each_tag {
                             self.each_depth += 1;
+                            self.each_close_tags.push(
+                                tag_name_stripped
+                                    .trim_start_matches('<')
+                                    .to_ascii_lowercase(),
+                            );
                         } else {
                             // Pass the computed elem_id to extract_directives so it uses consistent IDs
                             self.extract_directives(&tag_with_id, &elem_id);
@@ -2216,6 +2240,20 @@ mod tests {
             "{:?}",
             diagnostics
         );
+    }
+
+    #[test]
+    fn multiple_each_containers_each_get_ids() {
+        let mut vc = ViewCompiler::new();
+        vc.register_signal("numbers", 0);
+        vc.register_signal("tasks", 0);
+        let (bindings, html, _) = vc.compile(
+            r#"<ul><li b-each:item="numbers" b-key="item"><span b-text="item">x</span></li></ul>
+               <ul><li b-each:item="tasks" b-key="item.title"><span b-text="item.title">x</span></li></ul>"#,
+        );
+        let each_count = bindings.iter().filter(|b| matches!(b.directive, Directive::Each { .. })).count();
+        assert_eq!(each_count, 2, "both each bindings must exist: {bindings:?}\n{html}");
+        assert_eq!(html.matches("id=\"rbv-li-").count(), 2, "both each containers need ids:\n{html}");
     }
 
     // ── 2026-08-11 (Phase 2a3): b-each + b-key ────────────────────────

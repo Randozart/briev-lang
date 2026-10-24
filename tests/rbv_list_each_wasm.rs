@@ -47,4 +47,19 @@ fn per_instantiation_list_each_builds_for_wasm() {
     let int_ir = std::fs::read_to_string(out.join("list_int_each_wasm.ll")).unwrap();
     assert!(int_ir.contains("define i32 @__view_items_numbers"), "int materializer missing:\n{int_ir}");
 
+    build_fixture(brievc, "list_task_each_wasm", &out);
+    let task_ir = std::fs::read_to_string(out.join("list_task_each_wasm.ll")).unwrap();
+    assert!(task_ir.contains("define i32 @__view_items_tasks"), "struct materializer missing:\n{task_ir}");
+    let shim = std::fs::read_to_string(out.join("list_task_each_wasm.mjs")).unwrap();
+    assert!(shim.contains("item[\"title\"]"), "struct item projection missing:\n{shim}");
+    assert!(shim.contains("itemKey(\"item.title\""), "struct key projection missing:\n{shim}");
+
+    // Both instantiations in one unit must each resolve their own op scaffold.
+    build_fixture(brievc, "list_multi_each_wasm", &out);
+    let multi_ir = std::fs::read_to_string(out.join("list_multi_each_wasm.ll")).unwrap();
+    assert!(multi_ir.contains("define i32 @__view_items_numbers"), "int materializer missing in multi:\n{multi_ir}");
+    assert!(multi_ir.contains("define i32 @__view_items_tasks"), "task materializer missing in multi:\n{multi_ir}");
+    let multi_html = std::fs::read_to_string(out.join("list_multi_each_wasm.html")).unwrap();
+    assert_eq!(multi_html.matches("id=\"rbv-li-").count(), 2,
+        "both b-each containers need stable ids:\n{multi_html}");
 }

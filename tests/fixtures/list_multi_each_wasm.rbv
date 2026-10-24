@@ -1,0 +1,26 @@
+import "std/collections.bv";
+
+obj TaskItem { title: String; done: Bool; };
+
+defn make_numbers() -> List<Int> {
+    let values: List<Int> = [1, 2];
+    term values;
+};
+defn make_tasks() -> List<TaskItem> {
+    let a: TaskItem = TaskItem { title: "one", done: false };
+    let b: TaskItem = TaskItem { title: "two", done: true };
+    let items: List<TaskItem> = [a, b];
+    term items;
+};
+
+let numbers: List<Int> = make_numbers();
+let tasks: List<TaskItem> = make_tasks();
+
+<view>
+  <ul>
+    <li b-each:item="numbers" b-key="item"><span b-text="item">x</span></li>
+  </ul>
+  <ul>
+    <li b-each:item="tasks" b-key="item.title"><span b-text="item.title">x</span><span b-text="item.done">false</span></li>
+  </ul>
+</view>

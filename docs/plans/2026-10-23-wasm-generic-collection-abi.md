@@ -1,7 +1,7 @@
 # wasm32 generic collection ABI
 
 **Date:** 2026-10-23
-**Status:** PARTIAL — List<Int> fixed; monomorphized registry remains
+**Status:** COMPLETE for List<T>; JSON ingestion remains a separate blocker
 **Branch:** `fix/wasm-generic-collections`
 **Base:** `feat/fullstack-task-board` at `7bff81bf`.
 
@@ -105,33 +105,22 @@ Hardcoded `i64` is only valid where the format itself is 64-bit.
   - webstack allows the already-implemented `CharCount#`/`Count#`/`At#` ops.
 - G3: not needed for correctness yet; the scaffold still over-allocates
   capacity with `elem_size = 8`, but indexed access uses the real element type.
-- G4: **List<Int> passes** a wasm build + llc regression
-  (`tests/rbv_list_each_wasm.rs`) and renders `1, 2` in Chromium.
-  List<String>/struct lists remain blocked.
-- G5: blocked on the monomorphized collection registry below.
+- G4/G5 landed:
+  - `List<Int>`, `List<TaskItem>`, and both in ONE unit build for wasm32,
+    pass `llc`, and render correctly in Chromium;
+  - collection construction resolves member bodies from the concrete
+    monomorph key (`List<T>`), not the generic base;
+  - multiple `b-each` containers now receive stable IDs (closing tags were
+    never parsed by `inject_ids`, so the first each swallowed the rest of the
+    view).
 
-## Remaining blocker — List<T> is not monomorphized in the op registry
+## Resolved — List<T> monomorphized op resolution
 
-`obj_members` and `operator_defs` are keyed by `td.name` (`"List"`), not by
-the resolved `List<T>` key. A unit with one `List<Int>` works. A second
-instantiation, or a concrete struct element type, reuses the first scaffold's
-element ABI and emits a bad list-element store:
-
-```llvm
-%h = <i32 struct handle>
-%v = trunc i64 %h to i32  ; invalid: %h is already i32
-```
-
-This is the root cause behind the earlier apparent `T` success (the one-letter
-type parameter path) and the multi-list fixture failure.
-
-Fix direction:
-
-1. key `obj_members` and `operator_defs` by the resolved monomorph key;
-2. instantiate scaffolded member bodies per element type (or parameterize them
-   by the resolved element ABI);
-3. make `construct_local_collection` resolve bindings from that key;
-4. test `List<Int>`, `List<String>`, and `List<TaskItem>` in ONE unit.
+`ensure_mono` already created `List<T>`-substituted member bodies, but
+`construct_local_collection` still looked members up by the base `"List"` key.
+Construction now resolves the concrete monomorph first, falling back to the
+base only when no mono entry exists. Regression coverage builds
+`List<Int>`, `List<TaskItem>`, and both in one unit.
 
 ## Separate blocker — web JSON ingestion
 
