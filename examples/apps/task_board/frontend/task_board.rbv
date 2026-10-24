@@ -90,8 +90,9 @@ defn task_body(title: String) -> String {
 };
 
 txn refresh [loaded == 0][loaded == 1] {
-    tasks_json = load_tasks();
-    tasks = parse_tasks(tasks_json);
+    let fresh: String = load_tasks();
+    tasks_json = fresh;
+    tasks = parse_tasks(fresh);
     status = "ready";
     loaded = 1;
     term;
@@ -105,8 +106,9 @@ txn create_task [revision >= 0][revision >= 0] {
     let response: String = http_post(API_ORIGIN + "/api/tasks", task_body(title));
     let code: Int = last_http_status();
     when code == 200 {
-        tasks_json = load_tasks();
-        tasks = parse_tasks(tasks_json);
+        let fresh: String = load_tasks();
+        tasks_json = fresh;
+        tasks = parse_tasks(fresh);
         notice = "Task created";
     };
     when code == 400 {
@@ -128,8 +130,9 @@ txn toggle_task [true][revision >= 0] {
     let response: String = http_post(path, "");
     let code: Int = last_http_status();
     when code == 200 {
-        tasks_json = load_tasks();
-        tasks = parse_tasks(tasks_json);
+        let fresh: String = load_tasks();
+        tasks_json = fresh;
+        tasks = parse_tasks(fresh);
         notice = "Task toggled";
     };
     when code != 200 {
@@ -145,8 +148,9 @@ txn delete_task [true][revision >= 0] {
     let response: String = http_delete(path);
     let code: Int = last_http_status();
     when code == 200 {
-        tasks_json = load_tasks();
-        tasks = parse_tasks(tasks_json);
+        let fresh: String = load_tasks();
+        tasks_json = fresh;
+        tasks = parse_tasks(fresh);
         notice = "Task deleted";
     };
     when code != 200 {

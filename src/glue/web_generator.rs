@@ -967,9 +967,11 @@ export async function createApp(wasmBytes) {{
               \x20             if (!el2) {{\n\
               \x20               el2 = document.createElement(tagName);\n\
               \x20               el2.innerHTML = templateInner;\n\
-              \x20               applyItem(el2, item);\n\
               \x20               container.appendChild(el2);\n\
              \x20               rendered.set(key, el2);\n\
+             // Existing keyed nodes still need field updates (toggle
+             // done=true must re-render, not only create).
+             applyItem(el2, item);
              \x20             }}\n\
              \x20           }}\n\
              \x20           for (const [key, el2] of rendered) {{\n\
@@ -1368,9 +1370,10 @@ export async function createApp(wasmBytes) {{
                      \x20             if (!el) {{\n\
                      \x20               el = document.createElement(tagName);\n\
                      \x20               el.innerHTML = templateInner;\n\
-                     \x20               applyItem(el, item);\n\
                      \x20               container.appendChild(el);\n\
                      \x20               rendered.set(key, el);\n\
+                     // Existing keyed nodes still need field updates.
+                     applyItem(el, item);
                      \x20             }}\n\
                      \x20           }}\n\
                      \x20           for (const [key, el] of rendered) {{\n\
