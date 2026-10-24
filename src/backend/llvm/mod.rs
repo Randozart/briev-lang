@@ -6329,6 +6329,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         if self.ctx.collection_iterables.is_empty() {
             return;
         }
+        // Materializers are pure view helpers, never machine transactions.
+        // A stale txn_name/stateless flag from the previously emitted function
+        // made them call __web_flush_state, which re-entered the same
+        // materializer through the binding flush (infinite recursion).
+        let saved_txn_name = std::mem::take(&mut self.fun.txn_name);
+        let saved_stateless = self.fun.stateless_body;
+        self.fun.stateless_body = true;
         writeln!(out, "@__web_view_buf = private global [1024 x i64] zeroinitializer").ok();
         let mut names: Vec<String> = self.ctx.collection_iterables.iter().cloned().collect();
         names.sort_unstable();
@@ -6422,6 +6429,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             writeln!(out, "  ret i32 ptrtoint ([1024 x i64]* @__web_view_buf to i32)").ok();
             writeln!(out, "}}").ok();
         }
+        self.fun.txn_name = saved_txn_name;
+        self.fun.stateless_body = saved_stateless;
     }
 
     /// 2026-08-06 (fix): emit the top-level closure functions collected during

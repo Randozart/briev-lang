@@ -5806,7 +5806,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let out_used = inline_slot.is_none()
             && self.fun.enum_return_context
             && !self.fun.enum_out_busy
-            && self.fun.enum_out_slot.is_some();
+            && self.fun.enum_out_slot.is_some()
+            && self.fun.expected_enum_type.as_ref() == self.fun.enum_out_type.as_ref();
         if out_used {
             self.fun.enum_out_busy = true;
         }
@@ -7069,8 +7070,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             }
             crate::ast::Pattern::Literal(lit) => {
                 let lv = self.emit_pattern_literal(out, lit, indent);
+                let wide = self.ensure_typed_value(
+                    out, indent, "i64", scrut, Some(scrut_ty.clone()),
+                    self.ctx.type_universe.clone().as_ref(),
+                );
                 let r = self.fun.gen_reg();
-                writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, r, scrut, lv).ok();
+                writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, r, wide, lv).ok();
                 r
             }
             // 2026-08-22 (spec-conformance plan Phase 4a): tuple patterns

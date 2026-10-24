@@ -3667,6 +3667,13 @@ impl LlvmBackend {
         let sret_enum = self.ctx.defn_sret.contains(&d.name);
         if sret_enum {
             self.fun.enum_out_slot = Some("%enum_out".to_string());
+            self.fun.enum_out_type = self
+                .ctx
+                .defn_return_types
+                .get(&d.name)
+                .and_then(|types| types.first().cloned());
+        } else {
+            self.fun.enum_out_type = None;
         }
         self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
             matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))

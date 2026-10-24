@@ -654,16 +654,16 @@ export class WasmDomRuntime {{
 
   _bitsToString(ptr) {{
     if (!ptr) return 0;
-    let src = new Uint8Array(this._memory.buffer);
-    let end = Number(ptr);
-    while (end < src.length && src[end] !== 0) end += 1;
-    const len = end - Number(ptr);
+    // Briev Data/String is [i64 length][bytes], NOT a NUL-terminated C string.
+    const header = new DataView(this._memory.buffer);
+    const len = Number(header.getBigUint64(Number(ptr), true));
+    if (len < 0 || len > (1 << 30)) return 0;
     // _malloc may grow memory and detach the buffer; re-acquire views after.
     const out = this._malloc(8 + len + 1);
-    src = new Uint8Array(this._memory.buffer);
+    const src = new Uint8Array(this._memory.buffer);
     const dv = new DataView(this._memory.buffer);
     dv.setBigUint64(out, BigInt(len), true);
-    src.set(src.subarray(Number(ptr), end), out + 8);
+    src.set(src.subarray(Number(ptr) + 8, Number(ptr) + 8 + len), out + 8);
     src[out + 8 + len] = 0;
     return out;
   }}
