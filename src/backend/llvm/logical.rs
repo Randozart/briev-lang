@@ -49,7 +49,10 @@ impl LlvmBackend {
     // lazy branch is skipped. Bind mutable parameters at entry in their ABI
     // type, including pointers and vectors; no machine-word boxing is needed.
     pub(super) fn bind_mutable_parameter(&mut self, out: &mut String, name: &str, ty: &Type, raw: &str) {
-        let slot = self.fun.gen_reg();
+        // 2026-10-25: parameter slots are emitted before the body's %t
+        // counter is reset; sharing the %t namespace produced duplicate
+        // definitions in large functions (browser_catalogue_scan %t48).
+        let slot = self.fun.next_reg_with_prefix("ps");
         let physical = self.llvm_type(ty);
         writeln!(out, "  {} = alloca {}", slot, physical).ok();
         writeln!(out, "  store {} {}, ptr {}", physical, raw, slot).ok();

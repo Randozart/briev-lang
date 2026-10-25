@@ -2946,8 +2946,17 @@ impl LlvmBackend {
                 writeln!(out, "{}  {} = inttoptr i64 {} to ptr", indent, conv, val.name).ok();
                 writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
             } else {
-                let fty = self.llvm_type(&val.ty);
-                writeln!(out, "{}  store {} {}, ptr {}", indent, fty, val.name, ptr_reg).ok();
+                // 2026-10-25: store through the DECLARED field type, not the
+                // value's register type. A boxed Bool parameter arrives as an
+                // i64 handle but its struct field is i8; storing by val.ty
+                // emitted `store i32 %ac3` on wasm and rejected the module.
+                let field_ty = self.ctx.struct_types.get(type_name)
+                    .and_then(|fields| fields.iter().find(|(name, _)| name == field_name))
+                    .map(|(_, ty)| ty.clone())
+                    .unwrap_or_else(|| val.ty.clone());
+                let stored = self.coerce_register_value(out, indent, &val, &field_ty);
+                let fty = self.llvm_type(&field_ty);
+                writeln!(out, "{}  store {} {}, ptr {}", indent, fty, stored.name, ptr_reg).ok();
             }
         }
 
@@ -7587,10 +7596,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             return reg.clone();
         }
         let v = self.fun.gen_reg();
-        if ty_str == "i1" {
+        // 2026-10-25: boxed Bool/Char parameters are i64 in SSA while their
+        // Briev binding type says Int; truncating by llvm_type(Int)=i32
+        // produced `trunc i32 %ac3` on an i64 register.
+        let actual_ty = if self.fun.boxed_scalar_regs.contains(&reg.name)
+            || reg.name.starts_with("%ac")
+        {
+            "i64"
+        } else {
+            ty_str.as_str()
+        };
+        if actual_ty == "i1" {
             writeln!(out, "{}{} = zext i1 {} to i8", indent, v, reg.name).ok();
         } else {
-            writeln!(out, "{}{} = trunc {} {} to i8", indent, v, ty_str, reg.name).ok();
+            writeln!(out, "{}{} = trunc {} {} to i8", indent, v, actual_ty, reg.name).ok();
         }
         TypedRegister {
             name: v,
@@ -7660,6 +7679,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             Type::float64()
         } else if is_float {
             if l_fbits.is_some() { l.ty.clone() } else { r.ty.clone() }
+        } else if self.llvm_type(&l.ty) == self.llvm_type(&r.ty) {
+            // 2026-10-25: same-width integer arithmetic keeps its declared
+            // type (Int64 * Int64 is Int64). Returning flexible Int made the
+            // result i64 in IR but i32 in the type map, so a following cast
+            // emitted `zext i32 %i64reg`.
+            l.ty.clone()
         } else {
             Type::int()
         };
@@ -8359,6 +8384,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 let op = if target_ll == "double" { "fpext" } else { "fptrunc" };
                 writeln!(out, "{}{} = {} {} {} to {}", indent, reg, op, src_ll, src.name, target_ll).ok();
                 return Some(TypedRegister { name: reg, ty: target.clone() });
+            }
+            // 2026-10-25: a same-protocol integer width change (Int → Int64)
+            // has an empty graph path but different LLVM widths. Returning the
+            // source register made `1000000000 as Int64` stay i32 and broke
+            // wasm `mul i64`. Widening is signed (Int), narrowing is trunc.
+            if src_ll.starts_with('i') && target_ll.starts_with('i') && src_ll != target_ll {
+                let src_bits = src_ll[1..].parse::<u32>().ok();
+                let dst_bits = target_ll[1..].parse::<u32>().ok();
+                if let (Some(src_bits), Some(dst_bits)) = (src_bits, dst_bits) {
+                    let reg = self.fun.gen_reg();
+                    let op = if src_bits < dst_bits { "sext" } else { "trunc" };
+                    writeln!(out, "{}{} = {} {} {} to {}", indent, reg, op, src_ll, src.name, target_ll).ok();
+                    return Some(TypedRegister { name: reg, ty: target.clone() });
+                }
             }
             return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
         }

@@ -2936,7 +2936,16 @@ impl LlvmBackend {
             return val.clone();
         }
         let want_ll = self.llvm_type(want_ty);
-        let have_ll = self.llvm_type(&val.ty);
+        // 2026-10-25: boxed Bool/Char parameter registers are i64 in SSA
+        // even though their Briev binding type reports flexible Int. Use the
+        // physical width before choosing trunc/ext.
+        let have_ll = if self.fun.boxed_scalar_regs.contains(&val.name)
+            || val.name.starts_with("%ac")
+        {
+            "i64".to_string()
+        } else {
+            self.llvm_type(&val.ty)
+        };
         if have_ll == want_ll {
             return val.clone();
         }
