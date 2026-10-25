@@ -10955,3 +10955,9 @@ restores SIGILL. The same shape can drop any side-effect-only call whose
 return value is unused. Needs an effect summary that marks a call to a
 possibly-trapping user defn as observable, or a liveness rule for trap paths.
 Discovered while validating the adopted Result fixture.
+## Ordinary collection rebinding (FIXED 2026-10-21)
+
+Same-type local assignment incorrectly invoked InsertAt with a collection handle.
+collection_assignment.rs now replaces the binding before the historical fallback.
+Explicit arrow insertion remains unchanged. Three unit tests and the native
+collection_rebind_gate.bv cover the behavior. See the collection-rebinding plan.

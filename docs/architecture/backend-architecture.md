@@ -705,3 +705,8 @@ continuing Void expression. Match probing snapshots and restores that flag in
 addition to its binding, alloca, and block state; each arm starts independently.
 A terminating Void arm cannot suppress another arm's value phi. Continuing Void
 and all-arms-terminate behavior retain their existing lowering paths.
+### Ordinary collection rebinding (2026-10-21)
+
+Same-type local assignment replaces the collection handle before InsertAt
+dispatch. Eligibility comes from declared operator metadata and exact types;
+explicit arrow insertion keeps its existing path. See collection_assignment.rs.

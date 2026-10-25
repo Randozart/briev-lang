@@ -1150,6 +1150,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // 2026-07-31 (A6): when the InsertAt op is bound to an obj
                     // member (`op InsertAt: push(#Lh, #Rh)`), emit a self-bound
                     // member call instead of the free-function marker dispatch.
+                    if super::collection_assignment::emit_collection_rebind(backend, out, indent, name, &val) {
+                        return TypedRegister { name: val.name, ty: Type::void() };
+                    }
                     let insert_strat = backend.find_insert_strategy(lhs).cloned();
                     if let Some(op_def) = &insert_strat {
                         if emit_strategy_member_call(backend, out, indent, lhs, op_def, Some(&val.name)).is_none() {
