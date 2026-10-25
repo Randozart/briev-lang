@@ -438,6 +438,12 @@ fn collection_rebind_gate_golden_output() {
 }
 
 #[test]
+fn matrix_primitives_golden_output() {
+    let out = build_link_run("matrix_primitives_smoke", "golden", &[]);
+    assert_eq!(out, "matrix_vector_intvec=true\n", "matrix primitive golden drifted: {out:?}");
+}
+
+#[test]
 fn byte_sink_trait_golden_output() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");

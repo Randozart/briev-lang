@@ -233,3 +233,6 @@ The adoption is complete when:
   receive-length-corrected module has unproved buffer/socket bounds. Recorded
   in BUGS.md; do not weaken the bounds contracts. The reusable receive-length
   behavior remains part of the deferred PG branch.
+- Matrix/Vector/IntVec adopted from `8e24a679` with conflict-free
+  `FloatMatrix`/`FloatVector` names for coexistence with `Matrix<T,R,C>`;
+  daily compile/link/run gate covers `2^53+1` in `IntVec`.

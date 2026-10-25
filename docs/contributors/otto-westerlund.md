@@ -58,7 +58,7 @@ authoritative design record; this file tracks credit and disposition.
 | PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | included in deferred PG branch |
 | Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | pending |
 | Browser events/WebSocket/fetch | `8e6c8be1` | pending |
-| Matrix/Vector/IntVec primitives | `8e24a679` | pending rename/adoption |
+| Matrix/Vector/IntVec primitives | `8e24a679` | adopted as `FloatMatrix`/`FloatVector`/`IntVec` (next commit) |
 | Sparse CSR / rating population | `3db9b920` | pending generalization |
 
 ## Adopted compiler hardening (2026-10-25)
