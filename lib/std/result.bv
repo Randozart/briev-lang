@@ -21,15 +21,18 @@ defn is_err<T,E>(r: Result<T,E>) -> Bool {
 };
 
 defn unwrap<T,E>(r: Result<T,E>) -> T {
+    // 2026-10-21: a wrong-side unwrap has no T value. Fabricating `0 as T`
+    // silently returned nonsense for object payloads. Keep the documented
+    // partial API: trap on misuse, preserve the real payload otherwise.
     term match r {
         Ok(v) => v,
-        Err(_) => 0 as T
+        Err(_) => { trap; },
     };
 };
 
 defn unwrap_err<T,E>(r: Result<T,E>) -> E {
     term match r {
-        Ok(_) => "aborted" as E
+        Ok(_) => { trap; },
         Err(e) => e,
     };
 };

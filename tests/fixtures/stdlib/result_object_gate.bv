@@ -1,0 +1,23 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/result.bv";
+import "std/env.bv";
+obj UnwrapPayload { number: Int; text: String; };
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let good: Result<UnwrapPayload, UnwrapPayload> = Ok(UnwrapPayload { number: 42, text: "value" });
+    let bad: Result<UnwrapPayload, UnwrapPayload> = Err(UnwrapPayload { number: 7, text: "error" });
+    let mode: Int = get_env_int("UNWRAP_MODE");
+    // Force the result into an exit value: the trap must be observable even
+    // when the unwrapped payload would otherwise be unused.
+    when mode == 1 { let forced: UnwrapPayload = unwrap(bad); endprogram forced.number; };
+    when mode == 2 { let forced: UnwrapPayload = unwrap_err(good); endprogram forced.number; };
+    let value: UnwrapPayload = unwrap(good);
+    let failure: UnwrapPayload = unwrap_err(bad);
+    let passed: Bool = value.number == 42 && value.text == "value" && failure.number == 7 && failure.text == "error";
+    println!("object_unwraps={}", passed);
+    when passed == false { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

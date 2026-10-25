@@ -10936,3 +10936,22 @@ Remaining UI issue is separate: after a toggle txn, the parsed
 `List<TaskItem>` contains `done=true` and the raw task JSON is true, but the
 existing keyed `b-each` DOM row still shows false. Tracked in
 `docs/plans/2026-10-23-wasm-json-runtime.md`.
+
+## Result wrong-side unwrap fabricated payloads (FIXED 2026-10-25)
+
+`unwrap(Err(...))` returned `0 as T` and `unwrap_err(Ok(...))` returned
+`"aborted" as E`, contradicting the documented trapping API and corrupting
+object payloads. Both wrong-side arms now `trap;`; valid payloads are
+preserved. Adopted from Otto Westerlund's `fix/result-wrong-side-unwrap`
+(`dac3aa4a`). Regression: `tests/fixtures/stdlib/result_object_gate.bv`
+checks both object payloads and both SIGILL paths.
+
+## Unused call to a trapping defn is eliminated (OPEN 2026-10-25)
+
+`unwrap(bad);` as a bare statement produced `endprogram`'s fallback instead of
+the wrong-side trap: the result was unused, so LLVM removed the call and the
+trap with it. Forcing the payload into a used value (`endprogram forced.number`)
+restores SIGILL. The same shape can drop any side-effect-only call whose
+return value is unused. Needs an effect summary that marks a call to a
+possibly-trapping user defn as observable, or a liveness rule for trap paths.
+Discovered while validating the adopted Result fixture.
