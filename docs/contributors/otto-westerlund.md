@@ -64,6 +64,7 @@ authoritative design record; this file tracks credit and disposition.
 ## Adopted compiler hardening (2026-10-25)
 | Boxed tuple list index stride | discovered while porting strict JSON | `107c3017` |
 | Interpreter scalar `.^^Bytes` + `Mod#` | discovered while porting strict JSON | `1317e8bf` |
+| Collection `.^Length` target width | discovered while testing wasm stringify | `0d82ed9e` |
 
 
 

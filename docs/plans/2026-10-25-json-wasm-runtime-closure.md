@@ -112,4 +112,6 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
   `Mod#` aliases remainder, restoring the reference JSON parse path.
 - `0bd6ed1e` — strict parse/stringify gates added to the daily corpus.
 - `66b33459` — restore the empty-object `find_pair` guard.
+- `0d82ed9e` — collection `.^Length` uses the target-width handle and adapts
+  the i64 len header; wasm stringify compiles and round-trips Unicode.
 - Task Board structured Chromium CRUD passes with the strict parser.
