@@ -1,8 +1,8 @@
 # wasm JSON runtime bring-up
 
 **Date:** 2026-10-23
-**Status:** IN PROGRESS — parser compiles/runs; BoolVal payload still wrong
-**Branch:** `fix/wasm-tuple-abi`
+**Status:** J1/J2/J4 COMPLETE — Task Board parser + structured Chromium CRUD pass; J3 standalone parser fixture remains
+**Branch:** `feat/task-board-structured`
 **Base:** `5b247f46`
 
 ## Goal
@@ -88,3 +88,15 @@ Standalone wasm browser gate for:
   - boxed Bool/Char call arguments unbox to target width.
 - Structured Task Board rendering is implemented but blocked on the remaining
   BoolVal payload propagation bug in object pairs.
+
+- J1/J2 resolved:
+  - parsed object/list `done:true` reaches `b-each` correctly;
+  - the earlier BoolVal report came from a flattened top-level view probe, not
+    from JSON object parsing.
+- J4 resolved:
+  - keyed `b-each` applied item bindings only when creating an element, so a
+    toggle that changed `done` on an existing key left the old DOM text;
+  - existing keyed nodes now receive field updates;
+  - item triggers bind only on creation so refresh does not attach duplicate
+    listeners;
+  - Chromium create/toggle/delete gate passes with structured rows.
