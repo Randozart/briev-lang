@@ -10996,3 +10996,12 @@ recover the Bool payload (Task Board toggle renders `done=false`), so the
 parser swap is not committed. The parser work is preserved for the next
 boxed-enum/tuple layout pass; do not re-land it as the default `json_parse`
 until the grouped wasm JSON gate passes.
+
+## Otto PostgreSQL client blocked on contract-gate drift (OPEN 2026-10-25)
+
+`lib/std/db/pg.bv` from `fix/pg-receive-length` (with the receive-length fix)
+does not pass current `brievc check`: buffer/socket bounds and grow-size
+preconditions are unproved at the call sites. The module needs the same
+proof/guard treatment as the net stack before adoption; do not weaken the
+network bounds contracts. Native encoding/live-SQLSTATE gates must be rerun
+after that pass.
