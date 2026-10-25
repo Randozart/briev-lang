@@ -216,3 +216,15 @@ test; E is deferred on concrete list typing in `iter_chain`.
   `tests/fixtures/stdlib/run_pg.sh` SQLSTATE/recovery gate.
 - Contract drift handled with explicit guards and max-sized allocations; no
   network bounds weakened. `brievc check lib/std/db/pg.bv` is clean.
+
+### PostgreSQL validation
+
+- `brievc check lib/std/db/pg.bv`: clean.
+- `pg_buffer_gate` in the daily corpus: PASS.
+- Optional live `run_pg.sh` requires a local trust-auth DB; not run in this
+  environment (no `pg_isready`, PGUSER/PGDATABASE unset).
+- `cargo test --lib`: 3340 passed.
+- daily corpus: 28 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- full runtime suite: PASS, all MATCH/PASS.
