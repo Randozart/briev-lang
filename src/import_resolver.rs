@@ -1843,7 +1843,10 @@ mod tests {
     /// 2026-09-25 (Wave 1 C3): the production factory the compile/check
     /// call sites install (`pipeline::module_plugin_factory`), default opts.
     fn default_factory() -> Box<dyn Fn(&str) -> Result<crate::plugin::PluginManager, String>> {
-        crate::pipeline::module_plugin_factory(&crate::pipeline::BuildOptions::default())
+        crate::pipeline::module_plugin_factory(
+            &crate::pipeline::BuildOptions::default(),
+            "main.bv",
+        )
     }
 
     #[test]

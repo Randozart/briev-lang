@@ -1028,9 +1028,24 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
 /// resolver field, and the `run_ast` block in `resolve_import`.
 pub fn module_plugin_factory(
     opts: &BuildOptions,
+    root_file_path: &str,
 ) -> Box<dyn Fn(&str) -> Result<PluginManager, String>> {
     let opts = opts.clone();
-    Box::new(move |module_path| Ok(build_plugin_manager(module_path, &opts)))
+    let root_file_path = root_file_path.to_string();
+    let root_is_browser = get_extension(&root_file_path) == ".rbv";
+    Box::new(move |module_path| {
+        // 2026-10-25: a browser root imports target-neutral `.bv` app modules
+        // into the same WebAssembly program. Give those modules the root's web
+        // prelude; the native `.bv` prelude would inject a second `byte_at`
+        // beside the portable definition. Explicit foreign dialects keep theirs.
+        let module_is_briev = get_extension(module_path) == ".bv";
+        let plugin_path = if root_is_browser && module_is_briev {
+            root_file_path.as_str()
+        } else {
+            module_path
+        };
+        Ok(build_plugin_manager(plugin_path, &opts))
+    })
 }
 
 pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
@@ -1066,7 +1081,7 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    resolver.plugin_factory = Some(module_plugin_factory(opts));
+    resolver.plugin_factory = Some(module_plugin_factory(opts, file_path));
     // 2026-10-06 (package/module v0, folio): dependency import roots.
     // Build mode may write folio.lock (a no-op without git deps).
     for root in crate::packages::project_dependency_roots(
@@ -1186,7 +1201,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    resolver.plugin_factory = Some(module_plugin_factory(opts));
+    resolver.plugin_factory = Some(module_plugin_factory(opts, file_path));
     // 2026-10-06 (package/module v0, folio): dependency import roots.
     // Check mode is read-only — it never writes folio.lock.
     for root in crate::packages::project_dependency_roots(
@@ -1415,6 +1430,41 @@ mod tests {
     use super::*;
     use crate::glue::web_generator::{BindRoute, ParamKind};
     use crate::view_compiler::{Binding, Directive, ItemBinding, ItemDirective};
+
+    #[test]
+    fn browser_root_imports_plain_briev_module_with_browser_prelude() {
+        let dir = tempfile::tempdir().expect("temporary project directory");
+        let root = dir.path().join("main.rbv");
+        let helper = dir.path().join("helper.bv");
+        std::fs::write(&helper, "obj HelperValue { value: Int; };").unwrap();
+        let source = "import \"./helper.bv\";\nlet value: HelperValue = HelperValue { value: 1 };\n<view><p b-text=\"value.value\">1</p></view>";
+        std::fs::write(&root, source).unwrap();
+        let opts = BuildOptions {
+            file_path: root.to_string_lossy().to_string(),
+            stdlib_path: Some(crate::resource_root().join("lib").to_string_lossy().to_string()),
+            ..BuildOptions::default()
+        };
+        let result = parse_and_check(root.to_str().unwrap(), source, &opts);
+        assert!(result.is_ok(), "browser root import should typecheck: {result:?}");
+    }
+
+    #[test]
+    fn match_empty_list_arm_uses_the_declared_collection_result_type() {
+        let dir = tempfile::tempdir().expect("temporary project directory");
+        let root = dir.path().join("match_list.bv");
+        let source = "import \"std/json.bv\";\ndefn protocol_array(value: JsonValue) -> List<JsonValue> { match value { Array(values) => values, _ => [] } };\ndefn protocol_fields() -> List<(String,JsonValue)> { term [(\"x\",Null())]; };";
+        std::fs::write(&root, source).unwrap();
+        let opts = BuildOptions {
+            file_path: root.to_string_lossy().to_string(),
+            stdlib_path: Some(crate::resource_root().join("lib").to_string_lossy().to_string()),
+            ..BuildOptions::default()
+        };
+        let (items, universe) = parse_and_check(root.to_str().unwrap(), source, &opts)
+            .expect("typed match with an empty List arm");
+        let mut backend = crate::backend::llvm::LlvmBackend::new().with_type_universe(universe);
+        let ir = backend.generate(&items, None);
+        assert!(!ir.is_empty(), "codegen must emit the checked program");
+    }
 
     fn bind(element_id: &str, target: &str) -> Binding {
         Binding {
