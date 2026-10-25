@@ -67,6 +67,10 @@ fn per_instantiation_list_each_builds_for_wasm() {
     // WASM backend, not just an IR string check.
     build_fixture(brievc, "browser_json_values", &out);
 
+    // Portable browser stdlib surface: async HTTP, WebSocket, timers and
+    // secure nonces must compile through the generated host module.
+    build_fixture(brievc, "portable_web_imports", &out);
+
     // JSON stringify exercises runtime `.^Length` on a collection parameter
     // on wasm32 (target-width handle, i64 len header).
     build_fixture(brievc, "json_stringify_wasm", &out);

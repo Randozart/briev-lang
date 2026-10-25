@@ -1,0 +1,28 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+import "std/web/fetch.bv";
+import "std/web/websocket.bv";
+import "std/web/events.bv";
+import "std/web/random.bv";
+
+let tick: Int = 0;
+let api: String = query_parameter("api", "");
+let nonce: String = web_random_hex(16);
+
+txn probe [tick == 0][tick == 1] {
+    let timer: Int = event_after("portable-web-timer", 1);
+    event_cancel(timer);
+    let handle: Int = websocket_connect("ws://127.0.0.1/live", "portable-web-live");
+    when handle > 0 { ws_close(handle); };
+    let request: Int = http_async_start(api + "/v1/state", "GET", "", "{}", "portable-web-http");
+    when request > 0 { http_async_cancel(request); http_async_release(request); };
+    tick = 1;
+    term;
+};
+
+<view>
+  <span id="nonce" b-text="nonce">none</span>
+  <button id="probe" b-trigger:click="probe">Probe</button>
+</view>

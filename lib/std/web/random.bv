@@ -1,0 +1,8 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored in part by Otto Westerlund (@odecode); adopted with attribution.
+// Secure browser randomness for operation identifiers and protocol nonces.
+// The host uses Web Crypto and refuses insecure or unavailable contexts.
+frgn web_random_bytes(length: Int) -> String from "glue/web/web.js";
+frgn web_random_hex(length: Int) -> String from "glue/web/web.js";

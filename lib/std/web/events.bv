@@ -1,0 +1,10 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored in part by Otto Westerlund (@odecode); adopted with attribution.
+// Browser timers dispatch ordinary window events. Retain the returned handle
+// and cancel before rescheduling to avoid duplicate pending notifications.
+frgn event_after(event: String, delay: Int) -> Int from "glue/web/web.js";
+frgn event_cancel(handle: Int) from "glue/web/web.js";
+frgn web_set_unload_warning(enabled: Bool) from "glue/web/web.js";
+frgn query_parameter(name: String, fallback: String) -> String from "glue/web/web.js";

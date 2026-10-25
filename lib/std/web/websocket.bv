@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored in part by Otto Westerlund (@odecode); adopted with attribution.
+// 2026-10-21: opaque integer handles own browser WebSockets. Register a window
+// event, consume its FIFO in a b-window transaction, and close to release it.
+// OPEN=1, CONNECTING=0, CLOSING=2, CLOSED/unknown=3 (the browser's states).
+frgn ws_open(url: String) -> Int from "glue/web/web.js";
+frgn ws_onmessage(handle: Int, event: String) -> Bool from "glue/web/web.js";
+frgn ws_status(handle: Int) -> Int from "glue/web/web.js";
+frgn ws_pending(handle: Int) -> Int from "glue/web/web.js";
+frgn ws_receive(handle: Int) -> String from "glue/web/web.js";
+frgn ws_error(handle: Int) -> String from "glue/web/web.js";
+frgn ws_send(handle: Int, text: String) -> Bool from "glue/web/web.js";
+frgn ws_close(handle: Int) from "glue/web/web.js";
+
+defn websocket_connect(url: String, event: String) -> Int {
+    let handle: Int = ws_open(url);
+    when handle > 0 { ws_onmessage(handle,event); };
+    term handle;
+};
