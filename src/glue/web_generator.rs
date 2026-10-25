@@ -480,12 +480,14 @@ impl GlueWebGenerator {
                 .collect::<String>()
         };
         let host_module_src = self.host_module_src.as_str();
+        let heap_runtime_js = include_str!("web_heap.js");
 
         format!(
             r#"// dom-shim.mjs — Auto-generated GLUE web runtime for {app_name}
 // Reads WASM linear memory at known state offsets.
 
 {host_fns_js}{host_module_src}
+{heap_runtime_js}
 export class WasmDomRuntime {{
   constructor(wasmBytes) {{
     this._handles = [null];
@@ -501,7 +503,7 @@ export class WasmDomRuntime {{
     this._generationOffset = {generation_offset};
     this._flushBufferOffset = {flush_buffer_offset};
     this._maxFlushEntries = {max_flush_entries};
-    this._heapPtr = 0;
+    this._heap = createWebHeap(() => this._memory);
     // 2026-10-08 (Phase 3.1 stranger probe): keep the init promise so
     // createApp can await it — reading `_instance.exports` before init
     // resolved threw "Cannot read properties of null (reading 'exports')".
@@ -535,35 +537,16 @@ export class WasmDomRuntime {{
 
   _buildImports() {{
     return {{
+      ...this._heap,
       __web_flush_state: (updatesPtr, count) => {{
         this._applyFlush(updatesPtr, count);
       }},
-      // LLVM lowers libc malloc to an env import on wasm32. The runtime
-      // owns a bump allocator so user host boundaries do not depend on Emscripten.
-      malloc: (size) => this._malloc(size),
-      // C-backed Data→String door: copy a NUL-terminated byte sequence into a
-      // Briev [len][bytes] string owned by wasm memory.
-      briev_bits_to_str: (ptr) => this._bitsToString(ptr),
       // Native syscall shim: browser programs do not use file/OS syscalls.
       // The symbol may remain rooted by the shared prelude; a callable stub
       // keeps the wasm module instantiable without pretending to implement IO.
       briev_syscall: (..._args) => 0,
 {imports_js}
     }};
-  }}
-
-  _malloc(size) {{
-    const need = (Number(size) + 7) & ~7;
-    const memory = this._memory || this._instance?.exports.memory;
-    if (!memory) throw new Error("malloc before WebAssembly memory was ready");
-    if (!this._heapPtr) this._heapPtr = memory.buffer.byteLength;
-    if (this._heapPtr + need > memory.buffer.byteLength) {{
-      const pages = Math.ceil((this._heapPtr + need - memory.buffer.byteLength) / 65536);
-      memory.grow(pages);
-    }}
-    const ptr = this._heapPtr;
-    this._heapPtr += need;
-    return ptr;
   }}
 
   _loadStateLayout() {{
@@ -652,28 +635,12 @@ export class WasmDomRuntime {{
     return new TextDecoder().decode(bytes);
   }}
 
-  _bitsToString(ptr) {{
-    if (!ptr) return 0;
-    // Briev Data/String is [i64 length][bytes], NOT a NUL-terminated C string.
-    const header = new DataView(this._memory.buffer);
-    const len = Number(header.getBigUint64(Number(ptr), true));
-    if (len < 0 || len > (1 << 30)) return 0;
-    // _malloc may grow memory and detach the buffer; re-acquire views after.
-    const out = this._malloc(8 + len + 1);
-    const src = new Uint8Array(this._memory.buffer);
-    const dv = new DataView(this._memory.buffer);
-    dv.setBigUint64(out, BigInt(len), true);
-    src.set(src.subarray(Number(ptr) + 8, Number(ptr) + 8 + len), out + 8);
-    src[out + 8 + len] = 0;
-    return out;
-  }}
-
   _writeString(str) {{
     // Allocate WASM memory for a Briev string (i64 length + bytes + \0)
     // and return the pointer. Uses Module.malloc or pre-allocated buffer.
     const encoder = new TextEncoder();
     const bytes = encoder.encode(str);
-    const ptr = this._malloc(8 + bytes.length + 1);
+    const ptr = this._heap.malloc(8 + bytes.length + 1);
     const mem = new DataView(this._memory.buffer);
     mem.setBigUint64(ptr, BigInt(bytes.length), true);
     const arr = new Uint8Array(this._memory.buffer);
@@ -683,12 +650,9 @@ export class WasmDomRuntime {{
   }}
 
   _allocateStatic(size) {{
-    // Fallback: bump-allocate from a known free region.
-    // Overridden by the WASM module's malloc when available.
-    if (!this._heapPtr) this._heapPtr = 65536;
-    const ptr = this._heapPtr;
-    this._heapPtr += size;
-    return ptr;
+    // 2026-10-21: host strings share the allocator used by compiled code;
+    // no guessed free address may overlap the module's stack or globals.
+    return this._heap.malloc(size);
   }}
 
   _startRenderLoop() {{
@@ -2511,10 +2475,12 @@ mod tests {
             vec![frgn],
         );
         let out = g.generate().unwrap();
-        assert!(out.dom_shim.contains("malloc: (size) => this._malloc(size)"),
-            "wasm32 malloc import missing:\n{}", out.dom_shim);
-        assert!(out.dom_shim.contains("_malloc(size)"),
-            "bump allocator missing:\n{}", out.dom_shim);
+        assert!(out.dom_shim.contains("class WebHeap"),
+            "browser heap runtime missing:\n{}", out.dom_shim);
+        assert!(out.dom_shim.contains("...this._heap"),
+            "wasm32 heap imports missing:\n{}", out.dom_shim);
+        assert!(out.dom_shim.contains("return this._heap.malloc(size)"),
+            "host static allocation is not heap-owned:\n{}", out.dom_shim);
         assert!(out.dom_shim.contains("document.readyState"),
             "missed readiness-event recovery missing:\n{}", out.dom_shim);
     }

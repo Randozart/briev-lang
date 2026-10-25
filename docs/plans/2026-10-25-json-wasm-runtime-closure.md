@@ -1,7 +1,8 @@
 # JSON wasm closure and website runtime
 
 **Date:** 2026-10-25
-**Status:** Phase A COMPLETE — strict JSON on wasm; Phase B next
+**Status:** Phase B COMPLETE — strict JSON, browser heap, dynamic snapshots,
+helper-write flushes and lexical elaboration landed; Phase C next
 **Branch:** `feat/json-wasm-runtime`
 **Predecessor:** `docs/plans/2026-10-25-otto-contribution-adoption.md`
 
@@ -130,3 +131,31 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - wasm stringify probe: Unicode/control round-trip true.
 - `nbody_newton_accel`: finishes on current build; 5b9 logical patch hangs it
   and remains a separate gated follow-up.
+
+### Phase B execution log
+
+- `de574ea0` — WebHeap allocator (malloc/free/realloc/calloc/memcpy/memmove/
+  memset, validated ranges, coalescing reuse, host static strings).
+- `a2038053` — dynamic collection view snapshots (`realloc`, no 1024-word
+  global), helper-write commit closure in the flush batch/sizing, 1100-item
+  Unicode snapshot gate.
+- `87b9d607` — foreach/match lexical bindings survive nested operator
+  elaboration.
+- `node tests/web_heap.mjs`: PASS.
+- `node tests/web_collection_snapshot.mjs`: PASS (Unicode, 1100 items,
+  shared snapshots, reset).
+- Task Board Chromium CRUD with heap + dynamic snapshots: PASS.
+
+### Validation checkpoint — Phase B complete
+
+- `cargo test --lib`: 3325 passed.
+- daily corpus: 25 passed.
+- Task Board structured Chromium CRUD: PASS.
+- Task Board API: PASS.
+- `rbv_gate`: OK.
+- determinism quick: ALL DETERMINISTIC.
+- full runtime suite: PASS, all MATCH/PASS.
+- `node tests/web_heap.mjs`: PASS.
+- `node tests/web_collection_snapshot.mjs`: PASS (Unicode, 1100 items,
+  shared snapshots, reset).
+- CI now runs both browser runtime gates after the release build.

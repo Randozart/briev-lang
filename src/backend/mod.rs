@@ -34,6 +34,7 @@ pub struct AnalysisResults {
     pub dataflow_errors: Vec<DataflowError>,
     pub optimize_mode: bool,
     pub transition_graph: ReactorTransitionGraph,
+    pub web_commit_writes: HashMap<String, std::collections::HashSet<String>>,
     pub region_analyzer: RegionAnalyzer,
     pub dependency_graph: DependencyGraph,
     // 2026-07-31: Frontend-driven dispatch (Phase 1). Per-txn structural loop
@@ -336,6 +337,7 @@ pub fn analyze_program(
         dataflow_errors: Vec::new(),
         optimize_mode: optimize,
         transition_graph,
+        web_commit_writes: crate::analysis::web_commits::analyze(items),
         region_analyzer: RegionAnalyzer::analyze(items),
         dependency_graph,
         loop_shapes,

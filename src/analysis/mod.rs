@@ -72,6 +72,7 @@ pub mod batch_shape;
 pub mod component_instances;
 pub mod termination;
 pub mod variadic_specialize;
+pub mod web_commits;
 /// Determines how a state field behaves in the %State struct layout.
 /// Used by the Adaptive Layout Engine (Phase 1) to eliminate unused fields
 /// and allocate cache slots for meld-backed deferred projections.

@@ -16,7 +16,7 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
-**Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — close strict JSON on wasm, then browser heap/dynamic snapshots, then the unused-trap/logical/metadata batch. Builds on the merged Otto adoption slice.
+**Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes and lexical elaboration are landed; next is the unused-trap/logical/metadata batch. Builds on the merged Otto adoption slices.
 
 **Active adoption lane (2026-10-25):** `docs/plans/2026-10-25-otto-contribution-adoption.md` — adopt Otto Westerlund's missing compiler/stdlib/browser work on current main, starting with attribution, Result/print/view/collection fixes, then JSON, PostgreSQL, portable web stdlib, logical/metadata semantics and browser runtime. Credit ledger: `docs/contributors/otto-westerlund.md`.
 

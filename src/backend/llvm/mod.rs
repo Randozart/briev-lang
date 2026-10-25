@@ -1077,7 +1077,17 @@ pub(super) fn web_max_flush_entries(ctx: &crate::backend::llvm::context::Compile
     let max = ctx.transition_graph.as_ref()
         .map(|g| g.nodes.iter().map(|n| n.write_set.len()).max().unwrap_or(0))
         .unwrap_or(0);
-    max.max(1) as u32
+    // 2026-10-21: helper-call writes join the commit batch, so size the buffer
+    // for the largest helper closure and for the union of direct + helper
+    // writes on a node. Without this a helper that writes several fields can
+    // overflow @__web_flush_buf.
+    let helper_max = ctx.web_commit_writes.values().map(|writes| writes.len()).max().unwrap_or(0);
+    let union_max = ctx.transition_graph.as_ref().map(|graph| graph.nodes.iter().map(|node| {
+        ctx.web_commit_writes.get(&node.name).map(|writes|
+            writes.len() + node.write_set.difference(writes).count()
+        ).unwrap_or(node.write_set.len())
+    }).max().unwrap_or(0)).unwrap_or(0);
+    max.max(helper_max).max(union_max).max(1) as u32
 }
 pub(super) fn trg_llvm_storage_ty(ty: &Type, universe: Option<&crate::type_universe::TypeUniverse>) -> String {
     protocol_llvm_type(ty, universe)
@@ -2989,6 +2999,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-07-28: Persist transition graph for !prof computation in emit_toplevel.
         // iter_bounds populated later (at txn processing loop) — txns not in scope yet.
         self.ctx.transition_graph = Some(analysis.transition_graph.clone());
+        self.ctx.web_commit_writes = analysis.web_commit_writes.clone();
         // 2026-08-10: webstack flush buffer sized to the largest write_set —
         // frontend analysis, computed once so the term-site batch emitters and
         // the @__web_flush_buf declaration agree.
@@ -6320,11 +6331,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
     /// 2026-08-12 (Iterable protocol, slice 4): for each `b-each` iterable that
     /// is a Tier-2 collection (op Count + op At as op-as-member members), emit a
     /// `__view_items_<field>(ptr %state)` snapshot materializer. It drives the
-    /// collection's own ops to fill `@__web_view_buf` as `[len][word…]` and
-    /// returns the buffer pointer — the shim's b-each renderer reads the
-    /// snapshot instead of vector layout bytes (which cannot index a heap
-    /// collection). Structural: the compiler knows only the op surface, never a
-    /// collection layout.
+    /// collection's own ops to fill a dynamically sized `@__web_view_buf` as
+    /// `[len][word…]` and returns the buffer pointer — the shim's b-each
+    /// renderer reads the snapshot instead of vector layout bytes (which cannot
+    /// index a heap collection). Structural: the compiler knows only the op
+    /// surface, never a collection layout.
     fn emit_view_materializers(&mut self, out: &mut String) {
         use crate::ast::TopLevel;
         if self.ctx.collection_iterables.is_empty() {
@@ -6334,10 +6345,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // A stale txn_name/stateless flag from the previously emitted function
         // made them call __web_flush_state, which re-entered the same
         // materializer through the binding flush (infinite recursion).
-        let saved_txn_name = std::mem::take(&mut self.fun.txn_name);
-        let saved_stateless = self.fun.stateless_body;
-        self.fun.stateless_body = true;
-        writeln!(out, "@__web_view_buf = private global [1024 x i64] zeroinitializer").ok();
+        let saved_fun = self.fun.clone();
+        // 2026-10-21: collection cardinality is runtime data. A fixed 1024-word
+        // snapshot overwrote globals for larger collections. Grow an owned
+        // instance-local buffer; JS consumes it synchronously before reuse.
+        writeln!(out, "@__web_view_buf = private global ptr null").ok();
         let mut names: Vec<String> = self.ctx.collection_iterables.iter().cloned().collect();
         names.sort_unstable();
         for field in &names {
@@ -6357,6 +6369,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let item_fields = self.view_item_fields(&briev_ty);
             let row_size = item_fields.len();
             let fn_name = format!("__view_items_{}", field);
+            self.fun = FunctionContext::new();
+            self.fun.txn_name = fn_name.clone();
+            self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
             let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], &[], "  ");
@@ -6371,6 +6386,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else {
                 count.name.clone()
             };
+            Self::emit_view_buffer(out, &n_i32);
             writeln!(out, "  %hdr = alloca i32").ok();
             writeln!(out, "  store i32 0, ptr %hdr").ok();
             writeln!(out, "  br label %hlbl").ok();
@@ -6392,7 +6408,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 let word64 = self.view_projection_word(out, "  ", &word);
                 writeln!(out, "  %w32 = add i32 %c, 1").ok();
                 writeln!(out, "  %w = sext i32 %w32 to i64").ok();
-                writeln!(out, "  %p = getelementptr [1024 x i64], ptr @__web_view_buf, i64 0, i64 %w").ok();
+                writeln!(out, "  %p = getelementptr i64, ptr %view_data, i64 %w").ok();
                 writeln!(out, "  store i64 {}, ptr %p", word64).ok();
             } else {
                 // Struct/obj element: bind the boxed element handle and project
@@ -6415,7 +6431,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     writeln!(out, "  {} = mul i32 %c, {}", row, row_size).ok();
                     writeln!(out, "  {} = add i32 {}, {}", idx, row, col + 1).ok();
                     writeln!(out, "  {} = sext i32 {} to i64", wid, idx).ok();
-                    writeln!(out, "  {} = getelementptr [1024 x i64], ptr @__web_view_buf, i64 0, i64 {}", slot, wid).ok();
+                    writeln!(out, "  {} = getelementptr i64, ptr %view_data, i64 {}", slot, wid).ok();
                     writeln!(out, "  store i64 {}, ptr {}", word64, slot).ok();
                 }
             }
@@ -6426,12 +6442,24 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // buf[0] = n (the real len, at i64)
             let n64 = self.fun.gen_reg();
             writeln!(out, "  {} = sext i32 {} to i64", n64, n_i32).ok();
-            writeln!(out, "  store i64 {}, ptr @__web_view_buf", n64).ok();
-            writeln!(out, "  ret i32 ptrtoint ([1024 x i64]* @__web_view_buf to i32)").ok();
+            writeln!(out, "  store i64 {}, ptr %view_data", n64).ok();
+            writeln!(out, "  %view_result = ptrtoint ptr %view_data to i32").ok();
+            writeln!(out, "  ret i32 %view_result").ok();
             writeln!(out, "}}").ok();
         }
-        self.fun.txn_name = saved_txn_name;
-        self.fun.stateless_body = saved_stateless;
+        self.fun = saved_fun;
+    }
+
+    fn emit_view_buffer(out: &mut String, count: &str) {
+        writeln!(out, "  %view_valid = icmp sge i32 {count}, 0").ok();
+        writeln!(out, "  br i1 %view_valid, label %view_reserve, label %view_invalid").ok();
+        writeln!(out, "view_invalid:\n  call void @llvm.trap()\n  unreachable\nview_reserve:").ok();
+        writeln!(out, "  %view_count = zext i32 {count} to i64").ok();
+        writeln!(out, "  %view_slots = add i64 %view_count, 1").ok();
+        writeln!(out, "  %view_bytes = mul i64 %view_slots, 8").ok();
+        writeln!(out, "  %view_old = load ptr, ptr @__web_view_buf").ok();
+        writeln!(out, "  %view_data = call ptr @realloc(ptr %view_old, i64 %view_bytes)").ok();
+        writeln!(out, "  store ptr %view_data, ptr @__web_view_buf").ok();
     }
 
     /// 2026-08-06 (fix): emit the top-level closure functions collected during

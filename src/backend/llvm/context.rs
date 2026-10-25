@@ -435,6 +435,9 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// (induction variable, bound, direction) and increments per transaction name.
     /// Used by emit_toplevel.rs for precise !prof branch weights on guard conditions.
     pub transition_graph: Option<crate::analysis::transition_graph::ReactorTransitionGraph>,
+    /// Possible state writes at browser commit boundaries, including helper
+    /// calls. Frontend-computed; the web flush batch consumes it.
+    pub web_commit_writes: std::collections::HashMap<String, std::collections::HashSet<String>>,
     /// 2026-08-07 (object instance pools): the proven maximum live instances
     /// per obj base — the member column sizes (predictably inexhaustible).
     pub spawn_pools: std::collections::HashMap<String, usize>,
@@ -723,6 +726,7 @@ impl CompilerContext {
             has_cycles: false,
             state_size_bytes: 0,
             transition_graph: None,
+            web_commit_writes: std::collections::HashMap::new(),
             spawn_pools: std::collections::HashMap::new(),
             dependent_pools: std::collections::HashMap::new(),
             spawn_storage: std::collections::HashMap::new(),

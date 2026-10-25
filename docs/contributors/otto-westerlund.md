@@ -50,10 +50,10 @@ authoritative design record; this file tracks credit and disposition.
 | Target-width constant globals/loads | `a42faac5` | pending |
 | Exhaustive print traversal | `a42faac5` | adopted `ae9b2bf9` |
 | UTF-8 view compiler cursor | `a42faac5` | adopted `4827fb16` |
-| Browser heap + dynamic snapshots | `2f5ad2bf` / `fix/wasm32-web-runtime` | pending |
+| Browser heap + dynamic snapshots | `2f5ad2bf` / `fix/wasm32-web-runtime` | adopted `de574ea0` + `a2038053` |
 | `b-show`/`b-hide` and UTF-8 `b-each` | `2f5ad2bf` | adopted `4827fb16` |
-| Helper-write DOM invalidation | `2f5ad2bf` | pending |
-| Lexical elaboration scope | `2f5ad2bf` | pending |
+| Helper-write DOM invalidation | `2f5ad2bf` | adopted `a2038053` |
+| Lexical elaboration scope | `2f5ad2bf` | adopted `87b9d607` |
 | PostgreSQL v3 client | `bfa1e7ef` / `feat/net-db-postgres` | deferred — current contract gate rejects unproved buffer/socket bounds |
 | PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | included in deferred PG branch |
 | Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | pending |

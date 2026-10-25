@@ -11051,3 +11051,28 @@ and on a strict-JSON build with the logical patch reverted. Strict JSON does
 not need the patch (`json_get` finds second keys and Task Board passes without
 it). Reverted from the JSON PR; re-land only with an nbody non-hang gate and
 loop/dominance tests.
+
+
+## Browser view snapshot was fixed at 1024 words (FIXED 2026-10-25)
+
+`@__web_view_buf` was `[1024 x i64]`, so any b-each collection past 1023
+elements overwrote adjacent globals. The materializer now reallocs an
+instance-local `[len][word…]` buffer sized to the runtime count; the JS
+consumer reads it synchronously. Regression: 1100-item Unicode snapshot with
+two shared materializers and reset. Adopted from Otto Westerlund's
+`2f5ad2bf`.
+
+## Browser host allocator was a stack-blind bump (FIXED 2026-10-25)
+
+Host `malloc`/Data→String and `_allocateStatic` bumped from
+`memory.buffer.byteLength` with no free/reuse and no range validation.
+`WebHeap` now owns validated malloc/free/realloc/calloc/memcpy/memmove/memset,
+coalesces free blocks, and shares the compiled module's heap. The 1100-item
+snapshot and heap range/reuse tests pass.
+
+## Helper-call state writes missed the DOM flush (FIXED 2026-10-25)
+
+`emit_web_flush_batch` flushed only the txn's direct write_set, so state
+written by helper defns never reached the DOM, and the flush buffer was sized
+only for direct writes. The frontend now computes the helper-call closure and
+the batch/sizing union it. Adopted from `2f5ad2bf`.
