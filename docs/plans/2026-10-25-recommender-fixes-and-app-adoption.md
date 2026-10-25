@@ -286,3 +286,18 @@ test; E is deferred on concrete list typing in `iter_chain`.
 - Standalone recommender `app.rbv` builds and loads with zero page errors.
 - `server.bv` remains blocked on `Vector`/`FloatVector` naming and app-level
   contract bounds; app stays external.
+
+### Int64/cast-prelude validation
+
+- `cargo test --lib`: 3343 passed (including conformance with the browser
+  cast prelude excluded from the native sweep).
+- daily corpus: 29 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- host transport: PASS.
+- wasm fixture corpus (Int64/state-list/Bool-param): PASS.
+- standalone recommender `app.rbv` builds with the release compiler and loads
+  in Chromium with zero page errors.
+- full runtime suite pending final run.
+- `server.bv` remains blocked on Vector/FloatVector naming and app-level
+  contract bounds; app stays external.

@@ -56,7 +56,7 @@ authoritative design record; this file tracks credit and disposition.
 | Lexical elaboration scope | `2f5ad2bf` | adopted `87b9d607` |
 | PostgreSQL v3 client | `bfa1e7ef` + `db77a61b` / `fix/pg-receive-length` | adopted `e7cdeb89`; prefix + optional live SQLSTATE gates |
 | PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | adopted with client |
-| Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | async host/fetch/WebSocket/events/random + cast/prelude adopted |
+| Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | async host/fetch/WebSocket/events/random + cast/prelude adopted; shared byte_at |
 | Browser events/WebSocket/fetch | `8e6c8be1` | adopted `fd7672df`; host transport gate |
 | Matrix/Vector/IntVec primitives | `8e24a679` | adopted `c0ff0617` as `FloatMatrix`/`FloatVector`/`IntVec` |
 | Sparse CSR / rating population | `3db9b920` | adopted `754a1402` with FloatVector port; daily dual-CSR gate |
