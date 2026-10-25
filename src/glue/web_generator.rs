@@ -489,6 +489,11 @@ impl GlueWebGenerator {
 {host_fns_js}{host_module_src}
 {heap_runtime_js}
 export class WasmDomRuntime {{
+  // 2026-10-25: repeated snapshots preserve unchanged text nodes and observers.
+  _setText(element, value) {{
+    const text = value == null ? "" : String(value);
+    if (element.textContent !== text) element.textContent = text;
+  }}
   constructor(wasmBytes) {{
     this._handles = [null];
     this._bindingTable = [];
@@ -801,13 +806,13 @@ export async function createApp(wasmBytes) {{
                     crate::view_compiler::ItemDirective::Trigger { .. } => ("trigger", ""),
                 };
                 let extra = match &ib.directive {
-                    crate::view_compiler::ItemDirective::Trigger { event, txn } => {
-                        format!(", event: {event:?}, txn: {txn:?}")
+                    crate::view_compiler::ItemDirective::Trigger { event, txn, params } => {
+                        format!(", event: {event:?}, txn: {txn:?}, params: {params:?}")
                     }
                     crate::view_compiler::ItemDirective::Class { pairs } => {
                         let cls: Vec<String> = pairs
                             .iter()
-                            .map(|(cls_name, cls_expr)| format!("({cls_name:?}, {cls_expr:?})"))
+                            .map(|(cls_name, cls_expr)| format!("[{cls_name:?}, {cls_expr:?}]"))
                             .collect();
                         format!(", cls: [{}]", cls.join(", "))
                     }
@@ -904,15 +909,16 @@ export async function createApp(wasmBytes) {{
              \x20           const v = itemValue(expr.trim(), item);\n\
              \x20           return String(v === undefined ? item : v);\n\
              \x20         }};\n
-             \x20         const applyItem = (el, item, bindTriggers) => {{\n\
+             \x20         const applyItem = (el, item, bindTriggers) => {{ el.__brievItem = item;\n\
              \x20           for (const ib of itemBindings) {{\n\
              \x20             const target = ib.marker === 0 ? el : el.querySelector('[data-itm=\"' + ib.marker + '\"]');\n\
              \x20             if (!target) continue;\n\
-             \x20             if (ib.kind === \"text\") target.textContent = evalItem(ib.expr, item);\n\
+             \x20             if (ib.kind === \"text\") this._setText(target, evalItem(ib.expr, item));\n\
+             \x20             else if (ib.kind === \"class\") {{ for (const [name, expr] of (ib.cls || [])) target.classList.toggle(name, Boolean(evalItem(expr, item))); }}\n\
              \x20             else if (ib.kind === \"show\") target.style.display = evalItem(ib.expr, item) ? '' : 'none';\n\
              \x20             else if (ib.kind === \"when\") target.style.display = evalItem(ib.expr, item) ? '' : 'none';\n\
              \x20             else if (ib.kind === \"trigger\" && bindTriggers) {{\n\
-             \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(item));\n\
+             \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(...(ib.params.length ? ib.params.map(p => evalItem(p, el.__brievItem)) : [el.__brievItem])));\n\
              \x20             }}\n\
              \x20           }}\n\
              \x20         }};\n\
@@ -1034,7 +1040,7 @@ export async function createApp(wasmBytes) {{
                 format!(
                     "this._registerViewEffect({handle}, (value) => {{\n\
                      \x20         const el = {el};\n\
-                     \x20         if (el) el.textContent = {apply_value};\n\
+                     \x20         if (el) this._setText(el, {apply_value});\n\
                      \x20       }});"
                 )
             }
@@ -1171,7 +1177,9 @@ export async function createApp(wasmBytes) {{
                     String::new()
                 } else {
                     let args: Vec<String> = params.iter().map(|(_, v)| v.clone()).collect();
-                    format!(", {}", args.join(", "))
+                    // _txn owns the state argument; a leading comma made the
+                    // generated module syntactically invalid.
+                    args.join(", ")
                 };
                 if *scope == crate::view_compiler::TriggerScope::Window {
                     // The shim boots asynchronously, so `load`/DOMContentLoaded
@@ -1255,13 +1263,13 @@ export async function createApp(wasmBytes) {{
                             crate::view_compiler::ItemDirective::Trigger { .. } => ("trigger", ""),
                         };
                         let extra = match &ib.directive {
-                            crate::view_compiler::ItemDirective::Trigger { event, txn } => {
-                                format!(", event: {event:?}, txn: {txn:?}")
+                            crate::view_compiler::ItemDirective::Trigger { event, txn, params } => {
+                                format!(", event: {event:?}, txn: {txn:?}, params: {params:?}")
                             }
                             crate::view_compiler::ItemDirective::Class { pairs } => {
                                 let cls: Vec<String> = pairs
                                     .iter()
-                                    .map(|(cls_name, cls_expr)| format!("({cls_name:?}, {cls_expr:?})"))
+                                    .map(|(cls_name, cls_expr)| format!("[{cls_name:?}, {cls_expr:?}]"))
                                     .collect();
                                 format!(", cls: [{}]", cls.join(", "))
                             }
@@ -1307,18 +1315,18 @@ export async function createApp(wasmBytes) {{
                      \x20           }}\n\
                      \x20           return Boolean(item);\n\
                      \x20         }};\n\
-                     \x20         const applyItem = (el, item, bindTriggers) => {{\n\
+                     \x20         const applyItem = (el, item, bindTriggers) => {{ el.__brievItem = item;\n\
                      \x20           for (const ib of itemBindings) {{\n\
                      \x20             const target = ib.marker === 0 ? el : el.querySelector('[data-itm=\"' + ib.marker + '\"]');\n\
                      \x20             if (!target) continue;\n\
                      \x20             if (ib.kind === \"text\") {{\n\
-                     \x20               target.textContent = String(item);\n\
+                     \x20               this._setText(target, item);\n\
                      \x20             }} else if (ib.kind === \"class\") {{\n\
                      \x20               for (const [clsName, clsExpr] of (ib.cls || [])) {{\n\x20                 target.classList.toggle(clsName, evalItem(clsExpr, item));\n\x20               }}\n\
                      \x20             }} else if (ib.kind === \"show\" || ib.kind === \"when\") {{\n\
                      \x20               target.style.display = evalItem(ib.expr, item) ? \"\" : \"none\";\n\
                      \x20             }} else if (ib.kind === \"trigger\" && bindTriggers) {{\n\
-                     \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(item));\n\
+                     \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(...(ib.params.length ? ib.params.map(p => evalItem(p, el.__brievItem)) : [el.__brievItem])));\n\
                      \x20             }}\n\
                      \x20           }}\n\
                      \x20         }};\n\
@@ -1974,8 +1982,8 @@ mod tests {
             "text binding must register a view effect on the count field; got:\n{}", output.dom_shim);
         assert!(output.dom_shim.contains("document.getElementById(\"counter\")"),
             "text binding must target its element; got:\n{}", output.dom_shim);
-        assert!(output.dom_shim.contains("el.textContent = value"),
-            "text binding must set textContent; got:\n{}", output.dom_shim);
+        assert!(output.dom_shim.contains("this._setText(el, value)"),
+            "text binding must set text through the unchanged-text guard; got:\n{}", output.dom_shim);
         assert!(output.dom_shim.contains("addEventListener(\"click\"")
             && output.dom_shim.contains("this._txn(\"increment\")"),
             "trigger binding must wire the event listener; got:\n{}", output.dom_shim);
@@ -2259,6 +2267,7 @@ mod tests {
                         directive: ItemDirective::Trigger {
                             event: "click".to_string(),
                             txn: "select_item".to_string(),
+                            params: vec!["item".to_string()],
                         },
                     },
                     ItemBinding {
@@ -2301,14 +2310,38 @@ mod tests {
         assert!(shim.contains("getBigInt64(valPtr + i * 8"),
             "each must read i64 slots from WASM:\n{shim}");
         assert!(shim.contains("txn: \"select_item\"")
-            && shim.contains("this._txn(ib.txn)(item)"),
-            "item trigger must call the txn with the item:\n{shim}");
+            && shim.contains("params: [\"item\"]")
+            && shim.contains("ib.params.length ? ib.params.map"),
+            "item trigger must call the txn with its declared params:\n{shim}");
         assert!(shim.contains("data-itm=\\\""),
             "marker-1 inner elements resolved in the clone:\n{shim}");
         assert!(shim.contains("applyItem(el, item, isNew);"),
             "existing keyed rows must refresh fields:\n{shim}");
         assert!(shim.contains("ib.kind === \"trigger\" && bindTriggers"),
             "item triggers must bind only on creation:\n{shim}");
+    }
+
+    #[test]
+    fn test_static_trigger_arguments_have_no_leading_comma() {
+        use crate::view_compiler::{Binding, Directive, TriggerScope};
+        let bindings = vec![Binding {
+            element_id: "stars".to_string(),
+            directive: Directive::Trigger {
+                event: "click".to_string(),
+                txn: "select_stars".to_string(),
+                params: vec![("value".to_string(), "1".to_string())],
+                scope: TriggerScope::Element,
+            },
+        }];
+        let g = GlueWebGenerator::new(
+            Vec::new(), bindings,
+            StateLayout { app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 0, max_flush_entries: 0, fields: vec![] },
+            HashMap::new(), Vec::new(),
+        );
+        let shim = g.generate().expect("generate should succeed").dom_shim;
+        assert!(shim.contains("this._txn(\"select_stars\")(1)"), "{shim}");
+        assert!(!shim.contains("this._txn(\"select_stars\")(, 1)"), "{shim}");
+        assert!(shim.contains("_setText(element, value)"), "{shim}");
     }
 
     #[test]

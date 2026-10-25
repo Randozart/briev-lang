@@ -1503,6 +1503,7 @@ mod tests {
                     directive: ItemDirective::Trigger {
                         event: "click".to_string(),
                         txn: "remove_item".to_string(),
+                        params: Vec::new(),
                     },
                 }],
                 key_expr: "item".to_string(),
