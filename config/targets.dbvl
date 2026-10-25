@@ -18,7 +18,7 @@
 .bv: llvm; --budget 256; prelude-native env print inline-frgn entry script execute-many; none; 50;
 .ebv: electronics; ; prelude-electronics;
 .sbv: circt; ; prelude-hw;
-.rbv: webstack; --target wasm; prelude;
+.rbv: webstack; --target wasm; prelude-web;
 .abv: spirv; ; prelude execute-many;
 // 2026-09-21 (bad-dialect plan): .bad — Briev Assembly Dialect. The
 // target triple comes from --target (or host default); the backend lowers
