@@ -1,0 +1,18 @@
+import "std/collections.bv";
+
+defn make_pairs() -> List<(String, Int)> {
+    let items: List<(String, Int)> = [("a", 1), ("b", 2)];
+    term items;
+};
+
+let pairs: List<(String, Int)> = make_pairs();
+
+defn read_second() -> Int {
+    term pairs[1].1;
+};
+
+let second: Int = read_second();
+
+<view>
+  <span b-text="second">0</span>
+</view>
