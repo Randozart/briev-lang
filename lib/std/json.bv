@@ -93,6 +93,11 @@ defn resolve_str_val(val: JsonValue) -> Result<String, String> {
 };
 
 defn handle_object(pairs: List<(String, JsonValue)>, key: String) -> Result<String, String> {
+    // find_pair's convergence loop requires a non-empty range; an empty object
+    // must return Err here.
+    when pairs.Count#() == 0 {
+        term Err(e_utoken());
+    };
     let result = find_pair(pairs, key, 0);
     match result {
         Ok(val) => resolve_str_val(val),
