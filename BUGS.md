@@ -10961,3 +10961,38 @@ Same-type local assignment incorrectly invoked InsertAt with a collection handle
 collection_assignment.rs now replaces the binding before the historical fallback.
 Explicit arrow insertion remains unchanged. Three unit tests and the native
 collection_rebind_gate.bv cover the behavior. See the collection-rebinding plan.
+
+## Closed reflection pinned all imported definitions (FIXED 2026-10-25)
+
+`.^^Bytes` / `.^^Size` / `.^^Alignment` / `.^^Type` were treated as open
+reflection and set `DefnLiveness.keep_all`, pulling dead native env/syscall
+helpers into portable WASM. Closed value inspections now walk only the
+receiver; unknown reflection keeps the conservative fallback. The collection
+arrow no longer seeds the whole task/event family (the emitted-call fixpoint
+discovers the real edge). Adopted from Otto Westerlund's `a42faac5`.
+
+## Reflection Int results were i64 on wasm32 (FIXED 2026-10-25)
+
+`value .^^Bytes` and the other compile-time Int reflection targets emitted an
+i64 constant into an i32 comparison on wasm32 (`icmp eq i32 %t, %t2` where one
+side was `add i64`). Reflection now adapts its ABI-fixed i64 word to the
+declared target-width Int before use. Adopted from Otto Westerlund's
+`2f5ad2bf` reflection boundary changes. Task Board wasm build is green.
+
+## Boxed enum return through an sret callee returned a stack slot (FIXED 2026-10-25)
+
+A boxed enum-returning function that returned an sret callee's result passed a
+pointer to its own frame-local alloca upward; the caller read a dangling tag
+and match arms never fired. The sret slot is now heap-allocated when the
+current function is boxed and the result is in a return context. Regression:
+`test_boxed_enum_return_through_sret_callee_uses_heap_slot`.
+
+## Strict JSON parser blocked on wasm object-field extraction (OPEN 2026-10-25)
+
+The strict parser and stringify gates pass natively, and the parser compiles
+for wasm after target-width signed-integer/minimum fixes. On wasm, a parsed
+Object reports its key count correctly but `field_of`-style key lookup does not
+recover the Bool payload (Task Board toggle renders `done=false`), so the
+parser swap is not committed. The parser work is preserved for the next
+boxed-enum/tuple layout pass; do not re-land it as the default `json_parse`
+until the grouped wasm JSON gate passes.
