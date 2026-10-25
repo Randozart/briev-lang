@@ -32,13 +32,8 @@ import "std/float_fmt.bv";
 // 2026-09-09: moved here from string.bv (was `frgn : briev_str_char_at`
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
 // the lane parsers share one definition.
-defn byte_at(s: String, i: Int) [true][term >= 0] -> Int {
-    let addr: Int = (s as Data) as Int;
-    when i < 0 || i >= s .^Length {
-        term 0;
-    };
-    term Load#(addr + 8 + i, 1);
-};
+import "std/byte_at.bv";
+
 
 // ── value → String lanes ─────────────────────────────────────────────────
 
@@ -79,7 +74,10 @@ defn neg_digit_count(n: Int, acc: Int) [n <= 0 && acc >= 0][term >= 1] -> Int {
 
 // fill_pos — write n's digits into buf[stop-1 ..] backwards; returns buf.
 defn fill_pos(n: Int, buf: Int, stop: Int, buf_ret: Int)
-    [n >= 0 && stop >= 1][term >= 0] -> Int {
+    [n >= 0][term >= 0] -> Int {
+    when stop <= 0 {
+        term buf_ret;
+    };
     when n < 10 {
         Store#(buf + stop - 1, 48 + n, 1);
         term buf_ret;
@@ -90,7 +88,10 @@ defn fill_pos(n: Int, buf: Int, stop: Int, buf_ret: Int)
 
 // fill_neg — same for n <= 0 (srem keeps the sign; 48 - digit encodes).
 defn fill_neg(n: Int, buf: Int, stop: Int, buf_ret: Int)
-    [n <= 0 && stop >= 1][term >= 0] -> Int {
+    [n <= 0][term >= 0] -> Int {
+    when stop <= 0 {
+        term buf_ret;
+    };
     when n > -10 {
         Store#(buf + stop - 1, 48 - n, 1);
         term buf_ret;
@@ -389,16 +390,23 @@ defn pf_make(m: Int64, d: Int) [true][term >= 0.0 || term < 0.0] -> Float {
     when d == 0 {
         term base;
     };
+    when d > 2100 {
+        term 0.0;
+    };
     when d > 0 {
         term base / pow10f(d);
     };
-    term base * pow10f(0 - d);
+    let k: Int = 0 - d;
+    when k < 0 || k > 2100 {
+        term 0.0;
+    };
+    term base * pow10f(k);
 };
 
 // pow10f — 10^k in f32. k in [0,10] via loop multiply (exact: each 10^j is
 // representable). Larger k recurses in exact 10^10 chunks — one rounding
 // per chunk, well inside f32 resolution.
-defn pow10f(k: Int) [k >= 0 && k <= 1100][term >= 0.0 || term < 0.0] -> Float {
+defn pow10f(k: Int) [k >= 0 && k <= 2100][term >= 0.0 || term < 0.0] -> Float {
     when k > 10 {
         term 10000000000.0 * pow10f(k - 10);
     };
@@ -513,17 +521,23 @@ out defn briev_str_next_char(s: String, off_ptr: Int) [true][term >= 0] -> Int {
         term b0;
     };
     when (b0 & 0xE0) == 0xC0 {
-        let cp: Int = decode_cont(s, i, len, 2, b0 & 0x1F);
+        let cp_seed: Int = b0 & 0x1F;
+        when cp_seed < 0 { term 0; };
+        let cp: Int = decode_cont(s, i, len, 2, cp_seed);
         Store#(off_ptr, i + decode_width(s, i, len, 2), 8);
         term cp;
     };
     when (b0 & 0xF0) == 0xE0 {
-        let cp: Int = decode_cont(s, i, len, 3, b0 & 0x0F);
+        let cp_seed: Int = b0 & 0x0F;
+        when cp_seed < 0 { term 0; };
+        let cp: Int = decode_cont(s, i, len, 3, cp_seed);
         Store#(off_ptr, i + decode_width(s, i, len, 3), 8);
         term cp;
     };
     when (b0 & 0xF8) == 0xF0 {
-        let cp: Int = decode_cont(s, i, len, 4, b0 & 0x07);
+        let cp_seed: Int = b0 & 0x07;
+        when cp_seed < 0 { term 0; };
+        let cp: Int = decode_cont(s, i, len, 4, cp_seed);
         Store#(off_ptr, i + decode_width(s, i, len, 4), 8);
         term cp;
     };
@@ -534,10 +548,13 @@ out defn briev_str_next_char(s: String, off_ptr: Int) [true][term >= 0] -> Int {
 // decode_cont — accumulate `width-1` continuation bytes (stopping at the
 // payload end or a non-continuation byte).
 defn decode_cont(s: String, i: Int, len: Int, width: Int, cp: Int)
-    [i >= 0 && len >= 0 && width >= 2 && width <= 4 && cp >= 0]
+    [true]
     [term >= 0]
     -> Int
 {
+    when i < 0 || len < 0 || width < 1 || width > 4 || cp < 0 {
+        term 0;
+    };
     when width <= 1 {
         term cp;
     };
@@ -548,7 +565,8 @@ defn decode_cont(s: String, i: Int, len: Int, width: Int, cp: Int)
     when (b & 0xC0) != 0x80 {
         term cp;
     };
-    term decode_cont(s, i + 1, len, width - 1, (cp << 6) | (b & 0x3F));
+    let next_cp: Int = (cp << 6) | (b & 0x3F);
+    term decode_cont(s, i + 1, len, width - 1, next_cp);
 };
 
 // decode_width — how many bytes the decoder actually consumed (mirrors the

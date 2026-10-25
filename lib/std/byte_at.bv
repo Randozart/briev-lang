@@ -1,0 +1,14 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Shared target-neutral String byte accessor. Native cast_lanes and portable
+// cast_portable both import this module instead of defining a duplicate, so a
+// browser root that also gets the native lane cannot see two `byte_at`s.
+// Authored in part by Otto Westerlund (@odecode); adopted with attribution.
+defn byte_at(s: String, i: Int) [true][term >= 0 && term <= 255] -> Int {
+    let addr: Int = (s as Data) as Int;
+    when i < 0 || i >= s .^Length {
+        term 0;
+    };
+    term Load#(addr + 8 + i, 1);
+};
