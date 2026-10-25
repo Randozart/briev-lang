@@ -5,6 +5,11 @@ Copyright (c) 2026 Randy Smits-Schreuder Goedheijt <randozart@gmail.com>
 
 This product includes software developed by Randy Smits-Schreuder Goedheijt.
 
+Portions of this product were contributed by Otto Westerlund (@odecode),
+including compiler correctness fixes, stdlib net/database/JSON/browser modules,
+and the recommender application. See AUTHORS.md and
+docs/contributors/otto-westerlund.md for the contribution record.
+
 The Briev compiler is licensed under the Apache License, Version 2.0, with
 the LLVM Exceptions to the Apache 2.0 License (see the LICENSE file). In
 particular, code written in Briev and compiled by the Briev compiler is

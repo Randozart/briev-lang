@@ -403,7 +403,7 @@ See [examples/](examples/) for more verified programs.
 
 ### Contributors
 
-- **Otto Westerlund** ([@odecode](https://github.com/odecode)) — static trait-constrained generics; wired the `.sbv` synthesizability gate into the frontend; LLVM `memcpy`/`memset` declaration fixes; the stdlib net stack (ByteSink, TCP client + server over raw syscalls); and the cpp-vs-briev experiment whose thesis algorithm became the first live run of the expressiveness-closure acceptance test.
+- **Otto Westerlund** ([@odecode](https://github.com/odecode)) — static trait-constrained generics and the `.sbv` synthesizability gate; compiler correctness fixes for liveness, `needs_state`, const globals, pointer provenance, tuple/match lowering, imports and call dispatch; the pure-Briev net stack (ByteSink, TCP client/server, HTTP/1.1, WebSocket, Base64, SHA-1); PostgreSQL v3 wire client; strict JSON parsing and stringify; portable browser stdlib and transport; numeric/CSR primitives; the recommender application and browser/WASM work that exercised them; and the cpp-vs-briev experiment whose thesis algorithm became the first live run of the expressiveness-closure acceptance test. See `docs/contributors/otto-westerlund.md`.
 
 ## License
 
@@ -411,4 +411,4 @@ Apache-2.0 WITH LLVM-exception — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTIC
 
 ---
 
-*Last updated: 2026-10-18*
+*Last updated: 2026-10-25*
