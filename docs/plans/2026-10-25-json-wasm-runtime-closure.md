@@ -115,3 +115,18 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - `0d82ed9e` — collection `.^Length` uses the target-width handle and adapts
   the i64 len header; wasm stringify compiles and round-trips Unicode.
 - Task Board structured Chromium CRUD passes with the strict parser.
+
+### Validation checkpoint — Phase A complete
+
+- `cargo test --lib`: 3322 passed.
+- `cargo test --test daily_use_smoke`: 25 passed (strict parse/stringify +
+  adopted Result/collection/matrix gates).
+- Task Board structured Chromium CRUD with strict JSON: PASS.
+- Task Board API: PASS.
+- `rbv_gate`: OK.
+- determinism quick: ALL DETERMINISTIC.
+- full runtime suite: PASS, all correctness MATCH/PASS (including
+  `nbody_newton_accel`; the logical patch was reverted before this run).
+- wasm stringify probe: Unicode/control round-trip true.
+- `nbody_newton_accel`: finishes on current build; 5b9 logical patch hangs it
+  and remains a separate gated follow-up.
