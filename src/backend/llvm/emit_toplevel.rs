@@ -4337,6 +4337,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         field_llvm_ty: &str,
         lo: i64,
         hi: i64,
+        metadata_counter: &mut usize,
     ) -> Option<usize> {
         // Extract the integer width from the LLVM type ("i8"/"i16"/"i32"/"i64").
         // 2026-09-02 (plan fundamental-parent-membership): range metadata is
@@ -4364,7 +4365,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         if hi > max_signed || lo < min_signed {
             return None;
         }
-        let mi = range_meta.len() + 50;
+        let mi = super::reserve_metadata_ids(metadata_counter, 1);
         range_meta.push(format!("!{} = !{{ {} {}, {} {} }}", mi, field_llvm_ty, lo, field_llvm_ty, hi));
         Some(mi)
     }
@@ -4496,7 +4497,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 let field_llvm = self.ctx.field_types.get(
                     self.ctx.field_index_map.get(f).copied().unwrap_or(0),
                 ).cloned().unwrap_or_else(|| "i64".to_string());
-                if let Some(mi) = Self::emit_range_metadata(range_meta, &field_llvm, lo, hi) {
+                if let Some(mi) = Self::emit_range_metadata(range_meta, &field_llvm, lo, hi, &mut self.ctx.metadata_counter) {
                     self.ctx.field_to_meta_idx.insert(f.clone(), mi);
                 }
             }
@@ -4524,6 +4525,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                         .cloned().unwrap_or_else(|| "i64".to_string());
                     if let Some(mi) = Self::emit_range_metadata(
                         range_meta, &field_llvm, range_bounds.0, range_bounds.1,
+                        &mut self.ctx.metadata_counter,
                     ) {
                         self.ctx.field_to_meta_idx.insert(field_name.clone(), mi);
                     }

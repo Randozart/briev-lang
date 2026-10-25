@@ -881,10 +881,14 @@ impl LlvmBackend {
                         writeln!(out, "{}{} = load {}, ptr @{}", indent, v, hw, name).ok();
                         TypedRegister { name: v.to_string(), ty: Type::int() }
                     } else {
-                        writeln!(out, "{}{} = load i64, ptr @{}", indent, v, name).ok();
+                        // 2026-10-22: use the same target-derived type as the
+                        // constant global. Flexible Int is i32 on wasm32; a
+                        // hardcoded i64 load made comparisons invalid.
+                        let llvm_ty = self.llvm_type(ty);
+                        writeln!(out, "{}{} = load {}, ptr @{}", indent, v, llvm_ty, name).ok();
                         TypedRegister {
                             name: v.to_string(),
-                            ty: Type::int(),
+                            ty: ty.clone(),
                         }
                     }
                 } else if let Some(init) = self.ctx.inits.get(name) {
