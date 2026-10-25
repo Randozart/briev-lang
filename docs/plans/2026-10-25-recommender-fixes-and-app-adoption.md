@@ -1,7 +1,7 @@
 # Recommender fixes and app adoption
 
 **Date:** 2026-10-25
-**Status:** A/C/D landed; B rejected; E deferred; Phase D started (PG adopted); app still external
+**Status:** A/C/D landed; B rejected; E deferred; Phase D PG/web/ratings adopted; cast/prelude deferred; app still external
 **Branch:** `feat/recommender-fixes`
 **Sources:**
 - standalone app: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
@@ -246,3 +246,19 @@ test; E is deferred on concrete list typing in `iter_chain`.
 - `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
 - heap + 1100-item snapshot: PASS.
 - full runtime suite: PASS, all MATCH/PASS.
+
+### Cast/prelude + app probe
+
+- Added `cast_portable.bv` and `prelude-web.bv` provisionally and switched
+  `.rbv` to the web prelude. Task Board then failed in `pow10f`:
+  `%t55 = add i32 0, 1000000000` fed `mul i64` — an `Int64` literal-width bug
+  in the portable cast path.
+- Reverted the `.rbv` prelude switch and removed the two provisional files.
+  `cast_portable`/`prelude-web` remain deferred until target-width `Int64`
+  literal/cast lowering is fixed.
+- Kept the general root-prelude propagation (`module_plugin_factory`) and the
+  list-return/empty-match construction fixes; both have regressions.
+- Standalone app probe: `app.rbv` typechecks and the browser build now gets
+  past prelude imports, but still hits an untyped empty-list codegen context.
+  `server.bv` remains blocked on Vector/FloatVector naming plus broad contract
+  bounds in the app modules. App stays external.

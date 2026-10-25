@@ -11123,3 +11123,19 @@ A partial port of `generic_txns` plus txn specialization worklist made a concret
 compiler regressed before the app catalogue gate could run. Deferred until the
 frontend type substitution and txn worklist are ported together and gated by a
 multi-struct catalogue concatenation fixture.
+
+
+## Portable cast path emits i32 Int64 constants (OPEN 2026-10-25)
+
+Switching `.rbv` to `prelude-web` + `cast_portable` exposed
+`%t55 = add i32 0, 1000000000` feeding `mul i64` in `pow10f`, rejecting the
+generated IR. The constant is written as `1000000000 as Int64`; the cast/global
+must widen to the declared 64-bit type. Reverted the prelude switch until
+target-width Int64 literal/cast lowering is fixed. Adoption plan:
+`docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md`.
+
+## App browser hits an untyped empty-list context (OPEN 2026-10-25)
+
+After the web prelude/root fixes, the standalone `app.rbv` build reaches a bare
+empty-list codegen context (`exprs=[]`, current return type Bool). The app stays
+external until the remaining list-context producer is identified and fixed.
