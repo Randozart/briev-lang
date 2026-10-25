@@ -12,6 +12,7 @@
 
 mod output_inference;
 mod call_literals;
+mod elaboration_scope;
 mod validate;
 pub use validate::*;
 
@@ -2960,14 +2961,40 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
         Statement::Block(body) | Statement::SyncBlock(body)
         | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
         Statement::Foreach { item, list, body } => {
-            elaborate_expr(list, ctx, errors);
-            let fact_base = ctx.known_facts.len();
-            ctx.known_facts.extend(foreach_range_facts(list, item));
-            elaborate_stmts(body, ctx, errors);
-            ctx.known_facts.truncate(fact_base);
+            elaborate_foreach(item, list, body, ctx, errors)
         }
         _ => {}
     }
+}
+
+// 2026-10-21: operator elaboration needs the same declared element binding as
+// type checking. Otherwise `result += [item as String]` loses its concat op
+// and reaches codegen as integer addition of collection handles. Restore the
+// lexical environment after the loop, including shadowed names and facts.
+fn elaborate_foreach(
+    item: &str,
+    list: &mut Expr,
+    body: &mut [Statement],
+    ctx: &mut TypecheckContext,
+    errors: &mut Vec<TypeError>,
+) {
+    elaborate_expr(list, ctx, errors);
+    let list_ty = match infer_type_only(list, ctx) {
+        Ok(ty) => ty,
+        Err(error) => {
+            errors.push(error);
+            return;
+        }
+    };
+    let bindings = ctx.bindings.clone();
+    let facts = ctx.known_facts.clone();
+    ctx.bindings.insert(item.to_string(), foreach_item_type(ctx, &list_ty));
+    ctx.known_facts.extend(foreach_range_facts(list, item));
+    ctx.foreach_depth += 1;
+    elaborate_stmts(body, ctx, errors);
+    ctx.foreach_depth -= 1;
+    ctx.known_facts = facts;
+    ctx.bindings = bindings;
 }
 
 fn elaborate_expr(expr: &mut Expr, ctx: &mut TypecheckContext, errors: &mut Vec<TypeError>) {
@@ -3021,15 +3048,7 @@ fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: 
                 elaborate_expr(e, ctx, errors);
             }
         }
-        Expr::Match(scrut, arms) => {
-            elaborate_expr(scrut, ctx, errors);
-            for arm in arms.iter_mut() {
-                if let Some(g) = &mut arm.guard {
-                    elaborate_expr(g, ctx, errors);
-                }
-                elaborate_expr(&mut arm.body, ctx, errors);
-            }
-        }
+        Expr::Match(scrut, arms) => elaboration_scope::expression_match(scrut, arms, ctx, errors),
         Expr::Call(_, args, _) => {
             for a in args.iter_mut() {
                 elaborate_expr(a, ctx, errors);
@@ -3348,7 +3367,9 @@ fn infer_unary_op(
     match kind {
         UnaryOpKind::Neg => {
             let type_str = format!("{}", ty);
-            if type_str == "Int" || type_str == "Float" {
+            if ctx.operand_implements_protocol(&ty, "Int")
+                || ctx.operand_implements_protocol(&ty, "Float")
+            {
                 Ok(ty)
             } else {
                 Err(TypeError::InvalidOperation {
@@ -10577,6 +10598,58 @@ defn concat_demo() -> List<Int> {
             "`+` must elaborate into a call to the stdlib iter_chain, got calls: {calls:?}"
         );
         assert_eq!(add_ops, 0, "no `+` may survive over list operands");
+    }
+
+    #[test]
+    fn foreach_element_binding_survives_operator_elaboration() {
+        let source = r#"
+import "std/collections.bv";
+import "std/iterator.bv";
+defn collect_strings() -> List<String> {
+    let result: List<String> = [];
+    foreach index in 0..3 { result += [index as String]; };
+    term result;
+};
+"#;
+        let (items, _) = crate::library::parse_and_check("foreach_concat.bv", source).unwrap();
+        let mut concatenates = 0;
+        for item in &items {
+            let TopLevel::Definition(defn) = item else { continue };
+            if defn.name != "collect_strings" { continue; }
+            crate::ast::visit::walk_stmts(&defn.body, &mut |expr| {
+                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") { concatenates += 1; }
+            });
+        }
+        assert_eq!(concatenates, 1, "loop elements must resolve declared collection operations");
+    }
+
+    #[test]
+    fn match_payload_binding_survives_nested_foreach_elaboration() {
+        let source = r#"
+import "std/collections.bv";
+import "std/iterator.bv";
+enum Batch { Values(List<Int>), Empty };
+defn render(batch: Batch) -> List<String> {
+    match batch {
+        Values(values) => {
+            let result: List<String> = [];
+            foreach value in values { result += [value as String]; };
+            term result;
+        },
+        Empty => { let result: List<String> = []; term result; }
+    };
+};
+"#;
+        let (items, _) = crate::library::parse_and_check("payload_foreach.bv", source).unwrap();
+        let mut found = false;
+        for item in &items {
+            let TopLevel::Definition(defn) = item else { continue };
+            if defn.name != "render" { continue; }
+            crate::ast::visit::walk_stmts(&defn.body, &mut |expr| {
+                if matches!(expr, Expr::Call(name, _, _) if name == "iter_chain") { found = true; }
+            });
+        }
+        assert!(found, "enum payload element types must reach declared collection operators");
     }
 
     /// 2026-10-06: the gate the rewrite must NOT open — mismatched element
