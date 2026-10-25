@@ -426,6 +426,12 @@ fn trait_generics_golden_output() {
 /// regression in the member liveness or type-dependent needs-state paths is
 /// caught in CI.
 #[test]
+fn rating_population_gate_golden_output() {
+    let out = build_link_run("rating_population_gate", "golden", &[]);
+    assert_eq!(out, "rating_population=true\n", "rating population golden drifted: {out:?}");
+}
+
+#[test]
 fn pg_buffer_gate_golden_output() {
     let out = build_link_run("pg_buffer_gate", "golden", &[]);
     assert_eq!(out, "pg_received_prefix=true\n", "PG receive-buffer golden drifted: {out:?}");
