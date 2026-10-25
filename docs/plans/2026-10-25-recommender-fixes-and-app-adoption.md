@@ -211,6 +211,10 @@ test; E is deferred on concrete list typing in `iter_chain`.
 
 ## Phase D execution
 
+- Portable browser stdlib adopted: async HTTP handles, WebSocket FIFO/limits,
+  timers, secure random, host transport, and a Node regression. Cast/prelude
+  portability remains pending.
+- Rating population adopted with FloatVector naming; daily dual-CSR gate.
 - PostgreSQL client adopted from `fix/pg-receive-length`: `lib/std/db/pg.bv`,
   `buf_received`, `tests/tier1/pg_buffer_gate.bv`, and the optional live
   `tests/fixtures/stdlib/run_pg.sh` SQLSTATE/recovery gate.
