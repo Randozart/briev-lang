@@ -6457,7 +6457,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // its own frame. The slot becomes the returned handle; an
                     // alloca here dangled after return (JSON parse_number via
                     // json_value_depth). Sret functions use %enum_out above.
-                    if self.fun.expected_enum_type.is_some() && self.fun.enum_out_slot.is_none() {
+                    if self.fun.enum_return_context && self.fun.enum_out_slot.is_none() {
                         writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, s, words * 8).ok();
                     } else {
                         writeln!(out, "{}{} = alloca i64, i64 {}", indent, s, words).ok();

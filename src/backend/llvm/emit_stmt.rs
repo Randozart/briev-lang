@@ -1836,7 +1836,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(val) = val {
                 let saved_enum_ret = backend.fun.enum_return_context;
                 let saved_expected_enum = backend.fun.expected_enum_type.clone();
-                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some();
+                let returns_enum = backend.fun.item_return_type.as_ref()
+                    .map(|t| backend.ctx.enum_handle_types.contains(type_bare_name(t)))
+                    .unwrap_or(false);
+                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some() || returns_enum;
                 if let Some(t) = backend.fun.item_return_type.clone() {
                     if backend.ctx.enum_handle_types.contains(type_bare_name(&t)) {
                         backend.fun.expected_enum_type = Some(t);
