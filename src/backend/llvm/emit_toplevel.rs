@@ -200,6 +200,16 @@ impl LlvmBackend {
         let mut lets: HashMap<String, Option<Type>> = HashMap::new();
         let mut assigned: HashSet<String> = HashSet::new();
         for s in stmts { walk(s, &mut lets, &mut assigned); }
+        // 2026-10-22: lazy RHS blocks can mutate locals without executing on
+        // every edge. Discover expression-carried statement bodies through
+        // the exhaustive visitor too; otherwise codegen keeps the RHS's SSA
+        // assignment even on the skipped edge. Existing statement coverage
+        // and sorted entry-slot emission remain unchanged.
+        crate::ast::visit::walk_stmts(stmts, &mut |expression| {
+            if let Expr::Block(body) = expression {
+                for statement in body { walk(statement, &mut lets, &mut assigned); }
+            }
+        });
         lets.into_iter().filter(|(n, _)| assigned.contains(n)).collect()
     }
 
@@ -3814,7 +3824,15 @@ impl LlvmBackend {
         // String concats printed empty. The caller's attribute must be at
         // least as permissive as its callees' effects.
         let base = d.name.split('$').next().unwrap_or(&d.name);
-        let attr_idx = if self.ctx.defn_touches_raw_memory.contains(&d.name)
+        let attr_idx = if self.ctx.defn_may_trap.contains(&d.name)
+            || self.ctx.defn_may_trap.contains(base)
+            || Self::definition_may_trap(&d.body)
+        {
+            // 2026-10-25: a call that may trap/halt is observable even when
+            // its result is unused. #15 omits willreturn; #13 would still let
+            // LLVM delete `unwrap(bad);` entirely.
+            "#15"
+        } else if self.ctx.defn_touches_raw_memory.contains(&d.name)
             || self.ctx.defn_touches_raw_memory.contains(base)
             || Self::definition_touches_raw_memory(&d.body)
         {
@@ -3838,6 +3856,10 @@ impl LlvmBackend {
         self.fun.ssa_old_float_regs.clear();
         for (i, (n, t)) in d.parameters.iter().enumerate() {
             let raw = format!("%arg{}", i);
+            if Self::parameter_is_reassigned(&d.body, n) {
+                self.bind_mutable_parameter(out, n, t, &raw);
+                continue;
+            }
             let reg: String;
             // 2026-07-01: Use universe-declared box_op for parameter boxing.
             // If llvm_type is already i64, no boxing is needed (Int, UInt).
@@ -4208,6 +4230,46 @@ impl LlvmBackend {
 /// memory(argmem)'s "through pointer arguments" contract does not hold for
 /// int-address accesses. Helpers called with their own attrs are NOT scanned
 /// (the callee's attribute governs its own accesses).
+/// 2026-10-25: a defn may trap/halt directly or through nested statements.
+/// Calls to it are observable even when the result is unused.
+pub(crate) fn definition_may_trap(stmts: &[Statement]) -> bool {
+    fn expr_may_trap(expr: &Expr) -> bool {
+        match expr {
+            Expr::Block(body) => body.iter().any(stmt_may_trap),
+            Expr::If(_, then_expr, else_expr) => {
+                expr_may_trap(then_expr)
+                    || else_expr.as_deref().map_or(false, expr_may_trap)
+            }
+            Expr::Match(_, arms) => arms.iter().any(|arm| expr_may_trap(&arm.body)),
+            _ => false,
+        }
+    }
+    fn stmt_may_trap(stmt: &Statement) -> bool {
+        if matches!(stmt, Statement::Trap | Statement::Halt) {
+            return true;
+        }
+        let mut nested = false;
+        crate::ast::visit::walk_stmts(std::slice::from_ref(stmt), &mut |expr| {
+            if expr_may_trap(expr) { nested = true; }
+        });
+        if nested {
+            return true;
+        }
+        match stmt {
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => body.iter().any(stmt_may_trap),
+            Statement::Foreach { body, .. } => body.iter().any(stmt_may_trap),
+            Statement::Match { arms, .. } => arms.iter().any(|arm| arm.body.iter().any(stmt_may_trap)),
+            Statement::InlineDefn(d) => d.body.iter().any(stmt_may_trap),
+            _ => false,
+        }
+    }
+    stmts.iter().any(stmt_may_trap)
+}
+
 pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     // 2026-10-20 (pointer provenance): a raw `Ptr<T>` index/deref is memory
     // access even when no `Load#`/`Store#` intrinsic spelling appears. The
@@ -4398,7 +4460,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // (parse_str_chars) — the node referenced a register defined in
         // another function (`use of undefined value '%t295'`). clear_locals
         // clears these; the reactive path must too.
-        self.fun.let_bindings.clear();
+        self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear();
         self.fun.last_val_temps.clear();
@@ -5231,6 +5293,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                     _ => continue,
                 };
                 let saved_let_bindings = self.fun.let_bindings.clone();
+                let saved_native_parameters = self.fun.native_parameter_slots.clone();
                 let saved_let_binding_types = self.fun.let_binding_types.clone();
                 let saved_let_original_types = self.fun.let_original_types.clone();
                 let saved_reg_float_cache = self.fun.reg_float_cache.clone();
@@ -5241,7 +5304,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 // behavior byte-identical (params bind via let_bindings below,
                 // not via pre-declaration).
                 self.fun.reassigned_lets.clear();
-                self.fun.let_bindings.clear();
+                self.fun.clear_local_bindings();
                 self.fun.let_binding_types.clear();
                 self.fun.let_original_types.clear();
                 self.fun.reg_float_cache.clear();
@@ -5290,6 +5353,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 writeln!(out).ok();
 
                 self.fun.let_bindings = saved_let_bindings;
+                self.fun.native_parameter_slots = saved_native_parameters;
                 self.fun.let_binding_types = saved_let_binding_types;
                 self.fun.let_original_types = saved_let_original_types;
                 self.fun.reg_float_cache = saved_reg_float_cache;
@@ -5690,7 +5754,7 @@ fn probe_ok_checks(
         self.fun.txn_name = name.to_string();
         self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.pending_cleanup.clear();
-        self.fun.let_bindings.clear();
+        self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear();
         self.fun.reg_type_cache.clear();
@@ -5932,6 +5996,11 @@ fn probe_ok_checks(
             writeln!(out, "  br label %post").ok();
         }
         writeln!(out, "post:").ok();
+        // 2026-10-22: term branches here; its terminated flag describes the
+        // body predecessor, not this live convergence block. Lazy predicates
+        // must evaluate the gate here rather than inherit that stale flag.
+        self.fun.terminated = false;
+        self.fun.cur_block = Some("post".to_string());
         // 2026-10-05 (callable-txn convergence): the postcondition is the
         // convergence GOAL — satisfied → done (return), else → loop (body
         // re-runs). Unconditional for callable txns.
@@ -6155,6 +6224,11 @@ fn probe_ok_checks(
         // not defined in this function (precompute_sum: %t28 undefined).
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
+        // 2026-10-25: a prior body may have terminated. Lazy logical
+        // evaluation treats a stale terminated=true as "RHS is unreachable"
+        // and folds the whole pre guard to 0, dropping the node (nbody init).
+        self.fun.terminated = false;
+        self.fun.cur_block = Some("entry".to_string());
         let cond = self.emit_expr(out, &txn.contract.pre_condition, "  ");
         if cond.ty == Type::bool_() {
             writeln!(out, "  ret i8 {}", cond).ok();
@@ -6201,6 +6275,10 @@ fn probe_ok_checks(
         // through to GEP+load from %state (same rationale as emit_pre_function).
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
+        // 2026-10-25: reset the terminated latch before lazy precondition
+        // evaluation; a stale true folds `beginprogram && ...` to 0.
+        self.fun.terminated = false;
+        self.fun.cur_block = Some("entry".to_string());
         let cond = self.emit_expr(out, &txn.contract.pre_condition, "  ");
         let i1 = if cond.ty == Type::bool_() {
             let b = format!("%ric{}", self.fun.txn_counter); self.fun.txn_counter += 1;
@@ -6296,7 +6374,7 @@ fn probe_ok_checks(
         let fused_attr = "#0";
         writeln!(out, "define void @{}(ptr noalias nocapture align 8 %state) local_unnamed_addr {} {{", name, fused_attr).ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0; self.fun.let_bindings.clear(); self.fun.let_binding_types.clear(); self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear(); self.fun.reg_type_cache.clear(); self.fun.terminated = false; self.fun.returns_i64 = false;
+        self.fun.txn_counter = 0; self.fun.clear_local_bindings(); self.fun.let_binding_types.clear(); self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear(); self.fun.reg_type_cache.clear(); self.fun.terminated = false; self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
         for s in &combined {
             if self.fun.terminated { break; }
@@ -6310,7 +6388,7 @@ fn probe_ok_checks(
         let fused_attr = "#0";
         writeln!(out, "define void @{}({}) local_unnamed_addr {} {{", name, self.ctx.state_ptr_param, fused_attr).ok();
         writeln!(out, "  entry:").ok();
-        self.fun.txn_counter = 0; self.fun.let_bindings.clear(); self.fun.let_binding_types.clear(); self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear(); self.fun.reg_type_cache.clear(); self.fun.terminated = false; self.fun.returns_i64 = false;
+        self.fun.txn_counter = 0; self.fun.clear_local_bindings(); self.fun.let_binding_types.clear(); self.fun.let_original_types.clear(); self.fun.reg_float_cache.clear(); self.fun.reg_type_cache.clear(); self.fun.terminated = false; self.fun.returns_i64 = false;
             self.fun.fn_ret_ty = "void".to_string();
         for s in body {
             if self.fun.terminated { break; }
@@ -6530,7 +6608,7 @@ impl LlvmBackend {
         // because let_bindings is a shared HashMap. This causes emit_expr to
         // return registers that were defined in a different basic block, producing
         // SSA dominance violations ("Instruction does not dominate all uses").
-        self.fun.let_bindings.clear();
+        self.fun.clear_local_bindings();
         self.fun.let_binding_types.clear();
         let names: Vec<String> = self.ctx.cell_defs.iter()
             .filter(|(_, c)| c.is_persistent)
@@ -7465,10 +7543,12 @@ mod tests {
     #[test]
     fn result_gate_or_emits_canonical_i8() {
         // 2026-10-15 (bool-width canonicalization): the callable-txn
-        // convergence gate `[yes(term) || no(term)]` must emit `or i8` under
-        // the bool label — the desync class produced `or i64` feeding the
+        // convergence gate `[yes(term) || no(term)]` must retain canonical i8
+        // Bool values — the desync class produced `or i64` feeding the
         // gate's `trunc i8`, which clang rejects ("defined with type 'i64'
-        // but expected 'i8'").
+        // but expected 'i8'"). 2026-10-22: lazy logical lowering now merges
+        // edges instead of combining eager registers; preserve the width
+        // invariant without pinning the retired register-only instruction.
         let src = r#"
             defn yes(x: Int) -> Bool { term true; };
             defn no(x: Int) -> Bool { term false; };
@@ -7486,8 +7566,8 @@ mod tests {
         let mut backend = LlvmBackend::new();
         let ir = backend.generate(&program, None);
         assert!(
-            ir.contains("or i8"),
-            "the gate disjunction emits at the canonical width: {ir}"
+            ir.contains("phi i8"),
+            "the gate disjunction merges at the canonical width: {ir}"
         );
         assert!(
             !ir.contains("= or i64"),

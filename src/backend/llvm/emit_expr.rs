@@ -567,6 +567,12 @@ impl LlvmBackend {
                 // 2026-07-17: Remaining paths: local binding,
                 // phi register, state field, global constant.
                 if let Some(reg) = self.get_local(name) {
+                    if self.fun.native_parameter_slots.contains(&reg) {
+                        let ty = self.get_local_type(name);
+                        let loaded = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, self.llvm_type(&ty), reg).ok();
+                        return TypedRegister { name: loaded, ty };
+                    }
                     // 2026-07-18: If the binding is an alloca (param slot,
                     // uninitialized let, or txn param slot), emit a load.
                     if self.fun.param_slots.values().any(|s| s == &reg)
@@ -955,6 +961,12 @@ impl LlvmBackend {
             }
 
             // ── BinaryOp ─────────────────────────────────────────────
+            // 2026-10-22: choose the evaluation edge before emitting operands;
+            // the existing register-only binary paths remain for eager ops.
+            Expr::BinaryOp(BinaryOpKind::And, lhs, rhs) =>
+                self.emit_short_circuit(out, (lhs, rhs), false, indent),
+            Expr::BinaryOp(BinaryOpKind::Or, lhs, rhs) =>
+                self.emit_short_circuit(out, (lhs, rhs), true, indent),
             Expr::BinaryOp(kind, lhs, rhs) => {
                 // 2026-07-21: Mod with phi-tracked counter dividend — trunc i64
                 // to i32 so LLVM uses imul $magic (1 uop) instead of mul %reg

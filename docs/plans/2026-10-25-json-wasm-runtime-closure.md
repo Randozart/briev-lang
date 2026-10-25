@@ -1,8 +1,8 @@
 # JSON wasm closure and website runtime
 
 **Date:** 2026-10-25
-**Status:** Phase B COMPLETE — strict JSON, browser heap, dynamic snapshots,
-helper-write flushes and lexical elaboration landed; Phase C next
+**Status:** Phase C partial — unused-trap observability and lazy logical
+semantics landed; metadata allocator remains
 **Branch:** `feat/json-wasm-runtime`
 **Predecessor:** `docs/plans/2026-10-25-otto-contribution-adoption.md`
 
@@ -159,3 +159,15 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - `node tests/web_collection_snapshot.mjs`: PASS (Unicode, 1100 items,
   shared snapshots, reset).
 - CI now runs both browser runtime gates after the release build.
+
+### Phase C execution log
+
+- `3afdc42d` — adopted logical short-circuit + mutable parameter slots
+  (`5b9ac7f8`); `fba17b79` adds the stale-`terminated` reset needed for pre functions,
+  async bodies and the reactor dispatch loop. `nbody_newton_accel` no longer
+  hangs; `benchmarks/accel_reactor_nonhang.sh` runs in CI.
+- `c7c0b5d3` — may-trap defns and callers emit #15 without `willreturn`;
+  unused `unwrap(bad);` SIGILLs and Result mode 3 pins it.
+- Validation: 3330 lib tests, 25 daily, Task Board Chromium/API, rbv,
+  determinism, accel non-hang and full runtime suite all pass.
+- Remaining Phase C: module metadata allocator + target-width constants.

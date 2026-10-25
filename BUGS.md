@@ -10946,7 +10946,7 @@ preserved. Adopted from Otto Westerlund's `fix/result-wrong-side-unwrap`
 (`dac3aa4a`). Regression: `tests/tier1/result_object_gate.bv`
 checks both object payloads and both SIGILL paths.
 
-## Unused call to a trapping defn is eliminated (OPEN 2026-10-25)
+## Unused call to a trapping defn is eliminated (FIXED 2026-10-25)
 
 `unwrap(bad);` as a bare statement produced `endprogram`'s fallback instead of
 the wrong-side trap: the result was unused, so LLVM removed the call and the
@@ -10955,6 +10955,10 @@ restores SIGILL. The same shape can drop any side-effect-only call whose
 return value is unused. Needs an effect summary that marks a call to a
 possibly-trapping user defn as observable, or a liveness rule for trap paths.
 Discovered while validating the adopted Result fixture.
+
+**Fix:** a transitive may-trap closure marks trap/halt defns and their callers;
+they emit attribute group #15 (no `willreturn`). `unwrap(bad);` now SIGILLs,
+and the Result fixture's mode 3 pins it.
 ## Ordinary collection rebinding (FIXED 2026-10-21)
 
 Same-type local assignment incorrectly invoked InsertAt with a collection handle.
@@ -11043,14 +11047,19 @@ strict parser; parse/stringify gates run in the daily corpus. Interpreter
 scalar `.^^Bytes` and `Mod#` were fixed to keep the reference aligned.
 
 
-## Logical short-circuit patch hangs nbody_newton_accel (OPEN 2026-10-25)
+## Logical short-circuit patch hangs nbody_newton_accel (FIXED 2026-10-25)
 
 Adopting Otto's `5b9ac7f8` (`019202f4`) made `nbody_newton_accel` spin with
 100% CPU past the suite timeout. The same benchmark finishes on the baseline
 and on a strict-JSON build with the logical patch reverted. Strict JSON does
 not need the patch (`json_get` finds second keys and Task Board passes without
-it). Reverted from the JSON PR; re-land only with an nbody non-hang gate and
-loop/dominance tests.
+it). Reverted from the JSON PR.
+
+**Fix:** the lazy path inherited `FunctionContext.terminated=true` in pre
+functions, async bodies and the reactor dispatch loop. `beginprogram && i < nb`
+was folded to 0, so nbody's init node was absent from main. Reset the latch at
+each entry/edge; `benchmarks/accel_reactor_nonhang.sh` (CI) passes, along with
+the pre-guard regression and the full runtime suite.
 
 
 ## Browser view snapshot was fixed at 1024 words (FIXED 2026-10-25)
