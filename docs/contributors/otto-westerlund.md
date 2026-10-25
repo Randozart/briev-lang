@@ -45,7 +45,7 @@ authoritative design record; this file tracks credit and disposition.
 | Strict JSON parser and framing | `14f7f666` / `fix/json-parser-progress` | adopted `dc342cad` + `66b33459` |
 | JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | adopted `dc342cad` |
 | Ordinary collection rebinding | `d3684191` / `fix/collection-assignment-rebind` | adopted `b1838ed5` |
-| Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | adopted `019202f4` |
+| Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | deferred — regresses `nbody_newton_accel` (hangs); separate gated follow-up |
 | Module metadata allocator | `a42faac5` | pending |
 | Target-width constant globals/loads | `a42faac5` | pending |
 | Exhaustive print traversal | `a42faac5` | adopted `ae9b2bf9` |

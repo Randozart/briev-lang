@@ -62,7 +62,8 @@ Task Board Chrome gate, no native regression.
 
 1. Unused calls to possibly-trapping defns stay observable.
 2. Logical short-circuit + mutable parameter slots (`5b9ac7f8`), with loop
-   exits and dominance/cache tests at `-O0`/`-O2`.
+   exits and dominance/cache tests at `-O0`/`-O2`, plus an
+   `nbody_newton_accel` non-hang gate before re-landing.
 3. Module metadata allocator + target-width constants (`a42faac5`), with a
    large-universe test.
 
@@ -104,7 +105,9 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - `107c3017` — boxed tuple list indexing uses the canonical 8-byte word
   stride; strict JSON object fields after the first pair now resolve.
 - `019202f4` — logical short-circuit + mutable parameter entry slots
-  (`5b9ac7f8`), needed for `find_pair`/`json_get` on wasm.
+  (`5b9ac7f8`) was tested and reverted: strict JSON works without it, and it
+  hangs `nbody_newton_accel`. It moves to the separate Phase C gate with a
+  required nbody regression.
 - `1317e8bf` — interpreter scalar `.^^Bytes` returns the value width and
   `Mod#` aliases remainder, restoring the reference JSON parse path.
 - `0bd6ed1e` — strict parse/stringify gates added to the daily corpus.

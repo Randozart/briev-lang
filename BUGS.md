@@ -11041,3 +11041,13 @@ handles. `json_get`/`find_pair` also needed Otto's mutable-parameter entry slots
 and lazy logical evaluation. Task Board toggle renders `done=true` with the
 strict parser; parse/stringify gates run in the daily corpus. Interpreter
 scalar `.^^Bytes` and `Mod#` were fixed to keep the reference aligned.
+
+
+## Logical short-circuit patch hangs nbody_newton_accel (OPEN 2026-10-25)
+
+Adopting Otto's `5b9ac7f8` (`019202f4`) made `nbody_newton_accel` spin with
+100% CPU past the suite timeout. The same benchmark finishes on the baseline
+and on a strict-JSON build with the logical patch reverted. Strict JSON does
+not need the patch (`json_get` finds second keys and Task Board passes without
+it). Reverted from the JSON PR; re-land only with an nbody non-hang gate and
+loop/dominance tests.
