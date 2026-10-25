@@ -1,0 +1,42 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+import "std/result.bv";
+
+defn make_result(value: Int) -> Result<Int,String> {
+    when value < 0 { term Err("negative"); };
+    term Ok(value);
+};
+defn forward_result(value: Int) -> Result<Int,String> {
+    let local: Result<Int,String> = make_result(value);
+    term local;
+};
+defn forward_again(value: Int) -> Result<Int,String> {
+    let local: Result<Int,String> = forward_result(value);
+    term local;
+};
+defn choose_result(value: Int, fallback: Result<Int,String>) -> Result<Int,String> {
+    when value > 0 { term make_result(value); };
+    term fallback;
+};
+defn nested_result(value: Int) -> Result<Result<Int,String>,String> {
+    term Ok(make_result(value));
+};
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let first: Result<Int,String> = forward_again(37);
+    let second: Result<Int,String> = forward_again(-1);
+    let third: Result<Int,String> = forward_again(91);
+    let fallback: Result<Int,String> = Err("fallback");
+    let chosen: Result<Int,String> = choose_result(53,fallback);
+    let nested: Result<Result<Int,String>,String> = nested_result(-1);
+    let passed: Bool = is_ok(first) && unwrap(first) == 37 &&
+        is_err(second) && unwrap_err(second) == "negative" && unwrap(third) == 91 &&
+        is_ok(chosen) && unwrap(chosen) == 53 && is_ok(nested) &&
+        is_err(unwrap(nested)) && unwrap_err(unwrap(nested)) == "negative";
+    println!("local_result_lifetime={}",passed);
+    when !passed { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

@@ -90,3 +90,11 @@ explicitly requested.
 - Existing history is never rewritten; this ledger is the durable attribution
   record.
 - New adopted stdlib files carry a credit line below the SPDX header.
+
+## Recommender application
+
+- Repository: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
+- Compiler recovery commit: `odecode/brief-lang` `894fcfa5` (parent `1c1d4028`)
+- Plan: `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md`
+- Status: app external/pinned; compiler bundles A–E being adopted separately.
+  App licensing/credit must be extended to Otto before any vendoring.

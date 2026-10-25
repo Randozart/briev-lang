@@ -11102,3 +11102,19 @@ Adopted from Otto Westerlund's `a42faac5`.
 Constant declarations, aliases and reads used protocol metadata (i64) while
 flexible Int is i32 on wasm32, producing invalid comparisons. All three now use
 `llvm_type`; the wasm constant-width regression pins the global and load.
+
+
+## Data→String casting lane change breaks Bit→String (REJECTED 2026-10-25)
+
+The recommender recovery branch changes Data→String from the UTF-8 encoding
+callback to an IntToPtr representation cast. Applied wholesale, `test_bit_to_string`
+and `test_bit_to_string_encoding_door` fail: Bit→String no longer materializes
+the `[len][bytes]` header. Keep the current encoding lane; adapt the app instead.
+
+## Generic callable transaction specialization deferred (OPEN 2026-10-25)
+
+A partial port of `generic_txns` plus txn specialization worklist made a concrete
+`iter_chain` probe lose its list type (`Count#`/`.^Length` saw `Int`). The
+compiler regressed before the app catalogue gate could run. Deferred until the
+frontend type substitution and txn worklist are ported together and gated by a
+multi-struct catalogue concatenation fixture.

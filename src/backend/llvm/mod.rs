@@ -26,6 +26,8 @@ mod match_termination_tests;
 mod logical_tests;
 #[cfg(test)]
 mod metadata_tests;
+#[cfg(test)]
+mod crash_regressions;
 
 
 pub use builder::LLVMBuilder;
