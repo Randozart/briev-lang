@@ -10917,8 +10917,22 @@ subtree swallowed the rest of the view and later containers received no ID.
 ## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
 
 After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
-the parser. `TaskCall#` now uses target-width addresses/return. The next failure
-is `std/float_fmt.bv`'s tuple-returning `sscale` (`(Int, Int)` return emitted as
-an i64 pointer handle against an i32 return). Compiled app gates and Task Board
-remain green; JSON-to-`List<Task>` on wasm is deferred until the tuple-return
-ABI is fixed.
+the parser. Tuple returns/destructuring, enum handle/payload construction,
+match payload extraction, String slice bounds, boxed Bool/Char call arguments,
+and same-width cast lanes now use target widths on wasm32. The local-alloca dominance bug in
+`field_of` is fixed by scanning expression blocks for reassigned lets. JSON now
+compiles to wasm, but the browser runtime crashes inside the parser
+(`parse_tasks`/`parse_string`). Compiled app gates and Task Board remain green;
+JSON-to-`List<Task>` remains deferred until the runtime crash is minimized.
+
+## wasm JSON BoolVal payload (RESOLVED 2026-10-23)
+
+The earlier "BoolVal payload reads false" symptom came from a flattened
+top-level `TaskItem.done` view probe, not from JSON object parsing. Once enum
+sret slots were typed and Data→String copied `[len][bytes]` correctly,
+parsed object/list `done:true` values reach `b-each` correctly.
+
+Remaining UI issue is separate: after a toggle txn, the parsed
+`List<TaskItem>` contains `done=true` and the raw task JSON is true, but the
+existing keyed `b-each` DOM row still shows false. Tracked in
+`docs/plans/2026-10-23-wasm-json-runtime.md`.

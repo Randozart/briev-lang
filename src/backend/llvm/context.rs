@@ -1110,6 +1110,9 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-10-21 (P2-1 ReturnedSmall): hidden caller slot for an
     /// enum-returning defn, active only in return context.
     pub enum_out_slot: Option<String>,
+    /// Concrete enum type owned by `enum_out_slot`. A nested enum constructor
+    /// with a different expected type must NOT reuse this slot.
+    pub enum_out_type: Option<crate::ast::Type>,
     pub enum_return_context: bool,
     pub enum_out_busy: bool,
     /// 2026-10-21 (B0 nested enum layout): concrete enum instance expected at
@@ -1414,6 +1417,7 @@ impl FunctionContext {
             enum_inline_slots: HashMap::new(),
             enum_construct_slot: None,
             enum_out_slot: None,
+            enum_out_type: None,
             enum_return_context: false,
             enum_out_busy: false,
             expected_enum_type: None,
@@ -1554,6 +1558,7 @@ impl FunctionContext {
         self.volatile_raw_ptr_params = false;
         self.enum_construct_slot = None;
         self.enum_out_slot = None;
+        self.enum_out_type = None;
         self.enum_return_context = false;
         self.enum_out_busy = false;
         self.expected_enum_type = None;

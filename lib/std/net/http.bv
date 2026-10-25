@@ -403,7 +403,7 @@ defn http_response(status: Int, ctype: String, body: String)
     let s6: GrowBuf = put_str(s5, ctype);
     let s7: GrowBuf = put_str(s6, "\r\nContent-Length: ");
     let s8: GrowBuf = put_str(s7, body_len as String);
-    let s9: GrowBuf = put_str(s8, "\r\n");
+    let s9: GrowBuf = put_str(s8, "\r\nCache-Control: no-store\r\n");
     let s10: GrowBuf = put_str(s9, http_cors_headers());
     let s11: GrowBuf = put_str(s10, "Connection: close\r\n\r\n");
     term put_str(s11, body);

@@ -1,0 +1,21 @@
+import "std/float_fmt.bv";
+
+defn pair() -> (Int, Int) {
+    term (1, 2);
+};
+
+defn destructure_sum() -> Int {
+    let (a, b): (Int, Int) = pair();
+    term a + b;
+};
+
+defn field_sum() -> Int {
+    let p: (Int, Int) = pair();
+    term p.0 + p.1;
+};
+
+let total: Int = destructure_sum() + field_sum();
+
+<view>
+  <span b-text="total">0</span>
+</view>

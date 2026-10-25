@@ -184,6 +184,18 @@ impl LlvmBackend {
                 }
                 _ => {}
             }
+            // Runtime `match`/block expressions carry statements in
+            // `Expr::Block`; the statement walk above cannot see assignments
+            // inside them. Scan expression blocks recursively so a reassigned
+            // local is pre-declared in the entry block instead of being
+            // alloca'd inside a match arm (LLVM dominance failure).
+            crate::ast::visit::walk_stmts(std::slice::from_ref(s), &mut |expr| {
+                if let Expr::Block(body) = expr {
+                    for st in body {
+                        walk(st, lets, assigned);
+                    }
+                }
+            });
         }
         let mut lets: HashMap<String, Option<Type>> = HashMap::new();
         let mut assigned: HashSet<String> = HashSet::new();
@@ -3655,6 +3667,13 @@ impl LlvmBackend {
         let sret_enum = self.ctx.defn_sret.contains(&d.name);
         if sret_enum {
             self.fun.enum_out_slot = Some("%enum_out".to_string());
+            self.fun.enum_out_type = self
+                .ctx
+                .defn_return_types
+                .get(&d.name)
+                .and_then(|types| types.first().cloned());
+        } else {
+            self.fun.enum_out_type = None;
         }
         self.fun.volatile_raw_ptr_params = d.parameters.iter().any(|(_, ty)| {
             matches!(ty, crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_))

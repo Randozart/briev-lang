@@ -541,6 +541,13 @@ export class WasmDomRuntime {{
       // LLVM lowers libc malloc to an env import on wasm32. The runtime
       // owns a bump allocator so user host boundaries do not depend on Emscripten.
       malloc: (size) => this._malloc(size),
+      // C-backed Data→String door: copy a NUL-terminated byte sequence into a
+      // Briev [len][bytes] string owned by wasm memory.
+      briev_bits_to_str: (ptr) => this._bitsToString(ptr),
+      // Native syscall shim: browser programs do not use file/OS syscalls.
+      // The symbol may remain rooted by the shared prelude; a callable stub
+      // keeps the wasm module instantiable without pretending to implement IO.
+      briev_syscall: (..._args) => 0,
 {imports_js}
     }};
   }}
@@ -643,6 +650,22 @@ export class WasmDomRuntime {{
     const len = Number(lenView.getBigUint64(ptr, true));
     const bytes = mem.slice(Number(ptr) + 8, Number(ptr) + 8 + len);
     return new TextDecoder().decode(bytes);
+  }}
+
+  _bitsToString(ptr) {{
+    if (!ptr) return 0;
+    // Briev Data/String is [i64 length][bytes], NOT a NUL-terminated C string.
+    const header = new DataView(this._memory.buffer);
+    const len = Number(header.getBigUint64(Number(ptr), true));
+    if (len < 0 || len > (1 << 30)) return 0;
+    // _malloc may grow memory and detach the buffer; re-acquire views after.
+    const out = this._malloc(8 + len + 1);
+    const src = new Uint8Array(this._memory.buffer);
+    const dv = new DataView(this._memory.buffer);
+    dv.setBigUint64(out, BigInt(len), true);
+    src.set(src.subarray(Number(ptr) + 8, Number(ptr) + 8 + len), out + 8);
+    src[out + 8 + len] = 0;
+    return out;
   }}
 
   _writeString(str) {{
@@ -917,14 +940,14 @@ export async function createApp(wasmBytes) {{
              \x20           const v = itemValue(expr.trim(), item);\n\
              \x20           return String(v === undefined ? item : v);\n\
              \x20         }};\n
-             \x20         const applyItem = (el, item) => {{\n\
+             \x20         const applyItem = (el, item, bindTriggers) => {{\n\
              \x20           for (const ib of itemBindings) {{\n\
              \x20             const target = ib.marker === 0 ? el : el.querySelector('[data-itm=\"' + ib.marker + '\"]');\n\
              \x20             if (!target) continue;\n\
              \x20             if (ib.kind === \"text\") target.textContent = evalItem(ib.expr, item);\n\
              \x20             else if (ib.kind === \"show\") target.style.display = evalItem(ib.expr, item) ? '' : 'none';\n\
              \x20             else if (ib.kind === \"when\") target.style.display = evalItem(ib.expr, item) ? '' : 'none';\n\
-             \x20             else if (ib.kind === \"trigger\") {{\n\
+             \x20             else if (ib.kind === \"trigger\" && bindTriggers) {{\n\
              \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(item));\n\
              \x20             }}\n\
              \x20           }}\n\
@@ -941,13 +964,16 @@ export async function createApp(wasmBytes) {{
               \x20             const key = itemKey({key_expr:?}, item);\n\
               \x20             seen.add(key);\n\
               \x20             let el2 = rendered.get(key);\n\
-              \x20             if (!el2) {{\n\
+              \x20             const isNew = !el2;\n\
+              \x20             if (isNew) {{\n\
               \x20               el2 = document.createElement(tagName);\n\
               \x20               el2.innerHTML = templateInner;\n\
-              \x20               applyItem(el2, item);\n\
               \x20               container.appendChild(el2);\n\
              \x20               rendered.set(key, el2);\n\
              \x20             }}\n\
+             \x20             // Existing keyed nodes still need field updates (toggle\n\
+             \x20             // done=true must re-render, not only create).\n\
+             \x20             applyItem(el2, item, isNew);\n\
              \x20           }}\n\
              \x20           for (const [key, el2] of rendered) {{\n\
              \x20             if (!seen.has(key)) {{\n\
@@ -1316,7 +1342,7 @@ export async function createApp(wasmBytes) {{
                      \x20           }}\n\
                      \x20           return Boolean(item);\n\
                      \x20         }};\n\
-                     \x20         const applyItem = (el, item) => {{\n\
+                     \x20         const applyItem = (el, item, bindTriggers) => {{\n\
                      \x20           for (const ib of itemBindings) {{\n\
                      \x20             const target = ib.marker === 0 ? el : el.querySelector('[data-itm=\"' + ib.marker + '\"]');\n\
                      \x20             if (!target) continue;\n\
@@ -1326,7 +1352,7 @@ export async function createApp(wasmBytes) {{
                      \x20               for (const [clsName, clsExpr] of (ib.cls || [])) {{\n\x20                 target.classList.toggle(clsName, evalItem(clsExpr, item));\n\x20               }}\n\
                      \x20             }} else if (ib.kind === \"show\" || ib.kind === \"when\") {{\n\
                      \x20               target.style.display = evalItem(ib.expr, item) ? \"\" : \"none\";\n\
-                     \x20             }} else if (ib.kind === \"trigger\") {{\n\
+                     \x20             }} else if (ib.kind === \"trigger\" && bindTriggers) {{\n\
                      \x20               target.addEventListener(ib.event, () => this._txn(ib.txn)(item));\n\
                      \x20             }}\n\
                      \x20           }}\n\
@@ -1342,13 +1368,15 @@ export async function createApp(wasmBytes) {{
                      \x20             const key = String(item);\n\
                      \x20             seen.add(key);\n\
                      \x20             let el = rendered.get(key);\n\
-                     \x20             if (!el) {{\n\
+                     \x20             const isNew = !el;\n\
+                     \x20             if (isNew) {{\n\
                      \x20               el = document.createElement(tagName);\n\
                      \x20               el.innerHTML = templateInner;\n\
-                     \x20               applyItem(el, item);\n\
                      \x20               container.appendChild(el);\n\
                      \x20               rendered.set(key, el);\n\
                      \x20             }}\n\
+                     \x20             // Existing keyed nodes still need field updates.\n\
+                     \x20             applyItem(el, item, isNew);\n\
                      \x20           }}\n\
                      \x20           for (const [key, el] of rendered) {{\n\
                      \x20             if (!seen.has(key)) {{\n\

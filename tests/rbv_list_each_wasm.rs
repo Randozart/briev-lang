@@ -62,4 +62,8 @@ fn per_instantiation_list_each_builds_for_wasm() {
     let multi_html = std::fs::read_to_string(out.join("list_multi_each_wasm.html")).unwrap();
     assert_eq!(multi_html.matches("id=\"rbv-li-").count(), 2,
         "both b-each containers need stable ids:\n{multi_html}");
+
+    // Tuple return/destructure/field access on wasm32 (the float_fmt `sscale`
+    // shape used by JSON parsing).
+    build_fixture(brievc, "tuple_return_wasm", &out);
 }
