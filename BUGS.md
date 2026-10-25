@@ -10943,7 +10943,7 @@ existing keyed `b-each` DOM row still shows false. Tracked in
 `"aborted" as E`, contradicting the documented trapping API and corrupting
 object payloads. Both wrong-side arms now `trap;`; valid payloads are
 preserved. Adopted from Otto Westerlund's `fix/result-wrong-side-unwrap`
-(`dac3aa4a`). Regression: `tests/fixtures/stdlib/result_object_gate.bv`
+(`dac3aa4a`). Regression: `tests/tier1/result_object_gate.bv`
 checks both object payloads and both SIGILL paths.
 
 ## Unused call to a trapping defn is eliminated (OPEN 2026-10-25)
