@@ -1547,6 +1547,13 @@ fn eval_reflect(
             (Value::Product { fields, .. } | Value::Sum { payload: fields, .. }) => {
                 Ok(Value::int(fields.len() as i64))
             }
+            // 2026-10-25: scalar `Bytes` is the value width, matching codegen's
+            // non-string type_size path. The strict JSON integer accumulator
+            // derives its minimum from `0 .^^Bytes`; returning Void made the
+            // reference reject every integer parse.
+            Value::Atom(Atom::Int(_)) | Value::Atom(Atom::Float(_)) => Ok(Value::int(8)),
+            Value::Atom(Atom::Bool(_)) => Ok(Value::int(1)),
+            Value::Atom(Atom::Char(_)) => Ok(Value::int(4)),
             _ => Ok(Value::Void),
         },
         // `Type` (compile-time) is a frozen descriptor: the protocol category
