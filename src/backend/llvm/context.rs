@@ -951,9 +951,6 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub let_original_types: HashMap<String, Type>,
     /// 2026-07-18: Tracks which let-bindings point to allocas (vs SSA registers).
     pub let_binding_allocas: HashSet<String>,
-    /// 2026-10-22: reassigned ABI parameters retain their native physical type.
-    /// Entry slots dominate skipped logical branches; retire with typed locals.
-    pub native_parameter_slots: HashSet<String>,
     /// 2026-08-04 (compiler-in-Briev): top-level `let name` bindings that are
     /// reassigned somewhere in the body (incl. inside when/if/foreach blocks).
     /// Pre-declared as allocas at the function ENTRY so a reassignment inside a
@@ -1442,7 +1439,6 @@ impl FunctionContext {
             let_binding_types: HashMap::new(),
             let_original_types: HashMap::new(),
             let_binding_allocas: HashSet::new(),
-            native_parameter_slots: HashSet::new(),
             reassigned_lets: HashMap::new(),
             boxed_scalar_regs: HashSet::new(),
             task_handle_regs: HashSet::new(),
@@ -1548,16 +1544,9 @@ impl FunctionContext {
         r
     }
 
-    /// 2026-10-22: binding resets must also drop native parameter-slot metadata;
-    /// register names are reused by subsequent functions and outlined bodies.
-    pub fn clear_local_bindings(&mut self) {
-        self.let_bindings.clear();
-        self.native_parameter_slots.clear();
-    }
-
     /// Clear all local variable bindings (used at function entry).
     pub fn clear_locals(&mut self) {
-        self.clear_local_bindings();
+        self.let_bindings.clear();
         self.let_binding_types.clear();
         self.let_original_types.clear();
         self.boxed_scalar_regs.clear();
