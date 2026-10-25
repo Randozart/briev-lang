@@ -11085,3 +11085,20 @@ snapshot and heap range/reuse tests pass.
 written by helper defns never reached the DOM, and the flush buffer was sized
 only for direct writes. The frontend now computes the helper-call closure and
 the batch/sizing union it. Adopted from `2f5ad2bf`.
+
+
+## Metadata IDs collided on large universes (FIXED 2026-10-25)
+
+Fixed reservations !50 (range), !99 (StateAliasScope) and per-function
+metadata starting at 100 overlapped once the type universe grew, and function
+resets dropped pending definitions. Metadata IDs and definitions now live in
+CompilerContext; the TBAA prefix is reserved from the live universe, one
+allocator serves StateAliasScope/ranges/loops, and late closures flush at
+module end. Regression: `metadata_tests` at 0/50/100/180 types.
+Adopted from Otto Westerlund's `a42faac5`.
+
+## Int constant globals were i64 on wasm32 (FIXED 2026-10-25)
+
+Constant declarations, aliases and reads used protocol metadata (i64) while
+flexible Int is i32 on wasm32, producing invalid comparisons. All three now use
+`llvm_type`; the wasm constant-width regression pins the global and load.

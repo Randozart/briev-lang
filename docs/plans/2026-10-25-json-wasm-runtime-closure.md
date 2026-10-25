@@ -1,8 +1,8 @@
 # JSON wasm closure and website runtime
 
 **Date:** 2026-10-25
-**Status:** Phase C partial — unused-trap observability and lazy logical
-semantics landed; metadata allocator remains
+**Status:** Phase C COMPLETE — unused-trap observability, lazy logical semantics,
+module metadata allocation and target-width constants landed
 **Branch:** `feat/json-wasm-runtime`
 **Predecessor:** `docs/plans/2026-10-25-otto-contribution-adoption.md`
 
@@ -171,3 +171,15 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - Validation: 3330 lib tests, 25 daily, Task Board Chromium/API, rbv,
   determinism, accel non-hang and full runtime suite all pass.
 - Remaining Phase C: module metadata allocator + target-width constants.
+
+### Phase C completion
+
+- `faff264a` — metadata IDs/definitions live in CompilerContext; the TBAA
+  prefix is reserved from the live universe, StateAliasScope/ranges/loops share
+  one allocator, and late closures flush after all function families.
+- Constant globals, aliases and reads use `llvm_type`, so flexible Int is i32
+  on wasm32.
+- Regressions: large-universe metadata uniqueness/lifetime and wasm constant
+  width.
+- Validation: 3333 lib tests, 25 daily, Task Board Chrome/API, rbv,
+  determinism, accel non-hang, heap/snapshot and full runtime suite.
