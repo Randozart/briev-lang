@@ -2909,6 +2909,7 @@ impl LlvmBackend {
         for (field_name, field_expr) in fields {
             let fr = self.fun.gen_reg();
             let val = self.emit_expr_inner(out, &fr, field_expr, indent);
+            let val = self.own_enum_value(out, indent, &val);
             let offset = self.lookup_field_offset(type_name, field_name);
             let ptr_reg = self.fun.gen_reg();
             writeln!(out, "{}  {} = getelementptr i8, ptr {}, i64 {}", indent, ptr_reg, alloca_reg, offset).ok();
@@ -7121,14 +7122,18 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 r
             }
             crate::ast::Pattern::Literal(lit) => {
-                let lv = self.emit_pattern_literal(out, lit, indent);
-                let wide = self.ensure_typed_value(
-                    out, indent, "i64", scrut, Some(scrut_ty.clone()),
-                    self.ctx.type_universe.clone().as_ref(),
-                );
-                let r = self.fun.gen_reg();
-                writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, r, wide, lv).ok();
-                r
+                // 2026-10-25: pattern literals obey the scrutinee's ABI,
+                // including Bool and browser-width integers. Reuse ordinary
+                // typed equality rather than imposing an i64 representation.
+                let literal = self.emit_expr(out, lit, indent);
+                let literal = self.coerce_register_value(out, indent, &literal, scrut_ty);
+                let value = TypedRegister { name: scrut.to_string(), ty: scrut_ty.clone() };
+                let result = self.fun.gen_reg();
+                let compared = self.emit_binary_op(out, &result, &BinaryOpKind::Eq, &value, &literal, indent);
+                let boolean = self.coerce_to_i8_bool(out, indent, &compared);
+                let condition = self.fun.gen_reg();
+                writeln!(out, "{indent}{condition} = icmp ne i8 {}, 0", boolean.name).ok();
+                condition
             }
             // 2026-08-22 (spec-conformance plan Phase 4a): tuple patterns
             // compare memberwise. The scrutinee is a tuple's heap image

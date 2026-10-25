@@ -1,0 +1,15 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+import "std/json.bv";
+let result: String = "idle";
+txn probe(text: String) [text .^Length <= 65536][result .^Length > 0] {
+ let parsed: Result<JsonValue,String> = json_parse(text);
+ when is_ok(parsed) { result = "ok"; };
+ when is_err(parsed) { result = unwrap_err(parsed); };
+ term;
+};
+<view><button b-trigger:click="probe">Probe</button><p b-text="result">idle</p></view>
+
+

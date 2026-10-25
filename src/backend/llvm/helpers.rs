@@ -925,8 +925,21 @@ impl LlvmBackend {
         let lb = self.emit_load_length(out, indent, &hb, "clq", "clb");
         let total = self.emit_add_const(out, indent, &la, &lb, "ctl");
         let alloc_size = self.compute_alloc_size(out, indent, &total, "chs", "cas");
-        let result_i64 = self.emit_arena_alloc(out, indent, &alloc_size);
-        // 2026-07-19: emit_arena_alloc returns i64 — inttoptr to ptr for helpers.
+        let result_i64 = if self.arena_ptr_idx.is_some() && !self.fun.stateless_body {
+            self.emit_arena_alloc(out, indent, &alloc_size)
+        } else {
+            // 2026-10-25: String headers and compute_alloc_size use i64 on
+            // every target. Widening this as a native Int breaks wasm32 IR.
+            // Retire with a coordinated change to the String length ABI.
+            let size64 = alloc_size.clone();
+            let ptr = self.fun.gen_reg();
+            writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, ptr, size64).ok();
+            let handle = self.fun.gen_reg();
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, ptr).ok();
+            self.fun.alloc_strategies.insert(handle.clone(), crate::backend::llvm::AllocStrategy::Malloc);
+            handle
+        };
+        // Allocation follows the same state-aware policy as Alloc#.
         let result_handle = self.fun.gen_reg();
         let hw = format!("i{}", self.ctx.int_bits);
         if hw == "i32" {
@@ -1176,12 +1189,9 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "{}{}:", indent, fl).ok();
         let clean = self.emit_mask_tag(out, indent, boxed, &format!("cc{}", tag_prefix));
-        // 2026-09-10 (Family F): when the arena-aware rt_free defn
-        // exists (cast_lanes), route the temp free through it — a no-op that
-        // keeps libc out of the symbol table for freestanding programs (the
-        // concat epilogue was the last @free call site). The tag-bit flag
-        // remains the gate: arena pointers are never tagged temp, so this
-        // branch is dead at runtime either way.
+        // Free temporary malloc results directly. `rt_free` is the arena
+        // no-op and must not receive heap allocations created by a stateless
+        // concat path (2026-10-25).
         if self.ctx.defn_params.contains_key("rt_free") {
             // 2026-09-23 (stateless-defn mechanism): rt_free's body is
             // `term 0;` — it takes NO state. Gate on defn_takes_state so a
@@ -2369,6 +2379,40 @@ impl LlvmBackend {
         Some((lc, rc))
     }
 
+    /// Normalize mixed integer operands to the wider declared LLVM width.
+    /// Integer literals may retain their minimal physical width (for example
+    /// i16 for 65535) while ordinary Int expressions use the target width.
+    /// Binary operations require both registers to agree before emission.
+    pub(crate) fn adapt_mixed_integer_operands(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        left: &TypedRegister,
+        right: &TypedRegister,
+    ) -> Option<(TypedRegister, TypedRegister)> {
+        let left_ty = self.llvm_type(&left.ty);
+        let right_ty = self.llvm_type(&right.ty);
+        let left_bits = left_ty.strip_prefix('i')?.parse::<u32>().ok()?;
+        let right_bits = right_ty.strip_prefix('i')?.parse::<u32>().ok()?;
+        let target_bits = left_bits.max(right_bits).max(self.ctx.int_bits as u32);
+        if left_bits == target_bits && right_bits == target_bits {
+            return None;
+        }
+        let target_ty = format!("i{target_bits}");
+        let normalize = |backend: &mut Self, reg: &TypedRegister, width: u32, ty: &str,
+                         output: &mut String| -> TypedRegister {
+            if width == target_bits {
+                return reg.clone();
+            }
+            let converted = backend.fun.gen_reg();
+            let opcode = if backend.is_protocol_member(&reg.ty, "UInt") { "zext" } else { "sext" };
+            writeln!(output, "{indent}{converted} = {opcode} {ty} {} to {target_ty}", reg.name).ok();
+            TypedRegister { name: converted, ty: Type::int() }
+        };
+        Some((normalize(self, left, left_bits, &left_ty, out),
+              normalize(self, right, right_bits, &right_ty, out)))
+    }
+
     /// Box a typed register to i64 for uniform state storage.
     /// Handles Float64(double)→bitcast→i64, Float(float)→bitcast→i32→zext→i64,
     /// Bool(i8)→zext→i64, String/Data(i8*)→ptrtoint→i64. Int is already i64 (identity).
@@ -2425,6 +2469,26 @@ impl LlvmBackend {
         // so loads from %State produce i64 values that need no conversion.
         if self.llvm_type(&reg.ty) == "i64" {
             return reg.name.clone();
+        }
+        // Object and collection values use the target pointer-width integer as
+        // their local handle, but boxed tuple/enum payload slots are always
+        // i64 words. Widen that handle at the boxing boundary; treating it as
+        // an already-boxed value emits an i32 register into an i64 store on
+        // wasm32.
+        let is_narrow_handle = match &reg.ty {
+            Type::Custom(name) | Type::Applied(name, _) => {
+                self.ctx.obj_types.contains(name)
+                    || self.ctx.coll_storage.contains_key(name)
+            }
+            _ => false,
+        };
+        if is_narrow_handle {
+            let llvm_ty = self.llvm_type(&reg.ty);
+            if llvm_ty.starts_with('i') {
+                let widened = self.fun.gen_reg();
+                writeln!(out, "{}{} = zext {} {} to i64", indent, widened, llvm_ty, reg.name).ok();
+                return widened;
+            }
         }
         // 2026-07-26: Protocol-driven dispatch. No name matching.
         let ty = &reg.ty;
@@ -2608,6 +2672,54 @@ impl LlvmBackend {
         )
         .ok();
         Some(slot)
+    }
+
+    /// 2026-10-25: an aggregate can outlive the caller-owned temporary image
+    /// returned by an enum call. Give stored enum values an independent image;
+    /// retain stack-backed calls for local consumers. Retire with an ownership
+    /// proof that the source image already outlives the destination aggregate.
+    pub(crate) fn own_enum_value(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
+        let Some(layout) = self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(&reg.ty)) else {
+            return reg.clone();
+        };
+        let bytes = layout.image_words * 8;
+        let handle = self.adapt_to_i64(out, indent, reg);
+        let source = self.fun.gen_reg();
+        let destination = self.fun.gen_reg();
+        let result = self.fun.gen_reg();
+        writeln!(out, "{indent}{source} = inttoptr i64 {handle} to ptr").ok();
+        writeln!(out, "{indent}{destination} = call ptr @malloc(i64 {bytes})").ok();
+        writeln!(out, "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {destination}, ptr {source}, i64 {bytes}, i1 false)").ok();
+        writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to i64").ok();
+        TypedRegister { name: result, ty: reg.ty.clone() }
+    }
+
+    /// 2026-10-25: returning a local enum must transfer its image to the
+    /// caller-owned result slot before the local frame dies. Constructors may
+    /// already use that slot; loading the full image first also permits aliasing.
+    /// Retire only when enum values are returned directly by value.
+    pub(crate) fn retain_enum_return(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
+        let Some(destination) = self.fun.enum_out_slot.clone() else { return reg.clone(); };
+        let words = self.enum_image_words(self.fun.item_return_type.as_ref());
+        let handle = self.adapt_to_i64(out, indent, reg);
+        let source = self.fun.gen_reg();
+        writeln!(out, "{indent}{source} = inttoptr i64 {handle} to ptr").ok();
+        let mut values = Vec::with_capacity(words);
+        for word in 0..words {
+            let address = self.fun.gen_reg();
+            let value = self.fun.gen_reg();
+            writeln!(out, "{indent}{address} = getelementptr i64, ptr {source}, i64 {word}").ok();
+            writeln!(out, "{indent}{value} = load i64, ptr {address}").ok();
+            values.push(value);
+        }
+        for (word, value) in values.iter().enumerate() {
+            let address = self.fun.gen_reg();
+            writeln!(out, "{indent}{address} = getelementptr i64, ptr {destination}, i64 {word}").ok();
+            writeln!(out, "{indent}store i64 {value}, ptr {address}").ok();
+        }
+        let result = self.fun.gen_reg();
+        writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to i64").ok();
+        TypedRegister { name: result, ty: reg.ty.clone() }
     }
 
     /// 2026-10-21 (B2 nested enum layout): image width in i64 words for a
@@ -2823,6 +2935,21 @@ impl LlvmBackend {
         let have_ll = self.llvm_type(&val.ty);
         if have_ll == want_ll {
             return val.clone();
+        }
+        if let (Some(have_bits), Some(want_bits)) = (
+            have_ll.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
+            want_ll.strip_prefix('i').and_then(|n| n.parse::<u32>().ok()),
+        ) {
+            let op = if have_bits > want_bits {
+                "trunc"
+            } else if self.is_protocol_member(&val.ty, "UInt") {
+                "zext"
+            } else {
+                "sext"
+            };
+            let r = self.fun.gen_reg();
+            writeln!(out, "{}{} = {} {} {} to {}", indent, r, op, have_ll, val.name, want_ll).ok();
+            return crate::backend::llvm::TypedRegister { name: r, ty: want_ty.clone() };
         }
         let r = self.fun.gen_reg();
         let emitted = match (have_ll.as_str(), want_ll.as_str()) {

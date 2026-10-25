@@ -63,6 +63,10 @@ fn per_instantiation_list_each_builds_for_wasm() {
     assert_eq!(multi_html.matches("id=\"rbv-li-").count(), 2,
         "both b-each containers need stable ids:\n{multi_html}");
 
+    // Browser JSON scalar widths (int/bool/finite float) through the real
+    // WASM backend, not just an IR string check.
+    build_fixture(brievc, "browser_json_values", &out);
+
     // JSON stringify exercises runtime `.^Length` on a collection parameter
     // on wasm32 (target-width handle, i64 len header).
     build_fixture(brievc, "json_stringify_wasm", &out);

@@ -1,0 +1,19 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+enum Choice { Value(Int), Empty };
+obj Envelope { payload: Choice; };
+defn choice(value: Int) -> Choice { term Value(value); };
+defn envelope(value: Int) -> Envelope { term Envelope { payload: choice(value) }; };
+defn read_value(value: Choice) -> Int { term match value { Value(n) => n, Empty => -1 }; };
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let first: Envelope = envelope(37);
+    let second: Envelope = envelope(91);
+    let passed: Bool = read_value(first.payload) == 37 && read_value(second.payload) == 91;
+    println!("aggregate_result_lifetime={}",passed);
+    when !passed { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

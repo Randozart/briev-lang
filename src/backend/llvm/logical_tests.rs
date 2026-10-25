@@ -6,7 +6,7 @@ use super::{FunctionContext, LlvmBackend};
 use crate::ast::{BinaryOpKind, Expr, Statement};
 use std::process::Command;
 
-fn clang_ir(ir: &str, optimization: &str, run: bool) {
+pub(super) fn clang_ir(ir: &str, optimization: &str, run: bool) {
     if Command::new("clang").arg("--version").output().is_err() { return; }
     let directory = tempfile::TempDir::new().expect("IR fixture directory");
     let input = directory.path().join("logical.ll");

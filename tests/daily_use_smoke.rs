@@ -426,6 +426,18 @@ fn trait_generics_golden_output() {
 /// regression in the member liveness or type-dependent needs-state paths is
 /// caught in CI.
 #[test]
+fn enum_aggregate_lifetime_golden_output() {
+    let out = build_link_run("enum_aggregate_lifetime", "golden", &[]);
+    assert_eq!(out, "aggregate_result_lifetime=true\n", "aggregate lifetime golden drifted: {out:?}");
+}
+
+#[test]
+fn enum_local_return_golden_output() {
+    let out = build_link_run("enum_local_return", "golden", &[]);
+    assert_eq!(out, "local_result_lifetime=true\n", "local enum lifetime golden drifted: {out:?}");
+}
+
+#[test]
 fn result_object_gate_golden_output() {
     let out = build_link_run("result_object_gate", "golden", &[]);
     assert_eq!(out, "object_unwraps=true\n", "Result object unwrap golden drifted: {out:?}");
