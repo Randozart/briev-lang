@@ -262,3 +262,12 @@ test; E is deferred on concrete list typing in `iter_chain`.
   past prelude imports, but still hits an untyped empty-list codegen context.
   `server.bv` remains blocked on Vector/FloatVector naming plus broad contract
   bounds in the app modules. App stays external.
+
+### Root-prelude/list-return validation
+
+- `cargo test --lib`: 3342 passed.
+- daily corpus: 29 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- host transport: PASS.
+- full runtime suite: PASS, all MATCH/PASS.
