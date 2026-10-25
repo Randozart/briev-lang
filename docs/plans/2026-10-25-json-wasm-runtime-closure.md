@@ -1,7 +1,7 @@
 # JSON wasm closure and website runtime
 
 **Date:** 2026-10-25
-**Status:** ACTIVE
+**Status:** Phase A COMPLETE — strict JSON on wasm; Phase B next
 **Branch:** `feat/json-wasm-runtime`
 **Predecessor:** `docs/plans/2026-10-25-otto-contribution-adoption.md`
 

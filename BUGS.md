@@ -11030,3 +11030,14 @@ operations remain eager. Native -O0/-O2 and LLVM verifier regressions are in
 Conditional expression-block writes also require entry-slot discovery for locals
 and mutable native ABI parameters. Logical merges discard RHS-only pointer,
 state-pointer and last-value cache entries to preserve SSA dominance.
+
+## Strict JSON parser on wasm (FIXED 2026-10-25)
+
+Strict JSON parser and stringify now pass native and wasm. The lookup failure
+was `Ptr<Tuple>` being classified as a scalar 4-byte pointer while canonical
+collection slots are 8-byte words: `List<(String,JsonValue)>` index 1 read the
+slot padding. List indexing now uses the word stride and unboxes target-width
+handles. `json_get`/`find_pair` also needed Otto's mutable-parameter entry slots
+and lazy logical evaluation. Task Board toggle renders `done=true` with the
+strict parser; parse/stringify gates run in the daily corpus. Interpreter
+scalar `.^^Bytes` and `Mod#` were fixed to keep the reference aligned.
