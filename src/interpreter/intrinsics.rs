@@ -151,7 +151,7 @@ pub fn execute_intrinsic(
         "Sub#" => exec_binop(args, |a, b| a - b, |a, b| a - b),
         "Mul#" => exec_binop(args, |a, b| a * b, |a, b| a * b),
         "Div#" => exec_div(args),
-        "Rem#" => exec_rem(args),
+        "Rem#" | "Mod#" => exec_rem(args),
         "Neg#" => {
             let a = arg_as_i64(args, 0)?;
             Ok(i64_to_bits(a.wrapping_neg()))

@@ -11005,3 +11005,49 @@ preconditions are unproved at the call sites. The module needs the same
 proof/guard treatment as the net stack before adoption; do not weaken the
 network bounds contracts. Native encoding/live-SQLSTATE gates must be rerun
 after that pass.
+`foreach index in 0..n { result += [index as String]; }` lost the loop element
+binding during elaboration and emitted raw addition of collection handles.
+Binding the element also exposed missing enum payload bindings in enclosing
+match arms. Elaboration now consumes the checker's existing iterable and enum
+payload type authorities, including generic substitution, and restores lexical
+scope afterward. Two unit regressions and the generated-WASM collection fixture
+pin declared concatenation through both forms.
+
+## Logical RHS evaluated before its guard (2026-10-22)
+
+Recommender I02 exposed `idx > 0 && items[idx-1]...` reading index -1. LLVM's
+ordinary BinaryOp path emitted both operands before register `and`/`or`; the
+loop-exit evaluator did likewise. The reference interpreter already skips the
+unneeded RHS. Minimal discriminators use runtime flags around a trapping/read
+RHS and count exactly-once writes for the required edge.
+
+The new logical CFG emitter branches before RHS emission, joins canonical i8
+values through explicit predecessor blocks, handles nested/terminating RHS
+paths, and supplies the exit evaluator's existing i64 boundary through shared
+adaptation. Specific AST arms precede the unchanged eager fallback; bitwise
+operations remain eager. Native -O0/-O2 and LLVM verifier regressions are in
+`logical_tests.rs`. Verification is recorded in the dated short-circuit plan.
+Conditional expression-block writes also require entry-slot discovery for locals
+and mutable native ABI parameters. Logical merges discard RHS-only pointer,
+state-pointer and last-value cache entries to preserve SSA dominance.
+
+## Strict JSON parser on wasm (FIXED 2026-10-25)
+
+Strict JSON parser and stringify now pass native and wasm. The lookup failure
+was `Ptr<Tuple>` being classified as a scalar 4-byte pointer while canonical
+collection slots are 8-byte words: `List<(String,JsonValue)>` index 1 read the
+slot padding. List indexing now uses the word stride and unboxes target-width
+handles. `json_get`/`find_pair` also needed Otto's mutable-parameter entry slots
+and lazy logical evaluation. Task Board toggle renders `done=true` with the
+strict parser; parse/stringify gates run in the daily corpus. Interpreter
+scalar `.^^Bytes` and `Mod#` were fixed to keep the reference aligned.
+
+
+## Logical short-circuit patch hangs nbody_newton_accel (OPEN 2026-10-25)
+
+Adopting Otto's `5b9ac7f8` (`019202f4`) made `nbody_newton_accel` spin with
+100% CPU past the suite timeout. The same benchmark finishes on the baseline
+and on a strict-JSON build with the logical patch reverted. Strict JSON does
+not need the patch (`json_get` finds second keys and Task Board passes without
+it). Reverted from the JSON PR; re-land only with an nbody non-hang gate and
+loop/dominance tests.

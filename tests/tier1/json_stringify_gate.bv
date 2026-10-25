@@ -1,0 +1,31 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/json.bv";
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let text: String = "héllo 🌍\n\t\"\\";
+    let values: List<JsonValue> = [Null(),BoolVal(true),BoolVal(false),IntVal(-17),FloatVal(1.25),StrVal(text)];
+    let pairs: List<(String,JsonValue)> = [("escaped\"key",Array(values))];
+    let encoded: Result<String,String> = json_stringify(Object(pairs));
+    let valid: Bool = is_ok(encoded);
+    when valid {
+        let prefix: String = "{\"escaped\\\"key\":[null,true,false,-17,1.25,";
+        valid = is_ok(json_parse(unwrap(encoded))) && unwrap(encoded)[0:prefix .^Length] == prefix;
+    };
+    let roundtrip: Bool = false;
+    let quoted: Result<String,String> = json_stringify(StrVal(text));
+    when is_ok(quoted) {
+        let parsed: Result<JsonValue,String> = json_parse(unwrap(quoted));
+        when is_ok(parsed) {
+            let decoded: Result<String,String> = resolve_str_val(unwrap(parsed));
+            when is_ok(decoded) {
+                roundtrip = unwrap(decoded) == text;
+                when !roundtrip { println!("encoded={} decoded={} expected={}",unwrap(quoted),unwrap(decoded),text); };
+            };
+        };
+    };
+    println!("json_encode_all_variants={} unicode_control_roundtrip={}",valid,roundtrip);
+    when !valid || !roundtrip { endprogram 1; };
+    tick = 1; endprogram;
+};

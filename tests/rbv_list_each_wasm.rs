@@ -63,6 +63,21 @@ fn per_instantiation_list_each_builds_for_wasm() {
     assert_eq!(multi_html.matches("id=\"rbv-li-").count(), 2,
         "both b-each containers need stable ids:\n{multi_html}");
 
+    // JSON stringify exercises runtime `.^Length` on a collection parameter
+    // on wasm32 (target-width handle, i64 len header).
+    build_fixture(brievc, "json_stringify_wasm", &out);
+
+    // List of boxed tuples: index 1 must use the canonical 8-byte word
+    // stride and unbox the i32 handle, not treat Ptr<Tuple> as a 4-byte
+    // scalar pointer.
+    build_fixture(brievc, "list_tuple_index_wasm", &out);
+    let tuple_ir = std::fs::read_to_string(out.join("list_tuple_index_wasm.ll")).unwrap();
+    let body = tuple_ir.split("define i32 @read_second").nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("read_second definition");
+    assert!(body.contains("getelementptr i64"), "tuple list index must use word stride:\n{body}");
+    assert!(!body.contains("getelementptr i32"), "tuple list index must not use 4-byte stride:\n{body}");
+
     // Tuple return/destructure/field access on wasm32 (the float_fmt `sscale`
     // shape used by JSON parsing).
     build_fixture(brievc, "tuple_return_wasm", &out);

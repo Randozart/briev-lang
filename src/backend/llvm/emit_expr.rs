@@ -1600,16 +1600,28 @@ impl LlvmBackend {
                     // 8-byte — the recommender regression). List/seq slots
                     // and non-scalar pointees keep the i64-carrier paths
                     // below (boxed handles, fat pointers, string boxes).
-                    let elem_llvm = match &obj_reg.ty {
-                        Type::Ptr(inner) => self.llvm_type(inner),
-                        _ => "i64".to_string(),
+                    let (elem_llvm, scalar_pointee) = match &obj_reg.ty {
+                        Type::Ptr(inner) => {
+                            // 2026-10-25: a boxed tuple handle lowers to i32 on
+                            // wasm32, but the canonical Collection slot is an
+                            // 8-byte word. Classifying it as a scalar pointee
+                            // made List<(...)> index with a 4-byte stride and
+                            // read the padding at index 1 (strict JSON object
+                            // lookup). Scalar here means a flat protocol value,
+                            // never an aggregate/boxed handle.
+                            let scalar = matches!(inner.as_ref(), Type::Bits(_))
+                                || (self.ctx.type_universe.as_ref().map_or(false, |u| {
+                                    crate::type_universe::protocol_category(u, inner).map_or(false, |cat| {
+                                        matches!(cat.as_str(), "Int" | "UInt" | "Float" | "Bool" | "Char")
+                                    })
+                                }) && !matches!(inner.as_ref(), Type::Tuple(_)));
+                            (self.llvm_type(inner), scalar)
+                        }
+                        _ => ("i64".to_string(), false),
                     };
                     let raw_ptr_scalar = matches!(obj_reg.ty, Type::Ptr(_))
                         && !is_list_type
-                        && matches!(
-                            elem_llvm.as_str(),
-                            "i8" | "i16" | "i32" | "i64" | "float" | "double"
-                        );
+                        && scalar_pointee;
                     if raw_ptr_scalar {
                         writeln!(
                             out,
@@ -1723,8 +1735,15 @@ impl LlvmBackend {
                         writeln!(out, "{}store i64 {}, ptr {}", indent, table_addr, fat_table).ok();
                         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, fat_p).ok();
                     } else {
+                        // Boxed collection slots are 8-byte words. A handle
+                        // whose declared LLVM type is i32 on wasm32 is stored
+                        // zero-extended in the low half; load only that half so
+                        // consumers see the target-width handle. Native i64
+                        // handles keep the full word.
+                        let elem_llvm = self.llvm_type(&index_elem_ty);
+                        let load_ty = if elem_llvm == "i32" { "i32" } else { "i64" };
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
-                            if self.fun.volatile_read { "volatile " } else { "" }, "i64", gep).ok();
+                            if self.fun.volatile_read { "volatile " } else { "" }, load_ty, gep).ok();
                     }
                 } else if self.is_string_operand(&obj_reg.ty) {
                     // 2026-10-05 (json.bv): String indexing `s[i]` — the
@@ -4528,10 +4547,13 @@ impl LlvmBackend {
                          _ => {
                              let p = self.fun.gen_reg();
                              let gep = self.fun.gen_reg();
-                             let r = self.fun.gen_reg();
-                             writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, recv_reg.name).ok();
+                             let full = self.fun.gen_reg();
+                             // Collection handles are target-width on wasm32;
+                             // the hidden len slot remains an i64 header.
+                             self.emit_inttoptr(out, indent, &p, &recv_reg.name);
                              writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, gep, p).ok();
-                             writeln!(out, "{}{} = load i64, ptr {}", indent, r, gep).ok();
+                             writeln!(out, "{}{} = load i64, ptr {}", indent, full, gep).ok();
+                             let r = self.adapt_from_i64(out, indent, &full, &Type::int());
                              TypedRegister { name: r, ty: Type::int() }
                          }
                      }

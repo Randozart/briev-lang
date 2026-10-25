@@ -1,0 +1,30 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import { json_parse } from "std/json.bv";
+
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let literals: Bool = is_ok(json_parse("null")) && is_ok(json_parse(" true ")) &&
+        is_ok(json_parse("false")) && is_err(json_parse("nulX")) && is_err(json_parse("true false"));
+    let containers: Bool = is_ok(json_parse("[]")) && is_ok(json_parse("{}")) &&
+        is_ok(json_parse("[1,{\"a\":true},null,-1.25e-2]")) &&
+        is_err(json_parse("[1 2]")) && is_err(json_parse("[1,]")) &&
+        is_err(json_parse("{\"a\":1 \"b\":2}")) && is_err(json_parse("{\"a\":1,}"));
+    let strings: Bool = is_ok(json_parse("\"héllo 🌍\"")) &&
+        is_ok(json_parse("\"a\\\"b\\n\\u0041\\uD83C\\uDF0D\"")) &&
+        is_err(json_parse("\"\\uD800\"")) && is_err(json_parse("\"\\q\"")) &&
+        is_err(json_parse("\"unterminated")) && is_err(json_parse("\"raw\nline\""));
+    let numbers: Bool = is_ok(json_parse("-9223372036854775808")) &&
+        is_ok(json_parse("9223372036854775807")) && is_ok(json_parse("0.125e+2")) &&
+        is_err(json_parse("9223372036854775808")) && is_err(json_parse("-9223372036854775809")) &&
+        is_err(json_parse("1e9999")) && is_err(json_parse("01")) &&
+        is_err(json_parse("1.")) && is_err(json_parse("1e"));
+    let progress: Bool = is_err(json_parse("")) && is_err(json_parse("[")) &&
+        is_err(json_parse("{")) && is_err(json_parse("{\"a\":"));
+    println!("json_literals={} containers={} strings={} numbers={} progress={}",
+        literals,containers,strings,numbers,progress);
+    when !literals || !containers || !strings || !numbers || !progress { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

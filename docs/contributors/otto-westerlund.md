@@ -42,10 +42,10 @@ authoritative design record; this file tracks credit and disposition.
 | Work | Source | Status |
 |---|---|---|
 | Wrong-side `Result` unwrap trap | `dac3aa4a` / `fix/result-wrong-side-unwrap` | adopted `b4e54d5e` |
-| Strict JSON parser and framing | `14f7f666` / `fix/json-parser-progress` | deferred — native gates pass; wasm object-field blocker in BUGS.md |
-| JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | deferred with strict parser |
+| Strict JSON parser and framing | `14f7f666` / `fix/json-parser-progress` | adopted `dc342cad` + `66b33459` |
+| JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | adopted `dc342cad` |
 | Ordinary collection rebinding | `d3684191` / `fix/collection-assignment-rebind` | adopted `b1838ed5` |
-| Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | pending |
+| Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | deferred — regresses `nbody_newton_accel` (hangs); separate gated follow-up |
 | Module metadata allocator | `a42faac5` | pending |
 | Target-width constant globals/loads | `a42faac5` | pending |
 | Exhaustive print traversal | `a42faac5` | adopted `ae9b2bf9` |
@@ -62,6 +62,11 @@ authoritative design record; this file tracks credit and disposition.
 | Sparse CSR / rating population | `3db9b920` | pending generalization |
 
 ## Adopted compiler hardening (2026-10-25)
+| Boxed tuple list index stride | discovered while porting strict JSON | `107c3017` |
+| Interpreter scalar `.^^Bytes` + `Mod#` | discovered while porting strict JSON | `1317e8bf` |
+| Collection `.^Length` target width | discovered while testing wasm stringify | `0d82ed9e` |
+
+
 
 | Work | Source | Adopted |
 |---|---|---|
