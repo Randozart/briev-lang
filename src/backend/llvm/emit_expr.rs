@@ -4402,7 +4402,7 @@ impl LlvmBackend {
                 let count = self.vector_element_count(&recv_reg.ty);
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, r, count).ok();
-                TypedRegister { name: r, ty: Type::int() }
+                TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
             }
             // 2026-08-14 (Boxed Cat, iterable-protocol §10.4, tri-partite rule):
             // runtime `.^Size` is DELETED — the element count of a collection
@@ -4428,18 +4428,23 @@ impl LlvmBackend {
                 if self.is_string_operand(&recv_reg.ty) {
                     let r = self.fun.gen_reg();
                     writeln!(out, "{}{} = load i64, ptr {}", indent, r, recv_reg.name).ok();
-                    return TypedRegister { name: r, ty: Type::int() };
+                    return TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() };
                 }
-                let sz = types::type_size(&recv_reg.ty, self.ctx.type_universe.as_ref());
+                // 2026-10-25: ABI headers are i64, but the declared Int is
+                // target-width (i32 on wasm32). Adapt before comparison.
+                let resolved = self.llvm_type(&recv_reg.ty);
+                let sz = resolved.strip_prefix('i').and_then(|bits| bits.parse::<u64>().ok())
+                    .map(|bits| bits.div_ceil(8))
+                    .unwrap_or_else(|| types::type_size(&recv_reg.ty, self.ctx.type_universe.as_ref()));
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, r, sz).ok();
-                TypedRegister { name: r, ty: Type::int() }
+                TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
             }
             ("Alignment", ReflectKind::CompileTime) => {
                 let align = self.type_alignment(&recv_reg.ty);
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, r, align).ok();
-                TypedRegister { name: r, ty: Type::int() }
+                TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
             }
             ("Ptr", ReflectKind::Runtime) => {
                 // x.^Ptr ≡ &x — reuse the address-of path.
@@ -4451,7 +4456,7 @@ impl LlvmBackend {
                     let count = self.vector_element_count(&recv_reg.ty);
                     let r = self.fun.gen_reg();
                     writeln!(out, "{}{} = add i64 0, {}", indent, r, count).ok();
-                    TypedRegister { name: r, ty: Type::int() }
+                    TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
                 }
                  // 2026-08-12 (Iterable protocol): `x.^Length` on a String is
                  // the STORED byte count — the [len] header of the
@@ -4549,7 +4554,7 @@ impl LlvmBackend {
                 let code = self.type_category_code(&recv_reg.ty);
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, r, code).ok();
-                TypedRegister { name: r, ty: Type::int() }
+                TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
             }
             // 2026-08-14 (boundary plan): `x.^^Element` — a frozen descriptor =
             // the ELEMENT type's category code, folded exactly like `.^^Type`
@@ -4561,7 +4566,7 @@ impl LlvmBackend {
                 let code = self.type_category_code(&elem_ty);
                 let r = self.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, r, code).ok();
-                TypedRegister { name: r, ty: Type::int() }
+                TypedRegister { name: self.adapt_from_i64(out, indent, &r, &Type::int()), ty: Type::int() }
             }
             _ => panic!(
                 "reflection '{}' with kind '{:?}' reached codegen without emission",
@@ -6447,7 +6452,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }).unwrap_or_else(|| {
                     let s = self.fun.next_reg_with_prefix("esrt");
                     let words = self.enum_image_words_for_defn(name);
-                    writeln!(out, "{}{} = alloca i64, i64 {}", indent, s, words).ok();
+                    // 2026-10-25: a BOXED enum-returning function that returns
+                    // an sret callee must return a heap box, not a pointer into
+                    // its own frame. The slot becomes the returned handle; an
+                    // alloca here dangled after return (JSON parse_number via
+                    // json_value_depth). Sret functions use %enum_out above.
+                    if self.fun.enum_return_context && self.fun.enum_out_slot.is_none() {
+                        writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, s, words * 8).ok();
+                    } else {
+                        writeln!(out, "{}{} = alloca i64, i64 {}", indent, s, words).ok();
+                    }
                     s
                 });
                 call_args.push(format!("ptr {}", slot));

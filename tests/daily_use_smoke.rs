@@ -426,6 +426,24 @@ fn trait_generics_golden_output() {
 /// regression in the member liveness or type-dependent needs-state paths is
 /// caught in CI.
 #[test]
+fn result_object_gate_golden_output() {
+    let out = build_link_run("result_object_gate", "golden", &[]);
+    assert_eq!(out, "object_unwraps=true\n", "Result object unwrap golden drifted: {out:?}");
+}
+
+#[test]
+fn collection_rebind_gate_golden_output() {
+    let out = build_link_run("collection_rebind_gate", "golden", &[]);
+    assert_eq!(out, "collection_rebind_and_explicit_push=true\n", "collection rebind golden drifted: {out:?}");
+}
+
+#[test]
+fn matrix_primitives_golden_output() {
+    let out = build_link_run("matrix_primitives_smoke", "golden", &[]);
+    assert_eq!(out, "matrix_vector_intvec=true\n", "matrix primitive golden drifted: {out:?}");
+}
+
+#[test]
 fn byte_sink_trait_golden_output() {
     if !has("clang") {
         eprintln!("SKIP: clang not available");

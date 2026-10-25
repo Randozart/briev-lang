@@ -696,8 +696,9 @@ impl ViewCompiler {
                     continue;
                 }
             }
-            result.push(html.chars().nth(pos).unwrap_or(' '));
-            pos += 1;
+            let character = html[pos..].chars().next().unwrap_or(' ');
+            result.push(character);
+            pos += character.len_utf8();
         }
 
         result
@@ -1010,8 +1011,9 @@ impl ViewCompiler {
                     continue;
                 }
             }
-            result.push(html.chars().nth(pos).unwrap_or(' '));
-            pos += 1;
+            let character = html[pos..].chars().next().unwrap_or(' ');
+            result.push(character);
+            pos += character.len_utf8();
         }
         result
     }
@@ -2049,6 +2051,31 @@ mod tests {
         assert!(!html.is_empty());
         // No directives so no IDs injected
         assert!(!html.contains("id="));
+    }
+
+    #[test]
+    fn unicode_text_before_directive_preserves_byte_offsets() {
+        let mut vc = ViewCompiler::new();
+        vc.register_transaction("save", 0);
+        vc.register_signal("status", 0);
+        let source = concat!(
+            "<main><p>héllo 世界…</p><button b-trigger:click=\"save\">Save</button>",
+            "<p b-text=\"status\">Ready</p></main>"
+        );
+        let (_, html, diagnostics) = vc.compile(source);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected view diagnostics: {diagnostics:?}"
+        );
+        assert!(
+            html.starts_with("<main><p>héllo 世界…</p><button id=\"rbv-button-0\""),
+            "HTML shifted after Unicode text: {html}"
+        );
+        assert!(
+            html.contains("<p id=\"rbv-p-1\" b-text=\"status\">Ready</p>"),
+            "later directive tag was corrupted: {html}"
+        );
+        assert!(html.ends_with("</main>"), "closing markup was corrupted: {html}");
     }
 
     #[test]

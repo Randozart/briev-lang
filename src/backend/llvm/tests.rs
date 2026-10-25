@@ -10733,6 +10733,34 @@ defn make() -> Option {
 /// the backend reintroduced %state and clang rejected the module
 /// (arena_churn/digits_of_int — BUGS.md 2026-09-24).
 #[test]
+fn test_boxed_enum_return_through_sret_callee_uses_heap_slot() {
+    let src = r#"
+enum R { Ok(Int), Err(Int) };
+defn inner(x: Int) -> R { term Ok(x); };
+defn passthrough(r: R) -> R { term r; };
+defn outer(x: Int) -> R {
+    when x > 0 { term inner(x); };
+    term passthrough(Err(1));
+};
+let tick: Int = 0;
+node go [tick < 1][tick == 1] { let r: R = outer(1); tick = 1; term; };
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let items = p.parse_program().unwrap();
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let outer = ir.split("define i64 @outer").nth(1).expect("outer definition");
+    let body = outer.split("\n}").next().unwrap();
+    assert!(
+        body.contains("call ptr @malloc(i64 16)"),
+        "boxed enum return through an sret callee must own a heap slot:\n{body}"
+    );
+}
+
+#[test]
 fn test_stateless_defn_concat_uses_malloc_when_arena_program() {
     let src = "let n: Int = 0;\n\
                defn shout(s: String) -> String {\n\

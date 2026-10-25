@@ -893,7 +893,7 @@ export async function createApp(wasmBytes) {{
              const __sp = Number(BigInt.asUintN(32, BigInt(__word)));\
              const __len = Number(dv.getBigInt64(__sp, true));\
              const __bytes = new Uint8Array(this._memory.buffer, __sp + 8, __len);\
-             const item = String.fromCharCode(...__bytes);".to_string()
+             const item = new TextDecoder().decode(__bytes);".to_string()
         } else {
             "const item = Number(dv.getBigInt64(snapPtr + 8 + i * 8, true));".to_string()
         };
@@ -968,9 +968,10 @@ export async function createApp(wasmBytes) {{
               \x20             if (isNew) {{\n\
               \x20               el2 = document.createElement(tagName);\n\
               \x20               el2.innerHTML = templateInner;\n\
-              \x20               container.appendChild(el2);\n\
              \x20               rendered.set(key, el2);\n\
              \x20             }}\n\
+             \x20             // Reappend in snapshot order so keyed rows reconcile order.\n\
+             \x20             container.appendChild(el2);\n\
              \x20             // Existing keyed nodes still need field updates (toggle\n\
              \x20             // done=true must re-render, not only create).\n\
              \x20             applyItem(el2, item, isNew);\n\
@@ -1087,7 +1088,7 @@ export async function createApp(wasmBytes) {{
                 format!(
                     "this._registerViewEffect({handle}, (value) => {{\n\
                      \x20         const el = {el};\n\
-                     \x20         if (el) el.style.display = ({hidden} ? !({cond}) : ({cond})) ? 'none' : '';\n\
+                     \x20         if (el) el.style.display = ({hidden} ? !({cond}) : ({cond})) ? '' : 'none';\n\
                      \x20       }});",
                     hidden = if hidden { "true" } else { "false" },
                     cond = cond
@@ -1324,7 +1325,7 @@ export async function createApp(wasmBytes) {{
                      \x20         anchor.remove();\n\
                      \x20         const itemBindings = {ibs_js};\n\
                      \x20         const evalItem = (expr, item) => {{\n\
-                     \x20           if (expr === {item_name:?}) return Boolean(item);\n\
+                     \x20           if (expr === {item_name:?}) return item;\n\
                      \x20           for (const op of [\"==\", \"!=\", \"<=\", \">=\", \"<\", \">\"]) {{\n\
                      \x20             const i = expr.indexOf(op);\n\
                      \x20             if (i < 0) continue;\n\
@@ -2340,6 +2341,95 @@ mod tests {
             "item trigger must call the txn with the item:\n{shim}");
         assert!(shim.contains("data-itm=\\\""),
             "marker-1 inner elements resolved in the clone:\n{shim}");
+        assert!(shim.contains("applyItem(el, item, isNew);"),
+            "existing keyed rows must refresh fields:\n{shim}");
+        assert!(shim.contains("ib.kind === \"trigger\" && bindTriggers"),
+            "item triggers must bind only on creation:\n{shim}");
+    }
+
+    #[test]
+    fn test_b_show_uses_truthy_display_expression() {
+        use crate::view_compiler::{Binding, Directive};
+        let bindings = vec![Binding {
+            element_id: "status".to_string(),
+            directive: Directive::Show { expr: "count > 0".to_string() },
+        }];
+        let g = GlueWebGenerator::new(
+            Vec::new(),
+            bindings,
+            StateLayout {
+                app_name: "show_app".to_string(),
+                generation_offset: 0,
+                flush_buffer_offset: 64,
+                max_flush_entries: 8,
+                fields: vec![FieldLayout {
+                    field_handle: 1,
+                    name: "count".to_string(),
+                    offset: 4,
+                    size: 4,
+                    element_size: 4,
+                    type_tag: TypeTag::Int,
+                }],
+            },
+            HashMap::new(),
+            Vec::new(),
+        );
+        let shim = g.generate().expect("generate should succeed").dom_shim;
+        assert!(
+            shim.contains("? '' : 'none'"),
+            "b-show must show on truth: {shim}"
+        );
+        assert!(
+            !shim.contains("? 'none' : ''"),
+            "b-show must not invert visibility: {shim}"
+        );
+    }
+
+    #[test]
+    fn test_each_string_items_decode_utf8_and_reappend_in_order() {
+        use crate::view_compiler::{Binding, Directive, ItemBinding, ItemDirective};
+        let bindings = vec![Binding {
+            element_id: "lst".to_string(),
+            directive: Directive::Each {
+                iterable: "items".to_string(),
+                item_name: "item".to_string(),
+                template_html: r#"<span data-itm="1">x</span>"#.to_string(),
+                container_id: "lst".to_string(),
+                item_bindings: vec![ItemBinding {
+                    marker: 1,
+                    directive: ItemDirective::Text { signal: "item".to_string() },
+                }],
+                key_expr: "item".to_string(),
+            },
+        }];
+        let g = GlueWebGenerator::new(
+            Vec::new(),
+            bindings,
+            StateLayout {
+                app_name: "each_strings".to_string(),
+                generation_offset: 0,
+                flush_buffer_offset: 64,
+                max_flush_entries: 8,
+                fields: vec![FieldLayout {
+                    field_handle: 1,
+                    name: "items".to_string(),
+                    offset: 4,
+                    size: 16,
+                    element_size: 8,
+                    type_tag: TypeTag::String,
+                }],
+            },
+            HashMap::new(),
+            Vec::new(),
+        )
+        .with_collection_iterables(HashSet::from(["items".to_string()]))
+        .with_collection_string_iterables(HashSet::from(["items".to_string()]));
+        let shim = g.generate().expect("generate should succeed").dom_shim;
+        assert!(shim.contains("new TextDecoder().decode(__bytes)"), "{shim}");
+        assert!(shim.contains("if (token === \"item\") return item;"), "{shim}");
+        assert!(shim.contains("container.appendChild(el2);"), "{shim}");
+        assert!(shim.contains("const isNew = !el2;"), "{shim}");
+        assert!(!shim.contains("String.fromCharCode(...__bytes)"), "{shim}");
     }
 
     #[test]

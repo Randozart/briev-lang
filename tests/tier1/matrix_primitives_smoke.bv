@@ -1,0 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Otto Westerlund's flat Matrix/Vector/IntVec primitives, adopted with
+// renamed Matrix/Vector types so they coexist with the GPU shape types.
+import "std/matrix.bv";
+
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let matrix: FloatMatrix = mat_new(2, 2);
+    mat_set(matrix, 0, 1, 3.5);
+    mat_set(matrix, 1, 0, -2.25);
+    let vector: FloatVector = vec_new(3);
+    vec_set(vector, 2, 7.5);
+    let ints: IntVec = ivec_new(3);
+    ivec_set(ints, 1, 9007199254740993);
+    let valid: Bool = mat_get(matrix, 0, 1) == 3.5 && mat_get(matrix, 1, 0) == -2.25 &&
+        vec_get(vector, 2) == 7.5 && ivec_get(ints, 1) == 9007199254740993;
+    println!("matrix_vector_intvec={}", valid);
+    mat_free(matrix);
+    vec_free(vector);
+    ivec_free(ints);
+    when !valid { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

@@ -1,0 +1,151 @@
+// matrix - Malloc#-backed flat Float arrays (FloatMatrix / FloatVector) + an IntVec twin.
+// Authored by Otto Westerlund (@odecode); adopted with attribution, see
+// docs/contributors/otto-westerlund.md.
+//
+// 2026-10-19 (recommender-app Task 4): the CF engine holds big dense Float
+// blocks - the 943x943 user-user and 1682x1682 item-item PCC similarity
+// matrices (~30 MB combined) and the per-user/per-item mean vectors - plus
+// integer CSR index arrays for the sparse rating population. This module is
+// those primitives: a flat row-major Float Matrix, a flat Float Vector, and a
+// separate Int-typed IntVec so integer offsets never round-trip through a
+// float slot.
+//
+// LAYOUT. Following the bytes.bv pattern, the allocation's address is held as
+// an Int field and indexed by pointer arithmetic. Allocations reserve eight
+// bytes per Float element; typed Ptr<Float> indexing uses Float's declared
+// physical width (currently four bytes). The live values form a packed prefix;
+// remaining allocation capacity is not initialized. Element (r,c) has logical
+// index r*cols+c. 2026-10-21: clarified for snapshot serialization; retire the
+// spare capacity only with a coordinated allocation/format migration.
+//
+// WHY A TYPED-POINTER CAST, NOT `LoadF#`/`StoreF#`. The design named float
+// load/store intrinsics `LoadF#`/`StoreF#` pending resolution against the
+// intrinsic registry. The registry (src/intrinsic_signatures.rs) has NO such
+// intrinsic: `Load#` returns raw Int bits and `Store#` takes untyped bits, so
+// storing a Float through them would need a manual Float<->bit-pattern
+// reinterpret (the risk the ledger flags). Instead we reinterpret the Int
+// address as a `Ptr<Float>` and use the language's native typed-pointer
+// indexing (`arr[idx]`), which lowers to a typed floating load/store - no bit
+// shuffling, no new intrinsic, Intrinsics-before-frgn satisfied. This is the
+// exact pattern the working benchmarks/recommender.bv uses.
+
+// ── FloatMatrix: a flat row-major Float array (Task 4.1) ──────────────────────────
+//
+// ptr is the Malloc#(rows*cols*8) address held as an Int; rows/cols are the
+// dimensions. Element (r, c) is at flat index r*cols + c.
+obj FloatMatrix {
+    ptr:  Int;
+    rows: Int;
+    cols: Int;
+};
+
+// mat_new - allocate a rows x cols Float matrix (rows >= 1, cols >= 1). The
+// block is rows*cols*8 bytes of raw heap; the caller frees it with mat_free.
+// Contents are uninitialized (callers fill before reading).
+defn mat_new(rows: Int, cols: Int)
+    [rows >= 1 && cols >= 1][term.rows == rows && term.cols == cols]
+    -> FloatMatrix
+{
+    let addr: Int = Malloc#(rows * cols * 8) as Int;
+    term FloatMatrix { ptr: addr, rows: rows, cols: cols };
+};
+
+// mat_get - the Float at (r, c). The precondition pins (r, c) in bounds so the
+// flat index r*cols+c is a valid slot; the address is reinterpreted as a
+// Ptr<Float> and read with native typed indexing at Float's declared width.
+defn mat_get(m: FloatMatrix, r: Int, c: Int)
+    [r >= 0 && r < m.rows && c >= 0 && c < m.cols][true]
+    -> Float
+{
+    let base: Ptr<Float> = m.ptr as Ptr<Float>;
+    term base[r * m.cols + c];
+};
+
+// mat_set - store Float v at (r, c). Same in-bounds precondition and typed
+// Ptr<Float> write at Float's declared width. The store mutates the shared heap block in
+// place; FloatMatrix is a value handle over that block, so nothing is returned.
+defn mat_set(m: FloatMatrix, r: Int, c: Int, v: Float)
+    [r >= 0 && r < m.rows && c >= 0 && c < m.cols][true]
+    -> Void
+{
+    let base: Ptr<Float> = m.ptr as Ptr<Float>;
+    base[r * m.cols + c] = v;
+    term;
+};
+
+// mat_free - release the matrix's heap block.
+defn mat_free(m: FloatMatrix) -> Void {
+    Free#(m.ptr as Ptr<Bit<8>>);
+    term;
+};
+
+// ── FloatVector: a flat Float array (Task 4.2) ────────────────────────────────────
+//
+// ptr is the Malloc#(len*8) address held as an Int; len is the element count.
+obj FloatVector {
+    ptr: Int;
+    len: Int;
+};
+
+// vec_new - allocate a Float vector of `len` elements (len >= 1).
+defn vec_new(len: Int) [len >= 1][term.len == len] -> FloatVector {
+    let addr: Int = Malloc#(len * 8) as Int;
+    term FloatVector { ptr: addr, len: len };
+};
+
+// vec_get - the Float at index i (in bounds). Native Ptr<Float> read.
+defn vec_get(v: FloatVector, i: Int) [i >= 0 && i < v.len][true] -> Float {
+    let base: Ptr<Float> = v.ptr as Ptr<Float>;
+    term base[i];
+};
+
+// vec_set - store Float x at index i (in bounds). Native Ptr<Float> write.
+defn vec_set(v: FloatVector, i: Int, x: Float) [i >= 0 && i < v.len][true] -> Void {
+    let base: Ptr<Float> = v.ptr as Ptr<Float>;
+    base[i] = x;
+    term;
+};
+
+// vec_free - release the vector's heap block.
+defn vec_free(v: FloatVector) -> Void {
+    Free#(v.ptr as Ptr<Bit<8>>);
+    term;
+};
+
+// ── IntVec: a flat Int array, the integer twin of FloatVector (Task 4.2) ──────────
+//
+// A SEPARATE named type (not Vector) so the integer CSR offset/index arrays of
+// the sparse rating population never silently reuse the FloatVector - an
+// integer stored into a Float slot and read back would round-trip through Float,
+// corrupting large offsets. IntVec uses an 8-byte stride and a Ptr<Int> view,
+// so the stored bits are the integer itself, never a float encoding.
+obj IntVec {
+    ptr: Int;
+    len: Int;
+};
+
+// ivec_new - allocate an Int vector of `len` elements (len >= 1). 8-byte stride.
+defn ivec_new(len: Int) [len >= 1][term.len == len] -> IntVec {
+    let addr: Int = Malloc#(len * 8) as Int;
+    term IntVec { ptr: addr, len: len };
+};
+
+// ivec_get - the Int at index i (in bounds). Native Ptr<Int> read (no float
+// reinterpret - the slot holds the integer's own bits).
+defn ivec_get(v: IntVec, i: Int) [i >= 0 && i < v.len][true] -> Int {
+    let base: Ptr<Int> = v.ptr as Ptr<Int>;
+    term base[i];
+};
+
+// ivec_set - store Int x at index i (in bounds). Native Ptr<Int> write.
+defn ivec_set(v: IntVec, i: Int, x: Int) [i >= 0 && i < v.len][true] -> Void {
+    let base: Ptr<Int> = v.ptr as Ptr<Int>;
+    base[i] = x;
+    term;
+};
+
+// ivec_free - release the int vector's heap block.
+defn ivec_free(v: IntVec) -> Void {
+    Free#(v.ptr as Ptr<Bit<8>>);
+    term;
+};

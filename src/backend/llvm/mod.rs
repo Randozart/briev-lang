@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod builder;
 pub(crate) mod coll_scaffold;
+mod collection_assignment;
 pub mod context;
 pub mod directive;
 pub mod dispatch;

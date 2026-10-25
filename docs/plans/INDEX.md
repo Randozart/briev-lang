@@ -16,6 +16,8 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**Active adoption lane (2026-10-25):** `docs/plans/2026-10-25-otto-contribution-adoption.md` — adopt Otto Westerlund's missing compiler/stdlib/browser work on current main, starting with attribution, Result/print/view/collection fixes, then JSON, PostgreSQL, portable web stdlib, logical/metadata semantics and browser runtime. Credit ledger: `docs/contributors/otto-westerlund.md`.
+
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is
 the shipped default. Composite decode: **float4 k/v loads landed
 2026-10-02** (`d21f61d8`+`6512ac86`) — interleaved A/B vs `fec8b89a`:

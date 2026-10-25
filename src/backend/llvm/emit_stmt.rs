@@ -1150,6 +1150,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // 2026-07-31 (A6): when the InsertAt op is bound to an obj
                     // member (`op InsertAt: push(#Lh, #Rh)`), emit a self-bound
                     // member call instead of the free-function marker dispatch.
+                    if super::collection_assignment::emit_collection_rebind(backend, out, indent, name, &val) {
+                        return TypedRegister { name: val.name, ty: Type::void() };
+                    }
                     let insert_strat = backend.find_insert_strategy(lhs).cloned();
                     if let Some(op_def) = &insert_strat {
                         if emit_strategy_member_call(backend, out, indent, lhs, op_def, Some(&val.name)).is_none() {
@@ -1833,7 +1836,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(val) = val {
                 let saved_enum_ret = backend.fun.enum_return_context;
                 let saved_expected_enum = backend.fun.expected_enum_type.clone();
-                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some();
+                let returns_enum = backend.fun.item_return_type.as_ref()
+                    .map(|t| backend.ctx.enum_handle_types.contains(type_bare_name(t)))
+                    .unwrap_or(false);
+                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some() || returns_enum;
                 if let Some(t) = backend.fun.item_return_type.clone() {
                     if backend.ctx.enum_handle_types.contains(type_bare_name(&t)) {
                         backend.fun.expected_enum_type = Some(t);
