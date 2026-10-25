@@ -3086,10 +3086,22 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
 /// Uses `llc -march=wasm32 -filetype=obj` to produce a .o, then
 /// `wasm-ld` to link into .wasm. This avoids needing a wasm32 clang.
 fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<(), String> {
+    // 2026-10-25: llc alone does not eliminate self-tail recursion. Ordinary
+    // catalogue scans exhausted the WASM stack. Promote local slots and run
+    // LLVM's proof-preserving tail-call pass before instruction selection.
+    // Retire this stage only when the shared lowering guarantees bounded stack.
+    let lowered_path = format!("{}.lowered.ll", wasm_path);
+    let optimized = Command::new("opt")
+        .args(["-S", "-passes=mem2reg,tailcallelim", ll_path, "-o", &lowered_path])
+        .status().map_err(|error| format!("Could not run LLVM opt: {error}. Install llvm-tools or use --emit-ir-only."))?;
+    if !optimized.success() {
+        let _ = std::fs::remove_file(&lowered_path);
+        return Err(format!("LLVM could not lower '{ll_path}' for WebAssembly. Check the emitted IR diagnostics."));
+    }
     // Step 1: compile .ll to .wasm object file
     let obj_path = format!("{}.o", wasm_path);
     let mut assemble = Command::new("llc");
-    assemble.args(["-march=wasm32", "-filetype=obj", ll_path, "-o", &obj_path]);
+    assemble.args(["-march=wasm32", "-filetype=obj", &lowered_path, "-o", &obj_path]);
     let status = assemble.status()
         .map_err(|e| format!(
             "failed to invoke llc: {} (install llvm-tools or use --emit-ir-only)",
@@ -3101,7 +3113,8 @@ fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<()
     // Step 2: link .o to .wasm — export the reactive entry points the JS shim
     // calls (state_layout + every txn/definition). wasm-ld exports nothing by
     // default; without these the generated module is a dead object.
-    let mut link = Command::new("wasm-ld");
+    let linker = resolve_wasm_linker()?;
+    let mut link = Command::new(linker);
     link.args(["--no-entry", "--allow-undefined", "-o", wasm_path, &obj_path]);
     for name in exports {
         link.arg(format!("--export={}", name));
@@ -3117,8 +3130,34 @@ fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<()
     }
     // Clean up intermediate object
     let _ = std::fs::remove_file(&obj_path);
+    let _ = std::fs::remove_file(&lowered_path);
     println!("wrote {}", wasm_path);
     Ok(())
+}
+
+/// Resolve the WebAssembly linker paired with the installed Clang toolchain.
+/// LLVM packages commonly install only a versioned `wasm-ld-N` executable;
+/// Clang reports the matching path without requiring the compiler to guess
+/// the LLVM version or depend on an unversioned symlink.
+fn resolve_wasm_linker() -> Result<String, String> {
+    if Command::new("wasm-ld").arg("--version").output().is_ok() {
+        return Ok("wasm-ld".to_string());
+    }
+    let output = Command::new("clang")
+        .arg("-print-prog-name=wasm-ld")
+        .output()
+        .map_err(|e| format!("failed to locate wasm-ld through clang: {}", e))?;
+    if !output.status.success() {
+        return Err("clang could not resolve its wasm-ld linker".to_string());
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() || path == "wasm-ld" || !std::path::Path::new(&path).is_file() {
+        return Err(format!(
+            "clang reported unavailable WebAssembly linker '{}'; install wasm-ld or use --emit-ir-only",
+            path
+        ));
+    }
+    Ok(path)
 }
 
 /// The effective view HTML: the `<view>` tag / `--html` value when present;
