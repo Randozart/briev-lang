@@ -95,3 +95,18 @@ Strict JSON parser/stringify and browser runtime pieces originate with Otto
 Westerlund (`@odecode`). Preserve original authorship where possible and add
 source SHA/branch plus `Co-authored-by` on adaptations. Update
 `docs/contributors/otto-westerlund.md` with every adopted result.
+
+## Execution log
+
+- `dc342cad` — strict parser + stringify port (Otto's `14f7f666` /
+  `892dcd6c`), including target-width integer accumulation and `cast_lanes`
+  removal.
+- `107c3017` — boxed tuple list indexing uses the canonical 8-byte word
+  stride; strict JSON object fields after the first pair now resolve.
+- `019202f4` — logical short-circuit + mutable parameter entry slots
+  (`5b9ac7f8`), needed for `find_pair`/`json_get` on wasm.
+- `1317e8bf` — interpreter scalar `.^^Bytes` returns the value width and
+  `Mod#` aliases remainder, restoring the reference JSON parse path.
+- `0bd6ed1e` — strict parse/stringify gates added to the daily corpus.
+- `66b33459` — restore the empty-object `find_pair` guard.
+- Task Board structured Chromium CRUD passes with the strict parser.
