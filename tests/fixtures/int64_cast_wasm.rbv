@@ -1,0 +1,13 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+let tick: Int = 0;
+let result: Int64 = 0;
+txn probe [tick == 0][tick == 1] {
+    let a: Int64 = 1000000000 as Int64;
+    let b: Int64 = 1000000000 as Int64;
+    result = a * b;
+    tick = 1;
+    term;
+};
+<view><span b-text="result">0</span><button b-trigger:click="probe">Go</button></view>

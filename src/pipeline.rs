@@ -993,6 +993,7 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
             "prelude-native".to_string(),
             "prelude-hw".to_string(),
             "prelude-electronics".to_string(),
+            "prelude-web".to_string(),
         ]);
     }
     if !disabled_plugins.is_empty() {

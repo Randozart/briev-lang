@@ -1,0 +1,7 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+let items: List<String> = ["x"];
+let tick: Int = 0;
+txn clear [tick == 0][tick == 1] { items = []; tick = 1; term; };
+<view><span b-text="tick">0</span></view>

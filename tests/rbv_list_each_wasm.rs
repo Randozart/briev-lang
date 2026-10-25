@@ -67,6 +67,13 @@ fn per_instantiation_list_each_builds_for_wasm() {
     // WASM backend, not just an IR string check.
     build_fixture(brievc, "browser_json_values", &out);
 
+    build_fixture(brievc, "state_list_clear_wasm", &out);
+    build_fixture(brievc, "bool_param_struct_wasm", &out);
+
+    // Int64 cast/arithmetic must widen before the i64 multiply (wasm32
+    // flexible Int is i32; the identity cast path used to return i32).
+    build_fixture(brievc, "int64_cast_wasm", &out);
+
     // Portable browser stdlib surface: async HTTP, WebSocket, timers and
     // secure nonces must compile through the generated host module.
     build_fixture(brievc, "portable_web_imports", &out);

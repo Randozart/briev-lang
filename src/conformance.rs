@@ -227,6 +227,10 @@ pub fn discover_active_sources() -> Vec<(PathBuf, SourceKind)> {
         // 2. lib/compiler/*.bv are the meta-circular tamer track's WIP —
         //    owned by that agent; coordinate before migrating.
         let is_tamer_wip = p.components().any(|c| c.as_os_str() == "compiler");
+        // lib/std/cast_portable.bv is the browser-alternative to cast_lanes:
+        // checking it under the native .bv prelude injects both lane sets.
+        // It is exercised by every .rbv check/build instead.
+        let is_browser_cast_prelude = p.ends_with("lib/std/cast_portable.bv");
         // 3. 2026-09-02: test-time generated fixtures (SPIR-V image tests)
         //    are written mid-run and removed by their owning test — a
         //    concurrent sweep can observe a partial file. The owning test
@@ -239,7 +243,7 @@ pub fn discover_active_sources() -> Vec<(PathBuf, SourceKind)> {
             .and_then(|n| n.to_str())
             .map(|n| n.starts_with("briev_") && n.contains("_test_"))
             .unwrap_or(false);
-        !is_glue_dbv && !is_tamer_wip && !is_generated_fixture
+        !is_glue_dbv && !is_tamer_wip && !is_browser_cast_prelude && !is_generated_fixture
     });
     found
 }

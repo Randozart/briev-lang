@@ -1,0 +1,32 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+// 2026-10-21: browser programs need portable types, collections and casts.
+// Linux I/O/environment modules belong to prelude-native, not the browser host.
+// Keep this target choice in configuration; do not recognize web library names
+// in the compiler. Retire this split only for a capability-parametric prelude.
+$(Parsed @ highest) {
+    let anchor = Tag$("import").First$();
+    when anchor.Count$() > 0 {
+        anchor.Before$().Insert$(
+            Import$("std/types/bootstrap.bv"),
+            Import$("std/collections.bv"),
+            Import$("std/iterator.bv"),
+            Import$("std/cast_portable.bv"),
+            Import$("std/float_fmt.bv")
+        );
+    };
+    when anchor.Count$() == 0 {
+        let entry = Tag$("txn").First$();
+        when entry.Count$() > 0 {
+            entry.Before$().Insert$(
+                Import$("std/types/bootstrap.bv"),
+                Import$("std/collections.bv"),
+                Import$("std/iterator.bv"),
+                Import$("std/cast_portable.bv"),
+                Import$("std/float_fmt.bv")
+            );
+        };
+    };
+};

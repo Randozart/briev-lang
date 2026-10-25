@@ -11139,3 +11139,24 @@ target-width Int64 literal/cast lowering is fixed. Adoption plan:
 After the web prelude/root fixes, the standalone `app.rbv` build reaches a bare
 empty-list codegen context (`exprs=[]`, current return type Bool). The app stays
 external until the remaining list-context producer is identified and fixed.
+
+
+## Int64 literal/cast width on wasm32 (FIXED 2026-10-25)
+
+`1000000000 as Int64` returned the i32 source register from the cast identity
+path, then fed `mul i64`. Same-protocol integer casts now sext/trunc by declared
+width, and same-width integer arithmetic keeps its declared type. Regression:
+`tests/fixtures/int64_cast_wasm.rbv`.
+
+## Global b-class emitted the literal {el} placeholder (FIXED 2026-10-25)
+
+The generated class binding contained `const el = {el};`, causing a browser
+TDZ error before initialization. The global class path now formats the actual
+element lookup; the class-target regression and app browser smoke pass.
+
+## Boxed Bool params and struct fields disagreed on width (FIXED 2026-10-25)
+
+A boxed Bool parameter is i64 in SSA while its binding type is Int; struct
+stores and Bool coercion used i32, producing `store i32 %ac3` / `trunc i32` on
+i64 registers. Stores now use the declared field type and coercions use the
+physical width. Regression: `bool_param_struct_wasm.rbv`.

@@ -1,7 +1,7 @@
 # Recommender fixes and app adoption
 
 **Date:** 2026-10-25
-**Status:** A/C/D landed; B rejected; E deferred; Phase D PG/web/ratings adopted; cast/prelude deferred; app still external
+**Status:** A/C/D landed; B rejected; E deferred; Phase D PG/web/ratings/cast-prelude adopted; app browser builds, server still external
 **Branch:** `feat/recommender-fixes`
 **Sources:**
 - standalone app: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
@@ -271,3 +271,33 @@ test; E is deferred on concrete list typing in `iter_chain`.
 - `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
 - host transport: PASS.
 - full runtime suite: PASS, all MATCH/PASS.
+
+### Int64/cast-prelude closure
+
+- Fixed same-protocol integer width conversion in the cast identity path and
+  same-width integer arithmetic result typing.
+- Gave mutable-parameter slots a `%ps` namespace so large functions no longer
+  collide with `%t` registers.
+- Struct literal fields now store through the declared field type, and boxed
+  Bool coercions use the physical i64 width.
+- Typed state-list assignments (`items = []`) construct through collection ops.
+- Fixed global `b-class` emitting the literal `{el}` placeholder.
+- Re-enabled `cast_portable` + `prelude-web`; Task Board web gate passes.
+- Standalone recommender `app.rbv` builds and loads with zero page errors.
+- `server.bv` remains blocked on `Vector`/`FloatVector` naming and app-level
+  contract bounds; app stays external.
+
+### Int64/cast-prelude validation
+
+- `cargo test --lib`: 3343 passed (including conformance with the browser
+  cast prelude excluded from the native sweep).
+- daily corpus: 29 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- host transport: PASS.
+- wasm fixture corpus (Int64/state-list/Bool-param): PASS.
+- standalone recommender `app.rbv` builds with the release compiler and loads
+  in Chromium with zero page errors.
+- full runtime suite: PASS, all MATCH/PASS.
+- `server.bv` remains blocked on Vector/FloatVector naming and app-level
+  contract bounds; app stays external.

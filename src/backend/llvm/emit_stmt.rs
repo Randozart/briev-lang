@@ -965,7 +965,32 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 return TypedRegister { name: result, ty: Type::int() };
             }
 
-            let val = backend.emit_expr(out, rhs, indent);
+            // 2026-10-25: a list literal assigned to a typed target needs the
+            // target's collection witness, exactly like a typed let. Without
+            // this, `server_ratings = []` reached the generic list arm and
+            // panicked (recommender login reset path).
+            let target_ty = match lhs {
+                Expr::Identifier(name) => backend
+                    .fun
+                    .let_binding_types
+                    .get(name)
+                    .cloned()
+                    .or_else(|| {
+                        backend.ctx.field_index_map.get(name).and_then(|idx| {
+                            backend.ctx.field_briev_types.get(*idx).cloned()
+                        })
+                    }),
+                _ => None,
+            };
+            let val = if let (Some(ty), crate::ast::Expr::List(_)) = (target_ty.as_ref(), rhs) {
+                if let Some((value, _)) = backend.construct_local_collection(out, indent, ty, rhs) {
+                    value
+                } else {
+                    backend.emit_expr(out, rhs, indent)
+                }
+            } else {
+                backend.emit_expr(out, rhs, indent)
+            };
             match lhs {
                 Expr::Identifier(name) => {
                     // 2026-08-07 (object instance pools): a bare member

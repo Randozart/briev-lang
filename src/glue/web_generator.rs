@@ -1370,7 +1370,7 @@ export async function createApp(wasmBytes) {{
                 // Each expr is a bounded single-field form (validated at view
                 // compile): dynamic pairs register on the root field's handle
                 // (evaluated on flush); literal-only pairs apply once at init.
-                 let mut js = String::from("(() => {\n        const el = {el};\n        if (!el) return;\n");
+                 let mut js = format!("(() => {{\n        const el = {el};\n        if (!el) return;\n");
                  for (cls_name, expr) in pairs {
                      match self.bounded_root(expr) {
                          Some((root, None)) if !root.is_empty() => {
@@ -2319,6 +2319,32 @@ mod tests {
             "existing keyed rows must refresh fields:\n{shim}");
         assert!(shim.contains("ib.kind === \"trigger\" && bindTriggers"),
             "item triggers must bind only on creation:\n{shim}");
+    }
+
+    #[test]
+    fn test_global_class_targets_the_element_not_a_placeholder() {
+        use crate::view_compiler::{Binding, Directive};
+        let bindings = vec![Binding {
+            element_id: "status".to_string(),
+            directive: Directive::Class {
+                pairs: vec![("active".to_string(), "count == 1".to_string())],
+            },
+        }];
+        let g = GlueWebGenerator::new(
+            Vec::new(), bindings,
+            StateLayout {
+                app_name: "t".into(), generation_offset: 0, flush_buffer_offset: 64,
+                max_flush_entries: 8,
+                fields: vec![FieldLayout {
+                    field_handle: 1, name: "count".into(), offset: 4, size: 4,
+                    element_size: 4, type_tag: TypeTag::Int,
+                }],
+            },
+            HashMap::new(), Vec::new(),
+        );
+        let shim = g.generate().expect("generate should succeed").dom_shim;
+        assert!(shim.contains("document.getElementById(\"status\")"), "{shim}");
+        assert!(!shim.contains("const el = {el};"), "{shim}");
     }
 
     #[test]
