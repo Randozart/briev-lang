@@ -192,3 +192,19 @@ possible and add co-authorship on adapted commits.
   list typing in a concrete `iter_chain` probe (`Count#`/`.^Length` saw Int).
   Keep the existing defn-only worklist until a full frontend/txn specialization
   change can be gated by the multi-struct catalogue fixture.
+
+## Validation checkpoint — bundles A/C/D
+
+- `cargo test --lib`: 3340 passed.
+- `cargo test --test daily_use_smoke`: 27 passed (including enum aggregate,
+  enum local return, Result, collection, matrix, JSON gates).
+- Task Board structured Chromium CRUD: PASS.
+- Task Board API: PASS.
+- `rbv_gate`: OK.
+- determinism quick: ALL DETERMINISTIC.
+- accel reactor non-hang: PASS.
+- browser heap + 1100-item Unicode snapshot: PASS.
+- full runtime suite: PASS, all MATCH/PASS.
+
+Bundles B and E are not merged. B is rejected on the Bit→String encoding
+test; E is deferred on concrete list typing in `iter_chain`.
