@@ -231,7 +231,7 @@ impl LlvmBackend {
 
         }
         emit_loop_metadata(out, "  ", &format!("{}.header", label_prefix),
-            &mut self.fun.metadata_counter, &mut self.fun.pending_metadata, disable_fold);
+            &mut self.ctx.metadata_counter, &mut self.ctx.pending_metadata, disable_fold);
         writeln!(out, "{}:", exit_label).ok();
         // 2026-08-09 (Phase 10): a folded loop exit runs registered defers.
         self.flush_defer_cleanup(out, "  ");
@@ -626,7 +626,7 @@ impl LlvmBackend {
 
         let disable_fold = self.loop_has_observable(body);
         emit_loop_metadata(out, "  ", ".cm_header",
-            &mut self.fun.metadata_counter, &mut self.fun.pending_metadata, disable_fold);
+            &mut self.ctx.metadata_counter, &mut self.ctx.pending_metadata, disable_fold);
         writeln!(out, "{}:", exit_label).ok();
         // 2026-07-17: Emit hoisted post-loop prints (swan song) AFTER the loop
         // closes, so they read the final accumulator values from %State. The
