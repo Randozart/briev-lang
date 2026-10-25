@@ -228,3 +228,8 @@ The adoption is complete when:
   object-field extraction still returns the wrong Bool payload. Parser swap
   deferred (BUGS.md) rather than shipping a broken Task Board. Compiler fixes
   found en route are retained.
+
+- PostgreSQL client adoption stopped at current contract checking: the
+  receive-length-corrected module has unproved buffer/socket bounds. Recorded
+  in BUGS.md; do not weaken the bounds contracts. The reusable receive-length
+  behavior remains part of the deferred PG branch.

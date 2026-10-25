@@ -54,8 +54,8 @@ authoritative design record; this file tracks credit and disposition.
 | `b-show`/`b-hide` and UTF-8 `b-each` | `2f5ad2bf` | adopted `4827fb16` |
 | Helper-write DOM invalidation | `2f5ad2bf` | pending |
 | Lexical elaboration scope | `2f5ad2bf` | pending |
-| PostgreSQL v3 client | `bfa1e7ef` / `feat/net-db-postgres` | pending |
-| PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | pending |
+| PostgreSQL v3 client | `bfa1e7ef` / `feat/net-db-postgres` | deferred — current contract gate rejects unproved buffer/socket bounds |
+| PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | included in deferred PG branch |
 | Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | pending |
 | Browser events/WebSocket/fetch | `8e6c8be1` | pending |
 | Matrix/Vector/IntVec primitives | `8e24a679` | pending rename/adoption |
