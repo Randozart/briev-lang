@@ -471,6 +471,11 @@ impl LlvmBackend {
                 // 2026-10-16 (term-semantics plan §1): the body's bare `term;`
                 // is P-gated against THIS txn's postcondition.
                 self.fun.item_post = Some(txn.contract.post_condition.clone());
+                // 2026-10-25: reset the terminated latch before lazy
+                // precondition evaluation. A stale true from the previous
+                // body folds `beginprogram && ...` to 0 (nbody init dropped).
+                self.fun.terminated = false;
+                self.fun.cur_block = Some(".ss_main_loop".to_string());
                 let cond_val = self.emit_expr(out, pre, "  ");
                 let bool_reg = self.as_bool_reg(out, "  ", &cond_val);
                 let body_label = format!(".ssb_{}", name);

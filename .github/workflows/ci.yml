@@ -43,6 +43,9 @@ jobs:
       - name: Tier-1 end-to-end fixtures
         run: cargo test --test daily_use_smoke
 
+      - name: Accel reactor non-hang gate
+        run: bash benchmarks/accel_reactor_nonhang.sh
+
       - name: Browser heap and collection snapshot gates
         run: |
           node tests/web_heap.mjs

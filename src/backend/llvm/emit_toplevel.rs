@@ -6224,6 +6224,11 @@ fn probe_ok_checks(
         // not defined in this function (precompute_sum: %t28 undefined).
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
+        // 2026-10-25: a prior body may have terminated. Lazy logical
+        // evaluation treats a stale terminated=true as "RHS is unreachable"
+        // and folds the whole pre guard to 0, dropping the node (nbody init).
+        self.fun.terminated = false;
+        self.fun.cur_block = Some("entry".to_string());
         let cond = self.emit_expr(out, &txn.contract.pre_condition, "  ");
         if cond.ty == Type::bool_() {
             writeln!(out, "  ret i8 {}", cond).ok();
@@ -6270,6 +6275,10 @@ fn probe_ok_checks(
         // through to GEP+load from %state (same rationale as emit_pre_function).
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
+        // 2026-10-25: reset the terminated latch before lazy precondition
+        // evaluation; a stale true folds `beginprogram && ...` to 0.
+        self.fun.terminated = false;
+        self.fun.cur_block = Some("entry".to_string());
         let cond = self.emit_expr(out, &txn.contract.pre_condition, "  ");
         let i1 = if cond.ty == Type::bool_() {
             let b = format!("%ric{}", self.fun.txn_counter); self.fun.txn_counter += 1;

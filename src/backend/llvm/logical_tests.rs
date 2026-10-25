@@ -119,3 +119,28 @@ fn terminating_rhs_has_no_fabricated_phi_incoming() {
     assert!(!ir.contains("logical.value."), "a trapping edge has no value predecessor: {ir}");
     clang_ir(&ir, "-O0", false);
 }
+
+#[test]
+fn pre_beginprogram_guard_is_not_folded_to_zero() {
+    let source = r#"
+let i: Int = 0;
+let n: Int = 1;
+sync<timer> node boot [beginprogram && i < n][i == n] {
+    i = i + 1;
+    term;
+};
+node done [i == n][true] {
+    endprogram 0;
+};
+when true { reside; };
+"#;
+    let (items, universe) = crate::library::parse_and_check("scratch/logical_begin.bv", source)
+        .expect("typed reactive program");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define internal i8 @pre_boot").expect("pre_boot emitted");
+    let end = ir[start..].find("\n}\n").map(|offset| start + offset).unwrap_or(ir.len());
+    let segment = &ir[start..end];
+    assert!(segment.contains("phi i8"), "the beginprogram guard must keep its lazy value: {segment}");
+    assert!(!segment.contains("ret i8 0"), "stale terminated folded the guard to zero: {segment}");
+}
