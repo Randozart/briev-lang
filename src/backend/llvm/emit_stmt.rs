@@ -1853,7 +1853,19 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         backend.fun.expected_enum_type = Some(t);
                     }
                 }
-                let mut reg = backend.emit_expr(out, val, indent);
+                // 2026-10-25: a list literal in return position has no
+                // inferred collection witness at codegen. Construct it from
+                // the declared return type instead of hitting the generic
+                // expression emitter (applies to `protocol_array`'s empty arm).
+                let returned_collection = if matches!(val, crate::ast::Expr::List(_)) {
+                    backend.fun.item_return_type.clone().and_then(|ty| {
+                        backend.construct_local_collection(out, indent, &ty, val)
+                            .map(|(value, _)| value)
+                    })
+                } else {
+                    None
+                };
+                let mut reg = returned_collection.unwrap_or_else(|| backend.emit_expr(out, val, indent));
                 // 2026-10-23 (tail-loop lowering): a lowered recursive tail
                 // has already emitted the loop backedge; it must not receive
                 // a second `ret` terminator.

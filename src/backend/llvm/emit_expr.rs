@@ -6213,8 +6213,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 .map(|(i, a)| {
                     if let Some(param_tys) = &fn_params {
                         if let Some(pt) = param_tys.get(i) {
+                            let has_collection_parameter_type = self.tier2_collection_type(pt)
+                                || matches!(pt, Type::Custom(_) | Type::Applied(_, _));
                             if matches!(a, crate::ast::Expr::List(_))
-                                && self.tier2_collection_type(pt)
+                                && has_collection_parameter_type
                             {
                                 if let Some((reg, _)) = self.construct_local_collection(
                                     out, indent, pt, a,
@@ -6786,6 +6788,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         arms: &[crate::ast::MatchArm],
         scrut: &TypedRegister,
         indent: &str,
+        expected_result: Option<&Type>,
     ) -> Vec<Type> {
         let saved_alloca_len = self.fun.pending_struct_allocas.len();
         let saved_block = self.fun.cur_block.clone();
@@ -6813,6 +6816,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             self.fun.terminated = false;
             self.fun.tail_loop_backedge = false;
             self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
+            if matches!(*arm.body, Expr::List(_)) {
+                if let Some(expected) = expected_result {
+                    tys.push(expected.clone());
+                    continue;
+                }
+            }
             let reg = self.emit_expr(&mut sink, &arm.body, indent);
             if !self.fun.terminated {
                 tys.push(reg.ty);
@@ -6828,6 +6837,23 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         self.fun.terminated = saved_terminated;
         self.fun.tail_loop_backedge = saved_tail_backedge;
         tys
+    }
+
+    fn emit_match_arm_value(
+        &mut self,
+        out: &mut String,
+        body: &Expr,
+        expected_result: Option<&Type>,
+        indent: &str,
+    ) -> TypedRegister {
+        if matches!(body, Expr::List(_)) {
+            if let Some(expected) = expected_result {
+                if let Some((value, _)) = self.construct_local_collection(out, indent, expected, body) {
+                    return value;
+                }
+            }
+        }
+        self.emit_expr(out, body, indent)
     }
 
         /// 2026-08-06 (Phase 7): lower a match expression. The scrutinee is
@@ -6894,7 +6920,16 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // deferred-alloca queue truncates back and the tracked block is
         // restored. Pattern BINDING lives outside emit_expr, so name maps
         // are untouched by the probe.
-        let probe_types = self.probe_match_result_types(arms, &scrut, indent);
+        let match_result_hint = self.fun.item_return_type.clone();
+        let expected_enum_result = match_result_hint.as_ref().filter(|ty| match ty {
+            Type::Custom(name) | Type::Applied(name, _) => self.ctx.enum_handle_types.contains(name),
+            _ => false,
+        });
+        let probe_types = if let Some(expected) = expected_enum_result {
+            vec![expected.clone(); arms.len()]
+        } else {
+            self.probe_match_result_types(arms, &scrut, indent, match_result_hint.as_ref())
+        };
         // 2026-10-05 (json.bv): canonicalize enum-handle probe types. An enum
         // CONSTRUCTOR (`Err(e)`) reports `Type::int()` (the i64 handle) while
         // an enum-returning CALL (`finish_number(..)`) reports the declared
@@ -6956,9 +6991,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 writeln!(out, "  br i1 {}, label %{}, label %{}", g1, body_label, next_labels[i]).ok();
                 writeln!(out, "{}:", body_label).ok();
                 self.fun.cur_block = Some(body_label.clone());
-                body_reg = self.emit_expr(out, &arm.body, indent);
+                body_reg = self.emit_match_arm_value(
+                    out, &arm.body, match_result_hint.as_ref(), indent,
+                );
             } else {
-                body_reg = self.emit_expr(out, &arm.body, indent);
+                body_reg = self.emit_match_arm_value(
+                    out, &arm.body, match_result_hint.as_ref(), indent,
+                );
             }
             // 2026-10-05 (json.bv): an arm that TERMINATED (its body ran a
             // `term` — a convergence checkpoint in a callable txn — branching
