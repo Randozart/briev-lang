@@ -5,10 +5,10 @@
 // cast-lane helpers print_int/print_str/print_float/put_char; renamed
 // 2026-10-15, core-usable purge).
 //
-// Runs at Front stage (before typechecking). Collects variable type
-// annotations from `let name: Type = ...` declarations. For literals
-// (Quoted, Decimal, Float) dispatches directly. Falls back to print_int
-// when the type can't be determined (all benchmarks use Int as default).
+// Runs before typechecking and again after typing. The early implementation
+// collected annotations and defaulted unknown values to integers. Since typed
+// dispatch moved to Print#, that table was unused; 2026-10-22 removes it and
+// uses the exhaustive mutable visitor for type-independent macro expansion.
 //
 // 2026-08-01: Phase 1 of the plugin-macro rework — the entry points are now
 // the lowercase macros `print!` / `println!`. Two forms are supported:
@@ -21,11 +21,13 @@
 // `println!()` with no arguments prints a newline alone.
 // The old PascalCase `Print!`/`PrintLn!` names are rejected by the
 // typechecker with a rename hint (see src/typechecker/mod.rs).
+//
+// 2026-10-25: exhaustive postorder traversal adopted from Otto Westerlund
+// (@odecode); see docs/contributors/otto-westerlund.md.
 
-use crate::ast::{Expr, StageKind, Statement, TopLevel, Type};
+use crate::ast::{Expr, StageKind, Statement, TopLevel};
 use crate::plugin::Plugin;
 use crate::type_universe::TypeUniverse;
-use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct PrintPlugin;
@@ -42,11 +44,9 @@ impl Plugin for PrintPlugin {
     fn on_ast(
         &self,
         program: &mut Vec<TopLevel>,
-        universe: &mut TypeUniverse,
+        _universe: &mut TypeUniverse,
     ) -> Result<(), String> {
-        let mut known_types: HashMap<String, Type> = HashMap::new();
-        collect_binding_types(program, &mut known_types);
-        resolve_prints(program, &known_types, universe)
+        resolve_prints(program)
     }
 }
 
@@ -122,171 +122,29 @@ pub(crate) fn parse_format(fmt: &[u8]) -> Result<Vec<FmtPart>, String> {
     Ok(parts)
 }
 
-fn collect_binding_types(program: &[TopLevel], map: &mut HashMap<String, Type>) {
+// 2026-10-22: one exhaustive mutable postorder walk replaces partial print
+// walkers. Foreach diagnostics and nested operand/container macros previously
+// escaped expansion. Print# remains the sole typed dispatch authority.
+fn resolve_prints(program: &mut [TopLevel]) -> Result<(), String> {
+    let mut failure = None;
+    let mut resolve = |expression: &mut Expr| {
+        if failure.is_some() { return; }
+        if let Err(error) = resolve_print_expr(expression) { failure = Some(error); }
+    };
     for item in program {
-        collect_item_types(item, map);
+        crate::ast::visit_mut::walk_toplevel(item, &mut resolve);
     }
+    failure.map_or(Ok(()), Err)
 }
 
-fn collect_item_types(item: &TopLevel, map: &mut HashMap<String, Type>) {
-    match item {
-        TopLevel::Definition(d) => collect_from_stmts(&d.body, map),
-        TopLevel::Transaction(t) => collect_from_stmts(&t.body, map),
-        TopLevel::Statement(stmt) => collect_from_stmt(stmt, map),
-        _ => {}
-    }
-}
-
-fn collect_from_stmts(stmts: &[crate::ast::Statement], map: &mut HashMap<String, Type>) {
-    for stmt in stmts {
-        collect_from_stmt(stmt, map);
-    }
-}
-
-fn collect_from_stmt(stmt: &crate::ast::Statement, map: &mut HashMap<String, Type>) {
-    match stmt {
-        crate::ast::Statement::Let { name, ty: Some(t), .. } => {
-            map.insert(name.clone(), t.clone());
-        }
-        crate::ast::Statement::Guarded(_, body) => collect_from_stmts(body, map),
-        _ => {}
-    }
-}
-
-fn resolve_prints(
-    program: &mut Vec<TopLevel>,
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
-) -> Result<(), String> {
-    for item in program.iter_mut() {
-        walk_item(item, known_types, universe)?;
-    }
+fn resolve_print_expr(expression: &mut Expr) -> Result<(), String> {
+    let Expr::PluginIntercept { name, args, receiver, .. } = expression else { return Ok(()); };
+    // 2026-09-16 (Bug A), preserved: receiver precedes explicit arguments.
+    // Postorder traversal has already expanded nested receiver/argument macros.
+    let mut full_args = args.clone();
+    if let Some(receiver) = receiver { full_args.insert(0, (**receiver).clone()); }
+    if let Some(replacement) = resolve_print(name, &full_args)? { *expression = replacement; }
     Ok(())
-}
-
-fn walk_item(
-    item: &mut TopLevel,
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
-) -> Result<(), String> {
-    match item {
-        TopLevel::Definition(d) => walk_stmts(&mut d.body, known_types, universe),
-        TopLevel::Transaction(t) => walk_stmts(&mut t.body, known_types, universe),
-        TopLevel::Constant(c) => walk_expr(&mut c.expr, known_types, universe),
-        TopLevel::Statement(stmt) => walk_stmt(stmt, known_types, universe),
-        TopLevel::Init(init) => {
-            if let Some(value) = &mut init.value {
-                walk_expr(value, known_types, universe)?;
-            }
-            walk_stmts(&mut init.body, known_types, universe)
-        }
-        // 2026-09-28 (usage-readiness): `sync<g> node` wraps the item in a
-        // SyncGroup — a `println!` in the node body previously skipped print
-        // resolution and hit the codegen panic at emit_expr.rs:1700.
-        // Walk the wrapped item like any other.
-        TopLevel::SyncGroup { item, .. } => walk_item(item, known_types, universe),
-        _ => Ok(()),
-    }
-}
-
-fn walk_stmts(
-    stmts: &mut [crate::ast::Statement],
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
-) -> Result<(), String> {
-    for stmt in stmts.iter_mut() {
-        walk_stmt(stmt, known_types, universe)?;
-    }
-    Ok(())
-}
-
-fn walk_stmt(
-    stmt: &mut crate::ast::Statement,
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
-) -> Result<(), String> {
-    match stmt {
-        crate::ast::Statement::Assign(_, expr)
-        | crate::ast::Statement::Let { expr: Some(expr), .. }
-        | crate::ast::Statement::Expression(expr)
-        | crate::ast::Statement::Term(Some(expr))
-        | crate::ast::Statement::Tail(expr)
-        | crate::ast::Statement::EndProgram(Some(expr)) => {
-            walk_expr(expr, known_types, universe)
-        }
-        crate::ast::Statement::Guarded(_, body) => walk_stmts(body, known_types, universe),
-        _ => Ok(()),
-    }
-}
-
-fn walk_expr(
-    expr: &mut Expr,
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
-) -> Result<(), String> {
-    match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } => {
-            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
-            // prepend it as the first argument (UFCS-style chaining) so it is
-            // not silently dropped.
-            let mut full_args = args.clone();
-            if let Some(recv) = receiver {
-                walk_expr(recv, known_types, universe)?;
-                full_args.insert(0, (**recv).clone());
-            }
-            if let Some(replacement) = resolve_print(name, &full_args, known_types, universe)? {
-                *expr = replacement;
-            }
-            Ok(())
-        }
-        Expr::BinaryOp(_, lhs, rhs) => {
-            walk_expr(lhs, known_types, universe)?;
-            walk_expr(rhs, known_types, universe)
-        }
-        Expr::UnaryOp(_, inner) => walk_expr(inner, known_types, universe),
-        Expr::Call(_, args, _) => {
-            for a in args {
-                walk_expr(a, known_types, universe)?;
-            }
-            Ok(())
-        }
-        Expr::If(cond, then, else_) => {
-            walk_expr(cond, known_types, universe)?;
-            walk_expr(then, known_types, universe)?;
-            if let Some(el) = else_ {
-                walk_expr(el, known_types, universe)?;
-            }
-            Ok(())
-        }
-        Expr::Match(_, arms) => {
-            for arm in arms {
-                walk_expr(&mut arm.body, known_types, universe)?;
-            }
-            Ok(())
-        }
-        Expr::Block(stmts) => walk_stmts(stmts, known_types, universe),
-        Expr::Tuple(elems) | Expr::List(elems) => {
-            for e in elems {
-                walk_expr(e, known_types, universe)?;
-            }
-            Ok(())
-        }
-        Expr::Field(obj, _) | Expr::Index(obj, _) => walk_expr(obj, known_types, universe),
-        Expr::Cast(inner, _) | Expr::IsType(inner, _) | Expr::Deref(inner)
-        | Expr::AddrOf(inner) => walk_expr(inner, known_types, universe),
-        Expr::Within(body, _) => walk_expr(body, known_types, universe),
-        Expr::Lambda(_, body) => walk_expr(body, known_types, universe),
-        Expr::DerivationBlock(db) => {
-            for ex in &mut db.examples {
-                for inp in &mut ex.inputs {
-                    walk_expr(inp, known_types, universe)?;
-                }
-                walk_expr(&mut ex.output, known_types, universe)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }
 
 fn print_call(value: &Expr) -> Expr {
@@ -306,8 +164,6 @@ fn newline_call() -> Expr {
 fn expand_format(
     fmt: &[u8],
     args: &[Expr],
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
 ) -> Result<(Vec<Statement>, usize), String> {
     let parts = parse_format(fmt)?;
     let mut stmts = Vec::new();
@@ -357,8 +213,6 @@ fn expand_format(
 fn resolve_print(
     name: &str,
     args: &[Expr],
-    known_types: &HashMap<String, Type>,
-    universe: &TypeUniverse,
 ) -> Result<Option<Expr>, String> {
     let is_println = name == "println";
     if !is_println && name != "print" {
@@ -376,7 +230,7 @@ fn resolve_print(
     let mut stmts = Vec::new();
     if let Expr::Quoted(fmt) = &args[0] {
         // Rust-style format string: value arguments follow the literal.
-        let (mut parts, used) = expand_format(fmt, &args[1..], known_types, universe)?;
+        let (mut parts, used) = expand_format(fmt, &args[1..])?;
         let supplied = args.len() - 1;
         if supplied > used {
             eprintln!(
@@ -412,6 +266,68 @@ fn resolve_print(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(source: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(source).expect("print fixture tokens");
+        crate::parser::Parser::new(tokens, source).parse_program().expect("print fixture syntax")
+    }
+
+    #[test]
+    fn nested_statement_prints_expand_without_intercepts() {
+        let mut program = parsed(r#"
+            defn diagnostics() {
+                foreach item in 0..3 { when item > 0 { println!("item={}",item); }; };
+                match 1 { 1 => { println!("one"); }, _ => { println!("other"); }, };
+                let nested: Int = { println!("initializer"); 1; };
+            };
+            obj Console { defn show() { println!("member"); }; };
+        "#);
+        resolve_prints(&mut program).expect("expand all statement positions");
+        let mut unresolved = 0;
+        let mut calls = 0;
+        for item in &program {
+            crate::ast::visit::walk_toplevel(item, &mut |expression| match expression {
+                Expr::PluginIntercept { .. } => unresolved += 1,
+                Expr::Call(name, _, _) if name == "Print#" => calls += 1,
+                _ => {}
+            });
+        }
+        assert_eq!(unresolved, 0);
+        assert!(calls >= 10, "each diagnostic retains its print and newline");
+    }
+
+    #[test]
+    fn nested_unknown_plugin_arguments_still_expand_prints() {
+        let mut program = parsed("defn nested() { custom!(println!(\"nested\")); };");
+        resolve_prints(&mut program).expect("nested argument expansion");
+        let mut names = Vec::new();
+        for item in &program {
+            crate::ast::visit::walk_toplevel(item, &mut |expression| {
+                if let Expr::PluginIntercept { name, .. } = expression { names.push(name.clone()); }
+            });
+        }
+        assert_eq!(names, ["custom"]);
+    }
+
+    #[test]
+    fn exported_definition_prints_expand() {
+        let mut program = parsed(r#"export defn say() { println!("exported"); };"#);
+        resolve_prints(&mut program).expect("export body expansion");
+        let mut unresolved = 0;
+        for item in &program {
+            crate::ast::visit::walk_toplevel(item, &mut |expression| {
+                if let Expr::PluginIntercept { .. } = expression { unresolved += 1; }
+            });
+        }
+        assert_eq!(unresolved, 0);
+    }
+
+    #[test]
+    fn malformed_nested_format_is_an_error() {
+        let mut program = parsed("defn nested() { foreach item in 0..2 { println!(\"{2}\",item); }; };");
+        let error = resolve_prints(&mut program).expect_err("nested format error");
+        assert!(error.contains("out of range"), "{error}");
+    }
 
     #[test]
     fn parse_plain_literal() {
@@ -456,25 +372,19 @@ mod tests {
 
     #[test]
     fn expand_out_of_range_positional_errors() {
-        let universe = TypeUniverse::new();
-        let known = HashMap::new();
-        let err = expand_format(b"{1}", &[], &known, &universe).unwrap_err();
+        let err = expand_format(b"{1}", &[]).unwrap_err();
         assert!(err.contains("out of range"), "err was: {err}");
     }
 
     #[test]
     fn expand_too_few_sequential_errors() {
-        let universe = TypeUniverse::new();
-        let known = HashMap::new();
-        let err = expand_format(b"{}", &[], &known, &universe).unwrap_err();
+        let err = expand_format(b"{}", &[]).unwrap_err();
         assert!(err.contains("only 0 were supplied"), "err was: {err}");
     }
 
     #[test]
     fn expand_value_kinds() {
-        let universe = TypeUniverse::new();
-        let known = HashMap::new();
-        let (stmts, used) = expand_format(b"{}, {1}, {0}", &[Expr::Decimal(7), Expr::Float(1.5)], &known, &universe).unwrap();
+        let (stmts, used) = expand_format(b"{}, {1}, {0}", &[Expr::Decimal(7), Expr::Float(1.5)]).unwrap();
         // {} -> Print#(7), ", " -> literal, {1} -> Print#(1.5),
         // ", " -> literal, {0} -> Print#(1.5).
         assert_eq!(stmts.len(), 5);

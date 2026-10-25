@@ -18,6 +18,7 @@ pub mod bad;
 pub(crate) mod bld;
 mod types;
 pub mod visit;
+pub mod visit_mut;
 
 pub use canonical::*;
 pub use display::*;
