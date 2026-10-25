@@ -13,6 +13,8 @@ node run [tick < 1][tick == 1] {
     // when the unwrapped payload would otherwise be unused.
     when mode == 1 { let forced: UnwrapPayload = unwrap(bad); endprogram forced.number; };
     when mode == 2 { let forced: UnwrapPayload = unwrap_err(good); endprogram forced.number; };
+    // Unused wrong-side call: the trap must remain observable (SIGILL).
+    when mode == 3 { unwrap(bad); endprogram 5; };
     let value: UnwrapPayload = unwrap(good);
     let failure: UnwrapPayload = unwrap_err(bad);
     let passed: Bool = value.number == 42 && value.text == "value" && failure.number == 7 && failure.text == "error";

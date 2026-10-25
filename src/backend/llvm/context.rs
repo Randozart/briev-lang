@@ -144,6 +144,10 @@ pub struct CompilerContext {
     /// effects — `print_str` reaches `SysCall#` via `write_all`; with #8
     /// (argmem-only) LLVM deleted every store that filled the write buffer.
     pub defn_touches_raw_memory: std::collections::HashSet<String>,
+    /// Defns that may trap/halt directly or through a callee. Their calls are
+    /// observable even when the result is unused and must not carry
+    /// `willreturn`.
+    pub defn_may_trap: std::collections::HashSet<String>,
     /// 2026-10-15 (type-dependent member statefulness): concrete type names
     /// with at least one state-taking member (export_abi::type_stateful_members).
     /// A monomorphized trait default/generic specialized to such a type must
@@ -647,6 +651,7 @@ impl CompilerContext {
             tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan::default(),
             enum_layout_planner: None,
             defn_touches_raw_memory: std::collections::HashSet::new(),
+            defn_may_trap: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
             idx_to_field_name: HashMap::new(),
             collection_iterables: std::collections::HashSet::new(),

@@ -3814,7 +3814,15 @@ impl LlvmBackend {
         // String concats printed empty. The caller's attribute must be at
         // least as permissive as its callees' effects.
         let base = d.name.split('$').next().unwrap_or(&d.name);
-        let attr_idx = if self.ctx.defn_touches_raw_memory.contains(&d.name)
+        let attr_idx = if self.ctx.defn_may_trap.contains(&d.name)
+            || self.ctx.defn_may_trap.contains(base)
+            || Self::definition_may_trap(&d.body)
+        {
+            // 2026-10-25: a call that may trap/halt is observable even when
+            // its result is unused. #15 omits willreturn; #13 would still let
+            // LLVM delete `unwrap(bad);` entirely.
+            "#15"
+        } else if self.ctx.defn_touches_raw_memory.contains(&d.name)
             || self.ctx.defn_touches_raw_memory.contains(base)
             || Self::definition_touches_raw_memory(&d.body)
         {
@@ -4208,6 +4216,46 @@ impl LlvmBackend {
 /// memory(argmem)'s "through pointer arguments" contract does not hold for
 /// int-address accesses. Helpers called with their own attrs are NOT scanned
 /// (the callee's attribute governs its own accesses).
+/// 2026-10-25: a defn may trap/halt directly or through nested statements.
+/// Calls to it are observable even when the result is unused.
+pub(crate) fn definition_may_trap(stmts: &[Statement]) -> bool {
+    fn expr_may_trap(expr: &Expr) -> bool {
+        match expr {
+            Expr::Block(body) => body.iter().any(stmt_may_trap),
+            Expr::If(_, then_expr, else_expr) => {
+                expr_may_trap(then_expr)
+                    || else_expr.as_deref().map_or(false, expr_may_trap)
+            }
+            Expr::Match(_, arms) => arms.iter().any(|arm| expr_may_trap(&arm.body)),
+            _ => false,
+        }
+    }
+    fn stmt_may_trap(stmt: &Statement) -> bool {
+        if matches!(stmt, Statement::Trap | Statement::Halt) {
+            return true;
+        }
+        let mut nested = false;
+        crate::ast::visit::walk_stmts(std::slice::from_ref(stmt), &mut |expr| {
+            if expr_may_trap(expr) { nested = true; }
+        });
+        if nested {
+            return true;
+        }
+        match stmt {
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => body.iter().any(stmt_may_trap),
+            Statement::Foreach { body, .. } => body.iter().any(stmt_may_trap),
+            Statement::Match { arms, .. } => arms.iter().any(|arm| arm.body.iter().any(stmt_may_trap)),
+            Statement::InlineDefn(d) => d.body.iter().any(stmt_may_trap),
+            _ => false,
+        }
+    }
+    stmts.iter().any(stmt_may_trap)
+}
+
 pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     // 2026-10-20 (pointer provenance): a raw `Ptr<T>` index/deref is memory
     // access even when no `Load#`/`Store#` intrinsic spelling appears. The

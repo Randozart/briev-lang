@@ -50,6 +50,38 @@ fn escape_llvm_string(s: &str) -> String {
 /// callees' memory effects — `print_str` reaches `SysCall#` through
 /// `write_all`, and claiming argmemonly there let -O2 delete the buffer
 /// stores before write(2).
+/// Defns that may trap/halt directly or through a callee. Calls to these are
+/// observable even when their result is unused; the defn attribute must not
+/// claim `willreturn` or LLVM can delete the whole call.
+fn compute_transitive_may_trap(items: &[TopLevel]) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    fn gather<'a>(item: &'a TopLevel, out: &mut Vec<&'a crate::ast::Definition>) {
+        match item {
+            TopLevel::Definition(d) => out.push(d),
+            TopLevel::Export(e) => gather(&e.inner, out),
+            TopLevel::TypeDef(td) => {
+                for m in &td.body.members { gather(m, out); }
+            }
+            TopLevel::Impl(im) => {
+                for d in &im.functions { out.push(d); }
+            }
+            _ => {}
+        }
+    }
+    let mut defs: Vec<&crate::ast::Definition> = Vec::new();
+    for item in items { gather(item, &mut defs); }
+    let mut called: std::collections::HashMap<&str, HashSet<String>> = std::collections::HashMap::new();
+    let mut may_trap: HashSet<String> = HashSet::new();
+    for d in &defs {
+        let mut calls = HashSet::new();
+        for stmt in &d.body { collect_called_names_stmt(stmt, &mut calls); }
+        if LlvmBackend::definition_may_trap(&d.body) { may_trap.insert(d.name.clone()); }
+        called.insert(d.name.as_str(), calls);
+    }
+    close_over_calls(&mut may_trap, &called);
+    may_trap
+}
+
 fn compute_transitive_raw_memory(items: &[TopLevel]) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
     fn gather<'a>(item: &'a TopLevel, out: &mut Vec<&'a crate::ast::Definition>) {
@@ -2950,6 +2982,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // before the write() syscall — every concat printed empty. Seed with
         // direct touchers, then close over calls (fixpoint, like needs_state).
         self.ctx.defn_touches_raw_memory = compute_transitive_raw_memory(items);
+        self.ctx.defn_may_trap = compute_transitive_may_trap(items);
         // 2026-10-15 (type-dependent member statefulness): concrete types with
         // a state-taking member. A trait default/generic monomorphized onto
         // such a type must itself take `%state` (its specialized body reaches a
@@ -5646,7 +5679,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         writeln!(out, "attributes #14 = {{").ok();
         writeln!(out, "    mustprogress nofree nosync nounwind noreturn memory(readwrite)").ok();
         writeln!(out, "}}").ok();
-        // Range metadata
+// 2026-10-25: may-trap/halt defns. No willreturn: an unused call is observable.\nattributes #15 = {\n    nofree norecurse nosync nounwind memory(readwrite)\n}\n        // Range metadata
         if !range_meta.is_empty() {
             writeln!(out).ok();
             for m in &range_meta {

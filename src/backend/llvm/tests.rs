@@ -12064,3 +12064,29 @@ node run [tick == 0][tick == 1] {
     assert!(ir.contains("call i32"), "TaskCall result must be i32:\n{ir}");
     assert!(!ir.contains("call i64 %"), "stale i64 TaskCall remains:\n{ir}");
 }
+
+
+#[test]
+fn defn_may_trap_is_not_willreturn() {
+    let src = r#"
+defn boom(n: Int) -> Int {
+    when n > 0 { trap; };
+    term 0;
+};
+defn caller(n: Int) -> Int { term boom(n); };
+node entry [beginprogram][true] {
+    caller(1);
+    endprogram 5;
+};
+"#;
+    let program = parse_bv_source(src);
+    let mut backend = LlvmBackend::new();
+    let ir = backend.generate(&program, None);
+    for name in ["boom", "caller"] {
+        let line = ir.lines().find(|l| l.contains("define") && l.contains(&format!("@{name}")))
+            .unwrap_or_else(|| panic!("missing @{name}:\n{ir}"));
+        assert!(line.contains("#15"), "may-trap defn must use the non-willreturn group: {line}");
+        assert!(!line.contains("#8"), "may-trap defn must not claim memory(read): {line}");
+    }
+    assert!(ir.contains("call i64 @caller"), "the unused may-trap call must survive: {ir}");
+}
