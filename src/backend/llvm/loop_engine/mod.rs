@@ -66,6 +66,13 @@ impl LlvmBackend {
                 }
                 return v;
             }
+            Expr::BinaryOp(kind @ (crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or), left, right) => {
+                // 2026-10-22: exit predicates share ordinary lazy evaluation;
+                // widen only the completed Bool, never eagerly emit its RHS.
+                let value = self.emit_exit_short_circuit(out, (left, right),
+                    matches!(kind, crate::ast::BinaryOpKind::Or), indent);
+                return self.adapt_to_i64(out, indent, &value);
+            }
             Expr::BinaryOp(kind, l, r) => {
                 return self.emit_exit_binop(out, indent, kind, l, r, &v);
             }
