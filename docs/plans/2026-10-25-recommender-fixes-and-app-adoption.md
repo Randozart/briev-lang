@@ -178,7 +178,7 @@ possible and add co-authorship on adapted commits.
 - Bundle A — adopted `helpers.rs`, `crash_regressions.rs` and the browser
   JSON/enum-lifetime fixtures. Ported typed pattern-literal equality and enum
   ownership call sites; fixed owned enum handles to target width. Commits:
-  `f3e7c1a0` (adoption), `0c5f9605` (target width).
+  `16e6c8a7` (adoption), `0c5f9605` (target width).
 - Bundle B — rejected: whole-file `casting/graph.rs` changes Data→String to
   IntToPtr and fails existing Bit→String encoding tests. Keep the current
   encoding lane; adapt the app later.
