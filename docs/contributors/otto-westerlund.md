@@ -57,9 +57,9 @@ authoritative design record; this file tracks credit and disposition.
 | PostgreSQL v3 client | `bfa1e7ef` + `db77a61b` / `fix/pg-receive-length` | adopted `e7cdeb89`; prefix + optional live SQLSTATE gates |
 | PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | adopted with client |
 | Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | async host/fetch/WebSocket/events/random adopted; cast/prelude still pending |
-| Browser events/WebSocket/fetch | `8e6c8be1` | adopted from integration branch (`4e20...`); host transport gate |
+| Browser events/WebSocket/fetch | `8e6c8be1` | adopted `fd7672df`; host transport gate |
 | Matrix/Vector/IntVec primitives | `8e24a679` | adopted `c0ff0617` as `FloatMatrix`/`FloatVector`/`IntVec` |
-| Sparse CSR / rating population | `3db9b920` | adopted `rating_population.bv` with FloatVector port; daily dual-CSR gate |
+| Sparse CSR / rating population | `3db9b920` | adopted `754a1402` with FloatVector port; daily dual-CSR gate |
 
 ## Adopted compiler hardening (2026-10-25)
 | Boxed tuple list index stride | discovered while porting strict JSON | `107c3017` |
