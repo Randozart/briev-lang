@@ -1,8 +1,8 @@
 # Otto contribution adoption
 
 **Date:** 2026-10-25
-**Status:** ACTIVE — attribution first; then low-risk compiler/view fixes, JSON,
-stdlib expansion, semantics, and browser runtime
+**Status:** ACTIVE — attribution and first adoption slice landed; remaining
+work is tracked below
 **Branch:** `feat/otto-adoption`
 **Source:** `odecode/brief-lang` fork, especially
 `integration/recommender-i10-i11` (`2c5940e8`) and the focused branches listed
@@ -236,3 +236,22 @@ The adoption is complete when:
 - Matrix/Vector/IntVec adopted from `8e24a679` with conflict-free
   `FloatMatrix`/`FloatVector` names for coexistence with `Matrix<T,R,C>`;
   daily compile/link/run gate covers `2^53+1` in `IntVec`.
+
+### Validation checkpoint (first slice)
+
+- `cargo test --lib`: 3322 passed.
+- `cargo test --test daily_use_smoke`: 23 passed (includes Result, collection
+  rebind and matrix primitives gates).
+- Task Board structured Chromium CRUD: PASS.
+- Task Board API gate: PASS.
+- `rbv_gate`: OK.
+- LLVM determinism quick: ALL DETERMINISTIC.
+- Full runtime suite: PASS, all correctness MATCH/PASS.
+- Result wrong-side native modes: SIGILL 132 on both wrong sides.
+- Collection rebind native gate: `collection_rebind_and_explicit_push=true`.
+- Matrix gate: `matrix_vector_intvec=true`.
+
+Remaining candidates: logical short-circuit + mutable parameter slots, module
+metadata allocator, target-width constants, strict JSON wasm object-field
+blocker, PostgreSQL proof pass, portable browser stdlib/host transport, general
+CSR extraction, and browser heap/dynamic snapshots.
