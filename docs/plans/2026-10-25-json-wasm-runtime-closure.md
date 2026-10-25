@@ -145,3 +145,17 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 - `node tests/web_collection_snapshot.mjs`: PASS (Unicode, 1100 items,
   shared snapshots, reset).
 - Task Board Chromium CRUD with heap + dynamic snapshots: PASS.
+
+### Validation checkpoint — Phase B complete
+
+- `cargo test --lib`: 3325 passed.
+- daily corpus: 25 passed.
+- Task Board structured Chromium CRUD: PASS.
+- Task Board API: PASS.
+- `rbv_gate`: OK.
+- determinism quick: ALL DETERMINISTIC.
+- full runtime suite: PASS, all MATCH/PASS.
+- `node tests/web_heap.mjs`: PASS.
+- `node tests/web_collection_snapshot.mjs`: PASS (Unicode, 1100 items,
+  shared snapshots, reset).
+- CI now runs both browser runtime gates after the release build.
