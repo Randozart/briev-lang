@@ -1,0 +1,35 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+import "std/rating_population.bv";
+
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let us: IntVec = ivec_new(5);
+    let it: IntVec = ivec_new(5);
+    let val: FloatVector = vec_new(5);
+    ivec_set(us, 0, 0); ivec_set(it, 0, 0); vec_set(val, 0, 5.0);
+    ivec_set(us, 1, 0); ivec_set(it, 1, 1); vec_set(val, 1, 3.0);
+    ivec_set(us, 2, 1); ivec_set(it, 2, 1); vec_set(val, 2, 4.0);
+    ivec_set(us, 3, 1); ivec_set(it, 3, 2); vec_set(val, 3, 2.0);
+    ivec_set(us, 4, 2); ivec_set(it, 4, 2); vec_set(val, 4, 1.0);
+    let pop: RatingPopulation = pop_build(us, it, val, 5, 3, 3);
+    let user_ok: Bool = pop.nusers == 3 && pop.nitems == 3 && pop.nnz == 5 &&
+        ivec_get(pop.user_off, 0) == 0 && ivec_get(pop.user_off, 1) == 2 &&
+        ivec_get(pop.user_off, 2) == 4 && ivec_get(pop.user_off, 3) == 5 &&
+        ivec_get(pop.user_item, 0) == 0 && ivec_get(pop.user_item, 1) == 1 &&
+        vec_get(pop.user_val, 0) == 5.0 && vec_get(pop.user_val, 1) == 3.0;
+    let item_ok: Bool = ivec_get(pop.item_off, 0) == 0 &&
+        ivec_get(pop.item_off, 1) == 1 && ivec_get(pop.item_off, 2) == 3 &&
+        ivec_get(pop.item_off, 3) == 5 &&
+        ivec_get(pop.item_user, 0) == 0 && ivec_get(pop.item_user, 1) == 0 &&
+        ivec_get(pop.item_user, 2) == 1 && vec_get(pop.item_val, 1) == 3.0;
+    let passed: Bool = user_ok && item_ok;
+    println!("rating_population={}", passed);
+    pop_free(pop);
+    ivec_free(us); ivec_free(it); vec_free(val);
+    when !passed { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

@@ -48,6 +48,7 @@ jobs:
 
       - name: Browser heap and collection snapshot gates
         run: |
+          node tests/web_host_transport.mjs
           node tests/web_heap.mjs
           ./target/release/brievc build tests/fixtures/collection_snapshot.rbv --split --out /tmp/collection_snapshot
           node tests/web_collection_snapshot.mjs /tmp/collection_snapshot/collection_snapshot.wasm

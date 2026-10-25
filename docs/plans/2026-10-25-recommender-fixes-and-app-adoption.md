@@ -211,6 +211,10 @@ test; E is deferred on concrete list typing in `iter_chain`.
 
 ## Phase D execution
 
+- Portable browser stdlib adopted: async HTTP handles, WebSocket FIFO/limits,
+  timers, secure random, host transport, and a Node regression. Cast/prelude
+  portability remains pending.
+- Rating population adopted with FloatVector naming; daily dual-CSR gate.
 - PostgreSQL client adopted from `fix/pg-receive-length`: `lib/std/db/pg.bv`,
   `buf_received`, `tests/tier1/pg_buffer_gate.bv`, and the optional live
   `tests/fixtures/stdlib/run_pg.sh` SQLSTATE/recovery gate.
@@ -227,4 +231,18 @@ test; E is deferred on concrete list typing in `iter_chain`.
 - daily corpus: 28 passed.
 - Task Board Chrome/API: PASS.
 - `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- full runtime suite: PASS, all MATCH/PASS.
+
+### Portable web + rating population validation
+
+- `node tests/web_host_transport.mjs`: HTTP compatibility, async bounds/
+  lifecycle/paint, unload warning, WebSocket FIFO and timers PASS.
+- `portable_web_imports` wasm gate compiles the async/WebSocket/timer/random
+  surface.
+- `rating_population_gate` dual-CSR daily gate: PASS.
+- `cargo test --lib`: 3340 passed.
+- daily corpus: 29 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- heap + 1100-item snapshot: PASS.
 - full runtime suite: PASS, all MATCH/PASS.

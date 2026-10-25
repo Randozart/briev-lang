@@ -1,27 +1,19 @@
-// Browser HTTP boundary for the webstack host module.
-//
-// `fetch` remains the original read-only GET surface. `http_fetch` is the
-// method-aware boundary; the synchronous host records the response status for
-// the immediately following `last_http_status` call. There is no async race:
-// both calls execute in the same Briev expression sequence.
+// Browser HTTP boundary for the webstack host module. Legacy text calls are
+// synchronous and retain status; async handles keep Promises private to JS.
 frgn fetch(url: String) -> String : fetch_url from "glue/web/web.js";
-
 frgn http_fetch(url: String, method: String, body: String) -> String : fetch_url_method from "glue/web/web.js";
 frgn last_http_status() -> Int : last_fetch_status from "glue/web/web.js";
+frgn fetch_method(url: String, method: String, body: String, content_type: String) -> String from "glue/web/web.js";
+frgn http_async_start(url: String, method: String, body: String, options_json: String, event_name: String) -> Int from "glue/web/web.js";
+frgn http_async_status(handle: Int) -> Int from "glue/web/web.js";
+frgn http_async_http_status(handle: Int) -> Int from "glue/web/web.js";
+frgn http_async_body(handle: Int) -> String from "glue/web/web.js";
+frgn http_async_error(handle: Int) -> String from "glue/web/web.js";
+frgn http_async_cancel(handle: Int) -> Void from "glue/web/web.js";
+frgn http_async_release(handle: Int) -> Void from "glue/web/web.js";
 
-
-defn http_get(url: String) -> String {
-    term http_fetch(url, "GET", "");
-};
-
-defn http_post(url: String, body: String) -> String {
-    term http_fetch(url, "POST", body);
-};
-
-defn http_put(url: String, body: String) -> String {
-    term http_fetch(url, "PUT", body);
-};
-
-defn http_delete(url: String) -> String {
-    term http_fetch(url, "DELETE", "");
-};
+defn http_get(url: String) -> String { term http_fetch(url, "GET", ""); };
+defn http_post(url: String, body: String) -> String { term http_fetch(url, "POST", body); };
+defn http_put(url: String, body: String) -> String { term http_fetch(url, "PUT", body); };
+defn http_delete(url: String) -> String { term http_fetch(url, "DELETE", ""); };
+defn http_delete_body(url: String, body: String) -> String { term fetch_method(url, "DELETE", body, "application/json"); };

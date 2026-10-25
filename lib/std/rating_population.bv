@@ -1,0 +1,203 @@
+// rating_population - a sparse rating set kept in BOTH orientations (per-user
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+// rows AND per-item columns), CSR-style, Malloc#-backed.
+//
+// 2026-10-19 (recommender-app Task 5): the AutAI-Fusion predictor traverses
+// user neighbors (Eq. 29) and item neighbors (Eq. 30), so it needs the ratings
+// sparse BOTH ways - by user and by item. This builds both orientations in one
+// pass over the observed ratings.
+//
+// CSR (compressed sparse row). For the per-user orientation:
+//   user_off[u] .. user_off[u+1]-1  index into (user_item[], user_val[])
+// giving user u's ratings. user_off has nusers+1 entries (the last is nnz).
+// The per-item orientation mirrors it with item_off / item_user / item_val.
+// Offsets and indices are integers (IntVec, 8-byte Int stride - no float
+// round-trip of an index); rating values are Float (FloatVector).
+//
+// BUILD (counting sort, O(nnz)): count how many ratings each row has, prefix-
+// sum the counts into the offset array, then scatter each rating to its row's
+// slot using a moving per-row cursor. Done once per orientation in the single
+// pass the design asks for.
+
+import "std/matrix.bv";
+
+obj RatingPopulation {
+    // per-user rows
+    user_off:  IntVec;    // len nusers+1
+    user_item: IntVec;    // len nnz
+    user_val:  FloatVector;    // len nnz
+    // per-item columns
+    item_off:  IntVec;    // len nitems+1
+    item_user: IntVec;    // len nnz
+    item_val:  FloatVector;    // len nnz
+    nusers: Int;
+    nitems: Int;
+    nnz:    Int;
+};
+
+// pop_build - build the dual-orientation population from `nnz` parallel rating
+// arrays: us[k] rated it[k] with val[k], for k in 0..nnz. `us` and `it` are
+// IntVec of user/item indices (0-based, us[k] in [0,nusers), it[k] in
+// [0,nitems)); `val` is the parallel FloatVector of rating values. nusers/nitems are
+// the index-space sizes. Returns the fully populated RatingPopulation.
+defn pop_build(us: IntVec, it: IntVec, val: FloatVector, nnz: Int, nusers: Int, nitems: Int)
+    [nnz >= 0 && nusers >= 1 && nitems >= 1][term.nnz == nnz]
+    -> RatingPopulation
+{
+    // per-user orientation: key = user index, parallel payload = (item, value)
+    let (uoff, uitem, uval): (IntVec, IntVec, FloatVector) =
+        csr_build(us, it, val, nnz, nusers);
+    // per-item orientation: key = item index, parallel payload = (user, value)
+    let (ioff, iuser, ival): (IntVec, IntVec, FloatVector) =
+        csr_build(it, us, val, nnz, nitems);
+    term RatingPopulation {
+        user_off: uoff, user_item: uitem, user_val: uval,
+        item_off: ioff, item_user: iuser, item_val: ival,
+        nusers: nusers, nitems: nitems, nnz: nnz
+    };
+};
+
+// csr_build - one CSR orientation. `key[k]` is the row of entry k (0..nrows);
+// `payload[k]` is the parallel index to store alongside the value `val[k]`.
+// Returns (off, pay, outval): off has nrows+1 entries (prefix sums, off[nrows]
+// == nnz); pay/outval have nnz entries, grouped by row. Counting sort.
+defn csr_build(key: IntVec, payload: IntVec, val: FloatVector, nnz: Int, nrows: Int)
+    [nnz >= 0 && nrows >= 1][true]
+    -> (IntVec, IntVec, FloatVector)
+{
+    // 1) off[r+1] = count of entries whose key == r (temporarily shifted by 1
+    // so the prefix sum turns counts into start offsets). off has nrows+1 slots.
+    let off: IntVec = ivec_new(nrows + 1);
+    csr_zero(off, nrows + 1, 0);
+    csr_count(key, off, nnz, 0);
+    // 2) prefix-sum in place: off[r] becomes the start index of row r; off[0]=0,
+    // off[nrows]=nnz. We shifted counts into off[r+1], so a running sum gives
+    // exactly the start offsets.
+    csr_prefix(off, nrows, 1, 0);
+    // 3) scatter: a moving cursor per row (a copy of the start offsets) places
+    // each entry at its row's next free slot.
+    let cur: IntVec = ivec_new(nrows + 1);
+    csr_copy(off, cur, nrows + 1, 0);
+    let cap: Int = csr_cap(nnz);
+    let pay: IntVec = ivec_new(cap);
+    let outval: FloatVector = vec_new(cap);
+    csr_scatter(key, payload, val, cur, pay, outval, nnz, 0);
+    term (off, pay, outval);
+};
+
+// csr_cap - Malloc# needs cap >= 1; an empty population (nnz 0) still allocates
+// a 1-slot block so the obj is well-formed (the offsets make it unused).
+defn csr_cap(nnz: Int) [nnz >= 0][term >= 1] -> Int {
+    when nnz <= 0 {
+        term 1;
+    };
+    term nnz;
+};
+
+// csr_zero - set the first `n` entries of `v` to 0. Tail recursion.
+defn csr_zero(v: IntVec, n: Int, i: Int) [n >= 0 && i >= 0][true] -> Int {
+    when i >= n || i >= v.len {
+        term 0;
+    };
+    ivec_set(v, i, 0);
+    term csr_zero(v, n, i + 1);
+};
+
+// csr_count - for each entry k, increment off[key[k] + 1] (the shift-by-one that
+// lets the prefix sum produce start offsets directly). Tail recursion over k.
+defn csr_count(key: IntVec, off: IntVec, nnz: Int, k: Int)
+    [nnz >= 0 && k >= 0][true]
+    -> Int
+{
+    when k >= nnz || k >= key.len {
+        term 0;
+    };
+    let r: Int = ivec_get(key, k);
+    when r < 0 || r + 1 >= off.len { term 0; };
+    ivec_set(off, r + 1, ivec_get(off, r + 1) + 1);
+    term csr_count(key, off, nnz, k + 1);
+};
+
+// csr_prefix - running prefix sum: off[i] += off[i-1], for i in 1..=nrows.
+// After this off[r] is row r's start index and off[nrows] == nnz. Tail
+// recursion carrying the running total `run` (= off[i-1] after the add).
+defn csr_prefix(off: IntVec, nrows: Int, i: Int, run: Int)
+    [nrows >= 1 && i >= 1 && run >= 0][true]
+    -> Int
+{
+    when i > nrows || i >= off.len {
+        term 0;
+    };
+    let sum: Int = run + ivec_get(off, i);
+    ivec_set(off, i, sum);
+    when sum < 0 { term 0; };
+    term csr_prefix(off, nrows, i + 1, sum);
+};
+
+// csr_copy - copy the first `n` entries of `src` into `dst` (the cursor starts
+// as a copy of the start offsets). Tail recursion.
+defn csr_copy(src: IntVec, dst: IntVec, n: Int, i: Int)
+    [n >= 0 && i >= 0][true]
+    -> Int
+{
+    when i >= n || i >= src.len || i >= dst.len {
+        term 0;
+    };
+    ivec_set(dst, i, ivec_get(src, i));
+    term csr_copy(src, dst, n, i + 1);
+};
+
+// csr_scatter - place each entry at its row's next free slot: for entry k with
+// row r = key[k], the slot is cur[r], then cur[r] advances. pay[slot] =
+// payload[k], outval[slot] = val[k]. Tail recursion over k.
+defn csr_scatter(key: IntVec, payload: IntVec, val: FloatVector, cur: IntVec, pay: IntVec, outval: FloatVector, nnz: Int, k: Int)
+    [nnz >= 0 && k >= 0][true]
+    -> Int
+{
+    when k >= nnz || k >= key.len || k >= payload.len || k >= val.len {
+        term 0;
+    };
+    let r: Int = ivec_get(key, k);
+    when r < 0 || r >= cur.len { term 0; };
+    let slot: Int = ivec_get(cur, r);
+    when slot < 0 || slot >= pay.len || slot >= outval.len { term 0; };
+    ivec_set(pay, slot, ivec_get(payload, k));
+    vec_set(outval, slot, vec_get(val, k));
+    ivec_set(cur, r, slot + 1);
+    term csr_scatter(key, payload, val, cur, pay, outval, nnz, k + 1);
+};
+
+// ── row/column accessors ─────────────────────────────────────────────────────
+
+// pop_user_begin / pop_user_end - the [begin, end) slice of user u's ratings in
+// (user_item, user_val). Bounds: u in [0, nusers).
+defn pop_user_begin(p: RatingPopulation, u: Int) [u >= 0 && u < p.nusers][term >= 0] -> Int {
+    when u >= p.user_off.len { term 0; };
+    term ivec_get(p.user_off, u);
+};
+defn pop_user_end(p: RatingPopulation, u: Int) [u >= 0 && u < p.nusers][term >= 0] -> Int {
+    when u + 1 >= p.user_off.len { term 0; };
+    term ivec_get(p.user_off, u + 1);
+};
+
+// pop_item_begin / pop_item_end - the [begin, end) slice of item i's ratings in
+// (item_user, item_val). Bounds: i in [0, nitems).
+defn pop_item_begin(p: RatingPopulation, i: Int) [i >= 0 && i < p.nitems][term >= 0] -> Int {
+    when i >= p.item_off.len { term 0; };
+    term ivec_get(p.item_off, i);
+};
+defn pop_item_end(p: RatingPopulation, i: Int) [i >= 0 && i < p.nitems][term >= 0] -> Int {
+    when i + 1 >= p.item_off.len { term 0; };
+    term ivec_get(p.item_off, i + 1);
+};
+
+// pop_free - release every backing allocation.
+defn pop_free(p: RatingPopulation) -> Void {
+    ivec_free(p.user_off);
+    ivec_free(p.user_item);
+    vec_free(p.user_val);
+    ivec_free(p.item_off);
+    ivec_free(p.item_user);
+    vec_free(p.item_val);
+    term;
+};
