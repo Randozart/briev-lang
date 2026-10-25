@@ -298,6 +298,6 @@ test; E is deferred on concrete list typing in `iter_chain`.
 - wasm fixture corpus (Int64/state-list/Bool-param): PASS.
 - standalone recommender `app.rbv` builds with the release compiler and loads
   in Chromium with zero page errors.
-- full runtime suite pending final run.
+- full runtime suite: PASS, all MATCH/PASS.
 - `server.bv` remains blocked on Vector/FloatVector naming and app-level
   contract bounds; app stays external.
