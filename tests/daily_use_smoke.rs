@@ -438,6 +438,18 @@ fn collection_rebind_gate_golden_output() {
 }
 
 #[test]
+fn json_parse_gate_golden_output() {
+    let out = build_link_run("json_parse_gate", "golden", &[]);
+    assert_eq!(out, "json_literals=true containers=true strings=true numbers=true progress=true\n", "strict JSON parse golden drifted: {out:?}");
+}
+
+#[test]
+fn json_stringify_gate_golden_output() {
+    let out = build_link_run("json_stringify_gate", "golden", &[]);
+    assert_eq!(out, "json_encode_all_variants=true unicode_control_roundtrip=true\n", "JSON stringify golden drifted: {out:?}");
+}
+
+#[test]
 fn matrix_primitives_golden_output() {
     let out = build_link_run("matrix_primitives_smoke", "golden", &[]);
     assert_eq!(out, "matrix_vector_intvec=true\n", "matrix primitive golden drifted: {out:?}");
