@@ -63,6 +63,10 @@ fn per_instantiation_list_each_builds_for_wasm() {
     assert_eq!(multi_html.matches("id=\"rbv-li-").count(), 2,
         "both b-each containers need stable ids:\n{multi_html}");
 
+    // JSON stringify exercises runtime `.^Length` on a collection parameter
+    // on wasm32 (target-width handle, i64 len header).
+    build_fixture(brievc, "json_stringify_wasm", &out);
+
     // List of boxed tuples: index 1 must use the canonical 8-byte word
     // stride and unbox the i32 handle, not treat Ptr<Tuple> as a 4-byte
     // scalar pointer.

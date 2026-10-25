@@ -1,0 +1,16 @@
+import "std/json.bv";
+
+let encoded: String = "[]";
+let tick: Int = 0;
+
+txn encode_once [tick == 0][tick == 1] {
+    let text: String = "héllo 🌍";
+    let result: Result<String,String> = json_stringify(StrVal(text));
+    when is_ok(result) { encoded = unwrap(result); };
+    tick = 1;
+    term;
+};
+
+<view>
+  <span b-text="encoded">[]</span>
+</view>

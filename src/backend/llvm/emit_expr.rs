@@ -4547,10 +4547,13 @@ impl LlvmBackend {
                          _ => {
                              let p = self.fun.gen_reg();
                              let gep = self.fun.gen_reg();
-                             let r = self.fun.gen_reg();
-                             writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, recv_reg.name).ok();
+                             let full = self.fun.gen_reg();
+                             // Collection handles are target-width on wasm32;
+                             // the hidden len slot remains an i64 header.
+                             self.emit_inttoptr(out, indent, &p, &recv_reg.name);
                              writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, gep, p).ok();
-                             writeln!(out, "{}{} = load i64, ptr {}", indent, r, gep).ok();
+                             writeln!(out, "{}{} = load i64, ptr {}", indent, full, gep).ok();
+                             let r = self.adapt_from_i64(out, indent, &full, &Type::int());
                              TypedRegister { name: r, ty: Type::int() }
                          }
                      }
