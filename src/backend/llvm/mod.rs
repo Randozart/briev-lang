@@ -12,6 +12,7 @@ pub(crate) mod kernel;
 pub mod helpers;
 pub mod intrinsics;
 pub mod loop_engine;
+mod logical;
 pub mod normalizer;
 pub mod types;
 pub mod strategy;
@@ -21,6 +22,8 @@ pub mod vector_phi;
 mod tests;
 #[cfg(test)]
 mod match_termination_tests;
+#[cfg(test)]
+mod logical_tests;
 
 
 pub use builder::LLVMBuilder;
