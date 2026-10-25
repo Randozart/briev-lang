@@ -162,8 +162,8 @@ source SHA/branch plus `Co-authored-by` on adaptations. Update
 
 ### Phase C execution log
 
-- `fba17b79` — adopted logical short-circuit + mutable parameter slots
-  (`5b9ac7f8`), with the stale-`terminated` reset needed for pre functions,
+- `3afdc42d` — adopted logical short-circuit + mutable parameter slots
+  (`5b9ac7f8`); `fba17b79` adds the stale-`terminated` reset needed for pre functions,
   async bodies and the reactor dispatch loop. `nbody_newton_accel` no longer
   hangs; `benchmarks/accel_reactor_nonhang.sh` runs in CI.
 - `c7c0b5d3` — may-trap defns and callers emit #15 without `willreturn`;
