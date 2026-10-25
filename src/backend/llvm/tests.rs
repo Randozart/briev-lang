@@ -9812,6 +9812,30 @@ fn test_webstack_int_literal_emits_target_width() {
 }
 
 #[test]
+fn test_int_constant_global_and_load_follow_target_width() {
+    // 2026-10-22: const globals used protocol metadata (i64) while wasm32 Int
+    // is i32. Declarations, aliases and reads must all use llvm_type(Int).
+    let src = r#"
+const LIMIT: Int = 7;
+let seen: Int = LIMIT;
+txn run [seen == LIMIT][true] { seen = LIMIT; term; };
+"#;
+    let program = parse_bv_source(src);
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let ir = backend.generate(&program, None);
+    assert!(ir.contains("@LIMIT = constant i32 7"),
+        "Int constant global must be i32 on wasm32:\n{ir}");
+    assert!(ir.contains("load i32, ptr @LIMIT"),
+        "Int constant read must be i32 on wasm32:\n{ir}");
+    assert!(!ir.contains("load i64, ptr @LIMIT"),
+        "Int constant read must not hardcode i64:\n{ir}");
+}
+
+#[test]
 fn test_webstack_state_int_slots_are_target_width() {
     // 2026-08-10: flexible Int %State slots are i{int_bits} (i32 on wasm32) —
     // the --int-bits design intent. x86_64 (int_bits=64) is unchanged.

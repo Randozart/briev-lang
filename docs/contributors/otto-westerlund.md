@@ -46,8 +46,8 @@ authoritative design record; this file tracks credit and disposition.
 | JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | adopted `dc342cad` |
 | Ordinary collection rebinding | `d3684191` / `fix/collection-assignment-rebind` | adopted `b1838ed5` |
 | Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | adopted `3afdc42d` + stale-terminated fix `fba17b79`; nbody gate green |
-| Module metadata allocator | `a42faac5` | pending |
-| Target-width constant globals/loads | `a42faac5` | pending |
+| Module metadata allocator | `a42faac5` | adopted `faff264a` |
+| Target-width constant globals/loads | `a42faac5` | adopted `faff264a` |
 | Exhaustive print traversal | `a42faac5` | adopted `ae9b2bf9` |
 | UTF-8 view compiler cursor | `a42faac5` | adopted `4827fb16` |
 | Browser heap + dynamic snapshots | `2f5ad2bf` / `fix/wasm32-web-runtime` | adopted `de574ea0` + `a2038053` |
