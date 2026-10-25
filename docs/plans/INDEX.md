@@ -16,6 +16,8 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — adopt the standalone recommender app's compiler recovery fixes in bisectable bundles; keep the app external and pinned at `79234665` until PostgreSQL/portable-web/ratings stdlib prerequisites build. Source compiler commit: `894fcfa5`.
+
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes and lexical elaboration are landed; Phase C is complete; next is Phase D stdlib breadth (PostgreSQL contract pass, portable web modules, CSR). Builds on the merged Otto adoption slices.
 
 **Active adoption lane (2026-10-25):** `docs/plans/2026-10-25-otto-contribution-adoption.md` — adopt Otto Westerlund's missing compiler/stdlib/browser work on current main, starting with attribution, Result/print/view/collection fixes, then JSON, PostgreSQL, portable web stdlib, logical/metadata semantics and browser runtime. Credit ledger: `docs/contributors/otto-westerlund.md`.
