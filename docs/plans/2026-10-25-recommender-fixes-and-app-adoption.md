@@ -1,7 +1,7 @@
 # Recommender fixes and app adoption
 
 **Date:** 2026-10-25
-**Status:** A/C/D landed; B rejected; E deferred; app still external
+**Status:** A/C/D landed; B rejected; E deferred; Phase D started (PG adopted); app still external
 **Branch:** `feat/recommender-fixes`
 **Sources:**
 - standalone app: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
@@ -208,3 +208,11 @@ possible and add co-authorship on adapted commits.
 
 Bundles B and E are not merged. B is rejected on the Bit→String encoding
 test; E is deferred on concrete list typing in `iter_chain`.
+
+## Phase D execution
+
+- PostgreSQL client adopted from `fix/pg-receive-length`: `lib/std/db/pg.bv`,
+  `buf_received`, `tests/tier1/pg_buffer_gate.bv`, and the optional live
+  `tests/fixtures/stdlib/run_pg.sh` SQLSTATE/recovery gate.
+- Contract drift handled with explicit guards and max-sized allocations; no
+  network bounds weakened. `brievc check lib/std/db/pg.bv` is clean.
