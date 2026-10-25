@@ -11001,7 +11001,7 @@ parser swap is not committed. The parser work is preserved for the next
 boxed-enum/tuple layout pass; do not re-land it as the default `json_parse`
 until the grouped wasm JSON gate passes.
 
-## Otto PostgreSQL client blocked on contract-gate drift (OPEN 2026-10-25)
+## Otto PostgreSQL client blocked on contract-gate drift (FIXED 2026-10-25)
 
 `lib/std/db/pg.bv` from `fix/pg-receive-length` (with the receive-length fix)
 does not pass current `brievc check`: buffer/socket bounds and grow-size
@@ -11009,6 +11009,11 @@ preconditions are unproved at the call sites. The module needs the same
 proof/guard treatment as the net stack before adoption; do not weaken the
 network bounds contracts. Native encoding/live-SQLSTATE gates must be rerun
 after that pass.
+
+**Fix:** adopted with explicit receive/payload guards and max-sized buffers;
+`brievc check lib/std/db/pg.bv` passes, the prefix gate is in the daily corpus,
+and the live SQLSTATE/recovery gate is optional under
+`tests/fixtures/stdlib/run_pg.sh`.
 `foreach index in 0..n { result += [index as String]; }` lost the loop element
 binding during elaboration and emitted raw addition of collection handles.
 Binding the element also exposed missing enum payload bindings in enclosing

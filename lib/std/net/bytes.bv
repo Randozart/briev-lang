@@ -130,6 +130,17 @@ defn buf_new(cap: Int) [cap >= 1][term.cap == cap && term.len == 0] -> ByteBuf {
     term ByteBuf { ptr: addr, len: 0, cap: cap };
 };
 
+// 2026-10-21: recv/write syscalls initialize bytes but do not update the
+// ByteBuf value's logical length. Publish the initialized prefix before using
+// readers or bounded scanners. This returns the same allocation view; free it
+// exactly once through either handle. Authored by Otto Westerlund (@odecode).
+defn buf_received(buf: ByteBuf, count: Int)
+    [count >= 0 && count <= buf.cap][term.len == count && term.cap == buf.cap]
+    -> ByteBuf
+{
+    term ByteBuf { ptr: buf.ptr, len: count, cap: buf.cap };
+};
+
 // buf_free - release the allocation. After this the ByteBuf must not be used.
 defn buf_free(buf: ByteBuf) -> Void {
     Free#(buf.ptr as Ptr);

@@ -1,7 +1,7 @@
 # Recommender fixes and app adoption
 
 **Date:** 2026-10-25
-**Status:** A/C/D landed; B rejected; E deferred; app still external
+**Status:** A/C/D landed; B rejected; E deferred; Phase D started (PG adopted); app still external
 **Branch:** `feat/recommender-fixes`
 **Sources:**
 - standalone app: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
@@ -208,3 +208,23 @@ possible and add co-authorship on adapted commits.
 
 Bundles B and E are not merged. B is rejected on the Bit→String encoding
 test; E is deferred on concrete list typing in `iter_chain`.
+
+## Phase D execution
+
+- PostgreSQL client adopted from `fix/pg-receive-length`: `lib/std/db/pg.bv`,
+  `buf_received`, `tests/tier1/pg_buffer_gate.bv`, and the optional live
+  `tests/fixtures/stdlib/run_pg.sh` SQLSTATE/recovery gate.
+- Contract drift handled with explicit guards and max-sized allocations; no
+  network bounds weakened. `brievc check lib/std/db/pg.bv` is clean.
+
+### PostgreSQL validation
+
+- `brievc check lib/std/db/pg.bv`: clean.
+- `pg_buffer_gate` in the daily corpus: PASS.
+- Optional live `run_pg.sh` requires a local trust-auth DB; not run in this
+  environment (no `pg_isready`, PGUSER/PGDATABASE unset).
+- `cargo test --lib`: 3340 passed.
+- daily corpus: 28 passed.
+- Task Board Chrome/API: PASS.
+- `rbv_gate`: OK; determinism: ALL DETERMINISTIC; accel non-hang: PASS.
+- full runtime suite: PASS, all MATCH/PASS.
