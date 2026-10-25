@@ -209,3 +209,22 @@ The adoption is complete when:
 - all new code is tested on current main;
 - Otto is credited in the repository, in adopted commits, and in every new PR;
 - the contributor ledger maps every original SHA/PR to its adopted result.
+
+## Execution log
+
+- 2026-10-25 — attribution foundation committed (`ae4c70c4`): plan, contributor
+  ledger, README/AUTHORS/NOTICE.
+- `b4e54d5e` — adopted Result wrong-side trap. The fixture forces the payload
+  into an exit value so the trap is observable; unused-call elimination is
+  logged as a separate OPEN bug.
+- `4827fb16` — adopted UTF-8 view byte offsets, `b-show`/`b-hide`, UTF-8
+  `b-each` decoding and keyed-row reorder. Task Board Chromium gate green.
+- `ae9b2bf9` — adopted exhaustive print traversal; exported-definition walk
+  added beyond the source version.
+- `b1838ed5` — adopted ordinary collection rebinding; native gate green.
+- `0db07d3c` — adopted closed-reflection liveness, target-width reflection
+  Int results, and fixed boxed enum heap ownership through sret callees.
+- Strict JSON parser/stringify: native parse/stringify gates pass; wasm
+  object-field extraction still returns the wrong Bool payload. Parser swap
+  deferred (BUGS.md) rather than shipping a broken Task Board. Compiler fixes
+  found en route are retained.

@@ -41,17 +41,17 @@ authoritative design record; this file tracks credit and disposition.
 
 | Work | Source | Status |
 |---|---|---|
-| Wrong-side `Result` unwrap trap | `dac3aa4a` / `fix/result-wrong-side-unwrap` | pending |
-| Strict JSON parser and framing | `14f7f666` / `fix/json-parser-progress` | pending |
-| JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | pending |
-| Ordinary collection rebinding | `d3684191` / `fix/collection-assignment-rebind` | pending |
+| Wrong-side `Result` unwrap trap | `dac3aa4a` / `fix/result-wrong-side-unwrap` | adopted `b4e54d5e` |
+| Strict JSON parser and framing | `14f7f666` / `fix/json-parser-progress` | deferred — native gates pass; wasm object-field blocker in BUGS.md |
+| JSON stringify | `892dcd6c` / `feat/portable-web-stdlib` | deferred with strict parser |
+| Ordinary collection rebinding | `d3684191` / `fix/collection-assignment-rebind` | adopted `b1838ed5` |
 | Logical short-circuit + mutable parameter slots | `5b9ac7f8` / `codex/boolean-short-circuit` | pending |
 | Module metadata allocator | `a42faac5` | pending |
 | Target-width constant globals/loads | `a42faac5` | pending |
-| Exhaustive print traversal | `a42faac5` | pending |
-| UTF-8 view compiler cursor | `a42faac5` | pending |
+| Exhaustive print traversal | `a42faac5` | adopted `ae9b2bf9` |
+| UTF-8 view compiler cursor | `a42faac5` | adopted `4827fb16` |
 | Browser heap + dynamic snapshots | `2f5ad2bf` / `fix/wasm32-web-runtime` | pending |
-| `b-show`/`b-hide` and UTF-8 `b-each` | `2f5ad2bf` | pending |
+| `b-show`/`b-hide` and UTF-8 `b-each` | `2f5ad2bf` | adopted `4827fb16` |
 | Helper-write DOM invalidation | `2f5ad2bf` | pending |
 | Lexical elaboration scope | `2f5ad2bf` | pending |
 | PostgreSQL v3 client | `bfa1e7ef` / `feat/net-db-postgres` | pending |
@@ -60,6 +60,14 @@ authoritative design record; this file tracks credit and disposition.
 | Browser events/WebSocket/fetch | `8e6c8be1` | pending |
 | Matrix/Vector/IntVec primitives | `8e24a679` | pending rename/adoption |
 | Sparse CSR / rating population | `3db9b920` | pending generalization |
+
+## Adopted compiler hardening (2026-10-25)
+
+| Work | Source | Adopted |
+|---|---|---|
+| Closed reflection liveness + task-family DCE | `a42faac5` | `0db07d3c` |
+| Target-width reflection Int results | `2f5ad2bf` | `0db07d3c` |
+| Boxed enum heap ownership through sret callees | discovered while porting JSON | `0db07d3c` |
 
 ## Deferred product work
 
