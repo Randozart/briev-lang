@@ -1,7 +1,7 @@
 # Recommender fixes and app adoption
 
 **Date:** 2026-10-25
-**Status:** ACTIVE — Bundle A in progress
+**Status:** A/C/D landed; B rejected; E deferred; app still external
 **Branch:** `feat/recommender-fixes`
 **Sources:**
 - standalone app: `odecode/recommender-app` @ `79234665` (publish `32491a3c`)
@@ -172,3 +172,23 @@ possible and add co-authorship on adapted commits.
 - App fixtures compile and run once their prerequisites land.
 - The app remains labelled external/non-buildable until Phase D is green.
 - Otto is credited in the repository, commits, PRs and app NOTICE if vendored.
+
+## Execution log
+
+- Bundle A — adopted `helpers.rs`, `crash_regressions.rs` and the browser
+  JSON/enum-lifetime fixtures. Ported typed pattern-literal equality and enum
+  ownership call sites; fixed owned enum handles to target width. Commits:
+  `f3e7c1a0` (adoption), `0c5f9605` (target width).
+- Bundle B — rejected: whole-file `casting/graph.rs` changes Data→String to
+  IntToPtr and fails existing Bit→String encoding tests. Keep the current
+  encoding lane; adapt the app later.
+- Bundle C — landed `5cf8526b`: trigger separator, item trigger params,
+  multiple event attributes, class pairs, unchanged-text updates. View and
+  generator tests plus Task Board Chromium pass.
+- Bundle D — landed `c693c196`: `mem2reg,tailcallelim` before `wasm-ld`;
+  versioned linker resolution through clang. Task Board and JSON wasm builds
+  pass.
+- Bundle E — deferred: partial generic-transaction specialization changed
+  list typing in a concrete `iter_chain` probe (`Count#`/`.^Length` saw Int).
+  Keep the existing defn-only worklist until a full frontend/txn specialization
+  change can be gated by the multi-struct catalogue fixture.

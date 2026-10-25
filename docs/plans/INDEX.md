@@ -16,7 +16,7 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
-**Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — adopt the standalone recommender app's compiler recovery fixes in bisectable bundles; keep the app external and pinned at `79234665` until PostgreSQL/portable-web/ratings stdlib prerequisites build. Source compiler commit: `894fcfa5`.
+**Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — A/C/D compiler/web/WASM bundles landed; casting change rejected; generic txn specialization deferred. App remains external and pinned at `79234665`. Source compiler commit: `894fcfa5`.
 
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes and lexical elaboration are landed; Phase C is complete; next is Phase D stdlib breadth (PostgreSQL contract pass, portable web modules, CSR). Builds on the merged Otto adoption slices.
 
