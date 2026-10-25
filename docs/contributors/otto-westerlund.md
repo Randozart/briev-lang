@@ -54,7 +54,7 @@ authoritative design record; this file tracks credit and disposition.
 | `b-show`/`b-hide` and UTF-8 `b-each` | `2f5ad2bf` | adopted `4827fb16` |
 | Helper-write DOM invalidation | `2f5ad2bf` | adopted `a2038053` |
 | Lexical elaboration scope | `2f5ad2bf` | adopted `87b9d607` |
-| PostgreSQL v3 client | `bfa1e7ef` + `db77a61b` / `fix/pg-receive-length` | adopted `b15fb7a0`; prefix + optional live SQLSTATE gates |
+| PostgreSQL v3 client | `bfa1e7ef` + `db77a61b` / `fix/pg-receive-length` | adopted `e7cdeb89`; prefix + optional live SQLSTATE gates |
 | PostgreSQL receive lengths | `db77a61b` / `fix/pg-receive-length` | adopted with client |
 | Portable browser cast/prelude | `8e6c8be1` / `feat/portable-web-stdlib` | pending |
 | Browser events/WebSocket/fetch | `8e6c8be1` | pending |
