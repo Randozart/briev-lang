@@ -1,0 +1,17 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+import "std/db/pg.bv";
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let raw: ByteBuf = buf_new(8);
+    Store#(raw.ptr, 65, 1);
+    let initialized: ByteBuf = buf_received(raw, 1);
+    let ok: Bool = initialized.ptr == raw.ptr && initialized.cap == raw.cap && initialized.len == 1 && get_u8(initialized, 0) == 65;
+    println!("pg_received_prefix={}", ok);
+    buf_free(initialized);
+    when !ok { endprogram 1; };
+    tick = 1;
+    endprogram;
+};

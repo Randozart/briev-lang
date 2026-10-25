@@ -1,0 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/db/pg.bv";
+import "std/env.bv";
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let raw: ByteBuf = buf_new(8);
+    Store#(raw.ptr,65,1);
+    let initialized: ByteBuf = buf_received(raw,1);
+    let prefix: Bool = initialized.ptr == raw.ptr && initialized.cap == raw.cap && initialized.len == 1 && get_u8(initialized,0) == 65;
+    buf_free(initialized);
+    println!("received_prefix={}",prefix);
+    let conn: PgConn = pg_connect(2130706433,5432,get_env("PGUSER"),get_env("PGDATABASE"),"");
+    when conn.sock.fd < 0 || conn.pid < 0 { endprogram 1; };
+    let begun: PgResult = pg_simple_query(conn,"BEGIN");
+    let failed: PgResult = pg_simple_query(conn,"SELECT 1 / 0");
+    let rollback: PgResult = pg_simple_query(conn,"ROLLBACK");
+    let recovered: PgResult = pg_simple_query(conn,"SELECT 1");
+    let preserved: Bool = begun.ok && !failed.ok && failed.err_code == "22012" && failed.err_msg == "division by zero" && rollback.ok && recovered.ok;
+    println!("server_error_preserved_and_connection_recovers={}",preserved);
+    pg_close(conn);
+    when !prefix || !preserved { endprogram 1; };
+    tick = 1;
+    endprogram;
+};
