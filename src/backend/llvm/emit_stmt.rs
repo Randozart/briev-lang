@@ -90,6 +90,14 @@ pub(super) fn emit_web_flush_batch(backend: &mut LlvmBackend, out: &mut String, 
         })
         .unwrap_or_default();
     written.sort_unstable();
+    // 2026-10-21: a transaction's helper calls may write state that its own
+    // write_set does not contain. Union the frontend's cross-helper commit
+    // closure so those fields are flushed too.
+    if let Some(writes) = backend.ctx.web_commit_writes.get(&txn_name) {
+        written.extend(writes.iter().filter_map(|name| backend.ctx.field_index_map.get(name).copied()));
+        written.sort_unstable();
+        written.dedup();
+    }
     if written.is_empty() {
         writeln!(out, "{}call void @__web_flush_state(i32 0, i32 0)", indent).ok();
         return;

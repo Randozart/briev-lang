@@ -43,6 +43,12 @@ jobs:
       - name: Tier-1 end-to-end fixtures
         run: cargo test --test daily_use_smoke
 
+      - name: Browser heap and collection snapshot gates
+        run: |
+          node tests/web_heap.mjs
+          ./target/release/brievc build tests/fixtures/collection_snapshot.rbv --split --out /tmp/collection_snapshot
+          node tests/web_collection_snapshot.mjs /tmp/collection_snapshot/collection_snapshot.wasm
+
       - name: Contract census (deny)
         run: bash scripts/contract_census.sh /tmp/contract_census.log
 

@@ -1,0 +1,27 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Authored by Otto Westerlund (@odecode); adopted with attribution.
+let items: List<String> = ["héllo", "世界"];
+let empty_items: List<String> = [];
+
+txn grow_items [items.Count#() < 1100][items.Count#() == 1100] {
+    let cleared: List<String> = [];
+    items = cleared;
+    foreach idx in 0..1100 { items <- idx as String; };
+    term;
+};
+
+txn reset_items [items.Count#() > 0][items.Count#() == 0] {
+    let cleared: List<String> = [];
+    items = cleared;
+    term;
+};
+
+<view>
+  <button b-trigger:click="grow_items">Grow</button>
+  <button b-trigger:click="reset_items">Reset</button>
+  <ul><li b-each:item="items" b-key="item"><span b-text="item"></span></li></ul>
+  <ul><li b-each:item="empty_items" b-key="item"><span b-text="item"></span></li></ul>
+</view>
+when true { reside; };
