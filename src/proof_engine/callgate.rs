@@ -1259,7 +1259,14 @@ pub fn fallthrough_facts(cond: &Expr) -> Vec<Expr> {
             }
         }
         _ => match negate_literal(cond) {
-            Some(f) => vec![f],
+            Some(f) => {
+                // 2026-10-26: normalize to conjuncts. `!(A && B)` must yield
+                // two facts; a single opaque And fact was invisible to the
+                // prover and forced redundant compound guards in callers.
+                let mut out = Vec::new();
+                conjuncts(&f, &mut out);
+                out
+            }
             None => Vec::new(),
         },
     }
@@ -1875,6 +1882,12 @@ mod tests {
     #[test]
     fn guard_fallthrough_skips_and_guard() {
         assert!(fallthrough_facts(&e("a > 0 && b > 0")).is_empty());
+    }
+
+    #[test]
+    fn negated_conjunction_fallthrough_splits_into_facts() {
+        let facts = fallthrough_facts(&e("!(a > 0 && b > 0)"));
+        assert_eq!(facts, vec![e("a > 0"), e("b > 0")]);
     }
 
     #[test]

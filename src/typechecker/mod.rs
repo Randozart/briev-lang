@@ -43,6 +43,12 @@ pub struct TypecheckContext<'a> {
     /// program (defns, txns, imported bodies). Used to validate a declared
     /// `op` binding's implementation target actually exists.
     pub defined_fns: std::collections::HashSet<String>,
+    /// 2026-10-26: enclosing defn/txn name for dev guard audits.
+    pub current_fn_name: Option<String>,
+    /// 2026-10-26: parameters of the current body and locals that shadow a
+    /// global constant. Constant unfolding must skip these.
+    pub param_names: std::collections::HashSet<String>,
+    pub local_shadows: std::collections::HashSet<String>,
     /// 2026-08-01 (Phase 3): locals consumed by a `~op` (`a ~= b`, `dest ~<-
     /// src`, `~<- src;`). Reading a consumed local afterward is a use-after-move
     /// compile error; reassigning it (via `=` or `let`) clears the mark.
@@ -241,6 +247,9 @@ impl<'a> TypecheckContext<'a> {
             fn_contracts: HashMap::new(),
             constant_defs: HashMap::new(),
             known_facts: Vec::new(),
+            current_fn_name: None,
+            param_names: std::collections::HashSet::new(),
+            local_shadows: std::collections::HashSet::new(),
             in_defn: false,
             current_output_type: None,
             type_protocols: HashMap::new(),
@@ -2038,36 +2047,8 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
             &contract.params,
             args,
         );
-        // Fold compile-time constants in the goal (`SYS_OPEN` → 2). Constants
-        // are immutable by declaration, so this is pure substitution.
-        if !ctx.constant_defs.is_empty() {
-            // Only unfold names that are not locally bound: a std helper's
-            // `total` parameter must not pick up a program-level `const total`.
-            let live: Vec<&String> = ctx
-                .constant_defs
-                .keys()
-                .filter(|n| !ctx.bindings.contains_key(*n))
-                .collect();
-            if !live.is_empty() {
-                let names: Vec<String> = live.iter().map(|n| (*n).clone()).collect();
-                let values: Vec<crate::ast::Expr> = names
-                    .iter()
-                    .map(|n| ctx.constant_defs[n].clone())
-                    .collect();
-                // Constants may be defined in terms of other constants
-                // (`UART_CR1 = UART_BASE + 0x0C`): unfold to a fixpoint.
-                for _ in 0..8 {
-                    let before = goal.clone();
-                    goal = crate::proof_engine::callgate::substitute_params(
-                        &goal, &names, &values,
-                    );
-                    if goal == before {
-                        break;
-                    }
-                }
-            }
-        }
-        let verdict = crate::proof_engine::callgate::prove_precondition(&goal, &ctx.known_facts);
+        // Fold constants in the goal and facts together; see fold_constants.
+        let verdict = prove_with_constants(&goal, ctx);
         if verdict != crate::proof_engine::callgate::Verdict::Proven {
             // Rollout stage (config/contracts.dbvl `policy:` row): `allow`
             // (migration) rejects nothing, `warn` announces, `deny` is the
@@ -2828,6 +2809,8 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                     crate::proof_engine::callgate::facts_of(&d.contract.pre_condition),
                 );
                 ctx.in_defn = true;
+                ctx.param_names = d.parameters.iter().map(|(n, _)| n.clone()).collect();
+                ctx.local_shadows.clear();
                 elaborate_stmts(&mut d.body, &mut ctx, &mut errors);
                 ctx.in_defn = false;
                 elaborate_expr(&mut d.contract.pre_condition, &mut ctx, &mut errors);
@@ -2853,6 +2836,8 @@ fn elaborate_ops(items: &mut [TopLevel], universe: &TypeUniverse, env: &CheckEnv
                 ctx.known_facts.extend(
                     crate::proof_engine::callgate::facts_of(&t.contract.pre_condition),
                 );
+                ctx.param_names = t.parameters.iter().map(|(n, _)| n.clone()).collect();
+                ctx.local_shadows.clear();
                 elaborate_stmts(&mut t.body, &mut ctx, &mut errors);
                 ctx.known_facts.truncate(fact_base);
                 elaborate_expr(&mut t.contract.pre_condition, &mut ctx, &mut errors);
@@ -2926,6 +2911,9 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
                 }
             }
             record_component_post_facts(expr.as_ref(), names, ctx);
+            if names.is_empty() {
+                record_call_post_facts(expr.as_ref(), name, ctx);
+            }
         }
         Statement::Assign(l, r) => {
             elaborate_expr(l, ctx, errors);
@@ -3442,6 +3430,10 @@ fn infer_match(
     let mut result_ty: Option<Type> = None;
 
     for arm in arms {
+        // 2026-10-26: arm-local facts must not leak into sibling arms. A
+        // terminating guard in one arm (e.g. `when discard { term ... }`)
+        // otherwise refutes the opposite guard in the next arm.
+        let fact_base = ctx.known_facts.len();
         let mut saved: Vec<(String, Option<Type>)> = Vec::new();
         let mut binds: Vec<(String, Type)> = Vec::new();
 
@@ -3557,6 +3549,7 @@ fn infer_match(
             ctx.bindings.insert(n.clone(), t.clone());
         }
         let ty = infer_type_only(&arm.body, ctx);
+        ctx.known_facts.truncate(fact_base);
         for (n, prev) in saved {
             match prev {
                 Some(p) => {
@@ -3807,6 +3800,65 @@ fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
     facts
 }
 
+/// 2026-10-26: unfold top-level constants in an expression, skipping names
+/// that the current body shadows. Constants are immutable; this is pure
+/// substitution. Used symmetrically on goals AND facts so symbolic facts such
+/// as `size - WORKER_FRAME_HEADER >= 0` still match a folded goal.
+fn fold_constants(expr: &Expr, ctx: &TypecheckContext) -> Expr {
+    if ctx.constant_defs.is_empty() {
+        return expr.clone();
+    }
+    let live: Vec<&String> = ctx
+        .constant_defs
+        .keys()
+        .filter(|n| !ctx.param_names.contains(*n) && !ctx.local_shadows.contains(*n))
+        .collect();
+    if live.is_empty() {
+        return expr.clone();
+    }
+    let names: Vec<String> = live.iter().map(|n| (*n).clone()).collect();
+    let values: Vec<Expr> = names.iter().map(|n| ctx.constant_defs[n].clone()).collect();
+    let mut out = expr.clone();
+    for _ in 0..8 {
+        let before = out.clone();
+        out = crate::proof_engine::callgate::substitute_params(&out, &names, &values);
+        if out == before {
+            break;
+        }
+    }
+    out
+}
+
+fn prove_with_constants(goal: &Expr, ctx: &TypecheckContext) -> crate::proof_engine::callgate::Verdict {
+    let goal = fold_constants(goal, ctx);
+    let facts: Vec<Expr> = ctx
+        .known_facts
+        .iter()
+        .map(|f| fold_constants(f, ctx))
+        .collect();
+    crate::proof_engine::callgate::prove_precondition(&goal, &facts)
+}
+
+/// 2026-10-26: dev-only guard audit. For `when !(cond) { trap; }`, ask the
+/// prover whether `cond` already follows from the facts live before the guard.
+/// `BRIEV_AUDIT_GUARDS=1` prints one line per guard; it never changes checking.
+fn audit_guard_condition(cond: &Expr, ctx: &TypecheckContext) {
+    if std::env::var_os("BRIEV_AUDIT_GUARDS").is_none() {
+        return;
+    }
+    let Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) = cond else {
+        return;
+    };
+    let verdict = prove_with_constants(inner, ctx);
+    let label = match verdict {
+        crate::proof_engine::callgate::Verdict::Proven => "redundant",
+        crate::proof_engine::callgate::Verdict::Refuted => "dead",
+        crate::proof_engine::callgate::Verdict::Unproven => "unproven",
+    };
+    let name = ctx.current_fn_name.as_deref().unwrap_or("<top>");
+    eprintln!("AUDIT {label} [{name}]: {inner}");
+}
+
 /// Infer the type of a statement.
 pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(), TypeError> {
     match stmt {
@@ -3834,7 +3886,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // Result/when is the idiom, not an assertion). There is no
             // runtime check to emit — the backend no-op is correct by this
             // ruling and the interpreter's runtime enforcement retires.
-            let verdict = crate::proof_engine::callgate::prove_precondition(cond, &ctx.known_facts);
+            let verdict = prove_with_constants(cond, ctx);
             if verdict != crate::proof_engine::callgate::Verdict::Proven {
                 // Same rollout stage as the call gate
                 // (config/contracts.dbvl `policy:`; ContractGatePolicy).
@@ -4047,6 +4099,11 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 }
             }
             let resolved = ty.clone().unwrap_or(inferred);
+            for n in std::iter::once(&*name).chain(names.iter()) {
+                if ctx.constant_defs.contains_key(n) {
+                    ctx.local_shadows.insert(n.clone());
+                }
+            }
             ctx.bindings.insert(name.clone(), resolved);
             record_call_post_facts(expr.as_ref(), name, ctx);
             Ok(())
@@ -4391,6 +4448,13 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
         }
         Statement::Guarded(cond, body) => {
             infer_type_only(cond, ctx)?;
+            if ctx.in_defn
+                && body
+                    .iter()
+                    .any(crate::analysis::termination::statement_always_terminates)
+            {
+                audit_guard_condition(cond, ctx);
+            }
             // 2026-10-19 (contract tiers, Option 1): a guard ESTABLISHES its
             // condition as fact inside the body — this is exactly how
             // bounds-checked reads discharge (`when off + 4 <= buf.len {
@@ -4443,6 +4507,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // return, substituted with the concrete generic args. Never a
             // hardcoded Int.
             let element_ty = foreach_item_type(ctx, &list_ty);
+            if ctx.constant_defs.contains_key(item) {
+                ctx.local_shadows.insert(item.clone());
+            }
             ctx.bindings.insert(item.clone(), element_ty);
             let fact_base = ctx.known_facts.len();
             ctx.known_facts.extend(foreach_range_facts(list, item));
@@ -6704,6 +6771,9 @@ fn check_top_level<'a>(
             let fact_base = ctx.known_facts.len();
             ctx.known_facts.extend(own_pre);
             ctx.in_defn = true;
+            ctx.current_fn_name = Some(defn.name.clone());
+            ctx.param_names = defn.parameters.iter().map(|(n, _)| n.clone()).collect();
+            ctx.local_shadows.clear();
             for stmt in &defn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
@@ -6725,6 +6795,9 @@ fn check_top_level<'a>(
             let own_pre =
                 crate::proof_engine::callgate::facts_of(&txn.contract.pre_condition);
             ctx.known_facts.extend(own_pre);
+            ctx.current_fn_name = Some(txn.name.clone());
+            ctx.param_names = txn.parameters.iter().map(|(n, _)| n.clone()).collect();
+            ctx.local_shadows.clear();
             for stmt in &txn.body {
                 infer_statement(stmt, &mut ctx)?;
             }
