@@ -3780,6 +3780,11 @@ fn foreach_range_facts(list: &Expr, item: &str) -> Vec<Expr> {
             Expr::Identifier(_) | Expr::Decimal(_) => true,
             Expr::Field(base, _) => simple(base),
             Expr::Cast(inner, _) => simple(inner),
+            // 2026-10-26: arithmetic endpoints are stable when their leaves
+            // are simple: `(a + 1)..n`, `(idx + 1)..len`. These are ubiqui-
+            // tous in index loops and previously produced no loop facts.
+            Expr::UnaryOp(_, inner) => simple(inner),
+            Expr::BinaryOp(_, l, r) => simple(l) && simple(r),
             _ => false,
         }
     }
@@ -8654,6 +8659,20 @@ mod tests {
              };",
         )
         .expect("the foreach range facts prove the item bounds");
+    }
+
+    /// Arithmetic range endpoints (`(a + 1)..n`) establish the item bound.
+    #[test]
+    fn foreach_arithmetic_range_proves_item_bounds() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(i: Int, n: Int) [i >= 1 && i < n][term >= 0] -> Int { term i; }; \
+             defn f(a: Int, n: Int) [a >= 0 && a + 1 < n][term >= 0] -> Int { \
+                 foreach i in (a + 1)..n { let x: Int = need(i, n); }; \
+                 term 0; \
+             };",
+        )
+        .expect("arithmetic range endpoints prove the item bounds");
     }
 
     /// A post fact that a scale is positive proves a multiplied argument
