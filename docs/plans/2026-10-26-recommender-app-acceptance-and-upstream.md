@@ -116,15 +116,15 @@ differential interpreter/backend gate, generic callable-txn specialization,
 - 2026-10-26: fixtures still used `Vector`; renamed the seven fixture files to
   `FloatVector` before running gates.
 - 2026-10-26: `run_active_scratch.sh` PASS (`empty=true short=true truncated=true`).
-- 2026-10-26: `run_active_profile.sh` PASS at `-O0` and `-O3` without LTO;
-  FAILS with SIGSEGV under harness-exact `-O3 -flto` (BUGS.md, 2026-10-26).
-  `944d4b5` + fixture rename reproduces, so guards are not the cause.
-- 2026-10-26: `run_worker.sh` now executes (guard traps fixed) but fails
-  `generation_two_result` (`model-not-installed` after a generation-2 ready
-  ack) and the recovery sub-gate. App `74ae68d` + compiler `894fcfa5` passes
-  the generation-2 check, so this is a current-main regression (BUGS.md).
+- 2026-10-26: `run_active_profile.sh` PASS under harness-exact LTO after the
+  structural-size fix. Before the fix it passed without LTO and SIGSEGV'd at
+  LTO; the stale `obj` size was the cause (BUGS.md).
+- 2026-10-26: `run_worker.sh` now passes start/predict/install, generation-2
+  prediction, shutdown and reap (`generation_two_result=true`). Recovery still
+  reports `persistent_ipc=false` because it spawns a persistence worker that
+  needs PostgreSQL; that path is expected to be blocked locally.
 - 2026-10-26: guard-order fixes applied for terminal sentinels in
   `knn_argmax`/`knn_zero`/`mean_*`/`impute_*`/`sim_*`/`lookup_row`/`sc_fill_*`
   and frame-size/decode short-buffer paths.
 - 2026-10-26: `cargo test --all` PASS (whole workspace).
-- Pending: PG/MovieLens/Playwright gates; compiler regressions above.
+- Pending: PG/MovieLens/Playwright gates (including worker recovery).

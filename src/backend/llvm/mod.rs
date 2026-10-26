@@ -3914,6 +3914,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
         }
  
+        // 2026-10-26: structural `obj`/TypeDef sizes are first cached while
+        // their fields are registered in declaration order. A field whose own
+        // type is registered later then contributes a provisional size, so the
+        // parent's `bytes` disagrees with `lookup_field_offset` (which sums the
+        // final field sizes) and object allocation under-runs. Recompute to a
+        // fixpoint now that every type is present. Explicit `spec bytes` stay
+        // authoritative; packed/union layouts are already derived per access.
+        self.recompute_structural_sizes();
+
         // 2026-07-13: struct_layout removed from ResolvedType in new AST.
         // TypeUniverse-based struct population is a no-op until slot syntax is reintroduced.
 
@@ -7817,6 +7826,60 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
 
     /// Compute the total size of the %State struct in bytes from field_types.
     /// Used by the memcpy round-trip SROA optimization in emit_main.
+    /// 2026-10-26: refresh structural object sizes after registration.
+    /// `record_structural_layout` runs when an obj/TypeDef is first seen, but
+    /// a later-registered field type still has a provisional `bytes`; the
+    /// cached parent size then contradicts the offset walk at codegen and the
+    /// object allocates too little. Iterate until sizes stop changing.
+    fn recompute_structural_sizes(&mut self) {
+        let names: Vec<String> = self.ctx.struct_types.keys().cloned().collect();
+        for _ in 0..names.len().max(1) {
+            let mut updates: Vec<(String, u64)> = Vec::with_capacity(names.len());
+            for name in &names {
+                if self.ctx.unions.contains(name) || self.ctx.packed_structs.contains(name) {
+                    continue;
+                }
+                let Some(fields) = self.ctx.struct_types.get(name) else {
+                    continue;
+                };
+                let explicit = self
+                    .ctx
+                    .type_universe
+                    .as_ref()
+                    .and_then(|u| u.types.get(name))
+                    .is_some_and(|rt| rt.properties.contains_key("bytes"));
+                if explicit {
+                    continue;
+                }
+                let bytes: u64 = fields
+                    .iter()
+                    .map(|(_, ty)| crate::backend::llvm::types::type_size(
+                        ty,
+                        self.ctx.type_universe.as_ref(),
+                    ))
+                    .sum();
+                updates.push((name.clone(), bytes));
+            }
+            let Some(universe) = self.ctx.type_universe.as_mut() else {
+                return;
+            };
+            let mut changed = false;
+            for (name, bytes) in updates {
+                if let Some(rt) = universe.types.get_mut(&name) {
+                    if rt.bytes != bytes {
+                        rt.bytes = bytes;
+                        rt.min_bits = bytes * 8;
+                        rt.max_bits = bytes * 8;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                return;
+            }
+        }
+    }
+
     pub(crate) fn compute_state_size_bytes(&self) -> i64 {
         self.ctx.field_types.iter().map(|t| llvm_type_byte_size(t)).sum()
     }

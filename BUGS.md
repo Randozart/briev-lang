@@ -33,7 +33,7 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## `clang -O3 -flto` segfaults on the recommender active-profile gate -- OPEN 2026-10-26
+## `clang -O3 -flto` segfaults on the recommender active-profile gate -- FIXED 2026-10-26
 
 **Symptom:** the app's `active_profile_gate` runs correctly at `-O0` and at
 `-O3` without LTO, but the harness-exact `clang -O3 -flto -march=native
@@ -53,11 +53,16 @@ clang -O3 -flto -march=native -ffast-math /tmp/a/active_profile_gate.ll \
 
 **Contrast:** the gate is from app commit `944d4b5` + fixture rename only
 (no guard additions), so this is not caused by the branch's contract guards.
-`cargo test --lib` is green. Likely an LTO-only codegen/UB issue; next step is
-to reduce the emitted IR or bisect the optimizer, not to drop LTO in the
-harness.
+`cargo test --lib` is green.
 
-## Prediction worker loses `loaded`/generation state after a second install -- OPEN 2026-10-26
+**Root cause / fix (2026-10-26):** structural `obj`/TypeDef sizes were cached in
+declaration order by `record_structural_layout`; a field whose type registered
+later contributed a provisional size, so allocation under-ran the offsets the
+emitter uses. `recompute_structural_sizes` now runs to a fixpoint after all
+types register. With correct sizes the gate passes at harness LTO; the LTO
+segfault and the worker state loss below were the same out-of-bounds class.
+
+## Prediction worker loses `loaded`/generation state after a second install -- FIXED 2026-10-26
 
 **Symptom:** `worker_process_gate` installs generation 1, predicts, then
 installs generation 2 and gets a `ready` acknowledgement for generation 2. The
@@ -74,6 +79,13 @@ The gate is stable across LTO/no-LTO, so this is a frontend/backend behaviour
 change in current main, not an LTO artifact. Inspect the `WorkerModelState`
 update returned by `worker_child_install` and carried through the recursive
 `worker_child_loop`; the app code updates `loaded`/`generation` before returning.
+
+**Root cause / fix:** `WorkerModelState` allocated 826 bytes but wrote fields at
+offsets 872/880/881; the stale structural size came from the same
+`record_structural_layout` ordering. The fixpoint in
+`recompute_structural_sizes` makes allocation match offsets;
+`generation_two_result=true` and the shutdown/reap checks pass. Recovery still
+needs PostgreSQL because it spawns the persistence worker.
 
 ## Destructuring `let` silently bound `Int` when tuple inference failed -- FIXED 2026-10-26
 

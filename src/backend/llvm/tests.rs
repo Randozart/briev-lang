@@ -3595,6 +3595,71 @@ fn test_struct_type_registered() {
 }
 
 #[test]
+fn nested_obj_size_uses_final_field_layout() {
+    // Outer is declared before Inner, so the initial structural-layout cache
+    // sees Inner absent. The post-registration fixpoint must recompute Outer
+    // from Inner's final size; otherwise allocation is smaller than the field
+    // offsets the emitter uses (the WorkerModelState regression).
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let int_field = |name: &str| StructField {
+        name: name.to_string(),
+        ty: Type::int(),
+        default: None,
+        visibility: Visibility::Public,
+    };
+    let program = vec![
+        TopLevel::Obj(StructDefinition {
+            name: "Outer".to_string(),
+            type_params: vec![],
+            parent: None,
+            fields: vec![
+                StructField {
+                    name: "inner".to_string(),
+                    ty: Type::Custom("Inner".to_string()),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
+                int_field("tail"),
+            ],
+            transactions: vec![],
+            view_html: None,
+            span: None,
+            modifiers: vec![],
+            variants: vec![],
+        }),
+        TopLevel::Obj(StructDefinition {
+            name: "Inner".to_string(),
+            type_params: vec![],
+            parent: None,
+            fields: vec![int_field("a"), int_field("b"), int_field("c")],
+            transactions: vec![],
+            view_html: None,
+            span: None,
+            modifiers: vec![],
+            variants: vec![],
+        }),
+    ];
+    let _ = backend.generate(&program, None);
+    let universe = backend.ctx.type_universe.as_ref().expect("universe");
+    assert_eq!(
+        universe.types.get("Inner").map(|t| t.bytes),
+        Some(24),
+        "Inner is three Int fields"
+    );
+    assert_eq!(
+        universe.types.get("Outer").map(|t| t.bytes),
+        Some(32),
+        "Outer is Inner (24) + Int (8), not a provisional pointer-sized Inner"
+    );
+    assert_eq!(
+        backend.lookup_field_offset("Outer", "tail"),
+        24,
+        "offset walk must agree with the recomputed size"
+    );
+}
+
+#[test]
 fn test_struct_type_declaration_in_ir() {
     let mut backend = LlvmBackend::new();
     let program = vec![
