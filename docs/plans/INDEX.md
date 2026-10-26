@@ -13,6 +13,8 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
+
 **Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — A/C/D compiler/web/WASM bundles landed; casting change rejected; generic txn specialization deferred. App remains external and pinned at `79234665`. Source compiler commit: `894fcfa5`.
 
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes, lexical elaboration, logical semantics, metadata and target-width constants are landed. Phase D stdlib breadth (PostgreSQL, portable web, CSR) is adopted; the remaining compiler item is generic callable transaction specialization.
