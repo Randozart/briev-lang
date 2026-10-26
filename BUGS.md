@@ -10914,7 +10914,7 @@ wasm32 and render through `b-each`.
 Also fixed: `inject_ids` never parsed closing tags, so the first `b-each`
 subtree swallowed the rest of the view and later containers received no ID.
 
-## Web JSON ingestion blocked by prelude ABI (OPEN 2026-10-23)
+## Web JSON ingestion blocked by prelude ABI (FIXED 2026-10-25)
 
 After enabling `CharCount#`/`Count#` on webstack, `std/json.bv` compiles through
 the parser. Tuple returns/destructuring, enum handle/payload construction,
@@ -10991,7 +10991,10 @@ and match arms never fired. The sret slot is now heap-allocated when the
 current function is boxed and the result is in a return context. Regression:
 `test_boxed_enum_return_through_sret_callee_uses_heap_slot`.
 
-## Strict JSON parser blocked on wasm object-field extraction (OPEN 2026-10-25)
+## Strict JSON parser blocked on wasm object-field extraction (FIXED 2026-10-25)
+
+Resolved by the tuple-list word-stride fix and typed list construction; strict
+JSON now passes native/wasm and Task Board toggle.
 
 The strict parser and stringify gates pass natively, and the parser compiles
 for wasm after target-width signed-integer/minimum fixes. On wasm, a parsed
@@ -11125,7 +11128,7 @@ frontend type substitution and txn worklist are ported together and gated by a
 multi-struct catalogue concatenation fixture.
 
 
-## Portable cast path emits i32 Int64 constants (OPEN 2026-10-25)
+## Portable cast path emits i32 Int64 constants (FIXED 2026-10-25)
 
 Switching `.rbv` to `prelude-web` + `cast_portable` exposed
 `%t55 = add i32 0, 1000000000` feeding `mul i64` in `pow10f`, rejecting the
@@ -11134,7 +11137,7 @@ must widen to the declared 64-bit type. Reverted the prelude switch until
 target-width Int64 literal/cast lowering is fixed. Adoption plan:
 `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md`.
 
-## App browser hits an untyped empty-list context (OPEN 2026-10-25)
+## App browser hits an untyped empty-list context (FIXED 2026-10-25)
 
 After the web prelude/root fixes, the standalone `app.rbv` build reaches a bare
 empty-list codegen context (`exprs=[]`, current return type Bool). The app stays

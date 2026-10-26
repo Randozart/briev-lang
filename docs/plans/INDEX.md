@@ -3,10 +3,7 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 2901 green (2026-10-06, incl. the two
-normalizer-diagnostic tests, three `List + List` tests, four json interpreter
-tests, and five folio package tests); conformance sweep green; `gemm_h`
-byte-identical; 19 pre-existing warnings; Praetor no new diagnostics.
+**Suite state:** `cargo test --lib` 3343 green (2026-10-25); daily corpus 29 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
@@ -18,7 +15,7 @@ warns).
 
 **Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — A/C/D compiler/web/WASM bundles landed; casting change rejected; generic txn specialization deferred. App remains external and pinned at `79234665`. Source compiler commit: `894fcfa5`.
 
-**Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes and lexical elaboration are landed; Phase C is complete; next is Phase D stdlib breadth (PostgreSQL contract pass, portable web modules, CSR). Builds on the merged Otto adoption slices.
+**Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes, lexical elaboration, logical semantics, metadata and target-width constants are landed. Phase D stdlib breadth (PostgreSQL, portable web, CSR) is adopted; the remaining compiler item is generic callable transaction specialization.
 
 **Active adoption lane (2026-10-25):** `docs/plans/2026-10-25-otto-contribution-adoption.md` — adopt Otto Westerlund's missing compiler/stdlib/browser work on current main, starting with attribution, Result/print/view/collection fixes, then JSON, PostgreSQL, portable web stdlib, logical/metadata semantics and browser runtime. Credit ledger: `docs/contributors/otto-westerlund.md`.
 
