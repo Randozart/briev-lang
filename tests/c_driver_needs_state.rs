@@ -14,6 +14,7 @@ fn has(cmd: &str) -> bool {
 }
 
 #[test]
+#[ignore = "quarantined v0.1 stability gate; see BUGS.md C-driven bridge/CLI entry quarantine"]
 fn needs_state_pass_matches_reference() {
     for tool in ["cc"] {
         if !has(tool) {

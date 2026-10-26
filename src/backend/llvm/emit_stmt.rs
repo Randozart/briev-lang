@@ -1604,7 +1604,16 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     .map(is_event_type)
                     .unwrap_or(false);
                 if is_wire {
-                    if let Some(id_reg) = backend.fun.let_bindings.get(wname).cloned() {
+                    if let Some(mut id_reg) = backend.fun.let_bindings.get(wname).cloned() {
+                        // 2026-10-25: a reassigned Event parameter is bound to a
+                        // native parameter slot. The wire id is the loaded i64,
+                        // not the alloca address; passing the slot produced a
+                        // ptr-vs-i64 verifier error in async compiled events.
+                        if backend.fun.native_parameter_slots.contains(&id_reg) {
+                            let loaded = backend.fun.gen_reg();
+                            writeln!(out, "{indent}{loaded} = load i64, ptr {id_reg}").ok();
+                            id_reg = loaded;
+                        }
                         let val = backend.emit_expr(out, value, indent);
                         let boxed = backend.adapt_to_i64(out, indent, &val);
                         let events_i = backend.fun.gen_reg();

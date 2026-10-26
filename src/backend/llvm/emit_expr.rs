@@ -8833,8 +8833,18 @@ impl crate::backend::llvm::LlvmBackend {
     /// pass `%state` when present — the old stateless call could never
     /// resolve to the defn (pre-existing latent bug, fixed here).
     fn emit_event_trap_call(&mut self, out: &mut String) {
-        let st = if self.ctx.defn_takes_state("event_strict_trap") { "ptr %state, " } else { "" };
-        writeln!(out, "  call i64 @event_strict_trap({})", st).ok();
+        // 2026-10-25: strict event reads inside a stateless defn have no
+        // %state. event_strict_trap is stateful (it prints), so calling it
+        // there emitted `use of undefined value '%state'`. Trap directly;
+        // the caller immediately emits `unreachable`.
+        if self.fun.stateless_body {
+            writeln!(out, "  call void @llvm.trap()").ok();
+            return;
+        }
+        // A stateful callee takes exactly `ptr %state`; the old trailing
+        // comma produced `call i64 @event_strict_trap(ptr %state, )`.
+        let args = if self.ctx.defn_takes_state("event_strict_trap") { "ptr %state" } else { "" };
+        writeln!(out, "  call i64 @event_strict_trap({args})").ok();
     }
 
     fn emit_event_payload_read(
