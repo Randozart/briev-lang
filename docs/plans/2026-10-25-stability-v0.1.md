@@ -1,7 +1,7 @@
 # Briev stability and v0.1 release
 
 **Date:** 2026-10-25
-**Status:** ACTIVE — Phase 1 complete; Phase 2 (reference parity) next
+**Status:** ACTIVE — Phase 1 complete; PR open; Phase 2 (reference parity) next
 **Branch:** `stability/v0.1`
 
 ## Decision set
@@ -133,4 +133,6 @@ Acceptance: no unexplained regression; performance status is visible.
 
 Phase 1 fuzz/panic audit: a new full-frontend proptest found a lexer `unwrap`
 panic in `library::parse_and_check`; malformed input now returns a span-bearing
-diagnostic. Remaining: continue auditing reachable non-frontend panics.
+diagnostic. Phase 1 validation: `cargo test --all` PASS, full runtime suite PASS, Task Board
+Chrome/API PASS, rbv/determinism/accel/host PASS. Full panic audit continues in
+later phases.
