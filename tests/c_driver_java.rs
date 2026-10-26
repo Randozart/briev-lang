@@ -63,7 +63,14 @@ fn java_roundtrip() {
     let ext = Command::new(brievc)
         .args(["extension", &bv, "java", "--out", &base.to_string_lossy()])
         .output().expect("failed brievc extension java");
-    assert!(ext.status.success(), "java ext failed: {}", String::from_utf8_lossy(&ext.stderr));
+    if !ext.status.success() {
+        let stderr = String::from_utf8_lossy(&ext.stderr);
+        if stderr.contains("jni.h") {
+            eprintln!("SKIP: JNI headers not installed");
+            return;
+        }
+        panic!("java ext failed: {stderr}");
+    }
     assert!(base.join("libboundary.so").exists(), "libboundary.so missing");
 
     let export = Command::new(brievc)
