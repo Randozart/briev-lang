@@ -4451,7 +4451,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             if ctx.in_defn
                 && body
                     .iter()
-                    .any(crate::analysis::termination::statement_always_terminates)
+                    .any(|s| matches!(s, Statement::Trap))
             {
                 audit_guard_condition(cond, ctx);
             }
@@ -8514,6 +8514,32 @@ mod tests {
              defn f() -> Int { let n: Int = 7; check n > 0; term pos(n); };",
         )
         .expect("proven check discharges the downstream contract");
+    }
+
+    /// 2026-10-26: a terminating guard in one match arm must not leak its
+    /// fall-through fact into a sibling arm. Before the fix, the first arm's
+    /// `when b { term ... }` established `!b`, and the false arm's `check b`
+    /// was reported REFUTED instead of simply unproven.
+    #[test]
+    fn match_arm_facts_do_not_leak_between_siblings() {
+        let _deny = DenyGate::install();
+        let errs = check(
+            "defn f(b: Bool) -> Int {\n\
+             match b {\n\
+                 true => { when b { term 1; }; term 2; },\n\
+                 false => { check b; term 3; },\n\
+             }\n\
+             };",
+        )
+        .expect_err("the false arm cannot prove b");
+        assert!(
+            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            "expected unproven, not a leaked refutation: {errs:#?}"
+        );
+        assert!(
+            !errs.iter().any(|e| format!("{e:?}").contains("REFUTED")),
+            "arm fact leaked: {errs:#?}"
+        );
     }
 
     /// A refuted check is a compile error under `deny`.

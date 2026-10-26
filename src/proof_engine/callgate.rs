@@ -390,6 +390,97 @@ fn entail_same_terms(fact: &LinC, goal: &LinC) -> bool {
     }
 }
 
+/// 2026-10-26: difference-bound closure. Facts `x - y <= c` compose:
+/// `idx >= begin` + `begin >= 0` proves `idx >= 0`. The same-term linear core
+/// cannot compare different atoms, which forced redundant loop guards.
+const DIFF_CONST: &str = "\u{0}const";
+
+fn lin_to_diff(lc: &LinC) -> Option<(String, String, i128, BinaryOpKind)> {
+    match lc.terms.as_slice() {
+        [(x, 1), (y, -1)] => Some((x.clone(), y.clone(), lc.const_, lc.op)),
+        [(y, -1), (x, 1)] => Some((x.clone(), y.clone(), lc.const_, lc.op)),
+        [(x, 1)] => Some((x.clone(), DIFF_CONST.to_string(), lc.const_, lc.op)),
+        [(x, -1)] => {
+            let flipped = match lc.op {
+                BinaryOpKind::Le => BinaryOpKind::Ge,
+                BinaryOpKind::Lt => BinaryOpKind::Gt,
+                BinaryOpKind::Ge => BinaryOpKind::Le,
+                BinaryOpKind::Gt => BinaryOpKind::Lt,
+                other => other,
+            };
+            Some((x.clone(), DIFF_CONST.to_string(), lc.const_.checked_neg()?, flipped))
+        }
+        _ => None,
+    }
+}
+
+fn diff_edges(lc: &LinC) -> Vec<(String, String, i128)> {
+    let Some((x, y, c, op)) = lin_to_diff(lc) else { return Vec::new(); };
+    let mut out = Vec::new();
+    match op {
+        BinaryOpKind::Le => out.push((y, x, c)),
+        BinaryOpKind::Lt => if let Some(v) = c.checked_sub(1) { out.push((y, x, v)); },
+        BinaryOpKind::Ge => if let Some(v) = c.checked_neg() { out.push((x, y, v)); },
+        BinaryOpKind::Gt => if let Some(v) = c.checked_neg().and_then(|v| v.checked_sub(1)) { out.push((x, y, v)); },
+        BinaryOpKind::Eq => {
+            if let Some(v) = c.checked_neg() {
+                out.push((y.clone(), x.clone(), c));
+                out.push((x, y, v));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn difference_proves(goal: &LinC, facts: &[Expr]) -> bool {
+    let Some((x, y, c, op)) = lin_to_diff(goal) else { return false; };
+    let requirements = match op {
+        BinaryOpKind::Le => vec![(y.clone(), x.clone(), c)],
+        BinaryOpKind::Lt => c.checked_sub(1).map(|v| vec![(y.clone(), x.clone(), v)]).unwrap_or_default(),
+        BinaryOpKind::Ge => c.checked_neg().map(|v| vec![(x.clone(), y.clone(), v)]).unwrap_or_default(),
+        BinaryOpKind::Gt => c.checked_neg().and_then(|v| v.checked_sub(1)).map(|v| vec![(x.clone(), y.clone(), v)]).unwrap_or_default(),
+        BinaryOpKind::Eq => {
+            match (c.checked_neg()) {
+                Some(v) => vec![(y.clone(), x.clone(), c), (x.clone(), y.clone(), v)],
+                None => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    if requirements.is_empty() { return false; }
+    let mut edges: Vec<(String, String, i128)> = Vec::new();
+    for f in facts {
+        let Expr::BinaryOp(op, l, r) = f else { continue };
+        if let Some(lc) = normalize(l, *op, r) {
+            edges.extend(diff_edges(&lc));
+        }
+    }
+    if edges.is_empty() { return false; }
+    let mut nodes: Vec<String> = Vec::new();
+    for (a, b, _) in &edges {
+        if !nodes.contains(a) { nodes.push(a.clone()); }
+        if !nodes.contains(b) { nodes.push(b.clone()); }
+    }
+    for (a, b, _) in &requirements {
+        if !nodes.contains(a) { nodes.push(a.clone()); }
+        if !nodes.contains(b) { nodes.push(b.clone()); }
+    }
+    let n=nodes.len(); let idx: HashMap<&str,usize> = nodes.iter().enumerate().map(|(i,s)|(s.as_str(),i)).collect();
+    let inf=i128::MAX/4;
+    let mut dist=vec![vec![inf;n];n];
+    for i in 0..n { dist[i][i]=0; }
+    for (a,b,w) in edges {
+        let (i,j)=(idx[a.as_str()],idx[b.as_str()]);
+        if w<dist[i][j] { dist[i][j]=w; }
+    }
+    for k in 0..n { for i in 0..n { if dist[i][k]>=inf { continue; } for j in 0..n { if dist[k][j]>=inf {continue;} let v=dist[i][k].saturating_add(dist[k][j]); if v<dist[i][j] {dist[i][j]=v;} } } }
+    requirements.iter().all(|(a,b,w)| {
+        let (i,j)=(idx[a.as_str()],idx[b.as_str()]);
+        dist[i][j] <= *w
+    })
+}
+
 /// Collect atom bounds from simple one-atom facts. Facts with two atoms
 /// (`x <= y`, `x != y`) are handled by the linear same-term core instead.
 fn bounds_map(facts: &[Expr]) -> HashMap<String, Bounds> {
@@ -1068,6 +1159,10 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
         }
     }
     if proven {
+        return Verdict::Proven;
+    }
+
+    if difference_proves(&g, facts) {
         return Verdict::Proven;
     }
 
@@ -1877,6 +1972,21 @@ mod tests {
             prove_precondition(&e("m >= pow2b(b)"), &facts),
             Verdict::Proven
         );
+    }
+
+    #[test]
+    fn difference_bounds_compose_across_atoms() {
+        let facts = vec![e("idx >= begin"), e("begin >= 0")];
+        assert_eq!(prove_precondition(&e("idx >= 0"), &facts), Verdict::Proven);
+        let facts = vec![e("i < end"), e("end <= len")];
+        assert_eq!(prove_precondition(&e("i < len"), &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn difference_bounds_do_not_overprove() {
+        let facts = vec![e("idx >= begin"), e("begin >= 0")];
+        assert_eq!(prove_precondition(&e("idx > 0"), &facts), Verdict::Unproven);
+        assert_eq!(prove_precondition(&e("n < 0"), &[e("n == 5")]), Verdict::Refuted);
     }
 
     #[test]

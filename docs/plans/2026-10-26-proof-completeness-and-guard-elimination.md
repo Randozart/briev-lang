@@ -86,5 +86,16 @@ Separate from proof completeness:
 
 ## Validation log
 
-- 2026-10-26: plan created; Phase 1 starts with fact normalization and
-  postcondition recording.
+- 2026-10-26: plan created.
+- 2026-10-26: Phase 0 audit added (`BRIEV_AUDIT_GUARDS=1`). Baseline after
+  Phase 1: 612 → 359 trap guards; 253 removed as proven; 354 remain unproven
+  (contract/runtime/loop families). Zero redundant.
+- 2026-10-26: proof fixes landed: conjunct split on negated guard fall-through;
+  callee postconditions in elaboration; constant folding in goals AND facts
+  with parameter/local shadow tracking; match-arm fact scoping; transitive
+  difference-bound closure.
+- 2026-10-26: soundness catch: the first difference-bound implementation had a
+  constant-sign inversion and briefly proved `n < 0` from `n == 5`; fixed and
+  covered by `difference_bounds_do_not_overprove` / `check_refuted_is_error`.
+- 2026-10-26: app gates after removals: active-scratch, active-profile,
+  worker, server PASS; full compiler `cargo test --lib` 3351 passed.

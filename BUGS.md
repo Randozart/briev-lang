@@ -33,6 +33,19 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Facts leak between match arms -- FIXED 2026-10-26
+
+**Symptom:** a terminating guard in one match arm (`when discard { term ... }`)
+established `!discard`; the fall-through fact survived into the next arm, so a
+reachable `when !discard { term ... }` was reported/dead and sibling-arm
+obligations could be refuted by unrelated facts.
+
+**Root cause:** `infer_match` did not snapshot/restore `known_facts` per arm
+(the elaboration path already did).
+
+**Fix:** truncate arm-local facts after each arm body; regression test
+`match_arm_facts_do_not_leak_between_siblings`.
+
 ## `b-window` event names truncated at hyphen -- FIXED 2026-10-26
 
 **Symptom:** `<section b-window:recommender-live="live_event">` bound the
