@@ -3913,7 +3913,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             // 2026-07-25: Tuple destructuring or single let.
             if names.len() > 1 {
-                return check_let_destructure(names, expr, ctx);
+                return check_let_destructure(names, expr, ty.as_ref(), ctx);
             }
             if names.len() == 1 && names[0] == "_" {
                 // 2026-07-25: Discard binding — evaluate expr but don't bind.
@@ -4501,15 +4501,28 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
 fn check_let_destructure(
     names: &[String],
     expr: &Option<Expr>,
+    declared: Option<&Type>,
     ctx: &mut TypecheckContext,
 ) -> Result<(), TypeError> {
-    // 2026-07-25: Always bind destructured names — type is Int as fallback.
+    // 2026-10-26: never swallow an inference error into Int fallbacks — that
+    // hid the real component types and produced mismatches far from the
+    // binding. A tuple annotation still types the no-initializer form.
+    let declared_elems = match declared {
+        Some(Type::Tuple(types)) => Some(types.clone()),
+        _ => None,
+    };
     let elem_types = match expr {
-        Some(e) => match infer_type_only(e, ctx) {
-            Ok(Type::Tuple(types)) => types,
-            _ => vec![Type::int(); names.len()],
+        Some(e) => match infer_type_only(e, ctx)? {
+            Type::Tuple(types) => types,
+            found => {
+                return Err(TypeError::TypeMismatch {
+                    expected: "tuple".to_string(),
+                    found: format!("{}", found),
+                    context: format!("destructuring let ({})", names.join(", ")),
+                });
+            }
         },
-        None => vec![Type::int(); names.len()],
+        None => declared_elems.unwrap_or_else(|| vec![Type::int(); names.len()]),
     };
     let count = elem_types.len().min(names.len());
     for i in 0..count {
@@ -8514,6 +8527,23 @@ mod tests {
     /// Foreach over a range establishes the item bounds for call-site proofs.
     /// This is what lets a hot payload walk call a bounds-proven accessor
     /// without a redundant per-iteration guard.
+    /// 2026-10-26: a destructuring let must not silently bind Int when the
+    /// initializer is not a tuple. That fallback hid the real component types
+    /// and produced mismatches far from the offending binding.
+    #[test]
+    fn destructuring_non_tuple_initializer_is_error() {
+        let _deny = DenyGate::install();
+        let err = check(
+            "defn pair() -> Int { term 1; }; \
+             defn f() -> Int { let (a, b): (Int, Int) = pair(); term a; };",
+        )
+        .expect_err("non-tuple initializer must be rejected");
+        assert!(
+            err.iter().any(|e| format!("{e}").contains("tuple")),
+            "unexpected errors: {err:?}"
+        );
+    }
+
     #[test]
     fn foreach_range_proves_item_bounds() {
         let _deny = DenyGate::install();
