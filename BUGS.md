@@ -33,6 +33,33 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Destructuring `let` silently bound `Int` when tuple inference failed -- FIXED 2026-10-26
+
+**Symptom:** a `let (a, b): (Float, Float) = overlap_acc(...)` in the
+recommender bound both components as `Int`, producing `pcc_finish` argument
+mismatches and comparisons against `Float` far from the binding.
+
+**Root cause:** `check_let_destructure` discarded `infer_type_only` errors and
+non-tuple results, falling back to `vec![Type::int(); names.len()]`. The real
+failure was invisible, and the declared tuple annotation was ignored.
+
+**Fix:** pass the declared type into `check_let_destructure`, propagate the
+inference error, and use the tuple annotation only for the no-initializer form.
+Regression test: `destructuring_non_tuple_initializer_is_error`.
+
+## Struct-literal field access was opaque to the proof engine -- FIXED 2026-10-26
+
+**Symptom:** guarded calls such as `sock_close(Socket { fd: fd })` and
+`buf_slice_string(ByteBuf { ... }, 0, len)` still failed their preconditions
+after the caller established the guarded bounds.
+
+**Root cause:** `atom_key`/`linify` treated `Type { field: value }.field` as an
+opaque atom, so the goal never reduced to the value the guard constrained.
+
+**Fix:** `struct_field_value` reduces a literal field access to its value in
+both normalization paths. Regression test:
+`struct_literal_field_reduces_to_value`.
+
 ## Raw Ptr<T> index/deref emitted argmemonly (#8) + per-access inttoptr provenance loss -- FIXED 2026-10-20
 
 **Symptom:** PR #29 reported a recommender `picked[]` stale read under
