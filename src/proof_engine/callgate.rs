@@ -96,11 +96,31 @@ impl Bounds {
 /// other expression is its structural Debug form. Exact structural equality
 /// is what makes the atom check sound.
 fn atom_key(e: &Expr) -> String {
+    if let Some(inner) = struct_field_value(e) {
+        return atom_key(inner);
+    }
     match e {
         Expr::Identifier(n) => n.clone(),
         Expr::Field(base, field) => format!("{}.{}", atom_key(base), field),
         _ => format!("{:?}", e),
     }
+}
+
+/// 2026-10-26: `Type { field: value, ... }.field` denotes `value`. Leaving it
+/// opaque made every struct-literal argument (Socket/ByteBuf/Matrix views)
+/// fail bounds the caller already guarded. Reduction is exact and total.
+fn struct_field_value(e: &Expr) -> Option<&Expr> {
+    let Expr::Field(base, field) = e else {
+        return None;
+    };
+    let Expr::StructLiteral { fields, specs, .. } = base.as_ref() else {
+        return None;
+    };
+    fields
+        .iter()
+        .chain(specs.iter())
+        .find(|(name, _)| name == field)
+        .map(|(_, value)| value)
 }
 
 /// Reduce an expression to `(terms, constant)` — `None` when the expression
@@ -111,6 +131,9 @@ fn linify(e: &Expr) -> Option<(Vec<(String, i128)>, i128)> {
     // an opaque atom and every bound against it is lost.
     if let Some(n) = literal_int(e) {
         return Some((vec![], n as i128));
+    }
+    if let Some(inner) = struct_field_value(e) {
+        return linify(inner);
     }
     match e {
         Expr::Decimal(n) => Some((vec![], *n as i128)),
@@ -1755,6 +1778,25 @@ mod tests {
         let facts = vec![e("buf.len >= 4")];
         let goal = e("buf.len >= 2");
         assert_eq!(prove_precondition(&goal, &facts), Verdict::Proven);
+    }
+
+    /// 2026-10-26: a literal's own field denotes its value. Without this,
+    /// `Socket { fd: fd }.fd` was opaque and a caller's `fd >= -4096` guard
+    /// could not discharge the callee contract.
+    #[test]
+    fn struct_literal_field_reduces_to_value() {
+        let lit = Expr::StructLiteral {
+            type_name: "Socket".into(),
+            fields: vec![("fd".into(), Expr::Identifier("fd".into()))],
+            specs: Vec::new(),
+        };
+        let field = Expr::Field(Box::new(lit), "fd".into());
+        assert_eq!(atom_key(&field), "fd");
+        assert_eq!(
+            linify(&field),
+            Some((vec![("fd".to_string(), 1)], 0)),
+            "literal field must reduce to the field value"
+        );
     }
 
     #[test]
