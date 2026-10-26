@@ -11178,6 +11178,7 @@ lane still executes them.
 | `needs_state_pass_matches_reference` | Briev pass returns 0, Rust reference 31 for `node_bridge.bv` |
 | `python_node_cross_language_bridge` | Node save/persist returns empty |
 | `python_native_extension_roundtrip` | `greet("world")` returns empty |
+| `go_roundtrip` | generated Go bridge references undefined `@cstr_len` |
 | `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
 
 Removal conditions:
