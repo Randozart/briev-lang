@@ -134,13 +134,14 @@ differential interpreter/backend gate, generic callable-txn specialization,
 - 2026-10-26: `run.sh` PASS; `run_accounts.sh` PASS; `run_cache.sh` PASS;
   `run_operation_store.sh` PASS; `run_prediction_workers.sh` PASS;
   `run_worker.sh` PASS including recovery.
-- 2026-10-26: `run_server.sh` passes catalogue/reactor/json/api/io/protocol/
-  loop gates; `server_ws_protocol_gate` fails (malformed frames yield no close
-  payload: expected 1002/1003/1007, got length 0).
-- 2026-10-26: `browser_pending_peer.mjs` fails at the `Live` tab wait with no
-  page errors; page shows only the title. `browser_live_server.mjs`/I11 not
-  run yet; I11 runner is absent from current main (lives on the fork I10/I11
-  branch).
+- 2026-10-26: `run_server.sh` PASS: catalogue/reactor/json/api/io/protocol/
+  loop and malformed-WebSocket-frame gates; the property test is absent from
+  the repository and is reported skipped.
+- 2026-10-26: `browser_pending_peer.mjs`: `Live` binding fixed (compiler
+  `b7bdfb08`, `b-window` hyphen truncation); it now reaches the catalogue and
+  fails waiting for the first recommendation, with the catalogue still
+  loading. `browser_live_server.mjs`/I11 not run yet; I11 runner is absent from
+  current main (lives on the fork I10/I11 branch).
 - Gate fixes applied: terminal guard ordering (udata, baseline_flush,
   account_state(_ratings), reactor init/close), PGSCHEMA export for workers,
   receipt payload JSON round-trip, missing `result_object_gate` fixture,
