@@ -89,7 +89,7 @@ defn walk_body_tokens(line: String, idx: Int, proj: String, depth: Int) -> Int {
 
 // ── the export: compute the bitmask ────────────────────────────────────
 export defn needs_state_compute(proj: CStr) -> Int {
-    let text: String = cstr_to_briev(proj as Int);
+    let text: String = cstr_to_briev(proj as String as Int);
     let el: String = section_line(text, "export");
     term compute_mask(text, el, 0, 0);
 };

@@ -66,10 +66,20 @@ pub fn parse_and_check(file_path: &str, source: &str) -> Result<(Vec<TopLevel>, 
     use crate::import_resolver::ImportResolver;
     use logos::Logos;
 
-    let lexer = Token::lexer(source);
-    let tokens: Vec<(Token, std::ops::Range<usize>)> = lexer
-        .map(|r| (r.unwrap(), 0..0))
-        .collect();
+    let mut lexer = Token::lexer(source);
+    let mut tokens: Vec<(Token, std::ops::Range<usize>)> = Vec::new();
+    while let Some(result) = lexer.next() {
+        match result {
+            Ok(token) => tokens.push((token, 0..0)),
+            Err(_) => {
+                let span = lexer.span();
+                return Err(format!(
+                    "lex error at bytes {}..{}: unexpected input",
+                    span.start, span.end
+                ));
+            }
+        }
+    }
 
     let mut p = parser::Parser::new(tokens, source);
     let mut items = p.parse_program()

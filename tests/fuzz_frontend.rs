@@ -200,3 +200,15 @@ mod unit_tests {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    #[test]
+    fn test_typechecker_never_panics_on_garbage(input in arb_garbage_input()) {
+        // Malformed source must return diagnostics/errors, never panic. A lex
+        // or parse failure is an expected outcome; only successful parses are
+        // pushed through the frontend/typechecker.
+        let _ = briev_compiler::library::parse_and_check("fuzz-input.bv", &input);
+    }
+}

@@ -11163,3 +11163,35 @@ A boxed Bool parameter is i64 in SSA while its binding type is Int; struct
 stores and Bool coercion used i32, producing `store i32 %ac3` / `trunc i32` on
 i64 registers. Stores now use the declared field type and coercions use the
 physical width. Regression: `bool_param_struct_wasm.rbv`.
+
+## C-driven bridge and CLI entry tests quarantined for v0.1 (OPEN 2026-10-25)
+
+The first full `cargo test --all` stabilization run found failures outside the
+Tier 1 compiler path. They are quarantined, not deleted; the non-blocking CI
+lane still executes them.
+
+| Test | Observed |
+|---|---|
+| `boundary_types_roundtrip` | `greet` empty, `join` null from a C caller |
+| `cpp_roundtrip` | driver exits non-zero after C boundary check |
+| `host_cancellation_stops_briev_loop` | `CancelRequested#` unsupported by LLVM normalizer |
+| `needs_state_pass_matches_reference` | Briev pass returns 0, Rust reference 31 for `node_bridge.bv` |
+| `python_node_cross_language_bridge` | Node save/persist returns empty |
+| `python_native_extension_roundtrip` | `greet("world")` returns empty |
+| `go_roundtrip` | generated Go bridge references undefined `@cstr_len` |
+| `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
+
+Removal conditions:
+- C string return/ownership fixed or the C bridge explicitly retired;
+- `CancelRequested#` supported or the driver retired;
+- needs-state Briev pass matches Rust on the corpus;
+- Python/Node binding strings round-trip;
+- CLI entry tests complete with a bounded timeout.
+Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs`.
+
+## Malformed input panics in library lexing (FIXED 2026-10-25)
+
+`library::parse_and_check` unwrapped lexer results, so any malformed source
+could panic instead of returning a diagnostic. The lexer loop now returns a
+span-bearing `lex error`; the new proptest pushes 100 garbage inputs through
+the full parse/import/typecheck path and asserts no panic.

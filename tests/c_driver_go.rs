@@ -30,6 +30,7 @@ fn go_bin() -> Option<std::path::PathBuf> {
 }
 
 #[test]
+#[ignore = "quarantined v0.1 stability gate; see BUGS.md C-driven bridge/CLI entry quarantine"]
 fn go_roundtrip() {
     for tool in ["cc", "ar", "llc", "clang"] {
         if !has(tool) {

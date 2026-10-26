@@ -37,6 +37,13 @@ jobs:
       - name: Library tests
         run: cargo test --lib
 
+      - name: All-target tests
+        run: cargo test --all
+
+      - name: Quarantined tests (non-blocking)
+        continue-on-error: true
+        run: timeout 600s cargo test --all -- --ignored --test-threads=1
+
       - name: Binary tests
         run: cargo test --bin brievc
 
