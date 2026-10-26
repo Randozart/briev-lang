@@ -56,6 +56,10 @@ const { instance: inst } = await WebAssembly.instantiate(bytes, {
     // the DOM decode itself is exercised by the shim's own tests.
     __web_flush_state: (updatesPtr, count) => { maxFlushCount = Math.max(maxFlushCount, Number(count)); },
     malloc: (n) => malloc(n),
+    // WebHeap/LLVM may lower copies and fills to the libc-style imports.
+    memcpy: (dst, src, n) => { new Uint8Array(instance.exports.memory.buffer).copyWithin(Number(dst), Number(src), Number(src) + Number(n)); return dst; },
+    memmove: (dst, src, n) => { new Uint8Array(instance.exports.memory.buffer).copyWithin(Number(dst), Number(src), Number(src) + Number(n)); return dst; },
+    memset: (dst, value, n) => { new Uint8Array(instance.exports.memory.buffer).fill(Number(value), Number(dst), Number(dst) + Number(n)); return dst; },
     location: () => writeStr('/'),
     // The browser host import from the router's host module — recorded.
     navigate: (p) => { navCalls.push(readStr(p)); },
