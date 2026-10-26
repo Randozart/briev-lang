@@ -33,6 +33,24 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `JsonValue` Object nested in `Array` loses its payload across a function return -- OPEN 2026-10-26
+
+**Symptom:** a constructed protocol payload
+`Object([("operations", Array([Object([...])]))])` stringifies correctly, but
+after `protocol_member(payload,"operations")` the array length is right while
+`a[0]` is no longer an `Object`; member reads (`item_id`, `rating`) return
+`Null`/`-1`. Parsing the same JSON text produces a working value.
+
+**Repro:** build a payload in a function, extract `Array`, match `a[0]`; see
+the app's `operation_store_gate` (`receipt_reply=false` before the workaround).
+Direct Object-in-list-at-top-level works; the corruption appears when the
+Array is itself a field of an Object returned through a call.
+
+**Current workaround:** the app serializes the receipt payload and reparses it
+at the wire boundary (`persistence_worker_receipt_payload`), which restores the
+canonical representation. Do not treat this as the fix: the copy path must be
+repaired so constructed nested arrays behave like parsed ones.
+
 ## `clang -O3 -flto` segfaults on the recommender active-profile gate -- FIXED 2026-10-26
 
 **Symptom:** the app's `active_profile_gate` runs correctly at `-O0` and at

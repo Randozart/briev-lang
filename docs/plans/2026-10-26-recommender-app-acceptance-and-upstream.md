@@ -1,11 +1,11 @@
 # Recommender app acceptance + compiler upstream
 
 **Date:** 2026-10-26
-**Status:** ACTIVE — app builds; acceptance gates blocked on local services;
-upstream compiler landing undecided
-**App branch:** `compat/briev-main-2026-10-25` @ `435159b`
+**Status:** ACTIVE — local PostgreSQL/MovieLens/Playwright available; most gates
+pass; WS malformed-close and mocked-browser gates remain
+**App branch:** `compat/briev-main-2026-10-25` @ `4a33985` + pending gate fixes
 **App PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
-**Compiler main:** `064aaaa6` on `Randozart/briev-lang`
+**Compiler main:** `beeb022b` on `Randozart/briev-lang`
 
 ## Goal
 
@@ -127,4 +127,23 @@ differential interpreter/backend gate, generic callable-txn specialization,
   `knn_argmax`/`knn_zero`/`mean_*`/`impute_*`/`sim_*`/`lookup_row`/`sc_fill_*`
   and frame-size/decode short-buffer paths.
 - 2026-10-26: `cargo test --all` PASS (whole workspace).
-- Pending: PG/MovieLens/Playwright gates (including worker recovery).
+- 2026-10-26: local acceptance environment: user-space PostgreSQL 18.6 on
+  127.0.0.1:5432 (trust auth, `briev_test`/`briev_recommender_test`),
+  MovieLens 100k at `/tmp/opencode/ml-100k/ml-100k`, Playwright Chromium.
+- 2026-10-26: `run_profile_admission.sh` PASS.
+- 2026-10-26: `run.sh` PASS; `run_accounts.sh` PASS; `run_cache.sh` PASS;
+  `run_operation_store.sh` PASS; `run_prediction_workers.sh` PASS;
+  `run_worker.sh` PASS including recovery.
+- 2026-10-26: `run_server.sh` passes catalogue/reactor/json/api/io/protocol/
+  loop gates; `server_ws_protocol_gate` fails (malformed frames yield no close
+  payload: expected 1002/1003/1007, got length 0).
+- 2026-10-26: `browser_pending_peer.mjs` fails at the `Live` tab wait with no
+  page errors; page shows only the title. `browser_live_server.mjs`/I11 not
+  run yet; I11 runner is absent from current main (lives on the fork I10/I11
+  branch).
+- Gate fixes applied: terminal guard ordering (udata, baseline_flush,
+  account_state(_ratings), reactor init/close), PGSCHEMA export for workers,
+  receipt payload JSON round-trip, missing `result_object_gate` fixture,
+  removed stale `fs_read_lifecycle_gate` reference.
+- Remaining compiler bug: constructed `JsonValue` Object inside Array loses
+  payload through a call boundary (BUGS.md); parsed JSON works.
