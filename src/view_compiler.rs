@@ -1556,7 +1556,7 @@ if attr.starts_with("b-text") {
         let after = &tag_lower[attr_idx + attr_name.len()..];
 
         if after.starts_with(':') {
-            let end = after[1..].find(|c: char| !c.is_alphanumeric() && c != '_')?;
+            let end = after[1..].find(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')?;
             Some(after[1..end + 1].to_string())
         } else {
             None
@@ -2599,6 +2599,28 @@ mod tests {
     }
 
     // ── 2026-10-07 (popstate): `b-window:<event>` ─────────────────────
+
+    /// 2026-10-26: DOM event names may contain hyphens. The suffix scanner
+    /// previously stopped at '-', so `b-window:recommender-live` bound
+    /// "recommender" and the websocket open event never reached its txn.
+    #[test]
+    fn b_window_event_name_preserves_hyphens() {
+        let mut vc = ViewCompiler::new();
+        let (bindings, _, diagnostics) =
+            vc.compile(r#"<div b-window:recommender-live="live_event"></div>"#);
+        assert!(diagnostics.is_empty(), "unexpected diagnostics: {diagnostics:?}");
+        let t = bindings
+            .iter()
+            .find(|b| matches!(&b.directive, Directive::Trigger { .. }))
+            .expect("window trigger binding");
+        match &t.directive {
+            Directive::Trigger { event, txn, .. } => {
+                assert_eq!(event, "recommender-live");
+                assert_eq!(txn, "live_event");
+            }
+            other => panic!("expected Trigger, got {other:?}"),
+        }
+    }
 
     /// A window-scoped trigger parses to a `Directive::Trigger` with
     /// `scope = Window` and the event name — the shim binds `window`.

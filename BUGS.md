@@ -33,6 +33,19 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `b-window` event names truncated at hyphen -- FIXED 2026-10-26
+
+**Symptom:** `<section b-window:recommender-live="live_event">` bound the
+window event `recommender`, not `recommender-live`; the browser websocket's
+open/message notification (dispatched as `recommender-live`) never reached the
+transaction, leaving the UI at "Connecting".
+
+**Root cause:** `ViewCompiler::extract_event_suffix` stopped at the first
+character that was not alphanumeric/underscore, so `-` ended the event name.
+
+**Fix:** allow `-` in the event suffix and add
+`b_window_event_name_preserves_hyphens`.
+
 ## `JsonValue` Object nested in `Array` loses its payload across a function return -- OPEN 2026-10-26
 
 **Symptom:** a constructed protocol payload
