@@ -88,7 +88,7 @@ Separate from proof completeness:
 
 - 2026-10-26: plan created.
 - 2026-10-26: Phase 0 audit added (`BRIEV_AUDIT_GUARDS=1`). Baseline after
-  Phase 1: 612 → 359 trap guards; 253 removed as proven; 354 remain unproven
+  Phase 1: 612 → 358 trap guards; 254 removed as proven; 354 remain unproven
   (contract/runtime/loop families). Zero redundant.
 - 2026-10-26: proof fixes landed: conjunct split on negated guard fall-through;
   callee postconditions in elaboration; constant folding in goals AND facts
@@ -98,4 +98,10 @@ Separate from proof completeness:
   constant-sign inversion and briefly proved `n < 0` from `n == 5`; fixed and
   covered by `difference_bounds_do_not_overprove` / `check_refuted_is_error`.
 - 2026-10-26: app gates after removals: active-scratch, active-profile,
-  worker, server PASS; full compiler `cargo test --lib` 3351 passed.
+  worker, server, run/accounts/cache/operation-store/prediction-workers PASS
+  (prediction recovery needs `PGSCHEMA` in the harness environment).
+  Compiler `cargo test --lib` 3351 passed.
+- 2026-10-26: remaining 354 unproven guards are contract boundaries of
+  internal functions, dynamic DB/result checks, and loop/counter facts not yet
+  covered by interval/induction reasoning. Next: loop endpoint capture and
+  counter intervals, then contract inference for private defns.
