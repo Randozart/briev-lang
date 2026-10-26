@@ -1,7 +1,7 @@
 # Briev stability and v0.1 release
 
 **Date:** 2026-10-25
-**Status:** ACTIVE — Phase 1 complete; PR open; Phase 2 (reference parity) next
+**Status:** ACTIVE — Phase 1 complete and merged (PR #47); Phase 2 (reference parity) next
 **Branch:** `stability/v0.1`
 
 ## Decision set
