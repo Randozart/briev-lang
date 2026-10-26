@@ -131,4 +131,6 @@ Acceptance: no unexplained regression; performance status is visible.
 - Task Board Chrome/API, rbv gate, determinism, accel non-hang and host
   transport all pass.
 
-Remaining Phase 1: add fuzz smoke and the malformed-input panic audit.
+Phase 1 fuzz/panic audit: a new full-frontend proptest found a lexer `unwrap`
+panic in `library::parse_and_check`; malformed input now returns a span-bearing
+diagnostic. Remaining: continue auditing reachable non-frontend panics.

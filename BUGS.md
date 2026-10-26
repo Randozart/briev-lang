@@ -11187,3 +11187,10 @@ Removal conditions:
 - Python/Node binding strings round-trip;
 - CLI entry tests complete with a bounded timeout.
 Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs`.
+
+## Malformed input panics in library lexing (FIXED 2026-10-25)
+
+`library::parse_and_check` unwrapped lexer results, so any malformed source
+could panic instead of returning a diagnostic. The lexer loop now returns a
+span-bearing `lex error`; the new proptest pushes 100 garbage inputs through
+the full parse/import/typecheck path and asserts no panic.
