@@ -19,6 +19,8 @@ warns).
 
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes, lexical elaboration, logical semantics, metadata and target-width constants are landed. Phase D stdlib breadth (PostgreSQL, portable web, CSR) is adopted; the remaining compiler item is generic callable transaction specialization.
 
+**Active app acceptance lane (2026-10-26):** `docs/plans/2026-10-26-recommender-app-acceptance-and-upstream.md` — recommender app builds against current main (PR #1, draft); compiler prerequisites `e442f06b`/`1c1dd70f` pushed to Randozart main. Remaining: `cargo test --all`, non-PostgreSQL app gates, then PG/MovieLens/Playwright acceptance and the upstream landing decision.
+
 **Active adoption lane (2026-10-25):** `docs/plans/2026-10-25-otto-contribution-adoption.md` — adopt Otto Westerlund's missing compiler/stdlib/browser work on current main, starting with attribution, Result/print/view/collection fixes, then JSON, PostgreSQL, portable web stdlib, logical/metadata semantics and browser runtime. Credit ledger: `docs/contributors/otto-westerlund.md`.
 
 **GPU standing state:** fused online softmax (`ptx_deferred_online: 1`) is

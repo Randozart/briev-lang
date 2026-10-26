@@ -33,6 +33,48 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `clang -O3 -flto` segfaults on the recommender active-profile gate -- OPEN 2026-10-26
+
+**Symptom:** the app's `active_profile_gate` runs correctly at `-O0` and at
+`-O3` without LTO, but the harness-exact `clang -O3 -flto -march=native
+-ffast-math` binary segfaults after the final `active_build`, in `model_free`
+(or an invalid read in `active_build` under ASan+LTO). The same binary built
+from `--llvm` with `-O3` (no LTO), `-O2 -flto`, or `-O1 -flto` passes.
+
+**Reproduction (2026-10-26, clang 23.1.3):**
+
+```sh
+cd /tmp/opencode/recommender-app-pr
+brievc build tests/fixtures/recommender/active_profile_gate.bv --llvm --out /tmp/a
+clang -O3 -flto -march=native -ffast-math /tmp/a/active_profile_gate.ll \
+  /path/to/briev/lib/runtime/briev_rt.c -lm -o /tmp/a/gate
+/tmp/a/gate            # SIGSEGV
+```
+
+**Contrast:** the gate is from app commit `944d4b5` + fixture rename only
+(no guard additions), so this is not caused by the branch's contract guards.
+`cargo test --lib` is green. Likely an LTO-only codegen/UB issue; next step is
+to reduce the emitted IR or bisect the optimizer, not to drop LTO in the
+harness.
+
+## Prediction worker loses `loaded`/generation state after a second install -- OPEN 2026-10-26
+
+**Symptom:** `worker_process_gate` installs generation 1, predicts, then
+installs generation 2 and gets a `ready` acknowledgement for generation 2. The
+next generation-2 prediction returns `error: model-not-installed` (the state
+still has `loaded == false`).
+
+**Contrast (same app sources):**
+
+- app `74ae68d` + compiler `894fcfa5`: `generation_two_result=true`
+- app `944d4b5` (rename only) + compiler `064aaaa6`: `generation_two_result=false`,
+  response `error`, payload `model-not-installed`
+
+The gate is stable across LTO/no-LTO, so this is a frontend/backend behaviour
+change in current main, not an LTO artifact. Inspect the `WorkerModelState`
+update returned by `worker_child_install` and carried through the recursive
+`worker_child_loop`; the app code updates `loaded`/`generation` before returning.
+
 ## Destructuring `let` silently bound `Int` when tuple inference failed -- FIXED 2026-10-26
 
 **Symptom:** a `let (a, b): (Float, Float) = overlap_acc(...)` in the
