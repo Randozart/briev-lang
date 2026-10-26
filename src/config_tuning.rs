@@ -509,17 +509,22 @@ pub(crate) fn install_ir_lowering(settings: IrLoweringSettings) {
 
 /// 2026-10-01 (Phase-2.4 strangler parity tests): apply a settings edit
 /// for one test's duration; Drop restores the full previous generation.
-/// The window's concurrency with other tests is benign BY the parity the
-/// guard exists to prove (identical output under either flag value).
-pub(crate) struct SettingsGuard(IrLoweringSettings);
+/// 2026-10-25: serialize settings windows. Tests run in parallel, and a
+/// competing guard can change ptx_plan_lowering/deferred_split between the
+/// legacy and planned arms (CI-only node-count flake). Reentrant so one test
+/// can install nested guards on the same thread.
+static SETTINGS_TEST_LOCK: LazyLock<parking_lot::ReentrantMutex<()>> =
+    LazyLock::new(|| parking_lot::ReentrantMutex::new(()));
+pub(crate) struct SettingsGuard(IrLoweringSettings, parking_lot::ReentrantMutexGuard<'static, ()>);
 
 impl SettingsGuard {
     pub(crate) fn install_with(edit: impl FnOnce(&mut IrLoweringSettings)) -> Self {
+        let lock = SETTINGS_TEST_LOCK.lock();
         let prev = *ir_lowering();
         let mut s = prev;
         edit(&mut s);
         install_ir_lowering(s);
-        Self(prev)
+        Self(prev, lock)
     }
 }
 
