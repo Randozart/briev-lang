@@ -7847,7 +7847,11 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     .type_universe
                     .as_ref()
                     .and_then(|u| u.types.get(name))
-                    .is_some_and(|rt| rt.properties.contains_key("bytes"));
+                    .is_some_and(|rt| {
+                        ["bytes", "bits", "maxbits", "minbits"]
+                            .iter()
+                            .any(|k| rt.properties.contains_key(*k))
+                    });
                 if explicit {
                     continue;
                 }
