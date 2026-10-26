@@ -481,6 +481,157 @@ fn difference_proves(goal: &LinC, facts: &[Expr]) -> bool {
     })
 }
 
+/// 2026-10-26: bounded Fourier-Motzkin feasibility fallback for linear goals
+/// with more than two atoms. Facts are relaxed to integer `<=` constraints;
+/// `Neq` is ignored (conservative). Returns true only when the negated goal is
+/// infeasible — a sound proof, never a guess. The bound caps keep the
+/// combinatorial cost predictable; exceeding it yields "not proven".
+const FM_MAX_VARS: usize = 32;
+const FM_MAX_CONS: usize = 1024;
+
+fn lin_le_constraints(lc: &LinC) -> Vec<(Vec<(String, i128)>, i128)> {
+    let terms = lc.terms.clone();
+    let c = lc.const_;
+    let neg = |t: &Vec<(String, i128)>, k: i128| -> Option<Vec<(String, i128)>> {
+        t.iter().map(|(a, v)| Some((a.clone(), v.checked_mul(k)?))).collect()
+    };
+    match lc.op {
+        BinaryOpKind::Le => vec![(terms, c)],
+        BinaryOpKind::Lt => c.checked_sub(1).map(|v| vec![(terms, v)]).unwrap_or_default(),
+        BinaryOpKind::Ge => c.checked_neg().map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default(),
+        BinaryOpKind::Gt => c.checked_neg().and_then(|v| v.checked_sub(1)).map(|v| vec![(neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default(),
+        BinaryOpKind::Eq => {
+            c.checked_neg().map(|v| vec![(terms.clone(), c), (neg(&terms, -1).unwrap_or_default(), v)]).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn goal_negation_constraints(g: &LinC) -> Option<Vec<(Vec<(String, i128)>, i128)>> {
+    let terms = g.terms.clone();
+    let c = g.const_;
+    let neg = |k: i128| -> Option<Vec<(String, i128)>> {
+        terms.iter().map(|(a, v)| Some((a.clone(), v.checked_mul(k)?))).collect()
+    };
+    let out = match g.op {
+        BinaryOpKind::Le => vec![(neg(-1)?, c.checked_neg()?.checked_sub(1)?)],
+        BinaryOpKind::Lt => vec![(neg(-1)?, c.checked_neg()?)],
+        BinaryOpKind::Ge => vec![(terms.clone(), c.checked_sub(1)?)],
+        BinaryOpKind::Gt => vec![(terms.clone(), c)],
+        BinaryOpKind::Eq => vec![
+            (terms.clone(), c.checked_sub(1)?),
+            (neg(-1)?, c.checked_neg()?.checked_sub(1)?),
+        ],
+        _ => return None,
+    };
+    Some(out)
+}
+
+fn fourier_motzkin_infeasible(mut cons: Vec<(Vec<i128>, i128)>, nvars: usize) -> bool {
+    for v in 0..nvars {
+        let mut pos: Vec<(Vec<i128>, i128)> = Vec::new();
+        let mut negc: Vec<(Vec<i128>, i128)> = Vec::new();
+        let mut zero: Vec<(Vec<i128>, i128)> = Vec::new();
+        for (coeff, rhs) in cons {
+            match coeff.get(v).copied().unwrap_or(0) {
+                0 => zero.push((coeff, rhs)),
+                c if c > 0 => pos.push((coeff, rhs)),
+                _ => negc.push((coeff, rhs)),
+            }
+        }
+        if pos.is_empty() || negc.is_empty() {
+            cons = zero;
+            continue;
+        }
+        let mut next = zero;
+        for (pc, pr) in &pos {
+            for (nc, nr) in &negc {
+                let a = -nc[v];
+                let b = pc[v];
+                let mut coeff = pc.clone();
+                for i in 0..nvars {
+                    coeff[i] = coeff[i].checked_mul(a).unwrap_or(i128::MAX / 4);
+                    coeff[i] = coeff[i].checked_add(nc[i].checked_mul(b).unwrap_or(0)).unwrap_or(i128::MAX / 4);
+                }
+                coeff[v] = 0;
+                let rhs = pr.checked_mul(a).and_then(|x| nr.checked_mul(b).and_then(|y| x.checked_add(y)));
+                let Some(rhs) = rhs else { return false; };
+                next.push((coeff, rhs));
+                if next.len() > FM_MAX_CONS {
+                    return false;
+                }
+            }
+        }
+        cons = next;
+    }
+    cons.iter().any(|(_, rhs)| *rhs < 0)
+}
+
+fn linear_goal_proven(goal: &LinC, facts: &[Expr]) -> bool {
+    if goal.terms.len() > FM_MAX_VARS {
+        return false;
+    }
+    let Some(negated) = goal_negation_constraints(goal) else { return false; };
+    let mut all_terms: Vec<String> = goal.terms.iter().map(|(a, _)| a.clone()).collect();
+    let mut fact_lin: Vec<LinC> = Vec::new();
+    // Keep only facts transitively connected to the goal's atoms. The app's
+    // contexts are large; feeding every fact to Fourier-Motzkin hits the cap
+    // and loses otherwise simple counter/length proofs.
+    let mut relevant: std::collections::HashSet<String> = all_terms.iter().cloned().collect();
+    let mut picked: Vec<bool> = vec![false; facts.len()];
+    loop {
+        let mut changed = false;
+        for (i, f) in facts.iter().enumerate() {
+            if picked[i] { continue; }
+            let Expr::BinaryOp(op, l, r) = f else { continue };
+            let Some(lc) = normalize(l, *op, r) else { continue };
+            if lc.terms.iter().any(|(a, _)| a.contains("Call(")) { continue; }
+            if !lc.terms.iter().any(|(a, _)| relevant.contains(a)) { continue; }
+            picked[i] = true; changed = true;
+            for (a, _) in &lc.terms {
+                if relevant.insert(a.clone()) && !all_terms.contains(a) {
+                    all_terms.push(a.clone());
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    for (i, f) in facts.iter().enumerate() {
+        if !picked[i] { continue; }
+        let Expr::BinaryOp(op, l, r) = f else { continue };
+        let Some(lc) = normalize(l, *op, r) else { continue };
+        if lc.op == BinaryOpKind::Neq { continue; }
+        fact_lin.push(lc);
+    }
+    for (a, _) in &goal.terms {
+        if !all_terms.contains(a) { all_terms.push(a.clone()); }
+    }
+    if all_terms.len() > FM_MAX_VARS { return false; }
+    let idx: HashMap<&str, usize> = all_terms.iter().enumerate().map(|(i, s)| (s.as_str(), i)).collect();
+    let align = |terms: &[(String, i128)]| -> Vec<i128> {
+        let mut v = vec![0i128; all_terms.len()];
+        for (a, k) in terms { if let Some(i) = idx.get(a.as_str()) { v[*i] = *k; } }
+        v
+    };
+    let mut base: Vec<(Vec<i128>, i128)> = Vec::new();
+    for lc in &fact_lin {
+        for (terms, rhs) in lin_le_constraints(lc) {
+            base.push((align(&terms), rhs));
+        }
+    }
+    // A goal is proven only when EVERY branch of its negation is
+    // infeasible. Eq has two branches; returning on the first one was the
+    // source of a false `x <= 5 ⊢ x == 5`.
+    for (terms, rhs) in negated {
+        let mut c = base.clone();
+        c.push((align(&terms), rhs));
+        if !fourier_motzkin_infeasible(c, all_terms.len()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Collect atom bounds from simple one-atom facts. Facts with two atoms
 /// (`x <= y`, `x != y`) are handled by the linear same-term core instead.
 fn bounds_map(facts: &[Expr]) -> HashMap<String, Bounds> {
@@ -1163,6 +1314,10 @@ fn prove_conjunct_core(goal: &Expr, facts: &[Expr]) -> Verdict {
     }
 
     if difference_proves(&g, facts) {
+        return Verdict::Proven;
+    }
+
+    if linear_goal_proven(&g, facts) {
         return Verdict::Proven;
     }
 
@@ -1980,6 +2135,17 @@ mod tests {
         assert_eq!(prove_precondition(&e("idx >= 0"), &facts), Verdict::Proven);
         let facts = vec![e("i < end"), e("end <= len")];
         assert_eq!(prove_precondition(&e("i < len"), &facts), Verdict::Proven);
+    }
+
+    #[test]
+    fn linear_goal_proves_counter_bound() {
+        let facts = vec![
+            e("count <= idx - begin"),
+            e("idx <= end - 1"),
+            e("users.len == end - begin + 1"),
+            e("count == 0"),
+        ];
+        assert_eq!(prove_precondition(&e("count < users.len"), &facts), Verdict::Proven);
     }
 
     #[test]

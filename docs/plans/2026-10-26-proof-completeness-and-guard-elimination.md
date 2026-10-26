@@ -97,8 +97,9 @@ Separate from proof completeness:
 - 2026-10-26: soundness catch: the first difference-bound implementation had a
   constant-sign inversion and briefly proved `n < 0` from `n == 5`; fixed and
   covered by `difference_bounds_do_not_overprove` / `check_refuted_is_error`.
-- 2026-10-26: arithmetic range endpoints + internal contract boundaries; 612 → 335 guards
-  (277 proven), 331 unproven remain. App gates: active-scratch, active-profile,
+- 2026-10-26: arithmetic range endpoints + internal contract boundaries; 612 → 329 guards
+  (283 proven), 325 unproven remain. Counter induction, bounded
+  Fourier–Motzkin, and loop-mutation invalidation landed. App gates: active-scratch, active-profile,
   worker, server, run/accounts/cache/operation-store/prediction-workers PASS
   (prediction recovery needs `PGSCHEMA` in the harness environment).
   Compiler `cargo test --lib` 3351 passed.

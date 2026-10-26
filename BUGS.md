@@ -33,6 +33,16 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Loop-mutated locals retained their pre-loop facts -- FIXED 2026-10-26
+
+**Symptom:** after `foreach ... { count = count + 1; };`, a proof could still
+use `count == 0` from before the loop. Loop-body facts were truncated, but the
+pre-loop snapshot was restored without invalidating names assigned in the body.
+
+**Fix:** collect loop-body assignments, drop restored facts mentioning those
+names, then add the sound counter post-invariant (`count <= end - start`).
+Regression test: `loop_mutations_invalidate_pre_loop_facts`.
+
 ## Facts leak between match arms -- FIXED 2026-10-26
 
 **Symptom:** a terminating guard in one match arm (`when discard { term ... }`)

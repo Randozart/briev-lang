@@ -3766,6 +3766,108 @@ fn record_call_post_facts(
     ctx.known_facts.extend(facts);
 }
 
+/// 2026-10-26: collect identifier assignments in a loop body. Nested foreach
+/// assignments are recorded separately so counter induction can reject them.
+fn collect_loop_assignments(
+    stmts: &[Statement],
+    nested: bool,
+    out: &mut Vec<(String, Expr, bool)>,
+) {
+    for st in stmts {
+        match st {
+            Statement::Assign(Expr::Identifier(name), rhs) => {
+                out.push((name.clone(), rhs.clone(), nested));
+            }
+            Statement::ArrowAssign { target: Some(t), .. } => {
+                if let Expr::Identifier(name) = t.as_ref() {
+                    out.push((name.clone(), Expr::Bool(false), nested));
+                }
+            }
+            Statement::Block(body) | Statement::Guarded(_, body) => {
+                collect_loop_assignments(body, nested, out);
+            }
+            Statement::Foreach { body, .. } => {
+                collect_loop_assignments(body, true, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `count = count + 1` induction for `foreach i in start..end`: at the body
+/// head `count <= i - start`; after the loop `count <= end - start` when the
+/// range is non-empty. Only variables initialized to zero and assigned by
+/// exactly one non-nested increment qualify.
+fn foreach_counter_facts(
+    list: &Expr,
+    item: &str,
+    body: &[Statement],
+    ctx: &TypecheckContext,
+) -> (Vec<Expr>, Vec<Expr>, Vec<String>) {
+    let Expr::Range { start, end, .. } = list else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    let mut assigns: Vec<(String, Expr, bool)> = Vec::new();
+    collect_loop_assignments(body, false, &mut assigns);
+    let assigned: Vec<String> = {
+        let mut v: Vec<String> = assigns.iter().map(|(n, _, _)| n.clone()).collect();
+        v.sort(); v.dedup(); v
+    };
+    let mut pre = Vec::new();
+    let mut post = Vec::new();
+    for name in &assigned {
+        let mine: Vec<&(String, Expr, bool)> = assigns.iter().filter(|(n, _, _)| n == name).collect();
+        if mine.len() != 1 || mine[0].2 { continue; }
+        let increment = matches!(
+            &mine[0].1,
+            Expr::BinaryOp(BinaryOpKind::Add, l, r)
+                if matches!(l.as_ref(), Expr::Identifier(n) if n == name)
+                    && matches!(r.as_ref(), Expr::Decimal(1))
+        );
+        if !increment { continue; }
+        let zero = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Identifier(name.clone())),
+            Box::new(Expr::Decimal(0)),
+        );
+        if prove_with_constants(&zero, ctx) != crate::proof_engine::callgate::Verdict::Proven {
+            continue;
+        }
+        pre.push(Expr::BinaryOp(
+            BinaryOpKind::Ge,
+            Box::new(Expr::Identifier(name.clone())),
+            Box::new(Expr::Decimal(0)),
+        ));
+        pre.push(Expr::BinaryOp(
+            BinaryOpKind::Le,
+            Box::new(Expr::Identifier(name.clone())),
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Sub,
+                Box::new(Expr::Identifier(item.to_string())),
+                start.clone(),
+            )),
+        ));
+        let ordered = Expr::BinaryOp(BinaryOpKind::Le, start.clone(), end.clone());
+        if prove_with_constants(&ordered, ctx) == crate::proof_engine::callgate::Verdict::Proven {
+            post.push(Expr::BinaryOp(
+                BinaryOpKind::Ge,
+                Box::new(Expr::Identifier(name.clone())),
+                Box::new(Expr::Decimal(0)),
+            ));
+            post.push(Expr::BinaryOp(
+                BinaryOpKind::Le,
+                Box::new(Expr::Identifier(name.clone())),
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Sub,
+                    end.clone(),
+                    start.clone(),
+                )),
+            ));
+        }
+    }
+    (pre, post, assigned)
+}
+
 /// Range facts established inside `foreach i in a..b` (or `a..=b`): the loop
 /// item is bounded by the range endpoints. Only simple endpoints are used —
 /// an endpoint expression with effects could change while the fact is live.
@@ -4517,7 +4619,10 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             ctx.bindings.insert(item.clone(), element_ty);
             let fact_base = ctx.known_facts.len();
+            let (counter_pre, counter_post, assigned) =
+                foreach_counter_facts(list, item, body, ctx);
             ctx.known_facts.extend(foreach_range_facts(list, item));
+            ctx.known_facts.extend(counter_pre);
             ctx.foreach_depth += 1;
             for stmt in body {
                 if let Err(e) = infer_statement(stmt, ctx) {
@@ -4528,6 +4633,14 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             ctx.foreach_depth -= 1;
             ctx.known_facts.truncate(fact_base);
+            // The body may have mutated these locals; pre-loop facts about
+            // them are no longer valid after the loop.
+            ctx.known_facts.retain(|f| {
+                !assigned.iter().any(|n| {
+                    crate::proof_engine::callgate::mentions(f, n)
+                })
+            });
+            ctx.known_facts.extend(counter_post);
             Ok(())
         }
         // 2026-08-17 (foreach break): `break;` is valid only lexically inside
@@ -8659,6 +8772,46 @@ mod tests {
              };",
         )
         .expect("the foreach range facts prove the item bounds");
+    }
+
+    /// A zero-initialized counter incremented once per iteration is bounded
+    /// by the iteration index; the compiler should prove `count < n` inside
+    /// the loop and `count <= n` after it without a guard.
+    #[test]
+    fn foreach_counter_induction_proves_bounds() {
+        let _deny = DenyGate::install();
+        check(
+            "defn need(c: Int, n: Int) [c >= 0 && c < n][term >= 0] -> Int { term c; }; \
+             defn f(n: Int) [n >= 1][term >= 0] -> Int { \
+                 let total: Int = n; \
+                 let count: Int = 0; \
+                 foreach idx in 0..n { let x: Int = need(count, total); count = count + 1; }; \
+                 check count <= total; \
+                 term count; \
+             };",
+        )
+        .expect("counter induction proves the loop and post-loop bounds");
+    }
+
+    /// A loop-mutated local must not retain its pre-loop facts after the
+    /// loop. `count` starts at 0 but is incremented; the post-loop check cannot
+    /// be proven from `count == 0`.
+    #[test]
+    fn loop_mutations_invalidate_pre_loop_facts() {
+        let _deny = DenyGate::install();
+        let errs = check(
+            "defn f(n: Int) [n >= 1] -> Int { \
+                 let count: Int = 0; \
+                 foreach idx in 0..n { count = count + 1; }; \
+                 check count == 0; \
+                 term count; \
+             };",
+        )
+        .expect_err("the post-loop count is not known to be zero");
+        assert!(
+            errs.iter().any(|e| format!("{e:?}").contains("cannot be proven")),
+            "expected unproven, not a stale proof: {errs:#?}"
+        );
     }
 
     /// Arithmetic range endpoints (`(a + 1)..n`) establish the item bound.
