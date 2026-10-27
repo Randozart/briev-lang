@@ -83,3 +83,5 @@ Only after B–F: parsed-list/reconnect path, browser gate, PR readiness.
 - 2026-10-27: Phase C started — every binary/wasm build now runs
   `opt -passes=verify -disable-output` on emitted IR before clang/llc. Invalid
   IR is a Briev diagnostic. Regression test added.
+- 2026-10-27: structural layout invariant added — every computed obj size must
+  cover every emitted field end; debug assertion catches stale-size regressions.

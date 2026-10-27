@@ -7879,8 +7879,36 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                 }
             }
             if !changed {
-                return;
+                break;
             }
+        }
+        // Phase C invariant: the computed struct byte size must cover every
+        // emitted field end. A smaller size is the stale-layout class that
+        // produced heap OOB and LTO-only corruption.
+        for name in &names {
+            if self.ctx.unions.contains(name) || self.ctx.packed_structs.contains(name) {
+                continue;
+            }
+            let Some(fields) = self.ctx.struct_types.get(name) else {
+                continue;
+            };
+            let Some(bytes) = self.ctx.type_universe.as_ref()
+                .and_then(|u| u.types.get(name))
+                .map(|rt| rt.bytes)
+            else {
+                continue;
+            };
+            let end = fields.iter().map(|(field, ty)| {
+                self.lookup_field_offset(name, field)
+                    + crate::backend::llvm::types::type_size(
+                        ty,
+                        self.ctx.type_universe.as_ref(),
+                    )
+            }).max().unwrap_or(0);
+            debug_assert!(
+                bytes >= end,
+                "structural layout {name}: size {bytes} < field end {end}"
+            );
         }
     }
 
