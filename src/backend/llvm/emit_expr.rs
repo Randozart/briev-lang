@@ -2923,7 +2923,13 @@ impl LlvmBackend {
         // loop body (flush_pending_struct_allocas) — an allocation in the loop
         // makes clang -O3 peel the loop and emit a bogus exit assumption (the
         // node fires once). Elsewhere it stays inline.
-        if self.fun.defer_struct_allocas {
+        // 2026-10-27: only constant-field literals may share one preheader
+        // allocation. A dynamic field is re-evaluated per iteration; hoisting
+        // its allocation made every list/collection entry alias the last
+        // iteration's object (`List<Item>` parsed from JSON read the final
+        // title for every element). Dynamic literals allocate per evaluation.
+        let const_fields = fields.iter().all(|(_, expr)| is_compile_time_const(expr));
+        if self.fun.defer_struct_allocas && const_fields {
             self.fun.pending_struct_allocas.push(format!("{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size));
         } else {
             writeln!(out, "{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size).ok();

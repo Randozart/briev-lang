@@ -10429,6 +10429,33 @@ fn test_struct_literal_alloca_deferred_in_loop() {
     let _ = reg;
 }
 
+#[test]
+fn test_dynamic_struct_literal_allocation_stays_in_loop() {
+    // 2026-10-27: hoisting a dynamic struct literal's allocation to the loop
+    // preheader makes every appended struct alias the final iteration. A
+    // parsed `List<Item>` then reads the last title for every element.
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    backend.ctx.struct_types.insert(
+        "Item".to_string(),
+        vec![("id".to_string(), Type::int()), ("title".to_string(), Type::string())],
+    );
+    let mut out = String::new();
+    backend.fun.defer_struct_allocas = true;
+    backend.emit_struct_literal(
+        &mut out, "%v", "Item",
+        &[
+            ("id".to_string(), Expr::Identifier("i".to_string())),
+            ("title".to_string(), Expr::Quoted(b"x".to_vec())),
+        ],
+        "  ",
+    );
+    assert!(out.contains("call ptr @malloc"),
+        "dynamic struct literal must allocate per evaluation; got:\n{out}");
+    assert!(backend.fun.pending_struct_allocas.is_empty(),
+        "dynamic struct literal must not defer its allocation");
+}
+
 // ── typed !range metadata (2026-08-13 fix) ────────────────────────────
 
 /// 2026-08-27 (plan 2026-08-27-cbv-foreign-hardware-and-mmio.md Slice C):
