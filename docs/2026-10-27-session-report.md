@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T15:49:43+01:00
+**Last updated:** 2026-10-27T15:59:16+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -122,6 +122,10 @@ lands; do not rewrite history.
   lookup. The specialized `is_ok` ABI still wants i32 while the generic
   `Result` metadata reports i64; reverted again rather than shipping invalid
   IR. Generic fixture compiles; runtime list-view/Float fixes remain open.
+- `15:58` Root-caused the specialized call: the callee wants i32 and the
+  argument metadata says i32, but the actual SSA value is an **i64 state-field
+  load** of a Result. Fix enum/Result state-load register width (or track
+  actual register width), not `is_ok`. Compiler left green.
 
 ## Evidence / current state
 
