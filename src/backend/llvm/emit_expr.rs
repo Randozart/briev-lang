@@ -6394,6 +6394,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         Some(TypedRegister { name: v.to_string(), ty })
     }
 
+    /// 2026-10-27: enum/Result handles use target-width call ABI even when
+    /// the generic type's fallback `llvm_type` is i64.
+    fn call_param_llvm_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Custom(n) | Type::Applied(n, _)
+                if self.ctx.enum_handle_types.contains(n) =>
+            {
+                format!("i{}", self.ctx.int_bits)
+            }
+            _ => self.llvm_type(ty),
+        }
+    }
+
     /// 2026-10-13 (refactor for S6): the ABI-adapting call tail of
     /// `emit_user_call`, keyed by `callee`. Shared by the ordinary user-call
     /// path and the monomorphized-generic path (which passes the specialized
@@ -6659,11 +6672,36 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         continue;
                     }
                 }
+                let actual_ty = self
+                    .fun
+                    .reg_llvm_ty
+                    .get(&reg.name)
+                    .cloned()
+                    .unwrap_or_else(|| self.llvm_type(&reg.ty));
+                let expected_ty = defn_param_tys
+                    .as_ref()
+                    .and_then(|tys| tys.get(i))
+                    .map(|pt| self.call_param_llvm_type(pt))
+                    .unwrap_or_else(|| actual_ty.clone());
                 if matches!(reg.ty, Type::Ptr(_)) {
                     let conv = self.canonical_ptr(out, indent, &reg.name);
                     call_args.push(format!("ptr {}", conv));
+                } else if expected_ty == "i64"
+                    && actual_ty.starts_with('i')
+                    && actual_ty != "i64"
+                {
+                    let conv = self.fun.gen_reg();
+                    writeln!(out, "{}{} = sext {} {} to i64", indent, conv, actual_ty, reg.name).ok();
+                    call_args.push(format!("i64 {}", conv));
+                } else if actual_ty == "i64"
+                    && expected_ty.starts_with('i')
+                    && expected_ty != "i64"
+                {
+                    let conv = self.fun.gen_reg();
+                    writeln!(out, "{}{} = trunc i64 {} to {}", indent, conv, reg.name, expected_ty).ok();
+                    call_args.push(format!("{} {}", expected_ty, conv));
                 } else {
-                    call_args.push(format!("{} {}", self.llvm_type(&reg.ty), reg.name));
+                    call_args.push(format!("{} {}", actual_ty, reg.name));
                 }
             }
         }
