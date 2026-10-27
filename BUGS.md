@@ -33,7 +33,7 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## wasm32 generic list view state and Float/JSON conversion -- OPEN 2026-10-27
+## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 
 **Generic repro (no recommender names):**
 - `List<Item>` recursive scan: native `count=3 page=2`; wasm
@@ -57,6 +57,11 @@ reported Briev/LLVM type is i32, but the actual SSA register is an i64 load from
 a `%State` Result slot. The call emitter trusts the type metadata and emits
 `i32 %i64reg`. Fix enum/Result state-field register width (or track actual
 register width), not `is_ok` specifically.
+
+**Fixed 2026-10-27:** actual register widths are tracked and calls coerce
+i32↔i64; enum/Result state loads truncate to target width. Generic
+`"4.5" as Float` and JSON parse now pass. Remaining: generic list view `.^Size`
+staleness and JSON stringify false; app gate now reaches offline save fallback.
 
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 

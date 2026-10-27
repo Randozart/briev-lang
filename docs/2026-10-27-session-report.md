@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T16:14:54+01:00
+**Last updated:** 2026-10-27T16:35:34+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -131,6 +131,13 @@ lands; do not rewrite history.
   the actual register width. Generic fixture now builds through `is_ok`.
   `rbv_list_each_wasm` and daily smoke pass. Runtime Float (`4.5`→0) and
   list-view `.^Size` staleness remain.
+- `16:45` Landed generic call-argument width coercion (actual register width +
+  enum-aware callee ABI). Generic `"4.5" as Float` now passes (`f_ok=true`)
+  and JSON parse passes (`jsonp=true`). Browser gate now advances through
+  login, state, 1682-film catalogue, live recommendation render (Movie 41/42,
+  one card) and reaches the offline save fallback.
+- Remaining browser failure: after socket close, clicking save does not issue
+  `/v1/ratings`; next isolate the offline fallback transaction/state.
 
 ## Evidence / current state
 
