@@ -46,6 +46,12 @@ docs/2026-08-27-session-report.md).
 Next: isolate the list state flush/read path and mixed Int64/Int tuple layout
 or float conversion. No app-specific branch is acceptable.
 
+Additional evidence (2026-10-27): a generic call-argument width coercion fixed
+the `4.5` mantissa path but exposed specialized-call ABI mismatch
+(`is_ok$JsonValue$String` receives i64 where it expects i32). That fix was
+reverted; the generic ABI coercion must cover specialized/base parameter
+metadata before re-landing.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the

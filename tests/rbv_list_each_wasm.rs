@@ -94,6 +94,10 @@ fn per_instantiation_list_each_builds_for_wasm() {
     assert!(body.contains("getelementptr i32, ptr"), "tuple list index must use target-width stride:\n{body}");
     assert!(!body.contains("getelementptr i64, ptr %t24"), "tuple list index must not use an 8-byte list stride:\n{body}");
 
+    // Generic wasm regression corpus: a struct list scan plus Float/JSON
+    // conversion. No recommender-specific names.
+    build_fixture(brievc, "generic_wasm_scan", &out);
+
     // Tuple return/destructure/field access on wasm32 (the float_fmt `sscale`
     // shape used by JSON parsing).
     build_fixture(brievc, "tuple_return_wasm", &out);

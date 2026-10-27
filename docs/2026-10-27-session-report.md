@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T14:15:00+01:00
+**Last updated:** 2026-10-27T14:47:46+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -112,6 +112,12 @@ lands; do not rewrite history.
     issue in `str_to_float`/JSON parsing.
   - Next: fix generic list view state freshness and mixed Int64/Int tuple or
     float parse layout; app remains the corpus, not the mechanism.
+- `14:35` Added `tests/fixtures/generic_wasm_scan.rbv` and a wasm compile
+  regression. Runtime evidence: list mutation is correct (`local page=2`) but
+  view `.^Size` is stale; `"4.5" as Float` is 0 on wasm. A generic call-width
+  coercion (i32 literal into i64 Int64 param) exposed a specialized-call ABI
+  gap (`is_ok$JsonValue$String` receives i64 for i32); attempted fix reverted
+  to keep the compiler green. No app-specific code used.
 
 ## Evidence / current state
 

@@ -1,0 +1,34 @@
+import "std/collections.bv";
+obj Item { id: Int; title: String; score: Float; };
+let items: List<Item> = [
+    Item { id: 0, title: "alpha", score: 1.5 },
+    Item { id: 1, title: "beta", score: 2.5 },
+    Item { id: 2, title: "gamma", score: 3.5 }
+];
+defn scan(movies: List<Item>, offset: Int, limit: Int, idx: Int,
+    total: Int, page: List<Item>) -> Int {
+    when idx >= movies .^Length { term total; };
+    let movie: Item = movies[idx];
+    when movie.id >= 0 {
+        when total >= offset && total < offset + limit { page <- movie; };
+        term scan(movies, offset, limit, idx + 1, total + 1, page);
+    };
+    term scan(movies, offset, limit, idx + 1, total, page);
+};
+let page: List<Item> = [];
+let count: Int = 0;
+let f: Float = "4.5" as Float;
+let f_ok: Bool = f > 4.4 && f < 4.6;
+let page_len: Int = 0;
+let ready: Bool = false;
+txn run [true][ready] {
+    count = scan(items, 0, 2, 0, 0, page);
+    page_len = page .^Length;
+    ready = true;
+    term;
+};
+<view>
+  <main><button id="go" b-trigger:click="run">go</button>
+    <pre id="out">count=<span id="count" b-text="count">0</span> page=<span id="page_len" b-text="page.^Size">0</span> f=<span id="f" b-text="f">0</span> f_ok=<span id="fok" b-text="f_ok">false</span> local=<span id="local" b-text="page_len">0</span></pre>
+  </main>
+</view>
