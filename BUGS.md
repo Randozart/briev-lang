@@ -78,6 +78,10 @@ A small 2-object fixture reaches item indexing, then traps in
 replacing it with a pure recursive defn made parsing empty/trap. Needs a
 generic JSON accessor/transaction ABI fix.
 
+Follow-up attempts to relax `find_pair`'s false postcondition and/or inline a
+`foreach` lookup also changed parsing to `parsed=0`; reverted. Root is not just
+the transaction contract.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the

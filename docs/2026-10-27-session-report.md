@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T18:07:11+01:00
+**Last updated:** 2026-10-27T19:20:32+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -174,6 +174,11 @@ lands; do not rewrite history.
   recursive defn made parsing return empty/trap, so the fix needs the generic
   JSON accessor/transaction ABI, not a one-off rewrite. Reverted; compiler
   unchanged.
+- `19:30` Tried two minimal stdlib fixes: relax `find_pair`'s false
+  postcondition (`i >= count`) and inline a `foreach` lookup in `json_get`.
+  Both changed parsing to `parsed=0` and still trapped, so neither is the fix.
+  Reverted; stdlib/compiler unchanged. Need a source-level repro of why changing
+  `json_get` alters `json_parse` execution before changing stdlib again.
 
 ## Evidence / current state
 
