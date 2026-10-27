@@ -966,10 +966,14 @@ out defn coll_resize(handle: Int, new_cap: Int)
         Store#(handle + 8, 0, 8);
         term 0;
     };
-    let nd: Int = Alloc#(8 * new_cap) as Int;
+    // wasm32 coll elements are target-width handles (4 bytes), not native
+    // 64-bit words. The old 8-byte stride overwrote the second appended
+    // element with zeros (HTTP request queue corruption).
+    let word: Int = 4;
+    let nd: Int = Alloc#(word * new_cap) as Int;
     let copy_n: Int = coll_min(old_cap, new_cap);
     when copy_n > 0 {
-        Copy#(nd, old_data, 8 * copy_n);
+        Copy#(nd, old_data, word * copy_n);
     };
     Store#(handle, nd, 8);
     Store#(handle + 8, new_cap, 8);

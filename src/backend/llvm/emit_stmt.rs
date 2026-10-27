@@ -1352,9 +1352,21 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             Type::Ptr(inner) => backend.llvm_type(inner),
                             _ => "i64".to_string(),
                         };
+                        // Mirror the read side: only genuine scalar pointees
+                        // use the native-width element path. A tuple/object/
+                        // string pointee is a boxed target-width handle even
+                        // when its fallback LLVM type is i64.
                         let scalar_pointee = matches!(
                             elem_llvm.as_str(),
                             "i8" | "i16" | "i32" | "i64" | "float" | "double"
+                        ) && !matches!(
+                            &obj_reg.ty,
+                            Type::Ptr(inner)
+                                if matches!(
+                                    inner.as_ref(),
+                                    Type::Tuple(_) | Type::Custom(_) | Type::Applied(_, _)
+                                        | Type::Dyn(_) | Type::Vector(_, _)
+                                )
                         );
                         let vol_obj = match obj.as_ref() {
                             Expr::Identifier(n) => backend.fun.volatile_locals.contains(n),
@@ -1378,9 +1390,48 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             );
                             writeln!(out, "{}store {}{} {}, ptr {}", indent, vol_prefix, elem_llvm, store_val, gep).ok();
                         } else {
-                            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, gep, ptr, offset).ok();
-                            let e64 = backend.adapt_to_i64(out, indent, &val);
-                            writeln!(out, "{}store {}i64 {}, ptr {}", indent, vol_prefix, e64, gep).ok();
+                            // 2026-10-27: non-scalar pointer slots carry
+                            // target-width boxed handles (i32 on wasm32).
+                            let slot_ty = format!("i{}", backend.ctx.int_bits);
+                            writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, slot_ty, ptr, offset).ok();
+                            let actual = match &val.ty {
+                                // A bare generic parameter's fallback LLVM type
+                                // is i64, but its register is the target-width
+                                // collection handle (i32 on wasm32).
+                                Type::Custom(n)
+                                    if n.len() == 1
+                                        && n.chars().next().is_some_and(|c| c.is_uppercase()) =>
+                                {
+                                    slot_ty.clone()
+                                }
+                                _ => backend.llvm_type(&val.ty),
+                            };
+                            let store_val = if actual == "ptr" {
+                                let r = backend.fun.gen_reg();
+                                writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, r, val.name, slot_ty).ok();
+                                r
+                            } else if actual == slot_ty {
+                                val.name.clone()
+                            } else if actual == "i64" && slot_ty == "i32" {
+                                let r = backend.fun.gen_reg();
+                                writeln!(out, "{}{} = trunc i64 {} to i32", indent, r, val.name).ok();
+                                r
+                            } else if actual == "i32" && slot_ty == "i64" {
+                                let r = backend.fun.gen_reg();
+                                writeln!(out, "{}{} = zext i32 {} to i64", indent, r, val.name).ok();
+                                r
+                            } else {
+                                let universe = backend.ctx.type_universe.clone();
+                                backend.ensure_typed_value(
+                                    out,
+                                    indent,
+                                    &slot_ty,
+                                    &val.name,
+                                    Some(val.ty.clone()),
+                                    universe.as_ref(),
+                                )
+                            };
+                            writeln!(out, "{}store {}{} {}, ptr {}", indent, vol_prefix, slot_ty, store_val, gep).ok();
                         }
                     }
                 }

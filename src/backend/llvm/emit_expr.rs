@@ -1600,6 +1600,15 @@ impl LlvmBackend {
                     // Raw Ptr<T> from Malloc# has no header — offset is the index.
                     let is_list_type = matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
                         || is_seq_literal;
+                    // 2026-10-27: list slots are target-width handles, not
+                    // always 64-bit words. On wasm32 append writes i32 slots;
+                    // reading with an i64 stride skipped every second entry
+                    // (HTTP request queue corruption).
+                    let slot_ty = if is_list_type || matches!(obj_reg.ty, Type::Ptr(_)) {
+                        format!("i{}", self.ctx.int_bits)
+                    } else {
+                        "i64".to_string()
+                    };
                     let gep_idx = self.gep_index(out, indent, &idx_clone);
                     if is_list_type {
                         writeln!(out, "{}{} = add i64 {}, 1", indent, offset, gep_idx).ok();
@@ -1665,8 +1674,8 @@ impl LlvmBackend {
                     }
                     writeln!(
                         out,
-                        "{}{} = getelementptr i64, ptr {}, i64 {}",
-                        indent, gep, ptr, offset
+                        "{}{} = getelementptr {}, ptr {}, i64 {}",
+                        indent, gep, slot_ty, ptr, offset
                     )
                     .ok();
                     // 2026-08-01 (E): `vol let` — Ptr-Index reads emit
@@ -1678,17 +1687,21 @@ impl LlvmBackend {
                     if self.is_string_operand(&index_elem_ty) {
                         let raw = self.fun.gen_reg();
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
-                            if self.fun.volatile_read { "volatile " } else { "" }, "i64", gep).ok();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, raw).ok();
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, v, slot_ty, raw).ok();
                     } else if self.is_protocol_member(&index_elem_ty, "Float") {
                         // 2026-08-07 (Phase 7): a Float (f32) element is
                         // stored in the i64 list slot as
                         // `zext(bitcast float to i32)` — invert it.
                         let raw = self.fun.gen_reg();
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
-                            if self.fun.volatile_read { "volatile " } else { "" }, "i64", gep).ok();
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
                         let tr = self.fun.gen_reg();
-                        writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, raw).ok();
+                        if slot_ty == "i64" {
+                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, raw).ok();
+                        } else {
+                            writeln!(out, "{}{} = trunc i32 {} to i32", indent, tr, raw).ok();
+                        }
                         writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, tr).ok();
                     } else if self.is_protocol_member(&index_elem_ty, "Int") {
                         // 2026-08-12 (slice 4, wasm32 maze): an Int element is
@@ -1751,15 +1764,10 @@ impl LlvmBackend {
                         writeln!(out, "{}store i64 {}, ptr {}", indent, table_addr, fat_table).ok();
                         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, fat_p).ok();
                     } else {
-                        // Boxed collection slots are 8-byte words. A handle
-                        // whose declared LLVM type is i32 on wasm32 is stored
-                        // zero-extended in the low half; load only that half so
-                        // consumers see the target-width handle. Native i64
-                        // handles keep the full word.
-                        let elem_llvm = self.llvm_type(&index_elem_ty);
-                        let load_ty = if elem_llvm == "i32" { "i32" } else { "i64" };
+                        // List slots carry target-width handles; native i64,
+                        // wasm32 i32.
                         writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
-                            if self.fun.volatile_read { "volatile " } else { "" }, load_ty, gep).ok();
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
                     }
                 } else if self.is_string_operand(&obj_reg.ty) {
                     // 2026-10-05 (json.bv): String indexing `s[i]` — the

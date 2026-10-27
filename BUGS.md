@@ -33,6 +33,24 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
+
+**Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the
+second read back zeroed (`kind=""`, handle 0). In the recommender this dropped
+the `/state` HTTP request from `http_requests`, leaving the profile stuck at
+"Loading your saved profile".
+
+**Root cause:** three paths disagreed on the wasm32 collection word:
+- portable `coll_resize` allocated/copied 8 bytes per element;
+- list/Ptr reads emitted `getelementptr i64` and `load i64`;
+- non-scalar Ptr stores wrote i64.
+Appends used target-width i32 slots, so the second slot was skipped/corrupted.
+
+**Fix:** portable `coll_resize` uses 4-byte elements; list/Ptr reads use
+`i{int_bits}`; non-scalar Ptr stores use the target width and convert
+ptr/i64/i32 handles safely (bare generic `T` included). Minimal browser repro:
+two tuple appends now read `len=2 first=catalogue second=state h=3`.
+
 ## Loop-mutated locals retained their pre-loop facts -- FIXED 2026-10-26
 
 **Symptom:** after `foreach ... { count = count + 1; };`, a proof could still
