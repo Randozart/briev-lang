@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T13:58:46+01:00
+**Last updated:** 2026-10-27T14:15:00+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -103,6 +103,15 @@ lands; do not rewrite history.
   blocker is therefore additional wasm collection/float ABI behavior, not the
   view binding. Next: isolate catalogue scan indexing and float parsing with a
   minimal wasm fixture.
+- `14:10` Generic wasm fixtures (no recommender names):
+  - `List<Item>` + recursive scan: native `count=3 page=2`; wasm
+    `count=3 page(view)=0 local page_len=2`. So the list mutation is correct;
+    the UI `.^Size` path sees a stale/incorrect list state.
+  - `"4.5" as Float`: native `4.5`, wasm `0`; JSON containing `4.5` also
+    fails (`json_ok=false`). This is a generic portable string/float/tuple ABI
+    issue in `str_to_float`/JSON parsing.
+  - Next: fix generic list view state freshness and mixed Int64/Int tuple or
+    float parse layout; app remains the corpus, not the mechanism.
 
 ## Evidence / current state
 

@@ -33,6 +33,19 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## wasm32 generic list view state and Float/JSON conversion -- OPEN 2026-10-27
+
+**Generic repro (no recommender names):**
+- `List<Item>` recursive scan: native `count=3 page=2`; wasm
+  `count=3 page(view)=0 local page_len=2`. List append works; the view
+  `.^Size` path observes stale list state.
+- `"4.5" as Float`: native `4.5`, wasm `0`; `json_parse` with `4.5` fails.
+  `str_to_float`/JSON reaches wasm `unreachable` (`num_bitcast_invalid` /
+  depth frames), indicating a generic portable float/tuple ABI issue.
+
+Next: isolate the list state flush/read path and mixed Int64/Int tuple layout
+or float conversion. No app-specific branch is acceptable.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the
