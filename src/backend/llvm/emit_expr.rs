@@ -841,9 +841,24 @@ impl LlvmBackend {
                         // i{int_bits} (push_field_type), so `loaded` is already
                         // the arithmetic width — no trunc needed. Bool/String/
                         // Data/Ptr slots stay i64 and are boxed/unboxed above.
-                        TypedRegister {
-                            name: loaded,
-                            ty: briev_ty,
+                        let enum_handle = matches!(
+                            &briev_ty,
+                            Type::Custom(n) | Type::Applied(n, _)
+                                if self.ctx.enum_handle_types.contains(n)
+                        );
+                        if enum_handle && field_llvm_ty == "i64" && self.ctx.int_bits < 64 {
+                            let tr = self.fun.gen_reg();
+                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, loaded).ok();
+                            self.fun.reg_llvm_ty.insert(tr.clone(), "i32".to_string());
+                            TypedRegister { name: tr, ty: briev_ty }
+                        } else {
+                            if enum_handle {
+                                self.fun.reg_llvm_ty.insert(loaded.clone(), field_llvm_ty.clone());
+                            }
+                            TypedRegister {
+                                name: loaded,
+                                ty: briev_ty,
+                            }
                         }
                     }
                 } else if let Some((ty, _)) = self.ctx.constants.get(name) {
@@ -6535,7 +6550,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 if carrier_replace.contains(&i) {
                     continue;
                 }
-                let reg_llvm_ty = self.llvm_type(&reg.ty);
+                let reg_llvm_ty = self
+                    .fun
+                    .reg_llvm_ty
+                    .get(&reg.name)
+                    .cloned()
+                    .unwrap_or_else(|| self.llvm_type(&reg.ty));
                 // A boxed Bool/Char parameter is an i64 SSA register, but the
                 // callee's native ABI parameter is i8/i32 on wasm32. Unbox at
                 // the call boundary instead of forwarding the i64 register.

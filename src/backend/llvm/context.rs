@@ -1339,6 +1339,9 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // Without this, let bindings (e.g. `let f0: Float = b0 * input;`) would
     // return Type::int() because f0 is not in field_index_map.
     pub last_val_types: HashMap<String, Type>,
+    /// 2026-10-27: actual LLVM register widths for values whose Briev type
+    /// maps to a fallback width (notably enum/Result state loads).
+    pub reg_llvm_ty: HashMap<String, String>,
 
     /// 2026-08-06 (Phase 8): closures bound by `let` in this function. A call
     /// to a closure name INLINES the body with the params bound to the arg
@@ -1520,6 +1523,7 @@ impl FunctionContext {
             volatile_locals: std::collections::HashSet::new(),
             member_result: None,
             last_val_types: HashMap::new(),
+            reg_llvm_ty: HashMap::new(),
             closure_lets: HashMap::new(),
             rotation_fields: HashSet::new(),
             active_vector_groups: Vec::new(),
@@ -1611,6 +1615,7 @@ impl FunctionContext {
         // here isolates the passes.
         self.last_val_temps.clear();
         self.last_val_types.clear();
+        self.reg_llvm_ty.clear();
         // 2026-10-20 (pointer provenance): canonical conversions are keyed by
         // per-function SSA names and state-field cache entries; they must not
         // leak across an emission pass or function.
