@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T12:40:25+01:00
+**Last updated:** 2026-10-27T13:50:54+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -92,6 +92,11 @@ lands; do not rewrite history.
   `client_receive_event` never sees the recommendation. Next: compare the host
   `webSockets` message queue against the app's channel handle; likely a
   wasm32/host-boundary queue issue, not the protocol decoder.
+- `13:10` Corrected that finding: host queue receives the message (`q=1`) and
+  app `ws_pending=1`; `client_receive_event` runs and
+  `client_refresh_recommendation_cards` observes `CARDS n=1`. The UI still shows
+  `cold_start`/no cards, so the remaining issue is post-transaction view state
+  (cold_start/recommendation_cards commit or render), not message delivery.
 
 ## Evidence / current state
 
