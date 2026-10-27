@@ -17,6 +17,8 @@ warns).
 
 **Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — A/C/D compiler/web/WASM bundles landed; casting change rejected; generic txn specialization deferred. App remains external and pinned at `79234665`. Source compiler commit: `894fcfa5`.
 
+**Session report (2026-10-27):** `docs/2026-10-27-session-report.md` — chronological record of app compatibility, compiler hardening, proof elimination, ledger, and remaining browser/hardening work.
+
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes, lexical elaboration, logical semantics, metadata and target-width constants are landed. Phase D stdlib breadth (PostgreSQL, portable web, CSR) is adopted; the remaining compiler item is generic callable transaction specialization.
 
 **Active proof-completeness lane (2026-10-26):** `docs/plans/2026-10-26-proof-completeness-and-guard-elimination.md` — make the prover discharge constructible obligations and let the compiler consume them. Source guards are retained; proof-aware guard elimination is implemented (Rule 25).
