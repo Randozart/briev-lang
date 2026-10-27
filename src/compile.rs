@@ -2799,8 +2799,28 @@ struct LinkInputs<'a> {
     bootstrap_entry: Option<&'a str>,
 }
 
+/// 2026-10-27: reject invalid emitted IR before clang/llc. This turns
+/// compiler lowering bugs (missing sret slots, width mismatches, undefined SSA)
+/// into Briev diagnostics instead of clang errors or runtime traps.
+fn verify_emitted_ir(ll_path: &str) -> Result<(), String> {
+    let output = Command::new("opt")
+        .args(["-passes=verify", "-disable-output", ll_path])
+        .output()
+        .map_err(|e| format!("cannot invoke opt to verify '{}': {}", ll_path, e))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "emitted IR failed LLVM verification for '{}':\n{}",
+        ll_path,
+        stderr.trim()
+    ))
+}
+
 fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>) -> Result<(), String> {
     let LinkInputs { extra_objects, protocol_libs, shared, bad_objects, bootstrap_entry } = inputs;
+    verify_emitted_ir(ll_path)?;
     let ll_text = std::fs::read_to_string(ll_path)
         .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
     // Extract target triple from the IR (first line: target triple = "..."`)
@@ -3086,6 +3106,7 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
 /// Uses `llc -march=wasm32 -filetype=obj` to produce a .o, then
 /// `wasm-ld` to link into .wasm. This avoids needing a wasm32 clang.
 fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<(), String> {
+    verify_emitted_ir(ll_path)?;
     // 2026-10-25: llc alone does not eliminate self-tail recursion. Ordinary
     // catalogue scans exhausted the WASM stack. Promote local slots and run
     // LLVM's proof-preserving tail-call pass before instruction selection.
@@ -3191,6 +3212,22 @@ fn resolve_wasm_linker() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn emitted_ir_verifier_rejects_invalid_module() {
+        let path = std::env::temp_dir().join(format!(
+            "briev-invalid-{}.ll",
+            std::process::id()
+        ));
+        std::fs::write(&path, "define i32 @bad() {\n  ret void\n}\n").unwrap();
+        let result = super::verify_emitted_ir(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(result.is_err(), "invalid IR must be rejected");
+        assert!(
+            result.unwrap_err().contains("verification"),
+            "diagnostic must identify IR verification"
+        );
+    }
+
 
     /// 2026-08-27 (Slice A): an extern source that does not exist is a hard
     /// error naming both symbol and path.
