@@ -21,7 +21,7 @@ warns).
 
 **Active proof-completeness lane (2026-10-26):** `docs/plans/2026-10-26-proof-completeness-and-guard-elimination.md` — make the prover discharge constructible obligations and let the compiler consume them. Source guards are retained; proof-aware guard elimination is implemented (Rule 25).
 
-**Next proof workstream (2026-10-26):** `docs/plans/2026-10-26-proof-consumption-ledger.md` — every proof family must name its codegen consumer (or an explicit no-runtime-consumer record). Guard elimination is the first DONE row; bounds checks, loop facts, constructor facts, and alias/lifetime proofs are open.
+**Active proof-consumption workstream (2026-10-27):** `docs/plans/2026-10-26-proof-consumption-ledger.md` — every proof family must name its codegen consumer (or an explicit no-runtime-consumer record). Instrumentation landed: 176/176 assertion guards consumed, 0 unconsumed. Accessor bounds are `NONE (static contract; no runtime check)`; loop/constructor/alias consumers remain open.
 
 **Active app acceptance lane (2026-10-26):** `docs/plans/2026-10-26-recommender-app-acceptance-and-upstream.md` — recommender app builds against current main (PR #1, draft); compiler prerequisites `e442f06b`/`1c1dd70f` pushed to Randozart main. Remaining: `cargo test --all`, non-PostgreSQL app gates, then PG/MovieLens/Playwright acceptance and the upstream landing decision.
 
