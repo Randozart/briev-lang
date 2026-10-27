@@ -73,6 +73,11 @@ Generic parsed-JSON fixture: 1682 objects parse, but building `List<Item>` from
 them traps (`unreachable`) before scan and leaves `items=0`. This points at
 parser/struct construction or the JSON accessor path, not list stride sizing.
 
+A small 2-object fixture reaches item indexing, then traps in
+`json_get(item,key)`. `find_pair` (stdlib) is a transaction called from a defn;
+replacing it with a pure recursive defn made parsing empty/trap. Needs a
+generic JSON accessor/transaction ABI fix.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the

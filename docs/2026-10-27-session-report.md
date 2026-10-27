@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T18:04:32+01:00
+**Last updated:** 2026-10-27T18:07:11+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -168,6 +168,12 @@ lands; do not rewrite history.
   clang/llc, and structural sizes assert size ≥ field end. `cargo test --lib`
   3357 passed; release rebuilt. Browser OOB remains; next is the physical
   ABI/collection model (Phase B/D).
+- `19:05` Small generic parsed-JSON list narrows the trap: array length is 2,
+  item indexing reaches step 2, then `json_get(item, key)` traps. stdlib
+  `find_pair` is a transaction called from a defn; converting it to a pure
+  recursive defn made parsing return empty/trap, so the fix needs the generic
+  JSON accessor/transaction ABI, not a one-off rewrite. Reverted; compiler
+  unchanged.
 
 ## Evidence / current state
 
