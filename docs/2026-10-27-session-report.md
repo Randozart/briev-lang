@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T12:20:19+01:00
+**Last updated:** 2026-10-27T12:40:25+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -83,6 +83,10 @@ lands; do not rewrite history.
   does not render a shortlist card (body shows "Your shortlist is taking
   shape"). Catalogue + ratings are correct; next isolate the live-event
   delivery/decode path.
+- `12:40` Updated the wasm tuple-list regression test to pin the target-width
+  stride; minimal fixture renders `second=2`. `cargo test --all` and daily-use
+  smoke are green. Browser state/catalogue now work; the live recommendation
+  event is the next blocker.
 
 ## Evidence / current state
 
