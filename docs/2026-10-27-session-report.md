@@ -87,6 +87,11 @@ lands; do not rewrite history.
   stride; minimal fixture renders `second=2`. `cargo test --all` and daily-use
   smoke are green. Browser state/catalogue now work; the live recommendation
   event is the next blocker.
+- `12:55` Live-event isolation: the page receives the WebSocket `message` event
+  (`LIVECOUNT=1` after dispatch), but the app's `ws_pending` remains 0, so
+  `client_receive_event` never sees the recommendation. Next: compare the host
+  `webSockets` message queue against the app's channel handle; likely a
+  wasm32/host-boundary queue issue, not the protocol decoder.
 
 ## Evidence / current state
 
