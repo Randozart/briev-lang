@@ -82,6 +82,26 @@ Follow-up attempts to relax `find_pair`'s false postcondition and/or inline a
 `foreach` lookup also changed parsing to `parsed=0`; reverted. Root is not just
 the transaction contract.
 
+**Correction 2026-10-27:** the small fixture queried `json_get` for a NUMERIC
+`item_id`; `json_get` returns string values only, so that `Err` was correct.
+The 2-object string-title path passes. The 1682-item protocol-style path still
+fails: item 1363 OOB in lookup, and replacing `find_pair` with a pure defn makes
+`json_parse` return zero immediately. This is a compiler-wide function/stack
+interaction, not a JSON contract bug.
+
+## Dynamic struct literals aliased loop allocations -- FIXED 2026-10-27
+
+**Symptom:** `List<Item>` built in a loop read the last item's fields for every
+entry (`alpha`/`beta` parsed list rendered `beta`/`beta`).
+
+**Root cause:** `emit_struct_literal` deferred the struct malloc to the loop
+preheader whenever `defer_struct_allocas` was set, but dynamic field stores
+still ran per iteration. Every list entry held the same allocation.
+
+**Fix:** dynamic-field struct literals allocate per evaluation; only
+constant-field literals keep the preheader deferral. Regression:
+`test_dynamic_struct_literal_allocation_stays_in_loop`, commit `faed1779`.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the

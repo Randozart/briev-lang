@@ -2,10 +2,10 @@
 
 **Date:** 2026-10-26
 **Status:** ACTIVE — local PostgreSQL/MovieLens/Playwright available; most gates
-pass; WS malformed-close and mocked-browser gates remain
-**App branch:** `compat/briev-main-2026-10-25` @ `4a33985` + pending gate fixes
+pass; browser catalogue scan OOB remains
+**App branch:** `compat/briev-main-2026-10-25` @ `864c314`
 **App PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
-**Compiler main:** `beeb022b` on `Randozart/briev-lang`
+**Compiler main:** `faed1779` on `Randozart/briev-lang`
 
 ## Goal
 

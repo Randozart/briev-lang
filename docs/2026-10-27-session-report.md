@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T19:20:32+01:00
+**Last updated:** 2026-10-27T21:08:45+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -179,11 +179,27 @@ lands; do not rewrite history.
   Both changed parsing to `parsed=0` and still trapped, so neither is the fix.
   Reverted; stdlib/compiler unchanged. Need a source-level repro of why changing
   `json_get` alters `json_parse` execution before changing stdlib again.
+- `20:45` Corrected the small-fixture diagnosis: `json_get` returns STRING
+  values only; querying numeric `item_id` correctly returns `Err`. The
+  2-object string-title path passes. The 1682 path still fails.
+- `21:10` Found and fixed a real generic bug: `emit_struct_literal` hoisted a
+  dynamic struct allocation to the loop preheader, so every appended struct
+  aliased the last iteration. `List<Item>` parsed from JSON read the final
+  title for every element. Dynamic-field literals now allocate per evaluation
+  (`faed1779`). Native and wasm 2-item fixtures read `alpha` then `beta`.
+  `cargo test --lib`: 3358 passed.
+- `21:10` Remaining 1682-item failure is earlier: protocol-style parsed list
+  reaches item 1363 then OOB; replacing stdlib `find_pair` with a pure defn
+  makes `json_parse` fail immediately (`parsed=0`). A protocol 1682 fixture
+  also fails after adding lookup defns. This is a compiler-wide
+  function/liveness/stack interaction, not a JSON contract bug. Reverted all
+  stdlib experiments; app browser gate still OOB in
+  `browser_catalogue_scan`.
 
 ## Evidence / current state
 
-- Compiler main: `141c083d` on `Randozart/briev-lang`.
-- App branch: `compat/briev-main-2026-10-25` at `b12d316`.
+- Compiler main: `faed1779` on `Randozart/briev-lang`.
+- App branch: `compat/briev-main-2026-10-25` at `864c314`.
 - Source guards: 505; compiler elides 176; 107 source cleanup; 283 fewer
   codegen guard branches than the original 612.
 - `cargo test --all`: PASS (~3,350+ tests).
