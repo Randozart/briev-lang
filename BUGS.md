@@ -89,6 +89,11 @@ fails: item 1363 OOB in lookup, and replacing `find_pair` with a pure defn makes
 `json_parse` return zero immediately. This is a compiler-wide function/stack
 interaction, not a JSON contract bug.
 
+**Stack A/B 2026-10-27:** the 1682 protocol fixture parses/scans at
+`wasm-ld -z stack-size=262144` but not at the default 64 KiB. The app still
+traps in `browser_catalogue_scan` at 512 KiB/1 MiB; 2–4 MiB hangs. Parser
+recursion is stack-bound; the app scan needs a separate fix.
+
 ## Dynamic struct literals aliased loop allocations -- FIXED 2026-10-27
 
 **Symptom:** `List<Item>` built in a loop read the last item's fields for every

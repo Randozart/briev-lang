@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T21:08:45+01:00
+**Last updated:** 2026-10-27T23:00:44+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -195,6 +195,17 @@ lands; do not rewrite history.
   function/liveness/stack interaction, not a JSON contract bug. Reverted all
   stdlib experiments; app browser gate still OOB in
   `browser_catalogue_scan`.
+- `22:30` Stack A/B confirms the parser failure class. Protocol fixture:
+  2/100/1000 parse clean on the default 64 KiB wasm stack; 1682 traps.
+  Relinking the same 1682 object with `wasm-ld -z stack-size=262144` (and
+  524288/1048576) parses and scans all 1682 items. The app still traps at
+  `browser_catalogue_scan` at 512 KiB and 1 MiB; 2/4 MiB runs no longer report
+  OOB but hang in the gate. So parser recursion is stack-bound; the app scan
+  has at least one additional issue.
+- `22:45` Attempted a broad plain wasm tail-loop enable. It exposed an
+  unrelated i32/i64 loop-engine mismatch (`iter_chain_loop`) and was reverted
+  before commit. Compiler remains at `a33f8137`; `faed1779` is the only
+  codegen fix.
 
 ## Evidence / current state
 
