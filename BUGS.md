@@ -52,6 +52,12 @@ the `4.5` mantissa path but exposed specialized-call ABI mismatch
 reverted; the generic ABI coercion must cover specialized/base parameter
 metadata before re-landing.
 
+Precise cause: the specialized callee parameter is i32, and the argument's
+reported Briev/LLVM type is i32, but the actual SSA register is an i64 load from
+a `%State` Result slot. The call emitter trusts the type metadata and emits
+`i32 %i64reg`. Fix enum/Result state-field register width (or track actual
+register width), not `is_ok` specifically.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the
