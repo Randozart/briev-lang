@@ -161,6 +161,18 @@ Patches are unacceptable. There is no "go fast and break things."
     composite to their numbers. Full doctrine:
     `docs/architecture/proof-vs-shape.md`.
 
+25. **PROOF IS NOT OPTIMIZATION (2026-10-26)**: If the prover discharges a
+    source guard, KEEP THE GUARD IN SOURCE. The compiler must eliminate the
+    proven guard (proof-aware lowering / IR elision). Deleting it by hand is
+    not the optimization: it bakes a proof result into one app, removes runtime
+    defense and documentation, and hides a missing backend pass. Manual
+    deletion is allowed only for literal/constant noise or exact duplicates,
+    and only after an IR A/B shows identical emission. Lesson record:
+    cue = prover proves a guard; lesson = keep source guard, implement compiler
+    elimination; evidence = `emit_stmt.rs` always emitted `br` for `Guarded`,
+    manual removal of 283 guards changed IR, post-pass restored identical IR;
+    confidence = high.
+
 ## Performance Recovery Protocol
 
 When a benchmark is at/above parity but a mechanism made it faster before:

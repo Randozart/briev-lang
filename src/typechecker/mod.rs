@@ -26,6 +26,15 @@ use crate::type_universe::{
 use std::collections::HashMap;
 
 /// Type-check context: variable bindings and type universe.
+thread_local! {
+    /// Proven-dead guards collected during inference, keyed by
+    /// (function, preorder ordinal, required condition). A post-pass lowers
+    /// them out of the AST so the backend emits no runtime branch.
+    static PROVEN_GUARDS: std::cell::RefCell<
+        std::collections::HashSet<(String, usize, String)>,
+    > = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
 pub struct TypecheckContext<'a> {
     pub bindings: HashMap<String, Type>,
     /// 2026-07-18: Names of state-level bindings (top-level let, state fields,
@@ -45,6 +54,8 @@ pub struct TypecheckContext<'a> {
     pub defined_fns: std::collections::HashSet<String>,
     /// 2026-10-26: enclosing defn/txn name for dev guard audits.
     pub current_fn_name: Option<String>,
+    /// 2026-10-26: preorder ordinal of guarded statements in this function.
+    pub guard_ordinal: usize,
     /// 2026-10-26: parameters of the current body and locals that shadow a
     /// global constant. Constant unfolding must skip these.
     pub param_names: std::collections::HashSet<String>,
@@ -248,6 +259,7 @@ impl<'a> TypecheckContext<'a> {
             constant_defs: HashMap::new(),
             known_facts: Vec::new(),
             current_fn_name: None,
+            guard_ordinal: 0,
             param_names: std::collections::HashSet::new(),
             local_shadows: std::collections::HashSet::new(),
             in_defn: false,
@@ -4555,6 +4567,23 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
         }
         Statement::Guarded(cond, body) => {
             infer_type_only(cond, ctx)?;
+            let ordinal = ctx.guard_ordinal;
+            ctx.guard_ordinal += 1;
+            if let Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) = cond {
+                if prove_with_constants(inner, ctx)
+                    == crate::proof_engine::callgate::Verdict::Proven
+                {
+                    if let Some(name) = ctx.current_fn_name.clone() {
+                        PROVEN_GUARDS.with(|set| {
+                            set.borrow_mut().insert((
+                                name,
+                                ordinal,
+                                inner.to_string(),
+                            ));
+                        });
+                    }
+                }
+            }
             if ctx.in_defn
                 && body
                     .iter()
@@ -5114,6 +5143,7 @@ pub fn check_program_with_target(
     isr_mechanism: Option<&str>,
     surface_electronics: bool,
 ) -> Result<(), Vec<TypeError>> {
+    PROVEN_GUARDS.with(|set| set.borrow_mut().clear());
     // 2026-08-22 (Phase 5, SPEC §8.5): the parser's relationship list is
     // SYNTACTIC — a bare name becomes the refinement parent whether or not
     // it names a trait. Here, with the trait registry known, reclassify:
@@ -6332,6 +6362,8 @@ pub fn check_program_with_target(
         errors.extend(elaborate_ops(items, universe, &env));
     }
     if errors.is_empty() {
+        let proven = PROVEN_GUARDS.with(|set| set.borrow().clone());
+        eliminate_proven_guards(items, &proven);
         Ok(())
     } else {
         Err(errors)
@@ -6846,6 +6878,67 @@ fn make_typecheck_context<'a>(env: &CheckEnv<'a>, universe: &'a TypeUniverse) ->
     ctx
 }
 
+/// 2026-10-26: compiler-owned guard elimination. A guard `when !(cond) ...`
+/// whose `cond` is proven true is dead; remove it after all proofs have run.
+/// Source guards stay in the program as intent/documentation.
+fn eliminate_proven_guards(
+    items: &mut [TopLevel],
+    proven: &std::collections::HashSet<(String, usize, String)>,
+) {
+    for item in items.iter_mut() {
+        match item {
+            TopLevel::Definition(d) => {
+                let mut ord = 0;
+                lower_guards(&mut d.body, &d.name, &mut ord, proven);
+            }
+            TopLevel::Transaction(t) => {
+                let mut ord = 0;
+                lower_guards(&mut t.body, &t.name, &mut ord, proven);
+            }
+            TopLevel::Export(e) => {
+                let mut one = vec![(*e.inner).clone()];
+                eliminate_proven_guards(&mut one, proven);
+                if let Some(TopLevel::Definition(_) | TopLevel::Transaction(_)) = one.first() {
+                    *e.inner = one.remove(0);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn lower_guards(
+    stmts: &mut [Statement],
+    fn_name: &str,
+    ord: &mut usize,
+    proven: &std::collections::HashSet<(String, usize, String)>,
+) {
+    for stmt in stmts.iter_mut() {
+        match stmt {
+            Statement::Guarded(cond, body) => {
+                let this = *ord;
+                *ord += 1;
+                let key_cond = match cond {
+                    Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) => inner.to_string(),
+                    _ => cond.to_string(),
+                };
+                // Always descend so nested guard ordinals stay aligned, then
+                // drop a proven-dead guard itself.
+                lower_guards(body, fn_name, ord, proven);
+                if proven.contains(&(fn_name.to_string(), this, key_cond)) {
+                    *stmt = Statement::Block(Vec::new());
+                }
+            }
+            Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Defer(body)
+            | Statement::Mutex(body) => lower_guards(body, fn_name, ord, proven),
+            Statement::Foreach { body, .. } => lower_guards(body, fn_name, ord, proven),
+            _ => {}
+        }
+    }
+}
+
 fn check_top_level<'a>(
     item: &TopLevel,
     universe: &'a TypeUniverse,
@@ -6890,6 +6983,7 @@ fn check_top_level<'a>(
             ctx.known_facts.extend(own_pre);
             ctx.in_defn = true;
             ctx.current_fn_name = Some(defn.name.clone());
+            ctx.guard_ordinal = 0;
             ctx.param_names = defn.parameters.iter().map(|(n, _)| n.clone()).collect();
             ctx.local_shadows.clear();
             for stmt in &defn.body {
@@ -6914,6 +7008,7 @@ fn check_top_level<'a>(
                 crate::proof_engine::callgate::facts_of(&txn.contract.pre_condition);
             ctx.known_facts.extend(own_pre);
             ctx.current_fn_name = Some(txn.name.clone());
+            ctx.guard_ordinal = 0;
             ctx.param_names = txn.parameters.iter().map(|(n, _)| n.clone()).collect();
             ctx.local_shadows.clear();
             for stmt in &txn.body {
@@ -8599,6 +8694,15 @@ mod tests {
         check_program(&mut items, &universe)
     }
 
+    fn checked_items(src: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = crate::parser::Parser::new(tokens, src);
+        let mut items = p.parse_program().unwrap();
+        let universe = crate::type_universe::TypeUniverse::new();
+        check_program(&mut items, &universe).expect("program checks");
+        items
+    }
+
     // ── 2026-10-16 (tails plan §2): tail typecheck ─────────────────────────
 
     // ── 2026-10-20 (contract tiers, ruling ii): check = static-only ───────
@@ -8791,6 +8895,44 @@ mod tests {
              };",
         )
         .expect("counter induction proves the loop and post-loop bounds");
+    }
+
+    /// A proven-dead guard must be lowered out of the AST by the compiler,
+    /// not deleted from the source. `i >= 0` follows from the foreach range.
+    #[test]
+    fn proven_guard_is_eliminated_in_ast() {
+        let items = checked_items(
+            "defn f(n: Int) [n >= 0] -> Int { \
+                 foreach i in 0..n { when !(i >= 0) { trap; }; }; \
+                 term 0; \
+             };",
+        );
+        let body = items
+            .iter()
+            .find_map(|i| match i {
+                TopLevel::Definition(d) if d.name == "f" => Some(&d.body),
+                _ => None,
+            })
+            .expect("defn f");
+        fn walk(stmts: &[Statement], lowered: &mut bool, still_present: &mut bool) {
+            for s in stmts {
+                match s {
+                    Statement::Guarded(_, _) => *still_present = true,
+                    Statement::Block(b) if b.is_empty() => *lowered = true,
+                    Statement::Block(b)
+                    | Statement::SyncBlock(b)
+                    | Statement::Defer(b)
+                    | Statement::Mutex(b) => walk(b, lowered, still_present),
+                    Statement::Foreach { body, .. } => walk(body, lowered, still_present),
+                    _ => {}
+                }
+            }
+        }
+        let mut lowered = false;
+        let mut still_present = false;
+        walk(body, &mut lowered, &mut still_present);
+        assert!(lowered, "the proven guard should lower to an empty block");
+        assert!(!still_present, "no guard statement should remain in f");
     }
 
     /// A loop-mutated local must not retain its pre-loop facts after the

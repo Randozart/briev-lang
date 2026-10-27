@@ -1332,6 +1332,25 @@ fn record_reg_def(t: &str, def_ty: &mut std::collections::HashMap<String, String
 /// unreachable for lifted programs. The composition (pass + generate) is
 /// what compile_source runs.
 #[test]
+fn proven_guard_is_elided_from_ir() {
+    let src = r#"
+defn f(n: Int) [n >= 0] -> Int {
+    foreach i in 0..n { when !(i >= 0) { trap; }; };
+    term 0;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut p = crate::parser::Parser::new(tokens, src);
+    let mut items = p.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    crate::typechecker::check_program(&mut items, &universe).expect("checks");
+    let mut backend = LlvmBackend::new();
+    let ir = backend.generate(&items, None);
+    assert!(!ir.contains("guard.then"), "proven guard emitted a branch:\n{ir}");
+    assert!(!ir.contains("call void @llvm.trap"), "proven guard emitted a trap:\n{ir}");
+}
+
+#[test]
 fn test_wildcard_lift_reaches_codegen_as_plain_elements() {
     let src = r#"
 let a: Int[4];

@@ -84,6 +84,19 @@ Separate from proof completeness:
 - Do not treat terminal-sentinel guard ordering as a prover bug; it is app
   logic, though a refuted-on-path warning is acceptable.
 
+## Lesson record (2026-10-26)
+
+- **cue:** the prover proves a `when` guard, tempting a source deletion.
+- **lesson:** keep the source guard; add proof-aware compiler elimination.
+  Source guards are intent, documentation, and runtime defense. Manual
+  deletion is the wrong layer and hides a missing backend optimization.
+- **evidence:** `src/backend/llvm/emit_stmt.rs` emitted `br` for every
+  `Statement::Guarded`; manually removing 283 guards changed the emitted IR.
+  With the new post-typecheck elimination pass, the restored source produced
+  structurally identical IR to the manual-removal branch (register numbering
+  aside).
+- **confidence:** high.
+
 ## Validation log
 
 - 2026-10-26: plan created.
