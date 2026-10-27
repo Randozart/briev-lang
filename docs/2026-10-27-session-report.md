@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T13:50:54+01:00
+**Last updated:** 2026-10-27T13:58:46+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -97,6 +97,12 @@ lands; do not rewrite history.
   `client_refresh_recommendation_cards` observes `CARDS n=1`. The UI still shows
   `cold_start`/no cards, so the remaining issue is post-transaction view state
   (cold_start/recommendation_cards commit or render), not message delivery.
+- `13:50` Deeper probe hit wasm traps: `browser_catalogue_scan` memory access
+  out of bounds during `client_refresh_rating_view`, and
+  `str_to_float`/JSON depth `unreachable` on the live event payload. The current
+  blocker is therefore additional wasm collection/float ABI behavior, not the
+  view binding. Next: isolate catalogue scan indexing and float parsing with a
+  minimal wasm fixture.
 
 ## Evidence / current state
 
