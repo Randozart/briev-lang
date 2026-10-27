@@ -69,6 +69,10 @@ memory OOB during the second state hydration. A generic 1682-item/two-scan
 `List<struct>` fixture does not trap, so the trigger is the parsed struct list/
 state shape (still generic, no app-specific branch).
 
+Generic parsed-JSON fixture: 1682 objects parse, but building `List<Item>` from
+them traps (`unreachable`) before scan and leaves `items=0`. This points at
+parser/struct construction or the JSON accessor path, not list stride sizing.
+
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
 **Symptom:** a `List<(Int,String,Int,String)>` stored the first tuple but the

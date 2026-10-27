@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T17:31:55+01:00
+**Last updated:** 2026-10-27T17:36:52+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -157,6 +157,12 @@ lands; do not rewrite history.
   the wasm catalogue scan OOB on the second state hydration. Generic
   1682-item/two-scan fixture does not OOB, so the remaining trigger is the
   parsed `List<struct>`/state shape (still generic, no app branch).
+- `18:05` Generic parsed-JSON struct list exposes an earlier trap: 1682 objects
+  parse (`parsed=1682`) but the build loop into `List<Item>` leaves `items=0`
+  with wasm `unreachable` before scan. Literal 1682-item/two-scan is clean.
+  So the remaining path is parser/struct-construction, not list sizing or
+  transport timing. App still uses protocol helpers; instrument its scan
+  lengths next.
 
 ## Evidence / current state
 
