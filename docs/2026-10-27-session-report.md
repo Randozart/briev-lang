@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T10:18:48+01:00
+**Last updated:** 2026-10-27T10:37:30+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -58,6 +58,18 @@ lands; do not rewrite history.
   - check: **1 typecheck-only**
 - Accessors `ivec_get`/`vec_get`/`mat_get` emit direct loads; no runtime bounds
   check exists. Recorded as `NONE (static contract; no runtime check)`.
+- `10:37` Browser catalogue investigation:
+  - `Live` binding works; three HTTP events reach the host.
+  - login/state/movies requests are issued, but the UI remains at
+    "Loading the movie catalogue…"; state count remains 0.
+  - a drain probe observed `pending=1 remain=0` after the login response; the
+    two follow-up handles were issued but were not present in `http_requests`
+    when the next drain ran.
+  - a deferred-load transaction (scheduled after login) did not fix it; the
+    experiment was reverted. App source is clean at `b12d316`.
+  - Next isolation: determine whether this is a host-event/transaction race or
+    a compiler bug in global list mutation across nested calls. Add a minimal
+    browser/WASM reproduction before changing app code.
 
 ## Evidence / current state
 
@@ -77,10 +89,10 @@ lands; do not rewrite history.
 
 ## To do
 
-1. **Browser catalogue blocker.** `browser_pending_peer.mjs` reaches `Live` but
-   stalls loading the 1682-movie catalogue. Rebuild web, instrument
-   `client_handle_catalogue` (parsed count/valid/first/last), classify
-   JSON/decode vs validation vs render, fix, rerun.
+1. **Browser catalogue blocker. IN PROGRESS.** `Live` works, but state/catalogue
+   responses are not reflected in the UI; the handle list loses the follow-up
+   requests before drain. Isolate host event/transaction race vs compiler
+   global-list mutation with a minimal WASM/browser repro before app changes.
 2. **Compiler hardening invariants.**
    - assert allocation size >= max emitted field end after structural sizing;
    - verify emitted IR before invoking clang (invalid `%esrt0` class);
