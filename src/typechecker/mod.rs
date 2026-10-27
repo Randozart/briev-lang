@@ -4569,26 +4569,25 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             infer_type_only(cond, ctx)?;
             let ordinal = ctx.guard_ordinal;
             ctx.guard_ordinal += 1;
-            if let Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) = cond {
-                if prove_with_constants(inner, ctx)
-                    == crate::proof_engine::callgate::Verdict::Proven
-                {
-                    if let Some(name) = ctx.current_fn_name.clone() {
-                        PROVEN_GUARDS.with(|set| {
-                            set.borrow_mut().insert((
-                                name,
-                                ordinal,
-                                inner.to_string(),
-                            ));
-                        });
+            let is_assertion_guard = body.iter().any(|s| matches!(s, Statement::Trap));
+            if is_assertion_guard {
+                if let Expr::UnaryOp(crate::ast::UnaryOpKind::Not, inner) = cond {
+                    if prove_with_constants(inner, ctx)
+                        == crate::proof_engine::callgate::Verdict::Proven
+                    {
+                        if let Some(name) = ctx.current_fn_name.clone() {
+                            PROVEN_GUARDS.with(|set| {
+                                set.borrow_mut().insert((
+                                    name,
+                                    ordinal,
+                                    inner.to_string(),
+                                ));
+                            });
+                        }
                     }
                 }
             }
-            if ctx.in_defn
-                && body
-                    .iter()
-                    .any(|s| matches!(s, Statement::Trap))
-            {
+            if ctx.in_defn && is_assertion_guard {
                 audit_guard_condition(cond, ctx);
             }
             // 2026-10-19 (contract tiers, Option 1): a guard ESTABLISHES its
@@ -6885,15 +6884,17 @@ fn eliminate_proven_guards(
     items: &mut [TopLevel],
     proven: &std::collections::HashSet<(String, usize, String)>,
 ) {
+    let mut lowered: std::collections::HashSet<(String, usize, String)> =
+        std::collections::HashSet::new();
     for item in items.iter_mut() {
         match item {
             TopLevel::Definition(d) => {
                 let mut ord = 0;
-                lower_guards(&mut d.body, &d.name, &mut ord, proven);
+                lower_guards(&mut d.body, &d.name, &mut ord, proven, &mut lowered);
             }
             TopLevel::Transaction(t) => {
                 let mut ord = 0;
-                lower_guards(&mut t.body, &t.name, &mut ord, proven);
+                lower_guards(&mut t.body, &t.name, &mut ord, proven, &mut lowered);
             }
             TopLevel::Export(e) => {
                 let mut one = vec![(*e.inner).clone()];
@@ -6905,6 +6906,19 @@ fn eliminate_proven_guards(
             _ => {}
         }
     }
+    if std::env::var_os("BRIEV_PROOF_LEDGER").is_some() {
+        eprintln!(
+            "PROOF_LEDGER family=guard proven={} lowered={} unconsumed={}",
+            proven.len(),
+            lowered.len(),
+            proven.difference(&lowered).count()
+        );
+        for (fn_name, ord, cond) in proven.difference(&lowered) {
+            eprintln!(
+                "PROOF_LEDGER UNCONSUMED family=guard fn={fn_name} ordinal={ord} cond={cond}"
+            );
+        }
+    }
 }
 
 fn lower_guards(
@@ -6912,6 +6926,7 @@ fn lower_guards(
     fn_name: &str,
     ord: &mut usize,
     proven: &std::collections::HashSet<(String, usize, String)>,
+    lowered: &mut std::collections::HashSet<(String, usize, String)>,
 ) {
     for stmt in stmts.iter_mut() {
         match stmt {
@@ -6924,16 +6939,22 @@ fn lower_guards(
                 };
                 // Always descend so nested guard ordinals stay aligned, then
                 // drop a proven-dead guard itself.
-                lower_guards(body, fn_name, ord, proven);
-                if proven.contains(&(fn_name.to_string(), this, key_cond)) {
+                lower_guards(body, fn_name, ord, proven, lowered);
+                let key = (fn_name.to_string(), this, key_cond);
+                if proven.contains(&key) {
+                    lowered.insert(key);
                     *stmt = Statement::Block(Vec::new());
                 }
             }
             Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Defer(body)
-            | Statement::Mutex(body) => lower_guards(body, fn_name, ord, proven),
-            Statement::Foreach { body, .. } => lower_guards(body, fn_name, ord, proven),
+            | Statement::Mutex(body) => {
+                lower_guards(body, fn_name, ord, proven, lowered)
+            }
+            Statement::Foreach { body, .. } => {
+                lower_guards(body, fn_name, ord, proven, lowered)
+            }
             _ => {}
         }
     }

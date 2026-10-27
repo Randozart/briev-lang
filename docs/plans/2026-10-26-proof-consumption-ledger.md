@@ -1,7 +1,7 @@
 # Proof-consumption ledger
 
 **Date:** 2026-10-26
-**Status:** NEXT WORKSTREAM
+**Status:** ACTIVE — instrumentation landed; guard row complete
 **Rule:** proof is an optimization license. A proof that no codegen consumer
 uses is a missing optimization, not a completed one.
 
@@ -28,13 +28,33 @@ Source guards stay in the program. The compiler elides them when proven.
 | Bounds checks at accessors | contract gate | `i < len` | — | no IR consumer identified yet | — | OPEN |
 | Alias/lifetime/independence facts | future proof passes | non-overlap, lifetime | vectorization/hoisting/reload removal | TBD | TBD | OPEN |
 
+## Snapshot (2026-10-27)
+
+`BRIEV_PROOF_LEDGER=1` on the recommender:
+
+```text
+PROOF_LEDGER family=guard proven=176 lowered=176 unconsumed=0
+```
+
+- All recorded assertion-guard proofs are consumed by the post-typecheck
+  elimination pass. Non-trap control-flow guards are not treated as assertion
+  proofs.
+- `ivec_get`, `vec_get`, and `mat_get` IR contains **no runtime bounds check**
+  (direct load). The contract proof therefore has no bounds-check consumer;
+  this is recorded as `NONE (static contract; no runtime check)`, not as a
+  missing optimization.
+- Loop/constructor/difference facts currently have an **indirect** consumer:
+  they discharge the guards that the elimination pass removes. They do not yet
+  drive loop optimization, hoisting, or vectorization.
+
 ## Phases
 
-1. **Instrument proof production.** Emit a structured record whenever a proof
-   obligation is discharged: family, goal, facts used, verdict, and source
-   site.
-2. **Name consumers.** Map every proof family to a pass/IR transformation.
-   `NONE` is a valid recorded value; it flags an optimization gap.
+1. **Instrument proof production. DONE for guards.** `BRIEV_PROOF_LEDGER=1`
+   reports proven/lowered/unconsumed guard counts. Contract/bounds facts are
+   still typecheck-only.
+2. **Name consumers. IN PROGRESS.** Guard → elimination is named and asserted.
+   Accessor bounds → `NONE (static contract; no runtime check)`. Remaining
+   families still need explicit rows.
 3. **Enforce consumption for guards.** A proven guard must be lowered; add a
    test that every recorded guard proof disappears from emitted IR.
 4. **Audit remaining facts.** For each family with `NONE`, either add a general
@@ -60,6 +80,14 @@ Source guards stay in the program. The compiler elides them when proven.
 - Do not delete source guards as the optimization.
 - Do not unsoundly consume facts with unresolved aliasing/effect questions.
 - Do not encode algorithm-specific or type-specific optimizations.
+
+## Validation log
+
+- 2026-10-27: `BRIEV_PROOF_LEDGER=1` on `server.bv`: proven=176, lowered=176,
+  unconsumed=0. A/B IR against the manual-removal branch: structurally
+  identical.
+- 2026-10-27: accessors have no runtime bounds check; guard elimination is the
+  only current runtime consumer of proof facts.
 
 ## Lesson record
 
