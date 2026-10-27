@@ -2061,6 +2061,9 @@ fn infer_call(name: &str, args: &[Expr], ctx: &mut TypecheckContext) -> Result<T
         );
         // Fold constants in the goal and facts together; see fold_constants.
         let verdict = prove_with_constants(&goal, ctx);
+        if verdict == crate::proof_engine::callgate::Verdict::Proven {
+            crate::proof_engine::ledger::record("contract", "typecheck-only");
+        }
         if verdict != crate::proof_engine::callgate::Verdict::Proven {
             // Rollout stage (config/contracts.dbvl `policy:` row): `allow`
             // (migration) rejects nothing, `warn` announces, `deny` is the
@@ -4006,6 +4009,9 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             // runtime check to emit — the backend no-op is correct by this
             // ruling and the interpreter's runtime enforcement retires.
             let verdict = prove_with_constants(cond, ctx);
+            if verdict == crate::proof_engine::callgate::Verdict::Proven {
+                crate::proof_engine::ledger::record("check", "typecheck-only");
+            }
             if verdict != crate::proof_engine::callgate::Verdict::Proven {
                 // Same rollout stage as the call gate
                 // (config/contracts.dbvl `policy:`; ContractGatePolicy).
@@ -5143,6 +5149,7 @@ pub fn check_program_with_target(
     surface_electronics: bool,
 ) -> Result<(), Vec<TypeError>> {
     PROVEN_GUARDS.with(|set| set.borrow_mut().clear());
+    crate::proof_engine::ledger::clear();
     // 2026-08-22 (Phase 5, SPEC §8.5): the parser's relationship list is
     // SYNTACTIC — a bare name becomes the refinement parent whether or not
     // it names a trait. Here, with the trait registry known, reclassify:
@@ -6363,6 +6370,7 @@ pub fn check_program_with_target(
     if errors.is_empty() {
         let proven = PROVEN_GUARDS.with(|set| set.borrow().clone());
         eliminate_proven_guards(items, &proven);
+        crate::proof_engine::ledger::dump();
         Ok(())
     } else {
         Err(errors)
@@ -6914,6 +6922,7 @@ fn eliminate_proven_guards(
             proven.difference(&lowered).count()
         );
         for (fn_name, ord, cond) in proven.difference(&lowered) {
+            crate::proof_engine::ledger::record("guard", "UNCONSUMED");
             eprintln!(
                 "PROOF_LEDGER UNCONSUMED family=guard fn={fn_name} ordinal={ord} cond={cond}"
             );
@@ -6944,6 +6953,7 @@ fn lower_guards(
                 if proven.contains(&key) {
                     lowered.insert(key);
                     *stmt = Statement::Block(Vec::new());
+                    crate::proof_engine::ledger::record("guard", "guard-elimination");
                 }
             }
             Statement::Block(body)

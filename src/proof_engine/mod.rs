@@ -4,6 +4,7 @@
 // Uses # intrinsics for SMT theory mapping (BitVec for all values).
 
 pub(crate) mod callgate;
+pub(crate) mod ledger;
 pub(crate) mod smt;
 pub use smt::*;
 

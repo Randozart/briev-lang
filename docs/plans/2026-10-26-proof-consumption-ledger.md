@@ -25,7 +25,9 @@ Source guards stay in the program. The compiler elides them when proven.
 | Constructor postconditions | call post-facts | `v.len == n`, matrix dims | guard elimination; bounds/dimension simplification | removed guards in A/B IR | app gate A/B | PARTIAL |
 | Constant folding | typechecker constant table | `SYS_*`, literal relations | call gate and guard elimination | guard branches removed | fold tests | PARTIAL |
 | Difference/linear facts | difference closure, Fourier–Motzkin | transitive bounds | guard elimination | removed guards | proof tests | PARTIAL |
-| Bounds checks at accessors | contract gate | `i < len` | — | no IR consumer identified yet | — | OPEN |
+| Contract preconditions | call gate | callee precondition | NONE — static typecheck-only | no runtime check emitted | ledger count | NONE (static) |
+| Bounds checks at accessors | contract gate | `i < len` | NONE — direct load, no check | `ivec_get`/`vec_get`/`mat_get` IR | IR inspection | NONE (static) |
+| `check` assertions | check dialogue | condition true | NONE — compile-time dialogue | no runtime check emitted | ledger count | NONE (static) |
 | Alias/lifetime/independence facts | future proof passes | non-overlap, lifetime | vectorization/hoisting/reload removal | TBD | TBD | OPEN |
 
 ## Snapshot (2026-10-27)
@@ -34,6 +36,9 @@ Source guards stay in the program. The compiler elides them when proven.
 
 ```text
 PROOF_LEDGER family=guard proven=176 lowered=176 unconsumed=0
+PROOF_LEDGER family=guard consumer=guard-elimination count=176
+PROOF_LEDGER family=contract consumer=typecheck-only count=1537
+PROOF_LEDGER family=check consumer=typecheck-only count=1
 ```
 
 - All recorded assertion-guard proofs are consumed by the post-typecheck
@@ -49,9 +54,10 @@ PROOF_LEDGER family=guard proven=176 lowered=176 unconsumed=0
 
 ## Phases
 
-1. **Instrument proof production. DONE for guards.** `BRIEV_PROOF_LEDGER=1`
-   reports proven/lowered/unconsumed guard counts. Contract/bounds facts are
-   still typecheck-only.
+1. **Instrument proof production. DONE.** `BRIEV_PROOF_LEDGER=1` reports
+   guard proven/lowered/unconsumed plus contract/check counts by consumer.
+   Contract and check proofs are explicitly `typecheck-only`; accessors emit
+   no runtime bounds check.
 2. **Name consumers. IN PROGRESS.** Guard → elimination is named and asserted.
    Accessor bounds → `NONE (static contract; no runtime check)`. Remaining
    families still need explicit rows.
@@ -91,6 +97,9 @@ PROOF_LEDGER family=guard proven=176 lowered=176 unconsumed=0
 - 2026-10-27: full recommender gates PASS (run/accounts/cache/operation-store/
   prediction-workers/worker/server/active-scratch/active-profile);
   `ll_determinism_check.sh --quick`: ALL DETERMINISTIC.
+- 2026-10-27: ledger consumer counts: guard `guard-elimination` 176; contract
+  `typecheck-only` 1537; check `typecheck-only` 1. Contract/check proofs are
+  static (no runtime check emitted), not missing codegen consumers.
 
 ## Lesson record
 
