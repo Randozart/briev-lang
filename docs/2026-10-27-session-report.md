@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T17:36:52+01:00
+**Last updated:** 2026-10-27T18:04:32+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -163,6 +163,11 @@ lands; do not rewrite history.
   So the remaining path is parser/struct-construction, not list sizing or
   transport timing. App still uses protocol helpers; instrument its scan
   lengths next.
+- `18:35` Opened `docs/plans/2026-10-27-eternal-abi-and-temporal-transport.md`.
+  Phase C landed: emitted IR is verified with `opt -passes=verify` before
+  clang/llc, and structural sizes assert size ≥ field end. `cargo test --lib`
+  3357 passed; release rebuilt. Browser OOB remains; next is the physical
+  ABI/collection model (Phase B/D).
 
 ## Evidence / current state
 
