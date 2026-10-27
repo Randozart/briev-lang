@@ -19,7 +19,9 @@ warns).
 
 **Active JSON/runtime lane (2026-10-25):** `docs/plans/2026-10-25-json-wasm-runtime-closure.md` — strict JSON, browser heap, dynamic snapshots, helper-write flushes, lexical elaboration, logical semantics, metadata and target-width constants are landed. Phase D stdlib breadth (PostgreSQL, portable web, CSR) is adopted; the remaining compiler item is generic callable transaction specialization.
 
-**Active proof-completeness lane (2026-10-26):** `docs/plans/2026-10-26-proof-completeness-and-guard-elimination.md` — make the prover discharge constructible obligations and delete redundant app guards. Phase 0 audit, then fact normalization, elaboration postconditions, loop-endpoint facts, equality closure, interval/counter reasoning.
+**Active proof-completeness lane (2026-10-26):** `docs/plans/2026-10-26-proof-completeness-and-guard-elimination.md` — make the prover discharge constructible obligations and let the compiler consume them. Source guards are retained; proof-aware guard elimination is implemented (Rule 25).
+
+**Next proof workstream (2026-10-26):** `docs/plans/2026-10-26-proof-consumption-ledger.md` — every proof family must name its codegen consumer (or an explicit no-runtime-consumer record). Guard elimination is the first DONE row; bounds checks, loop facts, constructor facts, and alias/lifetime proofs are open.
 
 **Active app acceptance lane (2026-10-26):** `docs/plans/2026-10-26-recommender-app-acceptance-and-upstream.md` — recommender app builds against current main (PR #1, draft); compiler prerequisites `e442f06b`/`1c1dd70f` pushed to Randozart main. Remaining: `cargo test --all`, non-PostgreSQL app gates, then PG/MovieLens/Playwright acceptance and the upstream landing decision.
 

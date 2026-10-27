@@ -161,17 +161,21 @@ Patches are unacceptable. There is no "go fast and break things."
     composite to their numbers. Full doctrine:
     `docs/architecture/proof-vs-shape.md`.
 
-25. **PROOF IS NOT OPTIMIZATION (2026-10-26)**: If the prover discharges a
-    source guard, KEEP THE GUARD IN SOURCE. The compiler must eliminate the
-    proven guard (proof-aware lowering / IR elision). Deleting it by hand is
-    not the optimization: it bakes a proof result into one app, removes runtime
-    defense and documentation, and hides a missing backend pass. Manual
-    deletion is allowed only for literal/constant noise or exact duplicates,
-    and only after an IR A/B shows identical emission. Lesson record:
-    cue = prover proves a guard; lesson = keep source guard, implement compiler
-    elimination; evidence = `emit_stmt.rs` always emitted `br` for `Guarded`,
-    manual removal of 283 guards changed IR, post-pass restored identical IR;
-    confidence = high.
+25. **PROOF LICENSES OPTIMIZATION (2026-10-26)**: A discharged obligation is
+    an optimization input. The compiler must consume proofs to remove runtime
+    checks, branches, bounds tests, and redundant work. Keep the source guard:
+    it is intent, documentation, and defense. Manually deleting it is NOT the
+    optimization; it bakes one proof result into one app and hides a missing
+    proof-consuming pass. Every proof family needs a named consumer (or an
+    explicit "no runtime consumer" record). Manual deletion is allowed only
+    for literal/constant noise or exact duplicates, and only after an IR A/B
+    shows identical emission. Workstream:
+    `docs/plans/2026-10-26-proof-consumption-ledger.md`. Lesson record:
+    cue = prover proves a guard/fact; lesson = consume the proof in codegen,
+    never delete the source guard as the optimization; evidence = `Guarded`
+    always emitted `br`; 283 fewer guard branches after elimination + source
+    cleanup; 176 restored guards are compiler-elided; restored source produced
+    structurally identical IR; confidence = high.
 
 ## Performance Recovery Protocol
 

@@ -86,16 +86,18 @@ Separate from proof completeness:
 
 ## Lesson record (2026-10-26)
 
-- **cue:** the prover proves a `when` guard, tempting a source deletion.
-- **lesson:** keep the source guard; add proof-aware compiler elimination.
-  Source guards are intent, documentation, and runtime defense. Manual
-  deletion is the wrong layer and hides a missing backend optimization.
+- **cue:** the prover proves a `when` guard or any other obligation.
+- **lesson:** proof is an optimization license. Keep the source intent; make
+  the compiler consume the proof (lower the guard, drop the check, remove the
+  branch). Manual source deletion is not the optimization.
 - **evidence:** `src/backend/llvm/emit_stmt.rs` emitted `br` for every
-  `Statement::Guarded`; manually removing 283 guards changed the emitted IR.
-  With the new post-typecheck elimination pass, the restored source produced
-  structurally identical IR to the manual-removal branch (register numbering
-  aside).
+  `Statement::Guarded`; manual removal of 283 guard branches changed the IR.
+  With the proof-aware post-typecheck elimination pass, restored source (505
+  guards) produced structurally identical IR to the manual-removal branch:
+  176 restored guards are compiler-elided, and 107 literal/constant/duplicate/
+  contract guards were removed from source.
 - **confidence:** high.
+- **next workstream:** `docs/plans/2026-10-26-proof-consumption-ledger.md`.
 
 ## Validation log
 
@@ -116,7 +118,12 @@ Separate from proof completeness:
   worker, server, run/accounts/cache/operation-store/prediction-workers PASS
   (prediction recovery needs `PGSCHEMA` in the harness environment).
   Compiler `cargo test --lib` 3351 passed.
-- 2026-10-26: remaining 354 unproven guards are contract boundaries of
-  internal functions, dynamic DB/result checks, and loop/counter facts not yet
-  covered by interval/induction reasoning. Next: loop endpoint capture and
-  counter intervals, then contract inference for private defns.
+- 2026-10-26: remaining unproven guards are contract boundaries of internal
+  functions, dynamic DB/result checks, and loop/length facts.
+- 2026-10-26: proof-aware guard elimination landed in the compiler. Restored
+  semantic source guards (505 total); only literal/constant/duplicate noise
+  deleted. A/B `server.ll`: structurally identical to the manual-removal
+  branch (register numbering aside); guard/trap counts identical.
+  `ll_determinism_check.sh --quick`: ALL DETERMINISTIC.
+- 2026-10-26: rule corrected to **PROOF LICENSES OPTIMIZATION**; proof-family
+  to codegen-consumer ledger opened as the next workstream.
