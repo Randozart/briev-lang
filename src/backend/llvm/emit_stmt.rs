@@ -1364,8 +1364,16 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             Type::Ptr(inner)
                                 if matches!(
                                     inner.as_ref(),
-                                    Type::Tuple(_) | Type::Custom(_) | Type::Applied(_, _)
+                                    Type::Tuple(_) | Type::Applied(_, _)
                                         | Type::Dyn(_) | Type::Vector(_, _)
+                                )
+                                || matches!(
+                                    inner.as_ref(),
+                                    Type::Custom(n)
+                                        if (n.len() == 1
+                                            && n.chars().next().is_some_and(|c| c.is_uppercase()))
+                                            || backend.ctx.obj_types.contains(n)
+                                            || backend.ctx.coll_storage.contains_key(n)
                                 )
                         );
                         let vol_obj = match obj.as_ref() {
