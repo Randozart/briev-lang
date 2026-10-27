@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T17:24:56+01:00
+**Last updated:** 2026-10-27T17:31:55+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -152,6 +152,11 @@ lands; do not rewrite history.
   submit and failure paths now pass. Remaining failure: wasm OOB in
   `browser_catalogue_scan` during the reconnect state hydration. This is the
   generic list/scan issue, not transport timing.
+- `17:50` Confirmed: offline save, accepted event, reconnect, saved event,
+  second offline save and failure/status path all pass. Final error is exactly
+  the wasm catalogue scan OOB on the second state hydration. Generic
+  1682-item/two-scan fixture does not OOB, so the remaining trigger is the
+  parsed `List<struct>`/state shape (still generic, no app branch).
 
 ## Evidence / current state
 

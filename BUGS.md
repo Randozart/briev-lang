@@ -61,7 +61,13 @@ register width), not `is_ok` specifically.
 **Fixed 2026-10-27:** actual register widths are tracked and calls coerce
 i32↔i64; enum/Result state loads truncate to target width. Generic
 `"4.5" as Float` and JSON parse now pass. Remaining: generic list view `.^Size`
-staleness and JSON stringify false; app gate now reaches offline save fallback.
+staleness and JSON stringify false.
+
+**Additional browser evidence:** offline save/reconnect/failure paths now pass
+with deterministic timers; the remaining trap is `browser_catalogue_scan`
+memory OOB during the second state hydration. A generic 1682-item/two-scan
+`List<struct>` fixture does not trap, so the trigger is the parsed struct list/
+state shape (still generic, no app-specific branch).
 
 ## wasm32 collection slots used mixed 8-byte/4-byte strides -- FIXED 2026-10-27
 
