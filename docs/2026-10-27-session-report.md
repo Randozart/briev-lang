@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T16:35:34+01:00
+**Last updated:** 2026-10-27T16:47:04+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -138,6 +138,9 @@ lands; do not rewrite history.
   one card) and reaches the offline save fallback.
 - Remaining browser failure: after socket close, clicking save does not issue
   `/v1/ratings`; next isolate the offline fallback transaction/state.
+- `16:55` Added a wait for `Reconnecting` before clicking save in the browser
+  gate; it still never issues `/v1/ratings`. So this is not a timing race; the
+  app fallback save path needs isolation next.
 
 ## Evidence / current state
 
