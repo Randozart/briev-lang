@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T11:45:00+01:00
+**Last updated:** 2026-10-27T12:20:19+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -79,7 +79,7 @@ lands; do not rewrite history.
   8 native). Reproducer now reports `len=2 first=catalogue second=state h=3`.
   `BUGS.md` updated. Browser app now applies the profile state (ratings 5)
   and the catalogue loads (Movies 1–12, page 1/141, 1682 films).
-- `11:45` Browser gate now fails later: the live WebSocket recommendation event
+- `12:20` Browser gate now fails later: the live WebSocket recommendation event
   does not render a shortlist card (body shows "Your shortlist is taking
   shape"). Catalogue + ratings are correct; next isolate the live-event
   delivery/decode path.
