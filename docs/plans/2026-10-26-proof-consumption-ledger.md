@@ -88,6 +88,9 @@ PROOF_LEDGER family=guard proven=176 lowered=176 unconsumed=0
   identical.
 - 2026-10-27: accessors have no runtime bounds check; guard elimination is the
   only current runtime consumer of proof facts.
+- 2026-10-27: full recommender gates PASS (run/accounts/cache/operation-store/
+  prediction-workers/worker/server/active-scratch/active-profile);
+  `ll_determinism_check.sh --quick`: ALL DETERMINISTIC.
 
 ## Lesson record
 
