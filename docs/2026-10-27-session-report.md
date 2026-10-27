@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T16:47:04+01:00
+**Last updated:** 2026-10-27T17:07:53+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -141,6 +141,12 @@ lands; do not rewrite history.
 - `16:55` Added a wait for `Reconnecting` before clicking save in the browser
   gate; it still never issues `/v1/ratings`. So this is not a timing race; the
   app fallback save path needs isolation next.
+- `17:10` Root cause: the app reconnects (250 ms retry) before the save click;
+  `connection=Live` and `client_submit_operation` sends the rating over the new
+  WebSocket (`peer.sent`), not HTTP. The gate asserts a forced `/v1/ratings`
+  fallback and is racy. Next: make the gate either keep the socket offline
+  deterministically or accept the WS-send path, then assert the same operation
+  semantics.
 
 ## Evidence / current state
 
