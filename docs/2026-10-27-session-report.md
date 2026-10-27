@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T17:07:53+01:00
+**Last updated:** 2026-10-27T17:24:56+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -147,6 +147,11 @@ lands; do not rewrite history.
   fallback and is racy. Next: make the gate either keep the socket offline
   deterministically or accept the WS-send path, then assert the same operation
   semantics.
+- `17:30` Browser gate made timer-deterministic: hold reconnect timers, verify
+  HTTP fallback, then release and explicitly dispatch reconnect. Both offline
+  submit and failure paths now pass. Remaining failure: wasm OOB in
+  `browser_catalogue_scan` during the reconnect state hydration. This is the
+  generic list/scan issue, not transport timing.
 
 ## Evidence / current state
 
