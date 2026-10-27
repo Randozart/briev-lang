@@ -1,6 +1,6 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T14:47:46+01:00
+**Last updated:** 2026-10-27T15:49:43+01:00
 **Status:** compiler and app build/check green; all local recommender gates pass
 except the browser catalogue gate. Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
@@ -118,6 +118,10 @@ lands; do not rewrite history.
   coercion (i32 literal into i64 Int64 param) exposed a specialized-call ABI
   gap (`is_ok$JsonValue$String` receives i64 for i32); attempted fix reverted
   to keep the compiler green. No app-specific code used.
+- `15:49` Retried generic call-width adaptation with mangled/base parameter
+  lookup. The specialized `is_ok` ABI still wants i32 while the generic
+  `Result` metadata reports i64; reverted again rather than shipping invalid
+  IR. Generic fixture compiles; runtime list-view/Float fixes remain open.
 
 ## Evidence / current state
 
