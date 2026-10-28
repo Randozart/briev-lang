@@ -2041,7 +2041,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // Emit no terminator and leave `terminated` unchanged so the
                     // enclosing body continues.
                 } else if backend.fun.fn_ret_ty != "void" {
-                    let reg = backend.retain_enum_return(out, indent, &reg);
+                    // 2026-10-28: no extra enum-image copy on return. The
+                    // adopted copy was redundant for the caller-owned enum
+                    // slots (enum_local_return still passes) and cost 4x on
+                    // ws_frame; ownership at construction/storage is the
+                    // single place that needs an independent image.
                     // 2026-07-26: Use actual expression LLVM type, not hardcoded "i64".
                     // Frgn calls may return ptr (for String/Data in C ABI).
                     let val_ty = backend.llvm_type(&reg.ty);
