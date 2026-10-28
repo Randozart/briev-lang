@@ -14,7 +14,7 @@
 // post = the declaration of completion. The program signals intent; the
 // compiler derives the machinery.
 
-use crate::ast::{BinaryOpKind, Expr, TopLevel};
+use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel};
 use std::collections::BTreeSet;
 
 /// Soundness level of a derived causal edge.
@@ -89,6 +89,15 @@ pub fn run(items: &[TopLevel]) -> CausalGraph {
 
 // ── Node collection ────────────────────────────────────────────────────
 
+fn statements_end_program(body: &[Statement]) -> bool {
+    body.iter().any(|stmt| match stmt {
+        Statement::EndProgram(_) => true,
+        // An unconditional block always runs; a guarded/loop body may not.
+        Statement::Block(inner) => statements_end_program(inner),
+        _ => false,
+    })
+}
+
 fn collect_nodes(items: &[TopLevel]) -> Vec<CausalNode> {
     let mut out = Vec::new();
     for item in items {
@@ -117,8 +126,12 @@ fn collect_nodes(items: &[TopLevel]) -> Vec<CausalNode> {
             reads,
             pre_facts: field_facts(&txn.contract.pre_condition),
             post_facts: field_facts(post),
-            post_declares_completion: !matches!(post, Expr::Bool(true))
-                && !crate::proof_engine::is_vacuously_true(post),
+            // `endprogram` is an explicit process boundary: the node cannot
+            // fire forever simply because its postcondition is [true]. The
+            // giantnode corpus uses exactly that shape.
+            post_declares_completion: statements_end_program(&txn.body)
+                || (!matches!(post, Expr::Bool(true))
+                    && !crate::proof_engine::is_vacuously_true(post)),
         });
     }
     out
@@ -484,6 +497,19 @@ mod tests {
         assert!(g.refusals[0].contains("flip"), "names the node: {}", g.refusals[0]);
         assert!(g.refusals[0].contains("liveness"), "states the missing obligation");
         assert!(g.refusals[0].contains("fix:"), "gives the fix");
+    }
+
+    #[test]
+    fn endprogram_counts_as_completion() {
+        let src = r#"
+            let x: Int = 0;
+            node stop
+                [x == 0]
+                [true]
+            { x = 1; endprogram; }
+        "#;
+        let g = graph(src);
+        assert!(g.refusals.is_empty(), "endprogram must satisfy liveness: {:?}", g.refusals);
     }
 
     #[test]
