@@ -2364,12 +2364,21 @@ impl LlvmBackend {
             let off = self.lookup_field_offset(base, &fname);
             let gep = self.fun.gen_reg();
             writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, box_p, off).ok();
-            let store_val = if load_ty == "i64" {
-                val.clone()
-            } else {
-                self.adapt_to_i64(out, indent, &TypedRegister { name: val.clone(), ty: fty.clone() })
+            // 2026-10-28: boxes use native member widths, as the inverse
+            // pool-publication path does. Word stores overrun packed Bool/Float
+            // members; retire this conversion when pools share boxed storage.
+            let native_ty = self.llvm_type(&fty);
+            let store_val = match () {
+                _ if load_ty == native_ty => val,
+                _ if native_ty == "ptr" => {
+                    let pointer = self.fun.gen_reg();
+                    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, pointer, load_ty, val).ok();
+                    pointer
+                }
+                _ => self.ensure_typed_value(out, indent, &native_ty, &val,
+                    Some(Type::bits(64)), self.ctx.type_universe.clone().as_ref()),
             };
-            writeln!(out, "{}store i64 {}, ptr {}", indent, store_val, gep).ok();
+            writeln!(out, "{}store {} {}, ptr {}", indent, native_ty, store_val, gep).ok();
         }
         TypedRegister { name: addr, ty: Type::Custom(base.to_string()) }
     }
@@ -3368,7 +3377,7 @@ impl LlvmBackend {
     /// each word is converted back to the member's native type and stored in
     /// that member's column at the instance's row. Nested-array columns are
     /// skipped (a single word cannot materialize them; they stay zero).
-    fn emit_instance_seed_from_value(
+    pub(super) fn emit_instance_seed_from_value(
         &mut self,
         out: &mut String,
         indent: &str,

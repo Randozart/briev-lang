@@ -11422,3 +11422,18 @@ Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs
 could panic instead of returning a diagnostic. The lexer loop now returns a
 span-bearing `lex error`; the new proptest pushes 100 garbage inputs through
 the full parse/import/typecheck path and asserts no panic.
+
+## FIXED 2026-10-28: whole-object assignment to pooled state loses returned value
+
+A top-level object with a member is stored in pool columns. Assignment evaluated
+its RHS but did not copy the returned object's fields into those columns. The
+next reactor sweep read the old value; asynchronous authentication replies were
+then discarded because the pending job state had disappeared. Main lacks the
+publication path that existed in integration commit 894fcfa5.
+
+Fix: reuse the initialization publication helper for whole-object replacement,
+retaining local shadowing and dependent/boxed-pool exclusions. Use native field
+widths for inverse value-context boxing to avoid overlapping Bool/Float fields.
+Regression: pooled_object_replacement_survives_reactor_firings, using a member-
+bearing object and explicit failure exits at O0/O2. A methodless object uses a
+boxed slot and does not reproduce the missing pool assignment.

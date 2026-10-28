@@ -993,6 +993,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             };
             match lhs {
                 Expr::Identifier(name) => {
+                    // 2026-10-28: whole-object replacement must publish the returned
+                    // value to pooled columns before the next reactor sweep (login
+                    // worker tags otherwise disappear). Remove when pooled objects
+                    // and boxed values share a single storage representation.
+                    if !backend.fun.let_bindings.contains_key(name)
+                        && backend.unpacked_instance_prefix(name).is_some_and(|(base, _)|
+                            !backend.ctx.dependent_pools.contains_key(&base)
+                                && !backend.ctx.boxed_offsets.contains_key(&base))
+                    {
+                        backend.emit_instance_seed_from_value(out, indent, name, &val);
+                        return TypedRegister { name: val.name, ty: Type::void() };
+                    }
                     // 2026-08-07 (object instance pools): a bare member
                     // target in an UNPACKED member body writes the instance's
                     // top-level slot — `total = 1` in `st`'s member → the
