@@ -9,7 +9,7 @@
 //! any fact is unknown; nothing here changes codegen.
 
 use crate::ast::{EnumVariant, Expr, Statement, TopLevel};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Representation class for an enum-producing surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,10 @@ pub struct EnumRepresentationPlan {
     pub defns: BTreeMap<String, EnumRepresentation>,
     /// All declared variant names (bare and `Enum::Variant` where derivable).
     pub variants: Vec<String>,
+    /// Immutable local bindings returned directly by an enum-returning defn
+    /// whose initializer can be given heap ownership. Empty means the caller
+    /// must retain a stack-backed image at return.
+    pub escaping_return_lets: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl EnumRepresentationPlan {
@@ -136,7 +140,123 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
         }
     }
 
-    EnumRepresentationPlan { defns, variants }
+    let escaping_return_lets = escaping_return_lets(items, &defns, &variants);
+    EnumRepresentationPlan { defns, variants, escaping_return_lets }
+}
+
+/// Prove the local bindings whose enum image can be heap-owned at return.
+///
+/// This is deliberately narrower than liveness: a returned alias still points
+/// at another local, and a reassigned binding may expose more than one image.
+/// Both keep the existing return-time copy.
+fn escaping_return_lets(
+    items: &[TopLevel],
+    defns: &BTreeMap<String, EnumRepresentation>,
+    variants: &[String],
+) -> BTreeMap<String, BTreeSet<String>> {
+    let variants: HashMap<&str, ()> = variants.iter().map(|v| (v.as_str(), ())).collect();
+    let mut out = BTreeMap::new();
+    for item in items {
+        let TopLevel::Definition(d) = item else { continue };
+        if !defns.contains_key(&d.name) {
+            continue;
+        }
+        let names = escaping_let_names(d, &variants, defns);
+        if !names.is_empty() {
+            out.insert(d.name.clone(), names);
+        }
+    }
+    out
+}
+
+fn escaping_let_names(
+    d: &crate::ast::Definition,
+    variants: &HashMap<&str, ()>,
+    defns: &BTreeMap<String, EnumRepresentation>,
+) -> BTreeSet<String> {
+    let returned = return_identifiers(&d.body);
+    let reassigned = reassigned_identifiers(&d.body);
+    let mut names = BTreeSet::new();
+    for stmt in &d.body {
+        let Statement::Let { name, expr: Some(init), .. } = stmt else {
+            continue;
+        };
+        let immutable = !reassigned.contains(name);
+        let heap_owned = heap_owned_initializer(init, variants, defns);
+        if returned.contains(name) && immutable && heap_owned {
+            names.insert(name.clone());
+        }
+    }
+    names
+}
+
+fn return_identifiers(body: &[Statement]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    collect_return_identifiers(body, &mut out);
+    out
+}
+
+fn collect_return_identifiers(body: &[Statement], out: &mut BTreeSet<String>) {
+    for stmt in body {
+        match stmt {
+            Statement::Term(Some(Expr::Identifier(name)))
+            | Statement::Tail(Expr::Identifier(name)) => {
+                out.insert(name.clone());
+            }
+            Statement::Guarded(_, inner)
+            | Statement::Block(inner)
+            | Statement::SyncBlock(inner)
+            | Statement::Defer(inner)
+            | Statement::Mutex(inner)
+            | Statement::Foreach { body: inner, .. } => {
+                collect_return_identifiers(inner, out);
+            }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    collect_return_identifiers(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn reassigned_identifiers(body: &[Statement]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    crate::ast::visit::walk_assign_targets(body, &mut |target| {
+        if let Expr::Identifier(name) = target {
+            out.insert(name.clone());
+        }
+    });
+    out
+}
+
+fn heap_owned_initializer(
+    expr: &Expr,
+    variants: &HashMap<&str, ()>,
+    defns: &BTreeMap<String, EnumRepresentation>,
+) -> bool {
+    match expr {
+        // A direct alias points at another local's image; only the alias's
+        // own initializer can prove heap ownership.
+        Expr::Identifier(_) => false,
+        Expr::Call(name, _, _) => {
+            is_variant_name(name, variants) || defns.contains_key(name)
+        }
+        Expr::Match(_, arms) => arms
+            .iter()
+            .all(|arm| heap_owned_initializer(&arm.body, variants, defns)),
+        Expr::Block(stmts) => stmts
+            .iter()
+            .rev()
+            .find_map(|stmt| match stmt {
+                Statement::Expression(expr) | Statement::Term(Some(expr)) => Some(expr),
+                _ => None,
+            })
+            .map(|expr| heap_owned_initializer(expr, variants, defns))
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Conservative sret eligibility: a candidate must not be called from another
@@ -460,6 +580,41 @@ mod tests {
             !safe.contains(&"inner".to_string()),
             "enum-returning txn returns a pointer to the callee frame slot"
         );
+    }
+
+    #[test]
+    fn returned_sret_call_local_is_escape_eligible() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn inner(x: Int) -> R { term Ok(x); };\n\
+             defn outer(x: Int) -> R { let r: R = inner(x); term r; };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        assert!(plan.escaping_return_lets.get("outer").map(|s| s.contains("r")).unwrap_or(false));
+    }
+
+    #[test]
+    fn returned_match_local_is_escape_eligible() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn inner(x: Int) -> R { term Ok(x); };\n\
+             defn outer(x: Int, y: Int) -> R { let r: R = match y { 0 => inner(x), _ => Err(1) }; term r; };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        assert!(plan.escaping_return_lets.get("outer").map(|s| s.contains("r")).unwrap_or(false));
+    }
+
+    #[test]
+    fn alias_and_reassigned_returns_are_not_eligible() {
+        let items = parse(
+            "enum R { Ok(Int), Err(Int) };\n\
+             defn inner(x: Int) -> R { term Ok(x); };\n\
+             defn alias(x: Int) -> R { let r: R = inner(x); let passed: R = r; term passed; };\n\
+             defn reassigned(x: Int) -> R { let r: R = inner(x); r = Err(2); term r; };\n",
+        );
+        let plan = build_enum_representation_plan(&items);
+        assert!(!plan.escaping_return_lets.get("alias").map(|s| s.contains("passed")).unwrap_or(false));
+        assert!(!plan.escaping_return_lets.get("reassigned").map(|s| s.contains("r")).unwrap_or(false));
     }
 
     #[test]
