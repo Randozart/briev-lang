@@ -1051,6 +1051,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             return TypedRegister { name: val.name, ty: Type::void() };
                         }
                     }
+                    // A top-level pooled/unpacked instance (`server`) is a
+                    // set of state columns, not one scalar slot. Assigning a
+                    // returned instance value must split it back into those
+                    // columns; otherwise the assignment is silently dropped
+                    // and the next node firing reads the pre-call snapshot.
+                    if backend.ctx.obj_instance_inits.contains_key(name)
+                        && backend.emit_instance_seed_from_value(out, indent, name, &val)
+                    {
+                        backend.fun.last_val_temps.insert(name.clone(), val.name.clone());
+                        backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
+                        return TypedRegister { name: val.name, ty: Type::void() };
+                    }
                     // 2026-07-31 (A5): obj member `self` slot write — a bare
                     // slot name in a member body stores to self+offset.
                     // 2026-08-18: same shadow guard as above for the BOXED

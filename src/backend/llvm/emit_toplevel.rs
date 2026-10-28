@@ -3391,15 +3391,15 @@ impl LlvmBackend {
     /// each word is converted back to the member's native type and stored in
     /// that member's column at the instance's row. Nested-array columns are
     /// skipped (a single word cannot materialize them; they stay zero).
-    fn emit_instance_seed_from_value(
+    pub(super) fn emit_instance_seed_from_value(
         &mut self,
         out: &mut String,
         indent: &str,
         name: &str,
         val: &TypedRegister,
-    ) {
+    ) -> bool {
         let Some((mono, _)) = self.ctx.obj_instance_inits.get(name).cloned() else {
-            return;
+            return false;
         };
         let mono = mono.as_str();
         let base = Self::pool_base(mono).to_string();
@@ -3412,7 +3412,7 @@ impl LlvmBackend {
         if self.ctx.dependent_pools.contains_key(&base)
             || self.ctx.boxed_offsets.contains_key(&base)
         {
-            return;
+            return false;
         }
         let fields = self.ctx.struct_types.get(mono).cloned().unwrap_or_default();
         let row = self
@@ -3478,6 +3478,7 @@ impl LlvmBackend {
             };
             writeln!(out, "{}store {} {}, ptr {}", indent, load_ty, store_val, row_p).ok();
         }
+        true
     }
 
     /// Emit a body-form init's seeding statements once, storing the yielded

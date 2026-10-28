@@ -1575,6 +1575,32 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
     vec![obj_decl, inst, node]
 }
 
+/// Assigning a returned instance value to a top-level unpacked instance must
+/// seed its state columns. Regression for the server's
+/// `server = server_step(server, ...)` assignment silently dropped in the node.
+#[test]
+fn top_level_instance_assignment_seeds_columns() {
+    let src = r#"
+obj Counter { value: Int; };
+defn make_counter(v: Int) -> Counter { term Counter { value: v }; };
+let c: Counter = make_counter(0);
+node step [c.value == 0][c.value == 1] {
+    c = make_counter(1);
+    term;
+};
+"#;
+    let (items, universe) = crate::library::parse_and_check("benchmarks/instance_assign.bv", src)
+        .expect("parse_and_check failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let call = ir.find("call i64 @make_counter").expect("assignment call must be emitted");
+    let tail = &ir[call..(call + 4000).min(ir.len())];
+    assert!(tail.contains("getelementptr inbounds %State"),
+        "instance assignment must address the unpacked state columns; got:\n{tail}");
+    assert!(tail.contains("store i64"),
+        "instance assignment must store the returned member into its column; got:\n{tail}");
+}
+
 #[test]
 fn test_unpacked_instance_emits_prefixed_slots() {
     let mut backend = LlvmBackend::new();
