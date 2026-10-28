@@ -47,13 +47,7 @@ all GPU, electronics, silicon, SPIR-V, and unlisted backends are experimental.
 cargo build --release --bin brievc
 ./target/release/brievc targets
 
-cat > hello.bv <<'BV'
-node main [beginprogram][true] {
-    println!("hello from briev");
-    endprogram;
-};
-BV
-./target/release/brievc build hello.bv --out ./hello
+./target/release/brievc build examples/hello.bv --out ./hello
 BOUND=1000 ./hello/hello
 ```
 
@@ -63,3 +57,16 @@ additionally require LLVM's wasm backend:
 ```bash
 ./target/release/brievc build page.rbv --split --out ./page
 ```
+
+## Reproducible package
+
+Build the release tree and detached SHA-256 sums:
+
+```bash
+scripts/package_release.sh v0.1.0-preview target/release-package
+sha256sum -c target/release-package/briev-v0.1.0-preview.tar.gz.sha256
+```
+
+The package contains `brievc`, the stdlib/runtime/plugin trees, the full baked
+config set, runnable native/split-view examples, the license/notice, changelog,
+and these release notes.
