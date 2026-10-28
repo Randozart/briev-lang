@@ -37,6 +37,21 @@ jobs:
       - name: Library tests
         run: cargo test --lib
 
+      - name: Target support table
+        run: ./target/release/brievc targets
+
+      - name: Tier-2 compile-only IR
+        run: |
+          ./target/release/brievc build tests/fixtures/minimal.bv --llvm --triple aarch64-unknown-linux-gnu --out /tmp/tier2-aarch64
+          ./target/release/brievc build tests/fixtures/minimal.bv --llvm --triple riscv64-unknown-none --out /tmp/tier2-riscv64
+
+      - name: Unsupported target fails cleanly
+        run: |
+          if ./target/release/brievc build tests/fixtures/minimal.bv --triple definitely-not-a-target --out /tmp/tier2-unsupported; then
+            echo "unsupported target unexpectedly succeeded" >&2
+            exit 1
+          fi
+
       - name: All-target tests
         run: cargo test --all
 
