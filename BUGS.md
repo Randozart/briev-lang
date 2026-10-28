@@ -11442,3 +11442,13 @@ tail-lowered defn emitted immediately before a callable txn left the backedge
 flag set, so the txn body skipped definitions and compared against a bound
 register that was never emitted (`%t4` i64 vs i32). The callable-txn entry now
 resets the tail-loop state. Regression: `rbv_list_each_wasm`.
+
+
+## Enum-return image copy regressed ws_frame 3.85x (FIXED 2026-10-28)
+
+`retain_enum_return` copied every enum image into the caller-owned result slot
+on every non-void return. The adopted copy was redundant for the caller-owned
+slots (`tests/tier1/enum_local_return.bv` passes without it) and dominated
+`ws_frame`: 0.0600s vs the locked baseline's 0.0156s (3.85x). Removed the copy;
+ownership at construction/storage remains. `compare_baseline.sh ws_frame` is
+back to 1.00x, and `cargo test --all` passes.
