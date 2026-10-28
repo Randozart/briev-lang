@@ -376,6 +376,14 @@ impl TargetConfig {
             .map_err(|e| format!("parse error in '{}': {}", path.display(), e))
     }
 
+    /// Deterministic extension→target rows for `brievc targets` and release
+    /// documentation. Tuning rows are intentionally excluded.
+    pub fn extension_entries(&self) -> Vec<(&str, &TargetEntry)> {
+        let mut keys: Vec<&str> = self.entries.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys.into_iter().filter_map(|key| self.entries.get(key).map(|entry| (key, entry))).collect()
+    }
+
     /// Look up a target entry by file extension (e.g. ".bv").
     pub fn lookup(&self, extension: &str) -> Option<&TargetEntry> {
         let key = if extension.starts_with('.') { extension.to_string() } else { format!(".{}", extension) };
@@ -411,6 +419,21 @@ pub fn get_extension(file_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_entries_are_sorted_and_complete() {
+        let config = TargetConfig::load();
+        let entries = config.extension_entries();
+        assert!(entries.len() >= 6, "extension support table lost rows: {entries:?}");
+        let keys: Vec<&str> = entries.iter().map(|(key, _)| *key).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "brievc targets must be deterministic");
+        let (_, bv) = entries.iter().find(|(key, _)| *key == ".bv").expect(".bv row");
+        assert_eq!(bv.backend.as_deref(), Some("llvm"));
+        let (_, rbv) = entries.iter().find(|(key, _)| *key == ".rbv").expect(".rbv row");
+        assert_eq!(rbv.backend.as_deref(), Some("webstack"));
+    }
 
     /// Pre-migration config/targets.toml, frozen as the golden reference for
     /// parity_targets_dbvl_matches_toml. 2026-08-03: the .toml file is deleted;
