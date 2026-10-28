@@ -3693,6 +3693,11 @@ impl LlvmBackend {
     }
 
     pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
+        // A defn is not a state-machine transaction. Leaving the previous
+        // txn's name here made emit_web_flush_batch treat every defn `term`
+        // as a commit: a recursive title lookup flushed all 32 bound fields
+        // per call (32k DOM effect passes in one browser rating click).
+        self.fun.txn_name.clear();
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
         self.fun.enum_inline_slots.clear();

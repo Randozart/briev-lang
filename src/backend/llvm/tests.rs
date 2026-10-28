@@ -12222,6 +12222,39 @@ node run [tick == 0][tick == 1] {
 }
 
 #[test]
+fn webstack_stateful_defn_after_txn_does_not_flush() {
+    // A defn emitted after a transaction must not inherit its txn_name and
+    // flush all bound fields at every `term`. Regression for client_movie_title
+    // flushing 32 fields per recursive call in the browser.
+    let src = r#"
+let tick: Int = 0;
+node run [tick == 0][tick == 1] {
+    let value: Int = title();
+    tick = value - 41;
+    term;
+};
+defn title() -> Int {
+    term 42;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define i32 @title()").expect("title defn must be emitted");
+    let end = start + ir[start..].find("\n}\n").expect("title defn must close");
+    let function_ir = &ir[start..end];
+    assert!(!function_ir.contains("@__web_flush_state"),
+        "stateful defn must not flush transaction state; got:\n{function_ir}");
+}
+
+#[test]
 fn webstack_task_call_uses_target_width() {
     // 2026-10-23 (wasm collection ABI): TaskCall# boxes three addresses and
     // returns the task status. On wasm32 those addresses and the return are

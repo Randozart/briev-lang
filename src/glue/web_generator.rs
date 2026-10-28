@@ -929,6 +929,8 @@ export async function createApp(wasmBytes) {{
              \x20           const dv = new DataView(this._memory.buffer);\n\
               \x20           const n = Number(dv.getBigInt64(snapPtr, true));\n\
               \x20           const seen = new Set();\n\
+             \x20           // Keyed reconcile: only move rows that are out of order.\n\
+             \x20           let cursor = container.firstChild;\n\
               \x20           for (let i = 0; i < n; i++) {{\n\
               \x20             {item_reader}\n\
               \x20             const key = itemKey({key_expr:?}, item);\n\
@@ -940,8 +942,12 @@ export async function createApp(wasmBytes) {{
               \x20               el2.innerHTML = templateInner;\n\
              \x20               rendered.set(key, el2);\n\
              \x20             }}\n\
-             \x20             // Reappend in snapshot order so keyed rows reconcile order.\n\
-             \x20             container.appendChild(el2);\n\
+             \x20             // Move only when the row is not already at the cursor.\n\
+             \x20             if (el2 === cursor) {{\n\
+             \x20             cursor = cursor.nextSibling;\n\
+             \x20           }} else {{\n\
+             \x20             container.insertBefore(el2, cursor);\n\
+             \x20           }}\n\
              \x20             // Existing keyed nodes still need field updates (toggle\n\
              \x20             // done=true must re-render, not only create).\n\
              \x20             applyItem(el2, item, isNew);\n\
@@ -2450,7 +2456,7 @@ mod tests {
         let shim = g.generate().expect("generate should succeed").dom_shim;
         assert!(shim.contains("new TextDecoder().decode(__bytes)"), "{shim}");
         assert!(shim.contains("if (token === \"item\") return item;"), "{shim}");
-        assert!(shim.contains("container.appendChild(el2);"), "{shim}");
+        assert!(shim.contains("container.insertBefore(el2, cursor);"), "{shim}");
         assert!(shim.contains("const isNew = !el2;"), "{shim}");
         assert!(!shim.contains("String.fromCharCode(...__bytes)"), "{shim}");
     }
