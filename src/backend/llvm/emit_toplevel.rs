@@ -1000,6 +1000,15 @@ impl LlvmBackend {
         if self.is_protocol_member(ty, "Float") {
             return false;
         }
+        let llvm_ty = self.llvm_type(ty);
+        matches!(llvm_ty.as_str(), "i64" | "i32" | "i16" | "i8" | "i1" | "ptr")
+            || self.is_boxed_type(ty)
+    }
+
+    /// Whether the parameter's entry binding is already an i64 value (a
+    /// pointer parameter is ptrtoint'd, a boxed parameter is widened, an i64
+    /// parameter is raw). Native sub-i64 parameters stay in their own width.
+    fn tail_loop_binding_is_i64(&self, ty: &Type) -> bool {
         matches!(self.llvm_type(ty).as_str(), "i64" | "ptr") || self.is_boxed_type(ty)
     }
 
@@ -1009,8 +1018,18 @@ impl LlvmBackend {
         // register/stack shape enough to regress ws_frame 1.45x. This first
         // slice is limited to loop-carried nested-enum state, the ownership
         // shape that needed the carrier ABI in the first place.
+        //
+        // 2026-10-27 (wasm stack/TCO): wasm32 has no TCO — a deep self-tail
+        // recursion grows the wasm stack linearly and OOBs at ~1682 items on
+        // the default 64 KiB stack. Native keeps the carrier-only gate to
+        // preserve ws_frame performance; wasm32 lowers every eligible direct
+        // self-tail-recursive defn to an explicit loop.
+        let carrier_eligible = self.ctx.tail_carrier.info(&d.name).is_some();
+        let plain_wasm = self.ctx.int_bits == 32 && !d.parameters.is_empty();
+        if !carrier_eligible && !plain_wasm {
+            return false;
+        }
         self.ctx.tail_loop.is_lowerable(&d.name)
-            && self.ctx.tail_carrier.info(&d.name).is_some()
             && d.parameters.iter().all(|(_, ty)| self.tail_loop_i64_binding(ty))
     }
 
@@ -1653,7 +1672,10 @@ impl LlvmBackend {
             if let Some(empty_member) = empty_member {
                 let size = self.struct_type_size(&type_key);
                 let inst = self.fun.gen_reg();
-                writeln!(out, "{}{} = alloca i8, i64 {}", indent, inst, size).ok();
+                // A collection state field stores this handle in %State. It
+                // must outlive init_state; a stack alloca dangles immediately
+                // (the first scan/page read then traps or reads garbage).
+                writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, inst, size).ok();
                 let addr = self.fun.gen_reg();
                 let hw = format!("i{}", self.ctx.int_bits);
                 writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, addr, inst, hw).ok();
@@ -1710,9 +1732,10 @@ impl LlvmBackend {
             }
         }
         // Allocate the instance storage and pass its address as `self`.
+        // The constructed handle lands in %State, so the storage is heap-owned.
         let size = self.struct_type_size(&type_key);
         let inst = self.fun.gen_reg();
-        writeln!(out, "{}{} = alloca i8, i64 {}", indent, inst, size).ok();
+        writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, inst, size).ok();
         let addr = self.fun.gen_reg();
         // 2026-08-11 (wasm32 obj-member fix): obj instance handles are
         // i{int_bits} (i32 on wasm32), not hardcoded i64.
@@ -4039,24 +4062,58 @@ impl LlvmBackend {
                 self.fun.let_bindings.insert(name.clone(), handle);
             }
             let mut param_slots = Vec::with_capacity(d.parameters.len());
-            for (name, _) in &d.parameters {
+            for (name, ty) in &d.parameters {
                 let slot = self.fun.next_reg_with_prefix("tpsl");
-                let value = self.fun.let_bindings.get(name).cloned().unwrap_or_else(|| "0".to_string());
                 writeln!(out, "  {} = alloca i64, align 8", slot).ok();
+                let binding = self.fun.let_bindings.get(name).cloned().unwrap_or_else(|| "0".to_string());
+                // Mutable params bind to an alloca; load the native value first.
+                let value = if self.fun.native_parameter_slots.contains(&binding) {
+                    let loaded = self.fun.gen_reg();
+                    writeln!(out, "  {} = load {}, ptr {}", loaded, self.llvm_type(ty), binding).ok();
+                    self.adapt_to_i64(out, "  ", &crate::backend::llvm::TypedRegister {
+                        name: loaded,
+                        ty: ty.clone(),
+                    })
+                } else if self.tail_loop_binding_is_i64(ty) {
+                    binding
+                } else {
+                    self.adapt_to_i64(out, "  ", &crate::backend::llvm::TypedRegister {
+                        name: binding,
+                        ty: ty.clone(),
+                    })
+                };
                 writeln!(out, "  store i64 {}, ptr {}", value, slot).ok();
                 param_slots.push((name.clone(), slot));
             }
             self.fun.tail_param_slots = param_slots;
+            // A tail loop has no loop-engine preheader to flush deferred
+            // constant-field allocations into. Emit any queued allocation now
+            // (it dominates the header) and keep body allocations inline.
+            self.flush_pending_struct_allocas(out);
+            self.fun.defer_struct_allocas = false;
             writeln!(out, "  br label %{}", header).ok();
             writeln!(out, "{}:", header).ok();
             self.fun.cur_block = Some(header.clone());
             self.fun.tail_loop_header = Some(header.clone());
             self.fun.tail_loop_fn = Some(d.name.clone());
             self.fun.tail_loop_backedge = false;
-            for (name, slot) in self.fun.tail_param_slots.clone() {
-                let value = self.fun.gen_reg();
-                writeln!(out, "  {} = load i64, ptr {}", value, slot).ok();
-                self.fun.let_bindings.insert(name, value);
+            for ((name, ty), (_, slot)) in d.parameters.iter().zip(self.fun.tail_param_slots.clone()) {
+                let loaded = self.fun.gen_reg();
+                writeln!(out, "  {} = load i64, ptr {}", loaded, slot).ok();
+                let mutable_binding = self.fun.let_bindings.get(name).cloned()
+                    .filter(|b| self.fun.native_parameter_slots.contains(b));
+                let value = if mutable_binding.is_some() || !self.tail_loop_binding_is_i64(ty) {
+                    self.adapt_from_i64(out, "  ", &loaded, ty)
+                } else {
+                    loaded
+                };
+                // Mutable params keep their alloca binding; store the native
+                // value back so body reads see the loop-carried state.
+                if let Some(binding) = mutable_binding {
+                    writeln!(out, "  store {} {}, ptr {}", self.llvm_type(ty), value, binding).ok();
+                    continue;
+                }
+                self.fun.let_bindings.insert(name.clone(), value);
             }
         }
         let body_len = d.body.len();
@@ -5769,6 +5826,14 @@ fn probe_ok_checks(
         // these; this reset must too.
         self.fun.last_val_temps.clear();
         self.fun.last_val_types.clear();
+        // A tail-lowered defn leaves its loop header/slots/backedge flag on
+        // the shared FunctionState. A callable txn is a new function: stale
+        // state suppressed body definitions and emitted a comparison against
+        // a bound register that was never defined.
+        self.fun.tail_loop_fn = None;
+        self.fun.tail_loop_header = None;
+        self.fun.tail_param_slots.clear();
+        self.fun.tail_loop_backedge = false;
         // 2026-07-18: Detect bounded pre-condition (e.g. x < N) — enables
         // Alloca strategy for stack-allocated temporaries within the loop.
         self.fun.is_static_bound = matches!(&txn.contract.pre_condition,

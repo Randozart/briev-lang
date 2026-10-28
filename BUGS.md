@@ -11422,3 +11422,23 @@ Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs
 could panic instead of returning a diagnostic. The lexer loop now returns a
 span-bearing `lex error`; the new proptest pushes 100 garbage inputs through
 the full parse/import/typecheck path and asserts no panic.
+
+
+## State collection initializer stored a stack header in %State (FIXED 2026-10-28)
+
+A collection state field initialized with `[]` (or any literal handled by
+`emit_init_op_construction`) built its `[data, cap, len]` header with
+`alloca i8` inside `init_state`, then stored that stack address in `%State`.
+After `init_state` returned, the first catalogue scan read the dead frame and
+trapped (`memory access out of bounds` in `browser_catalogue_scan`). Both the
+empty and non-empty construction paths now `malloc` the header. Regression:
+`state_collection_initializer_heap_allocates_header`.
+
+## Callable txn inherited a prior defn's tail-loop state (FIXED 2026-10-28)
+
+`emit_callable_txn` cleared local bindings but not `tail_loop_fn`,
+`tail_loop_header`, `tail_param_slots`, or `tail_loop_backedge`. A
+tail-lowered defn emitted immediately before a callable txn left the backedge
+flag set, so the txn body skipped definitions and compared against a bound
+register that was never emitted (`%t4` i64 vs i32). The callable-txn entry now
+resets the tail-loop state. Regression: `rbv_list_each_wasm`.

@@ -841,6 +841,32 @@ node run [tick < 1][tick == 1] {
 /// 2026-08-14 (boundary plan, SPEC §17.3): the four bit intrinsics dispatch
 /// to their LLVM lanes — `Popcount#` → ctpop, `LeadingZeros#` → ctlz,
 /// `TrailingZeros#` → cttz, `BitReverse#` → bitreverse.
+/// A collection state field stores its construction handle in `%State`.
+/// The header must be heap-owned: an `init_state` stack alloca dangles as
+/// soon as init returns, and the first scan/page read traps.
+#[test]
+fn state_collection_initializer_heap_allocates_header() {
+    let src = r#"
+import { List } from "std/collections.bv";
+let xs: List<Int> = [];
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let n: Int = xs .^Length;
+    tick = n + 1;
+    term;
+};
+"#;
+    let (items, universe) = crate::library::parse_and_check("benchmarks/state_list_init.bv", &src)
+        .expect("parse_and_check failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define void @init_state(").expect("init_state must be emitted");
+    let end = start + ir[start..].find("\n}\n").expect("init_state must close");
+    let init = &ir[start..end];
+    assert!(!init.contains("alloca i8"), "state list header must not be stack-allocated; got:\n{init}");
+    assert!(init.contains("call ptr @malloc"), "state list header must be heap-allocated; got:\n{init}");
+}
+
 #[test]
 fn test_bit_intrinsics_emit_llvm_lanes() {
     let src = r#"

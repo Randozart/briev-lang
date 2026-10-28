@@ -121,8 +121,16 @@ fn tail_self_calls_in_body(body: &[Statement], name: &str) -> Vec<Vec<Expr>> {
 
 fn collect_tail_self_calls(body: &[Statement], name: &str, out: &mut Vec<Vec<Expr>>) {
     for stmt in body {
-        if let Statement::Term(Some(e)) | Statement::Tail(e) = stmt {
-            collect_tail_self_calls_expr(e, name, out);
+        match stmt {
+            Statement::Term(Some(e)) | Statement::Tail(e) => {
+                collect_tail_self_calls_expr(e, name, out);
+            }
+            // `when cond { term f(...); }` is a guarded tail path; the
+            // recursive call still exits the frame on that edge.
+            Statement::Guarded(_, inner) | Statement::Block(inner) => {
+                collect_tail_self_calls(inner, name, out);
+            }
+            _ => {}
         }
     }
 }
@@ -183,8 +191,14 @@ pub fn build_tail_recursion_plan(items: &[TopLevel]) -> TailRecursionPlan {
 fn tail_calls_in_body(body: &[Statement], name: &str) -> usize {
     let mut total = 0;
     for stmt in body {
-        if let Statement::Term(Some(e)) | Statement::Tail(e) = stmt {
-            total += tail_calls_in_expr(e, name);
+        match stmt {
+            Statement::Term(Some(e)) | Statement::Tail(e) => {
+                total += tail_calls_in_expr(e, name);
+            }
+            Statement::Guarded(_, inner) | Statement::Block(inner) => {
+                total += tail_calls_in_body(inner, name);
+            }
+            _ => {}
         }
     }
     total
@@ -259,6 +273,15 @@ mod tests {
         let items = parse("defn f(n: Int) -> Int { when n <= 0 { term 0; }; term f(n - 1); };\n");
         let plan = build_tail_loop_plan(&items);
         assert!(plan.is_lowerable("f"));
+    }
+
+    #[test]
+    fn guarded_tail_recursion_is_loop_lowerable() {
+        let items = parse(
+            "defn f(n: Int) -> Int { when n <= 0 { term 0; }; when n > 0 { term f(n - 1); }; };\n",
+        );
+        let plan = build_tail_loop_plan(&items);
+        assert!(plan.is_lowerable("f"), "a term inside a when-block is still a tail edge");
     }
 
     #[test]
