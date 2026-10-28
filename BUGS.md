@@ -11444,11 +11444,18 @@ register that was never emitted (`%t4` i64 vs i32). The callable-txn entry now
 resets the tail-loop state. Regression: `rbv_list_each_wasm`.
 
 
-## Enum-return image copy regressed ws_frame 3.85x (FIXED 2026-10-28)
+## Enum-return image copy regressed ws_frame 3.85x (PARTIALLY FIXED 2026-10-28)
 
 `retain_enum_return` copied every enum image into the caller-owned result slot
-on every non-void return. The adopted copy was redundant for the caller-owned
-slots (`tests/tier1/enum_local_return.bv` passes without it) and dominated
-`ws_frame`: 0.0600s vs the locked baseline's 0.0156s (3.85x). Removed the copy;
-ownership at construction/storage remains. `compare_baseline.sh ws_frame` is
-back to 1.00x, and `cargo test --all` passes.
+on every non-void return and dominated `ws_frame`: 0.0600s vs the locked
+baseline's 0.0156s (3.85x).
+
+Removing the copy outright recovered performance but crashed
+`server_protocol_gate`: a returned local image died with its frame. The current
+fix retains only `term <identifier>` images; call/constructor results are
+already caller-owned, and an exact source==destination slot is not copied.
+
+`server_protocol_gate` and all cargo/app gates pass. `ws_frame` remains a known
+2.48x locked-baseline regression because the hot local decode result still
+requires an image copy. Follow-up: return small enum images by value or consume
+a lifetime/linearity proof to elide the copy.
