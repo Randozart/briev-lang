@@ -56,6 +56,30 @@ copying makes `ws_frame` 1.58x C. Existing alternatives all failed:
 Stage 1 remains open until the list-alias defect has a non-weakening fix or is
 subsumed by the first aggregate slice.
 
+### 2026-10-29 — Stage 2 ScalarValue prototype (not committed)
+
+An environment-gated aggregate prototype was built for the `ws_frame` chain:
+`{ i64, i64 }` constructors, locals, calls, returns, and matches. It produced
+`0016384`, emitted zero `%enum_out`/`ret_copy`, and passed `cargo test --all`
+with the gate enabled. Prototype patch: `/tmp/opencode/enum-value2-stage2.patch`.
+
+The performance gate failed:
+
+- current copying path: ~0.045s;
+- ScalarValue prototype: ~0.044s;
+- unsafe no-copy control at HEAD: ~0.012–0.016s.
+
+After LLVM inlining, the prototype performs **more** `WsFrame` allocations than
+the no-copy control (6 vs 4 inside optimized `ws_decode`). Thus the two-word
+enum aggregate alone does not remove the dominant cost: the enum payload is a
+boxed `WsFrame` object. Correct fast execution requires object payload values
+to participate in the same value model (stack/inline or proven allocation
+reuse), not merely enum boundaries.
+
+Stage 2 is therefore **not merged**. The next slice must extend the value model
+to small object payloads or prove allocation reuse; do not enable the aggregate
+ABI by default.
+
 ## Physical classes
 
 ### 1. `ScalarValue`
