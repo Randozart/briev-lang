@@ -1,0 +1,39 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// A list of enum values must own each element. Build results across multiple
+// calls, then consume every element after later calls have run.
+import "std/result.bv";
+
+defn make_result(value: Int) -> Result<Int,String> {
+    when value < 0 { term Err("negative"); };
+    term Ok(value);
+};
+
+defn build_results() -> List<Result<Int,String> > {
+    let values: List<Result<Int,String> > = [];
+    foreach value in 0..4 {
+        when value % 2 == 0 {
+            values <- make_result(value);
+        };
+        when value % 2 == 1 {
+            values <- make_result(0 - value);
+        };
+    };
+    term values;
+};
+
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let values: List<Result<Int,String> > = build_results();
+    let later: Result<Int,String> = make_result(-9);
+    let passed: Bool = values .^Length == 4 &&
+        is_ok(values[0]) && unwrap(values[0]) == 0 &&
+        is_err(values[1]) && unwrap_err(values[1]) == "negative" &&
+        is_ok(values[2]) && unwrap(values[2]) == 2 &&
+        is_err(values[3]) && unwrap_err(values[3]) == "negative" &&
+        is_err(later);
+    println!("enum_list_lifetime={}",passed);
+    when !passed { endprogram 1; };
+    tick = 1; endprogram;
+};

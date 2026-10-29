@@ -10856,6 +10856,44 @@ defn add(a: Int, b: Int) -> Int {
 
 
 #[test]
+fn enum_value_repr_metadata_is_available_without_ir_change() {
+    // Groundwork gate: concrete layout must expose the hybrid value class
+    // before emitters migrate, and the register table must round-trip it.
+    let src = r#"
+enum Option {
+    Some(Int),
+    None,
+};
+
+defn make() -> Option {
+  term Some(7);
+};
+
+        let done: Bool = false;
+        node __test_go [done == false][done == true] { done = true; };
+    "#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let option_ty = crate::ast::Type::Custom("Option".into());
+    assert_eq!(
+        backend.enum_value_repr(&option_ty),
+        Some(crate::analysis::enum_layout::EnumValueRepr::ScalarValue)
+    );
+    let mut fun = crate::backend::llvm::context::FunctionContext::new();
+    fun.set_enum_register_repr("%r", crate::analysis::enum_layout::EnumValueRepr::PackedMemory);
+    assert_eq!(
+        fun.enum_register_repr("%r"),
+        Some(crate::analysis::enum_layout::EnumValueRepr::PackedMemory)
+    );
+    fun.clear_locals();
+    assert_eq!(fun.enum_register_repr("%r"), None);
+}
+
+#[test]
 fn test_enum_handle_abi_no_struct_decl() {
     // 2026-08-26 (Track B): an enum's runtime image is the boxed
     // {tag, payload} pair behind an i64 handle. The TypeDef must NOT emit a

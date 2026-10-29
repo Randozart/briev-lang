@@ -11478,3 +11478,16 @@ the retain helper still elides an exact caller-slot alias. All cargo/app gates
 pass. `ws_frame` remains a known ~2.5x locked-baseline regression. Follow-up:
 return small enum images by value or consume a lifetime/linearity proof to
 elide the copy.
+
+
+## List<Result> elements alias later enum constructors (OPEN 2026-10-29)
+
+Building a `List<Result<Int,String>>` with four conditional pushes produces
+`LEN=4`, but index 2 changes from `Ok(2)` to an `Err` value. The current enum
+ABI publishes handles to short-lived constructor images; collection growth /
+later constructors can overwrite or misinterpret those handles. Reproducer:
+`tests/tier1/enum_list_lifetime.bv.known-bug`; ignored regression pin:
+`tests/enum_list_lifetime_regression.rs`.
+
+This is part of the enum value model migration: collection elements must own a
+complete value or an explicitly owned box, never a borrowed constructor slot.

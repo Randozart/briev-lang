@@ -16,6 +16,17 @@ struct EnumDef {
     variants: Vec<(String, Type)>,
 }
 
+/// Physical representation selected by the enum value model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumValueRepr {
+    ScalarValue,
+    PackedMemory,
+    OwnedBox,
+}
+
+/// Initial inline packed-memory threshold.
+pub const PACKED_MEMORY_MAX_WORDS: usize = 4;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumLayout {
     /// Total i64 words in the image (tag + payload area).
@@ -134,6 +145,18 @@ impl EnumLayoutPlanner {
         }
     }
 
+    /// Select the semantic value representation for a concrete enum.
+    pub fn value_repr_for(&self, ty: &Type) -> Option<EnumValueRepr> {
+        let layout = self.layout_for(ty)?;
+        if layout.image_words <= 2 {
+            Some(EnumValueRepr::ScalarValue)
+        } else if layout.image_words <= PACKED_MEMORY_MAX_WORDS {
+            Some(EnumValueRepr::PackedMemory)
+        } else {
+            Some(EnumValueRepr::OwnedBox)
+        }
+    }
+
     fn payload_words(&self, ty: &Type, depth: usize) -> usize {
         match ty {
             Type::Void => 0,
@@ -206,6 +229,52 @@ mod tests {
             .expect("layout");
         assert_eq!(layout.image_words, 2);
         assert_eq!(layout.variant_payload_words, vec![1, 1]);
+    }
+
+    #[test]
+    fn two_word_enums_are_scalar_values() {
+        let p = planner();
+        let scalar = applied("Result", vec![Type::int(), Type::int()]);
+        assert_eq!(p.value_repr_for(&scalar), Some(EnumValueRepr::ScalarValue));
+    }
+
+    #[test]
+    fn nested_inline_enums_are_packed_memory() {
+        let p = planner();
+        let nested = applied(
+            "Result",
+            vec![Type::Custom("TcpState".into()), Type::Custom("FsmError".into())],
+        );
+        assert_eq!(p.value_repr_for(&nested), Some(EnumValueRepr::PackedMemory));
+    }
+
+    #[test]
+    fn oversized_layouts_are_owned_boxes() {
+        let items = parse(
+            "enum Big { Five(Int, Int, Int, Int, Int) };\n",
+        );
+        let p = EnumLayoutPlanner::new(&items, 2);
+        let big = Type::Custom("Big".into());
+        let layout = p.layout_for(&big).expect("layout");
+        assert_eq!(layout.image_words, 6);
+        assert_eq!(p.value_repr_for(&big), Some(EnumValueRepr::OwnedBox));
+    }
+
+    #[test]
+    fn depth_capped_nested_payload_does_not_box_the_outer_value() {
+        let shallow = parse(
+            "enum Result<T, E> { Ok(T), Err(E) };\n",
+        );
+        let p = EnumLayoutPlanner::new(&shallow, 1);
+        let deep = applied(
+            "Result",
+            vec![
+                applied("Result", vec![Type::int(), Type::int()]),
+                Type::int(),
+            ],
+        );
+        // Outer aggregate is two words: tag plus one owned nested handle.
+        assert_eq!(p.value_repr_for(&deep), Some(EnumValueRepr::ScalarValue));
     }
 
     #[test]

@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// A state enum must own its complete value. Write it, then consume it in the
+// same bounded firing so the fixture terminates deterministically.
+enum Mode { Active(Int), Idle };
+
+let saved: Mode = Mode.Idle;
+let checked: Int = 0;
+
+node run [checked == 0][checked == 1] {
+    saved = Mode.Active(37);
+    let passed: Bool = match saved {
+        Active(value) => value == 37,
+        Idle => false,
+    };
+    println!("enum_state_lifetime={}",passed);
+    when !passed { endprogram 1; };
+    checked = 1;
+    term;
+};

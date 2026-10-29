@@ -136,8 +136,7 @@ pub struct CompilerContext {
     pub tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan,
     /// 2026-10-21 (nested enum layout): concrete enum image planner.
     pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
-    /// 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): base defn
-    /// names that TRANSITIVELY touch raw memory (Load#/Store#/Alloc#/Free#/
+    /// 2026-10-29 (enum value model groundwork): concrete value-class planner
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
     /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
     /// A caller's attribute must be at least as permissive as its callees'
@@ -1136,6 +1135,11 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-10-21 (B0 nested enum layout): concrete enum instance expected at
     /// the current expression site (empty = unknown/boxed fallback).
     pub expected_enum_type: Option<crate::ast::Type>,
+    /// 2026-10-29 (enum value model groundwork): representation of registers
+    /// known to carry a concrete enum value rather than a legacy handle.
+    /// Groundwork only; codegen does not consume this yet.
+    pub enum_register_reprs:
+        HashMap<String, crate::analysis::enum_layout::EnumValueRepr>,
     /// Declared Briev return type of the current defn, used to seed
     /// `expected_enum_type` for term/tail expressions.
     pub item_return_type: Option<crate::ast::Type>,
@@ -1434,7 +1438,7 @@ impl FunctionContext {
             plain_ptr: None,
             effect_carry: false,
             volatile_raw_ptr_params: false,
-            enum_inline_slots: HashMap::new(),
+            enum_inline_slots: HashMap::new(), enum_register_reprs: HashMap::new(),
             enum_construct_slot: None,
             enum_out_slot: None,
             enum_out_type: None,
@@ -1621,6 +1625,24 @@ impl FunctionContext {
         // leak across an emission pass or function.
         self.canonical_ptrs.clear();
         self.state_ptr_cache.clear();
+        self.enum_register_reprs.clear();
+    }
+
+    /// Record that a register carries a concrete enum value.
+    /// Groundwork for the enum value model; no emitter consumes it yet.
+    pub fn set_enum_register_repr(
+        &mut self,
+        register: &str,
+        repr: crate::analysis::enum_layout::EnumValueRepr,
+    ) {
+        self.enum_register_reprs.insert(register.to_string(), repr);
+    }
+
+    pub fn enum_register_repr(
+        &self,
+        register: &str,
+    ) -> Option<crate::analysis::enum_layout::EnumValueRepr> {
+        self.enum_register_reprs.get(register).copied()
     }
 
     /// Reset function state for a new function (keeps txn_counter if needed).

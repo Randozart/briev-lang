@@ -271,6 +271,18 @@ fn collect_called_names_stmt(s: &Statement, out: &mut std::collections::HashSet<
 }
 
 impl LlvmBackend {
+    /// Query the concrete enum value representation selected by the layout
+    /// planner. Groundwork for the enum value model; legacy ABI unchanged.
+    pub(crate) fn enum_value_repr(
+        &self,
+        ty: &crate::ast::Type,
+    ) -> Option<crate::analysis::enum_layout::EnumValueRepr> {
+        self.ctx
+            .enum_layout_planner
+            .as_ref()
+            .and_then(|planner| planner.value_repr_for(ty))
+    }
+
     /// Warn once per plain txn that can never execute: non-reactive,
     /// callable-shaped (no params/outputs), referenced by no call in the
     /// program, AND not live (a live-but-uncalled txn is dispatched
