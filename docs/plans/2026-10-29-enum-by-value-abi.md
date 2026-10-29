@@ -1,7 +1,7 @@
 # Two-word enum by-value return ABI
 
 **Date:** 2026-10-29
-**Status:** PHASE 0 REFUTED — by-value not sufficient
+**Status:** BLOCKED — boundary ABI experiments refuted; full value representation or rebaseline required
 **Scope:** LLVM enum-return lifetime and the `ws_frame` baseline regression.
 **Parent:** `docs/plans/2026-10-28-enum-return-escape-heap.md`
 
@@ -56,6 +56,26 @@ Conclusion: the copy is dominant, but moving it into aggregate materialization
 does not solve it. The next candidate is return provenance/liveness analysis
 that proves a returned image already lives in the caller-owned `%enum_out`
 (or heap), so the existing sret ABI can skip the copy safely.
+
+## Follow-up provenance result — no performance win
+
+Returned-local destination forwarding was re-tested after the separate enum
+retention bug was fixed:
+
+- `server_loop_gate` passes (`upgrade/fragmented/owner/ping-pong/...` all true);
+- `ws_frame` remains ~0.047s, unchanged from the copying path.
+
+Forcing the existing heap-boxed enum ABI also measured ~0.045s.
+
+The safe no-copy control (0.012s) returns a pointer to an `alloca` in the
+callee's match-arm block; the caller reads it after return. That is a dangling
+stack pointer even though ASan's use-after-return instrumentation did not flag
+it in this build. It is not a valid performance target.
+
+**Conclusion:** boundary-only by-value, forwarding, and boxed ABI all fail.
+Matching the old baseline requires representing small enum values as SSA
+aggregates end-to-end, or accepting a corrected-ABI rebaseline. No compiler
+code was changed by this experiment.
 
 ## Phase 0 — Actual-IR proof
 
