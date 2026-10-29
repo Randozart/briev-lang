@@ -76,9 +76,31 @@ boxed `WsFrame` object. Correct fast execution requires object payload values
 to participate in the same value model (stack/inline or proven allocation
 reuse), not merely enum boundaries.
 
-Stage 2 is therefore **not merged**. The next slice must extend the value model
-to small object payloads or prove allocation reuse; do not enable the aggregate
-ABI by default.
+Stage 2 is therefore **not merged**.
+
+### 2026-10-29 — small-object destination reuse prototype
+
+A second hand-transform extended `ws_partial` and `ws_decode_mask` with hidden
+object-result destinations. The constructor wrote directly into a caller-owned
+34-byte slot instead of `malloc`; `ws_decode` propagated a frame destination.
+
+Performance gate: **PASS** at old-baseline range:
+
+- ScalarValue only: ~0.044s;
+- object destination reuse: ~0.012–0.017s;
+- unsafe no-copy control: ~0.012–0.016s;
+- current copying ABI: ~0.045s.
+
+The hand prototype was not output-correct (`acc=10920`, expected `0`): the
+manual IR transform did not implement every object-result path (notably the
+unmasked `Ok(f)` copy into the destination) with full ownership/lifetime
+rules. That is expected for a hand transform and does not refute the model; it
+identifies the implementation work: compiler-managed object destinations,
+destination select/copy for every constructor path, and ownership proofs.
+
+Gate conclusion: allocation reuse/destination construction is the missing
+performance mechanism. The next compiler slice must implement it generally,
+not enable the partial hand IR.
 
 ## Physical classes
 
