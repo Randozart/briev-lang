@@ -72,6 +72,9 @@ callee's match-arm block; the caller reads it after return. That is a dangling
 stack pointer even though ASan's use-after-return instrumentation did not flag
 it in this build. It is not a valid performance target.
 
+Correct-ABI runtime suite: every row MATCH; `ws_frame` is 1.58x C
+(0.0385s vs 0.0244s). The old locked baseline is not a safe target.
+
 **Conclusion:** boundary-only by-value, forwarding, and boxed ABI all fail.
 Matching the old baseline requires representing small enum values as SSA
 aggregates end-to-end, or accepting a corrected-ABI rebaseline. No compiler
