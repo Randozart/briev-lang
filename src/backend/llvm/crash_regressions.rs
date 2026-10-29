@@ -47,17 +47,24 @@ fn boolean_match_literal_uses_native_boolean_width() {
 fn pooled_object_replacement_survives_reactor_firings() {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
     let source = r#"
-        obj Snapshot { ready: Bool; count: Int; weight: Float; title: String; };
+        obj Snapshot {
+            ready: Bool; count: Int; weight: Float; title: String;
+            defn value() -> Int { term count; };
+        };
+        defn initial_snapshot() -> Snapshot {
+            term Snapshot { ready: true, count: 0, weight: 0.5, title: "alive" };
+        };
         defn advance(value: Snapshot) -> Snapshot {
             term Snapshot { ready: true, count: value.count+1, weight: value.weight, title: value.title };
         };
-        out let snapshot: Snapshot = Snapshot { ready: true, count: 0, weight: 0.5, title: "alive" };
+        out let snapshot: Snapshot = initial_snapshot();
         out let iterations: Int = 0;
-        out node step [iterations < 3][iterations == 3] {
-            when !snapshot.ready || snapshot.weight != 0.5 || snapshot.title .^Length != 5 { endprogram 71; };
+        out node step [true][false] {
+            when !snapshot.ready || snapshot.weight != 0.5 || snapshot.title .^Length != 5 { SysCall#(60,71); };
             snapshot = advance(snapshot);
             iterations += 1;
-            when snapshot.count != iterations { endprogram 72; };
+            when snapshot.count != iterations { SysCall#(60,72); };
+            when iterations >= 3 { endprogram 0; };
             term;
         };
     "#;
