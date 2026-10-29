@@ -15,6 +15,12 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
+**Active destination/ownership reconciliation (2026-10-29):**
+`docs/plans/2026-10-29-destination-ownership-reconciliation.md` — supersedes
+ad-hoc ObjectDestination metadata; reconciles small-sum unboxing, nested
+layout, carrier slots, tail-loop lowering, ownership algebra, boundary
+ownership, and P2-1/P2-2 into one frontend `ValueDestinationPlan`.
+
 **Active enum model (2026-10-29):** `docs/plans/2026-10-29-enum-value-model.md` —
 hybrid ScalarValue/PackedMemory/OwnedBox migration replacing internal enum
 handles; Stage 0 classification/metadata complete, list-alias defect recorded.

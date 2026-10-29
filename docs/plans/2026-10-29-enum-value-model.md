@@ -1,7 +1,9 @@
 # Hybrid enum value model
 
 **Date:** 2026-10-29
-**Status:** ACTIVE — Stage 0 complete; list-alias red bug recorded
+**Status:** RECONCILED — implementation strategy superseded by
+`docs/plans/2026-10-29-destination-ownership-reconciliation.md`; experiments
+and evidence remain historical
 **Scope:** concrete enum representation, ownership, ABI, state/list/struct
 layouts, and performance.
 **Parents:** `docs/plans/2026-10-29-enum-by-value-abi.md`,
