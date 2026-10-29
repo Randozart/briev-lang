@@ -11455,7 +11455,10 @@ Removing the copy outright recovered performance but crashed
 fix retains only `term <identifier>` images; call/constructor results are
 already caller-owned, and an exact source==destination slot is not copied.
 
-`server_protocol_gate` and all cargo/app gates pass. `ws_frame` remains a known
-2.48x locked-baseline regression because the hot local decode result still
-requires an image copy. Follow-up: return small enum images by value or consume
-a lifetime/linearity proof to elide the copy.
+`server_protocol_gate` initially passed with the narrower rule, but the full
+recommender `server_loop_gate` exposed the flaw: call/match results can also
+return frame-owned images. 2026-10-29 restores retention for every enum return;
+the retain helper still elides an exact caller-slot alias. All cargo/app gates
+pass. `ws_frame` remains a known ~2.5x locked-baseline regression. Follow-up:
+return small enum images by value or consume a lifetime/linearity proof to
+elide the copy.

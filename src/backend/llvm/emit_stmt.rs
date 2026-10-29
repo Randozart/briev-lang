@@ -2041,15 +2041,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // Emit no terminator and leave `terminated` unchanged so the
                     // enclosing body continues.
                 } else if backend.fun.fn_ret_ty != "void" {
-                    // 2026-10-28: retain only a genuinely different image.
-                    // An already caller-owned slot must not be copied (the
-                    // old unconditional copy cost 4x on ws_frame), but a local
-                    // image must not outlive its frame (server_protocol_gate).
-                    let reg = if matches!(val, crate::ast::Expr::Identifier(_)) {
-                        backend.retain_enum_return(out, indent, &reg)
-                    } else {
-                        reg
-                    };
+                    // 2026-10-29: retain every enum image at the ABI edge.
+                    // Narrowing the copy to identifier terms restored a real
+                    // server regression: call/match results can also expose
+                    // frame-owned storage. The retain helper still skips an
+                    // exact caller-slot alias, but unknown ownership is copied.
+                    // PERF(ws_frame): known 2.48x baseline regression; the
+                    // by-value/ownership-proved enum ABI is the durable fix.
+                    let reg = backend.retain_enum_return(out, indent, &reg);
                     // 2026-07-26: Use actual expression LLVM type, not hardcoded "i64".
                     // Frgn calls may return ptr (for String/Data in C ABI).
                     let val_ty = backend.llvm_type(&reg.ty);
