@@ -102,6 +102,28 @@ Gate conclusion: allocation reuse/destination construction is the missing
 performance mechanism. The next compiler slice must implement it generally,
 not enable the partial hand IR.
 
+### 2026-10-29 — production ObjectDestination slice (not merged)
+
+The first compiler implementation was environment-gated
+(`BRIEV_ENUM_VALUE2`) and combined:
+
+- ScalarValue aggregate ABI;
+- hidden object-result destinations for small obj helpers;
+- destination forwarding through aggregate call chains;
+- alias-aware fresh scratch slots;
+- escaping-result copies back to the caller destination.
+
+It reached correct `ws_frame` output in one configuration, but later
+alias/lifetime refinements still crashed. A mis-scheduled object destination
+caused LLVM to select the extended-length path on a masked raw byte. The
+default compiler was never changed; the complete experiment is preserved at
+`/tmp/opencode/object-destination-slice.patch` (ephemeral).
+
+**Gate: FAIL.** The slice is not merged. The required next design is a formal
+destination/liveness pass, not additional ad-hoc register metadata:
+destination SSA values, escape/overlap proofs, and explicit copies at ABI
+edges. This likely needs its own plan and backend rewrite before retry.
+
 ## Physical classes
 
 ### 1. `ScalarValue`
