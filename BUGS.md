@@ -11423,6 +11423,22 @@ could panic instead of returning a diagnostic. The lexer loop now returns a
 span-bearing `lex error`; the new proptest pushes 100 garbage inputs through
 the full parse/import/typecheck path and asserts no panic.
 
+## FIXED 2026-10-28: whole-object assignment to pooled state loses returned value
+
+A top-level object with a member is stored in pool columns. Assignment evaluated
+its RHS but did not copy the returned object's fields into those columns. The
+next reactor sweep read the old value; asynchronous authentication replies were
+then discarded because the pending job state had disappeared. The pooled
+publication path was restored on fork main in commit 210c5b9b; this branch adds
+the mixed-width boxing correction and strengthens the regression that exposed
+the lost assignment.
+
+Fix: whole-object replacement uses the initialization publication helper,
+retaining local shadowing and dependent/boxed-pool exclusions. The inverse
+value-context boxing path uses native field widths to avoid overlapping
+Bool/Float fields. Regression: pooled_object_replacement_survives_reactor_firings,
+using a member-bearing object and explicit failure exits at O0/O2. A methodless
+object uses a boxed slot and does not reproduce the missing pool assignment.
 
 ## State collection initializer stored a stack header in %State (FIXED 2026-10-28)
 

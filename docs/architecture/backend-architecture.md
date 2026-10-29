@@ -731,3 +731,9 @@ and all-arms-terminate behavior retain their existing lowering paths.
 Same-type local assignment replaces the collection handle before InsertAt
 dispatch. Eligibility comes from declared operator metadata and exact types;
 explicit arrow insertion keeps its existing path. See collection_assignment.rs.
+
+2026-10-28: whole-object assignment to a top-level pooled instance publishes the
+returned fields into its row with the initialization helper. The inverse boxing
+path stores native member widths. Local shadowing and dependent/boxed pools
+retain their dedicated paths. The regression uses a member-bearing mixed-field
+object to exercise pool columns rather than an ordinary boxed handle.
