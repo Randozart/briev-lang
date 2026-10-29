@@ -6452,7 +6452,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             } else {
                 count.name.clone()
             };
-            Self::emit_view_buffer(out, &n_i32);
+            // One header word plus `row_size` projected fields per item.
+            // The old count+1 reservation assumed one word per item and let a
+            // 4-field row overrun the buffer by 3n words (the fake-peer
+            // browser OOB; I11 only survived because spare heap followed).
+            Self::emit_view_buffer(out, &n_i32, row_size.max(1));
             writeln!(out, "  %hdr = alloca i32").ok();
             writeln!(out, "  store i32 0, ptr %hdr").ok();
             writeln!(out, "  br label %hlbl").ok();
@@ -6516,12 +6520,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.fun = saved_fun;
     }
 
-    fn emit_view_buffer(out: &mut String, count: &str) {
+    fn emit_view_buffer(out: &mut String, count: &str, words_per_item: usize) {
         writeln!(out, "  %view_valid = icmp sge i32 {count}, 0").ok();
         writeln!(out, "  br i1 %view_valid, label %view_reserve, label %view_invalid").ok();
         writeln!(out, "view_invalid:\n  call void @llvm.trap()\n  unreachable\nview_reserve:").ok();
         writeln!(out, "  %view_count = zext i32 {count} to i64").ok();
-        writeln!(out, "  %view_slots = add i64 %view_count, 1").ok();
+        writeln!(out, "  %view_rows = mul i64 %view_count, {words_per_item}").ok();
+        writeln!(out, "  %view_slots = add i64 %view_rows, 1").ok();
         writeln!(out, "  %view_bytes = mul i64 %view_slots, 8").ok();
         writeln!(out, "  %view_old = load ptr, ptr @__web_view_buf").ok();
         writeln!(out, "  %view_data = call ptr @realloc(ptr %view_old, i64 %view_bytes)").ok();

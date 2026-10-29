@@ -12255,6 +12255,41 @@ defn title() -> Int {
 }
 
 #[test]
+fn webstack_view_snapshot_reserves_all_item_fields() {
+    // Regression: a b-each snapshot reserved count+1 words while each struct
+    // item wrote one word per projected field. A 4-field row overran by 3n
+    // words; the fake-peer browser gate caught it once the heap reached the
+    // memory boundary.
+    let src = r#"
+import { List } from "std/collections.bv";
+obj Item { id: Int; total: Int; };
+let items: List<Item> = [];
+let tick: Int = 0;
+node run [tick == 0][tick == 1] {
+    items <- Item { id: 0, total: 0 };
+    tick = 1;
+    term;
+};
+"#;
+    let (items, universe) = crate::library::parse_and_check("benchmarks/view_snapshot.bv", src)
+        .expect("parse_and_check failed");
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(universe);
+    backend.ctx.collection_iterables.insert("items".to_string());
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define i32 @__view_items_items(").expect("view materializer");
+    let end = start + ir[start..].find("\n}\n").expect("materializer close");
+    let function_ir = &ir[start..end];
+    assert!(function_ir.contains("%view_rows = mul i64 %view_count, 2"),
+        "snapshot must reserve id+total words per item; got:\n{function_ir}");
+    assert!(function_ir.contains("%view_slots = add i64 %view_rows, 1"),
+        "snapshot must include the header word; got:\n{function_ir}");
+}
+
+#[test]
 fn webstack_task_call_uses_target_width() {
     // 2026-10-23 (wasm collection ABI): TaskCall# boxes three addresses and
     // returns the task status. On wasm32 those addresses and the return are
