@@ -15,6 +15,8 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
+**Active release ledger (2026-10-28):** `docs/plans/2026-10-28-v0.1-preview-readiness.md` — execution checklist and exit criteria for PR #1 and `v0.1.0-preview`: baseline snapshot, gate integrity, interpreter parity, Tier 1 platform contract, performance A/B, app acceptance, release engineering.
+
 **Active recommender lane (2026-10-25):** `docs/plans/2026-10-25-recommender-fixes-and-app-adoption.md` — A/C/D compiler/web/WASM bundles landed; casting change rejected; generic txn specialization deferred. App remains external and pinned at `79234665`. Source compiler commit: `894fcfa5`.
 
 **Session report (2026-10-27):** `docs/2026-10-27-session-report.md` — chronological record of app compatibility, compiler hardening, proof elimination, ledger, and remaining browser/hardening work.

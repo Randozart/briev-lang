@@ -1,0 +1,8 @@
+// hello — the smallest native smoke test.
+let tick: Int = 0;
+
+node main [tick == 0][tick == 1] {
+    println!("hello from briev");
+    tick = 1;
+    term;
+};

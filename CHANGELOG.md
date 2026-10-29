@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.1.0-preview — 2026-10-28
+
+### Highlights
+
+- Tier 1 native Linux (`.bv`, `x86_64-unknown-linux-gnu`) and browser
+  (`.rbv`, wasm32 webstack) are the supported release surfaces.
+- Added the browser/server I11 integration path: deterministic peer gate,
+  real browser/server gate, and a reproducible Python runner with artifact
+  hashes.
+- Added deterministic target reporting (`brievc targets`) and the Tier 1 /
+  Tier 2 / experimental support contract.
+- Added IR verification before external tools and a full seven-corpus IR
+  determinism gate.
+- Fixed state-collection lifetime, top-level unpacked-instance assignment,
+  callable-txn tail-state leakage, defn web-flush leakage, keyed DOM churn,
+  and reactor range `foreach`.
+- Recovered `ws_frame` from a 3.85x locked-baseline regression to baseline
+  parity; post-fix it is 0.30x C.
+
+### Known limitations
+
+- Cross-language C/C++/Python/Node bridges, C cancellation, needs-state
+  reference, and CLI entry cases remain quarantined.
+- GPU/electronics/silicon/SPIR-V surfaces remain experimental.
+- `recommender_server_properties.rs` is not present in the external app
+  checkout; its gate records an explicit skip.
+
 ## 2026-04-30
 
 ### Language

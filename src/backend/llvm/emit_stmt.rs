@@ -993,18 +993,6 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             };
             match lhs {
                 Expr::Identifier(name) => {
-                    // 2026-10-28: whole-object replacement must publish the returned
-                    // value to pooled columns before the next reactor sweep (login
-                    // worker tags otherwise disappear). Remove when pooled objects
-                    // and boxed values share a single storage representation.
-                    if !backend.fun.let_bindings.contains_key(name)
-                        && backend.unpacked_instance_prefix(name).is_some_and(|(base, _)|
-                            !backend.ctx.dependent_pools.contains_key(&base)
-                                && !backend.ctx.boxed_offsets.contains_key(&base))
-                    {
-                        backend.emit_instance_seed_from_value(out, indent, name, &val);
-                        return TypedRegister { name: val.name, ty: Type::void() };
-                    }
                     // 2026-08-07 (object instance pools): a bare member
                     // target in an UNPACKED member body writes the instance's
                     // top-level slot — `total = 1` in `st`'s member → the
@@ -1062,6 +1050,18 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
                             return TypedRegister { name: val.name, ty: Type::void() };
                         }
+                    }
+                    // A top-level pooled/unpacked instance (`server`) is a
+                    // set of state columns, not one scalar slot. Assigning a
+                    // returned instance value must split it back into those
+                    // columns; otherwise the assignment is silently dropped
+                    // and the next node firing reads the pre-call snapshot.
+                    if backend.ctx.obj_instance_inits.contains_key(name)
+                        && backend.emit_instance_seed_from_value(out, indent, name, &val)
+                    {
+                        backend.fun.last_val_temps.insert(name.clone(), val.name.clone());
+                        backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
+                        return TypedRegister { name: val.name, ty: Type::void() };
                     }
                     // 2026-07-31 (A5): obj member `self` slot write — a bare
                     // slot name in a member body stores to self+offset.
@@ -2041,7 +2041,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // Emit no terminator and leave `terminated` unchanged so the
                     // enclosing body continues.
                 } else if backend.fun.fn_ret_ty != "void" {
-                    let reg = backend.retain_enum_return(out, indent, &reg);
+                    // 2026-10-28: retain only a genuinely different image.
+                    // An already caller-owned slot must not be copied (the
+                    // old unconditional copy cost 4x on ws_frame), but a local
+                    // image must not outlive its frame (server_protocol_gate).
+                    let reg = if matches!(val, crate::ast::Expr::Identifier(_)) {
+                        backend.retain_enum_return(out, indent, &reg)
+                    } else {
+                        reg
+                    };
                     // 2026-07-26: Use actual expression LLVM type, not hardcoded "i64".
                     // Frgn calls may return ptr (for String/Data in C ABI).
                     let val_ty = backend.llvm_type(&reg.ty);

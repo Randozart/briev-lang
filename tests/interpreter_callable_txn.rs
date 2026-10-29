@@ -459,12 +459,10 @@ node entry [beginprogram][true] {
 }
 
 
-/// OPEN (BUGS.md 2026-10-20): the interpreter's reactor path fails a large
-/// ws_encode payload (`Load# read failed` during a 7000-byte copy) while the
-/// same body executes correctly through exec_stmt directly. Kept as an
-/// ignored regression pin; un-ignore when the reactor-vs-exec divergence is
-/// fixed.
-#[ignore = "known: large ws_encode payload fails in the reactor path — BUGS.md 2026-10-20"]
+/// 2026-10-28: the reactor's Product-only foreach silently skipped integer
+/// ranges, so the 7000-byte source stayed zero-filled and the copy eventually
+/// hit a zero-length string at the heap base. Foreach now delegates to the
+/// interpreter's iterable implementation.
 #[test]
 fn ws_encode_growth_interpreter() {
     let v = run(

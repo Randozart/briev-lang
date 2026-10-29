@@ -74,6 +74,25 @@ impl LlvmBackend {
         short_value: bool,
         indent: &str,
     ) -> TypedRegister {
+        // The CFG form exists to license side effects and traps on the RHS.
+        // A literal/arithmetic RHS has neither, so the old register-level and/or
+        // is semantically identical and lets LLVM keep the hot guard branch
+        // straight-line (ws_frame pays measurably for the control flow).
+        if Self::expr_is_side_effect_free(operands.1)
+            && !Self::expr_contains_beginprogram(operands.0)
+            && !Self::expr_contains_beginprogram(operands.1)
+        {
+            let left = self.emit_expr(out, operands.0, indent);
+            let right = self.emit_expr(out, operands.1, indent);
+            let left_truth = self.logical_truth(out, &left, indent);
+            let right_truth = self.logical_truth(out, &right, indent);
+            let raw = self.fun.gen_reg();
+            let opcode = if short_value { "or" } else { "and" };
+            writeln!(out, "{indent}{raw} = {opcode} i1 {left_truth}, {right_truth}").ok();
+            let result = self.fun.gen_reg();
+            writeln!(out, "{indent}{result} = zext i1 {raw} to i8").ok();
+            return TypedRegister { name: result, ty: Type::bool_() };
+        }
         self.emit_logical_control(out, LogicalInputs { left: operands.0, right: operands.1, exit: false }, short_value, indent)
     }
 
@@ -115,6 +134,45 @@ impl LlvmBackend {
         self.fun.cur_block = Some(merge);
         self.fun.terminated = false;
         TypedRegister { name: result, ty: Type::bool_() }
+    }
+
+    fn expr_contains_beginprogram(expr: &Expr) -> bool {
+        match expr {
+            Expr::BeginProgram => true,
+            Expr::BinaryOp(_, left, right) | Expr::Within(left, right) => {
+                Self::expr_contains_beginprogram(left) || Self::expr_contains_beginprogram(right)
+            }
+            Expr::UnaryOp(_, inner)
+            | Expr::Cast(inner, _)
+            | Expr::Field(inner, _)
+            | Expr::Deref(inner)
+            | Expr::AddrOf(inner)
+            | Expr::Consume(inner)
+            | Expr::Await(inner) => Self::expr_contains_beginprogram(inner),
+            _ => false,
+        }
+    }
+
+    /// Conservative syntactic purity: no call, memory access, control flow,
+    /// consumption, or plugin boundary. A false answer merely uses the safe
+    /// short-circuit CFG; it never changes semantics.
+    fn expr_is_side_effect_free(expr: &Expr) -> bool {
+        match expr {
+            // `beginprogram` participates in reactor bootstrap edge state;
+            // even inside an otherwise pure predicate, keep the lazy CFG the
+            // precondition contract expects.
+            Expr::BeginProgram => false,
+            Expr::Quoted(_) | Expr::Decimal(_) | Expr::Char(_) | Expr::TaggedLiteral(_, _)
+            | Expr::TaggedQuotedLiteral(_, _) | Expr::Bool(_) | Expr::Float(_)
+            | Expr::Identifier(_) | Expr::UnitLiteral { .. } => true,
+            Expr::BinaryOp(_, left, right) | Expr::Within(left, right) => {
+                Self::expr_is_side_effect_free(left) && Self::expr_is_side_effect_free(right)
+            }
+            Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Field(inner, _) => {
+                Self::expr_is_side_effect_free(inner)
+            }
+            _ => false,
+        }
     }
 
     fn logical_rhs(&mut self, out: &mut String, inputs: LogicalInputs<'_>, indent: &str) -> Option<String> {

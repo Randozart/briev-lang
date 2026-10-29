@@ -44,6 +44,7 @@ fn main() {
         "memcheck" => run_memcheck_cmd(&args[2..]),
         "ownership" => run_ownership_cmd(&args[2..]),
         "config" => run_config(&args[2..]),
+        "targets" => run_targets(),
         "init" => run_init(args.get(2).map(|s| s.as_str())),
         // 2026-10-06 (package/module v0, folio): dependency management.
         "update" => run_update(),
@@ -96,6 +97,25 @@ fn main() {
     }
 }
 
+fn run_targets() -> Result<(), String> {
+    let config = TargetConfig::load();
+    println!("EXTENSION\tBACKEND\tTRIPLE\tPLUGINS");
+    for (ext, entry) in config.extension_entries() {
+        let backend = entry.backend.as_deref().unwrap_or("(unset)");
+        let triple = entry.target_triple.as_deref().unwrap_or(match backend {
+            "llvm" => "x86_64-unknown-linux-gnu",
+            "webstack" => "wasm32-unknown-wasi",
+            "bad" => "(host)",
+            _ => "(profile default)",
+        });
+        let plugins = entry.plugins.as_ref()
+            .map(|p| p.join(","))
+            .unwrap_or_else(|| "(default)".to_string());
+        println!("{ext}\t{backend}\t{triple}\t{plugins}");
+    }
+    Ok(())
+}
+
 fn print_usage(program: &str) {
     let name = Path::new(program).file_name()
         .and_then(|n| n.to_str())
@@ -125,6 +145,7 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build", name);
     eprintln!("  {} build <file.bv> --dump-traces            Print macro expansion traces after build", name);
     eprintln!("  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)", name);
+    eprintln!("  {} targets                            List extension→target support rows", name);
     eprintln!("  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml", name);
     eprintln!("  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop", name);
     eprintln!("  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)", name);

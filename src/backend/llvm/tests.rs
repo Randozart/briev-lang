@@ -841,6 +841,32 @@ node run [tick < 1][tick == 1] {
 /// 2026-08-14 (boundary plan, SPEC §17.3): the four bit intrinsics dispatch
 /// to their LLVM lanes — `Popcount#` → ctpop, `LeadingZeros#` → ctlz,
 /// `TrailingZeros#` → cttz, `BitReverse#` → bitreverse.
+/// A collection state field stores its construction handle in `%State`.
+/// The header must be heap-owned: an `init_state` stack alloca dangles as
+/// soon as init returns, and the first scan/page read traps.
+#[test]
+fn state_collection_initializer_heap_allocates_header() {
+    let src = r#"
+import { List } from "std/collections.bv";
+let xs: List<Int> = [];
+let tick: Int = 0;
+node run [tick < 1][tick == 1] {
+    let n: Int = xs .^Length;
+    tick = n + 1;
+    term;
+};
+"#;
+    let (items, universe) = crate::library::parse_and_check("benchmarks/state_list_init.bv", &src)
+        .expect("parse_and_check failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define void @init_state(").expect("init_state must be emitted");
+    let end = start + ir[start..].find("\n}\n").expect("init_state must close");
+    let init = &ir[start..end];
+    assert!(!init.contains("alloca i8"), "state list header must not be stack-allocated; got:\n{init}");
+    assert!(init.contains("call ptr @malloc"), "state list header must be heap-allocated; got:\n{init}");
+}
+
 #[test]
 fn test_bit_intrinsics_emit_llvm_lanes() {
     let src = r#"
@@ -1547,6 +1573,32 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
         doc: None,
     });
     vec![obj_decl, inst, node]
+}
+
+/// Assigning a returned instance value to a top-level unpacked instance must
+/// seed its state columns. Regression for the server's
+/// `server = server_step(server, ...)` assignment silently dropped in the node.
+#[test]
+fn top_level_instance_assignment_seeds_columns() {
+    let src = r#"
+obj Counter { value: Int; };
+defn make_counter(v: Int) -> Counter { term Counter { value: v }; };
+let c: Counter = make_counter(0);
+node step [c.value == 0][c.value == 1] {
+    c = make_counter(1);
+    term;
+};
+"#;
+    let (items, universe) = crate::library::parse_and_check("benchmarks/instance_assign.bv", src)
+        .expect("parse_and_check failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let call = ir.find("call i64 @make_counter").expect("assignment call must be emitted");
+    let tail = &ir[call..(call + 4000).min(ir.len())];
+    assert!(tail.contains("getelementptr inbounds %State"),
+        "instance assignment must address the unpacked state columns; got:\n{tail}");
+    assert!(tail.contains("store i64"),
+        "instance assignment must store the returned member into its column; got:\n{tail}");
 }
 
 #[test]
@@ -12167,6 +12219,39 @@ node run [tick == 0][tick == 1] {
         !function_ir.contains("@__web_flush_state"),
         "stateless webstack defn must not flush machine state; got:\n{function_ir}"
     );
+}
+
+#[test]
+fn webstack_stateful_defn_after_txn_does_not_flush() {
+    // A defn emitted after a transaction must not inherit its txn_name and
+    // flush all bound fields at every `term`. Regression for client_movie_title
+    // flushing 32 fields per recursive call in the browser.
+    let src = r#"
+let tick: Int = 0;
+node run [tick == 0][tick == 1] {
+    let value: Int = title();
+    tick = value - 41;
+    term;
+};
+defn title() -> Int {
+    term 42;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).unwrap();
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().unwrap();
+    let universe = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new()
+        .with_webstack(true)
+        .with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi")
+        .with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let start = ir.find("define i32 @title()").expect("title defn must be emitted");
+    let end = start + ir[start..].find("\n}\n").expect("title defn must close");
+    let function_ir = &ir[start..end];
+    assert!(!function_ir.contains("@__web_flush_state"),
+        "stateful defn must not flush transaction state; got:\n{function_ir}");
 }
 
 #[test]

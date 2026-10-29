@@ -1,14 +1,31 @@
 # Session report — 2026-10-27
 
-**Last updated:** 2026-10-27T23:00:44+01:00
-**Status:** compiler and app build/check green; all local recommender gates pass
-except the browser catalogue gate. Proof-consumption ledger is active.
+**Last updated:** 2026-10-28T10:56:08+01:00
+**Status:** compiler and app build/check green; the browser catalogue gate passes.
+Proof-consumption ledger is active.
 **Companion PR:** https://github.com/odecode/recommender-app/pull/1 (draft)
 
 This report is the running record. Append a timestamped entry whenever work
 lands; do not rewrite history.
 
 ## Done
+
+### 2026-10-28 — browser catalogue root cause
+
+- `10:56` Fixed state collection initializers: the `op Init`/`InitEmpty`
+  construction header was stack-allocated in `init_state` and its handle stored
+  into `%State`; it dangled on return. The header is now heap-owned.
+- `10:56` Fixed wasm plain tail-recursion lowering: guarded `when` tails are
+  recognized, `i32`/`ptr` parameters round-trip through i64 loop slots, mutable
+  parameters reload/store their allocas, and deferred struct allocas flush
+  before the tail header.
+- `10:56` Fixed callable-txn state leakage: a preceding tail-lowered defn left
+  `tail_loop_backedge`/header/slots on the shared `FunctionState`, suppressing
+  txn body definitions and producing undefined-register IR.
+- Regression: `state_collection_initializer_heap_allocates_header`,
+  `guarded_tail_recursion_is_loop_lowerable`, `rbv_list_each_wasm`.
+- `cargo test --lib`: 3360 passed.
+- App `browser_pending_peer.mjs`: passes end to end.
 
 ### 2026-10-26 — app compatibility and compiler prerequisites
 
@@ -251,7 +268,6 @@ lands; do not rewrite history.
 
 ## Open risks
 
-- Browser catalogue failure is unresolved and blocks PR readiness.
 - Static layout/IR invariants are not yet enforced by the compiler.
 - Proof soundness is heuristic; two bugs were caught by tests, not formal
   verification.

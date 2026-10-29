@@ -2698,29 +2698,41 @@ impl LlvmBackend {
     /// 2026-10-25: returning a local enum must transfer its image to the
     /// caller-owned result slot before the local frame dies. Constructors may
     /// already use that slot; loading the full image first also permits aliasing.
-    /// Retire only when enum values are returned directly by value.
+    /// 2026-10-28: an exact source==destination handle is already caller-owned;
+    /// copying it again dominated ws_frame by 3.85x.
     pub(crate) fn retain_enum_return(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
         let Some(destination) = self.fun.enum_out_slot.clone() else { return reg.clone(); };
         let words = self.enum_image_words(self.fun.item_return_type.as_ref());
         let handle = self.adapt_to_i64(out, indent, reg);
+        let source_is_destination = self.fun.gen_reg();
+        let destination_handle = self.fun.gen_reg();
+        writeln!(out, "{indent}{destination_handle} = ptrtoint ptr {destination} to i64").ok();
+        writeln!(out, "{indent}{source_is_destination} = icmp eq i64 {handle}, {destination_handle}").ok();
+        let same_block = self.fun.next_label("ret_same");
+        let copy_block = self.fun.next_label("ret_copy");
+        let done_block = self.fun.next_label("ret_done");
+        writeln!(out, "{indent}br i1 {source_is_destination}, label %{same_block}, label %{copy_block}").ok();
+        writeln!(out, "{indent}{same_block}:").ok();
+        writeln!(out, "{indent}  br label %{done_block}").ok();
+        writeln!(out, "{indent}{copy_block}:").ok();
         let source = self.fun.gen_reg();
         writeln!(out, "{indent}{source} = inttoptr i64 {handle} to ptr").ok();
         let mut values = Vec::with_capacity(words);
         for word in 0..words {
             let address = self.fun.gen_reg();
             let value = self.fun.gen_reg();
-            writeln!(out, "{indent}{address} = getelementptr i64, ptr {source}, i64 {word}").ok();
-            writeln!(out, "{indent}{value} = load i64, ptr {address}").ok();
+            writeln!(out, "{indent}  {address} = getelementptr i64, ptr {source}, i64 {word}").ok();
+            writeln!(out, "{indent}  {value} = load i64, ptr {address}").ok();
             values.push(value);
         }
         for (word, value) in values.iter().enumerate() {
             let address = self.fun.gen_reg();
-            writeln!(out, "{indent}{address} = getelementptr i64, ptr {destination}, i64 {word}").ok();
-            writeln!(out, "{indent}store i64 {value}, ptr {address}").ok();
+            writeln!(out, "{indent}  {address} = getelementptr i64, ptr {destination}, i64 {word}").ok();
+            writeln!(out, "{indent}  store i64 {value}, ptr {address}").ok();
         }
+        writeln!(out, "{indent}  br label %{done_block}").ok();
+        writeln!(out, "{indent}{done_block}:").ok();
         let result = self.fun.gen_reg();
-        // 2026-10-25: the caller-owned result slot is a target-width handle
-        // (i32 on wasm32), not the i64 word used inside the image.
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{indent}{result} = ptrtoint ptr {destination} to {hw}").ok();
         TypedRegister { name: result, ty: reg.ty.clone() }

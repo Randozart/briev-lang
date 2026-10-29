@@ -364,33 +364,13 @@ impl Reactor {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }
-            Statement::Foreach { item, list, body, .. } => {
-                let list_val = interp.eval_expr(list)?;
-                // 2026-08-06 (Slice G/I): Expr::List evaluates to a Product.
-                let fields = match list_val {
-                    Value::Product { fields, .. } => fields,
-                    _ => Vec::new(),
-                };
-                for elem in fields {
-                    interp.state.insert(item.clone(), elem);
-                    // 2026-08-17 (foreach break): a body `break;` stops this
-                    // foreach (interp.exec_stmt surfaces it as RuntimeError::Break).
-                    let mut broke = false;
-                    for stmt in body {
-                        match interp.exec_stmt(stmt) {
-                            Err(crate::interpreter::RuntimeError::Break) => {
-                                broke = true;
-                                break;
-                            }
-                            r => {
-                                r?;
-                            }
-                        }
-                    }
-                    if broke {
-                        break;
-                    }
-                }
+            Statement::Foreach { .. } => {
+                // Foreach is a language-level iterable construct, not a
+                // reactor scheduling decision. Delegate to the interpreter so
+                // ranges, Products, Bits, break, and binding scope all match
+                // the reference. The old Product-only copy silently skipped
+                // `foreach j in 0..7000`, leaving ws_encode's source unseeded.
+                interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }
             Statement::Block(body) => {
@@ -629,6 +609,32 @@ mod tests {
         let result = reactor.run(&mut interp).unwrap();
         assert!(result);
         assert_eq!(interp.state.get("v").and_then(|v| v.as_i64()), Some(20));
+    }
+
+    #[test]
+    fn test_foreach_iterates_integer_range() {
+        // Regression: the reactor's Product-only copy skipped `0..3`, so the
+        // loop variable never advanced and range-driven fills were no-ops.
+        let foreach = Statement::Foreach {
+            item: "v".into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(Expr::Decimal(0)),
+                end: Box::new(Expr::Decimal(3)),
+                inclusive: false,
+            }),
+            body: vec![],
+        };
+        let txn = make_rct_txn(
+            "iter_range",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            vec![foreach, Statement::Term(None)],
+        );
+        let mut interp = Interpreter::new();
+        let reactor = build_reactor(&simple_program(vec![txn]));
+        let result = reactor.run(&mut interp).unwrap();
+        assert!(result);
+        assert_eq!(interp.state.get("v").and_then(|v| v.as_i64()), Some(2));
     }
 
     #[test]
