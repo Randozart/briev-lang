@@ -21,6 +21,12 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::LazyLock;
 
+pub(crate) struct WordImageCopy<'a> {
+    pub source: &'a str,
+    pub destination: &'a str,
+    pub words: usize,
+}
+
 impl LlvmBackend {
     // ═══════════════════════════════════════════════════════════════
     // Section 1: Cell Rewriting
@@ -2778,6 +2784,30 @@ impl LlvmBackend {
             .map(|l| l.image_words)
             .unwrap_or(2)
             .max(2)
+    }
+
+    /// Shared word-image copy for stable carriers and inline enum images.
+    /// Source and destination are already-resolved LLVM pointers.
+    pub(crate) fn emit_word_image_copy(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        image: WordImageCopy<'_>,
+    ) {
+        let WordImageCopy {
+            source,
+            destination,
+            words,
+        } = image;
+        for word in 0..words {
+            let value = self.fun.gen_reg();
+            let src_gep = self.fun.gen_reg();
+            let dst_gep = self.fun.gen_reg();
+            writeln!(out, "{indent}{src_gep} = getelementptr i64, ptr {source}, i64 {word}").ok();
+            writeln!(out, "{indent}{dst_gep} = getelementptr i64, ptr {destination}, i64 {word}").ok();
+            writeln!(out, "{indent}{value} = load i64, ptr {src_gep}").ok();
+            writeln!(out, "{indent}store i64 {value}, ptr {dst_gep}").ok();
+        }
     }
 
     /// True when this owner/type group has no observed escape, so the literal

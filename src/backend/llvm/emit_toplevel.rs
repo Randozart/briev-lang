@@ -1,5 +1,6 @@
 use crate::ast::{BinaryOpKind, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::emit_stmt::emit_statement;
+use crate::backend::llvm::helpers::WordImageCopy;
 use crate::backend::llvm::{float_to_llvm_hex, float64_to_llvm_hex, f32_to_f16_hex, llvm_type_byte_size, protocol_llvm_type, LlvmBackend, TypedRegister};
 use crate::type_universe::{ResolvedType, TypeUniverse};
 use crate::typechecker::defn_section_name;
@@ -4081,15 +4082,7 @@ impl LlvmBackend {
                 let words = self.enum_image_words(Some(ty));
                 let src = self.fun.gen_reg();
                 writeln!(out, "  {} = inttoptr i64 {} to ptr", src, initial).ok();
-                for word in 0..words {
-                    let load = self.fun.gen_reg();
-                    let gep_src = self.fun.gen_reg();
-                    let gep_dst = self.fun.gen_reg();
-                    writeln!(out, "  {} = getelementptr i64, ptr {}, i64 {}", gep_src, src, word).ok();
-                    writeln!(out, "  {} = getelementptr i64, ptr {}, i64 {}", gep_dst, hidden, word).ok();
-                    writeln!(out, "  {} = load i64, ptr {}", load, gep_src).ok();
-                    writeln!(out, "  store i64 {}, ptr {}", load, gep_dst).ok();
-                }
+                self.emit_word_image_copy(out, "  ", WordImageCopy { source: &src, destination: &hidden, words });
                 let handle = self.fun.gen_reg();
                 writeln!(out, "  {} = ptrtoint ptr {} to i64", handle, hidden).ok();
                 self.fun.let_bindings.insert(name.clone(), handle);

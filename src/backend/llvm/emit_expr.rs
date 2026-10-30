@@ -12,6 +12,7 @@
 use crate::ast::*;
 use crate::ast::{Expr, Statement, Type};
 use crate::backend::llvm::emit_stmt;
+use crate::backend::llvm::helpers::WordImageCopy;
 
 /// 2026-10-07 (frgn void signature agreement): build the `call` line for a
 /// foreign symbol. A void callee emits `call void @sym(args)` (no result
@@ -6067,15 +6068,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let handle = self.adapt_to_i64(out, indent, &value);
         let source = self.fun.gen_reg();
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, source, handle).ok();
-        for word in 0..nested_layout.image_words {
-            let src_gep = self.fun.gen_reg();
-            let dst_gep = self.fun.gen_reg();
-            let value = self.fun.gen_reg();
-            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, src_gep, source, word).ok();
-            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, dst_gep, nested, word).ok();
-            writeln!(out, "{}{} = load i64, ptr {}", indent, value, src_gep).ok();
-            writeln!(out, "{}store i64 {}, ptr {}", indent, value, dst_gep).ok();
-        }
+        self.emit_word_image_copy(out, indent, WordImageCopy { source: &source, destination: &nested, words: nested_layout.image_words });
         None
     }
 
@@ -6523,15 +6516,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             if let Some((hidden, words)) = carrier_slots.get(&index).cloned() {
                 let src = self.fun.gen_reg();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, value).ok();
-                for word in 0..words {
-                    let item = self.fun.gen_reg();
-                    let src_gep = self.fun.gen_reg();
-                    let dst_gep = self.fun.gen_reg();
-                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, src_gep, src, word).ok();
-                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, dst_gep, hidden, word).ok();
-                    writeln!(out, "{}{} = load i64, ptr {}", indent, item, src_gep).ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, item, dst_gep).ok();
-                }
+                self.emit_word_image_copy(out, indent, WordImageCopy { source: &src, destination: &hidden, words });
                 let handle = self.fun.gen_reg();
                 writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, handle, hidden).ok();
                 writeln!(out, "{}store i64 {}, ptr {}", indent, handle, slot).ok();
@@ -6624,8 +6609,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let mut carrier_replace: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let self_call_carrier_replace = self.fun.tail_loop_fn.as_deref() == Some(name);
         if let Some(carriers) = self.ctx.tail_carrier.info(name) {
+            let carriers = carriers.carriers.clone();
             let self_call = self_call_carrier_replace;
-            for carrier in &carriers.carriers {
+            for carrier in &carriers {
                 let Some(arg) = arg_regs.get(carrier.param_index) else {
                     continue;
                 };
@@ -6661,15 +6647,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     .unwrap_or(2);
                 let src = self.fun.gen_reg();
                 writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, src, arg.name).ok();
-                for w in 0..words {
-                    let load = self.fun.gen_reg();
-                    let store_slot = self.fun.gen_reg();
-                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, load, src, w).ok();
-                    let value = self.fun.gen_reg();
-                    writeln!(out, "{}{} = load i64, ptr {}", indent, value, load).ok();
-                    writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, store_slot, hidden, w).ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, value, store_slot).ok();
-                }
+                self.emit_word_image_copy(out, indent, WordImageCopy { source: &src, destination: &hidden, words });
                 call_args.push(format!("ptr {}", hidden));
                 carrier_replace.insert(carrier.param_index);
             }

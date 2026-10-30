@@ -1072,14 +1072,16 @@ Gate:
 
 ### Phase D6 — loop/carrier lane
 
-**Status 2026-10-30: D6a COMPLETE.** The destination plan now owns recursive
+**Status 2026-10-30: D6a/D6b COMPLETE.** The destination plan now owns recursive
 carrier facts: parameter carrier IDs, stable-carrier class, per-tail-arm
 argument classification, result local, sret callee, proof, and the callable's
 hidden-ABI carrier count. The tail-carrier walker records argument classes and
 the backend reconstructs its existing `TailCarrierPlan` from the unified plan,
 so there is one carrier source of truth. No carrier lowering changed.
-Validation: 3416 lib tests, quick IR determinism, recursive-carrier IR test,
-and FSM/ws/SPSC correctness MATCH.
+D6b routes recursive-carrier seeding/backedge copies and nested inline-enum
+copies through `emit_word_image_copy`, removing three duplicated word-copy
+loops. Validation: 3416 lib tests, quick IR determinism, recursive-carrier IR
+test, and FSM/ws/SPSC correctness MATCH.
 
 **Deliverables:**
 
@@ -1381,3 +1383,4 @@ The generalized implementation is complete when:
 - [x] Complete D5b proven non-escaping object frame images, with loop/address
       escape guards and full-suite A/B.
 - [x] Complete D6a recursive-carrier unification and backend plan consumption.
+- [x] Complete D6b shared word-image copy helper for recursive carriers.
