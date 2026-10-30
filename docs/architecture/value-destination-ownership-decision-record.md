@@ -902,12 +902,14 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D3b in progress. `defn_sret` is plan-driven; enum
-construction/match emission still uses the legacy path.
+**Current phase:** D3 complete. Enum ABI, layout lookups, constructor/match
+agreement, and value retention consume the joined `EnumLoweringPlan`; D4 small
+object scalar replacement is next.
 
-**Rollback:** delete `value_lowering.rs` and its module line, drop the enum
-fields from the generalized plan, and restore `defn_sret` from
-`sret_safe_defns` to return to D1/D2 analysis-only state.
+**Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
+reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.
+Delete `value_lowering.rs` and the enum fields from the generalized plan to
+return to D1/D2 analysis-only state.
 
 This record is authoritative for destination/ownership lowering. Implementation
 status lives in the execution plan; do not edit historical evidence in place.

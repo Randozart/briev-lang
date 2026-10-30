@@ -5,6 +5,7 @@ mod collection_assignment;
 pub mod context;
 pub mod directive;
 pub mod dispatch;
+pub mod enum_lowering;
 pub mod emit_expr;
 pub mod emit_stmt;
 pub mod emit_toplevel;
@@ -278,10 +279,7 @@ impl LlvmBackend {
         &self,
         ty: &crate::ast::Type,
     ) -> Option<crate::analysis::enum_layout::EnumValueRepr> {
-        self.ctx
-            .enum_layout_planner
-            .as_ref()
-            .and_then(|planner| planner.value_repr_for(ty))
+        self.enum_value_repr_for(ty)
     }
 
     /// Warn once per plain txn that can never execute: non-reactive,
@@ -3227,20 +3225,31 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
         }
         self.build_field_index(&reordered_items);
-        // 2026-10-21 (P2-1 ReturnedSmall): classify enum-returning defns from
-        // the structural plan. Only constructor-shaped returns take the hidden
-        // sret slot; everything else keeps the boxed ABI.
-        self.ctx.defn_sret = self
-            .ctx
-            .generalized_destination_ownership
-            .enum_hidden_result_callables()
-            .into_iter()
-            .collect();
         // 2026-10-21 (B1 nested enum layout): concrete instance planner.
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
             .max_enum_inline_depth;
         self.ctx.enum_layout_planner =
             Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
+        let enum_lowering = self
+            .ctx
+            .enum_layout_planner
+            .as_ref()
+            .map(|layouts| {
+                crate::backend::llvm::enum_lowering::EnumLoweringPlan::build(
+                    &self.ctx.generalized_destination_ownership,
+                    layouts,
+                )
+            })
+            .unwrap_or_default();
+        self.ctx.enum_lowering = enum_lowering;
+        // 2026-10-21 (P2-1 ReturnedSmall): only constructor-shaped, sret-safe
+        // enum results take the hidden slot; the joined plan owns the verdict.
+        self.ctx.defn_sret = self
+            .ctx
+            .enum_lowering
+            .hidden_result_callables()
+            .into_iter()
+            .collect();
         let tail_plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
         self.ctx.tail_loop =
             crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);

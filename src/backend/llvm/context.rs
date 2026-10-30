@@ -136,6 +136,8 @@ pub struct CompilerContext {
     pub tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan,
     /// 2026-10-21 (nested enum layout): concrete enum image planner.
     pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
+    /// 2026-10-30 (D3b): semantic enum facts joined with physical layout.
+    pub enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan,
     /// 2026-10-30 (destination ownership D3): generalized frontend plan.
     /// Enum ABI decisions consume it first; later lanes read the same plan.
     pub generalized_destination_ownership:
@@ -658,6 +660,7 @@ impl CompilerContext {
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
             tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan::default(),
             enum_layout_planner: None,
+            enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
             generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             defn_may_trap: std::collections::HashSet::new(),

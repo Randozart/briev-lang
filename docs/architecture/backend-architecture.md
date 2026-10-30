@@ -18,10 +18,13 @@ backend is migrating to one frontend-derived `ValueDestinationPlan` for
 enum/object/composite/collection/loop/ABI destinations. Phase R1 landed
 analysis-only semantic value facts in
 `AnalysisResults.destination_ownership`. Lowering must consume that plan
-through the future shared `value_lowering.rs` helpers; it must not derive
+through the shared `value_lowering.rs` helpers; it must not derive
 destination/lifetime decisions from register names or scattered local maps.
-Public/runtime ABI remains frozen; internal helper ABI plans switch atomically
-per callable.
+D3 joins the semantic enum plan with target physical layout in
+`enum_lowering.rs`; enum construction, projection, retention, image width, and
+`defn_sret` read that joined entry, with `EnumLayoutPlanner` as the conservative
+fallback. Public/runtime ABI remains frozen; internal helper ABI plans switch
+atomically per callable.
 
 2026-10-22: `logical.rs` owns LLVM `&&`/`||` evaluation control flow. Specific
 AST dispatch arms select the lazy path before either binary operand is emitted;
@@ -71,7 +74,8 @@ The backend state is strictly stratified into three lifetimes to prevent state l
 | `vector_phi.rs` | Vector phi group detection and emission |
 | `loop_engine/` | Loop emission strategies (counter.rs, ssa.rs) |
 | `tests.rs` | Backend unit tests |
-| `value_lowering.rs` | Planned/shared destination ownership lowering helpers: destination writes, copies, materialization, ABI conversions (implementation lane; do not scatter these decisions in emit modules) |
+| `value_lowering.rs` | Shared destination-ownership lowering helpers: destination writes, copies, materialization, ABI conversions (implementation lane; do not scatter these decisions in emit modules) |
+| `enum_lowering.rs` | Joined semantic-enum/physical-layout plan: variant tags, payload inline flags, image width, value representation, callable enum ABI policy |
 
 ### 1.2.5 Backend Folder Layout + Normalizer Responsibility
 

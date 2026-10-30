@@ -27,6 +27,13 @@ Rules added by that record:
 Do not add new ad-hoc destination metadata to `FunctionContext`. Destination
 decisions belong in the plan and shared lowering helpers.
 
+D3 (2026-10-30) joins frontend enum facts with the target-configured
+`EnumLayoutPlanner` in `EnumLoweringPlan`. Enum construction, match/projection,
+value retention, image width, and value representation read the joined entry;
+missing entries fall back to the planner. The backend validates constructor/
+match tag agreement in debug builds. Physical layout remains owned by
+`EnumLayoutPlanner`; the semantic plan never guesses word counts.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

@@ -5853,6 +5853,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     /// `resolve_field_type` performs for struct members. 2026-10-05 (json.bv):
     /// variant bindings previously hardcoded Int.
     pub(crate) fn enum_payload_type(&self, scrut_ty: &Type, vname: &str) -> Option<Type> {
+        if let Some(variant) = self.ctx.enum_lowering.variant(scrut_ty, vname) {
+            return variant.payload.clone();
+        }
         let declared = self.ctx.variant_payload.get(vname).cloned().or_else(|| {
             let bare = vname.rsplit("::").next().unwrap_or(vname);
             self.ctx.variant_payload.get(bare).cloned()
@@ -5925,7 +5928,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         if std::env::var_os("BRIEV_DIAG_ENUM_TYPE").is_some() {
             let layout = saved_expected_enum
                 .as_ref()
-                .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)));
+                .and_then(|t| self.enum_layout(t));
             eprintln!(
                 "diag enum: variant='{}' expected={:?} payload={:?} layout={:?}",
                 v, saved_expected_enum, payload_expected, layout
@@ -5941,13 +5944,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // still store a handle.
         let layout = saved_expected_enum
             .as_ref()
-            .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)));
+            .and_then(|t| self.enum_layout(t));
         let arg_is_ctor = args.len() == 1
             && match &args[0] {
                 Expr::Call(n, _, _) => self.enum_variant_ctor(n).is_some(),
                 Expr::Field(_, n) => self.enum_variant_ctor(n).is_some(),
                 _ => false,
             };
+        debug_assert!(
+            saved_expected_enum
+                .as_ref()
+                .map_or(true, |ty| self.ctx.enum_lowering.agrees_with_tag(ty, tag_idx, v)),
+            "constructor/layout disagreement for variant {v} tag {tag_idx}"
+        );
         let inline_layout = layout
             .as_ref()
             .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
@@ -5982,13 +5991,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 // but the outer variant still knows the concrete nested enum.
                 let nested_layout = payload_expected
                     .as_ref()
-                    .and_then(|t| self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(t)))
-                    .or_else(|| {
-                        self.ctx
-                            .enum_layout_planner
-                            .as_ref()
-                            .and_then(|p| p.layout_for(&preg.ty))
-                    });
+                    .and_then(|t| self.enum_layout(t))
+                    .or_else(|| self.enum_layout(&preg.ty));
                 match nested_layout {
                     Some(nested_layout) => {
                         let handle = self.adapt_to_i64(out, indent, &preg);
@@ -6290,7 +6294,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // callee's match lowering will read.
                     let saved_expected = self.fun.expected_enum_type.clone();
                     if let Some(pt) = fn_params.as_ref().and_then(|p| p.get(i)) {
-                        if self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(pt)).is_some() {
+                        if self.enum_layout(pt).is_some() {
                             self.fun.expected_enum_type = Some(pt.clone());
                         }
                     }
@@ -7430,11 +7434,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         .enum_variant_ctor(vname)
                         .map(|(_, idx)| idx)
                         .unwrap_or(usize::MAX);
+                    debug_assert!(
+                        tag_idx == usize::MAX
+                            || self.ctx.enum_lowering.agrees_with_tag(scrut_ty, tag_idx, vname),
+                        "match/layout disagreement for variant {vname} tag {tag_idx}"
+                    );
                     let inline_payload = self
-                        .ctx
-                        .enum_layout_planner
-                        .as_ref()
-                        .and_then(|p| p.layout_for(scrut_ty))
+                        .enum_layout(scrut_ty)
                         .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
                         .unwrap_or(false);
                     let payload = if inline_payload {

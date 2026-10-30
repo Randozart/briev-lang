@@ -858,16 +858,21 @@ determinism, Praetor clean.
 
 ### Phase D3 — generalized enum lane
 
-**Status 2026-10-30: D3a/D3b-step-1 COMPLETE.** The generalized plan records
-declared enum constructors, payload types, enum-shaped values, and per-callable
-enum result plans. `CallerDestination` is claimed only when the existing
+**Status 2026-10-30: D3 COMPLETE.** The generalized plan records declared
+enum constructors, payload types, enum-shaped values, and per-callable enum
+result plans. `CallerDestination` is claimed only when the existing
 `sret_safe_defns` gate also proves the callable safe; exported enum results stay
-boxed to preserve the public ABI. The backend now fills `defn_sret` from
-`enum_hidden_result_callables()` instead of recomputing `sret_safe_defns`; an
-equivalence test pins the two sets. No enum construction/match emitter changed
-yet. Validation: 13 destination-model tests, 3397 lib tests, quick IR
-determinism, Praetor no new diagnostics.
-
+boxed to preserve the public ABI. The backend joins semantic enum facts with
+`EnumLayoutPlanner` in `EnumLoweringPlan` and fills `defn_sret` from the joined
+hidden-result policy. Constructors, match/projection, value
+retention, image width, and value representation now read that joined entry with
+the planner as the conservative fallback. Constructor/match tag agreement is
+debug-validated. Validation: 5 enum-lowering tests, 3402 lib tests, quick IR
+determinism, focused JSON/ws/loop gates, and byte-identical IR for
+`nested_enum_payload_match`, `local_enum_smoke`,
+`enum_aggregate_lifetime`, `enum_state_lifetime`, and `ws_frame` against the
+immediate parent commit. `ws_frame` correctness remains `0016384`. Praetor
+clean on new files; only pre-existing baseline diagnostics remain.
 **Deliverables:**
 
 - enum shape facts;
@@ -895,6 +900,50 @@ Gate:
 - all recommender server gates;
 - full lib/determinism;
 - no incorrect retain/copy.
+
+#### D3b implementation addendum (2026-10-30)
+
+No separate plan document: this addendum is authoritative for the remaining D3
+migration. The umbrella owns scope/gates; the ADR owns architecture.
+
+**Bridge.** The frontend plan carries semantic enum facts and callable result
+destinations, but physical image width and inline-payload decisions stay in the
+backend because they depend on target settings. Join them once in the backend:
+
+- input A: `GeneralizedDestinationOwnershipPlan.enums` and
+  `.enum_callables`;
+- input B: the target-configured `EnumLayoutPlanner`;
+- output: deterministic `EnumLoweringPlan` keyed by concrete enum `Type`;
+- each entry records tag order, variant payload layout/inline flag, image
+  width, value representation, constructor-visible variant names, and the
+  callable result policy already selected by the frontend.
+
+The join must not inspect Briev type-name strings as physical truth; enum
+identity comes from the structured type plus declared variants. Construction,
+match/projection, and call-site hidden-result paths consume the same joined
+entry. Unknown concrete layouts retain the legacy boxed fallback.
+
+**Ordered slices.** Each slice is a separate commit and gate:
+
+1. Add `EnumLoweringPlan` + tests proving exact agreement with the existing
+   layout planner and frontend enum facts. No emitter change.
+2. Route constructor tag/payload emission through the joined plan. Preserve
+   current malloc/inline/sret choices; require exact IR A/B for the enum corpus.
+3. Route match tag extraction and payload projection through the same joined
+   entry. Add a constructor/match agreement validator.
+4. Route call-site enum result destinations through the joined callable policy
+   (the `defn_sret` set is already plan-driven).
+5. Remove only the superseded ad-hoc enum layout lookups; leave boxed fallback
+   for missing/unknown entries.
+
+**Validation.** A/B every slice against its immediate parent commit, not the
+stale baseline worktree: compile the enum fixtures with both binaries, byte
+compare `.ll`, run both outputs, then run the D3 gate. Add targeted tests for
+direct constructors, nested inline payloads, match bindings, multi-payload
+tuples, sret callers, recursive/boxed fallback, and exported boxed ABI.
+
+**Rollback.** Delete `EnumLoweringPlan`, restore the prior emitter lookups, and
+keep the D3a facts; no public/runtime ABI or source syntax depends on this join.
 
 ### Phase D4 — generalized object lane
 
@@ -1239,3 +1288,5 @@ The generalized implementation is complete when:
 - [x] Complete Phase D3a enum destination facts (no emitter change).
 - [x] Complete D3b step 1: backend consumes plan-driven enum ABI
       (`defn_sret`) with equivalence pinned.
+- [x] Complete D3b: `EnumLoweringPlan` join, plan-driven enum layout reads,
+      constructor/match agreement, exact IR A/B.

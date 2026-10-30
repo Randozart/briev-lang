@@ -2674,12 +2674,44 @@ impl LlvmBackend {
         Some(slot)
     }
 
+    /// Joined enum layout view. The D3b plan is authoritative when it has a
+    /// concrete entry; the target layout planner remains the conservative
+    /// fallback for types not seen by the frontend pass.
+    pub(crate) fn enum_layout(&self, ty: &crate::ast::Type) -> Option<crate::analysis::enum_layout::EnumLayout> {
+        self.ctx
+            .enum_lowering
+            .layout(ty)
+            .cloned()
+            .or_else(|| {
+                self.ctx
+                    .enum_layout_planner
+                    .as_ref()
+                    .and_then(|planner| planner.layout_for(ty))
+            })
+    }
+
+    pub(crate) fn enum_value_repr_for(
+        &self,
+        ty: &crate::ast::Type,
+    ) -> Option<crate::analysis::enum_layout::EnumValueRepr> {
+        self.ctx
+            .enum_lowering
+            .entry(ty)
+            .map(|entry| entry.representation)
+            .or_else(|| {
+                self.ctx
+                    .enum_layout_planner
+                    .as_ref()
+                    .and_then(|planner| planner.value_repr_for(ty))
+            })
+    }
+
     /// 2026-10-25: an aggregate can outlive the caller-owned temporary image
     /// returned by an enum call. Give stored enum values an independent image;
     /// retain stack-backed calls for local consumers. Retire with an ownership
     /// proof that the source image already outlives the destination aggregate.
     pub(crate) fn own_enum_value(&mut self, out: &mut String, indent: &str, reg: &TypedRegister) -> TypedRegister {
-        let Some(layout) = self.ctx.enum_layout_planner.as_ref().and_then(|p| p.layout_for(&reg.ty)) else {
+        let Some(layout) = self.enum_layout(&reg.ty) else {
             return reg.clone();
         };
         let bytes = layout.image_words * 8;
@@ -2742,15 +2774,10 @@ impl LlvmBackend {
     /// concrete enum type. Unknown/non-enum types use the legacy 2-word
     /// `{tag,payload}` floor.
     pub(crate) fn enum_image_words(&self, ty: Option<&crate::ast::Type>) -> usize {
-        ty.and_then(|t| {
-            self.ctx
-                .enum_layout_planner
-                .as_ref()
-                .and_then(|p| p.layout_for(t))
-        })
-        .map(|l| l.image_words)
-        .unwrap_or(2)
-        .max(2)
+        ty.and_then(|t| self.enum_layout(t))
+            .map(|l| l.image_words)
+            .unwrap_or(2)
+            .max(2)
     }
 
     /// Image width for an enum-returning defn's declared return type.
