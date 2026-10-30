@@ -849,6 +849,13 @@ Gate:
 - helper IR tests pass;
 - no legacy emitter changed except optional imports.
 
+**Status 2026-10-30: COMPLETE.** Added
+`src/backend/llvm/value_lowering.rs`: plan-facing `ValueLoweringContext`,
+pure `ConversionPlan` decisions, boundary-plan mapping, and exact
+`llvm.memcpy`/`llvm.memset` emitters over resolved `MemoryRange`s. No emitter
+call sites changed. Validation: 9 helper tests, 3393 lib tests, quick IR
+determinism, Praetor clean.
+
 ### Phase D3 — generalized enum lane
 
 **Deliverables:**
@@ -1218,3 +1225,4 @@ The generalized implementation is complete when:
 - [x] Capture branch baseline
       (`benchmarks/results/2026-10-30-value-destination-branch-baseline.md`).
 - [x] Complete Phase D1 schema completion (analysis-only).
+- [x] Complete Phase D2 shared value-lowering skeleton (no call sites).

@@ -16,6 +16,7 @@ mod logical;
 pub mod normalizer;
 pub mod types;
 pub mod strategy;
+pub mod value_lowering;
 pub mod vector_phi;
 
 #[cfg(test)]
