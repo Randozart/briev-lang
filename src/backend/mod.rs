@@ -336,8 +336,15 @@ pub fn analyze_program(
             type_universe,
             &|_| None,
         );
-    let destination_ownership =
+    let mut destination_ownership =
         crate::analysis::destination_ownership::analyze(items);
+    // D6: the loop engine's Local/Machine decision joins the destination plan
+    // after both source passes exist; no body is re-walked.
+    crate::analysis::destination_model::attach_loop_engine_plans(
+        &mut destination_ownership.generalized,
+        &loop_shapes,
+        &materialization,
+    );
         AnalysisResults {
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),

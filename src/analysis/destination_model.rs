@@ -424,6 +424,33 @@ pub struct RecursiveCarrierPlan {
     pub proof: ProofStatus,
 }
 
+/// Loop-engine storage decision for one carried field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopFieldRepresentation {
+    /// Loop-local SSA phi; no post-loop state commitment.
+    Phi,
+    /// Stable state carrier; committed at loop convergence.
+    StateCarrier,
+}
+
+/// One carried field's loop-engine destination.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopFieldPlan {
+    pub field: String,
+    pub storage: crate::analysis::materialization::StorageClass,
+    pub representation: LoopFieldRepresentation,
+    pub proof: ProofStatus,
+}
+
+/// Unified loop-engine destination plan for a bounded reactive node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopEnginePlan {
+    pub node: String,
+    pub counter: String,
+    pub fields: BTreeMap<String, LoopFieldPlan>,
+    pub proof: ProofStatus,
+}
+
 /// Generalized loop plan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopPlan {
@@ -619,6 +646,7 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub sinks: BTreeMap<DestinationId, DestinationSinkPlan>,
     pub tuples: BTreeMap<DestinationId, TupleDestinationPlan>,
     pub recursive_carriers: BTreeMap<CallableId, RecursiveCarrierPlan>,
+    pub loop_engines: BTreeMap<String, LoopEnginePlan>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -861,6 +889,74 @@ fn populate_hidden_tail_carriers(
             callable_plan.hidden_abi.tail_carriers = plan.carriers.len() as u64;
         }
     }
+}
+
+/// Attach frontend loop-engine plans to the generalized destination plan.
+///
+/// `LoopShape` owns carried-field liveness; `LoopMaterializationPlan` owns the
+/// Local/Machine split. This adapter records both without re-walking bodies.
+pub fn attach_loop_engine_plans(
+    plan: &mut GeneralizedDestinationOwnershipPlan,
+    shapes: &std::collections::HashMap<String, crate::analysis::loop_shape::LoopShape>,
+    materialization: &std::collections::HashMap<
+        String,
+        crate::analysis::materialization::LoopMaterializationPlan,
+    >,
+) {
+    plan.loop_engines = shapes
+        .iter()
+        .map(|(node, shape)| {
+            let materialized = materialization.get(node);
+            let fields = shape
+                .carried_fields
+                .iter()
+                .map(|field| {
+                    let storage = materialized
+                        .and_then(|plan| plan.fields.get(field))
+                        .copied()
+                        .unwrap_or_else(|| {
+                            if shape.local_fields.contains(field) {
+                                crate::analysis::materialization::StorageClass::Local
+                            } else {
+                                crate::analysis::materialization::StorageClass::Machine
+                            }
+                        });
+                    let (representation, proof) = match storage {
+                        crate::analysis::materialization::StorageClass::Local => (
+                            LoopFieldRepresentation::Phi,
+                            ProofStatus::Proven {
+                                reasons: BTreeSet::from([ProofReason::NonEscaping]),
+                            },
+                        ),
+                        _ => (
+                            LoopFieldRepresentation::StateCarrier,
+                            ProofStatus::Proven {
+                                reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+                            },
+                        ),
+                    };
+                    (
+                        field.clone(),
+                        LoopFieldPlan {
+                            field: field.clone(),
+                            storage,
+                            representation,
+                            proof,
+                        },
+                    )
+                })
+                .collect();
+            let engine = LoopEnginePlan {
+                node: node.clone(),
+                counter: shape.counter.clone(),
+                fields,
+                proof: ProofStatus::Proven {
+                    reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+                },
+            };
+            (node.clone(), engine)
+        })
+        .collect();
 }
 
 /// Reconstruct the backend's current carrier ABI view from the unified plan.
@@ -2270,6 +2366,43 @@ defn loop(n: Int, state: S, sum: Int) -> Int {
             tail_carrier_plan_from_generalized(&plan),
             crate::analysis::tail_carrier::build_tail_carrier_plan(&items)
         );
+    }
+
+    #[test]
+    fn loop_engine_plans_join_shape_and_materialization() {
+        let src = r#"
+let count: Int = 0;
+let acc: Int = 0;
+let scratch: Int = 0;
+node run [count < 4][count == 4] {
+    acc = acc + count;
+    scratch = count * 2;
+    count = count + 1;
+};
+"#;
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let items = parser.parse_program().expect("parse");
+        let graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
+            &items,
+            &None,
+            &vec![],
+        );
+        let shapes = crate::analysis::loop_shape::build_loop_shapes(&graph, &items, 4);
+        let materialization =
+            crate::analysis::materialization::build_materialization_plans(&shapes);
+        let mut rebuilt = crate::analysis::destination_ownership::analyze(&items).generalized;
+        crate::analysis::destination_model::attach_loop_engine_plans(
+            &mut rebuilt,
+            &shapes,
+            &materialization,
+        );
+        let engine = rebuilt.loop_engines.get("run").expect("loop engine");
+        assert_eq!(engine.counter, "count");
+        assert!(engine
+            .fields
+            .values()
+            .any(|field| field.representation == LoopFieldRepresentation::StateCarrier));
     }
 
     #[test]

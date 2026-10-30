@@ -6898,11 +6898,29 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-21 (canonical Local/effect model): the frontend's
         // materialization plan is the source of truth for Local fields. Fall
         // back to the shape only when a caller built shapes without plans.
-        let planned_local: std::collections::HashSet<String> = analysis
-            .materialization
+        let planned_local: std::collections::HashSet<String> = self
+            .ctx
+            .generalized_destination_ownership
+            .loop_engines
             .get(&node.name)
-            .map(|plan| plan.local_fields().cloned().collect())
-            .unwrap_or_else(|| shape.local_fields.iter().cloned().collect());
+            .map(|engine| {
+                engine
+                    .fields
+                    .values()
+                    .filter(|field| {
+                        field.representation
+                            == crate::analysis::destination_model::LoopFieldRepresentation::Phi
+                    })
+                    .map(|field| field.field.clone())
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                analysis
+                    .materialization
+                    .get(&node.name)
+                    .map(|plan| plan.local_fields().cloned().collect())
+                    .unwrap_or_else(|| shape.local_fields.iter().cloned().collect())
+            });
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
                 "diag: txn='{}' local={:?} post_hoist_groups={} floats={} temp_mediated={} aggregates={} vector_groups={:?}",

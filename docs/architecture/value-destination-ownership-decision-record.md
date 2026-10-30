@@ -902,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D6a unified recursive-carrier facts are complete and the
-backend consumes them. Next: loop-engine phi/alloca selection from the same
-plan, then sink-specific copy elimination where D5 proves destination
-lifetime.
+**Current phase:** D6 recursive-carrier facts, shared carrier copies, and
+loop-engine phi/state-carrier plans are unified. Next: retire the legacy
+materialization fallback and migrate remaining loop engines to the unified
+plan.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.
