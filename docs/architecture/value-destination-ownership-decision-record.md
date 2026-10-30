@@ -902,11 +902,12 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D2 complete (analysis plus an unused shared lowering
-skeleton); D3 generalized enum lane is next.
+**Current phase:** D3a enum facts complete; D3b plan-driven enum emission is
+next.
 
-**Rollback:** no emitter call sites consume value lowering yet; delete
-`value_lowering.rs` and its module line to return to D1.
+**Rollback:** no emitter call sites consume value lowering or enum plans yet;
+delete `value_lowering.rs` and its module line, and drop the enum fields from
+the generalized plan to return to D1/D2 analysis-only state.
 
 This record is authoritative for destination/ownership lowering. Implementation
 status lives in the execution plan; do not edit historical evidence in place.

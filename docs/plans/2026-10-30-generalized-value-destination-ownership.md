@@ -858,6 +858,14 @@ determinism, Praetor clean.
 
 ### Phase D3 — generalized enum lane
 
+**Status 2026-10-30: D3a COMPLETE (facts only).** The generalized plan now
+records declared enum constructors, payload types, enum-shaped values, and
+per-callable enum result plans. `CallerDestination` is claimed only when the
+backend's existing `sret_safe_defns` gate also proves the callable safe;
+exported enum results stay boxed to preserve the public ABI. No enum emitter
+changed yet. Validation: 12 destination-model tests, 3396 lib tests, quick IR
+determinism, Praetor clean.
+
 **Deliverables:**
 
 - enum shape facts;
@@ -1226,3 +1234,4 @@ The generalized implementation is complete when:
       (`benchmarks/results/2026-10-30-value-destination-branch-baseline.md`).
 - [x] Complete Phase D1 schema completion (analysis-only).
 - [x] Complete Phase D2 shared value-lowering skeleton (no call sites).
+- [x] Complete Phase D3a enum destination facts (no emitter change).

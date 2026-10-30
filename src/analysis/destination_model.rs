@@ -11,7 +11,7 @@
 // Undo: delete this module and the `generalized` field on
 // `DestinationOwnershipPlan`; no other code depends on it.
 
-use crate::ast::{TopLevel, Type};
+use crate::ast::{EnumVariant, TopLevel, Type};
 use crate::analysis::destination_ownership::{
     CallableKind, DestinationClass as LegacyDestinationClass,
     DestinationOwnershipPlan, ParamObligation, ResultDestination,
@@ -441,6 +441,52 @@ pub struct BoundaryPlan {
     pub proof: ProofStatus,
 }
 
+/// One declared enum variant (constructor) in semantic form.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariantPlan {
+    pub name: String,
+    /// `None` for a unit variant; `Some(Tuple)` for multi-field payloads.
+    pub payload: Option<Type>,
+}
+
+/// Declared enum shape. Physical word counts remain the backend's
+/// `EnumLayoutPlanner` responsibility; this record carries the semantic
+/// constructor set and payload types without guessing layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDefinitionPlan {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub variants: Vec<EnumVariantPlan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumResultRepresentation {
+    InlineLocal,
+    CallerDestination,
+    Boxed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstructorAgreement {
+    AllConstructors,
+    ContainsNonConstructor,
+    Unknown,
+}
+
+/// Per-callable enum result plan. The plan records agreement and destination;
+/// D3 migration consumes it, while unmigrated callables stay on the current
+/// emitter path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumCallablePlan {
+    pub callable: CallableId,
+    pub result_type: Option<Type>,
+    pub representation: EnumResultRepresentation,
+    pub agreement: ConstructorAgreement,
+    pub hidden_destination: bool,
+    pub proof: ProofStatus,
+}
+
 /// Generalized value fact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneralValueFact {
@@ -461,6 +507,8 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub call_sites: BTreeMap<ProgramPoint, CallPlan>,
     pub loops: BTreeMap<DestinationId, LoopPlan>,
     pub boundaries: BTreeMap<DestinationId, BoundaryPlan>,
+    pub enums: BTreeMap<String, EnumDefinitionPlan>,
+    pub enum_callables: BTreeMap<CallableId, EnumCallablePlan>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -567,7 +615,207 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
         })
         .collect();
     plan.values.extend(loop_facts.into_iter().map(|fact| (fact.id.clone(), fact)));
+    plan.enums = build_enum_definitions(items);
+    plan.enum_callables = build_enum_callables(items, legacy, &plan.enums);
+    mark_enum_value_shapes(&mut plan.values, &plan.enums);
     plan
+}
+
+fn build_enum_definitions(items: &[TopLevel]) -> BTreeMap<String, EnumDefinitionPlan> {
+    items
+        .iter()
+        .filter_map(enum_definition)
+        .map(|plan| (plan.name.clone(), plan))
+        .collect()
+}
+
+fn enum_definition(item: &TopLevel) -> Option<EnumDefinitionPlan> {
+    match item {
+        TopLevel::Enum(e) => Some(EnumDefinitionPlan {
+            name: e.name.clone(),
+            type_params: e.type_params.iter().map(|p| p.name.clone()).collect(),
+            variants: e.variants.iter().map(enum_variant_plan).collect(),
+        }),
+        TopLevel::TypeDef(td) => {
+            let variants: Vec<EnumVariantPlan> = td
+                .body
+                .slots
+                .iter()
+                .filter_map(|slot| {
+                    let name = slot.name.strip_prefix("__variant_")?;
+                    Some(EnumVariantPlan {
+                        name: name.to_string(),
+                        payload: (!matches!(slot.ty, Type::Void)).then(|| slot.ty.clone()),
+                    })
+                })
+                .collect();
+            if variants.is_empty() {
+                return None;
+            }
+            Some(EnumDefinitionPlan {
+                name: td.name.clone(),
+                type_params: td.type_params.iter().map(|p| p.name.clone()).collect(),
+                variants,
+            })
+        }
+        TopLevel::Export(export) => enum_definition(export.inner.as_ref()),
+        _ => None,
+    }
+}
+
+fn enum_variant_plan(variant: &EnumVariant) -> EnumVariantPlan {
+    match variant {
+        EnumVariant::Unit(name) => EnumVariantPlan {
+            name: name.clone(),
+            payload: None,
+        },
+        EnumVariant::Tuple(name, types) => EnumVariantPlan {
+            name: name.clone(),
+            payload: enum_payload(types),
+        },
+        EnumVariant::Struct(name, fields) => {
+            let types: Vec<Type> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+            EnumVariantPlan {
+                name: name.clone(),
+                payload: enum_payload(&types),
+            }
+        }
+    }
+}
+
+fn enum_payload(types: &[Type]) -> Option<Type> {
+    match types {
+        [] => None,
+        [single] => Some(single.clone()),
+        _ => Some(Type::Tuple(types.to_vec())),
+    }
+}
+
+fn build_enum_callables(
+    items: &[TopLevel],
+    legacy: &DestinationOwnershipPlan,
+    enums: &BTreeMap<String, EnumDefinitionPlan>,
+) -> BTreeMap<CallableId, EnumCallablePlan> {
+    let representation = crate::analysis::enum_repr::build_enum_representation_plan(items);
+    let sret_safe: BTreeSet<String> =
+        crate::analysis::enum_repr::sret_safe_defns(items, &representation)
+            .into_iter()
+            .collect();
+    let shapes = callable_shapes(items, legacy);
+    legacy
+        .callables
+        .iter()
+        .filter_map(|(name, summary)| {
+            let callable = callable_id(name, summary.kind);
+            let result_type = shapes.get(&callable)?.result.clone()?;
+            if !is_enum_type(&result_type, enums) {
+                return None;
+            }
+            let plan = enum_callable_plan(
+                &callable,
+                &result_type,
+                summary,
+                representation.defns.get(name).copied(),
+                sret_safe.contains(name),
+            );
+            Some((callable, plan))
+        })
+        .collect()
+}
+
+fn enum_callable_plan(
+    callable: &CallableId,
+    result_type: &Type,
+    summary: &crate::analysis::destination_ownership::CallableSummary,
+    class: Option<crate::analysis::enum_repr::EnumRepresentation>,
+    sret_safe: bool,
+) -> EnumCallablePlan {
+    if summary.exported {
+        return EnumCallablePlan {
+            callable: callable.clone(),
+            result_type: Some(result_type.clone()),
+            representation: EnumResultRepresentation::Boxed,
+            agreement: ConstructorAgreement::Unknown,
+            hidden_destination: false,
+            proof: ProofStatus::Conservative {
+                reason: FallbackReason::ExternalBoundary,
+            },
+        };
+    }
+    match class.unwrap_or(crate::analysis::enum_repr::EnumRepresentation::Boxed) {
+        crate::analysis::enum_repr::EnumRepresentation::ReturnedSmallCandidate
+            if sret_safe =>
+        {
+            EnumCallablePlan {
+                callable: callable.clone(),
+                result_type: Some(result_type.clone()),
+                representation: EnumResultRepresentation::CallerDestination,
+                agreement: ConstructorAgreement::AllConstructors,
+                hidden_destination: true,
+                proof: ProofStatus::Proven {
+                    reasons: BTreeSet::from([
+                        ProofReason::CallerOwnedDestination,
+                        ProofReason::LayoutAgreement,
+                    ]),
+                },
+            }
+        }
+        crate::analysis::enum_repr::EnumRepresentation::ReturnedSmallCandidate => {
+            EnumCallablePlan {
+                callable: callable.clone(),
+                result_type: Some(result_type.clone()),
+                representation: EnumResultRepresentation::Boxed,
+                agreement: ConstructorAgreement::AllConstructors,
+                hidden_destination: false,
+                proof: ProofStatus::Conservative {
+                    reason: FallbackReason::RecursiveOrCyclic,
+                },
+            }
+        }
+        crate::analysis::enum_repr::EnumRepresentation::InlineLocalCandidate => {
+            EnumCallablePlan {
+                callable: callable.clone(),
+                result_type: Some(result_type.clone()),
+                representation: EnumResultRepresentation::InlineLocal,
+                agreement: ConstructorAgreement::Unknown,
+                hidden_destination: false,
+                proof: ProofStatus::Proven {
+                    reasons: BTreeSet::from([ProofReason::NonEscaping]),
+                },
+            }
+        }
+        crate::analysis::enum_repr::EnumRepresentation::Boxed => EnumCallablePlan {
+            callable: callable.clone(),
+            result_type: Some(result_type.clone()),
+            representation: EnumResultRepresentation::Boxed,
+            agreement: ConstructorAgreement::Unknown,
+            hidden_destination: false,
+            proof: ProofStatus::Conservative {
+                reason: FallbackReason::UnknownOwnership,
+            },
+        },
+    }
+}
+
+fn mark_enum_value_shapes(
+    values: &mut BTreeMap<SemanticValueId, GeneralValueFact>,
+    enums: &BTreeMap<String, EnumDefinitionPlan>,
+) {
+    for fact in values.values_mut() {
+        if fact.ty.as_ref().is_some_and(|ty| is_enum_type(ty, enums)) {
+            fact.shape.kind = ValueShapeKind::Enum;
+        }
+    }
+}
+
+fn is_enum_type(ty: &Type, enums: &BTreeMap<String, EnumDefinitionPlan>) -> bool {
+    match ty {
+        Type::Custom(name) | Type::Applied(name, _) => enums.contains_key(name),
+        Type::Union(_) => true,
+        Type::Generic(_, args) => args.iter().any(|ty| is_enum_type(ty, enums)),
+        Type::Constrained(inner, _) => is_enum_type(inner.as_ref(), enums),
+        _ => false,
+    }
 }
 
 fn build_callable(
@@ -1145,6 +1393,75 @@ defn caller(v: Int) -> Int { term helper(v); };
         let direct = build(&items, &legacy);
         assert_eq!(legacy.generalized, direct);
         assert!(!legacy.generalized.call_sites.is_empty());
+    }
+
+    #[test]
+    fn enum_constructor_return_selects_caller_destination() {
+        let (_, plan) = analyze_items(
+            r#"
+enum R { Ok(Int), Err(String) };
+defn make(x: Int) -> R { term Ok(x); };
+"#,
+        );
+        let shape = plan.enums.get("R").expect("enum definition");
+        assert_eq!(shape.variants.len(), 2);
+        assert_eq!(shape.variants[0].name, "Ok");
+        let callable = plan
+            .enum_callables
+            .values()
+            .find(|callable| callable.callable.name == "make")
+            .expect("enum callable");
+        assert_eq!(
+            callable.representation,
+            EnumResultRepresentation::CallerDestination
+        );
+        assert_eq!(callable.agreement, ConstructorAgreement::AllConstructors);
+        assert!(callable.hidden_destination);
+        let result_value = plan
+            .callables
+            .values()
+            .find(|plan| plan.callable.name == "make")
+            .and_then(|plan| plan.result.value.clone())
+            .expect("result value");
+        assert_eq!(
+            plan.values[&result_value].shape.kind,
+            ValueShapeKind::Enum
+        );
+    }
+
+    #[test]
+    fn non_constructor_enum_return_stays_boxed() {
+        let (_, plan) = analyze_items(
+            r#"
+enum R { Ok(Int), Err(Int) };
+defn unsupported(x: Int) -> R { term x; };
+"#,
+        );
+        let callable = plan
+            .enum_callables
+            .values()
+            .find(|callable| callable.callable.name == "unsupported")
+            .expect("enum callable");
+        assert_eq!(callable.representation, EnumResultRepresentation::Boxed);
+        assert_eq!(callable.agreement, ConstructorAgreement::Unknown);
+        assert!(!callable.hidden_destination);
+    }
+
+    #[test]
+    fn exported_enum_return_keeps_public_boxed_abi() {
+        let (_, plan) = analyze_items(
+            r#"
+enum R { Ok(Int), Err(Int) };
+export defn make(x: Int) -> R { term Ok(x); };
+"#,
+        );
+        let callable = plan
+            .enum_callables
+            .values()
+            .find(|callable| callable.callable.name == "make")
+            .expect("enum callable");
+        assert_eq!(callable.representation, EnumResultRepresentation::Boxed);
+        assert!(!callable.hidden_destination);
     }
 
     #[test]
