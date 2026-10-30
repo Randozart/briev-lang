@@ -34,6 +34,14 @@ missing entries fall back to the planner. The backend validates constructor/
 match tag agreement in debug builds. Physical layout remains owned by
 `EnumLayoutPlanner`; the semantic plan never guesses word counts.
 
+D4 (2026-10-30) also allows a small plain object/struct payload (<= 8 words) to
+live inline in an internal enum image. Construction writes the object fields
+directly into the payload or copies its byte image; match binds a pointer to
+that payload. Exported enums, collections, protocol types, and layouts whose
+field width cannot be bounded stay boxed. An emission assertion checks the
+actual object size against the reserved payload width. `ws_frame`'s second
+`WsFrame` allocation is removed by this path.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

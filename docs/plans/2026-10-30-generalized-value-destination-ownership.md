@@ -947,14 +947,24 @@ keep the D3a facts; no public/runtime ABI or source syntax depends on this join.
 
 ### Phase D4 — generalized object lane
 
-**Status 2026-10-30: D4a COMPLETE (facts only).** R1 now tags struct/object
+**Status 2026-10-30: D4a + D4 slice 3 COMPLETE.** R1 tags struct/object
 literal values with their concrete type, gives each root expression a unique
 stable ID, propagates types through let bindings, and marks every non-primitive
 call argument as a possible escape. The generalized plan records object/struct
 definitions, per-construction escape state, materialization requirements, and
 per-callable stack-eligible object types (only when every observed alias is
-non-escaping). No object emitter changed yet. Validation: targeted destination tests,
-full lib/determinism, and Praetor clean on changed files.
+non-escaping).
+
+D4 slice 3 inlines small object payloads inside internal enum images. Exported
+enums and collection/protocol types stay boxed; an emission-time assertion
+enforces `object_size <= payload_words * 8`. `ws_frame` no longer allocates the
+second `WsFrame`: malloc sites drop 64 -> 63, output stays `0016384`, and the
+controlled parent/current run is 0.0531s -> 0.0485s (~1.10x faster). Harness
+timing is 1.46x C, down from ~1.60x; the remaining `ws_partial` allocation needs
+the caller-destination slice.
+
+Validation: 3408 lib tests, quick IR determinism, JSON parse/stringify, ws codec
+parity, Praetor clean on new files, exact benchmark output.
 
 #### D4 implementation addendum (2026-10-30)
 
@@ -1335,3 +1345,5 @@ The generalized implementation is complete when:
       constructor/match agreement, exact IR A/B.
 - [x] Complete D4a object facts: literal types, unique expression IDs,
       alias-wide escape grouping, stack-eligibility map.
+- [x] Complete D4 slice 3: internal enum object-payload inline, boundary-gated,
+      `ws_frame` allocation and timing improvement.

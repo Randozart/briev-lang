@@ -8,7 +8,7 @@
 //! recursive-beyond-cap payloads consume one boxed handle word.
 
 use crate::ast::{EnumVariant, Statement, TopLevel, Type};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 struct EnumDef {
@@ -27,6 +27,10 @@ pub enum EnumValueRepr {
 /// Initial inline packed-memory threshold.
 pub const PACKED_MEMORY_MAX_WORDS: usize = 4;
 
+/// Small object payloads may live inside an internal enum image. The cap keeps
+/// enum images bounded; larger objects keep the one-word boxed handle.
+pub const INLINE_OBJECT_MAX_WORDS: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumLayout {
     /// Total i64 words in the image (tag + payload area).
@@ -35,64 +39,30 @@ pub struct EnumLayout {
     pub variant_payload_words: Vec<usize>,
     /// Per-variant flag: payload is a nested enum image laid out inline.
     pub variant_payload_inline: Vec<bool>,
+    /// Per-variant flag: payload is a small object/struct byte image laid out
+    /// inline. Mutually exclusive with `variant_payload_inline`.
+    pub variant_payload_inline_object: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumLayoutPlanner {
     enums: HashMap<String, EnumDef>,
+    objects: HashMap<String, EnumDef>,
+    /// Enums appearing in an exported signature keep the frozen boxed payload
+    /// layout; object payloads are never inlined there.
+    boundary_enums: HashSet<String>,
     max_depth: usize,
 }
 
 impl EnumLayoutPlanner {
     pub fn new(items: &[TopLevel], max_depth: usize) -> Self {
         let mut enums = HashMap::new();
+        let mut objects = HashMap::new();
         for item in items {
-            match item {
-                TopLevel::TypeDef(td) => {
-                    let variants: Vec<(String, Type)> = td
-                        .body
-                        .slots
-                        .iter()
-                        .filter_map(|s| {
-                            s.name.strip_prefix("__variant_").map(|n| (n.to_string(), s.ty.clone()))
-                        })
-                        .collect();
-                    if !variants.is_empty() {
-                        enums.insert(
-                            td.name.clone(),
-                            EnumDef {
-                                params: td.type_params.iter().map(|p| p.name.clone()).collect(),
-                                variants,
-                            },
-                        );
-                    }
-                }
-                TopLevel::Enum(e) => {
-                    let variants = e
-                        .variants
-                        .iter()
-                        .map(|v| match v {
-                            EnumVariant::Unit(n) => (n.clone(), Type::Void),
-                            EnumVariant::Tuple(n, ts) => {
-                                (n.clone(), if ts.len() == 1 { ts[0].clone() } else { Type::Tuple(ts.clone()) })
-                            }
-                            EnumVariant::Struct(n, fields) => {
-                                (n.clone(), Type::Tuple(fields.iter().map(|(_, t)| t.clone()).collect()))
-                            }
-                        })
-                        .collect();
-                    enums.insert(
-                        e.name.clone(),
-                        EnumDef {
-                            params: e.type_params.iter().map(|p| p.name.clone()).collect(),
-                            variants,
-                        },
-                    );
-                }
-                _ => {}
-            }
+            collect_declaration(item, &mut enums, &mut objects);
         }
-        Self { enums, max_depth }
+        let boundary_enums = collect_boundary_enums(items, &enums);
+        Self { enums, objects, boundary_enums, max_depth }
     }
 
     /// Layout for a concrete enum instance. `None` when the type is not a
@@ -114,23 +84,34 @@ impl EnumLayoutPlanner {
             .cloned()
             .zip(args.iter().cloned())
             .collect();
+        let allow_object_inline = !self.boundary_enums.contains(name);
         let mut variant_payload_words = Vec::with_capacity(def.variants.len());
         let mut variant_payload_inline = Vec::with_capacity(def.variants.len());
+        let mut variant_payload_inline_object = Vec::with_capacity(def.variants.len());
         for (_, payload) in &def.variants {
             let concrete = if subst.is_empty() {
                 payload.clone()
             } else {
                 crate::typechecker::substitute_type(payload, &subst)
             };
-            let inline = self.is_inline_enum(&concrete, depth + 1);
-            variant_payload_inline.push(inline);
-            variant_payload_words.push(self.payload_words(&concrete, depth + 1));
+            let inline_enum = self.is_inline_enum(&concrete, depth + 1);
+            let inline_object =
+                allow_object_inline && self.is_inline_object(&concrete, depth + 1);
+            variant_payload_inline.push(inline_enum);
+            variant_payload_inline_object.push(inline_object);
+            let words = if inline_object {
+                self.object_words(&concrete, depth + 1).unwrap_or(1)
+            } else {
+                self.payload_words(&concrete, depth + 1)
+            };
+            variant_payload_words.push(words);
         }
         let payload_words = variant_payload_words.iter().copied().max().unwrap_or(0).max(1);
         Some(EnumLayout {
             image_words: 1 + payload_words,
             variant_payload_words,
             variant_payload_inline,
+            variant_payload_inline_object,
         })
     }
 
@@ -142,6 +123,52 @@ impl EnumLayoutPlanner {
             Type::Custom(n) => self.enums.contains_key(n),
             Type::Applied(n, _) => self.enums.contains_key(n),
             _ => false,
+        }
+    }
+
+    fn is_inline_object(&self, ty: &Type, depth: usize) -> bool {
+        if depth >= self.max_depth {
+            return false;
+        }
+        self.object_words(ty, depth)
+            .is_some_and(|words| words <= INLINE_OBJECT_MAX_WORDS)
+    }
+
+    fn object_words(&self, ty: &Type, depth: usize) -> Option<usize> {
+        let (name, args) = match ty {
+            Type::Custom(name) => (name.as_str(), &[][..]),
+            Type::Applied(name, args) => (name.as_str(), args.as_slice()),
+            _ => return None,
+        };
+        let def = self.objects.get(name)?;
+        let subst: HashMap<String, Type> = def
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        let mut words = 0;
+        for (_, field) in &def.variants {
+            let concrete = if subst.is_empty() {
+                field.clone()
+            } else {
+                crate::typechecker::substitute_type(field, &subst)
+            };
+            words += self.field_words(&concrete, depth + 1)?;
+        }
+        Some(words.max(1))
+    }
+
+    fn field_words(&self, ty: &Type, _depth: usize) -> Option<usize> {
+        match ty {
+            Type::Void => Some(0),
+            Type::Bits(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
+            Type::Width(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
+            Type::Custom(_) | Type::Applied(_, _) | Type::Ptr(_) | Type::PtrConst(_)
+            | Type::LayoutPtr(_) | Type::Number(_) => Some(1),
+            Type::Generic(_, _) | Type::TypeVar(_) | Type::Constrained(_, _)
+            | Type::Vector(_, _) | Type::Tuple(_) | Type::Union(_)
+            | Type::Function(_, _) | Type::Dyn(_) | Type::Task(_) => None,
         }
     }
 
@@ -181,6 +208,162 @@ impl EnumLayoutPlanner {
 #[allow(dead_code)]
 fn _statement_marker(_: &Statement) {}
 
+fn collect_declaration(
+    item: &TopLevel,
+    enums: &mut HashMap<String, EnumDef>,
+    objects: &mut HashMap<String, EnumDef>,
+) {
+    match item {
+        TopLevel::TypeDef(td) => collect_typedef(td, enums, objects),
+        TopLevel::Enum(e) => collect_ast_enum(e, enums),
+        TopLevel::StaticStruct(s) => {
+            objects.insert(
+                s.name.clone(),
+                EnumDef {
+                    params: s.type_params.iter().map(|p| p.name.clone()).collect(),
+                    variants: s.fields.clone(),
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+fn collect_typedef(
+    td: &crate::ast::TypeDef,
+    enums: &mut HashMap<String, EnumDef>,
+    objects: &mut HashMap<String, EnumDef>,
+) {
+    let params: Vec<String> = td.type_params.iter().map(|p| p.name.clone()).collect();
+    let variants: Vec<(String, Type)> = td
+        .body
+        .slots
+        .iter()
+        .filter_map(|s| {
+            s.name
+                .strip_prefix("__variant_")
+                .map(|n| (n.to_string(), s.ty.clone()))
+        })
+        .collect();
+    if !variants.is_empty() {
+        enums.insert(td.name.clone(), EnumDef { params, variants });
+        return;
+    }
+    let plain_object = !td.coll && td.parent.is_none() && td.protocol.is_none();
+    let fields: Vec<(String, Type)> = td
+        .body
+        .slots
+        .iter()
+        .map(|slot| (slot.name.clone(), slot.ty.clone()))
+        .collect();
+    if plain_object && !fields.is_empty() {
+        objects.insert(td.name.clone(), EnumDef { params, variants: fields });
+    }
+}
+
+fn collect_ast_enum(e: &crate::ast::EnumDefinition, enums: &mut HashMap<String, EnumDef>) {
+    let variants = e
+        .variants
+        .iter()
+        .map(|v| match v {
+            EnumVariant::Unit(n) => (n.clone(), Type::Void),
+            EnumVariant::Tuple(n, ts) => {
+                let payload = if ts.len() == 1 {
+                    ts[0].clone()
+                } else {
+                    Type::Tuple(ts.clone())
+                };
+                (n.clone(), payload)
+            }
+            EnumVariant::Struct(n, fields) => {
+                let payload = Type::Tuple(fields.iter().map(|(_, t)| t.clone()).collect());
+                (n.clone(), payload)
+            }
+        })
+        .collect();
+    enums.insert(
+        e.name.clone(),
+        EnumDef {
+            params: e.type_params.iter().map(|p| p.name.clone()).collect(),
+            variants,
+        },
+    );
+}
+
+fn collect_boundary_enums(
+    items: &[TopLevel],
+    enums: &HashMap<String, EnumDef>,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for item in items {
+        let TopLevel::Export(export) = item else {
+            continue;
+        };
+        match export.inner.as_ref() {
+            TopLevel::Definition(d) => {
+                collect_signature_enums(&d.parameters, d.output_type.as_ref(), enums, &mut out);
+            }
+            TopLevel::Transaction(t) => {
+                collect_signature_enums(&t.parameters, t.output_type.as_ref(), enums, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_signature_enums(
+    parameters: &[(String, Type)],
+    output: Option<&crate::ast::OutputType>,
+    enums: &HashMap<String, EnumDef>,
+    out: &mut HashSet<String>,
+) {
+    for (_, ty) in parameters {
+        collect_type_enums(ty, enums, out);
+    }
+    if let Some(output) = output {
+        for ty in output.all_types() {
+            collect_type_enums(&ty, enums, out);
+        }
+    }
+}
+
+fn collect_type_enums(ty: &Type, enums: &HashMap<String, EnumDef>, out: &mut HashSet<String>) {
+    if let Some(name) = ty.universe_key() {
+        if enums.contains_key(name) {
+            out.insert(name.to_string());
+        }
+    }
+    match ty {
+        Type::Applied(_, args) | Type::Generic(_, args) => {
+            for arg in args {
+                collect_type_enums(arg, enums, out);
+            }
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                collect_type_enums(item, enums, out);
+            }
+        }
+        Type::Union(items) => {
+            for item in items {
+                collect_type_enums(item, enums, out);
+            }
+        }
+        Type::Ptr(inner) | Type::PtrConst(inner) | Type::Task(inner) | Type::Dyn(inner) => {
+            collect_type_enums(inner, enums, out);
+        }
+        Type::Function(params, ret) => {
+            for param in params {
+                collect_type_enums(param, enums, out);
+            }
+            collect_type_enums(ret, enums, out);
+        }
+        Type::Constrained(inner, _) => collect_type_enums(inner, enums, out),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +402,32 @@ mod tests {
         assert_eq!(layout.image_words, 3);
         assert_eq!(layout.variant_payload_words, vec![2, 2]);
         assert_eq!(layout.variant_payload_inline, vec![true, true]);
+    }
+
+    #[test]
+    fn small_object_payload_is_inline_in_internal_enum() {
+        let items = parse(
+            "struct P { a: Int; b: Int; };\n\
+             enum E { Wrap(P), Empty };\n",
+        );
+        let planner = EnumLayoutPlanner::new(&items, 2);
+        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        assert_eq!(layout.image_words, 3);
+        assert_eq!(layout.variant_payload_inline_object, vec![true, false]);
+        assert_eq!(layout.variant_payload_words, vec![2, 0]);
+    }
+
+    #[test]
+    fn exported_enum_keeps_boxed_object_payload() {
+        let items = parse(
+            "struct P { a: Int; b: Int; };\n\
+             enum E { Wrap(P), Empty };\n\
+             export defn take(e: E) -> Int { term 0; };\n",
+        );
+        let planner = EnumLayoutPlanner::new(&items, 2);
+        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        assert_eq!(layout.image_words, 2);
+        assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
     }
 
     #[test]

@@ -30,6 +30,7 @@ pub struct EnumVariantLowering {
     pub payload: Option<Type>,
     pub payload_words: usize,
     pub payload_inline: bool,
+    pub payload_inline_object: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +153,12 @@ fn validate_lengths(entry: &EnumLoweringEntry) -> Result<(), String> {
     if entry.variants.len() != entry.layout.variant_payload_inline.len() {
         return Err(format!("{:?}: variant/inline length mismatch", entry.ty));
     }
+    if entry.variants.len() != entry.layout.variant_payload_inline_object.len() {
+        return Err(format!(
+            "{:?}: variant/inline-object length mismatch",
+            entry.ty
+        ));
+    }
     Ok(())
 }
 
@@ -172,6 +179,14 @@ fn validate_variants(entry: &EnumLoweringEntry) -> Result<(), String> {
         if variant.payload_inline != entry.layout.variant_payload_inline[expected_tag] {
             return Err(format!(
                 "{:?}: variant {} inline flag disagrees with layout",
+                entry.ty, variant.name
+            ));
+        }
+        if variant.payload_inline_object
+            != entry.layout.variant_payload_inline_object[expected_tag]
+        {
+            return Err(format!(
+                "{:?}: variant {} inline-object flag disagrees with layout",
                 entry.ty, variant.name
             ));
         }
@@ -286,6 +301,7 @@ fn build_entry(
             payload: variant.payload.as_ref().map(|ty| substitute(ty, &subst)),
             payload_words: layout.variant_payload_words[tag],
             payload_inline: layout.variant_payload_inline[tag],
+            payload_inline_object: layout.variant_payload_inline_object[tag],
         })
         .collect();
     Some(EnumLoweringEntry {

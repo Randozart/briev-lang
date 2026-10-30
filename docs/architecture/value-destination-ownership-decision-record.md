@@ -902,9 +902,9 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D4a object facts complete. D4 lowering starts with
-non-escaping local groups, then internal enum object-payload inline and
-caller-destination materialization for escaping returns.
+**Current phase:** D4a facts and internal enum object-payload inlining are
+complete. The remaining D4 work is caller-destination/materialization for
+escaping object returns (starting with `ws_partial`).
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

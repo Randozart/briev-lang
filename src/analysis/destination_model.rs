@@ -705,6 +705,9 @@ fn build_object_definitions(items: &[TopLevel]) -> BTreeMap<String, ObjectDefini
 fn object_definition(item: &TopLevel) -> Option<ObjectDefinitionPlan> {
     match item {
         TopLevel::TypeDef(td) => {
+            if td.coll || td.parent.is_some() || td.protocol.is_some() {
+                return None;
+            }
             let fields: Vec<ObjectFieldPlan> = td
                 .body
                 .slots
