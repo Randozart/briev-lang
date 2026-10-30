@@ -49,6 +49,7 @@ pub mod export_abi;
 pub mod needs_state_projection;
 pub mod boundary_ownership;
 pub mod destination_ownership;
+pub mod destination_model;
 pub mod string_concat;
 pub mod boundary_marshalling;
 pub mod slp_isomorphism;

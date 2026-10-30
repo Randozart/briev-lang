@@ -675,6 +675,14 @@ impl<'a> BodyAnalyzer<'a> {
         if let Some(name) = target.as_var_name() {
             if let Some(destination) = scope.lookup(name) {
                 self.use_value(&destination);
+                if self.loop_depth > 0 {
+                    self.add_sink(
+                        &destination,
+                        SinkKind::LoopCarrier,
+                        &site,
+                        EscapeKind::LoopLifetime,
+                    );
+                }
                 return Some(destination);
             }
             let state_id = ValueId::new(
@@ -782,11 +790,13 @@ impl<'a> BodyAnalyzer<'a> {
                 );
                 let mut child_scope = scope.clone();
                 child_scope.define(item, item_id.clone());
+                self.loop_depth += 1;
                 for (index, statement) in body.iter().enumerate() {
                     let mut child_path = stmt_path.clone();
                     child_path.push(index);
                     self.stmt(statement, body_path, &mut child_path, &mut child_scope);
                 }
+                self.loop_depth -= 1;
                 Some(item_id)
             }
             Statement::Match { expr, arms } => {

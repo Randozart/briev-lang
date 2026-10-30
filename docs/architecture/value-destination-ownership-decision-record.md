@@ -75,7 +75,12 @@ Phase R1 landed `AnalysisResults.destination_ownership`:
 - conservative destination classes;
 - deterministic diagnostics.
 
-It is analysis-only. The backend does not yet consume it.
+Phase D1 completed the generalized schema on 2026-10-30: value shapes,
+callable/parameter/result/hidden-ABI plans, call argument/result plans, loop
+plans with `LoopCarrier` facts, boundary plans, proof/fallback reasons, and
+`export` wrapper indexing. The production plan is constructed after all R1
+facts are aggregated. It is still analysis-only; the backend does not consume
+it yet.
 
 Other analyses already contain necessary inputs:
 
@@ -897,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D0 branch/docs baseline, moving to D1 complete semantic fact
-schema.
+**Current phase:** D1 complete (analysis-only generalized schema); D2 shared
+value-lowering skeleton is next.
 
-**Rollback:** plan/docs-only; no backend behavior change yet.
+**Rollback:** analysis/docs-only; no backend behavior change yet.
 
 This record is authoritative for destination/ownership lowering. Implementation
 status lives in the execution plan; do not edit historical evidence in place.

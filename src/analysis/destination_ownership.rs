@@ -340,6 +340,10 @@ pub struct DestinationOwnershipPlan {
     pub call_sites: BTreeMap<CallSiteId, CallSiteFact>,
     /// Deterministic diagnostics.
     pub diagnostics: BTreeSet<DestinationDiagnostic>,
+    /// 2026-10-30 (Phase D1): generalized all-domain schema. Analysis-only;
+    /// no backend consumes this yet.
+    pub generalized:
+        crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
 }
 
 /// Internal callable signature/body. Bodies are cloned once for analysis.
@@ -377,6 +381,7 @@ pub fn analyze(items: &[TopLevel]) -> DestinationOwnershipPlan {
         let name = specs_by_owner(&specs, &fact_set.owner);
         plan.callables_by_owner.insert(name, fact_set);
     }
+    plan.generalized = crate::analysis::destination_model::build(items, &plan);
     plan
 }
 
@@ -421,14 +426,44 @@ fn index_callables(items: &[TopLevel]) -> (BTreeMap<String, CallableSpec>, BTree
                 },
             ),
             TopLevel::Export(e) => {
-                if let TopLevel::Definition(d) = e.inner.as_ref() {
-                    export_names.insert(d.name.clone());
+                if let Some(spec) = exported_spec(e.inner.as_ref()) {
+                    export_names.insert(spec.name.clone());
+                    insert_spec(&mut specs, spec);
                 }
             }
             _ => {}
         }
     }
     (specs, export_names)
+}
+
+fn exported_spec(item: &TopLevel) -> Option<CallableSpec> {
+    match item {
+        TopLevel::Definition(d) => Some(spec_from_defn(d, CallableKind::InternalDefn, true)),
+        TopLevel::TypeDefOperator(d) => Some(spec_from_defn(d, CallableKind::Member, true)),
+        TopLevel::Transaction(t) => Some(CallableSpec {
+            owner: format!("txn:{}", t.name),
+            name: t.name.clone(),
+            kind: CallableKind::InternalTransaction,
+            parameters: t.parameters.clone(),
+            result: t.output_type.as_ref().and_then(result_type),
+            body: t.body.clone(),
+            exported: true,
+        }),
+        TopLevel::CompileTimeDefn(d) => {
+            Some(spec_from_defn(d, CallableKind::InternalDefn, true))
+        }
+        TopLevel::CompileTimeTxn(t) => Some(CallableSpec {
+            owner: format!("ctxn:{}", t.name),
+            name: t.name.clone(),
+            kind: CallableKind::InternalTransaction,
+            parameters: t.parameters.clone(),
+            result: t.output_type.as_ref().and_then(result_type),
+            body: t.body.clone(),
+            exported: true,
+        }),
+        _ => None,
+    }
 }
 
 fn insert_spec(specs: &mut BTreeMap<String, CallableSpec>, spec: CallableSpec) {
@@ -504,6 +539,7 @@ fn analyze_callable(
         call_sites: BTreeMap::new(),
         diagnostics: BTreeSet::new(),
         temp_counter: 0,
+        loop_depth: 0,
     };
     let mut scope = Scope {
         values: HashMap::new(),
@@ -732,6 +768,9 @@ pub(super) struct BodyAnalyzer<'a> {
     pub(super) call_sites: BTreeMap<CallSiteId, CallSiteFact>,
     pub(super) diagnostics: BTreeSet<DestinationDiagnostic>,
     pub(super) temp_counter: u64,
+    /// Active foreach nesting depth. Loop-carried assignments are marked with
+    /// a LoopCarrier sink so the generalized plan can build loop facts.
+    pub(super) loop_depth: usize,
 }
 
 impl<'a> BodyAnalyzer<'a> {

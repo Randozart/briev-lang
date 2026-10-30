@@ -815,6 +815,15 @@ Gate:
 - Praetor clean;
 - full lib tests.
 
+**Status 2026-10-30: COMPLETE.** `src/analysis/destination_model.rs` now
+carries generalized value, callable, call, loop, and boundary plans. R1 now
+indexes `export` wrappers, loop-carried assignments emit `LoopCarrier` sinks,
+and call arguments/results are present in the generalized value table. No
+backend pass consumes the plan yet. Export wrappers are now indexed, call
+arguments/results and loop carriers enter the generalized value table, and the
+production plan is built only after R1 facts are aggregated. Validation: 10
+focused tests, 3384 lib tests, quick IR determinism, Praetor clean.
+
 ### Phase D2 — shared value lowering skeleton
 
 **Deliverables:**
@@ -1208,4 +1217,4 @@ The generalized implementation is complete when:
       layout contracts, derivation doctrine).
 - [x] Capture branch baseline
       (`benchmarks/results/2026-10-30-value-destination-branch-baseline.md`).
-- [ ] Begin Phase D1 schema completion.
+- [x] Complete Phase D1 schema completion (analysis-only).
