@@ -142,6 +142,12 @@ pub struct AnalysisResults {
     /// docs/plans/2026-08-31-boundary-ownership-inference.md.
     pub boundary_ownership:
         crate::analysis::boundary_ownership::BoundaryOwnershipResult,
+    /// 2026-10-29 (destination ownership Phase R1): frontend semantic value
+    /// facts, call summaries, escape sinks, and conservative destination
+    /// classes. Analysis-only; backend lowering does not consume it yet. See
+    /// docs/plans/2026-10-29-destination-ownership-reconciliation.md.
+    pub destination_ownership:
+        crate::analysis::destination_ownership::DestinationOwnershipPlan,
     /// 2026-09-13 (defn-liveness emission): the call-reachable defn/txn set.
     /// The backend emits ONLY these (plus keep_all when live code uses `.^^`
     /// reflection). Imports grant capability; liveness gates emission cost.
@@ -330,7 +336,9 @@ pub fn analyze_program(
             type_universe,
             &|_| None,
         );
-    AnalysisResults {
+    let destination_ownership =
+        crate::analysis::destination_ownership::analyze(items);
+        AnalysisResults {
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),
         fusable_pairs: Vec::new(),
@@ -362,6 +370,7 @@ pub fn analyze_program(
         spawn_storage,
         task_segments,
         boundary_ownership,
+        destination_ownership,
         electronics: crate::analysis::electronics::derive_netlist(items),
         defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
         dyn_collection_info,
