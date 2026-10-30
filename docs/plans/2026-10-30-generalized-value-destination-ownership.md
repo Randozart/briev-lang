@@ -947,7 +947,7 @@ keep the D3a facts; no public/runtime ABI or source syntax depends on this join.
 
 ### Phase D4 — generalized object lane
 
-**Status 2026-10-30: D4a + D4 slice 3 COMPLETE.** R1 tags struct/object
+**Status 2026-10-30: D4a + D4 slices 3 and 4 COMPLETE.** R1 tags struct/object
 literal values with their concrete type, gives each root expression a unique
 stable ID, propagates types through let bindings, and marks every non-primitive
 call argument as a possible escape. The generalized plan records object/struct
@@ -957,15 +957,23 @@ non-escaping).
 
 D4 slice 3 inlines small object payloads inside internal enum images. Exported
 enums and collection/protocol types stay boxed; an emission-time assertion
-enforces `object_size <= payload_words * 8`. `ws_frame` no longer allocates the
-second `WsFrame`: malloc sites drop 64 -> 63, output stays `0016384`, and the
-controlled parent/current run is 0.0531s -> 0.0485s (~1.10x faster). Harness
-timing is 1.46x C, down from ~1.60x; the remaining `ws_partial` allocation needs
-the caller-destination slice.
+enforces `object_size <= payload_words * 8`.
 
-Validation: 3408 lib tests, quick IR determinism, JSON parse/stringify, ws codec
-parity, Praetor clean on new files, exact benchmark output.
+D4 slice 4 adds `object_repr.rs`: an object-returning defn receives a hidden
+caller destination only when every return form is a direct object literal and
+every call result is consumed by a non-retaining parameter (field projection or
+an inline object enum payload). Unrecognized call positions keep the boxed ABI.
+`ws_partial` uses `%object_out`; the second and third per-frame `WsFrame`
+allocations are gone (63 -> 62 total malloc sites in `ws_frame`; no per-frame
+`WsFrame` malloc remains).
 
+Controlled parent/current A/B at parent `1353e6ad`: 0.0477s -> 0.0459s
+(~1.04x faster; current 1.51x C, parent 1.57x C). Full runtime harness:
+all outputs MATCH; `ws_frame` 1.48x C. ASan with
+`detect_stack_use_after_return=1` passes. Validation: 3412 lib tests, quick IR
+determinism, JSON parse/stringify, ws codec parity, and Praetor clean on new
+analysis. Detailed results:
+`benchmarks/results/2026-10-30-d4-object-caller-destination.md`.
 #### D4 implementation addendum (2026-10-30)
 
 No separate plan document; this addendum is authoritative for D4 lowering.
@@ -1347,3 +1355,5 @@ The generalized implementation is complete when:
       alias-wide escape grouping, stack-eligibility map.
 - [x] Complete D4 slice 3: internal enum object-payload inline, boundary-gated,
       `ws_frame` allocation and timing improvement.
+- [x] Complete D4 slice 4: proven object caller destination, `ws_partial`
+      hidden image, remaining WsFrame allocation removed.

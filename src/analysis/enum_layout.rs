@@ -509,3 +509,61 @@ mod tests {
         assert_eq!(layout.image_words, 2);
     }
 }
+
+impl EnumLayoutPlanner {
+    /// True when `variant` of some enum takes an inline object payload whose
+    /// base object is `object`. Used by object caller-destination proofs: a
+    /// parameter consumed only by such a constructor is copied into the enum
+    /// image, not retained by handle.
+    pub fn object_payload_is_inline(&self, variant: &str, object: &str) -> bool {
+        self.enums
+            .iter()
+            .any(|(enum_name, def)| {
+                let Some(tag) = def.variants.iter().position(|(name, _)| name == variant) else {
+                    return false;
+                };
+                let Some(payload) = def.variants.get(tag).map(|(_, payload)| payload) else {
+                    return false;
+                };
+                // A concrete object payload can be checked directly; a
+                // generic payload is checked at a concrete instantiation.
+                let ty = if payload.universe_key() == Some(object) {
+                    Type::Custom(enum_name.clone())
+                } else {
+                    let Some(target_param) = declared_generic_param(payload, &def.params) else {
+                        return false;
+                    };
+                    let args = def
+                        .params
+                        .iter()
+                        .map(|param| {
+                            if param == &target_param {
+                                Type::Custom(object.to_string())
+                            } else {
+                                Type::int()
+                            }
+                        })
+                        .collect();
+                    Type::Applied(enum_name.clone(), args)
+                };
+                self.layout_for(&ty)
+                    .and_then(|layout| layout.variant_payload_inline_object.get(tag).copied())
+                    .unwrap_or(false)
+            })
+    }
+}
+
+fn payload_universe_name(ty: &Type) -> Option<&str> {
+    ty.universe_key()
+}
+
+fn declared_generic_param(ty: &Type, params: &[String]) -> Option<String> {
+    let name = match ty {
+        Type::Custom(name) | Type::TypeVar(name) | Type::Generic(name, _) => name,
+        _ => return None,
+    };
+    params
+        .iter()
+        .find(|param| *param == name)
+        .cloned()
+}

@@ -2780,6 +2780,17 @@ impl LlvmBackend {
             .max(2)
     }
 
+    /// Exact byte image for an object-returning defn's declared result.
+    pub(crate) fn object_image_bytes_for_defn(&self, name: &str) -> u64 {
+        self.ctx
+            .defn_return_types
+            .get(name)
+            .and_then(|types| types.first())
+            .and_then(|ty| ty.universe_key())
+            .map(|name| self.struct_type_size(name))
+            .unwrap_or(0)
+    }
+
     /// Image width for an enum-returning defn's declared return type.
     pub(crate) fn enum_image_words_for_defn(&self, name: &str) -> usize {
         self.ctx

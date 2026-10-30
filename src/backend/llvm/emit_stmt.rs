@@ -458,6 +458,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(slot) = &sret_slot {
                 backend.fun.sret_call_slot = Some(slot.clone());
             }
+            if backend.ctx.defn_object_sret.contains(name) {
+                backend.fun.object_sret_call_slot = Some(backend.fun.next_reg_with_prefix("osrt"));
+            }
             let saved_expected_enum = backend.fun.expected_enum_type.clone();
             if let Some(t) = ty {
                 if backend.ctx.enum_handle_types.contains(type_bare_name(t)) {
@@ -759,6 +762,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             };
             backend.fun.enum_construct_slot = None;
             backend.fun.sret_call_slot = None;
+            backend.fun.object_sret_call_slot = None;
             backend.fun.expected_enum_type = saved_expected_enum;
             // 2026-08-17 (tuple correctness, plan
             // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
@@ -1949,6 +1953,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             if let Some(val) = val {
                 let saved_enum_ret = backend.fun.enum_return_context;
                 let saved_expected_enum = backend.fun.expected_enum_type.clone();
+                let saved_object_ret = backend.fun.object_return_context;
+                backend.fun.object_return_context = backend.fun.object_out_slot.is_some();
                 let returns_enum = backend.fun.item_return_type.as_ref()
                     .map(|t| backend.ctx.enum_handle_types.contains(type_bare_name(t)))
                     .unwrap_or(false);
@@ -1977,10 +1983,12 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 if backend.fun.tail_loop_backedge {
                     backend.fun.enum_return_context = saved_enum_ret;
                     backend.fun.expected_enum_type = saved_expected_enum;
+                    backend.fun.object_return_context = saved_object_ret;
                     return TypedRegister { name: reg.name, ty: reg.ty };
                 }
                 backend.fun.enum_return_context = saved_enum_ret;
                 backend.fun.expected_enum_type = saved_expected_enum;
+                backend.fun.object_return_context = saved_object_ret;
                 // 2026-08-01 (C3): a boxed Float param returned from a defn
                 // (`term v`) is an i64 handle — unbox through the float cache so
                 // `ret float` receives the actual float, not the handle.

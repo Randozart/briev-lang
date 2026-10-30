@@ -122,6 +122,9 @@ pub struct CompilerContext {
     /// 2026-10-21 (P2-1 ReturnedSmall): internal enum-returning defns whose
     /// return forms are constructor-shaped; they take a hidden ptr out slot.
     pub defn_sret: std::collections::HashSet<String>,
+    /// 2026-10-30 (D4 caller destination): object-returning defns proven safe
+    /// to write into a caller-owned hidden image.
+    pub defn_object_sret: std::collections::HashSet<String>,
     /// 2026-10-21 (TCO-safe sret): tail-recursive defns whose sret call
     /// slots are hoisted to the non-recursive caller. Value = ordered hidden
     /// sret callee names; each becomes one `ptr` parameter.
@@ -655,6 +658,7 @@ impl CompilerContext {
             defn_needs_state: HashMap::new(),
             defn_needs_plain: HashMap::new(),
             defn_sret: std::collections::HashSet::new(),
+            defn_object_sret: std::collections::HashSet::new(),
             defn_hoisted_sret: HashMap::new(),
             tail_recursive: std::collections::HashSet::new(),
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
@@ -1140,6 +1144,12 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub enum_out_type: Option<crate::ast::Type>,
     pub enum_return_context: bool,
     pub enum_out_busy: bool,
+    /// 2026-10-30 (D4): hidden caller-owned object image and its declared type.
+    pub object_out_slot: Option<String>,
+    pub object_out_type: Option<crate::ast::Type>,
+    pub object_return_context: bool,
+    /// Active caller image while emitting one object-sret call initializer.
+    pub object_sret_call_slot: Option<String>,
     /// 2026-10-21 (B0 nested enum layout): concrete enum instance expected at
     /// the current expression site (empty = unknown/boxed fallback).
     pub expected_enum_type: Option<crate::ast::Type>,
@@ -1450,12 +1460,16 @@ impl FunctionContext {
             enum_construct_slot: None,
             enum_out_slot: None,
             enum_out_type: None,
+            object_out_slot: None,
+            object_out_type: None,
             enum_return_context: false,
             enum_out_busy: false,
+            object_return_context: false,
             expected_enum_type: None,
             item_return_type: None,
             sret_call_slots: HashMap::new(),
             sret_call_slot: None,
+            object_sret_call_slot: None,
             hoisted_sret_params: HashMap::new(),
             tail_loop_fn: None,
             tail_loop_header: None,
@@ -1598,6 +1612,10 @@ impl FunctionContext {
         self.enum_construct_slot = None;
         self.enum_out_slot = None;
         self.enum_out_type = None;
+        self.object_out_slot = None;
+        self.object_out_type = None;
+        self.object_return_context = false;
+        self.object_sret_call_slot = None;
         self.enum_return_context = false;
         self.enum_out_busy = false;
         self.expected_enum_type = None;

@@ -23,8 +23,10 @@ destination/lifetime decisions from register names or scattered local maps.
 D3 joins the semantic enum plan with target physical layout in
 `enum_lowering.rs`; enum construction, projection, retention, image width, and
 `defn_sret` read that joined entry, with `EnumLayoutPlanner` as the conservative
-fallback. D4 adds boundary-gated inline object payloads for internal enums;
-exported enums and collections keep the boxed layout. Public/runtime ABI
+fallback. D4 adds boundary-gated inline object payloads for internal enums and
+proof-gated object caller destinations (`object_repr.rs`); exported enums,
+collections, unsupported call positions, and escaping object results keep the
+boxed layout. Public/runtime ABI
 remains frozen; internal helper ABI plans switch atomically per callable.
 
 2026-10-22: `logical.rs` owns LLVM `&&`/`||` evaluation control flow. Specific

@@ -2908,6 +2908,17 @@ impl LlvmBackend {
     ) -> TypedRegister {
         let total_size = self.struct_type_size(type_name);
         let struct_ty = crate::ast::Type::Custom(type_name.to_string());
+        let object_out_type = self.fun.object_out_type.as_ref().and_then(|ty| ty.universe_key());
+        let object_out = self.fun.object_return_context
+            && object_out_type == Some(type_name);
+        let alloca_reg = if object_out {
+            self.fun
+                .object_out_slot
+                .clone()
+                .expect("object return context without object_out_slot")
+        } else {
+            self.fun.gen_reg()
+        };
 
         // 2026-08-13 (struct value lifetime): a struct literal must live on the
         // HEAP, not the stack. The handle (`ptrtoint`) crosses function
@@ -2916,7 +2927,6 @@ impl LlvmBackend {
         // returns — the caller then reads a dead frame (append_str("") returned
         // a builder whose buffer read garbage). State-slot/field consumers read
         // the handle in the same function, so heap is a strict superset.
-        let alloca_reg = self.fun.gen_reg();
         // 2026-08-13 (reactor fix, merged with main's heap lifetime): the
         // allocation (heap malloc per main, so the handle survives function
         // boundaries) is deferred to the loop PREHEADER when inside a reactor
@@ -2929,9 +2939,9 @@ impl LlvmBackend {
         // iteration's object (`List<Item>` parsed from JSON read the final
         // title for every element). Dynamic literals allocate per evaluation.
         let const_fields = fields.iter().all(|(_, expr)| is_compile_time_const(expr));
-        if self.fun.defer_struct_allocas && const_fields {
+        if !object_out && self.fun.defer_struct_allocas && const_fields {
             self.fun.pending_struct_allocas.push(format!("{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size));
-        } else {
+        } else if !object_out {
             writeln!(out, "{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size).ok();
         }
 
@@ -6586,6 +6596,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             && self.plain_context_active()
             && self.ctx.defn_takes_plain(name);
         let takes_sret = is_defn && self.ctx.defn_sret.contains(name);
+        let takes_object_sret = is_defn && self.ctx.defn_object_sret.contains(name);
         // 2026-10-21 (TCO-safe sret): hoisted slots are a separate hidden
         // prefix and apply even when the recursive defn needs no state/plain/
         // sret parameter.
@@ -6660,13 +6671,27 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 carrier_replace.insert(carrier.param_index);
             }
         }
-        if takes_state || takes_plain || takes_sret {
+        if takes_state || takes_plain || takes_sret || takes_object_sret {
             if takes_state {
                 call_args.push("ptr %state".to_string());
             }
             if takes_plain {
                 let p = self.emit_plain_ptr_value(out, indent);
                 call_args.push(format!("ptr {}", p));
+            }
+            if takes_object_sret {
+                let slot = self.fun.object_sret_call_slot.clone().unwrap_or_else(|| {
+                    let slot = self.fun.next_reg_with_prefix("osrt");
+                    let bytes = self.object_image_bytes_for_defn(name);
+                    writeln!(
+                        out,
+                        "{}{} = alloca i8, i64 {}",
+                        indent, slot, bytes
+                    )
+                    .ok();
+                    slot
+                });
+                call_args.push(format!("ptr {}", slot));
             }
             if takes_sret {
                 let slot = self.fun.hoisted_sret_params.get(name).cloned().or_else(|| {

@@ -902,9 +902,9 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D4a facts and internal enum object-payload inlining are
-complete. The remaining D4 work is caller-destination/materialization for
-escaping object returns (starting with `ws_partial`).
+**Current phase:** D4 object lowering is complete: facts, internal enum
+object-payload inlining, and proof-gated object caller destination. D5
+container/state lane is next.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

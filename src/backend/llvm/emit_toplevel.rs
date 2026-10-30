@@ -3712,6 +3712,17 @@ impl LlvmBackend {
         self.fun.enum_inline_slots.clear();
         self.fun.sret_call_slots.clear();
         self.fun.enum_out_slot = None;
+        self.fun.object_out_slot = None;
+        let sret_object = self.ctx.defn_object_sret.contains(&d.name);
+        if sret_object {
+            self.fun.object_out_slot = Some("%object_out".to_string());
+            self.fun.object_out_type = d
+                .output_type
+                .as_ref()
+                .and_then(|ot| ot.all_types().into_iter().next());
+        } else {
+            self.fun.object_out_type = None;
+        }
         let sret_enum = self.ctx.defn_sret.contains(&d.name);
         if sret_enum {
             self.fun.enum_out_slot = Some("%enum_out".to_string());
@@ -3793,6 +3804,12 @@ impl LlvmBackend {
             }
             write!(out, "ptr noalias nocapture align 8 %enum_out").ok();
         }
+        if sret_object {
+            if needs_state || needs_plain || sret_enum {
+                let _ = write!(out, ", ");
+            }
+            write!(out, "ptr noalias nocapture align 8 %object_out").ok();
+        }
         // 2026-10-21 (TCO-safe sret): tail-recursive bodies receive their
         // sret call slots from the non-recursive caller. No per-frame alloca,
         // so LLVM can keep the self-call in tail position.
@@ -3803,7 +3820,7 @@ impl LlvmBackend {
             .cloned()
             .unwrap_or_default();
         for (i, callee) in hoisted_sret.iter().enumerate() {
-            if needs_state || needs_plain || sret_enum || i > 0 {
+            if needs_state || needs_plain || sret_enum || sret_object || i > 0 {
                 let _ = write!(out, ", ");
             }
             let _ = callee;
@@ -3818,13 +3835,13 @@ impl LlvmBackend {
             .map(|info| info.carriers.clone())
             .unwrap_or_default();
         for (i, carrier) in tail_carriers.iter().enumerate() {
-            if needs_state || needs_plain || sret_enum || !hoisted_sret.is_empty() || i > 0 {
+            if needs_state || needs_plain || sret_enum || sret_object || !hoisted_sret.is_empty() || i > 0 {
                 let _ = write!(out, ", ");
             }
             write!(out, "ptr align 8 %carrier{}", i).ok();
         }
         for (i, (n, t)) in d.parameters.iter().enumerate() {
-            if needs_state || needs_plain || sret_enum || !hoisted_sret.is_empty() || !tail_carriers.is_empty() || i > 0 {
+            if needs_state || needs_plain || sret_enum || sret_object || !hoisted_sret.is_empty() || !tail_carriers.is_empty() || i > 0 {
                 let _ = write!(out, ", ");
             }
             // 2026-07-04: dereferenceable(N) for Ptr<T> parameters.

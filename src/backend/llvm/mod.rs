@@ -3242,6 +3242,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             })
             .unwrap_or_default();
         self.ctx.enum_lowering = enum_lowering;
+        let object_sret_plan = self
+            .ctx
+            .enum_layout_planner
+            .as_ref()
+            .map(|layouts| {
+                crate::analysis::object_repr::build_object_representation_plan(
+                    &reordered_items,
+                    layouts,
+                )
+            });
+        if std::env::var_os("BRIEV_DIAG_OBJECT_SRET").is_some() {
+            eprintln!(
+                "diag object sret: candidates={:?}",
+                object_sret_plan
+                    .as_ref()
+                    .map(|plan| plan.caller_destination_defns.clone())
+            );
+        }
+        self.ctx.defn_object_sret = object_sret_plan
+            .map(|plan| plan.caller_destination_defns.into_iter().collect())
+            .unwrap_or_default();
         // 2026-10-21 (P2-1 ReturnedSmall): only constructor-shaped, sret-safe
         // enum results take the hidden slot; the joined plan owns the verdict.
         self.ctx.defn_sret = self

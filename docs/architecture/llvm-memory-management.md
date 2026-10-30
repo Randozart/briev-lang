@@ -42,6 +42,12 @@ field width cannot be bounded stay boxed. An emission assertion checks the
 actual object size against the reserved payload width. `ws_frame`'s second
 `WsFrame` allocation is removed by this path.
 
+D4 slice 4 adds `object_repr.rs`. An object-returning defn gets a hidden
+caller-owned image only when every return is a direct object literal and every
+call result is consumed by a non-retaining parameter. The callee writes fields
+into `%object_out`; unsupported call positions keep the boxed ABI. `ws_partial`
+uses this path, removing the last per-frame `WsFrame` allocation.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap
