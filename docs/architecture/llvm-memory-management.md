@@ -1,7 +1,31 @@
 # LLVM Backend Memory Management
 
 **Date:** 2026-06-23
-**Status:** Current
+**Last updated:** 2026-10-30
+**Status:** Current, with active destination-ownership migration
+
+## Value destination ownership (2026-10-30)
+
+The compiler is migrating to a generalized destination/ownership model. The
+authoritative decision record is
+`value-destination-ownership-decision-record.md`; the execution plan is
+`docs/plans/2026-10-30-generalized-value-destination-ownership.md`.
+
+Rules added by that record:
+
+- every semantic value has a destination/ownership fact;
+- backend lowering consumes `AnalysisResults.destination_ownership`;
+- unknown ownership boxes/copies;
+- proven non-escaping objects may become SSA/local fields;
+- proven caller destinations may replace hidden result copies;
+- proven loop/recursive values use stable carriers;
+- every representation crossing uses shared lowering helpers;
+- public/runtime ABI remains frozen; internal helper ABI switches atomically
+  per callable;
+- no destination pointer may escape its owner lifetime.
+
+Do not add new ad-hoc destination metadata to `FunctionContext`. Destination
+decisions belong in the plan and shared lowering helpers.
 
 ## Principle
 

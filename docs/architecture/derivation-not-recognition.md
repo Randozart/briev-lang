@@ -1,6 +1,11 @@
 # Derivation, Not Recognition — the compiler's obligation
 
 **2026-09-30.** Status: foundational doctrine.
+**2026-10-30 application:** destination ownership is proof-derived, not
+shape-recognized. Destination/alias/lifetime facts come from semantic value
+graphs and ownership analyses; backend lowering consumes
+`AnalysisResults.destination_ownership` through shared helpers. It must not
+recognize specific algorithms or source type names to choose a destination.
 **Authority:** fed by Golden Rules 15, 19, 23, 24; Rule 2 (maximum
 efficient default); Rule 9 (tests or it doesn't exist).
 **Companions:** `proof-vs-shape.md` (eternal vs temporal),

@@ -1,7 +1,9 @@
 # Destination ownership reconciliation
 
 **Date:** 2026-10-29
-**Status:** ACTIVE — planning/reconciliation gate
+**Status:** RECONCILED — superseded for execution by
+`docs/plans/2026-10-30-generalized-value-destination-ownership.md` on branch
+`feat/generalized-value-destination-ownership`
 **Scope:** enum, object, composite, loop-carried, and ABI value destinations in
 the LLVM backend.
 **Implementation target:** LLVM native + wasm32 Tier 1; other backends remain

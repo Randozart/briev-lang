@@ -60,6 +60,16 @@ owns the kernel and its buffer order together.** When two mappings must
 share one buffer, the composition owns an explicit transpose node —
 expressible today, amortized per context.
 
+## Destination facts consume layout contracts
+
+The generalized destination-ownership model
+(`value-destination-ownership-decision-record.md`) consumes concrete layout
+facts; it does not redefine them. Destination classes, scalar replacement,
+inline/packed materialization, and ABI conversions must be derived from the
+same element/projection facts recorded above. Unknown layout/ownership remains
+boxed or copied. The compiler may not silently rewrite a frozen host/device
+layout to obtain a destination optimization.
+
 ## The compiler's role: analysis, never rewriting
 
 The G001 pass (`src/analysis/coalescing.rs`) is the analysis voice of

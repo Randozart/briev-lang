@@ -103,6 +103,8 @@ The reference interpreter operates on generic semantic values:
 
 Stdlib concepts such as lists, maps, options, and results are not hardcoded interpreter value variants. Materialization lowers semantic values to target representations.
 
+A concrete materialization also selects a **destination form** for that value: SSA scalar/aggregate, caller-owned result slot, scalar-replaced local fields, packed memory, stable loop/recursive carrier, zero-copy view, or canonical boxed storage. Destination selection is a target/proof decision, not an author-language decision. The compiler derives ownership, escape, alias, and lifetime facts; unknown ownership uses the safe boxed/copy fallback. No destination form is part of the abstract semantic identity of a Briev value, and this selection introduces no source syntax.
+
 ### 2.3 Frontend/backend boundary
 
 The frontend resolves each syntactic operation to semantic behavior, contracts, effects, and access shape. Backends may choose any equivalent physical realization but must not redispatch by source type name or redefine operation meaning.
@@ -112,6 +114,7 @@ Examples:
 - LLVM may scalarize, vectorize, reorder, or choose strided storage.
 - CIRCT may realize the same operation as registers, memories, or parallel paths.
 - SPIR-V may select target-appropriate storage classes and vector operations.
+- LLVM may select destination ownership forms—SSA, caller destination, scalar-replaced object, packed memory, stable carrier, zero-copy view, or boxed fallback—only from proven ownership, escape, alias, and lifetime facts. Unknown ownership remains boxed/copied. These are internal materialization choices, not source syntax or semantic type identity.
 
 ### 2.4 Keyword categories, ambiguity resolution, and the admission process
 
