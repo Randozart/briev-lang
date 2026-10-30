@@ -12,7 +12,7 @@ use crate::analysis::enum_repr::{build_enum_representation_plan, EnumRepresentat
 use crate::analysis::tail_recursion::{
     build_tail_recursion_plan, TailRecursionClass,
 };
-use crate::ast::{Expr, Statement, TopLevel};
+use crate::ast::{Expr, Statement, TopLevel, Type};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,14 +31,16 @@ pub struct CarrierParam {
     pub result_local: String,
     /// Sret callee producing the temporary result.
     pub sret_callee: String,
+    /// Per-tail-arm classification, in `tail_self_calls_in_body` order.
+    pub arg_classes: Vec<CarrierArgClass>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CarrierInfo {
     pub carriers: Vec<CarrierParam>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TailCarrierPlan {
     pub defns: BTreeMap<String, CarrierInfo>,
 }
@@ -63,55 +65,72 @@ pub fn build_tail_carrier_plan(items: &[TopLevel]) -> TailCarrierPlan {
         if self_calls.is_empty() {
             continue;
         }
-        let mut carriers = Vec::new();
-        for (param_index, param) in d.parameters.iter().enumerate() {
-            let mut classes = Vec::new();
-            let mut result_local = String::new();
-            let mut sret_callee = String::new();
-            let sret_locals = sret_local_bindings(d, &enum_plan);
-            for args in &self_calls {
-                let Some(arg) = args.get(param_index) else {
-                    classes.push(CarrierArgClass::Unsupported);
-                    continue;
-                };
-                let class = match arg {
-                    Expr::Identifier(local) if *local == param.0 => {
-                        CarrierArgClass::ExistingCarrier
-                    }
-                    Expr::Identifier(local) => {
-                        let Some((sret_local, callee)) = sret_locals.get(local) else {
-                            classes.push(CarrierArgClass::Unsupported);
-                            continue;
-                        };
-                        result_local = sret_local.clone();
-                        sret_callee = callee.clone();
-                        CarrierArgClass::InlineNested
-                    }
-                    _ => CarrierArgClass::Unsupported,
-                };
-                classes.push(class);
-            }
-            if classes.iter().any(|c| *c == CarrierArgClass::Unsupported) {
-                continue;
-            }
-            if !classes
-                .iter()
-                .any(|c| *c == CarrierArgClass::InlineNested)
-            {
-                continue;
-            }
-            carriers.push(CarrierParam {
-                param_index,
-                param_name: param.0.clone(),
-                result_local,
-                sret_callee,
-            });
-        }
+        let carriers = carrier_parameters(d, &self_calls, &enum_plan);
         if !carriers.is_empty() {
             defns.insert(d.name.clone(), CarrierInfo { carriers });
         }
     }
     TailCarrierPlan { defns }
+}
+
+fn carrier_parameters(
+    d: &crate::ast::Definition,
+    self_calls: &[Vec<Expr>],
+    enum_plan: &crate::analysis::enum_repr::EnumRepresentationPlan,
+) -> Vec<CarrierParam> {
+    let sret_locals = sret_local_bindings(d, enum_plan);
+    d.parameters
+        .iter()
+        .enumerate()
+        .filter_map(|(param_index, param)| {
+            let classes: Vec<CarrierArgClass> = self_calls
+                .iter()
+                .map(|args| classify_carrier_arg(args, param_index, param, &sret_locals))
+                .collect();
+            let (result_local, sret_callee) = classes
+                .iter()
+                .zip(self_calls.iter())
+                .find_map(|(class, args)| match class {
+                    CarrierArgClass::InlineNested => {
+                        let Expr::Identifier(local) = &args[param_index] else {
+                            return None;
+                        };
+                        sret_locals.get(local).cloned()
+                    }
+                    _ => None,
+                })?;
+            carrier_is_approved(&classes).then(|| CarrierParam {
+                param_index,
+                param_name: param.0.clone(),
+                result_local,
+                sret_callee,
+                arg_classes: classes,
+            })
+        })
+        .collect()
+}
+
+fn classify_carrier_arg(
+    args: &[Expr],
+    param_index: usize,
+    param: &(String, Type),
+    sret_locals: &std::collections::HashMap<String, (String, String)>,
+) -> CarrierArgClass {
+    let Some(Expr::Identifier(local)) = args.get(param_index) else {
+        return CarrierArgClass::Unsupported;
+    };
+    if local == &param.0 {
+        return CarrierArgClass::ExistingCarrier;
+    }
+    sret_locals
+        .contains_key(local)
+        .then_some(CarrierArgClass::InlineNested)
+        .unwrap_or(CarrierArgClass::Unsupported)
+}
+
+fn carrier_is_approved(classes: &[CarrierArgClass]) -> bool {
+    classes.iter().all(|class| *class != CarrierArgClass::Unsupported)
+        && classes.contains(&CarrierArgClass::InlineNested)
 }
 
 /// Direct sret-result locals plus locals bound by destructuring a direct

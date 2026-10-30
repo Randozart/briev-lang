@@ -902,9 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D5a sink facts and D5b proven non-escaping object frame
-images are complete. Next: sink-specific copy elimination only where D5
-destination facts prove the destination outlives the value.
+**Current phase:** D6a unified recursive-carrier facts are complete and the
+backend consumes them. Next: loop-engine phi/alloca selection from the same
+plan, then sink-specific copy elimination where D5 proves destination
+lifetime.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

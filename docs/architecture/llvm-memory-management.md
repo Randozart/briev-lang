@@ -54,6 +54,12 @@ literal to a function-frame image only when every observed value of that
 owner/type is non-escaping. Loop construction and `&object` are explicit
 escapes. Frozen runtime layouts do not change.
 
+D6a (2026-10-30) moves recursive tail carriers into
+`GeneralizedDestinationOwnershipPlan.recursive_carriers`. The backend
+reconstructs its carrier ABI view from that plan; per-tail-arm argument
+classes distinguish an existing carrier from a temporary inline nested image.
+Carrier lowering behavior is unchanged in this slice.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

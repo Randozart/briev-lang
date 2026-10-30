@@ -12,6 +12,10 @@
 // `DestinationOwnershipPlan`; no other code depends on it.
 
 use crate::ast::{EnumVariant, TopLevel, Type};
+use crate::analysis::tail_carrier::{
+    build_tail_carrier_plan, CarrierArgClass as LegacyCarrierArgClass, CarrierInfo,
+    CarrierParam as LegacyCarrierParam, TailCarrierPlan,
+};
 use crate::analysis::destination_ownership::{
     CallableKind, DestinationClass as LegacyDestinationClass,
     DestinationOwnershipPlan, EscapeKind, ParamObligation, ResultDestination,
@@ -388,6 +392,38 @@ pub struct LoopValuePlan {
     pub requires_backedge_copy: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecursiveCarrierArgClass {
+    InlineNested,
+    ExistingCarrier,
+    /// Present only as an internal invariant guard; approved carrier plans
+    /// never contain an unsupported recursive arm.
+    Unsupported,
+}
+
+/// One recursive-call parameter that must live in a stable carrier image.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecursiveCarrierValue {
+    pub parameter: SemanticValueId,
+    pub param_index: usize,
+    pub param_name: String,
+    pub result_local: String,
+    pub sret_callee: String,
+    pub arg_classes: Vec<RecursiveCarrierArgClass>,
+    pub carrier: DestinationId,
+    pub class: GeneralDestinationClass,
+    pub requires_backedge_copy: bool,
+    pub proof: ProofStatus,
+}
+
+/// Stable carriers for a direct self-tail-recursive callable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecursiveCarrierPlan {
+    pub callable: CallableId,
+    pub carriers: Vec<RecursiveCarrierValue>,
+    pub proof: ProofStatus,
+}
+
 /// Generalized loop plan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopPlan {
@@ -582,6 +618,7 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub object_values: BTreeMap<SemanticValueId, ObjectValuePlan>,
     pub sinks: BTreeMap<DestinationId, DestinationSinkPlan>,
     pub tuples: BTreeMap<DestinationId, TupleDestinationPlan>,
+    pub recursive_carriers: BTreeMap<CallableId, RecursiveCarrierPlan>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -738,7 +775,136 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     insert_legacy_value_facts(legacy, &mut plan.values);
     plan.sinks = build_sink_plans(legacy);
     plan.tuples = build_tuple_plans(legacy);
+    plan.recursive_carriers = build_recursive_carriers(items, legacy);
+    populate_hidden_tail_carriers(&mut plan.callables, &plan.recursive_carriers);
     plan
+}
+
+fn build_recursive_carriers(
+    items: &[TopLevel],
+    legacy: &DestinationOwnershipPlan,
+) -> BTreeMap<CallableId, RecursiveCarrierPlan> {
+    let legacy_plan = build_tail_carrier_plan(items);
+    legacy
+        .callables
+        .iter()
+        .filter_map(|(name, summary)| {
+            let info = legacy_plan.info(name)?;
+            let callable = callable_id(name, summary.kind);
+            let plan = recursive_carrier_plan(&callable, info);
+            Some((callable, plan))
+        })
+        .collect()
+}
+
+fn recursive_carrier_plan(
+    callable: &CallableId,
+    info: &CarrierInfo,
+) -> RecursiveCarrierPlan {
+    let carriers = info
+        .carriers
+        .iter()
+        .map(|carrier| recursive_carrier_value(callable, carrier))
+        .collect();
+    RecursiveCarrierPlan {
+        callable: callable.clone(),
+        carriers,
+        proof: ProofStatus::Proven {
+            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+        },
+    }
+}
+
+fn recursive_carrier_value(
+    callable: &CallableId,
+    carrier: &LegacyCarrierParam,
+) -> RecursiveCarrierValue {
+    let arg_classes = carrier
+        .arg_classes
+        .iter()
+        .map(|class| match class {
+            LegacyCarrierArgClass::InlineNested => RecursiveCarrierArgClass::InlineNested,
+            LegacyCarrierArgClass::ExistingCarrier => RecursiveCarrierArgClass::ExistingCarrier,
+            LegacyCarrierArgClass::Unsupported => RecursiveCarrierArgClass::Unsupported,
+        })
+        .collect();
+    RecursiveCarrierValue {
+        parameter: semantic_value(
+            callable,
+            SemanticValueKind::Parameter,
+            &format!("param/{}/{}", carrier.param_index, carrier.param_index),
+            0,
+        ),
+        param_index: carrier.param_index,
+        param_name: carrier.param_name.clone(),
+        result_local: carrier.result_local.clone(),
+        sret_callee: carrier.sret_callee.clone(),
+        arg_classes,
+        carrier: DestinationId {
+            owner: callable.name.clone(),
+            path: format!("recursive/{}/{}", carrier.param_index, carrier.param_name),
+        },
+        class: GeneralDestinationClass::StableCarrier,
+        requires_backedge_copy: true,
+        proof: ProofStatus::Proven {
+            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+        },
+    }
+}
+
+fn populate_hidden_tail_carriers(
+    callables: &mut BTreeMap<CallableId, CallablePlan>,
+    carriers: &BTreeMap<CallableId, RecursiveCarrierPlan>,
+) {
+    for (callable, plan) in carriers {
+        if let Some(callable_plan) = callables.get_mut(callable) {
+            callable_plan.hidden_abi.tail_carriers = plan.carriers.len() as u64;
+        }
+    }
+}
+
+/// Reconstruct the backend's current carrier ABI view from the unified plan.
+/// D6 migrates the backend to this method so the tail-carrier walker has one
+/// consumer and no second source of truth.
+pub fn tail_carrier_plan_from_generalized(
+    plan: &GeneralizedDestinationOwnershipPlan,
+) -> TailCarrierPlan {
+    let defns = plan
+        .recursive_carriers
+        .values()
+        .map(|recursive| {
+            let carriers = recursive
+                .carriers
+                .iter()
+                .map(|carrier| LegacyCarrierParam {
+                    param_index: carrier.param_index,
+                    param_name: carrier.param_name.clone(),
+                    result_local: carrier.result_local.clone(),
+                    sret_callee: carrier.sret_callee.clone(),
+                    arg_classes: carrier
+                        .arg_classes
+                        .iter()
+                        .map(|class| match class {
+                            RecursiveCarrierArgClass::InlineNested => {
+                                LegacyCarrierArgClass::InlineNested
+                            }
+                            RecursiveCarrierArgClass::ExistingCarrier => {
+                                LegacyCarrierArgClass::ExistingCarrier
+                            }
+                            RecursiveCarrierArgClass::Unsupported => {
+                                LegacyCarrierArgClass::Unsupported
+                            }
+                        })
+                        .collect(),
+                })
+                .collect();
+            (
+                recursive.callable.name.clone(),
+                CarrierInfo { carriers },
+            )
+        })
+        .collect();
+    TailCarrierPlan { defns }
 }
 
 fn insert_legacy_value_facts(
@@ -2057,6 +2223,53 @@ defn run(n: Int) -> Int {
             .object_values
             .values()
             .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime)));
+    }
+
+    #[test]
+    fn recursive_carriers_unify_tail_carrier_facts() {
+        let src = r#"
+enum R { Ok(Int), Err(Int) };
+enum S { A };
+defn step(s: S) -> R { term Ok(1); };
+defn loop(n: Int, state: S, sum: Int) -> Int {
+    when n <= 0 { term sum; };
+    let r: R = step(state);
+    term match r {
+        Ok(next) => loop(n - 1, next, sum + 1),
+        Err(_) => loop(n - 1, state, sum),
+    };
+};
+"#;
+        let (_, plan) = analyze_items(src);
+        let callable = plan
+            .recursive_carriers
+            .keys()
+            .find(|callable| callable.name == "loop")
+            .expect("recursive carrier");
+        let recursive = &plan.recursive_carriers[callable];
+        assert_eq!(recursive.carriers.len(), 1);
+        assert_eq!(recursive.carriers[0].param_index, 1);
+        assert_eq!(recursive.carriers[0].param_name, "state");
+        assert_eq!(
+            recursive.carriers[0].arg_classes,
+            vec![
+                RecursiveCarrierArgClass::InlineNested,
+                RecursiveCarrierArgClass::ExistingCarrier,
+            ]
+        );
+        assert_eq!(recursive.carriers[0].class, GeneralDestinationClass::StableCarrier);
+        let callable_plan = &plan.callables[callable];
+        assert_eq!(callable_plan.hidden_abi.tail_carriers, 1);
+
+        let items = {
+            let tokens = crate::lexer::tokenize(src).expect("tokenize");
+            let mut parser = crate::parser::Parser::new(tokens, src);
+            parser.parse_program().expect("parse")
+        };
+        assert_eq!(
+            tail_carrier_plan_from_generalized(&plan),
+            crate::analysis::tail_carrier::build_tail_carrier_plan(&items)
+        );
     }
 
     #[test]
