@@ -48,6 +48,10 @@ call result is consumed by a non-retaining parameter. The callee writes fields
 into `%object_out`; unsupported call positions keep the boxed ABI. `ws_partial`
 uses this path, removing the last per-frame `WsFrame` allocation.
 
+D5a (2026-10-30) adds destination records for state stores, collection
+inserts, object-field stores, and tuple constructions. They remain conservative
+until copy elimination is proven; frozen runtime layouts do not change.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

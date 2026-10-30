@@ -400,11 +400,13 @@ impl<'a> BodyAnalyzer<'a> {
                     let id = self.child_expr(value, index, cursor, scope);
                     self.use_value(&id);
                 }
-                self.temp_value(
+                let id = self.temp_value(
                     cursor,
                     ValueOrigin::Composite,
                     DestinationClass::PackedMemory,
-                )
+                );
+                self.set_tuple_element_count(&id, values.len());
+                id
             }
             Expr::List(values) => {
                 for (index, value) in values.iter().enumerate() {

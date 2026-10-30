@@ -154,6 +154,9 @@ pub struct ValueFact {
     /// Concrete type when the walker knows it (currently struct/object
     /// literals). `None` means unknown; D4 object facts consume this.
     pub ty: Option<Type>,
+    /// Tuple arity when known. Element types remain unknown until type
+    /// propagation is added; `None` for non-tuples.
+    pub tuple_element_count: Option<usize>,
     pub origins: BTreeSet<ValueOrigin>,
     pub class: DestinationClass,
     pub uses: u64,
@@ -180,6 +183,7 @@ impl ValueFact {
             id,
             source_name,
             ty: None,
+            tuple_element_count: None,
             origins,
             class,
             uses: 0,
@@ -795,6 +799,12 @@ impl<'a> BodyAnalyzer<'a> {
             .or_insert_with(|| ValueFact::new(id.clone(), origin, class, name));
         entry.origins.insert(origin);
         id
+    }
+
+    pub(super) fn set_tuple_element_count(&mut self, id: &ValueId, count: usize) {
+        if let Some(fact) = self.facts.get_mut(id) {
+            fact.tuple_element_count = Some(count);
+        }
     }
 
     pub(super) fn set_fact_type(&mut self, id: &ValueId, ty: Type) {

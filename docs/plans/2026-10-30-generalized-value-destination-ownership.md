@@ -1036,6 +1036,14 @@ Gate:
 
 ### Phase D5 — container/state lane
 
+**Status 2026-10-30: D5a COMPLETE (facts only).** The generalized plan records
+state, collection-insert, and object-field sink destinations, plus tuple
+construction arity/class. R1 tags tuple arity without fabricating element
+types. Every sink remains conservative (`Boxed`, copy required). The plan also
+carries all R1 value facts not already enriched by earlier lanes, so sink
+plans and future copy elimination share one value table. No backend lowering
+changed. Validation recorded with the commit.
+
 **Deliverables:**
 
 - sink-specific container plans;
@@ -1357,3 +1365,4 @@ The generalized implementation is complete when:
       `ws_frame` allocation and timing improvement.
 - [x] Complete D4 slice 4: proven object caller destination, `ws_partial`
       hidden image, remaining WsFrame allocation removed.
+- [x] Complete D5a container/state/tuple destination facts (analysis-only).

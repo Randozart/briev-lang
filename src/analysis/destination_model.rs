@@ -514,6 +514,48 @@ pub struct ObjectValuePlan {
     pub proof: ProofStatus,
 }
 
+/// Sink categories covered by the D5 container/state lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DestinationSinkKind {
+    State,
+    Collection,
+    ObjectField,
+}
+
+impl DestinationSinkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DestinationSinkKind::State => "state",
+            DestinationSinkKind::Collection => "collection",
+            DestinationSinkKind::ObjectField => "object-field",
+        }
+    }
+}
+
+/// One state/collection/object-field destination. Copy elimination is a later
+/// D5 slice; every observed sink starts conservative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DestinationSinkPlan {
+    pub destination: DestinationId,
+    pub value: SemanticValueId,
+    pub kind: DestinationSinkKind,
+    pub class: GeneralDestinationClass,
+    pub requires_copy: bool,
+    pub proof: ProofStatus,
+}
+
+/// A tuple construction destination. Tuple element types are not yet known by
+/// R1, so `element_types` remains a typed-hole rather than guessing layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TupleDestinationPlan {
+    pub destination: DestinationId,
+    pub value: SemanticValueId,
+    pub element_count: usize,
+    pub class: GeneralDestinationClass,
+    pub requires_materialization: bool,
+    pub proof: ProofStatus,
+}
+
 /// Generalized value fact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneralValueFact {
@@ -538,6 +580,8 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub enum_callables: BTreeMap<CallableId, EnumCallablePlan>,
     pub objects: BTreeMap<String, ObjectDefinitionPlan>,
     pub object_values: BTreeMap<SemanticValueId, ObjectValuePlan>,
+    pub sinks: BTreeMap<DestinationId, DestinationSinkPlan>,
+    pub tuples: BTreeMap<DestinationId, TupleDestinationPlan>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -691,7 +735,154 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     plan.object_values = build_object_values(legacy, &plan.objects);
     insert_object_facts(&mut plan.values, &plan.object_values);
     mark_object_value_shapes(&mut plan.values, &plan.objects);
+    insert_legacy_value_facts(legacy, &mut plan.values);
+    plan.sinks = build_sink_plans(legacy);
+    plan.tuples = build_tuple_plans(legacy);
     plan
+}
+
+fn insert_legacy_value_facts(
+    legacy: &DestinationOwnershipPlan,
+    values: &mut BTreeMap<SemanticValueId, GeneralValueFact>,
+) {
+    let facts = legacy
+        .callables_by_owner
+        .values()
+        .flat_map(|facts| facts.values.values())
+        .filter_map(|fact| {
+            let id = legacy_semantic_value(fact);
+            values.contains_key(&id).then_some(()).map(|()| (id, fact))
+        })
+        .map(|(id, fact)| {
+            general_fact(
+                id,
+                fact.ty.clone(),
+                OwnershipClass::Unknown,
+                general_legacy_class(fact.class),
+            )
+        })
+        .collect::<Vec<_>>();
+    values.extend(facts.into_iter().map(|fact| (fact.id.clone(), fact)));
+}
+
+fn general_legacy_class(class: LegacyDestinationClass) -> GeneralDestinationClass {
+    match class {
+        LegacyDestinationClass::ScalarValue => GeneralDestinationClass::ScalarValue,
+        LegacyDestinationClass::CallerDestination => GeneralDestinationClass::CallerDestination,
+        LegacyDestinationClass::ScalarReplacedObject => {
+            GeneralDestinationClass::ScalarReplacedObject
+        }
+        LegacyDestinationClass::StableCarrier => GeneralDestinationClass::StableCarrier,
+        LegacyDestinationClass::PackedMemory => GeneralDestinationClass::PackedMemory,
+        LegacyDestinationClass::Boxed | LegacyDestinationClass::Unknown => {
+            GeneralDestinationClass::Boxed
+        }
+        LegacyDestinationClass::Borrowed => GeneralDestinationClass::Unknown,
+    }
+}
+
+fn legacy_semantic_value(fact: &crate::analysis::destination_ownership::ValueFact) -> SemanticValueId {
+    semantic_value(
+        &CallableId {
+            namespace: CallableNamespace::Unknown,
+            name: fact.id.owner.clone(),
+        },
+        SemanticValueKind::Local,
+        &fact.id.path,
+        0,
+    )
+}
+
+fn build_sink_plans(
+    legacy: &DestinationOwnershipPlan,
+) -> BTreeMap<DestinationId, DestinationSinkPlan> {
+    legacy
+        .callables_by_owner
+        .values()
+        .flat_map(|facts| facts.values.values())
+        .flat_map(fact_sink_plans)
+        .collect()
+}
+
+fn fact_sink_plans(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> Vec<(DestinationId, DestinationSinkPlan)> {
+    fact.sinks
+        .iter()
+        .filter_map(|(kind, sites)| destination_sink_kind(*kind).map(|kind| (kind, sites)))
+        .flat_map(|(kind, sites)| {
+            sites.iter().map(move |site| {
+                let destination = DestinationId {
+                    owner: fact.id.owner.clone(),
+                    path: format!("{}/{}/{}", fact.id.path, kind.as_str(), site),
+                };
+                let plan = DestinationSinkPlan {
+                    destination: destination.clone(),
+                    value: legacy_semantic_value(fact),
+                    kind,
+                    class: GeneralDestinationClass::Boxed,
+                    requires_copy: true,
+                    proof: ProofStatus::Conservative {
+                        reason: FallbackReason::UnknownOwnership,
+                    },
+                };
+                (destination, plan)
+            })
+        })
+        .collect()
+}
+
+fn destination_sink_kind(
+    kind: crate::analysis::destination_ownership::SinkKind,
+) -> Option<DestinationSinkKind> {
+    match kind {
+        crate::analysis::destination_ownership::SinkKind::StateStore => {
+            Some(DestinationSinkKind::State)
+        }
+        crate::analysis::destination_ownership::SinkKind::CollectionInsert => {
+            Some(DestinationSinkKind::Collection)
+        }
+        crate::analysis::destination_ownership::SinkKind::ObjectFieldStore => {
+            Some(DestinationSinkKind::ObjectField)
+        }
+        _ => None,
+    }
+}
+
+fn build_tuple_plans(
+    legacy: &DestinationOwnershipPlan,
+) -> BTreeMap<DestinationId, TupleDestinationPlan> {
+    legacy
+        .callables_by_owner
+        .values()
+        .flat_map(|facts| facts.values.values())
+        .filter(|fact| {
+            fact.origins
+                .contains(&ValueOrigin::Composite)
+        })
+        .filter_map(|fact| {
+            let element_count = fact.tuple_element_count?;
+            let destination = DestinationId {
+                owner: fact.id.owner.clone(),
+                path: format!("{}/tuple", fact.id.path),
+            };
+            let class = general_legacy_class(fact.class);
+            let plan = TupleDestinationPlan {
+                destination: destination.clone(),
+                value: legacy_semantic_value(fact),
+                element_count,
+                class,
+                requires_materialization: matches!(
+                    class,
+                    GeneralDestinationClass::Boxed | GeneralDestinationClass::Unknown
+                ),
+                proof: ProofStatus::Conservative {
+                    reason: FallbackReason::UnknownOwnership,
+                },
+            };
+            Some((destination, plan))
+        })
+        .collect()
 }
 
 fn build_object_definitions(items: &[TopLevel]) -> BTreeMap<String, ObjectDefinitionPlan> {
@@ -1808,6 +1999,39 @@ defn caller(x: Int) -> Int {
             .stack_object_types_by_owner()
             .get("defn:caller")
             .is_some_and(|types| types.contains("P")));
+    }
+
+    #[test]
+    fn container_state_and_tuple_destinations_are_recorded() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn run(v: Int) -> Int {
+    let p: P = P { x: 0; y: 0 };
+    let pair: (Int, Int) = (v, 2);
+    global_total = v;
+    p.x = v;
+    slot[0] <- v;
+    term v;
+};
+"#,
+        );
+        assert!(plan
+            .sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::State && sink.requires_copy));
+        assert!(plan
+            .sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::ObjectField));
+        assert!(plan
+            .sinks
+            .values()
+            .any(|sink| sink.kind == DestinationSinkKind::Collection));
+        let tuple = plan.tuples.values().next().expect("tuple construction");
+        assert_eq!(tuple.element_count, 2);
+        assert_eq!(tuple.class, GeneralDestinationClass::PackedMemory);
+        assert!(!tuple.requires_materialization);
     }
 
     #[test]
