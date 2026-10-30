@@ -145,6 +145,9 @@ pub struct CompilerContext {
     /// Enum ABI decisions consume it first; later lanes read the same plan.
     pub generalized_destination_ownership:
         crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
+    /// Precomputed owner/type pairs proven safe for a function-frame image.
+    pub stack_object_types:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// 2026-10-29 (enum value model groundwork): concrete value-class planner
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
     /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
@@ -666,6 +669,7 @@ impl CompilerContext {
             enum_layout_planner: None,
             enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
             generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
+            stack_object_types: std::collections::BTreeMap::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             defn_may_trap: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),
@@ -1150,6 +1154,8 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     pub object_return_context: bool,
     /// Active caller image while emitting one object-sret call initializer.
     pub object_sret_call_slot: Option<String>,
+    /// Raw R1 owner (`defn:name`, `txn:name`) for destination-plan lookups.
+    pub destination_owner: Option<String>,
     /// 2026-10-21 (B0 nested enum layout): concrete enum instance expected at
     /// the current expression site (empty = unknown/boxed fallback).
     pub expected_enum_type: Option<crate::ast::Type>,
@@ -1470,6 +1476,7 @@ impl FunctionContext {
             sret_call_slots: HashMap::new(),
             sret_call_slot: None,
             object_sret_call_slot: None,
+            destination_owner: None,
             hoisted_sret_params: HashMap::new(),
             tail_loop_fn: None,
             tail_loop_header: None,

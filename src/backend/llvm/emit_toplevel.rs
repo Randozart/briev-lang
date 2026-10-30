@@ -3707,6 +3707,7 @@ impl LlvmBackend {
         // as a commit: a recursive title lookup flushed all 32 bound fields
         // per call (32k DOM effect passes in one browser rating click).
         self.fun.txn_name.clear();
+        self.fun.destination_owner = Some(format!("defn:{}", d.name));
         self.fun.pending_cleanup.clear();
         self.fun.clear_locals();
         self.fun.enum_inline_slots.clear();
@@ -4542,6 +4543,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         }
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
+        self.fun.destination_owner = Some(format!("txn:{name}"));
         self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.pending_cleanup.clear();
         // 2026-10-05 (json.bv): the local-binding caches are PER-FUNCTION.
@@ -5843,6 +5845,7 @@ fn probe_ok_checks(
     pub(super) fn emit_callable_txn(&mut self, out: &mut String, txn: &crate::ast::Transaction, name: &str) {
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
+        self.fun.destination_owner = Some(format!("txn:{name}"));
         self.fun.item_post = Some(txn.contract.post_condition.clone());
         self.fun.pending_cleanup.clear();
         self.fun.clear_local_bindings();
@@ -6300,6 +6303,7 @@ fn probe_ok_checks(
         // `@briev_begin_<name>` entry flag — set the txn name so
         // `Expr::BeginProgram` resolves it.
         self.fun.txn_name = name.to_string();
+        self.fun.destination_owner = Some(format!("txn:{name}"));
         // 2026-07-04: Use #7 (memory(readonly)) for @pre_* functions.
         // Precondition expressions never write to %State — they only read
         // state fields via GEP+load. readonly tells LLVM the function has
@@ -6363,6 +6367,7 @@ fn probe_ok_checks(
         // `@briev_begin_<name>` entry flag — bind the txn name for the body's
         // precondition check.
         self.fun.txn_name = name.to_string();
+        self.fun.destination_owner = Some(format!("txn:{name}"));
         self.fun.item_post = Some(txn.contract.post_condition.clone());
         let async_name = format!("async_body_{}", name);
         let async_attr = "#0".to_string();

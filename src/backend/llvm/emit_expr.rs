@@ -2911,6 +2911,7 @@ impl LlvmBackend {
         let object_out_type = self.fun.object_out_type.as_ref().and_then(|ty| ty.universe_key());
         let object_out = self.fun.object_return_context
             && object_out_type == Some(type_name);
+        let stack_object = !object_out && self.object_literal_can_stack(type_name);
         let alloca_reg = if object_out {
             self.fun
                 .object_out_slot
@@ -2941,6 +2942,8 @@ impl LlvmBackend {
         let const_fields = fields.iter().all(|(_, expr)| is_compile_time_const(expr));
         if !object_out && self.fun.defer_struct_allocas && const_fields {
             self.fun.pending_struct_allocas.push(format!("{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size));
+        } else if stack_object {
+            writeln!(out, "{}  {} = alloca i8, i64 {}", indent, alloca_reg, total_size).ok();
         } else if !object_out {
             writeln!(out, "{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size).ok();
         }

@@ -69,6 +69,9 @@ pub enum SinkKind {
     ObjectFieldStore,
     UnknownCallArgument,
     ClosureCapture,
+    /// `&value` exposes the value's address; the referent may not use a
+    /// function-frame image unless the borrow is separately proven.
+    AddressEscape,
     LoopCarrier,
     ExportReturn,
 }
@@ -82,6 +85,7 @@ impl SinkKind {
             SinkKind::ObjectFieldStore => "object-field-store",
             SinkKind::UnknownCallArgument => "unknown-call-argument",
             SinkKind::ClosureCapture => "closure-capture",
+            SinkKind::AddressEscape => "address-escape",
             SinkKind::LoopCarrier => "loop-carrier",
             SinkKind::ExportReturn => "export-return",
         }
@@ -97,6 +101,7 @@ pub enum EscapeKind {
     ObjectLifetime,
     UnknownCallLifetime,
     ClosureLifetime,
+    AddressLifetime,
     LoopLifetime,
     ExportLifetime,
 }
@@ -110,6 +115,7 @@ impl EscapeKind {
             EscapeKind::ObjectLifetime => "object-lifetime",
             EscapeKind::UnknownCallLifetime => "unknown-call-lifetime",
             EscapeKind::ClosureLifetime => "closure-lifetime",
+            EscapeKind::AddressLifetime => "address-lifetime",
             EscapeKind::LoopLifetime => "loop-lifetime",
             EscapeKind::ExportLifetime => "export-lifetime",
         }

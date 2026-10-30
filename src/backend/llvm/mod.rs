@@ -2788,6 +2788,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         self.ctx.dep_graph = analysis.dependency_graph.clone();
         self.ctx.generalized_destination_ownership =
             analysis.destination_ownership.generalized.clone();
+        self.ctx.stack_object_types = self
+            .ctx
+            .generalized_destination_ownership
+            .stack_object_types_by_owner();
         self.ctx.global_free_after = analysis.global_lifetime.free_after.clone();
         self.ctx.observable_names = analysis.observable_names.clone();
         self.ctx.coll_safe_txns = analysis.coll_safe_txns.clone();

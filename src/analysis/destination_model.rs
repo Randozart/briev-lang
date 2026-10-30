@@ -2035,6 +2035,31 @@ defn run(v: Int) -> Int {
     }
 
     #[test]
+    fn loop_constructed_objects_are_not_stack_eligible() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn run(n: Int) -> Int {
+    let sum: Int = 0;
+    foreach i in 0..n {
+        let p: P = P { x: i; y: 0 };
+        sum = p.x;
+    };
+    term sum;
+};
+"#,
+        );
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:run")
+            .is_some_and(|types| types.contains("P")));
+        assert!(plan
+            .object_values
+            .values()
+            .any(|value| value.escapes.contains(&EscapeKind::LoopLifetime)));
+    }
+
+    #[test]
     fn generalized_plan_is_deterministic() {
         let src = r#"
 defn helper(v: Int) -> Int { term v; };

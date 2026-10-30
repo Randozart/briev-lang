@@ -1036,13 +1036,16 @@ Gate:
 
 ### Phase D5 — container/state lane
 
-**Status 2026-10-30: D5a COMPLETE (facts only).** The generalized plan records
-state, collection-insert, and object-field sink destinations, plus tuple
-construction arity/class. R1 tags tuple arity without fabricating element
-types. Every sink remains conservative (`Boxed`, copy required). The plan also
-carries all R1 value facts not already enriched by earlier lanes, so sink
-plans and future copy elimination share one value table. No backend lowering
-changed. Validation recorded with the commit.
+**Status 2026-10-30: D5a/D5b COMPLETE.** D5a records state, collection-insert,
+and object-field sink destinations, plus tuple construction arity/class; R1
+tags tuple arity without fabricating element types. D5b consumes the alias-wide
+non-escape map: object literals whose owner/type group has no observed escape
+use a function-frame image. Object construction inside a loop and `&object`
+are conservative escapes. The backend IR gate proves the frame image and no
+heap malloc; the full runtime A/B showed no material regression and `ws_frame`
+improved from 0.0157s (1.15x C) to 0.0136s (0.93x C). ASan with stack-use-after-
+return detection passes. Validation: 3415 lib tests, determinism, full runtime
+outputs MATCH, Praetor clean.
 
 **Deliverables:**
 
@@ -1366,3 +1369,5 @@ The generalized implementation is complete when:
 - [x] Complete D4 slice 4: proven object caller destination, `ws_partial`
       hidden image, remaining WsFrame allocation removed.
 - [x] Complete D5a container/state/tuple destination facts (analysis-only).
+- [x] Complete D5b proven non-escaping object frame images, with loop/address
+      escape guards and full-suite A/B.

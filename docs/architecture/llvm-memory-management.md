@@ -49,8 +49,10 @@ into `%object_out`; unsupported call positions keep the boxed ABI. `ws_partial`
 uses this path, removing the last per-frame `WsFrame` allocation.
 
 D5a (2026-10-30) adds destination records for state stores, collection
-inserts, object-field stores, and tuple constructions. They remain conservative
-until copy elimination is proven; frozen runtime layouts do not change.
+inserts, object-field stores, and tuple constructions. D5b lowers an object
+literal to a function-frame image only when every observed value of that
+owner/type is non-escaping. Loop construction and `&object` are explicit
+escapes. Frozen runtime layouts do not change.
 
 ## Principle
 

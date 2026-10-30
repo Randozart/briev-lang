@@ -428,6 +428,19 @@ impl<'a> BodyAnalyzer<'a> {
                     DestinationClass::ScalarReplacedObject,
                 );
                 self.set_fact_type(&id, Type::Custom(type_name.clone()));
+                if self.loop_depth > 0 {
+                    let site = format!(
+                        "{}/expr/{}",
+                        cursor.body_path,
+                        format_path(cursor.path)
+                    );
+                    self.add_sink(
+                        &id,
+                        SinkKind::LoopCarrier,
+                        &site,
+                        EscapeKind::LoopLifetime,
+                    );
+                }
                 id
             }
             Expr::Lambda(_, body) => self.expr_lambda(body, cursor, scope),
@@ -439,6 +452,17 @@ impl<'a> BodyAnalyzer<'a> {
             Expr::AddrOf(inner) => {
                 let id = self.child_expr(inner, 0, cursor, scope);
                 self.use_value(&id);
+                let site = format!(
+                    "{}/expr/{}/address",
+                    cursor.body_path,
+                    format_path(cursor.path)
+                );
+                self.add_sink(
+                    &id,
+                    SinkKind::AddressEscape,
+                    &site,
+                    EscapeKind::AddressLifetime,
+                );
                 self.temp_value(cursor, ValueOrigin::Unknown, DestinationClass::Boxed)
             }
             Expr::Consume(inner) => {

@@ -2780,6 +2780,18 @@ impl LlvmBackend {
             .max(2)
     }
 
+    /// True when this owner/type group has no observed escape, so the literal
+    /// may live in the current function frame.
+    pub(crate) fn object_literal_can_stack(&self, type_name: &str) -> bool {
+        let Some(owner) = self.fun.destination_owner.as_deref() else {
+            return false;
+        };
+        self.ctx
+            .stack_object_types
+            .get(owner)
+            .is_some_and(|types| types.contains(type_name))
+    }
+
     /// Exact byte image for an object-returning defn's declared result.
     pub(crate) fn object_image_bytes_for_defn(&self, name: &str) -> u64 {
         self.ctx

@@ -170,6 +170,35 @@ fn default_contract() -> Contract {
 }
 
 #[test]
+fn proven_non_escaping_object_literal_uses_frame_image() {
+    let src = r#"
+obj P { x: Int; y: Int; };
+defn read(x: Int) -> Int {
+    let p: P = P { x: x; y: 0 };
+    term p.x;
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().expect("parse");
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let output = backend.generate(&items, None);
+    let start = output.find("define i64 @read(").expect("read emitted");
+    let end = output[start..].find("\ndefine ").map(|n| start + n).unwrap_or(output.len());
+    let function = &output[start..end];
+    assert!(
+        function.contains("alloca i8, i64 16"),
+        "proven object literal must use frame image:\n{function}"
+    );
+    assert!(
+        !function.contains("call ptr @malloc(i64 16)"),
+        "proven object literal must not heap allocate:\n{function}"
+    );
+}
+
+#[test]
 fn test_llvm_generates_module() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&empty_program(), None);
