@@ -136,6 +136,10 @@ pub struct CompilerContext {
     pub tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan,
     /// 2026-10-21 (nested enum layout): concrete enum image planner.
     pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
+    /// 2026-10-30 (destination ownership D3): generalized frontend plan.
+    /// Enum ABI decisions consume it first; later lanes read the same plan.
+    pub generalized_destination_ownership:
+        crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
     /// 2026-10-29 (enum value model groundwork): concrete value-class planner
     /// Copy#/Fill#/Volatile*/SysCall#), including through callees. Emitted
     /// with #13 (full memory(readwrite)) instead of the argmemonly #8 lie.
@@ -654,6 +658,7 @@ impl CompilerContext {
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
             tail_carrier: crate::analysis::tail_carrier::TailCarrierPlan::default(),
             enum_layout_planner: None,
+            generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             defn_may_trap: std::collections::HashSet::new(),
             type_stateful_members: HashSet::new(),

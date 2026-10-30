@@ -518,6 +518,20 @@ impl GeneralizedDestinationOwnershipPlan {
         format!("{self:#?}")
     }
 
+    /// Callables whose enum result uses the hidden caller destination. This
+    /// is the plan-driven replacement for `sret_safe_defns`; only callables
+    /// already proven safe/atomic by the enum representation analysis appear.
+    pub fn enum_hidden_result_callables(&self) -> BTreeSet<String> {
+        self.enum_callables
+            .values()
+            .filter(|plan| {
+                plan.representation == EnumResultRepresentation::CallerDestination
+                    && plan.hidden_destination
+            })
+            .map(|plan| plan.callable.name.clone())
+            .collect()
+    }
+
     /// Number of plan facts still conservative. This makes hidden fallback
     /// visible to reports without printing during normal compilation.
     pub fn conservative_count(&self) -> usize {
@@ -1462,6 +1476,26 @@ export defn make(x: Int) -> R { term Ok(x); };
             .expect("enum callable");
         assert_eq!(callable.representation, EnumResultRepresentation::Boxed);
         assert!(!callable.hidden_destination);
+    }
+
+    #[test]
+    fn enum_hidden_destinations_match_sret_safety() {
+        let src = r#"
+enum R { A(Int), B(Int) };
+defn direct(x: Int) -> R { term A(x); };
+defn passthrough(x: Int) -> R { let r: R = direct(x); term r; };
+defn other(x: Int) -> R { term B(x); };
+"#;
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let items = parser.parse_program().expect("parse");
+        let legacy = crate::analysis::destination_ownership::analyze(&items);
+        let representation = crate::analysis::enum_repr::build_enum_representation_plan(&items);
+        let expected: BTreeSet<String> =
+            crate::analysis::enum_repr::sret_safe_defns(&items, &representation)
+                .into_iter()
+                .collect();
+        assert_eq!(legacy.generalized.enum_hidden_result_callables(), expected);
     }
 
     #[test]

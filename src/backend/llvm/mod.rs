@@ -2788,6 +2788,8 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             }
         }
         self.ctx.dep_graph = analysis.dependency_graph.clone();
+        self.ctx.generalized_destination_ownership =
+            analysis.destination_ownership.generalized.clone();
         self.ctx.global_free_after = analysis.global_lifetime.free_after.clone();
         self.ctx.observable_names = analysis.observable_names.clone();
         self.ctx.coll_safe_txns = analysis.coll_safe_txns.clone();
@@ -3228,11 +3230,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-21 (P2-1 ReturnedSmall): classify enum-returning defns from
         // the structural plan. Only constructor-shaped returns take the hidden
         // sret slot; everything else keeps the boxed ABI.
-        self.ctx.defn_sret.clear();
-        let enum_plan = crate::analysis::enum_repr::build_enum_representation_plan(&reordered_items);
-        for name in crate::analysis::enum_repr::sret_safe_defns(&reordered_items, &enum_plan) {
-            self.ctx.defn_sret.insert(name);
-        }
+        self.ctx.defn_sret = self
+            .ctx
+            .generalized_destination_ownership
+            .enum_hidden_result_callables()
+            .into_iter()
+            .collect();
         // 2026-10-21 (B1 nested enum layout): concrete instance planner.
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
             .max_enum_inline_depth;
