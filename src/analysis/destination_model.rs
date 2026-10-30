@@ -14,7 +14,7 @@
 use crate::ast::{EnumVariant, TopLevel, Type};
 use crate::analysis::destination_ownership::{
     CallableKind, DestinationClass as LegacyDestinationClass,
-    DestinationOwnershipPlan, ParamObligation, ResultDestination,
+    DestinationOwnershipPlan, EscapeKind, ParamObligation, ResultDestination,
     ValueOrigin,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -487,6 +487,33 @@ pub struct EnumCallablePlan {
     pub proof: ProofStatus,
 }
 
+/// One declared object/struct field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectFieldPlan {
+    pub name: String,
+    pub ty: Type,
+}
+
+/// Declared object/struct shape. Physical layout stays in the backend.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectDefinitionPlan {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub fields: Vec<ObjectFieldPlan>,
+}
+
+/// One observed object construction and its escape state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectValuePlan {
+    pub value: SemanticValueId,
+    pub ty: Type,
+    pub object: String,
+    pub class: GeneralDestinationClass,
+    pub escapes: BTreeSet<EscapeKind>,
+    pub requires_materialization: bool,
+    pub proof: ProofStatus,
+}
+
 /// Generalized value fact.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GeneralValueFact {
@@ -509,6 +536,8 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub boundaries: BTreeMap<DestinationId, BoundaryPlan>,
     pub enums: BTreeMap<String, EnumDefinitionPlan>,
     pub enum_callables: BTreeMap<CallableId, EnumCallablePlan>,
+    pub objects: BTreeMap<String, ObjectDefinitionPlan>,
+    pub object_values: BTreeMap<SemanticValueId, ObjectValuePlan>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -516,6 +545,32 @@ impl GeneralizedDestinationOwnershipPlan {
     /// stable for a given compiler version and is sufficient for D1 evidence.
     pub fn debug_snapshot(&self) -> String {
         format!("{self:#?}")
+    }
+
+    /// Object types that may be stack/scalar lowered in each callable: every
+    /// observed object value of that type in the owner is proven non-escaping.
+    /// A single escaping alias removes the type for that owner.
+    pub fn stack_object_types_by_owner(&self) -> BTreeMap<String, BTreeSet<String>> {
+        let mut groups: BTreeMap<String, BTreeMap<String, bool>> = BTreeMap::new();
+        for value in self.object_values.values() {
+            let owner = value.value.callable.name.clone();
+            groups
+                .entry(owner)
+                .or_default()
+                .entry(value.object.clone())
+                .and_modify(|safe| *safe &= !value.requires_materialization)
+                .or_insert(!value.requires_materialization);
+        }
+        groups
+            .into_iter()
+            .filter_map(|(owner, objects)| {
+                let types: BTreeSet<String> = objects
+                    .into_iter()
+                    .filter_map(|(object, safe)| safe.then_some(object))
+                    .collect();
+                (!types.is_empty()).then_some((owner, types))
+            })
+            .collect()
     }
 
     /// Callables whose enum result uses the hidden caller destination. This
@@ -632,7 +687,158 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     plan.enums = build_enum_definitions(items);
     plan.enum_callables = build_enum_callables(items, legacy, &plan.enums);
     mark_enum_value_shapes(&mut plan.values, &plan.enums);
+    plan.objects = build_object_definitions(items);
+    plan.object_values = build_object_values(legacy, &plan.objects);
+    insert_object_facts(&mut plan.values, &plan.object_values);
+    mark_object_value_shapes(&mut plan.values, &plan.objects);
     plan
+}
+
+fn build_object_definitions(items: &[TopLevel]) -> BTreeMap<String, ObjectDefinitionPlan> {
+    items
+        .iter()
+        .filter_map(object_definition)
+        .map(|plan| (plan.name.clone(), plan))
+        .collect()
+}
+
+fn object_definition(item: &TopLevel) -> Option<ObjectDefinitionPlan> {
+    match item {
+        TopLevel::TypeDef(td) => {
+            let fields: Vec<ObjectFieldPlan> = td
+                .body
+                .slots
+                .iter()
+                .filter(|slot| !slot.name.starts_with("__variant_"))
+                .map(|slot| ObjectFieldPlan {
+                    name: slot.name.clone(),
+                    ty: slot.ty.clone(),
+                })
+                .collect();
+            if fields.is_empty() {
+                return None;
+            }
+            Some(ObjectDefinitionPlan {
+                name: td.name.clone(),
+                type_params: td.type_params.iter().map(|p| p.name.clone()).collect(),
+                fields,
+            })
+        }
+        TopLevel::StaticStruct(s) => Some(ObjectDefinitionPlan {
+            name: s.name.clone(),
+            type_params: s.type_params.iter().map(|p| p.name.clone()).collect(),
+            fields: s
+                .fields
+                .iter()
+                .map(|(name, ty)| ObjectFieldPlan {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                })
+                .collect(),
+        }),
+        TopLevel::Export(export) => object_definition(export.inner.as_ref()),
+        _ => None,
+    }
+}
+
+fn build_object_values(
+    legacy: &DestinationOwnershipPlan,
+    objects: &BTreeMap<String, ObjectDefinitionPlan>,
+) -> BTreeMap<SemanticValueId, ObjectValuePlan> {
+    legacy
+        .callables_by_owner
+        .values()
+        .flat_map(|facts| facts.values.values())
+        .filter_map(|fact| object_value(fact, objects))
+        .map(|plan| (plan.value.clone(), plan))
+        .collect()
+}
+
+fn object_value(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+    objects: &BTreeMap<String, ObjectDefinitionPlan>,
+) -> Option<ObjectValuePlan> {
+    if fact.class != LegacyDestinationClass::ScalarReplacedObject {
+        return None;
+    }
+    let ty = fact.ty.clone()?;
+    let object = object_type_name(&ty)?.to_string();
+    if !objects.contains_key(&object) {
+        return None;
+    }
+    let requires_materialization = !fact.escapes.is_empty();
+    let class = if requires_materialization {
+        GeneralDestinationClass::Boxed
+    } else {
+        GeneralDestinationClass::ScalarReplacedObject
+    };
+    let proof = if requires_materialization {
+        ProofStatus::Conservative {
+            reason: FallbackReason::Escapes,
+        }
+    } else {
+        ProofStatus::Proven {
+            reasons: BTreeSet::from([ProofReason::NonEscaping]),
+        }
+    };
+    Some(ObjectValuePlan {
+        value: semantic_value(
+            &CallableId {
+                namespace: CallableNamespace::Unknown,
+                name: fact.id.owner.clone(),
+            },
+            SemanticValueKind::Local,
+            &fact.id.path,
+            0,
+        ),
+        ty,
+        object,
+        class,
+        escapes: fact.escapes.clone(),
+        requires_materialization,
+        proof,
+    })
+}
+
+fn insert_object_facts(
+    values: &mut BTreeMap<SemanticValueId, GeneralValueFact>,
+    object_values: &BTreeMap<SemanticValueId, ObjectValuePlan>,
+) {
+    for object in object_values.values() {
+        if values.contains_key(&object.value) {
+            continue;
+        }
+        let fact = general_fact(
+            object.value.clone(),
+            Some(object.ty.clone()),
+            OwnershipClass::Owned,
+            object.class,
+        );
+        values.insert(object.value.clone(), fact);
+    }
+}
+
+fn mark_object_value_shapes(
+    values: &mut BTreeMap<SemanticValueId, GeneralValueFact>,
+    objects: &BTreeMap<String, ObjectDefinitionPlan>,
+) {
+    for fact in values.values_mut() {
+        if fact
+            .ty
+            .as_ref()
+            .and_then(object_type_name)
+            .is_some_and(|name| objects.contains_key(name))
+        {
+            fact.shape.kind = ValueShapeKind::Object;
+        }
+    }
+}
+
+fn object_type_name(ty: &Type) -> Option<&str> {
+    match ty {
+        Type::Custom(name) | Type::Applied(name, _) => Some(name.as_str()),
+        _ => None,
+    }
 }
 
 fn build_enum_definitions(items: &[TopLevel]) -> BTreeMap<String, EnumDefinitionPlan> {
@@ -1496,6 +1702,109 @@ defn other(x: Int) -> R { term B(x); };
                 .into_iter()
                 .collect();
         assert_eq!(legacy.generalized.enum_hidden_result_callables(), expected);
+    }
+
+    #[test]
+    fn object_definition_and_escape_are_recorded() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn make(x: Int) -> P { term P { x: x; y: 0 }; };
+"#,
+        );
+        let object = plan.objects.get("P").expect("object definition");
+        assert_eq!(object.fields.len(), 2);
+        let value = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "P")
+            .expect("object value");
+        assert!(value.requires_materialization);
+        assert!(value.escapes.contains(&EscapeKind::Returned));
+        assert_eq!(value.class, GeneralDestinationClass::Boxed);
+    }
+
+    #[test]
+    fn local_object_has_non_escaping_proof() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn read(x: Int) -> Int {
+    let p: P = P { x: x; y: 0 };
+    term p.x;
+};
+"#,
+        );
+        let value = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "P")
+            .expect("object value");
+        assert!(!value.requires_materialization);
+        assert_eq!(
+            value.class,
+            GeneralDestinationClass::ScalarReplacedObject
+        );
+        assert_eq!(
+            value.proof,
+            ProofStatus::Proven {
+                reasons: BTreeSet::from([ProofReason::NonEscaping]),
+            }
+        );
+    }
+
+    #[test]
+    fn borrowed_object_argument_is_conservatively_escaping() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn consume(p: P) -> Int { term p.x; };
+defn caller(x: Int) -> Int {
+    let p: P = P { x: x; y: 0 };
+    term consume(p);
+};
+"#,
+        );
+        let escaped = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "P" && value.requires_materialization)
+            .expect("escaping object value");
+        assert!(escaped
+            .escapes
+            .contains(&EscapeKind::UnknownCallLifetime));
+    }
+
+    #[test]
+    fn stack_object_types_require_all_aliases_non_escaping() {
+        let (_, local) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn read(x: Int) -> Int {
+    let p: P = P { x: x; y: 0 };
+    term p.x;
+};
+"#,
+        );
+        assert!(local
+            .stack_object_types_by_owner()
+            .get("defn:read")
+            .is_some_and(|types| types.contains("P")));
+
+        let (_, escaping) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn consume(p: P) -> Int { term p.x; };
+defn caller(x: Int) -> Int {
+    let p: P = P { x: x; y: 0 };
+    term consume(p);
+};
+"#,
+        );
+        assert!(!escaping
+            .stack_object_types_by_owner()
+            .get("defn:caller")
+            .is_some_and(|types| types.contains("P")));
     }
 
     #[test]

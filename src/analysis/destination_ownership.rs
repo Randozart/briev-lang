@@ -151,6 +151,9 @@ impl DestinationClass {
 pub struct ValueFact {
     pub id: ValueId,
     pub source_name: Option<String>,
+    /// Concrete type when the walker knows it (currently struct/object
+    /// literals). `None` means unknown; D4 object facts consume this.
+    pub ty: Option<Type>,
     pub origins: BTreeSet<ValueOrigin>,
     pub class: DestinationClass,
     pub uses: u64,
@@ -176,6 +179,7 @@ impl ValueFact {
         ValueFact {
             id,
             source_name,
+            ty: None,
             origins,
             class,
             uses: 0,
@@ -540,6 +544,7 @@ fn analyze_callable(
         diagnostics: BTreeSet::new(),
         temp_counter: 0,
         loop_depth: 0,
+        expr_serial: 0,
     };
     let mut scope = Scope {
         values: HashMap::new(),
@@ -771,6 +776,9 @@ pub(super) struct BodyAnalyzer<'a> {
     /// Active foreach nesting depth. Loop-carried assignments are marked with
     /// a LoopCarrier sink so the generalized plan can build loop facts.
     pub(super) loop_depth: usize,
+    /// Monotonic ordinal for root expressions. Without it, two root
+    /// expressions in one statement share `expr/` and collapse into one value.
+    pub(super) expr_serial: u64,
 }
 
 impl<'a> BodyAnalyzer<'a> {
@@ -787,6 +795,12 @@ impl<'a> BodyAnalyzer<'a> {
             .or_insert_with(|| ValueFact::new(id.clone(), origin, class, name));
         entry.origins.insert(origin);
         id
+    }
+
+    pub(super) fn set_fact_type(&mut self, id: &ValueId, ty: Type) {
+        if let Some(fact) = self.facts.get_mut(id) {
+            fact.ty = Some(ty);
+        }
     }
 
     pub(super) fn use_value(&mut self, id: &ValueId) {

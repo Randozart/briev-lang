@@ -113,6 +113,9 @@ impl<'a> BodyAnalyzer<'a> {
         expr_path: &mut Vec<usize>,
         scope: &mut Scope,
     ) -> ValueId {
+        expr_path.clear();
+        expr_path.push(self.expr_serial as usize);
+        self.expr_serial += 1;
         let mut cursor = ExprCursor::new(body_path, expr_path);
         self.expr(expr, &mut cursor, scope)
     }
@@ -291,10 +294,11 @@ impl<'a> BodyAnalyzer<'a> {
 
         for (argument_id, obligation) in argument_ids.iter().zip(&summary.obligations) {
             self.use_value(argument_id);
-            if matches!(
-                obligation,
-                ParamObligation::Consume | ParamObligation::Owned | ParamObligation::Unknown
-            ) {
+            // Primitive by-value parameters cannot retain a handle. Every
+            // non-primitive obligation (including Borrow) may outlive the
+            // caller's frame: until a callee escape summary proves otherwise,
+            // treat the argument as escaping.
+            if *obligation != ParamObligation::Value {
                 self.add_sink(
                     argument_id,
                     SinkKind::UnknownCallArgument,
@@ -408,15 +412,21 @@ impl<'a> BodyAnalyzer<'a> {
                 }
                 self.temp_value(cursor, ValueOrigin::Composite, DestinationClass::Boxed)
             }
-            Expr::StructLiteral { fields, specs, .. } => {
+            Expr::StructLiteral {
+                type_name,
+                fields,
+                specs,
+            } => {
                 for (index, (_, value)) in fields.iter().chain(specs.iter()).enumerate() {
                     let _ = self.child_expr(value, index, cursor, scope);
                 }
-                self.temp_value(
+                let id = self.temp_value(
                     cursor,
                     ValueOrigin::Constructor,
                     DestinationClass::ScalarReplacedObject,
-                )
+                );
+                self.set_fact_type(&id, Type::Custom(type_name.clone()));
+                id
             }
             Expr::Lambda(_, body) => self.expr_lambda(body, cursor, scope),
             Expr::Deref(inner) => {
@@ -620,11 +630,15 @@ impl<'a> BodyAnalyzer<'a> {
                 .get(&produced)
                 .map(|fact| fact.class)
                 .unwrap_or(DestinationClass::Unknown);
+            let ty = self.facts.get(&produced).and_then(|fact| fact.ty.clone());
             let binding = ValueId::new(
                 self.owner.clone(),
                 format!("{site}/let/{}", sanitize_path(name)),
             );
             self.fact(binding.clone(), origin, class, Some(name.clone()));
+            if let Some(ty) = &ty {
+                self.set_fact_type(&binding, ty.clone());
+            }
             self.use_value(&produced);
             scope.define(name, binding.clone());
             value_id = Some(binding);
@@ -634,6 +648,9 @@ impl<'a> BodyAnalyzer<'a> {
                     format!("{site}/let/{}", sanitize_path(extra)),
                 );
                 self.fact(extra_id.clone(), origin, class, Some(extra.clone()));
+                if let Some(ty) = &ty {
+                    self.set_fact_type(&extra_id, ty.clone());
+                }
                 scope.define(extra, extra_id);
             }
         } else {

@@ -947,6 +947,49 @@ keep the D3a facts; no public/runtime ABI or source syntax depends on this join.
 
 ### Phase D4 — generalized object lane
 
+**Status 2026-10-30: D4a COMPLETE (facts only).** R1 now tags struct/object
+literal values with their concrete type, gives each root expression a unique
+stable ID, propagates types through let bindings, and marks every non-primitive
+call argument as a possible escape. The generalized plan records object/struct
+definitions, per-construction escape state, materialization requirements, and
+per-callable stack-eligible object types (only when every observed alias is
+non-escaping). No object emitter changed yet. Validation: targeted destination tests,
+full lib/determinism, and Praetor clean on changed files.
+
+#### D4 implementation addendum (2026-10-30)
+
+No separate plan document; this addendum is authoritative for D4 lowering.
+
+**Finding.** `ws_frame` currently allocates a `WsFrame` in `ws_partial`, a
+second `WsFrame` when `ws_decode_mask` constructs the `Ok` result, plus the
+`Result` image. A naive alloca is unsound: the `WsFrame` handle is stored in
+the returned enum payload and crosses function boundaries. Local stack lowering
+is safe only when every observed alias for an owner/type is non-escaping.
+
+**Ordered slices.** Each slice is a separate commit and gate:
+
+1. D4a facts: object definitions, literal types, escape state, alias grouping.
+2. Local stack/scalar lowering for `stack_object_types_by_owner` groups only.
+   No interprocedural return ABI change. A constructor inside a loop must use a
+   preheader slot or stay boxed; no per-iteration stack growth.
+3. Internal enum object-payload inline: when an enum is provably not exported
+   or foreign-visible, lay out a small object payload inline in the enum image,
+   construct literals directly into that payload, and bind match projections to
+   the payload pointer. Keep boxed payloads for boundary-visible enums and
+   unknown layouts. This removes the second `WsFrame` allocation.
+4. Object caller-destination/materialization for remaining escaping returns
+   (`ws_partial` is the first case). Materialize at return/state/list/FFI/store
+   boundaries; never return a pointer into a dead frame.
+5. Retire superseded object allocas/lookups and benchmark A/B each slice.
+
+**Validation.** Exact `ws_frame` output; malloc count on the proven path; IR +
+runtime A/B against the immediate parent; JSON/ws/server/loop gates; full
+lib/determinism; ASan or equivalent lifetime check for the stack-local slice.
+
+**Rollback.** Remove object fields from the generalized plan and object-lowering
+helpers; restore the heap struct literal. No source syntax or public ABI depends
+on the internal D4 lowering.
+
 **Deliverables:**
 
 - object shape and escape facts;
@@ -1290,3 +1333,5 @@ The generalized implementation is complete when:
       (`defn_sret`) with equivalence pinned.
 - [x] Complete D3b: `EnumLoweringPlan` join, plan-driven enum layout reads,
       constructor/match agreement, exact IR A/B.
+- [x] Complete D4a object facts: literal types, unique expression IDs,
+      alias-wide escape grouping, stack-eligibility map.
