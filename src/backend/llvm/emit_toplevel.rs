@@ -3706,7 +3706,26 @@ impl LlvmBackend {
         out
     }
 
-    pub(super) fn emit_definition(&mut self, out: &mut String, d: &crate::ast::Definition, needs_state: bool) {
+    fn definition_ret_abi_ty(&self, d: &crate::ast::Definition) -> String {
+        let has_ret = d.output_type.is_some() || !d.outputs.is_empty();
+        if !has_ret {
+            return "void".to_string();
+        }
+        d.output_type
+            .as_ref()
+            .and_then(|ot| match ot {
+                crate::ast::OutputType::Single(ty) => Some(self.llvm_ret_abi_type(ty)),
+                _ => None,
+            })
+            .unwrap_or_else(|| "i64".to_string())
+    }
+
+    pub(super) fn emit_definition(
+        &mut self,
+        out: &mut String,
+        d: &crate::ast::Definition,
+        needs_state: bool,
+    ) {
         // A defn is not a state-machine transaction. Leaving the previous
         // txn's name here made emit_web_flush_batch treat every defn `term`
         // as a commit: a recursive title lookup flushed all 32 bound fields
@@ -3756,27 +3775,8 @@ impl LlvmBackend {
         self.fun.is_static_bound = false;
         self.fun.ssa_old_int_regs.clear();
         self.fun.ssa_old_float_regs.clear();
-        // 2026-07-01: Use "i64" for all non-float returns instead of llvm_type().
-        // The body always produces i64 values (via adapt_to_i64) and call.rs expects
-        // i64 at the call site. Using llvm_type() gave "i8*" for String/Bool returns,
-        // creating a type mismatch (ret i64 in a define i8* function) that broke opt/llc.
+        let ll_ret_ty = self.definition_ret_abi_ty(d);
         let has_ret = d.output_type.is_some() || !d.outputs.is_empty();
-        // 2026-07-18: Use the correct LLVM type for the return type instead of
-        // always using "i64". Bool returns need "i8" to match term's ret i8.
-        let ll_ret_ty = if !has_ret {
-            // 2026-09-14 (machine-entry plan): VOID — the old "float" default
-            // paired with the call sites' `call i64` prototype; the mismatch
-            // made LLVM's inliner produce poison operands for the inlined
-            // body (x0-based stores landed in kernel_rv64's context init).
-            "void".to_string()
-        } else {
-            d.output_type.as_ref()
-                .and_then(|ot| match ot {
-                    crate::ast::OutputType::Single(ty) => Some(self.llvm_ret_abi_type(ty)),
-                    _ => None,
-                })
-                .unwrap_or_else(|| "i64".to_string())
-        };
         let is_float_fn = ll_ret_ty == "float" || ll_ret_ty == "double";
         self.fun.fn_ret_ty = ll_ret_ty.clone();
         self.fun.returns_i64 = has_ret;
@@ -3789,7 +3789,10 @@ impl LlvmBackend {
         // whichever node fires first (reactor-driven). User declarations named
         // `main` are rejected by name-collision with the runtime `@main`, so no
         // renaming is performed here.
-        let ll_name = d.name.clone();
+        let ll_name = self
+            .definition_symbol_override
+            .take()
+            .unwrap_or_else(|| d.name.clone());
         if self.ctx.is_shared_lib {
             write!(out, "define dso_local {} @{}(", ll_ret_ty, ll_name).ok();
         } else {
@@ -3814,7 +3817,7 @@ impl LlvmBackend {
             if needs_state || needs_plain || sret_enum {
                 let _ = write!(out, ", ");
             }
-            write!(out, "ptr noalias nocapture align 8 %object_out").ok();
+            write!(out, "ptr align 8 %object_out").ok();
         }
         // 2026-10-21 (TCO-safe sret): tail-recursive bodies receive their
         // sret call slots from the non-recursive caller. No per-frame alloca,
@@ -6596,9 +6599,90 @@ impl LlvmBackend {
                 .unwrap_or_else(|| self.llvm_type(fallback_ty));
             write!(out, "{} %arg{}", ty, i).ok();
         }
-        writeln!(out, ") local_unnamed_addr #0").ok();
+        writeln!(out, ")").ok();
         writeln!(out, "  ret {} %res", spec.ll_ret_ty).ok();
         writeln!(out, "}}").ok();
+    }
+
+    /// Internal symbol for a top-level `export` whose current hidden ABI is
+    /// exactly the public one. Unsupported shapes keep the direct-symbol path.
+    pub(super) fn top_level_export_internal_symbol(
+        &self,
+        d: &crate::ast::Definition,
+    ) -> Option<String> {
+        if Self::get_export_name(&d.modifiers).is_some() {
+            return None;
+        }
+        if self.ctx.defn_sret.contains(&d.name)
+            || self.ctx.defn_object_sret.contains(&d.name)
+            || self
+                .ctx
+                .defn_hoisted_sret
+                .get(&d.name)
+                .is_some_and(|callees| !callees.is_empty())
+            || !self
+                .ctx
+                .generalized_destination_ownership
+                .recursive_carrier_obligations(&d.name)
+                .is_empty()
+        {
+            return None;
+        }
+        if self.plain_context_active() && self.ctx.defn_takes_plain(&d.name) {
+            return None;
+        }
+        Some(format!("{}__briev_internal", d.name))
+    }
+
+    pub(super) fn emit_top_level_export_wrapper(
+        &mut self,
+        out: &mut String,
+        d: &crate::ast::Definition,
+        internal: &str,
+        needs_state: bool,
+    ) {
+        let ret_ty = self.definition_ret_abi_ty(d);
+        let boundary_types =
+            self.export_boundary_parameter_types(&d.name, &d.parameters);
+        let visibility = if self.ctx.is_shared_lib { "dso_local " } else { "" };
+        write!(out, "define {}{} @{}(", visibility, ret_ty, d.name).ok();
+        self.write_export_wrapper_args(out, d, needs_state, boundary_types.as_deref());
+        writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        if ret_ty == "void" {
+            write!(out, "  call void @{}(", internal).ok();
+        } else {
+            write!(out, "  %res = call {} @{}(", ret_ty, internal).ok();
+        }
+        self.write_export_wrapper_args(out, d, needs_state, boundary_types.as_deref());
+        writeln!(out, ")").ok();
+        if ret_ty == "void" {
+            writeln!(out, "  ret void").ok();
+        } else {
+            writeln!(out, "  ret {} %res", ret_ty).ok();
+        }
+        writeln!(out, "}}").ok();
+    }
+
+    fn write_export_wrapper_args(
+        &self,
+        out: &mut String,
+        d: &crate::ast::Definition,
+        needs_state: bool,
+        boundary_types: Option<&[String]>,
+    ) {
+        if needs_state {
+            write!(out, "{}", self.ctx.state_ptr_param).ok();
+        }
+        for (i, (_, fallback_ty)) in d.parameters.iter().enumerate() {
+            if needs_state || i > 0 {
+                write!(out, ", ").ok();
+            }
+            let ty = boundary_types
+                .and_then(|types| types.get(i))
+                .cloned()
+                .unwrap_or_else(|| self.llvm_type(fallback_ty));
+            write!(out, "{} %arg{}", ty, i).ok();
+        }
     }
 
     /// Parameter LLVM types from the frozen export boundary plan. Returns

@@ -174,6 +174,35 @@ pub(super) fn emit_destroy_register(
     }
 }
 
+fn collect_foreach_assigned(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
+    for statement in stmts {
+        match statement {
+            Statement::Assign(Expr::Identifier(name), _) => {
+                out.insert(name.clone());
+            }
+            Statement::ArrowAssign {
+                target: Some(target),
+                ..
+            } => {
+                if let Expr::Identifier(name) = target.as_ref() {
+                    out.insert(name.clone());
+                }
+            }
+            Statement::Guarded(_, body)
+            | Statement::Block(body)
+            | Statement::SyncBlock(body)
+            | Statement::Mutex(body)
+            | Statement::Foreach { body, .. } => collect_foreach_assigned(body, out),
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    collect_foreach_assigned(&arm.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// 2026-08-07 (Phase 7): the iteration source of a `foreach` — how the loop
 /// counter compares against a bound and how each item value is derived.
 enum IterKind {
@@ -2317,10 +2346,24 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     std::process::exit(1);
                 }
             };
-            let carriers = obligations
+            let mut carriers = obligations
                 .into_iter()
                 .map(|(name, obligation)| (name, Some(obligation)))
                 .collect::<Vec<_>>();
+            // Safety net for generated/macro-expanded bodies whose local
+            // binding never reached R1. The plan remains authoritative for
+            // every name it contains; this scan only prevents an assignment
+            // alloca from landing inside the loop body (invalid dominance for
+            // a value read after the loop).
+            let mut fallback = std::collections::HashSet::new();
+            collect_foreach_assigned(body, &mut fallback);
+            let planned: std::collections::HashSet<String> =
+                carriers.iter().map(|(name, _)| name.clone()).collect();
+            for name in fallback {
+                if !planned.contains(&name) {
+                    carriers.push((name, None));
+                }
+            }
             for (name, obligation) in carriers {
                 let Some(cur) = backend.fun.let_bindings.get(&name).cloned() else {
                     continue;

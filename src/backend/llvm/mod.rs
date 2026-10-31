@@ -1463,6 +1463,9 @@ pub struct LlvmBackend {
     // ── Reporting & Diagnostics ────────────────────────────
     pub(crate) report_lines: Vec<String>,
     pub(crate) warnings: Vec<String>,
+    /// D7e: emit the next definition under this LLVM symbol while keeping its
+    /// authored Briev name for plan/ABI lookups.
+    pub(crate) definition_symbol_override: Option<String>,
     pub(crate) remarks: Vec<crate::backend::llvm::directive::OptimizationRemark>,
     llvm_extra_flags: Vec<String>,
     pub(crate) pending_async_await_count: usize,
@@ -1622,6 +1625,7 @@ impl LlvmBackend {
             cell_thread_names: Vec::new(),
             report_lines: Vec::new(),
             warnings: Vec::new(),
+            definition_symbol_override: None,
             remarks: Vec::new(),
             llvm_extra_flags: Vec::new(),
             pending_async_await_count: 0,
@@ -3247,7 +3251,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             })
             .unwrap_or_default();
         self.ctx.enum_lowering = enum_lowering;
-        let object_sret_plan = self
+        self.ctx.defn_object_sret = self
             .ctx
             .enum_layout_planner
             .as_ref()
@@ -3256,16 +3260,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     &reordered_items,
                     layouts,
                 )
-            });
-        if std::env::var_os("BRIEV_DIAG_OBJECT_SRET").is_some() {
-            eprintln!(
-                "diag object sret: candidates={:?}",
-                object_sret_plan
-                    .as_ref()
-                    .map(|plan| plan.caller_destination_defns.clone())
-            );
-        }
-        self.ctx.defn_object_sret = object_sret_plan
+            })
             .map(|plan| plan.caller_destination_defns.into_iter().collect())
             .unwrap_or_default();
         // 2026-10-21 (P2-1 ReturnedSmall): only constructor-shaped, sret-safe
@@ -4749,8 +4744,19 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         // Briev defn carry %state.
                         let needs_state = self.ctx.export_needs_state.get(&d.name).copied()
                             .unwrap_or(false);
+                        let internal = self.top_level_export_internal_symbol(d);
+                        self.definition_symbol_override = internal.clone();
                         self.emit_definition(&mut out, d, needs_state);
                         writeln!(out).ok();
+                        if let Some(symbol) = internal {
+                            self.emit_top_level_export_wrapper(
+                                &mut out,
+                                d,
+                                &symbol,
+                                needs_state,
+                            );
+                            writeln!(out).ok();
+                        }
                     }
                 }
                 // 2026-07-29: Emit asm function bodies.

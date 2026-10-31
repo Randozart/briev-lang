@@ -902,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D7d is complete. Export and foreign boundary plans drive
-parameter and result ABI type selection for direct and bridge calls, preserving
-the frozen scalar/handle surface. Next: top-level `export` symbol wrappers and
-boundary ABI evidence.
+**Current phase:** D7e is complete. Simple top-level exports get a public
+wrapper plus internal body symbol; hidden-ABI exports keep the direct-symbol
+path. Export/foreign plans drive parameter and result ABI selection. Next:
+D8 retirement after remaining complex-export-wrapper work.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

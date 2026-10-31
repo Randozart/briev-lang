@@ -388,6 +388,87 @@ impl<'a> BodyAnalyzer<'a> {
         self.temp_value(cursor, ValueOrigin::UnknownCall, DestinationClass::Boxed)
     }
 
+    fn list_value(
+        &mut self,
+        values: &[Expr],
+        cursor: &mut ExprCursor,
+        scope: &mut Scope,
+    ) -> ValueId {
+        let site = format!(
+            "{}/expr/{}/collection",
+            cursor.body_path,
+            format_path(cursor.path)
+        );
+        for (index, value) in values.iter().enumerate() {
+            let id = self.child_expr(value, index, cursor, scope);
+            self.use_value(&id);
+            // A list stores handles, so every element outlives this
+            // expression. Recording the sink keeps frame images from leaking
+            // through heap containers.
+            self.add_sink(
+                &id,
+                SinkKind::CollectionInsert,
+                &site,
+                EscapeKind::CollectionLifetime,
+            );
+        }
+        self.temp_value(cursor, ValueOrigin::Composite, DestinationClass::Boxed)
+    }
+
+    fn struct_literal_value(
+        &mut self,
+        expr: &Expr,
+        cursor: &mut ExprCursor,
+        scope: &mut Scope,
+    ) -> ValueId {
+        let Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        } = expr
+        else {
+            unreachable!("struct_literal_value called on a non-literal expression")
+        };
+        let site = format!(
+            "{}/expr/{}/object-fields",
+            cursor.body_path,
+            format_path(cursor.path)
+        );
+        for (index, (_, value)) in fields.iter().chain(specs.iter()).enumerate() {
+            let child = self.child_expr(value, index, cursor, scope);
+            self.use_value(&child);
+            // A field stores the child handle in the parent's image. The child
+            // aliases the parent's lifetime; without a parent-lifetime proof it
+            // must never be a frame image.
+            self.add_sink(
+                &child,
+                SinkKind::ObjectFieldStore,
+                &site,
+                EscapeKind::ObjectLifetime,
+            );
+        }
+        let id = self.temp_value(
+            cursor,
+            ValueOrigin::Constructor,
+            DestinationClass::ScalarReplacedObject,
+        );
+        self.set_fact_type(&id, Type::Custom(type_name.to_string()));
+        if self.loop_depth > 0 {
+            let site = format!(
+                "{}/expr/{}",
+                cursor.body_path,
+                format_path(cursor.path)
+            );
+            self.add_sink(
+                &id,
+                SinkKind::LoopCarrier,
+                &site,
+                EscapeKind::LoopLifetime,
+            );
+        }
+        id
+    }
+
     fn expr_projection(
         &mut self,
         expr: &Expr,
@@ -408,56 +489,8 @@ impl<'a> BodyAnalyzer<'a> {
                 self.set_tuple_element_count(&id, values.len());
                 id
             }
-            Expr::List(values) => {
-                let site = format!(
-                    "{}/expr/{}/collection",
-                    cursor.body_path,
-                    format_path(cursor.path)
-                );
-                for (index, value) in values.iter().enumerate() {
-                    let id = self.child_expr(value, index, cursor, scope);
-                    self.use_value(&id);
-                    // A list stores handles, so every element outlives this
-                    // expression. Recording the sink keeps frame images from
-                    // leaking through heap containers.
-                    self.add_sink(
-                        &id,
-                        SinkKind::CollectionInsert,
-                        &site,
-                        EscapeKind::CollectionLifetime,
-                    );
-                }
-                self.temp_value(cursor, ValueOrigin::Composite, DestinationClass::Boxed)
-            }
-            Expr::StructLiteral {
-                type_name,
-                fields,
-                specs,
-            } => {
-                for (index, (_, value)) in fields.iter().chain(specs.iter()).enumerate() {
-                    let _ = self.child_expr(value, index, cursor, scope);
-                }
-                let id = self.temp_value(
-                    cursor,
-                    ValueOrigin::Constructor,
-                    DestinationClass::ScalarReplacedObject,
-                );
-                self.set_fact_type(&id, Type::Custom(type_name.clone()));
-                if self.loop_depth > 0 {
-                    let site = format!(
-                        "{}/expr/{}",
-                        cursor.body_path,
-                        format_path(cursor.path)
-                    );
-                    self.add_sink(
-                        &id,
-                        SinkKind::LoopCarrier,
-                        &site,
-                        EscapeKind::LoopLifetime,
-                    );
-                }
-                id
-            }
+            Expr::List(values) => self.list_value(values, cursor, scope),
+            Expr::StructLiteral { .. } => self.struct_literal_value(expr, cursor, scope),
             Expr::Lambda(_, body) => self.expr_lambda(body, cursor, scope),
             Expr::Deref(inner) => {
                 let id = self.child_expr(inner, 0, cursor, scope);
