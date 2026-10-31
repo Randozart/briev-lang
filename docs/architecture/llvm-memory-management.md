@@ -86,6 +86,10 @@ D6i makes destination-plan attachment a required pipeline invariant. Lowering
 rejects an unattached plan with an internal-compiler diagnostic; there is no
 conservative all-bindings fallback.
 
+D6j removes the reconstructed recursive-carrier ABI view. Carrier eligibility,
+hidden slots, seeding, and image copies read proof-approved
+`recursive_carrier_obligations` directly.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

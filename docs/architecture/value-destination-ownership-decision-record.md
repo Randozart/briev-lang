@@ -902,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D6 loop ownership is unified. Recursive carriers, counter
-loops, and foreach slot lowering consume destination-plan obligations; plan
-attachment is a required backend pipeline invariant. Next: sink-specific copy
-elimination where D5 proves destination lifetime.
+**Current phase:** D6 loop ownership is closed. Recursive carriers consume
+proof-approved obligations directly, counter loops and foreach slots consume
+unified plans, and destination attachment is a required backend invariant.
+Next: sink-specific copy elimination where D5 proves destination lifetime.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

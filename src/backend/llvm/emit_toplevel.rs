@@ -1025,7 +1025,11 @@ impl LlvmBackend {
         // the default 64 KiB stack. Native keeps the carrier-only gate to
         // preserve ws_frame performance; wasm32 lowers every eligible direct
         // self-tail-recursive defn to an explicit loop.
-        let carrier_eligible = self.ctx.tail_carrier.info(&d.name).is_some();
+        let carrier_eligible = !self
+            .ctx
+            .generalized_destination_ownership
+            .recursive_carrier_obligations(&d.name)
+            .is_empty();
         let plain_wasm = self.ctx.int_bits == 32 && !d.parameters.is_empty();
         if !carrier_eligible && !plain_wasm {
             return false;
@@ -3832,10 +3836,8 @@ impl LlvmBackend {
         // inline nested state passed through recursive self-calls.
         let tail_carriers = self
             .ctx
-            .tail_carrier
-            .info(&d.name)
-            .map(|info| info.carriers.clone())
-            .unwrap_or_default();
+            .generalized_destination_ownership
+            .recursive_carrier_obligations(&d.name);
         for (i, carrier) in tail_carriers.iter().enumerate() {
             if needs_state || needs_plain || sret_enum || sret_object || !hoisted_sret.is_empty() || i > 0 {
                 let _ = write!(out, ", ");

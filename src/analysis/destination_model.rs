@@ -13,8 +13,8 @@
 
 use crate::ast::{EnumVariant, TopLevel, Type};
 use crate::analysis::tail_carrier::{
-    build_tail_carrier_plan, CarrierArgClass as LegacyCarrierArgClass, CarrierInfo,
-    CarrierParam as LegacyCarrierParam, TailCarrierPlan,
+    build_tail_carrier_plan, CarrierArgClass as LegacyCarrierArgClass,
+    CarrierInfo, CarrierParam as LegacyCarrierParam,
 };
 use crate::analysis::destination_ownership::{
     CallableKind, DestinationClass as LegacyDestinationClass,
@@ -687,6 +687,38 @@ impl GeneralizedDestinationOwnershipPlan {
     /// Object types that may be stack/scalar lowered in each callable: every
     /// observed object value of that type in the owner is proven non-escaping.
     /// A single escaping alias removes the type for that owner.
+    /// Stable recursive-carrier plan for a defn, if R1 approved one.
+    pub fn recursive_carrier_plan(&self, name: &str) -> Option<&RecursiveCarrierPlan> {
+        self.recursive_carriers
+            .values()
+            .find(|plan| plan.callable.name == name)
+    }
+
+    /// Proof-approved recursive carrier obligations. Unsupported argument
+    /// arms and unproven lifetimes never become carrier slots.
+    pub fn recursive_carrier_obligations(
+        &self,
+        name: &str,
+    ) -> Vec<RecursiveCarrierValue> {
+        self.recursive_carrier_plan(name)
+            .map(|plan| {
+                plan.carriers
+                    .iter()
+                    .filter(|carrier| {
+                        !carrier
+                            .arg_classes
+                            .contains(&RecursiveCarrierArgClass::Unsupported)
+                            && matches!(
+                                carrier.proof,
+                                ProofStatus::Proven { .. }
+                            )
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Binding names carried by foreach loops in an owner. The backend uses
     /// the owner-wide set today; slot selection is conservative across sibling
     /// foreach loops but requires no statement rewalk.
@@ -928,7 +960,10 @@ fn recursive_carrier_value(
             path: format!("recursive/{}/{}", carrier.param_index, carrier.param_name),
         },
         class: GeneralDestinationClass::StableCarrier,
-        requires_backedge_copy: true,
+        requires_backedge_copy: carrier
+            .arg_classes
+            .iter()
+            .any(|class| *class == LegacyCarrierArgClass::InlineNested),
         proof: ProofStatus::Proven {
             reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
         },
@@ -1021,50 +1056,6 @@ pub fn attach_loop_engine_plans(
             (node.clone(), engine)
         })
         .collect();
-}
-
-/// Reconstruct the backend's current carrier ABI view from the unified plan.
-/// D6 migrates the backend to this method so the tail-carrier walker has one
-/// consumer and no second source of truth.
-pub fn tail_carrier_plan_from_generalized(
-    plan: &GeneralizedDestinationOwnershipPlan,
-) -> TailCarrierPlan {
-    let defns = plan
-        .recursive_carriers
-        .values()
-        .map(|recursive| {
-            let carriers = recursive
-                .carriers
-                .iter()
-                .map(|carrier| LegacyCarrierParam {
-                    param_index: carrier.param_index,
-                    param_name: carrier.param_name.clone(),
-                    result_local: carrier.result_local.clone(),
-                    sret_callee: carrier.sret_callee.clone(),
-                    arg_classes: carrier
-                        .arg_classes
-                        .iter()
-                        .map(|class| match class {
-                            RecursiveCarrierArgClass::InlineNested => {
-                                LegacyCarrierArgClass::InlineNested
-                            }
-                            RecursiveCarrierArgClass::ExistingCarrier => {
-                                LegacyCarrierArgClass::ExistingCarrier
-                            }
-                            RecursiveCarrierArgClass::Unsupported => {
-                                LegacyCarrierArgClass::Unsupported
-                            }
-                        })
-                        .collect(),
-                })
-                .collect();
-            (
-                recursive.callable.name.clone(),
-                CarrierInfo { carriers },
-            )
-        })
-        .collect();
-    TailCarrierPlan { defns }
 }
 
 fn insert_legacy_value_facts(
@@ -2536,10 +2527,23 @@ defn loop(n: Int, state: S, sum: Int) -> Int {
             let mut parser = crate::parser::Parser::new(tokens, src);
             parser.parse_program().expect("parse")
         };
-        assert_eq!(
-            tail_carrier_plan_from_generalized(&plan),
-            crate::analysis::tail_carrier::build_tail_carrier_plan(&items)
-        );
+        let unified = crate::analysis::tail_carrier::build_tail_carrier_plan(&items)
+            .info("loop")
+            .expect("legacy carrier")
+            .carriers
+            .clone();
+        assert_eq!(plan.recursive_carrier_obligations("loop").len(), unified.len());
+        for (obligation, carrier) in plan
+            .recursive_carrier_obligations("loop")
+            .into_iter()
+            .zip(unified)
+        {
+            assert_eq!(obligation.param_index, carrier.param_index);
+            assert_eq!(obligation.param_name, carrier.param_name);
+            assert_eq!(obligation.result_local, carrier.result_local);
+            assert_eq!(obligation.sret_callee, carrier.sret_callee);
+            assert_eq!(obligation.arg_classes.len(), carrier.arg_classes.len());
+        }
     }
 
     #[test]

@@ -3308,13 +3308,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // destination plan. SOA reordering does not add or remove recursive
         // calls; equivalence is pinned by the destination-model test and the
         // recursive-carrier IR tests.
-        self.ctx.tail_carrier = crate::analysis::destination_model::tail_carrier_plan_from_generalized(
-            &self.ctx.generalized_destination_ownership,
-        );
         if std::env::var_os("BRIEV_DIAG_TAIL").is_some() {
             eprintln!("diag tail: {:?}", tail_plan);
             eprintln!("diag hoisted sret: {:?}", self.ctx.defn_hoisted_sret);
-            eprintln!("diag carriers: {:?}", self.ctx.tail_carrier);
             eprintln!("diag tail loop: {:?}", self.ctx.tail_loop);
         }
 

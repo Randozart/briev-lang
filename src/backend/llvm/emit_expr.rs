@@ -6495,9 +6495,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             return None;
         }
         let param_tys = self.ctx.defn_params.get(name).cloned()?;
-        let carriers = self.ctx.tail_carrier.info(name)
-            .map(|info| info.carriers.clone())
-            .unwrap_or_default();
+        let carriers = self
+            .ctx
+            .generalized_destination_ownership
+            .recursive_carrier_obligations(name);
         let mut carrier_slots = std::collections::HashMap::new();
         for carrier in carriers {
             let Some(hidden) = self.fun.carrier_params.get(&carrier.param_index).cloned() else {
@@ -6608,8 +6609,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // args pass the carrier directly.
         let mut carrier_replace: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let self_call_carrier_replace = self.fun.tail_loop_fn.as_deref() == Some(name);
-        if let Some(carriers) = self.ctx.tail_carrier.info(name) {
-            let carriers = carriers.carriers.clone();
+        let carriers = self
+            .ctx
+            .generalized_destination_ownership
+            .recursive_carrier_obligations(name);
+        if !carriers.is_empty() {
             let self_call = self_call_carrier_replace;
             for carrier in &carriers {
                 let Some(arg) = arg_regs.get(carrier.param_index) else {
