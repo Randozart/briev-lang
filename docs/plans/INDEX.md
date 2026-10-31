@@ -15,13 +15,12 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
-**Active generalized destination implementation (2026-10-30):**
-`docs/plans/2026-10-30-generalized-value-destination-ownership.md` — branch
-`feat/generalized-value-destination-ownership`; full generalized
-destination/ownership implementation plan and ADR
-`docs/architecture/value-destination-ownership-decision-record.md`. Phase R1
-analysis landed; migration proceeds by generalized value lanes with frozen
-public/runtime ABI.
+**Active generalized destination implementation (2026-10-31):**
+merged to `main` at `3c2aeaea`. Phases D1–D6 and D7a–D7e landed. Remaining
+work: `docs/plans/2026-10-31-destination-ownership-remaining-work.md`.
+Umbrella: `docs/plans/2026-10-30-generalized-value-destination-ownership.md`.
+ADR: `docs/architecture/value-destination-ownership-decision-record.md`.
+Migration uses generalized value lanes with frozen public/runtime ABI.
 
 **Active destination/ownership reconciliation (2026-10-29):**
 `docs/plans/2026-10-29-destination-ownership-reconciliation.md` — supersedes
