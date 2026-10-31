@@ -902,9 +902,9 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D6 loop ownership is unified. Recursive carriers, carrier
-copies, and all counter-loop phi/state decisions consume `LoopEnginePlan`; the
-propagated local-field name set is retired. Next: sink-specific copy
+**Current phase:** D6 loop ownership is unified. Recursive carriers, counter
+loops, and foreach carrier slots consume destination-plan facts; the
+statement-body assignment rewalk is retired. Next: sink-specific copy
 elimination where D5 proves destination lifetime.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter

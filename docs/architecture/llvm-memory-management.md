@@ -70,6 +70,10 @@ plan lives on `FunctionContext`; version-DAG, countdown, and PerFieldPhi paths
 query it for `Phi`/`StateCarrier`/`LoopInvariant`/`Dead`. The propagated
 local-field name set is retired, and a missing plan is a loud rejection.
 
+D6f replaces the foreach assignment rewalk with `LoopPlan` carrier names and
+records list elements as collection escapes. Heap containers can never retain
+a function-frame object image.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap

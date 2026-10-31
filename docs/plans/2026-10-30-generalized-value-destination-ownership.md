@@ -1072,7 +1072,7 @@ Gate:
 
 ### Phase D6 — loop/carrier lane
 
-**Status 2026-10-30: D6a–D6e COMPLETE.** The destination plan now owns recursive
+**Status 2026-10-30: D6a–D6f COMPLETE.** The destination plan now owns recursive
 carrier facts: parameter carrier IDs, stable-carrier class, per-tail-arm
 argument classification, result local, sret callee, proof, and the callable's
 hidden-ABI carrier count. The tail-carrier walker records argument classes and
@@ -1088,8 +1088,11 @@ falling back. D6e adds the full write-set field class to `LoopShape`, attaches
 `Phi`/`StateCarrier`/`LoopInvariant`/`Dead` to `LoopEnginePlan`, stores the
 active plan on `FunctionContext`, and makes the version-DAG/countdown/PerField
 paths query it directly. The propagated `fun.local_fields` set is removed.
-Validation: 3417 lib tests, quick IR determinism, full runtime outputs MATCH,
-and loop-family correctness probes.
+D6f replaces the foreach assignment rewalk with plan-backed carrier names,
+captures loop-carried arrow stores in R1, and fixes list-element lifetime so
+frame-backed object literals cannot leak through heap containers. Validation:
+3418 lib tests, quick IR determinism, ws correctness/ASan, and collection
+rebind/SPSC gates.
 
 **Deliverables:**
 
@@ -1395,3 +1398,5 @@ The generalized implementation is complete when:
 - [x] Complete D6c loop-engine phi/state-carrier plan and backend consumption.
 - [x] Complete D6d duplicate materialization map retirement.
 - [x] Complete D6e explicit loop-engine plan consumption across counter paths.
+- [x] Complete D6f plan-backed foreach carrier slots and list-element escape
+      correction.

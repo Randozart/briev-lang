@@ -388,6 +388,10 @@ pub struct CallPlan {
 pub struct LoopValuePlan {
     pub value: SemanticValueId,
     pub carrier: DestinationId,
+    /// Source binding when R1 knows it. Foreach lowering consumes this to
+    /// select the frame slot set without re-walking statement bodies.
+    pub source_name: Option<String>,
+    pub site: String,
     pub class: GeneralDestinationClass,
     pub requires_backedge_copy: bool,
 }
@@ -673,6 +677,18 @@ impl GeneralizedDestinationOwnershipPlan {
     /// Object types that may be stack/scalar lowered in each callable: every
     /// observed object value of that type in the owner is proven non-escaping.
     /// A single escaping alias removes the type for that owner.
+    /// Binding names carried by foreach loops in an owner. The backend uses
+    /// the owner-wide set today; slot selection is conservative across sibling
+    /// foreach loops but requires no statement rewalk.
+    pub fn foreach_carrier_names(&self, owner: &str) -> BTreeSet<String> {
+        self.loops
+            .values()
+            .filter(|loop_plan| loop_plan.loop_id.owner == owner)
+            .flat_map(|loop_plan| loop_plan.carrier_values.iter())
+            .filter_map(|value| value.source_name.clone())
+            .collect()
+    }
+
     pub fn stack_object_types_by_owner(&self) -> BTreeMap<String, BTreeSet<String>> {
         let mut groups: BTreeMap<String, BTreeMap<String, bool>> = BTreeMap::new();
         for value in self.object_values.values() {
@@ -1687,13 +1703,14 @@ fn build_loops(
     legacy
         .callables_by_owner
         .iter()
-        .filter_map(|(owner, facts)| {
+        .filter_map(|(_name, facts)| {
+            let owner = facts.owner.as_str();
             let values = loop_values(owner, facts);
             if values.is_empty() {
                 return None;
             }
             let loop_id = DestinationId {
-                owner: owner.clone(),
+                owner: owner.to_string(),
                 path: "loop/0".to_string(),
             };
             Some((loop_id.clone(), LoopPlan {
@@ -1730,6 +1747,8 @@ fn loop_values(
                 owner: owner.to_string(),
                 path: format!("carrier/{}", fact.id.path),
             },
+            source_name: fact.source_name.clone(),
+            site: fact.id.path.clone(),
             class: GeneralDestinationClass::Boxed,
             requires_backedge_copy: true,
         })
@@ -1998,7 +2017,7 @@ mod tests {
 
     #[test]
     fn generalized_schema_covers_callable_parameters_and_results() {
-        let (_, plan) = analyze_items(
+        let (legacy, plan) = analyze_items(
             "defn identity(value: Int) -> Int { term value; };\n",
         );
         let callable = plan
@@ -2066,6 +2085,28 @@ defn total(n: Int) -> Int {
             .carrier_values
             .iter()
             .all(|value| value.requires_backedge_copy));
+        assert_eq!(
+            loop_plan.carrier_values[0].source_name.as_deref(),
+            Some("sum")
+        );
+    }
+
+    #[test]
+    fn foreach_arrow_assignments_are_carriers() {
+        let (legacy, plan) = analyze_items(
+            r#"
+defn drain(n: Int, q: List<Int>) -> Int {
+    let sum: Int = 0;
+    foreach i in 0..n {
+        sum <- i;
+    };
+    term sum;
+};
+"#,
+        );
+        assert!(plan
+            .foreach_carrier_names("defn:drain")
+            .contains("sum"));
     }
 
     #[test]

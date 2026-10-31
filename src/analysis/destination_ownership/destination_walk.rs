@@ -409,8 +409,23 @@ impl<'a> BodyAnalyzer<'a> {
                 id
             }
             Expr::List(values) => {
+                let site = format!(
+                    "{}/expr/{}/collection",
+                    cursor.body_path,
+                    format_path(cursor.path)
+                );
                 for (index, value) in values.iter().enumerate() {
-                    let _ = self.child_expr(value, index, cursor, scope);
+                    let id = self.child_expr(value, index, cursor, scope);
+                    self.use_value(&id);
+                    // A list stores handles, so every element outlives this
+                    // expression. Recording the sink keeps frame images from
+                    // leaking through heap containers.
+                    self.add_sink(
+                        &id,
+                        SinkKind::CollectionInsert,
+                        &site,
+                        EscapeKind::CollectionLifetime,
+                    );
                 }
                 self.temp_value(cursor, ValueOrigin::Composite, DestinationClass::Boxed)
             }
@@ -921,6 +936,19 @@ impl<'a> BodyAnalyzer<'a> {
                 let mut expr_path = Vec::new();
                 let value_id = self.stmt_expr(value, body_path, &mut expr_path, scope);
                 self.use_value(&value_id);
+                if let Some(Expr::Identifier(name)) = target.as_deref() {
+                    if let Some(destination) = scope.lookup(name) {
+                        self.use_value(&destination);
+                        if self.loop_depth > 0 {
+                            self.add_sink(
+                                &destination,
+                                SinkKind::LoopCarrier,
+                                &site,
+                                EscapeKind::LoopLifetime,
+                            );
+                        }
+                    }
+                }
                 let collection_like = target
                     .as_deref()
                     .is_some_and(|target| matches!(target, Expr::MethodCall(..) | Expr::Index(..)));

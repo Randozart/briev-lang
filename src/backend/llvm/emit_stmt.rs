@@ -174,39 +174,6 @@ pub(super) fn emit_destroy_register(
     }
 }
 
-/// 2026-08-07 (Phase 7): collect the names assigned inside a `foreach` body —
-/// loop-carried locals need memory slots (the body IR is emitted once).
-fn collect_foreach_assigned(stmts: &[Statement], out: &mut std::collections::HashSet<String>) {
-    for s in stmts {
-        match s {
-            Statement::Assign(Expr::Identifier(name), _) => { out.insert(name.clone()); }
-            Statement::ArrowAssign { target: Some(t), .. } => {
-                // 2026-09-08 (audit): arrow-push/extract stores into a local
-                // (`acc <- q`) — the plain-copy path stores to the target via
-                // emit_arrow_store, so a foreach-local target needs an alloca
-                // slot or each iteration reads the stale pre-loop register.
-                if let Expr::Identifier(name) = t.as_ref() {
-                    out.insert(name.clone());
-                }
-            }
-            Statement::Guarded(_, body) => collect_foreach_assigned(body, out),
-            Statement::Block(body) | Statement::SyncBlock(body) => collect_foreach_assigned(body, out),
-            // 2026-09-08 (audit): Mutex/Barrier bodies emit inline per
-            // iteration — assignments inside them must be tracked or the
-            // alloca slot is missing and the iteration re-reads the stale
-            // pre-loop register.
-            Statement::Mutex(body) => collect_foreach_assigned(body, out),
-            Statement::Match { arms, .. } => {
-                for arm in arms {
-                    collect_foreach_assigned(&arm.body, out);
-                }
-            }
-            Statement::Foreach { body, .. } => collect_foreach_assigned(body, out),
-            _ => {}
-        }
-    }
-}
-
 /// 2026-08-07 (Phase 7): the iteration source of a `foreach` — how the loop
 /// counter compares against a bound and how each item value is derived.
 enum IterKind {
@@ -2339,9 +2306,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // register every iteration (the body IR is emitted once; runtime
             // re-execution never re-resolves). Pre-declare an alloca slot and
             // seed it with the current value so the body reads/writes memory.
-            let mut body_assigned = std::collections::HashSet::new();
-            collect_foreach_assigned(body, &mut body_assigned);
-            for name in body_assigned {
+            for name in backend.foreach_carrier_names() {
                 if let Some(cur) = backend.fun.let_bindings.get(&name).cloned() {
                     if !backend.fun.let_binding_allocas.contains(&cur) {
                         let slot = backend.fun.gen_reg();
