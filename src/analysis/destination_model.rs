@@ -480,6 +480,32 @@ pub struct LoopPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryDirection {
+    Export,
+    Import,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryRole {
+    Parameter,
+    Result,
+}
+
+/// One typed ABI value crossing. The plan records the class conversion; D7
+/// lowering consumes it instead of inferring ownership at the call site.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundaryValuePlan {
+    pub role: BoundaryRole,
+    pub name: String,
+    pub ty: Option<Type>,
+    pub internal_class: GeneralDestinationClass,
+    pub external_class: GeneralDestinationClass,
+    pub conversion: BoundaryConversion,
+    pub ownership: OwnershipClass,
+    pub proof: ProofStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BoundaryKind {
     Export,
     ForeignCall,
@@ -516,11 +542,13 @@ impl BoundaryConversion {
 pub struct BoundaryPlan {
     pub boundary: DestinationId,
     pub kind: BoundaryKind,
+    pub direction: BoundaryDirection,
     pub internal_class: GeneralDestinationClass,
     pub external_class: GeneralDestinationClass,
     pub conversion: BoundaryConversion,
     pub ownership: OwnershipClass,
     pub proof: ProofStatus,
+    pub values: Vec<BoundaryValuePlan>,
 }
 
 /// One declared enum variant (constructor) in semantic form.
@@ -865,7 +893,7 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     }
 
     plan.loops = build_loops(legacy);
-    plan.boundaries = build_boundaries(legacy);
+    plan.boundaries = build_boundaries(items, legacy, &shapes);
     let loop_facts: Vec<GeneralValueFact> = plan
         .loops
         .values()
@@ -1827,30 +1855,203 @@ fn loop_plan_proof(values: &[LoopValuePlan]) -> ProofStatus {
 }
 
 fn build_boundaries(
+    items: &[TopLevel],
     legacy: &DestinationOwnershipPlan,
+    shapes: &BTreeMap<CallableId, CallableTypeShapes>,
+) -> BTreeMap<DestinationId, BoundaryPlan> {
+    let exports = export_boundaries(legacy, shapes);
+    let imports = foreign_boundaries(items);
+    exports.into_iter().chain(imports).collect()
+}
+
+fn export_boundaries(
+    legacy: &DestinationOwnershipPlan,
+    shapes: &BTreeMap<CallableId, CallableTypeShapes>,
 ) -> BTreeMap<DestinationId, BoundaryPlan> {
     legacy
         .callables
         .values()
         .filter(|summary| summary.exported)
-        .map(|summary| {
+        .filter_map(|summary| {
+            let callable = callable_id(&summary.name, summary.kind);
+            let shape = shapes.get(&callable)?;
+            let parameter_classes: Vec<GeneralDestinationClass> = summary
+                .parameters
+                .iter()
+                .map(|obligation| match obligation {
+                    ParamObligation::Value => GeneralDestinationClass::ScalarValue,
+                    _ => GeneralDestinationClass::Unknown,
+                })
+                .collect();
+            let values = boundary_values(
+                &shape.parameters,
+                &parameter_classes,
+                shape.result.as_ref(),
+                general_destination(summary.result),
+            );
+            let result_class = general_destination(summary.result);
+            let conversion = summary_boundary_conversion(result_class);
             let boundary = DestinationId {
                 owner: summary.name.clone(),
                 path: "boundary/export".to_string(),
             };
+            Some((
+                boundary.clone(),
+                BoundaryPlan {
+                    boundary,
+                    kind: BoundaryKind::Export,
+                    direction: BoundaryDirection::Export,
+                    internal_class: result_class,
+                    external_class: GeneralDestinationClass::Boxed,
+                    conversion,
+                    ownership: OwnershipClass::Unknown,
+                    proof: ProofStatus::Conservative {
+                        reason: FallbackReason::ExternalBoundary,
+                    },
+                    values,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPlan> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TopLevel::ForeignBinding(binding) => Some(binding),
+            _ => None,
+        })
+        .map(|binding| {
+            let mut values: Vec<BoundaryValuePlan> = binding
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(index, (_, ty))| {
+                    boundary_value(
+                        BoundaryRole::Parameter,
+                        format!("p{index}"),
+                        Some(ty.clone()),
+                        OwnershipClass::Unknown,
+                        GeneralDestinationClass::ScalarValue,
+                    )
+                })
+                .collect();
+            values.extend(binding.success_output.iter().map(|(name, ty)| {
+                boundary_value(
+                    BoundaryRole::Result,
+                    name.clone(),
+                    Some(ty.clone()),
+                    OwnershipClass::Owned,
+                    GeneralDestinationClass::Unknown,
+                )
+            }));
+            let internal_class = values
+                .iter()
+                .find(|value| value.role == BoundaryRole::Result)
+                .map(|value| value.internal_class)
+                .unwrap_or(GeneralDestinationClass::Unknown);
+            let boundary = DestinationId {
+                owner: binding.foreign_name.clone(),
+                path: "boundary/foreign".to_string(),
+            };
             (boundary.clone(), BoundaryPlan {
                 boundary,
-                kind: BoundaryKind::Export,
-                internal_class: GeneralDestinationClass::Unknown,
-                external_class: GeneralDestinationClass::Boxed,
-                conversion: BoundaryConversion::BoxAtBoundary,
+                kind: BoundaryKind::ForeignCall,
+                direction: BoundaryDirection::Import,
+                internal_class,
+                external_class: GeneralDestinationClass::ScalarValue,
+                conversion: value_boundary_conversion(internal_class),
                 ownership: OwnershipClass::Unknown,
                 proof: ProofStatus::Conservative {
                     reason: FallbackReason::ExternalBoundary,
                 },
+                values,
             })
         })
         .collect()
+}
+
+fn boundary_values(
+    parameters: &[Option<Type>],
+    parameter_classes: &[GeneralDestinationClass],
+    result: Option<&Type>,
+    result_class: GeneralDestinationClass,
+) -> Vec<BoundaryValuePlan> {
+    let mut values = parameters
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            let class = parameter_classes
+                .get(index)
+                .copied()
+                .unwrap_or(GeneralDestinationClass::Unknown);
+            boundary_value(
+                BoundaryRole::Parameter,
+                format!("p{index}"),
+                ty.clone(),
+                OwnershipClass::Unknown,
+                class,
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Some(ty) = result {
+        values.push(boundary_value(
+            BoundaryRole::Result,
+            "result".to_string(),
+            Some(ty.clone()),
+            OwnershipClass::Owned,
+            result_class,
+        ));
+    } else if result_class != GeneralDestinationClass::Unknown {
+        values.push(boundary_value(
+            BoundaryRole::Result,
+            "result".to_string(),
+            None,
+            OwnershipClass::Owned,
+            result_class,
+        ));
+    }
+    values
+}
+
+fn boundary_value(
+    role: BoundaryRole,
+    name: String,
+    ty: Option<Type>,
+    ownership: OwnershipClass,
+    internal_class: GeneralDestinationClass,
+) -> BoundaryValuePlan {
+    let conversion = value_boundary_conversion(internal_class);
+    BoundaryValuePlan {
+        role,
+        name,
+        ty,
+        internal_class,
+        external_class: GeneralDestinationClass::Boxed,
+        conversion,
+        ownership,
+        proof: ProofStatus::Conservative {
+            reason: FallbackReason::ExternalBoundary,
+        },
+    }
+}
+
+fn value_boundary_conversion(internal: GeneralDestinationClass) -> BoundaryConversion {
+    match internal {
+        GeneralDestinationClass::ScalarValue => BoundaryConversion::WidthConvert,
+        GeneralDestinationClass::Unknown => BoundaryConversion::CopyAtBoundary,
+        _ => BoundaryConversion::BoxAtBoundary,
+    }
+}
+
+fn summary_boundary_conversion(internal: GeneralDestinationClass) -> BoundaryConversion {
+    match internal {
+        GeneralDestinationClass::ScalarValue => BoundaryConversion::WidthConvert,
+        GeneralDestinationClass::CallerDestination | GeneralDestinationClass::Boxed
+        | GeneralDestinationClass::Unknown => BoundaryConversion::BoxAtBoundary,
+        _ => BoundaryConversion::CopyAtBoundary,
+    }
 }
 
 fn general_destination(result: ResultDestination) -> GeneralDestinationClass {
@@ -2217,8 +2418,38 @@ defn drain(n: Int, q: List<Int>) -> Int {
         );
         let boundary = plan.boundaries.values().next().expect("boundary plan");
         assert_eq!(boundary.kind, BoundaryKind::Export);
-        assert_eq!(boundary.conversion, BoundaryConversion::BoxAtBoundary);
+        assert_eq!(boundary.direction, BoundaryDirection::Export);
+        assert_eq!(boundary.conversion, BoundaryConversion::WidthConvert);
         assert_eq!(boundary.ownership, OwnershipClass::Unknown);
+        assert_eq!(boundary.values.len(), 3);
+        assert!(boundary.values.iter().all(|value| {
+            value.internal_class == GeneralDestinationClass::ScalarValue
+                && value.conversion == BoundaryConversion::WidthConvert
+        }));
+        assert_eq!(
+            boundary.values.iter().filter(|value| value.role == BoundaryRole::Result).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn foreign_binding_creates_import_boundary_values() {
+        let (_, plan) = analyze_items(
+            r#"frgn strlen(s: String) -> Int from "libc";"#,
+        );
+        let boundary = plan
+            .boundaries
+            .values()
+            .find(|boundary| boundary.kind == BoundaryKind::ForeignCall)
+            .expect("foreign boundary");
+        assert_eq!(boundary.direction, BoundaryDirection::Import);
+        assert_eq!(boundary.values.len(), 2);
+        assert_eq!(boundary.values[0].role, BoundaryRole::Parameter);
+        assert_eq!(boundary.values[1].role, BoundaryRole::Result);
+        assert_eq!(
+            boundary.values[1].ownership,
+            OwnershipClass::Owned
+        );
     }
 
     #[test]

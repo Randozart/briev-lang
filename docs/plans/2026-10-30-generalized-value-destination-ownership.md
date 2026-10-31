@@ -1132,6 +1132,15 @@ Gate:
 
 ### Phase D7 — boundary lane
 
+**Status 2026-10-30: D7a COMPLETE (facts only).** Boundary plans now carry a
+direction, role-tagged values, semantic types, internal/external classes,
+conversion, ownership, and proof. Exported defns produce parameter/result
+values from their real signatures; `frgn` bindings produce import plans.
+Scalar exports use width conversion, aggregates remain boxed, and foreign
+results are externally scalar with conservative internal conversion. No ABI
+wrapper or emitter consumes these values yet. Validation: 3420 lib tests,
+quick IR determinism, Praetor clean.
+
 **Deliverables:**
 
 - boundary destination plans;
@@ -1417,3 +1426,4 @@ The generalized implementation is complete when:
       policy.
 - [x] Complete D6i destination-plan attachment invariant and fallback removal.
 - [x] Complete D6j direct recursive-carrier obligation consumption.
+- [x] Complete D7a direction/role-tagged boundary value plans (analysis-only).

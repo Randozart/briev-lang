@@ -372,6 +372,7 @@ mod tests {
                 path: "boundary/export".to_string(),
             },
             kind: crate::analysis::destination_model::BoundaryKind::Export,
+            direction: crate::analysis::destination_model::BoundaryDirection::Export,
             internal_class: GeneralDestinationClass::CallerDestination,
             external_class: GeneralDestinationClass::Boxed,
             conversion: BoundaryConversion::BoxAtBoundary,
@@ -379,6 +380,7 @@ mod tests {
             proof: ProofStatus::Conservative {
                 reason: crate::analysis::destination_model::FallbackReason::ExternalBoundary,
             },
+            values: Vec::new(),
         };
         let conversion = plan_boundary_conversion(&boundary);
         assert_eq!(conversion.kind, ConversionKind::MaterializeBox);
