@@ -1965,13 +1965,17 @@ fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPla
                 })
                 .collect();
             values.extend(binding.success_output.iter().map(|(name, ty)| {
-                boundary_value(
+                let mut value = boundary_value(
                     BoundaryRole::Result,
                     name.clone(),
                     Some(ty.clone()),
                     OwnershipClass::Owned,
-                    GeneralDestinationClass::Unknown,
-                )
+                    GeneralDestinationClass::ScalarValue,
+                );
+                // The declared FFI result type IS the ABI contract; no
+                // implicit representation change happens at this boundary.
+                value.conversion = BoundaryConversion::None;
+                value
             }));
             let internal_class = values
                 .iter()
@@ -1988,7 +1992,7 @@ fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPla
                 direction: BoundaryDirection::Import,
                 internal_class,
                 external_class: GeneralDestinationClass::ScalarValue,
-                conversion: value_boundary_conversion(internal_class),
+                conversion: BoundaryConversion::None,
                 ownership: OwnershipClass::Unknown,
                 proof: ProofStatus::Conservative {
                     reason: FallbackReason::ExternalBoundary,
@@ -2468,6 +2472,14 @@ defn drain(n: Int, q: List<Int>) -> Int {
         assert_eq!(
             boundary.values[1].ownership,
             OwnershipClass::Owned
+        );
+        assert_eq!(
+            boundary.values[1].internal_class,
+            GeneralDestinationClass::ScalarValue
+        );
+        assert_eq!(
+            boundary.values[1].conversion,
+            BoundaryConversion::None
         );
     }
 

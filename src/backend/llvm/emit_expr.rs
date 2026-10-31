@@ -5462,6 +5462,34 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .collect()
     }
 
+    /// Foreign result ABI type from the import boundary plan. Only direct
+    /// (`None` / `WidthConvert`) handoffs are consumed; protocol/marshalling
+    /// paths keep the legacy ABI-derived fallback.
+    fn foreign_boundary_ret_llvm_type(
+        &self,
+        name: &str,
+        fallback_ty: &Type,
+    ) -> Option<String> {
+        let boundary = self
+            .ctx
+            .generalized_destination_ownership
+            .foreign_boundary(name)?;
+        let value = boundary
+            .values
+            .iter()
+            .find(|value| {
+                value.role == crate::analysis::destination_model::BoundaryRole::Result
+            })?;
+        if !matches!(
+            value.conversion,
+            crate::analysis::destination_model::BoundaryConversion::None
+                | crate::analysis::destination_model::BoundaryConversion::WidthConvert
+        ) {
+            return None;
+        }
+        Some(self.llvm_ret_abi_type(value.ty.as_ref().unwrap_or(fallback_ty)))
+    }
+
     /// 2026-07-22: Emit a direct foreign function call (Inline path).
     /// Uses the `symbol` parameter (from `as_name` or briev_name) as the
     /// callee, applies meld extension conversion to arguments, and emits
@@ -5543,7 +5571,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         if sig.result_type.is_void() {
             writeln!(out, "{}{}", indent, frgn_call_line(true, "", "", symbol, &call_args)).ok();
         } else {
-            let ret_llvm = self.llvm_ret_abi_type(&ret_type);
+            let ret_llvm = self
+                .foreign_boundary_ret_llvm_type(&sig.name, &ret_type)
+                .unwrap_or_else(|| self.llvm_ret_abi_type(&ret_type));
             writeln!(out, "{}{}", indent, frgn_call_line(false, v, &ret_llvm, symbol, &call_args)).ok();
         }
         // 2026-08-28 (Bug #5): the declared result type IS the ABI contract —
@@ -5581,7 +5611,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .map(|reg| format!("{} {}", self.llvm_type(&reg.ty), reg.name))
             .collect();
         let ret_type = sig.result_type.return_type().unwrap_or(Type::int());
-        let ret_llvm = self.llvm_ret_abi_type(&ret_type);
+        let ret_llvm = self
+            .foreign_boundary_ret_llvm_type(&sig.name, &ret_type)
+            .unwrap_or_else(|| self.llvm_ret_abi_type(&ret_type));
         // 2026-10-06 (web bridge ABI fix): the bridge symbol IS the foreign
         // symbol — the generated shim provides it by that name and the declare
         // loop already declares `@<sig.name>`. The old `bridge_` prefix produced
