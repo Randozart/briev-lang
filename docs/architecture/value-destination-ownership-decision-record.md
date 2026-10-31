@@ -903,9 +903,9 @@ before their lane starts.
 `feat/generalized-value-destination-ownership`.
 
 **Current phase:** D6 loop ownership is unified. Recursive carriers, counter
-loops, and foreach carrier slots consume destination-plan facts; the
-statement-body assignment rewalk is retired. Next: sink-specific copy
-elimination where D5 proves destination lifetime.
+loops, and foreach carriers consume destination-plan facts; foreach carrier
+class/copy/proof is derived from R1 rather than defaulted. Next: sink-specific
+copy elimination where D5 proves destination lifetime.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

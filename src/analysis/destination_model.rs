@@ -394,6 +394,7 @@ pub struct LoopValuePlan {
     pub site: String,
     pub class: GeneralDestinationClass,
     pub requires_backedge_copy: bool,
+    pub proof: ProofStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1713,13 +1714,12 @@ fn build_loops(
                 owner: owner.to_string(),
                 path: "loop/0".to_string(),
             };
+            let proof = loop_plan_proof(&values);
             Some((loop_id.clone(), LoopPlan {
                 loop_id,
                 carrier_values: values,
                 iteration_local_values: Vec::new(),
-                proof: ProofStatus::Conservative {
-                    reason: FallbackReason::Escapes,
-                },
+                proof,
             }))
         })
         .collect()
@@ -1733,6 +1733,10 @@ fn loop_values(
         .values
         .values()
         .filter(|fact| fact.escapes.contains(&crate::analysis::destination_ownership::EscapeKind::LoopLifetime))
+        // Loop-carried object temporaries are recorded for stack eligibility,
+        // but only named bindings are carrier obligations. Unnamed temporaries
+        // belong to the iteration, not the backedge state.
+        .filter(|fact| fact.source_name.is_some())
         .map(|fact| LoopValuePlan {
             value: semantic_value(
                 &CallableId {
@@ -1749,10 +1753,62 @@ fn loop_values(
             },
             source_name: fact.source_name.clone(),
             site: fact.id.path.clone(),
-            class: GeneralDestinationClass::Boxed,
-            requires_backedge_copy: true,
+            class: carrier_class(fact),
+            requires_backedge_copy: carrier_requires_backedge_copy(fact),
+            proof: carrier_proof(fact),
         })
         .collect()
+}
+
+/// A foreach binding survives in its named frame slot. Scalars need no
+/// separate image copy; aggregates and boxed handles do.
+fn carrier_class(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> GeneralDestinationClass {
+    match general_legacy_class(fact.class) {
+        GeneralDestinationClass::ScalarReplacedObject => GeneralDestinationClass::Boxed,
+        other => other,
+    }
+}
+
+fn carrier_requires_backedge_copy(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> bool {
+    !matches!(
+        carrier_class(fact),
+        GeneralDestinationClass::ScalarValue | GeneralDestinationClass::StableCarrier
+    )
+}
+
+fn carrier_proof(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> ProofStatus {
+    let known_binding = fact.source_name.is_some()
+        && fact.class != crate::analysis::destination_ownership::DestinationClass::Unknown;
+    if known_binding {
+        ProofStatus::Proven {
+            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+        }
+    } else {
+        ProofStatus::Conservative {
+            reason: FallbackReason::UnknownOwnership,
+        }
+    }
+}
+
+fn loop_plan_proof(values: &[LoopValuePlan]) -> ProofStatus {
+    if values
+        .iter()
+        .all(|value| matches!(value.proof, ProofStatus::Proven { .. }))
+    {
+        ProofStatus::Proven {
+            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+        }
+    } else {
+        ProofStatus::Conservative {
+            reason: FallbackReason::UnknownOwnership,
+        }
+    }
 }
 
 fn build_boundaries(
@@ -2081,14 +2137,36 @@ defn total(n: Int) -> Int {
         assert!(!plan.loops.is_empty());
         let loop_plan = plan.loops.values().next().expect("loop plan");
         assert!(!loop_plan.carrier_values.is_empty());
+        assert_eq!(loop_plan.carrier_values.len(), 1);
+        let scalar = &loop_plan.carrier_values[0];
+        assert_eq!(scalar.source_name.as_deref(), Some("sum"));
+        assert_eq!(scalar.class, GeneralDestinationClass::ScalarValue);
+        assert!(!scalar.requires_backedge_copy);
+        assert!(matches!(scalar.proof, ProofStatus::Proven { .. }));
+        assert!(matches!(loop_plan.proof, ProofStatus::Proven { .. }));
+    }
+
+    #[test]
+    fn aggregate_loop_carriers_keep_explicit_backedge_copy() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; y: Int; };
+defn run(n: Int) -> P {
+    let acc: P = P { x: 0; y: 0 };
+    foreach i in 0..n {
+        acc = P { x: i; y: acc.x };
+    };
+    term acc.x;
+};
+"#,
+        );
+        let loop_plan = plan.loops.values().next().expect("aggregate carrier");
         assert!(loop_plan
             .carrier_values
             .iter()
-            .all(|value| value.requires_backedge_copy));
-        assert_eq!(
-            loop_plan.carrier_values[0].source_name.as_deref(),
-            Some("sum")
-        );
+            .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
+                && carrier.requires_backedge_copy
+                && matches!(carrier.proof, ProofStatus::Proven { .. })));
     }
 
     #[test]
