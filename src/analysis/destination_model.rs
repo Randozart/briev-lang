@@ -715,6 +715,17 @@ impl GeneralizedDestinationOwnershipPlan {
     /// Object types that may be stack/scalar lowered in each callable: every
     /// observed object value of that type in the owner is proven non-escaping.
     /// A single escaping alias removes the type for that owner.
+    /// Frozen foreign-import boundary for a symbol name.
+    pub fn foreign_boundary(&self, name: &str) -> Option<&BoundaryPlan> {
+        let boundary = DestinationId {
+            owner: name.to_string(),
+            path: "boundary/foreign".to_string(),
+        };
+        self.boundaries
+            .get(&boundary)
+            .filter(|plan| plan.kind == BoundaryKind::ForeignCall)
+    }
+
     /// Frozen export boundary for a callable name.
     pub fn export_boundary(&self, name: &str) -> Option<&BoundaryPlan> {
         let boundary = DestinationId {

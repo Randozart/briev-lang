@@ -5424,6 +5424,44 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         self.emit_cast_path(out, &conv, arg, param_ty, indent)
     }
 
+    /// Foreign parameter ABI types from the import boundary plan. Returns
+    /// `None` when no plan exists or a value needs a conversion this path does
+    /// not implement, preserving the existing coercion fallback.
+    fn foreign_boundary_parameter_types(
+        &self,
+        name: &str,
+        inputs: &[(String, Type)],
+    ) -> Option<Vec<String>> {
+        let boundary = self
+            .ctx
+            .generalized_destination_ownership
+            .foreign_boundary(name)?;
+        let values: Vec<&crate::analysis::destination_model::BoundaryValuePlan> = boundary
+            .values
+            .iter()
+            .filter(|value| {
+                value.role == crate::analysis::destination_model::BoundaryRole::Parameter
+            })
+            .collect();
+        if values.len() != inputs.len() {
+            return None;
+        }
+        values
+            .iter()
+            .zip(inputs)
+            .map(|(value, (_, fallback_ty))| {
+                if !matches!(
+                    value.conversion,
+                    crate::analysis::destination_model::BoundaryConversion::None
+                        | crate::analysis::destination_model::BoundaryConversion::WidthConvert
+                ) {
+                    return None;
+                }
+                Some(self.llvm_type(value.ty.as_ref().unwrap_or(fallback_ty)))
+            })
+            .collect()
+    }
+
     /// 2026-07-22: Emit a direct foreign function call (Inline path).
     /// Uses the `symbol` parameter (from `as_name` or briev_name) as the
     /// callee, applies meld extension conversion to arguments, and emits
@@ -5453,6 +5491,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // 2026-08-28 (Bug #5): a String-family arg into a String-family
         // param of a DIFFERENT variant marshals through the casting graph
         // first (String → CStr = str_to_c) — see emit_frgn_variant_cast.
+        let boundary_types = self.foreign_boundary_parameter_types(&sig.name, &sig.inputs);
         let final_args: Vec<TypedRegister> = arg_regs
             .iter()
             .zip(sig.inputs.iter())
@@ -5481,8 +5520,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let arg_strs: Vec<String> = final_args
             .iter()
             .zip(sig.inputs.iter())
-            .map(|(arg, (_, param_ty))| {
-                let param_llvm = self.llvm_type(param_ty);
+            .enumerate()
+            .map(|(index, (arg, (_, param_ty)))| {
+                let param_llvm = boundary_types
+                    .as_ref()
+                    .and_then(|types| types.get(index))
+                    .cloned()
+                    .unwrap_or_else(|| self.llvm_type(param_ty));
                 let coerced = self.coerce_to_param_type(out, arg, &param_llvm, indent);
                 format!("{} {}", param_llvm, coerced.name)
             })
