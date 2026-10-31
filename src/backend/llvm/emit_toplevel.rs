@@ -4212,32 +4212,16 @@ impl LlvmBackend {
         // (txns, reactor_tick, main, probes all take %state).
         self.fun.stateless_body = false;
         // Phase 4.5: Emit dso_local export wrapper if #export modifier present
-        if let Some(export_name) = Self::get_export_name(&d.modifiers) {
-            writeln!(out, "define dso_local {} @{}(", ll_ret_ty, export_name).ok();
-            if needs_state {
-                write!(out, "{}", self.ctx.state_ptr_param).ok();
-            }
-            for (i, (n, t)) in d.parameters.iter().enumerate() {
-                if needs_state || i > 0 {
-                    write!(out, ", ").ok();
-                }
-                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
-            }
-            writeln!(out, ") local_unnamed_addr #0 {{").ok();
-            write!(out, "  %res = call {} @{}(", ll_ret_ty, ll_name).ok();
-            if needs_state {
-                write!(out, "ptr %state").ok();
-            }
-            for (i, (n, t)) in d.parameters.iter().enumerate() {
-                if needs_state || i > 0 {
-                    write!(out, ", ").ok();
-                }
-                write!(out, "{} %arg{}", self.llvm_type(t), i).ok();
-            }
-            writeln!(out, ") local_unnamed_addr #0").ok();
-            writeln!(out, "  ret {} %res", ll_ret_ty).ok();
-            writeln!(out, "}}").ok();
-        }
+        self.emit_export_boundary_wrapper(
+            out,
+            ExportWrapperSpec {
+                definition: d,
+                ll_name: &ll_name,
+                ll_ret_ty: &ll_ret_ty,
+                needs_state,
+            },
+        );
+
     }
 
     /// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): emit a
@@ -6561,7 +6545,100 @@ fn sig_number(name: &str) -> i32 {
     }
 }
 
+/// Inputs for one `#export` boundary wrapper.
+struct ExportWrapperSpec<'a> {
+    definition: &'a crate::ast::Definition,
+    ll_name: &'a str,
+    ll_ret_ty: &'a str,
+    needs_state: bool,
+}
+
 impl LlvmBackend {
+    fn emit_export_boundary_wrapper(
+        &mut self,
+        out: &mut String,
+        spec: ExportWrapperSpec<'_>,
+    ) {
+        let d = spec.definition;
+        let Some(export_name) = Self::get_export_name(&d.modifiers) else {
+            return;
+        };
+        let boundary_types =
+            self.export_boundary_parameter_types(&d.name, &d.parameters);
+        writeln!(out, "define dso_local {} @{}(", spec.ll_ret_ty, export_name).ok();
+        if spec.needs_state {
+            write!(out, "{}", self.ctx.state_ptr_param).ok();
+        }
+        for (i, (_, fallback_ty)) in d.parameters.iter().enumerate() {
+            if spec.needs_state || i > 0 {
+                write!(out, ", ").ok();
+            }
+            let ty = boundary_types
+                .as_ref()
+                .and_then(|types| types.get(i))
+                .cloned()
+                .unwrap_or_else(|| self.llvm_type(fallback_ty));
+            write!(out, "{} %arg{}", ty, i).ok();
+        }
+        writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        write!(out, "  %res = call {} @{}(", spec.ll_ret_ty, spec.ll_name).ok();
+        if spec.needs_state {
+            write!(out, "ptr %state").ok();
+        }
+        for (i, (_, fallback_ty)) in d.parameters.iter().enumerate() {
+            if spec.needs_state || i > 0 {
+                write!(out, ", ").ok();
+            }
+            let ty = boundary_types
+                .as_ref()
+                .and_then(|types| types.get(i))
+                .cloned()
+                .unwrap_or_else(|| self.llvm_type(fallback_ty));
+            write!(out, "{} %arg{}", ty, i).ok();
+        }
+        writeln!(out, ") local_unnamed_addr #0").ok();
+        writeln!(out, "  ret {} %res", spec.ll_ret_ty).ok();
+        writeln!(out, "}}").ok();
+    }
+
+    /// Parameter LLVM types from the frozen export boundary plan. Returns
+    /// `None` when the function has no plan or the plan is not a direct scalar
+    /// handoff, letting the legacy AST-driven wrapper remain the fallback.
+    fn export_boundary_parameter_types(
+        &self,
+        name: &str,
+        parameters: &[(String, crate::ast::Type)],
+    ) -> Option<Vec<String>> {
+        let boundary = self
+            .ctx
+            .generalized_destination_ownership
+            .export_boundary(name)?;
+        let values: Vec<&crate::analysis::destination_model::BoundaryValuePlan> = boundary
+            .values
+            .iter()
+            .filter(|value| {
+                value.role == crate::analysis::destination_model::BoundaryRole::Parameter
+            })
+            .collect();
+        if values.len() != parameters.len() {
+            return None;
+        }
+        values
+            .iter()
+            .zip(parameters)
+            .map(|(value, (_, fallback_ty))| {
+                if !matches!(
+                    value.conversion,
+                    crate::analysis::destination_model::BoundaryConversion::None
+                        | crate::analysis::destination_model::BoundaryConversion::WidthConvert
+                ) {
+                    return None;
+                }
+                Some(self.llvm_type(value.ty.as_ref().unwrap_or(fallback_ty)))
+            })
+            .collect()
+    }
+
     /// Emit a library shim — no main function, only `__briev_init_state`
     /// and dso_local wrappers for #export functions.
     /// 2026-07-19: Emit wrappers for exported functions in shared library.

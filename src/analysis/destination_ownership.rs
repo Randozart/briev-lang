@@ -399,6 +399,10 @@ pub fn analyze(items: &[TopLevel]) -> DestinationOwnershipPlan {
     plan
 }
 
+fn has_export_modifier(modifiers: &[crate::ast::Annotation]) -> bool {
+    modifiers.iter().any(|modifier| modifier.name == "export")
+}
+
 fn index_callables(items: &[TopLevel]) -> (BTreeMap<String, CallableSpec>, BTreeSet<String>) {
     let mut specs = BTreeMap::new();
     let mut export_names = BTreeSet::new();
@@ -406,11 +410,16 @@ fn index_callables(items: &[TopLevel]) -> (BTreeMap<String, CallableSpec>, BTree
         match item {
             TopLevel::Definition(d) => insert_spec(
                 &mut specs,
-                spec_from_defn(d, CallableKind::InternalDefn, false),
+                spec_from_defn(
+                    d,
+                    CallableKind::InternalDefn,
+                    has_export_modifier(&d.modifiers),
+                ),
             ),
-            TopLevel::TypeDefOperator(d) => {
-                insert_spec(&mut specs, spec_from_defn(d, CallableKind::Member, false))
-            }
+            TopLevel::TypeDefOperator(d) => insert_spec(
+                &mut specs,
+                spec_from_defn(d, CallableKind::Member, has_export_modifier(&d.modifiers)),
+            ),
             TopLevel::Transaction(t) => insert_spec(
                 &mut specs,
                 CallableSpec {
@@ -420,12 +429,16 @@ fn index_callables(items: &[TopLevel]) -> (BTreeMap<String, CallableSpec>, BTree
                     parameters: t.parameters.clone(),
                     result: t.output_type.as_ref().and_then(result_type),
                     body: t.body.clone(),
-                    exported: false,
+                    exported: has_export_modifier(&t.modifiers),
                 },
             ),
             TopLevel::CompileTimeDefn(d) => insert_spec(
                 &mut specs,
-                spec_from_defn(d, CallableKind::InternalDefn, false),
+                spec_from_defn(
+                    d,
+                    CallableKind::InternalDefn,
+                    has_export_modifier(&d.modifiers),
+                ),
             ),
             TopLevel::CompileTimeTxn(t) => insert_spec(
                 &mut specs,
@@ -436,7 +449,7 @@ fn index_callables(items: &[TopLevel]) -> (BTreeMap<String, CallableSpec>, BTree
                     parameters: t.parameters.clone(),
                     result: t.output_type.as_ref().and_then(result_type),
                     body: t.body.clone(),
-                    exported: false,
+                    exported: has_export_modifier(&t.modifiers),
                 },
             ),
             TopLevel::Export(e) => {

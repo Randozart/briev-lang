@@ -715,6 +715,17 @@ impl GeneralizedDestinationOwnershipPlan {
     /// Object types that may be stack/scalar lowered in each callable: every
     /// observed object value of that type in the owner is proven non-escaping.
     /// A single escaping alias removes the type for that owner.
+    /// Frozen export boundary for a callable name.
+    pub fn export_boundary(&self, name: &str) -> Option<&BoundaryPlan> {
+        let boundary = DestinationId {
+            owner: name.to_string(),
+            path: "boundary/export".to_string(),
+        };
+        self.boundaries
+            .get(&boundary)
+            .filter(|plan| plan.kind == BoundaryKind::Export)
+    }
+
     /// Stable recursive-carrier plan for a defn, if R1 approved one.
     pub fn recursive_carrier_plan(&self, name: &str) -> Option<&RecursiveCarrierPlan> {
         self.recursive_carriers
@@ -1875,22 +1886,27 @@ fn export_boundaries(
         .filter_map(|summary| {
             let callable = callable_id(&summary.name, summary.kind);
             let shape = shapes.get(&callable)?;
+            // The frozen export ABI passes every parameter as a scalar or
+            // opaque handle, including borrowed object/collection handles.
             let parameter_classes: Vec<GeneralDestinationClass> = summary
                 .parameters
                 .iter()
-                .map(|obligation| match obligation {
-                    ParamObligation::Value => GeneralDestinationClass::ScalarValue,
-                    _ => GeneralDestinationClass::Unknown,
-                })
+                .map(|_| GeneralDestinationClass::ScalarValue)
                 .collect();
-            let values = boundary_values(
+            let result_class = match general_destination(summary.result) {
+                GeneralDestinationClass::Unknown => GeneralDestinationClass::Unknown,
+                _ => GeneralDestinationClass::ScalarValue,
+            };
+            let mut values = boundary_values(
                 &shape.parameters,
                 &parameter_classes,
                 shape.result.as_ref(),
-                general_destination(summary.result),
+                result_class,
             );
-            let result_class = general_destination(summary.result);
-            let conversion = summary_boundary_conversion(result_class);
+            for value in &mut values {
+                value.external_class = GeneralDestinationClass::ScalarValue;
+                value.conversion = BoundaryConversion::None;
+            }
             let boundary = DestinationId {
                 owner: summary.name.clone(),
                 path: "boundary/export".to_string(),
@@ -1902,8 +1918,8 @@ fn export_boundaries(
                     kind: BoundaryKind::Export,
                     direction: BoundaryDirection::Export,
                     internal_class: result_class,
-                    external_class: GeneralDestinationClass::Boxed,
-                    conversion,
+                    external_class: GeneralDestinationClass::ScalarValue,
+                    conversion: BoundaryConversion::None,
                     ownership: OwnershipClass::Unknown,
                     proof: ProofStatus::Conservative {
                         reason: FallbackReason::ExternalBoundary,
@@ -2042,15 +2058,6 @@ fn value_boundary_conversion(internal: GeneralDestinationClass) -> BoundaryConve
         GeneralDestinationClass::ScalarValue => BoundaryConversion::WidthConvert,
         GeneralDestinationClass::Unknown => BoundaryConversion::CopyAtBoundary,
         _ => BoundaryConversion::BoxAtBoundary,
-    }
-}
-
-fn summary_boundary_conversion(internal: GeneralDestinationClass) -> BoundaryConversion {
-    match internal {
-        GeneralDestinationClass::ScalarValue => BoundaryConversion::WidthConvert,
-        GeneralDestinationClass::CallerDestination | GeneralDestinationClass::Boxed
-        | GeneralDestinationClass::Unknown => BoundaryConversion::BoxAtBoundary,
-        _ => BoundaryConversion::CopyAtBoundary,
     }
 }
 
@@ -2419,12 +2426,13 @@ defn drain(n: Int, q: List<Int>) -> Int {
         let boundary = plan.boundaries.values().next().expect("boundary plan");
         assert_eq!(boundary.kind, BoundaryKind::Export);
         assert_eq!(boundary.direction, BoundaryDirection::Export);
-        assert_eq!(boundary.conversion, BoundaryConversion::WidthConvert);
+        assert_eq!(boundary.conversion, BoundaryConversion::None);
         assert_eq!(boundary.ownership, OwnershipClass::Unknown);
         assert_eq!(boundary.values.len(), 3);
         assert!(boundary.values.iter().all(|value| {
             value.internal_class == GeneralDestinationClass::ScalarValue
-                && value.conversion == BoundaryConversion::WidthConvert
+                && value.external_class == GeneralDestinationClass::ScalarValue
+                && value.conversion == BoundaryConversion::None
         }));
         assert_eq!(
             boundary.values.iter().filter(|value| value.role == BoundaryRole::Result).count(),
