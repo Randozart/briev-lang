@@ -2307,20 +2307,20 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // re-execution never re-resolves). The destination plan owns the
             // obligation; a proven/conservative named carrier gets a frame
             // slot. A binding absent from an attached plan stays SSA.
-            let foreach_carriers = backend.foreach_carrier_obligations();
-            let carriers = match foreach_carriers {
-                Some(obligations) => obligations
-                    .into_iter()
-                    .map(|(name, obligation)| (name, Some(obligation)))
-                    .collect::<Vec<_>>(),
-                None => backend
-                    .fun
-                    .let_bindings
-                    .keys()
-                    .cloned()
-                    .map(|name| (name, None))
-                    .collect(),
+            let obligations = match backend.foreach_carrier_obligations() {
+                Ok(obligations) => obligations,
+                Err(message) => {
+                    eprintln!(
+                        "internal compiler error: {message}. Recompile; if this persists, \
+                         reduce the program and report it."
+                    );
+                    std::process::exit(1);
+                }
             };
+            let carriers = obligations
+                .into_iter()
+                .map(|(name, obligation)| (name, Some(obligation)))
+                .collect::<Vec<_>>();
             for (name, obligation) in carriers {
                 let Some(cur) = backend.fun.let_bindings.get(&name).cloned() else {
                     continue;

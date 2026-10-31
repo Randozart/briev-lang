@@ -2788,6 +2788,7 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         self.ctx.dep_graph = analysis.dependency_graph.clone();
         self.ctx.generalized_destination_ownership =
             analysis.destination_ownership.generalized.clone();
+        self.ctx.destination_plan_attached = true;
         self.ctx.stack_object_types = self
             .ctx
             .generalized_destination_ownership

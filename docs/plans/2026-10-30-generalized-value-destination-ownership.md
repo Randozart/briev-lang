@@ -1072,7 +1072,7 @@ Gate:
 
 ### Phase D6 — loop/carrier lane
 
-**Status 2026-10-30: D6a–D6h COMPLETE.** The destination plan now owns recursive
+**Status 2026-10-30: D6a–D6i COMPLETE.** The destination plan now owns recursive
 carrier facts: parameter carrier IDs, stable-carrier class, per-tail-arm
 argument classification, result local, sret callee, proof, and the callable's
 hidden-ABI carrier count. The tail-carrier walker records argument classes and
@@ -1096,10 +1096,12 @@ named scalars are stable slots without image copies, named aggregates remain
 explicit-copy carriers, and unnamed loop temporaries stay iteration-local.
 D6h lowers from `ForeachCarrierObligation`s: an attached plan is authoritative
 (absent bindings stay SSA), proven/conservative named carriers get frame slots,
-and unknown ownership gets a conservative slot with a warning. A missing
-destination plan uses the conservative all-bindings fallback only. Validation:
-3419 lib tests, quick IR determinism, collection/SPSC/ws gates, and Praetor no
-new diagnostics.
+and unknown ownership gets a conservative slot with a warning. D6i makes plan
+attachment a required pipeline invariant: `generate` sets
+`destination_plan_attached`, lowering rejects an unattached plan with an
+internal-compiler diagnostic, and the conservative all-bindings fallback is
+removed. Validation: 3419 lib tests, quick IR determinism, collection/SPSC/ws
+gates, and Praetor no new diagnostics.
 
 **Deliverables:**
 
@@ -1410,3 +1412,4 @@ The generalized implementation is complete when:
 - [x] Complete D6g proof-derived foreach carrier class/copy decisions.
 - [x] Complete D6h proof-derived foreach slot lowering and absent-binding SSA
       policy.
+- [x] Complete D6i destination-plan attachment invariant and fallback removal.

@@ -80,8 +80,11 @@ copy. Unnamed loop temporaries remain iteration-local and never become carriers.
 
 D6h lowers from those obligations. An attached plan is authoritative: absent
 bindings stay SSA. Proven/conservative carriers get frame slots; unknown
-ownership gets a conservative slot and warning. Only a missing destination plan
-uses the conservative all-bindings fallback.
+ownership gets a conservative slot and warning.
+
+D6i makes destination-plan attachment a required pipeline invariant. Lowering
+rejects an unattached plan with an internal-compiler diagnostic; there is no
+conservative all-bindings fallback.
 
 ## Principle
 

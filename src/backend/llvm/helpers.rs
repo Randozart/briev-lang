@@ -2786,23 +2786,32 @@ impl LlvmBackend {
             .max(2)
     }
 
-    /// Proof-derived foreach slot obligations. `None` means destination
-    /// ownership was not attached (an internal pipeline error), so lowering
-    /// may use its conservative all-bindings fallback. `Some` is authoritative:
-    /// a binding absent from the plan is iteration-local and must stay SSA.
+    /// Proof-derived foreach slot obligations. The destination plan is a
+    /// required pipeline input; an absent owner means this callable had no
+    /// loop-carried bindings. A binding absent from the attached plan is
+    /// iteration-local and must stay SSA.
     pub(crate) fn foreach_carrier_obligations(
         &self,
-    ) -> Option<
+    ) -> Result<
         std::collections::BTreeMap<
             String,
             crate::analysis::destination_model::ForeachCarrierObligation,
         >,
+        &'static str,
     > {
-        self.fun.destination_owner.as_deref().map(|owner| {
+        if !self.ctx.destination_plan_attached {
+            return Err(
+                "the compiler did not attach destination ownership before loop lowering",
+            );
+        }
+        let Some(owner) = self.fun.destination_owner.as_deref() else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        Ok(
             self.ctx
                 .generalized_destination_ownership
-                .foreach_carrier_obligations(owner)
-        })
+                .foreach_carrier_obligations(owner),
+        )
     }
 
     pub(crate) fn current_loop_field(

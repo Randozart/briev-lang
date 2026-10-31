@@ -145,6 +145,10 @@ pub struct CompilerContext {
     /// Enum ABI decisions consume it first; later lanes read the same plan.
     pub generalized_destination_ownership:
         crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
+    /// D6 pipeline invariant: true only after `generate` attaches the
+    /// destination-ownership analysis. Destination-dependent lowering must not
+    /// invent fallback semantics when this is false.
+    pub destination_plan_attached: bool,
     /// Precomputed owner/type pairs proven safe for a function-frame image.
     pub stack_object_types:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
@@ -669,6 +673,7 @@ impl CompilerContext {
             enum_layout_planner: None,
             enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
             generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
+            destination_plan_attached: false,
             stack_object_types: std::collections::BTreeMap::new(),
             defn_touches_raw_memory: std::collections::HashSet::new(),
             defn_may_trap: std::collections::HashSet::new(),
