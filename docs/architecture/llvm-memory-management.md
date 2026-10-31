@@ -74,6 +74,10 @@ D6f replaces the foreach assignment rewalk with `LoopPlan` carrier names and
 records list elements as collection escapes. Heap containers can never retain
 a function-frame object image.
 
+D6g derives foreach carrier obligations: named scalar bindings are stable slots
+with no separate image copy; named aggregates/boxed bindings require a backedge
+copy. Unnamed loop temporaries remain iteration-local and never become carriers.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap
