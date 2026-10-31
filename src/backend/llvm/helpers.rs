@@ -2786,6 +2786,27 @@ impl LlvmBackend {
             .max(2)
     }
 
+    pub(crate) fn current_loop_field(
+        &self,
+        field: &str,
+    ) -> Option<crate::analysis::destination_model::LoopFieldRepresentation> {
+        self.fun
+            .current_loop_engine
+            .as_ref()
+            .and_then(|engine| engine.fields.get(field))
+            .map(|plan| plan.representation)
+    }
+
+    pub(crate) fn loop_field_is_phi(&self, field: &str) -> bool {
+        matches!(
+            self.current_loop_field(field),
+            Some(
+                crate::analysis::destination_model::LoopFieldRepresentation::Phi
+                    | crate::analysis::destination_model::LoopFieldRepresentation::StateCarrier,
+            )
+        )
+    }
+
     /// Shared word-image copy for stable carriers and inline enum images.
     /// Source and destination are already-resolved LLVM pointers.
     pub(crate) fn emit_word_image_copy(

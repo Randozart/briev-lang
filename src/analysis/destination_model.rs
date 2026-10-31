@@ -441,6 +441,10 @@ pub enum LoopFieldRepresentation {
     Phi,
     /// Stable state carrier; committed at loop convergence.
     StateCarrier,
+    /// Never written by the loop; hoist to a preheader value.
+    LoopInvariant,
+    /// Written but never read; no phi or backedge.
+    Dead,
 }
 
 /// One carried field's loop-engine destination.
@@ -914,25 +918,43 @@ pub fn attach_loop_engine_plans(
         .iter()
         .map(|(node, shape)| {
             let fields = shape
-                .carried_fields
+                .field_classes
                 .iter()
-                .map(|field| {
+                .map(|(field, class)| {
                     let storage = if shape.local_fields.contains(field) {
                         LoopStorage::Local
                     } else {
                         LoopStorage::Machine
                     };
-                    let (representation, proof) = match storage {
-                        LoopStorage::Local => (
-                            LoopFieldRepresentation::Phi,
+                    let (representation, proof) = match class {
+                        crate::analysis::loop_carried::FieldClass::LoopCarried => {
+                            match storage {
+                                LoopStorage::Local => (
+                                    LoopFieldRepresentation::Phi,
+                                    ProofStatus::Proven {
+                                        reasons: BTreeSet::from([ProofReason::NonEscaping]),
+                                    },
+                                ),
+                                _ => (
+                                    LoopFieldRepresentation::StateCarrier,
+                                    ProofStatus::Proven {
+                                        reasons: BTreeSet::from([
+                                            ProofReason::StableCarrierLifetime,
+                                        ]),
+                                    },
+                                ),
+                            }
+                        }
+                        crate::analysis::loop_carried::FieldClass::LoopInvariant => (
+                            LoopFieldRepresentation::LoopInvariant,
                             ProofStatus::Proven {
                                 reasons: BTreeSet::from([ProofReason::NonEscaping]),
                             },
                         ),
-                        _ => (
-                            LoopFieldRepresentation::StateCarrier,
+                        crate::analysis::loop_carried::FieldClass::Dead => (
+                            LoopFieldRepresentation::Dead,
                             ProofStatus::Proven {
-                                reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+                                reasons: BTreeSet::from([ProofReason::NonEscaping]),
                             },
                         ),
                     };
@@ -2402,6 +2424,10 @@ node run [count < 4][count == 4] {
             .fields
             .values()
             .any(|field| field.representation == LoopFieldRepresentation::StateCarrier));
+        assert_eq!(
+            engine.fields.get("scratch").map(|field| field.representation),
+            Some(LoopFieldRepresentation::Dead)
+        );
     }
 
     #[test]

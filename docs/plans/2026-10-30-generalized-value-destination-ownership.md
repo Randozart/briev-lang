@@ -1072,7 +1072,7 @@ Gate:
 
 ### Phase D6 — loop/carrier lane
 
-**Status 2026-10-30: D6a/D6b/D6c/D6d COMPLETE.** The destination plan now owns recursive
+**Status 2026-10-30: D6a–D6e COMPLETE.** The destination plan now owns recursive
 carrier facts: parameter carrier IDs, stable-carrier class, per-tail-arm
 argument classification, result local, sret callee, proof, and the callable's
 hidden-ABI carrier count. The tail-carrier walker records argument classes and
@@ -1084,8 +1084,12 @@ loops. D6c joins `LoopShape` carried-field liveness into `LoopEnginePlan`. D6d r
 the duplicate materialization map: `LoopShape.local_fields` is the canonical
 Local proof, `LoopStorage`/`LoopFieldPlan` own the phi/state-carrier choice,
 and a missing loop-engine plan rejects folding with a diagnostic instead of
-falling back. Validation: 3417 lib tests, quick IR determinism, and
-FSM/sweep/series/Kalman correctness MATCH.
+falling back. D6e adds the full write-set field class to `LoopShape`, attaches
+`Phi`/`StateCarrier`/`LoopInvariant`/`Dead` to `LoopEnginePlan`, stores the
+active plan on `FunctionContext`, and makes the version-DAG/countdown/PerField
+paths query it directly. The propagated `fun.local_fields` set is removed.
+Validation: 3417 lib tests, quick IR determinism, full runtime outputs MATCH,
+and loop-family correctness probes.
 
 **Deliverables:**
 
@@ -1390,3 +1394,4 @@ The generalized implementation is complete when:
 - [x] Complete D6b shared word-image copy helper for recursive carriers.
 - [x] Complete D6c loop-engine phi/state-carrier plan and backend consumption.
 - [x] Complete D6d duplicate materialization map retirement.
+- [x] Complete D6e explicit loop-engine plan consumption across counter paths.

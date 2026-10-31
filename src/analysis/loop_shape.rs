@@ -77,6 +77,8 @@ pub struct LoopShape {
     pub direction: ConvergeDirection,
     /// True when the body writes ONLY the loop counter (write_set == {counter}).
     pub counter_only_writes: bool,
+    /// Full write-set field classes, deterministic by field name.
+    pub field_classes: std::collections::BTreeMap<String, FieldClass>,
     /// Loop-carried fields in deterministic (sorted) order — the minimal phi set.
     pub carried_fields: Vec<String>,
     /// 2026-10-20 (Local class): written fields whose only reads are inside
@@ -239,7 +241,12 @@ fn build_shape(
     let bp = node.bounded_pre.as_ref().unwrap();
     let bound = resolve_bound(bp, names);
     let counter_only_writes = node.write_set.len() == 1 && node.write_set.contains(&bp.var);
-    let carried_fields = classify_carried(node.write_set.clone(), txn);
+    let field_classes = classify_write_fields(node.write_set.clone(), txn);
+    let carried_fields = field_classes
+        .iter()
+        .filter(|(_, class)| **class == FieldClass::LoopCarried)
+        .map(|(field, _)| field.clone())
+        .collect::<Vec<_>>();
     let local_fields = classify_local_fields(node, txn, items);
     let field_pressure = classify_field_pressure(&carried_fields, items);
     let vector_groups = detect_vector_groups_structural(txn, node.write_set.clone(), &names.state_fields, min_width);
@@ -253,6 +260,7 @@ fn build_shape(
         bound: bound.clone(),
         direction: bp.direction,
         counter_only_writes,
+        field_classes,
         carried_fields,
         local_fields,
         vector_groups,
@@ -622,22 +630,20 @@ pub fn escaped_effect_cause(
 /// Classify the loop-carried field set (minimal-state, deterministic order).
 /// A field is carried when it is written in the loop AND read by the body,
 /// a contract expression, or an observable body (guards / swan song).
-fn classify_carried(write_set: HashSet<String>, txn: &Transaction) -> Vec<String> {
+fn classify_write_fields(
+    write_set: HashSet<String>,
+    txn: &Transaction,
+) -> std::collections::BTreeMap<String, FieldClass> {
     let contract_exprs = [&txn.contract.pre_condition, &txn.contract.post_condition];
     let observables = collect_observable_bodies(&txn.body);
-    let classes = crate::analysis::loop_carried::classify_fields(
+    crate::analysis::loop_carried::classify_fields(
         &write_set,
         &txn.body,
         &contract_exprs,
         &observables,
-    );
-    let mut carried: Vec<String> = classes
-        .into_iter()
-        .filter(|(_, c)| *c == FieldClass::LoopCarried)
-        .map(|(k, _)| k)
-        .collect();
-    carried.sort();
-    carried
+    )
+    .into_iter()
+    .collect()
 }
 
 /// Collect all guarded bodies (runtime `when` blocks) from a transaction body.

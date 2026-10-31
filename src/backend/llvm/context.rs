@@ -966,10 +966,10 @@ fn collect_free_stmts(
 
 #[derive(Debug, Clone)]
 pub struct FunctionContext {    // SSA register counters — NEVER rewound (prevents %t{N} collisions)
-    /// 2026-10-20 (Local class): loop-local fields whose values are
-    /// unobservable after this bounded loop. Their phis stay local; no
-    /// post-loop %State store.
-    pub local_fields: std::collections::HashSet<String>,
+    /// D6: the active bounded-loop destination plan. All phi/state decisions
+    /// query this instead of a propagated name set.
+    pub current_loop_engine:
+        Option<crate::analysis::destination_model::LoopEnginePlan>,
     pub txn_counter: usize,
     pub within_counter: usize,
     /// Arena bump counter for unique per-allocation register names
@@ -1483,7 +1483,7 @@ impl FunctionContext {
             tail_param_slots: Vec::new(),
             tail_loop_backedge: false,
             carrier_params: HashMap::new(),
-            local_fields: std::collections::HashSet::new(),
+            current_loop_engine: None,
             txn_counter: 0,
             within_counter: 0,
             arena_counter: 0,

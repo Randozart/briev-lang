@@ -6911,15 +6911,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             ));
             return false;
         };
-        let planned_local: std::collections::HashSet<String> = engine
-            .fields
-            .values()
-            .filter(|field| {
-                field.representation
-                    == crate::analysis::destination_model::LoopFieldRepresentation::Phi
-            })
-            .map(|field| field.field.clone())
-            .collect();
+        self.fun.current_loop_engine = Some(engine.clone());
         if std::env::var_os("BRIEV_DIAG_LOOP").is_some() {
             eprintln!(
                 "diag: txn='{}' local={:?} post_hoist_groups={} floats={} temp_mediated={} aggregates={} vector_groups={:?}",
@@ -7043,7 +7035,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             if let Some(batch) = analysis.batch_shapes.get(&node.name) {
                 if batch.counter == bp.var {
                     self.fun.pending_post_hoist = post_hoist.clone();
-                    self.fun.local_fields = planned_local.clone();
                     let carry_env = std::env::var("BRIEV_DIAG_EFFECT_CARRY").ok();
                     let direct_float = shape.carried_float_count > 0
                         && shape.temp_mediated_float_count < shape.carried_float_count;
@@ -7136,7 +7127,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.warnings.push(format!("info: txn '{}' dispatched via per-field phi ({}/{} fields written)", node.name, write_count, total_fields));
         }
         self.fun.pending_post_hoist = post_hoist;
-        self.fun.local_fields = planned_local.clone();
         let is_decreasing = bp.direction == crate::analysis::transition_graph::ConvergeDirection::Decreasing;
         self.emit_countable_main(
             out, &node.name, counter_idx, total_idx, total_const_name, bp.bound_literal,

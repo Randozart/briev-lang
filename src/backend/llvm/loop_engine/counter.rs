@@ -749,7 +749,7 @@ impl LlvmBackend {
         let mut phi_field_init: HashMap<String, String> = HashMap::new();
         for fname in &sorted_fields {
             if let Some(&idx) = self.ctx.field_index_map.get(fname.as_str()) {
-                let literal_init = if self.fun.local_fields.contains(fname.as_str()) {
+                let literal_init = if self.loop_field_is_phi(fname.as_str()) {
                     self.ctx.field_initializers.get(fname.as_str()).and_then(|e| {
                         let field_ty = self.ctx.field_types.get(idx).cloned()?;
                         match e {
@@ -1162,7 +1162,7 @@ impl LlvmBackend {
         // independent updates (the C shape) instead of treating every field
         // as an individually live state value.
         for fname in &sorted_fields {
-            if self.fun.local_fields.contains(fname.as_str())
+            if self.loop_field_is_phi(fname.as_str())
                 && self.fun.pending_post_hoist.is_empty()
             {
                 continue;
@@ -1430,12 +1430,6 @@ impl LlvmBackend {
         // written in the loop are hoisted (no phi); fields written but never
         // read are dropped. Only loop-carried fields get phis. The body
         // includes the guard, so a field read only by the guard is carried.
-        let hoist_flat: Vec<Statement> = self.fun.pending_post_hoist.iter()
-            .flat_map(|g| g.clone()).collect();
-        let observables: Vec<&[Statement]> = vec![guard_body, &hoist_flat];
-        let field_classes = crate::analysis::loop_carried::classify_fields(
-            &write_set, body, &[], &observables,
-        );
         writeln!(out, "{}:", header_label).ok();
         self.fun.phi_field_regs.clear();
         self.fun.backedge_field_regs.clear();
@@ -1468,11 +1462,11 @@ impl LlvmBackend {
             // 2026-07-31: Minimal-state — loop-invariant fields are hoisted
             // (their entry load is the hoisted value, no phi); dead fields are
             // dropped; loop-carried fields get a phi.
-            match field_classes.get(fname.as_str()) {
-                Some(crate::analysis::loop_carried::FieldClass::LoopInvariant) => {
+            match self.current_loop_field(fname.as_str()) {
+                Some(crate::analysis::destination_model::LoopFieldRepresentation::LoopInvariant) => {
                     self.fun.phi_field_regs.insert((*fname).clone(), init_f);
                 }
-                Some(crate::analysis::loop_carried::FieldClass::Dead) => {
+                Some(crate::analysis::destination_model::LoopFieldRepresentation::Dead) => {
                     // Skipped — no phi, no backedge, body writes dropped.
                 }
                 _ => {
