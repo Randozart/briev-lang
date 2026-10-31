@@ -424,6 +424,16 @@ pub struct RecursiveCarrierPlan {
     pub proof: ProofStatus,
 }
 
+/// Canonical loop storage. `Plain` and `Volatile` remain explicit names for
+/// storage-inference, but the current shape pass emits only Local/Machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopStorage {
+    Local,
+    Plain,
+    Machine,
+    Volatile,
+}
+
 /// Loop-engine storage decision for one carried field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopFieldRepresentation {
@@ -437,7 +447,7 @@ pub enum LoopFieldRepresentation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopFieldPlan {
     pub field: String,
-    pub storage: crate::analysis::materialization::StorageClass,
+    pub storage: LoopStorage,
     pub representation: LoopFieldRepresentation,
     pub proof: ProofStatus,
 }
@@ -891,38 +901,29 @@ fn populate_hidden_tail_carriers(
     }
 }
 
-/// Attach frontend loop-engine plans to the generalized destination plan.
+/// Attach loop-engine destination plans to the generalized plan.
 ///
-/// `LoopShape` owns carried-field liveness; `LoopMaterializationPlan` owns the
-/// Local/Machine split. This adapter records both without re-walking bodies.
+/// `LoopShape.local_fields` is the canonical Local proof. A carried field not
+/// in that proof is a stable state carrier. The former materialization map was
+/// a duplicate derivation and is retired.
 pub fn attach_loop_engine_plans(
     plan: &mut GeneralizedDestinationOwnershipPlan,
     shapes: &std::collections::HashMap<String, crate::analysis::loop_shape::LoopShape>,
-    materialization: &std::collections::HashMap<
-        String,
-        crate::analysis::materialization::LoopMaterializationPlan,
-    >,
 ) {
     plan.loop_engines = shapes
         .iter()
         .map(|(node, shape)| {
-            let materialized = materialization.get(node);
             let fields = shape
                 .carried_fields
                 .iter()
                 .map(|field| {
-                    let storage = materialized
-                        .and_then(|plan| plan.fields.get(field))
-                        .copied()
-                        .unwrap_or_else(|| {
-                            if shape.local_fields.contains(field) {
-                                crate::analysis::materialization::StorageClass::Local
-                            } else {
-                                crate::analysis::materialization::StorageClass::Machine
-                            }
-                        });
+                    let storage = if shape.local_fields.contains(field) {
+                        LoopStorage::Local
+                    } else {
+                        LoopStorage::Machine
+                    };
                     let (representation, proof) = match storage {
-                        crate::analysis::materialization::StorageClass::Local => (
+                        LoopStorage::Local => (
                             LoopFieldRepresentation::Phi,
                             ProofStatus::Proven {
                                 reasons: BTreeSet::from([ProofReason::NonEscaping]),
@@ -2369,7 +2370,7 @@ defn loop(n: Int, state: S, sum: Int) -> Int {
     }
 
     #[test]
-    fn loop_engine_plans_join_shape_and_materialization() {
+    fn loop_engine_plans_join_shape_and_storage() {
         let src = r#"
 let count: Int = 0;
 let acc: Int = 0;
@@ -2389,13 +2390,11 @@ node run [count < 4][count == 4] {
             &vec![],
         );
         let shapes = crate::analysis::loop_shape::build_loop_shapes(&graph, &items, 4);
-        let materialization =
-            crate::analysis::materialization::build_materialization_plans(&shapes);
+
         let mut rebuilt = crate::analysis::destination_ownership::analyze(&items).generalized;
         crate::analysis::destination_model::attach_loop_engine_plans(
             &mut rebuilt,
             &shapes,
-            &materialization,
         );
         let engine = rebuilt.loop_engines.get("run").expect("loop engine");
         assert_eq!(engine.counter, "count");

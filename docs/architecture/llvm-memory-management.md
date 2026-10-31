@@ -63,10 +63,11 @@ Carrier lowering behavior is unchanged in this slice.
 D6b routes stable-carrier seeding/backedge copies and inline enum image copies
 through `emit_word_image_copy`; do not reintroduce scattered word-copy loops.
 
-D6c joins `LoopShape` and `LoopMaterializationPlan` into
-`LoopEnginePlan`. A Local field selects a loop phi; a Machine field selects a
-stable state carrier. The folded loop engine consumes that plan for its phi
-set; the separate materialization map is a legacy fallback only.
+D6c/D6d unify loop-engine destinations in `LoopEnginePlan`. `LoopShape.local_fields`
+is the canonical Local proof; a Local field selects a loop phi and every other
+carried field selects a stable state carrier. The folded loop engine consumes
+that plan for its phi set. A missing plan is a loud rejection, not a silent
+fallback.
 
 ## Principle
 

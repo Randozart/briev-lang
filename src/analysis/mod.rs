@@ -62,7 +62,6 @@ pub mod layout_optimizer;
 pub mod protocol_graph;
 pub mod swan_song;
 pub mod loop_shape;
-pub mod materialization;
 pub mod density;
 pub mod image_storage;
 pub mod modulo_partition;

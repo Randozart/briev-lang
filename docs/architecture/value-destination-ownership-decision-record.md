@@ -902,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D6 recursive-carrier facts, shared carrier copies, and
-loop-engine phi/state-carrier plans are unified. Next: retire the legacy
-materialization fallback and migrate remaining loop engines to the unified
-plan.
+**Current phase:** D6 recursive carriers, shared carrier copies, and loop-engine
+phi/state-carrier plans are unified. The duplicate materialization map is
+retired; `LoopShape.local_fields` feeds `LoopEnginePlan` directly. Next:
+migrate any remaining loop-specific ownership decisions to this plan surface.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

@@ -801,15 +801,16 @@ mod tests {
         assert_eq!(shape.carried_float_count, 12);
         assert_eq!(shape.carried_scalar_count, 13);
         assert_eq!(shape.carried_aggregate_count, 0);
-        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
-        let plan = plans.get("tick").expect("tick plan");
+        let mut generalized = crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
+        crate::analysis::destination_model::attach_loop_engine_plans(&mut generalized, &shapes);
+        let engine = generalized.loop_engines.get("tick").expect("tick engine");
         assert_eq!(
-            plan.fields.get("p00"),
-            Some(&crate::analysis::materialization::StorageClass::Local)
+            engine.fields.get("p00").map(|field| field.storage),
+            Some(crate::analysis::destination_model::LoopStorage::Local)
         );
         assert_eq!(
-            plan.fields.get("count"),
-            Some(&crate::analysis::materialization::StorageClass::Machine)
+            engine.fields.get("count").map(|field| field.storage),
+            Some(crate::analysis::destination_model::LoopStorage::Machine)
         );
     }
 
@@ -869,11 +870,12 @@ node tick [count < total][count == total] {
         assert!(!shape.local_fields.contains(&"f".to_string()),
             "a field referenced by an exported defn is not loop-local");
         assert!(!shape.local_fields.contains(&"count".to_string()));
-        let plans = crate::analysis::materialization::build_materialization_plans(&shapes);
-        let plan = plans.get("tick").expect("tick plan");
+        let mut generalized = crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
+        crate::analysis::destination_model::attach_loop_engine_plans(&mut generalized, &shapes);
+        let engine = generalized.loop_engines.get("tick").expect("tick engine");
         assert_eq!(
-            plan.fields.get("f"),
-            Some(&crate::analysis::materialization::StorageClass::Machine)
+            engine.fields.get("f").map(|field| field.storage),
+            Some(crate::analysis::destination_model::LoopStorage::Machine)
         );
     }
 
