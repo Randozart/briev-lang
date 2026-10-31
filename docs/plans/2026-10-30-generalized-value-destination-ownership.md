@@ -1072,7 +1072,7 @@ Gate:
 
 ### Phase D6 — loop/carrier lane
 
-**Status 2026-10-30: D6a–D6g COMPLETE.** The destination plan now owns recursive
+**Status 2026-10-30: D6a–D6h COMPLETE.** The destination plan now owns recursive
 carrier facts: parameter carrier IDs, stable-carrier class, per-tail-arm
 argument classification, result local, sret callee, proof, and the callable's
 hidden-ABI carrier count. The tail-carrier walker records argument classes and
@@ -1094,8 +1094,12 @@ frame-backed object literals cannot leak through heap containers. D6g derives
 foreach carrier class, backedge-copy obligation, and per-value proof from R1:
 named scalars are stable slots without image copies, named aggregates remain
 explicit-copy carriers, and unnamed loop temporaries stay iteration-local.
-Validation: 3419 lib tests, quick IR determinism, collection/SPSC/ws gates,
-and Praetor clean.
+D6h lowers from `ForeachCarrierObligation`s: an attached plan is authoritative
+(absent bindings stay SSA), proven/conservative named carriers get frame slots,
+and unknown ownership gets a conservative slot with a warning. A missing
+destination plan uses the conservative all-bindings fallback only. Validation:
+3419 lib tests, quick IR determinism, collection/SPSC/ws gates, and Praetor no
+new diagnostics.
 
 **Deliverables:**
 
@@ -1404,3 +1408,5 @@ The generalized implementation is complete when:
 - [x] Complete D6f plan-backed foreach carrier slots and list-element escape
       correction.
 - [x] Complete D6g proof-derived foreach carrier class/copy decisions.
+- [x] Complete D6h proof-derived foreach slot lowering and absent-binding SSA
+      policy.

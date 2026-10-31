@@ -2304,21 +2304,49 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // 2026-08-07 (Phase 7): loop-carried locals — a register-bound let
             // (e.g. `acc`) assigned in the body would read its STALE initial
             // register every iteration (the body IR is emitted once; runtime
-            // re-execution never re-resolves). Pre-declare an alloca slot and
-            // seed it with the current value so the body reads/writes memory.
-            for name in backend.foreach_carrier_names() {
-                if let Some(cur) = backend.fun.let_bindings.get(&name).cloned() {
-                    if !backend.fun.let_binding_allocas.contains(&cur) {
-                        let slot = backend.fun.gen_reg();
-                        let llvm_ty = backend.fun.let_binding_types.get(&name)
-                            .map(|t| backend.llvm_type(t))
-                            .unwrap_or_else(|| "i64".to_string());
-                        writeln!(out, "{}{} = alloca {}, align 8", indent, slot, llvm_ty).ok();
-                        writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, cur, slot).ok();
-                        backend.fun.let_bindings.insert(name.clone(), slot.clone());
-                        backend.fun.let_binding_allocas.insert(slot.clone());
+            // re-execution never re-resolves). The destination plan owns the
+            // obligation; a proven/conservative named carrier gets a frame
+            // slot. A binding absent from an attached plan stays SSA.
+            let foreach_carriers = backend.foreach_carrier_obligations();
+            let carriers = match foreach_carriers {
+                Some(obligations) => obligations
+                    .into_iter()
+                    .map(|(name, obligation)| (name, Some(obligation)))
+                    .collect::<Vec<_>>(),
+                None => backend
+                    .fun
+                    .let_bindings
+                    .keys()
+                    .cloned()
+                    .map(|name| (name, None))
+                    .collect(),
+            };
+            for (name, obligation) in carriers {
+                let Some(cur) = backend.fun.let_bindings.get(&name).cloned() else {
+                    continue;
+                };
+                if backend.fun.let_binding_allocas.contains(&cur) {
+                    continue;
+                }
+                if let Some(obligation) = &obligation {
+                    if matches!(
+                        obligation.proof,
+                        crate::analysis::destination_model::ProofStatus::Unknown
+                    ) {
+                        backend.warnings.push(format!(
+                            "warning: foreach carrier '{name}' has unknown ownership — \
+                             using a conservative frame slot"
+                        ));
                     }
                 }
+                let slot = backend.fun.gen_reg();
+                let llvm_ty = backend.fun.let_binding_types.get(&name)
+                    .map(|t| backend.llvm_type(t))
+                    .unwrap_or_else(|| "i64".to_string());
+                writeln!(out, "{}{} = alloca {}, align 8", indent, slot, llvm_ty).ok();
+                writeln!(out, "{}store {} {}, ptr {}", indent, llvm_ty, cur, slot).ok();
+                backend.fun.let_bindings.insert(name.clone(), slot.clone());
+                backend.fun.let_binding_allocas.insert(slot.clone());
             }
             // Determine the iteration source (SPEC §11.4 — ranges AND
             // collections are iterable). The loop counter is a memory slot;

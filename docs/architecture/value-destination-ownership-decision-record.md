@@ -903,8 +903,8 @@ before their lane starts.
 `feat/generalized-value-destination-ownership`.
 
 **Current phase:** D6 loop ownership is unified. Recursive carriers, counter
-loops, and foreach carriers consume destination-plan facts; foreach carrier
-class/copy/proof is derived from R1 rather than defaulted. Next: sink-specific
+loops, and foreach slot lowering consume destination-plan obligations; an
+attached plan is authoritative and absent bindings stay SSA. Next: sink-specific
 copy elimination where D5 proves destination lifetime.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter

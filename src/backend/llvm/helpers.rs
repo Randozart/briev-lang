@@ -2786,19 +2786,23 @@ impl LlvmBackend {
             .max(2)
     }
 
-    /// Foreach-carried binding names from the unified destination plan.
-    /// Missing facts select no slots; ordinary scalar lets then stay SSA. This
-    /// is the conservative R1/destination-plan fallback, never a rewalk.
-    pub(crate) fn foreach_carrier_names(&self) -> std::collections::BTreeSet<String> {
-        self.fun
-            .destination_owner
-            .as_deref()
-            .map(|owner| {
-                self.ctx
-                    .generalized_destination_ownership
-                    .foreach_carrier_names(owner)
-            })
-            .unwrap_or_default()
+    /// Proof-derived foreach slot obligations. `None` means destination
+    /// ownership was not attached (an internal pipeline error), so lowering
+    /// may use its conservative all-bindings fallback. `Some` is authoritative:
+    /// a binding absent from the plan is iteration-local and must stay SSA.
+    pub(crate) fn foreach_carrier_obligations(
+        &self,
+    ) -> Option<
+        std::collections::BTreeMap<
+            String,
+            crate::analysis::destination_model::ForeachCarrierObligation,
+        >,
+    > {
+        self.fun.destination_owner.as_deref().map(|owner| {
+            self.ctx
+                .generalized_destination_ownership
+                .foreach_carrier_obligations(owner)
+        })
     }
 
     pub(crate) fn current_loop_field(

@@ -626,6 +626,15 @@ pub struct DestinationSinkPlan {
     pub proof: ProofStatus,
 }
 
+/// Proof-derived foreach slot obligation consumed by lowering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForeachCarrierObligation {
+    pub name: String,
+    pub class: GeneralDestinationClass,
+    pub requires_backedge_copy: bool,
+    pub proof: ProofStatus,
+}
+
 /// A tuple construction destination. Tuple element types are not yet known by
 /// R1, so `element_types` remains a typed-hole rather than guessing layout.
 #[derive(Debug, Clone, PartialEq)]
@@ -681,12 +690,27 @@ impl GeneralizedDestinationOwnershipPlan {
     /// Binding names carried by foreach loops in an owner. The backend uses
     /// the owner-wide set today; slot selection is conservative across sibling
     /// foreach loops but requires no statement rewalk.
-    pub fn foreach_carrier_names(&self, owner: &str) -> BTreeSet<String> {
+    pub fn foreach_carrier_obligations(
+        &self,
+        owner: &str,
+    ) -> BTreeMap<String, ForeachCarrierObligation> {
         self.loops
             .values()
             .filter(|loop_plan| loop_plan.loop_id.owner == owner)
             .flat_map(|loop_plan| loop_plan.carrier_values.iter())
-            .filter_map(|value| value.source_name.clone())
+            .filter_map(|value| {
+                value.source_name.as_ref().map(|name| {
+                    (
+                        name.clone(),
+                        ForeachCarrierObligation {
+                            name: name.clone(),
+                            class: value.class,
+                            requires_backedge_copy: value.requires_backedge_copy,
+                            proof: value.proof.clone(),
+                        },
+                    )
+                })
+            })
             .collect()
     }
 
@@ -2167,6 +2191,12 @@ defn run(n: Int) -> P {
             .all(|carrier| carrier.class == GeneralDestinationClass::Boxed
                 && carrier.requires_backedge_copy
                 && matches!(carrier.proof, ProofStatus::Proven { .. })));
+        let obligations = plan.foreach_carrier_obligations("defn:run");
+        assert!(obligations.values().all(|obligation| {
+            obligation.class == GeneralDestinationClass::Boxed
+                && obligation.requires_backedge_copy
+                && matches!(obligation.proof, ProofStatus::Proven { .. })
+        }));
     }
 
     #[test]
@@ -2182,9 +2212,11 @@ defn drain(n: Int, q: List<Int>) -> Int {
 };
 "#,
         );
-        assert!(plan
-            .foreach_carrier_names("defn:drain")
-            .contains("sum"));
+        let obligations = plan.foreach_carrier_obligations("defn:drain");
+        let obligation = obligations.get("sum").expect("scalar obligation");
+        assert_eq!(obligation.class, GeneralDestinationClass::ScalarValue);
+        assert!(!obligation.requires_backedge_copy);
+        assert!(matches!(obligation.proof, ProofStatus::Proven { .. }));
     }
 
     #[test]

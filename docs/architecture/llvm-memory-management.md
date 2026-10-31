@@ -78,6 +78,11 @@ D6g derives foreach carrier obligations: named scalar bindings are stable slots
 with no separate image copy; named aggregates/boxed bindings require a backedge
 copy. Unnamed loop temporaries remain iteration-local and never become carriers.
 
+D6h lowers from those obligations. An attached plan is authoritative: absent
+bindings stay SSA. Proven/conservative carriers get frame slots; unknown
+ownership gets a conservative slot and warning. Only a missing destination plan
+uses the conservative all-bindings fallback.
+
 ## Principle
 
 The LLVM backend's memory strategy is: **%State lives on the stack; heap
