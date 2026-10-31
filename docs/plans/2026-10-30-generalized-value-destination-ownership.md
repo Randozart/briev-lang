@@ -947,6 +947,15 @@ keep the D3a facts; no public/runtime ABI or source syntax depends on this join.
 
 ### Phase D4 — generalized object lane
 
+**Status 2026-10-31 (correction): D4b is DISABLED.** The 2026-10-30 D4b
+results are retained as history, but inline enum-object payloads miscompiled
+`net_stack_helpers` at `-O1` (stale `WsFrame` fields / oversized payload
+allocation). `OBJECT_PAYLOAD_INLINE_ENABLED` is false until the handle
+round-trip lifetime/alias proof is rebuilt. D5b and D4c remain enabled; D4c
+only accepts direct non-retaining consumers because enum-payload copying is no
+longer an inline-object proof. See
+`benchmarks/results/2026-10-31-d4b-rollback.md`. The original status follows.
+
 **Status 2026-10-30: D4a + D4 slices 3 and 4 COMPLETE.** R1 tags struct/object
 literal values with their concrete type, gives each root expression a unique
 stable ID, propagates types through let bindings, and marks every non-primitive

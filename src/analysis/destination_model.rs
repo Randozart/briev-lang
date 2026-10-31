@@ -2659,6 +2659,30 @@ defn caller(x: Int) -> Int {
     }
 
     #[test]
+    fn object_literal_field_aliases_parent_lifetime() {
+        let (_, plan) = analyze_items(
+            r#"
+obj Child { x: Int; };
+obj Parent { child: Child; };
+defn make(x: Int) -> Parent {
+    term Parent { child: Child { x: x } };
+};
+"#,
+        );
+        let child = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "Child")
+            .expect("child object");
+        assert!(child.requires_materialization);
+        assert!(child.escapes.contains(&EscapeKind::ObjectLifetime));
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("Child")));
+    }
+
+    #[test]
     fn stack_object_types_require_all_aliases_non_escaping() {
         let (_, local) = analyze_items(
             r#"

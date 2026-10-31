@@ -902,10 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D7e is complete. Simple top-level exports get a public
-wrapper plus internal body symbol; hidden-ABI exports keep the direct-symbol
-path. Export/foreign plans drive parameter and result ABI selection. Next:
-D8 retirement after remaining complex-export-wrapper work.
+**Current phase:** D7e is complete; D4b inline enum-object payloads are
+disabled after an `-O1` miscompile in `net_stack_helpers`. D5b frame images and
+D4c direct-consumer object destinations remain enabled. Next: P0 regression
+pinning (done), D7 complex-export wrappers, then D8 retirement.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

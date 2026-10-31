@@ -336,10 +336,9 @@ mod tests {
         let items = parse(
             r#"
 obj F { a: Int; b: Int; };
-enum R { Ok(F), Err(Int) };
 defn make(x: Int) -> F { term F { a: x; b: 0 }; };
-defn consume(f: F) -> R { term Ok(f); };
-defn caller(x: Int) -> R { term consume(make(x)); };
+defn consume(f: F) -> Int { term f.a; };
+defn caller(x: Int) -> Int { term consume(make(x)); };
 "#,
         );
         let layouts = EnumLayoutPlanner::new(&items, 2);
@@ -348,14 +347,29 @@ defn caller(x: Int) -> R { term consume(make(x)); };
     }
 
     #[test]
-    fn unconsumed_object_call_stays_boxed() {
+    fn enum_payload_consumer_is_rejected_while_object_inline_is_disabled() {
         let items = parse(
             r#"
 obj F { a: Int; b: Int; };
 enum R { Ok(F), Err(Int) };
 defn make(x: Int) -> F { term F { a: x; b: 0 }; };
 defn consume(f: F) -> R { term Ok(f); };
-defn caller(x: Int) -> R {
+defn caller(x: Int) -> R { term consume(make(x)); };
+"#,
+        );
+        let layouts = EnumLayoutPlanner::new(&items, 2);
+        let plan = build_object_representation_plan(&items, &layouts);
+        assert!(!plan.caller_destination_defns.contains("make"));
+    }
+
+    #[test]
+    fn unconsumed_object_call_stays_boxed() {
+        let items = parse(
+            r#"
+obj F { a: Int; b: Int; };
+defn make(x: Int) -> F { term F { a: x; b: 0 }; };
+defn consume(f: F) -> Int { term f.a; };
+defn caller(x: Int) -> Int {
     let direct: F = make(x);
     term consume(direct);
 };

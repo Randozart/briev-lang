@@ -38,11 +38,26 @@ fn is_library_surface(src: &str) -> bool {
     code.contains("export defn") && !code.contains("node ") && !code.contains("txn ")
 }
 
+#[derive(Clone, Copy)]
+enum LinkProfile {
+    Harness,
+    Asan,
+}
+
 /// Build + link + run one program-surface fixture. Returns stdout and asserts
 /// every stage; `env` pairs are set on the run (not the build). `slot` makes
 /// the out dir unique per caller — cargo runs tests in parallel, and two
 /// callers sharing one exe path race (one hits "Text file busy").
 fn build_link_run(name: &str, slot: &str, env: &[(&str, &str)]) -> String {
+    build_link_run_profile(name, slot, env, LinkProfile::Harness)
+}
+
+fn build_link_run_profile(
+    name: &str,
+    slot: &str,
+    env: &[(&str, &str)],
+    profile: LinkProfile,
+) -> String {
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let out_dir = Path::new(PROJECT_ROOT)
         .join("target/briev_daily_use_smoke")
@@ -73,20 +88,34 @@ fn build_link_run(name: &str, slot: &str, env: &[(&str, &str)]) -> String {
 
     let ll = out_dir.join(format!("{name}.ll"));
     let exe = out_dir.join(name);
-    let link = Command::new("clang")
-        .args([
-            "-O3",
-            "-flto",
-            "-march=native",
-            "-ffast-math",
-            "-fdata-sections",
-            "-ffunction-sections",
-            "-Wl,--gc-sections",
-            &ll.to_string_lossy(),
-            &format!("{PROJECT_ROOT}/lib/runtime/briev_rt.c"),
-            "-o",
-            &exe.to_string_lossy(),
-        ])
+    let mut link = Command::new("clang");
+    match profile {
+        LinkProfile::Harness => {
+            link.args([
+                "-O3",
+                "-flto",
+                "-march=native",
+                "-ffast-math",
+                "-fdata-sections",
+                "-ffunction-sections",
+                "-Wl,--gc-sections",
+            ]);
+        }
+        LinkProfile::Asan => {
+            link.args([
+                "-O1",
+                "-g",
+                "-fsanitize=address",
+                "-fno-omit-frame-pointer",
+                "-march=native",
+            ]);
+        }
+    }
+    let link = link
+        .arg(&ll)
+        .arg(format!("{PROJECT_ROOT}/lib/runtime/briev_rt.c"))
+        .arg("-o")
+        .arg(&exe)
         .output()
         .unwrap_or_else(|e| panic!("{name}: failed to spawn clang: {e}"));
     assert!(
@@ -290,7 +319,44 @@ fn net_stack_helpers_golden_output() {
     );
 }
 
-/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a
+/// P0 regression: an object literal field aliases its parent's lifetime.
+/// `HttpRequest` is nested in a returned `HttpParse`; D5b must not place the
+/// child in a function-frame image after the parent crosses the return edge.
+#[test]
+fn net_stack_helpers_asan_stack_lifetime() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run_profile(
+        "net_stack_helpers",
+        "asan",
+        &[("ASAN_OPTIONS", "detect_stack_use_after_return=1")],
+        LinkProfile::Asan,
+    );
+    assert_eq!(
+        out, "aGVsbG8=|s3pPLMBiTxaQ9kYGzzhZRbK+xOo=|OK",
+        "net-stack ASan lifetime run drifted: {out:?}"
+    );
+}
+
+/// P0 regression: generated/macro-expanded foreach bindings must keep their
+/// alloca in the loop preheader, never in a conditional body. The fixture's
+/// HashMap probe previously produced invalid dominance IR here.
+#[test]
+fn generated_foreach_binding_keeps_entry_slot() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("test_hashmap_rehash", "foreach-dominance", &[]);
+    assert!(
+        out.contains("10") && out.contains("80"),
+        "hashmap rehash output missing expected values: {out:?}"
+    );
+}
+
+/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a
 /// write in a sibling defn must not be reordered by LTO. The first iteration
 /// reads the zero slot; every later iteration reads the previous store. This
 /// pins the behavioral side of the #13 effect-summary fix; #8 on either defn

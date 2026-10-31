@@ -42,7 +42,16 @@ At `3c2aeaea`:
 - D6h retains one narrow fallback scan for generated foreach bindings that R1
   never records. This is correctness debt, not the intended end state.
 
-## P0 — pin the bugs found during merge readiness
+## P0 — pin the bugs found during merge readiness — COMPLETE (2026-10-31)
+
+Permanent regressions landed:
+
+- `object_literal_field_aliases_parent_lifetime` in the destination model.
+- `generated_foreach_binding_keeps_entry_slot` in the daily suite.
+- `net_stack_helpers_asan_stack_lifetime` in the daily suite (ASan,
+  `detect_use_after_return=1`).
+- D4b inline enum-object payloads disabled; full O0/O1/O2/O3 and ASan reruns
+  pass with the path off. Re-enable belongs in P3 after the alias proof.
 
 These bugs were found late; each needs a permanent regression test before more
 optimization.
@@ -157,6 +166,8 @@ Acceptance: no AST liveness rewalk remains in backend loop lowering.
 
 ## P3 — harden object frame images and caller destinations
 
+0. Re-enable D4b only after an O0/O1/O2/O3 + ASan proof of the i64 handle
+   round-trip. Current status: disabled; object payloads stay boxed.
 1. Add alias tests for:
    - nested object literal fields;
    - object in tuple;
