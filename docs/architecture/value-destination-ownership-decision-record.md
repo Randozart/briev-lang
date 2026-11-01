@@ -908,7 +908,9 @@ are gone; recursive carriers are emitted directly and runtime enum layout/bindin
 reads only `EnumLoweringPlan`. The planner is no longer backend state; it is a
 local join input, constructor tags/discriminants are plan-owned in declaration
 order, and enum-name checks read the generalized plan's declared-enum map. D4b inline enum-object payloads stay disabled
-after the `-O1` `net_stack_helpers` miscompile.
+after the `-O1` `net_stack_helpers` miscompile. D8 retention audit found both
+`own_enum_value` and `retain_enum_return` still carry unique obligations; no-op
+probes failed daily gates and real recommender I11 respectively.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

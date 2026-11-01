@@ -263,6 +263,15 @@ Landed slices:
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.
 
+Retention audit (2026-11-01): both `own_enum_value` and `retain_enum_return`
+remain required. No-op probes failed daily gates / real recommender I11
+respectively; details in
+`benchmarks/results/2026-11-01-d8-retention-audit.md`. Do not remove them
+without a proof-carrying replacement.
+
+D8 remains **partial**: P2’s generated-foreach fallback and the D4b re-enable
+decision are still open.
+
 Only after P0–P3 are green.
 
 1. Remove legacy enum sret/inline special cases superseded by
