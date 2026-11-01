@@ -11,6 +11,11 @@
 //   import "glue/c.bv";
 //   export defn greet(name: CStr) -> CStr { ... };
 
+// cstr_len lives in cast_lanes (normally prelude-imported by `brievc build`).
+// The standalone bridge/export path bypasses that prelude, so make the
+// dependency explicit: bridge IR must be self-contained for llc.
+import "std/cast_lanes.bv";
+
 // C string ↔ Briev string transforms. `cstr_to_briev` reads a nul-terminated
 // C string into a [len][data][NUL] Briev String; `str_to_c` yields the data
 // pointer of a Briev String (a zero-copy view — every String allocation is

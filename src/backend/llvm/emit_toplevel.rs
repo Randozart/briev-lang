@@ -6552,7 +6552,7 @@ struct ExportWrapperArgs<'a> {
     definition: &'a crate::ast::Definition,
     needs_state: bool,
     boundary_types: Option<&'a [String]>,
-    has_hidden: bool,
+    has_prefix: bool,
 }
 
 struct ExportWrapperCallSpec<'a> {
@@ -6667,7 +6667,7 @@ impl LlvmBackend {
                 definition: d,
                 needs_state,
                 boundary_types: boundary_types.as_deref(),
-                has_hidden: false,
+                has_prefix: false,
             },
         );
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
@@ -6734,13 +6734,15 @@ impl LlvmBackend {
             write!(out, "ptr {slot}").ok();
         }
         let has_hidden = !spec.hoisted.is_empty() || !spec.carriers.is_empty();
+        // State was already written above; only the comma/separator state is
+        // needed for the remaining parameters.
         self.write_export_wrapper_args(
             out,
             ExportWrapperArgs {
                 definition: spec.definition,
-                needs_state: spec.needs_state,
+                needs_state: false,
                 boundary_types: spec.boundary_types,
-                has_hidden,
+                has_prefix: spec.needs_state || has_hidden,
             },
         );
     }
@@ -6750,7 +6752,7 @@ impl LlvmBackend {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
         for (i, (_, fallback_ty)) in spec.definition.parameters.iter().enumerate() {
-            if spec.needs_state || spec.has_hidden || i > 0 {
+            if spec.needs_state || spec.has_prefix || i > 0 {
                 write!(out, ", ").ok();
             }
             let ty = spec

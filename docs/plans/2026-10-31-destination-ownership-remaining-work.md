@@ -146,14 +146,16 @@ Green:
 - wasm32: `rbv_list_each_wasm`, `rbv_obj_init_wasm32`, `rbv_router`.
 - no-prelude/stdlib boundary export: `tests/no_prelude_boundary.rs`.
 - C/multi bridge: `bridge_glue`, `bridge_multi`, GLUE suite.
+- Node/JS export + extension: `tests/js_export_boundary.rs` calls the real
+  `gate.js` consumer.
 - Full public ABI regressions from P0/D7f.
 
-Open: real-browser fake-peer/I11 gate and the Node/JS export consumer. The
-JS lane currently fails before runtime: generated `bridge.ll` calls
-`@cstr_len` with no definition or declaration (`llc: use of undefined value
-'@cstr_len'`). This is a GLUE liveness/emission gap, not a destination-plan
-regression. The app worktree is absent in this environment. See
-`benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
+Two JS blockers were fixed: `glue/c.bv` now explicitly imports its cast-lane
+dependency so bridge IR defines `cstr_len`; bridge export uses library-mode
+emission; and stateful export wrappers pass `%state` exactly once.
+
+Open: real-browser fake-peer/I11 gate (app worktree absent in this
+environment). See `benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
 
 Run and record:
 

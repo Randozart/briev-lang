@@ -819,8 +819,13 @@ pub fn run_export_cli(file_path: &str, language: &str, out_dir: &str) -> Result<
     // 2026-07-22: Step 3 — generate LLVM IR with the full backend (real function bodies)
     let llvm_ir = {
         use crate::backend::llvm::LlvmBackend;
+        // The language bridge wrapper is appended after this backend pass, so
+        // its helper calls (e.g. cstr_len for String conversion) are invisible
+        // to the liveness net. This is a library surface: emit the full
+        // callable set, matching `brievc build --library`.
         let mut b = LlvmBackend::new()
             .with_type_universe(universe)
+            .with_library_mode(true)
             .with_resolved_frgns(resolved_frgns);
         b.generate(&items, None)
     };

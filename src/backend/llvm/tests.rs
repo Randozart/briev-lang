@@ -298,6 +298,30 @@ export defn loop(n: Int, s: S) -> Int { term 0; };
 }
 
 #[test]
+fn stateful_export_wrapper_passes_state_once() {
+    let src = r#"
+txn step(x: Int) [true][true] -> Int { term x + 1; };
+export defn next(x: Int) -> Int { term step(x); };
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().expect("parse");
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let output = backend.generate(&items, None);
+    let call = output
+        .lines()
+        .find(|line| line.contains("call i64 @next__briev_internal("))
+        .expect("stateful export wrapper call");
+    assert_eq!(
+        call.matches("%state").count(),
+        1,
+        "state pointer duplicated: {call}"
+    );
+}
+
+#[test]
 fn proven_non_escaping_object_literal_uses_frame_image() {
     let src = r#"
 obj P { x: Int; y: Int; };
