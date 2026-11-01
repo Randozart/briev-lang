@@ -6162,6 +6162,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         Some(word)
     }
 
+    pub(super) fn resolve_constructor_enum(&self, variant: &str) -> Option<Type> {
+        self.fun
+            .expected_enum_type
+            .clone()
+            .filter(|ty| self.ctx.enum_lowering.variant(ty, variant).is_some())
+            .or_else(|| {
+                self.enum_variant_ctor(variant)
+                    .map(|(name, _)| Type::Custom(name))
+            })
+    }
+
     /// Emit a variant constructor: box {tag, payload} → i64 handle.
     pub(crate) fn emit_enum_construct(
         &mut self,
@@ -6211,7 +6222,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // 2026-10-21 (B0 nested enum layout): propagate the concrete enum
         // instance to payload constructors. `Ok(TcpState.X)` sees
         // TcpState, not the generic T payload.
-        let saved_expected_enum = self.fun.expected_enum_type.clone();
+        // The expected type may be stale from an enclosing constructor
+        // (`AdmissionError` around `OwnedOperationJob(WorkerTag)`). Only use it
+        // when this variant actually belongs to that enum; otherwise resolve
+        // the constructor's own enum from the plan-owned tag index.
+        let saved_expected_enum = self.resolve_constructor_enum(v);
         let payload_expected = saved_expected_enum
             .as_ref()
             .and_then(|t| self.enum_payload_type(t, v));

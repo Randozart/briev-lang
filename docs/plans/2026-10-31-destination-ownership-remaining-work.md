@@ -210,6 +210,9 @@ The collection-return runtime path is covered by `collection_rebind_gate`.
    defect is a stale/wrong enum-image frame source on one branch, not padding
    poison alone. Keep disabled until that branch is identified. Tracked in
    `BUGS.md` under “D4b inline enum-object payload miscompiles at -O1”.
+   Follow-up: notail + exact sizes fixed net_stack O0–O3, and a stale
+   `expected_enum_type` constructor-owner bug was fixed/tested; recommender I11
+   still reports `malloc(): invalid size` with D4b on, so it stays disabled.
 1. Add alias tests for:
    - nested object literal fields;
    - object in tuple — DONE (`TupleLifetime` + `tuple_object_alias`);

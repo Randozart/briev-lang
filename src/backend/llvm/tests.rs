@@ -3778,6 +3778,31 @@ fn test_float_binary_add() {
 }
 
 #[test]
+fn stale_expected_enum_does_not_override_constructor_owner() {
+    let program = vec![
+        TopLevel::Enum(EnumDefinition {
+            name: "AdmissionError".to_string(),
+            type_params: vec![],
+            variants: vec![EnumVariant::Tuple("Rejected".to_string(), vec![Type::int()])],
+            span: None,
+        }),
+        TopLevel::Enum(EnumDefinition {
+            name: "OperationJob".to_string(),
+            type_params: vec![],
+            variants: vec![EnumVariant::Tuple("OwnedOperationJob".to_string(), vec![Type::int()])],
+            span: None,
+        }),
+    ];
+    let mut backend = LlvmBackend::new();
+    let _ = backend.generate(&program, None);
+    backend.fun.expected_enum_type = Some(Type::Custom("AdmissionError".to_string()));
+    assert_eq!(
+        backend.resolve_constructor_enum("OwnedOperationJob"),
+        Some(Type::Custom("OperationJob".to_string()))
+    );
+}
+
+#[test]
 fn test_enum_type_registered_and_variant_disc() {
     let mut backend = LlvmBackend::new();
     let program = vec![

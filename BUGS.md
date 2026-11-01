@@ -56,10 +56,20 @@ segfaults in `ws_message_complete`; O0/O2/O3 pass.
 **Current mitigation:** `OBJECT_PAYLOAD_INLINE_ENABLED = false`; object payloads
 stay boxed. D4c only accepts non-enum consumers while this is off.
 
-**Next probe:** inspect the third call site's enum image source and match
-binding pointer after O1; determine which branch supplies a stale frame/image.
-Do not re-enable until O0/O1/O2/O3 + ASan all pass on `net_stack_helpers` and
-`ws_frame`.
+**Follow-up 2026-11-01:** the O1 crash was traced to a tail call in
+`ws_message` passing a frame pointer into its own stack enum image; `notail`
+plus exact object sizes fixed `net_stack_helpers` at O0–O3. A second independent
+bug was found: a stale `expected_enum_type` (`AdmissionError`) was applied to a
+constructor from another enum (`OperationJob`), selecting the wrong layout.
+That stale-owner bug is fixed and covered by
+`stale_expected_enum_does_not_override_constructor_owner` (and is a correctness
+fix even with D4b off). After those fixes, the real recommender server still
+aborts with `malloc(): invalid size (unsorted)`, so D4b is **not** re-enabled.
+
+**Next probe:** reproduce the server heap corruption with D4b on and exact
+object sizes/tail-call guards retained; identify the remaining object image
+whose bytes exceed its reserved enum payload. Do not re-enable until O0/O1/O2/O3
++ ASan and I11 all pass.
 
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 
