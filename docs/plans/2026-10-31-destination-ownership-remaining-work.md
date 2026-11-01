@@ -167,7 +167,19 @@ Acceptance:
 - evidence appended to this plan or a dated results file;
 - no frozen ABI delta.
 
-## P2 — close D6 foreach fallback
+## P2 — close D6 foreach fallback — BLOCKED (2026-11-01)
+
+Investigation finding: for `test_hashmap_rehash`, the emitted
+`txn_go` contains HashMap probe loops whose assignments are **created during
+callable expansion inside emission**, after frontend analysis. The generalized
+plan for `txn:go` has no LoopPlans at all (`loops = []`), so the legacy scan is
+the only source for names such as `r` and `done_slot`. This is not a missing
+source-name filter in R1; the body shape does not exist when R1 runs.
+
+The backend fallback therefore stays until inline/callable expansion is
+destination-plan-aware. The required fix is to replay callee loop-carrier facts
+(and any remapped locals) into the caller's emission context, or to run the
+destination adapter over the expanded body before emission.
 
 The backend currently scans assignment names inside a foreach body only when
 R1 did not report them. This fallback exists because generated/macro-expanded
@@ -176,9 +188,10 @@ bindings can bypass R1 scoping.
 Work:
 
 1. Identify the generated binding shape from `test_hashmap_rehash`.
-2. Teach R1 or the destination adapter to record that binding as a
-   `LoopCarrier` with source name and site.
-3. Remove `collect_foreach_assigned` from the backend.
+2. Make callable inline expansion carry callee `LoopCarrier` facts / remapped
+   locals into the caller emission context. R1 alone cannot see this shape.
+3. Remove `collect_foreach_assigned` from the backend only after the hashmap
+   dominance regression passes without it.
 4. Keep plan attachment a hard pipeline invariant.
 5. Add a regression test that fails if any foreach assignment alloca is emitted
    inside the loop body.
