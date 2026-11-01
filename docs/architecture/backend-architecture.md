@@ -26,9 +26,10 @@ D3 joins the semantic enum plan with target physical layout in
 fallback. D4 adds boundary-gated inline object payloads for internal enums and
 proof-gated object caller destinations (`object_repr.rs`); exported enums,
 collections, unsupported call positions, and escaping object results keep the
-boxed layout. D7e keeps the authored public symbol as a thin wrapper and moves
-simple exported bodies behind a deterministic internal symbol; hidden-ABI
-exports remain direct until their wrappers mirror the full parameter surface. Public/runtime ABI
+boxed layout. D7e keeps the authored public symbol as a thin wrapper and moves simple
+exported bodies behind a deterministic internal symbol. D7f wrappers allocate
+hidden hoisted-sret and recursive-carrier slots internally and pass them to the
+internal body; the public signature stays unchanged. Public/runtime ABI
 remains frozen; internal helper ABI plans switch atomically per callable.
 
 2026-10-22: `logical.rs` owns LLVM `&&`/`||` evaluation control flow. Specific

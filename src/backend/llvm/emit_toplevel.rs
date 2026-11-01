@@ -6548,6 +6548,21 @@ fn sig_number(name: &str) -> i32 {
     }
 }
 
+struct ExportWrapperArgs<'a> {
+    definition: &'a crate::ast::Definition,
+    needs_state: bool,
+    boundary_types: Option<&'a [String]>,
+    has_hidden: bool,
+}
+
+struct ExportWrapperCallSpec<'a> {
+    definition: &'a crate::ast::Definition,
+    needs_state: bool,
+    boundary_types: Option<&'a [String]>,
+    hoisted: &'a [String],
+    carriers: &'a [String],
+}
+
 /// Inputs for one `#export` boundary wrapper.
 struct ExportWrapperSpec<'a> {
     definition: &'a crate::ast::Definition,
@@ -6615,16 +6630,6 @@ impl LlvmBackend {
         }
         if self.ctx.defn_sret.contains(&d.name)
             || self.ctx.defn_object_sret.contains(&d.name)
-            || self
-                .ctx
-                .defn_hoisted_sret
-                .get(&d.name)
-                .is_some_and(|callees| !callees.is_empty())
-            || !self
-                .ctx
-                .generalized_destination_ownership
-                .recursive_carrier_obligations(&d.name)
-                .is_empty()
         {
             return None;
         }
@@ -6645,15 +6650,66 @@ impl LlvmBackend {
         let boundary_types =
             self.export_boundary_parameter_types(&d.name, &d.parameters);
         let visibility = if self.ctx.is_shared_lib { "dso_local " } else { "" };
+        let hoisted = self
+            .ctx
+            .defn_hoisted_sret
+            .get(&d.name)
+            .cloned()
+            .unwrap_or_default();
+        let carriers = self
+            .ctx
+            .generalized_destination_ownership
+            .recursive_carrier_obligations(&d.name);
         write!(out, "define {}{} @{}(", visibility, ret_ty, d.name).ok();
-        self.write_export_wrapper_args(out, d, needs_state, boundary_types.as_deref());
+        self.write_export_wrapper_args(
+            out,
+            ExportWrapperArgs {
+                definition: d,
+                needs_state,
+                boundary_types: boundary_types.as_deref(),
+                has_hidden: false,
+            },
+        );
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        let hoisted_slots: Vec<String> = hoisted
+            .iter()
+            .enumerate()
+            .map(|(index, callee)| {
+                let slot = format!("%hsrt{index}");
+                let words = self.enum_image_words_for_defn(callee);
+                writeln!(out, "  {slot} = alloca i64, i64 {words}").ok();
+                slot
+            })
+            .collect();
+        let carrier_slots: Vec<String> = carriers
+            .iter()
+            .enumerate()
+            .map(|(index, carrier)| {
+                let slot = format!("%carrier_slot{index}");
+                let words = d
+                    .parameters
+                    .get(carrier.param_index)
+                    .map(|(_, ty)| self.enum_image_words(Some(ty)))
+                    .unwrap_or(2);
+                writeln!(out, "  {slot} = alloca i64, i64 {words}").ok();
+                slot
+            })
+            .collect();
         if ret_ty == "void" {
             write!(out, "  call void @{}(", internal).ok();
         } else {
             write!(out, "  %res = call {} @{}(", ret_ty, internal).ok();
         }
-        self.write_export_wrapper_args(out, d, needs_state, boundary_types.as_deref());
+        self.write_export_wrapper_call_args(
+            out,
+            ExportWrapperCallSpec {
+                definition: d,
+                needs_state,
+                boundary_types: boundary_types.as_deref(),
+                hoisted: &hoisted_slots,
+                carriers: &carrier_slots,
+            },
+        );
         writeln!(out, ")").ok();
         if ret_ty == "void" {
             writeln!(out, "  ret void").ok();
@@ -6663,21 +6719,42 @@ impl LlvmBackend {
         writeln!(out, "}}").ok();
     }
 
-    fn write_export_wrapper_args(
+    fn write_export_wrapper_call_args(
         &self,
         out: &mut String,
-        d: &crate::ast::Definition,
-        needs_state: bool,
-        boundary_types: Option<&[String]>,
+        spec: ExportWrapperCallSpec<'_>,
     ) {
-        if needs_state {
+        if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
-        for (i, (_, fallback_ty)) in d.parameters.iter().enumerate() {
-            if needs_state || i > 0 {
+        for (i, slot) in spec.hoisted.iter().chain(spec.carriers.iter()).enumerate() {
+            if spec.needs_state || i > 0 {
                 write!(out, ", ").ok();
             }
-            let ty = boundary_types
+            write!(out, "ptr {slot}").ok();
+        }
+        let has_hidden = !spec.hoisted.is_empty() || !spec.carriers.is_empty();
+        self.write_export_wrapper_args(
+            out,
+            ExportWrapperArgs {
+                definition: spec.definition,
+                needs_state: spec.needs_state,
+                boundary_types: spec.boundary_types,
+                has_hidden,
+            },
+        );
+    }
+
+    fn write_export_wrapper_args(&self, out: &mut String, spec: ExportWrapperArgs<'_>) {
+        if spec.needs_state {
+            write!(out, "{}", self.ctx.state_ptr_param).ok();
+        }
+        for (i, (_, fallback_ty)) in spec.definition.parameters.iter().enumerate() {
+            if spec.needs_state || spec.has_hidden || i > 0 {
+                write!(out, ", ").ok();
+            }
+            let ty = spec
+                .boundary_types
                 .and_then(|types| types.get(i))
                 .cloned()
                 .unwrap_or_else(|| self.llvm_type(fallback_ty));

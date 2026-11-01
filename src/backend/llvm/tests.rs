@@ -205,6 +205,99 @@ export defn choose(x: Int) -> R { term Ok(x); };
 }
 
 #[test]
+fn export_wrapper_orders_hoisted_and_carrier_slots() {
+    let src = r#"
+enum R { Ok(Int) };
+enum S { A(Int), B };
+export defn loop(n: Int, s: S) -> Int { term 0; };
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().expect("parse");
+    let d = items
+        .iter()
+        .find_map(|item| match item {
+            crate::ast::TopLevel::Export(export) => match export.inner.as_ref() {
+                crate::ast::TopLevel::Definition(d) => Some(d.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("exported definition");
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    backend
+        .ctx
+        .defn_return_types
+        .insert("step".to_string(), vec![crate::ast::Type::Custom("R".to_string())]);
+    backend
+        .ctx
+        .defn_hoisted_sret
+        .insert(d.name.clone(), vec!["step".to_string()]);
+
+    use crate::analysis::destination_model::{
+        CallableId, CallableNamespace, DestinationId, ProofReason, ProofStatus,
+        RecursiveCarrierArgClass, RecursiveCarrierPlan, RecursiveCarrierValue,
+        SemanticValueId, SemanticValueKind,
+    };
+    let callable = CallableId {
+        namespace: CallableNamespace::Definition,
+        name: d.name.clone(),
+    };
+    let carrier = RecursiveCarrierValue {
+        parameter: SemanticValueId {
+            callable: callable.clone(),
+            kind: SemanticValueKind::Parameter,
+            path: "param/1/1".to_string(),
+            incarnation: 0,
+        },
+        param_index: 1,
+        param_name: "s".to_string(),
+        result_local: "next".to_string(),
+        sret_callee: "A".to_string(),
+        arg_classes: vec![RecursiveCarrierArgClass::InlineNested],
+        carrier: DestinationId {
+            owner: d.name.clone(),
+            path: "recursive/1/s".to_string(),
+        },
+        class: crate::analysis::destination_model::GeneralDestinationClass::StableCarrier,
+        requires_backedge_copy: true,
+        proof: ProofStatus::Proven {
+            reasons: std::collections::BTreeSet::from([
+                ProofReason::StableCarrierLifetime,
+            ]),
+        },
+    };
+    backend.ctx.generalized_destination_ownership.recursive_carriers.insert(
+        callable.clone(),
+        RecursiveCarrierPlan {
+            callable,
+            carriers: vec![carrier],
+            proof: ProofStatus::Proven {
+                reasons: std::collections::BTreeSet::from([
+                    ProofReason::StableCarrierLifetime,
+                ]),
+            },
+        },
+    );
+
+    let mut out = String::new();
+    backend.emit_top_level_export_wrapper(
+        &mut out,
+        &d,
+        "loop__briev_internal",
+        false,
+    );
+    assert!(out.contains("%hsrt0 = alloca i64, i64 2"), "{out}");
+    assert!(out.contains("%carrier_slot0 = alloca i64, i64 2"), "{out}");
+    assert!(
+        out.contains("i64 @loop__briev_internal(ptr %hsrt0, ptr %carrier_slot0, i64 %arg0, i64 %arg1)"),
+        "hidden slot call order drifted:\n{out}"
+    );
+}
+
+#[test]
 fn proven_non_escaping_object_literal_uses_frame_image() {
     let src = r#"
 obj P { x: Int; y: Int; };
