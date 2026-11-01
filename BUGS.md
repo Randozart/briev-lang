@@ -58,18 +58,23 @@ stay boxed. D4c only accepts non-enum consumers while this is off.
 
 **Follow-up 2026-11-01:** the O1 crash was traced to a tail call in
 `ws_message` passing a frame pointer into its own stack enum image; `notail`
-plus exact object sizes fixed `net_stack_helpers` at O0–O3. A second independent
-bug was found: a stale `expected_enum_type` (`AdmissionError`) was applied to a
-constructor from another enum (`OperationJob`), selecting the wrong layout.
-That stale-owner bug is fixed and covered by
-`stale_expected_enum_does_not_override_constructor_owner` (and is a correctness
-fix even with D4b off). After those fixes, the real recommender server still
-aborts with `malloc(): invalid size (unsorted)`, so D4b is **not** re-enabled.
+fixed `net_stack_helpers` at O0–O3. A second independent bug was found: a stale
+`expected_enum_type` (`AdmissionError`) was applied to a constructor from
+another enum (`OperationJob`), selecting the wrong layout. That stale-owner bug
+is fixed and covered by
+`stale_expected_enum_does_not_override_constructor_owner` (it is a correctness
+fix even with D4b off).
 
-**Next probe:** reproduce the server heap corruption with D4b on and exact
-object sizes/tail-call guards retained; identify the remaining object image
-whose bytes exceed its reserved enum payload. Do not re-enable until O0/O1/O2/O3
-+ ASan and I11 all pass.
+Further probe: exact object sizes must be consulted only for entries in the
+planner's object table. An unconditional exact-size lookup treated `List` as an
+inline object and corrupts JSON encoding. Even with that gated, D4b still makes
+the recommender worker report “Worker frame is incomplete; retain the bytes and
+continue reading” (no heap abort, but wrong frame data). This points to a
+remaining escaping match-binding/object-image lifetime gap, not layout width.
+
+**Next probe:** identify which match-bound inline object escapes the enum image
+on the worker frame path; add a materialization proof/copy for that escape.
+Do not re-enable until O0/O1/O2/O3 + ASan and I11 all pass.
 
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 
