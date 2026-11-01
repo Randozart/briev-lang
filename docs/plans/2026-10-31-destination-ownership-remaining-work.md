@@ -208,7 +208,8 @@ The collection-return runtime path is covered by `collection_rebind_gate`.
    garbage. Zero-initializing the reserved payload area fixed the first two
    calls (header/payload values now correct) but not the third. The remaining
    defect is a stale/wrong enum-image frame source on one branch, not padding
-   poison alone. Keep disabled until that branch is identified.
+   poison alone. Keep disabled until that branch is identified. Tracked in
+   `BUGS.md` under “D4b inline enum-object payload miscompiles at -O1”.
 1. Add alias tests for:
    - nested object literal fields;
    - object in tuple — DONE (`TupleLifetime` + `tuple_object_alias`);

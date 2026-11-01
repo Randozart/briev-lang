@@ -33,6 +33,34 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## D4b inline enum-object payload miscompiles at -O1 -- OPEN (disabled) 2026-11-01
+
+**Symptom:** with `OBJECT_PAYLOAD_INLINE_ENABLED = true`, the O1 build of
+`tests/tier1/net_stack_helpers.bv` fails on the third websocket decode
+(`ws_message(two, 0)` inside the `when first...` branch). Depending on
+surrounding statements it either returns a non-`WS_COMPLETE` frame or
+segfaults in `ws_message_complete`; O0/O2/O3 pass.
+
+**Isolation:**
+- D4c hidden object returns were separately disabled: O1 still fails, so this
+  is D4b itself.
+- GDB on the non-crashing instrumented run shows the third frame pointer's
+  payload/header fields garbage; first two frames are correct.
+- Zero-initializing the reserved enum payload area fixed the first two frames
+  (so padding poison is part of the problem) but not the third.
+- ASan with `detect_stack_use_after_return=1` reports no OOB; the failure is
+  optimizer-sensitive undef/lifetime behavior, not a plain overflow.
+- Adding marker stores changes the failure between wrong-result and SIGSEGV,
+  confirming UB rather than deterministic layout math.
+
+**Current mitigation:** `OBJECT_PAYLOAD_INLINE_ENABLED = false`; object payloads
+stay boxed. D4c only accepts non-enum consumers while this is off.
+
+**Next probe:** inspect the third call site's enum image source and match
+binding pointer after O1; determine which branch supplies a stale frame/image.
+Do not re-enable until O0/O1/O2/O3 + ASan all pass on `net_stack_helpers` and
+`ws_frame`.
+
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 
 **Generic repro (no recommender names):**
