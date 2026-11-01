@@ -423,7 +423,7 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// 2026-08-23 (Phase 5d): variant constructor registry from TypeDef
     /// enums — variant name → (enum name, tag index). Built during the
     /// definition walk; read by construction calls + match dispatch.
-    pub variant_ctor: HashMap<String, (String, usize)>,
+
     /// 2026-08-26 (Track B): declared enum names — values are boxed
     /// {tag,payload} images behind an i64 handle; llvm_type resolves them
     /// to the handle width, never to a struct/pointer ABI.
@@ -731,7 +731,6 @@ impl CompilerContext {
             cell_wires: Vec::new(),
             cell_trigger_bindings: Vec::new(),
             variant_disc: HashMap::new(),
-            variant_ctor: HashMap::new(),
             enum_handle_types: std::collections::HashSet::new(),
             optimize_budget: 256,
             // 2026-07-31: Phase 3 (§8.2) — arena/stack sizing comes from

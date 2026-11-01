@@ -5977,7 +5977,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     /// type_slots registry for `__variant_{name}`; ambiguous names error —
     /// bare construction requires unique variant names.
     pub(crate) fn enum_variant_ctor(&self, name: &str) -> Option<(String, usize)> {
-        self.ctx.variant_ctor.get(name).cloned()
+        self.ctx.enum_lowering.variant_ctor(name)
     }
 
     /// Resolve a match variant's declared payload type against the concrete

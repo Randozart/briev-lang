@@ -250,6 +250,9 @@ Landed slices:
   runtime enum-layout source; the planner only constructs that plan.
 - Removed `CompilerContext.enum_layout_planner`; the planner is now a local
   join input used only to build `EnumLoweringPlan` and object-result facts.
+- Removed `CompilerContext.variant_ctor`. Constructor tags now live in
+  `EnumLoweringPlan.variant_ctor`, built in source declaration order so
+  duplicate bare names keep the existing last-declaration-wins behavior.
 
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.

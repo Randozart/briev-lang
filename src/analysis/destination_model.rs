@@ -564,6 +564,8 @@ pub struct EnumDefinitionPlan {
     pub name: String,
     pub type_params: Vec<String>,
     pub variants: Vec<EnumVariantPlan>,
+    /// Source declaration order used for deterministic constructor tag lookup.
+    pub declaration_order: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1327,17 +1329,19 @@ fn object_type_name(ty: &Type) -> Option<&str> {
 fn build_enum_definitions(items: &[TopLevel]) -> BTreeMap<String, EnumDefinitionPlan> {
     items
         .iter()
-        .filter_map(enum_definition)
+        .enumerate()
+        .filter_map(|(order, item)| enum_definition(item, order))
         .map(|plan| (plan.name.clone(), plan))
         .collect()
 }
 
-fn enum_definition(item: &TopLevel) -> Option<EnumDefinitionPlan> {
+fn enum_definition(item: &TopLevel, declaration_order: usize) -> Option<EnumDefinitionPlan> {
     match item {
         TopLevel::Enum(e) => Some(EnumDefinitionPlan {
             name: e.name.clone(),
             type_params: e.type_params.iter().map(|p| p.name.clone()).collect(),
             variants: e.variants.iter().map(enum_variant_plan).collect(),
+            declaration_order,
         }),
         TopLevel::TypeDef(td) => {
             let variants: Vec<EnumVariantPlan> = td
@@ -1359,9 +1363,10 @@ fn enum_definition(item: &TopLevel) -> Option<EnumDefinitionPlan> {
                 name: td.name.clone(),
                 type_params: td.type_params.iter().map(|p| p.name.clone()).collect(),
                 variants,
+                declaration_order,
             })
         }
-        TopLevel::Export(export) => enum_definition(export.inner.as_ref()),
+        TopLevel::Export(export) => enum_definition(export.inner.as_ref(), declaration_order),
         _ => None,
     }
 }

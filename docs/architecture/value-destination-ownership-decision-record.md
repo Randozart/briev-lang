@@ -906,7 +906,7 @@ before their lane starts.
 D7a–D7h completed. The legacy `TailCarrierPlan` and `variant_payload` metadata
 are gone; recursive carriers are emitted directly and runtime enum layout/binding
 reads only `EnumLoweringPlan`. The planner is no longer backend state; it is a
-local join input. D4b inline enum-object payloads stay disabled
+local join input, and constructor tags are plan-owned in declaration order. D4b inline enum-object payloads stay disabled
 after the `-O1` `net_stack_helpers` miscompile.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter

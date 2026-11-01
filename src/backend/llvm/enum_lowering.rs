@@ -59,6 +59,8 @@ impl EnumLoweringEntry {
 pub struct EnumLoweringPlan {
     entries: Vec<EnumLoweringEntry>,
     callables: BTreeMap<CallableId, EnumCallablePlan>,
+    /// Bare and `Enum::Variant` constructor names, last declaration wins.
+    variant_ctor: BTreeMap<String, (String, usize)>,
 }
 
 impl EnumLoweringPlan {
@@ -73,9 +75,11 @@ impl EnumLoweringPlan {
             .into_iter()
             .filter_map(|ty| build_entry(&ty, semantic, layouts))
             .collect();
+        let variant_ctor = build_variant_ctor(semantic);
         EnumLoweringPlan {
             entries,
             callables: semantic.enum_callables.clone(),
+            variant_ctor,
         }
     }
 
@@ -93,6 +97,10 @@ impl EnumLoweringPlan {
 
     pub fn variant_at(&self, ty: &Type, tag: usize) -> Option<&EnumVariantLowering> {
         self.entry(ty)?.variant_at(tag)
+    }
+
+    pub fn variant_ctor(&self, name: &str) -> Option<(String, usize)> {
+        self.variant_ctor.get(name).cloned()
     }
 
     pub fn callable(&self, callable: &CallableId) -> Option<&EnumCallablePlan> {
@@ -209,6 +217,31 @@ fn validate_representation(entry: &EnumLoweringEntry) -> Result<(), String> {
         "{:?}: representation {:?} disagrees with image width {}",
         entry.ty, entry.representation, entry.layout.image_words
     ))
+}
+
+fn build_variant_ctor(
+    semantic: &GeneralizedDestinationOwnershipPlan,
+) -> BTreeMap<String, (String, usize)> {
+    let mut declarations: Vec<_> = semantic.enums.values().collect();
+    declarations.sort_by_key(|definition| definition.declaration_order);
+    let mut out = BTreeMap::new();
+    for definition in declarations {
+        add_variant_ctors(definition, &mut out);
+    }
+    out
+}
+
+fn add_variant_ctors(
+    definition: &EnumDefinitionPlan,
+    out: &mut BTreeMap<String, (String, usize)>,
+) {
+    for (tag, variant) in definition.variants.iter().enumerate() {
+        out.insert(variant.name.clone(), (definition.name.clone(), tag));
+        out.insert(
+            format!("{}::{}", definition.name, variant.name),
+            (definition.name.clone(), tag),
+        );
+    }
 }
 
 fn collect_candidates(semantic: &GeneralizedDestinationOwnershipPlan) -> Vec<Type> {
@@ -412,6 +445,20 @@ defn make(x: Int) -> R { term Ok(x); };
         assert!(plan.agrees_with_tag(&Type::Custom("R".to_string()), 0, "R::Ok"));
         assert!(!plan.agrees_with_tag(&Type::Custom("R".to_string()), 0, "Err"));
         assert!(plan.hidden_result_callable("make"));
+    }
+
+    #[test]
+    fn constructor_tags_preserve_declaration_order() {
+        let (_, plan) = joined(
+            r#"
+enum A { X(Int) };
+enum B { X(Int), Y };
+"#,
+            2,
+        );
+        assert_eq!(plan.variant_ctor("X"), Some(("B".to_string(), 0)));
+        assert_eq!(plan.variant_ctor("A::X"), Some(("A".to_string(), 0)));
+        assert_eq!(plan.variant_ctor("B::Y"), Some(("B".to_string(), 1)));
     }
 
     #[test]
