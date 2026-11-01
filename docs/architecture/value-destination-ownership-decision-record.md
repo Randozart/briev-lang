@@ -903,9 +903,10 @@ before their lane starts.
 `feat/generalized-value-destination-ownership`.
 
 **Current phase:** D8 retirement has started after P0, P3 alias coverage, and
-D7a–D7h completed. The legacy `TailCarrierPlan` ABI view is gone; recursive
-carriers are emitted directly as `RecursiveCarrierPlan`. D4b inline enum-object
-payloads stay disabled after the `-O1` `net_stack_helpers` miscompile.
+D7a–D7h completed. The legacy `TailCarrierPlan` and `variant_payload` metadata
+are gone; recursive carriers are emitted directly and enum payload binding
+reads only `EnumLoweringPlan`. D4b inline enum-object payloads stay disabled
+after the `-O1` `net_stack_helpers` miscompile.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.

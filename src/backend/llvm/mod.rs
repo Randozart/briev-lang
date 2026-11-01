@@ -3741,19 +3741,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         let vname =
                             slot.name.trim_start_matches("__variant_").to_string();
                         self.ctx.variant_ctor.insert(vname.clone(), (td.name.clone(), idx));
-                        // 2026-10-05 (json.bv match-binding): the declared
-                        // payload type per variant (generic params resolved
-                        // at the binding site against the scrutinee args).
-                        self.ctx.variant_payload.insert(vname.clone(), slot.ty.clone());
                         // 2026-08-26: qualified `Enum::Variant` paths resolve
                         // to the same tag index.
                         self.ctx.variant_ctor.insert(
                             format!("{}::{}", td.name, vname),
                             (td.name.clone(), idx),
                         );
-                        self.ctx
-                            .variant_payload
-                            .insert(format!("{}::{}", td.name, vname), slot.ty.clone());
                     }
                 }
                 TopLevel::TypeDef(td)
@@ -3841,17 +3834,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                         let vname =
                             slot.name.trim_start_matches("__variant_").to_string();
                         self.ctx.variant_ctor.insert(vname.clone(), (td.name.clone(), idx));
-                        // 2026-10-05 (json.bv match-binding): declared payload
-                        // type per variant (see the enum-only arm above).
-                        self.ctx.variant_payload.insert(vname.clone(), slot.ty.clone());
                         // 2026-08-26: qualified path resolves to the same tag.
                         self.ctx.variant_ctor.insert(
                             format!("{}::{}", td.name, vname),
                             (td.name.clone(), idx),
                         );
-                        self.ctx
-                            .variant_payload
-                            .insert(format!("{}::{}", td.name, vname), slot.ty.clone());
                     }
                     // 2026-08-16 (slice-6 deletion): register the coll's
                     // default op BINDINGS in the backend too — compile.rs

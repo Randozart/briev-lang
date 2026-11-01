@@ -238,11 +238,16 @@ Acceptance: no frame image can escape its owner lifetime by any path.
 
 ## P4 — D8 retirement — IN PROGRESS (2026-11-01)
 
-Landed slice: the legacy `TailCarrierPlan` / `CarrierInfo` / `CarrierParam`
-ABI view is deleted. `tail_carrier.rs` now emits unified
-`RecursiveCarrierPlan` directly, and the destination model no longer adapts a
-second carrier shape. Behavior is unchanged; recursive-carrier IR/daily gates
-are green.
+Landed slices:
+
+- Deleted the legacy `TailCarrierPlan` / `CarrierInfo` / `CarrierParam` ABI
+  view; `tail_carrier.rs` emits unified `RecursiveCarrierPlan` directly.
+- Deleted `CompilerContext.variant_payload` and its declaration-time
+  population. `enum_payload_type` now reads only
+  `EnumLoweringPlan.variant(scrut_ty, name)`, including generic substitution.
+
+Both are behavior-neutral: recursive-carrier IR/daily gates and the full enum
+corpus are green.
 
 Only after P0–P3 are green.
 

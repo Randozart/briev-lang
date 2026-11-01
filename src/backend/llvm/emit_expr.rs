@@ -5987,23 +5987,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     /// `resolve_field_type` performs for struct members. 2026-10-05 (json.bv):
     /// variant bindings previously hardcoded Int.
     pub(crate) fn enum_payload_type(&self, scrut_ty: &Type, vname: &str) -> Option<Type> {
-        if let Some(variant) = self.ctx.enum_lowering.variant(scrut_ty, vname) {
-            return variant.payload.clone();
-        }
-        let declared = self.ctx.variant_payload.get(vname).cloned().or_else(|| {
-            let bare = vname.rsplit("::").next().unwrap_or(vname);
-            self.ctx.variant_payload.get(bare).cloned()
-        })?;
-        let Type::Applied(base, args) = scrut_ty else {
-            return Some(declared);
-        };
-        let params = self.ctx.obj_type_params.get(base).cloned().unwrap_or_default();
-        if params.is_empty() {
-            return Some(declared);
-        }
-        let subst: std::collections::HashMap<String, Type> =
-            params.iter().cloned().zip(args.iter().cloned()).collect();
-        Some(crate::typechecker::substitute_type(&declared, &subst))
+        self.ctx
+            .enum_lowering
+            .variant(scrut_ty, vname)?
+            .payload
+            .clone()
     }
 
     /// Copy/construct a small object payload directly into the enum image.
