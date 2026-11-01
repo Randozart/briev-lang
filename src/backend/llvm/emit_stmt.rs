@@ -22,7 +22,7 @@ fn type_bare_name(ty: &Type) -> &str {
 
 fn is_enum_handle_type(backend: &LlvmBackend, ty: &Type) -> bool {
     match ty {
-        Type::Custom(n) | Type::Applied(n, _) => backend.ctx.enum_handle_types.contains(n),
+        Type::Custom(n) | Type::Applied(n, _) => backend.is_enum_type_name(n),
         _ => false,
     }
 }
@@ -459,7 +459,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             }
             let saved_expected_enum = backend.fun.expected_enum_type.clone();
             if let Some(t) = ty {
-                if backend.ctx.enum_handle_types.contains(type_bare_name(t)) {
+                if backend.is_enum_type_name(type_bare_name(t)) {
                     backend.fun.expected_enum_type = Some(t.clone());
                 }
             }
@@ -1952,11 +1952,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 let saved_object_ret = backend.fun.object_return_context;
                 backend.fun.object_return_context = backend.fun.object_out_slot.is_some();
                 let returns_enum = backend.fun.item_return_type.as_ref()
-                    .map(|t| backend.ctx.enum_handle_types.contains(type_bare_name(t)))
+                    .map(|t| backend.is_enum_type_name(type_bare_name(t)))
                     .unwrap_or(false);
                 backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some() || returns_enum;
                 if let Some(t) = backend.fun.item_return_type.clone() {
-                    if backend.ctx.enum_handle_types.contains(type_bare_name(&t)) {
+                    if backend.is_enum_type_name(type_bare_name(&t)) {
                         backend.fun.expected_enum_type = Some(t);
                     }
                 }

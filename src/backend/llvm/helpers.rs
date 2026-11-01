@@ -2680,6 +2680,13 @@ impl LlvmBackend {
         Some(slot)
     }
 
+    pub(crate) fn is_enum_type_name(&self, name: &str) -> bool {
+        self.ctx
+            .generalized_destination_ownership
+            .enums
+            .contains_key(name)
+    }
+
     /// Joined enum layout view. `EnumLoweringPlan` is the sole runtime source;
     /// `EnumLayoutPlanner` is retained only to build that plan.
     pub(crate) fn enum_layout(&self, ty: &crate::ast::Type) -> Option<crate::analysis::enum_layout::EnumLayout> {

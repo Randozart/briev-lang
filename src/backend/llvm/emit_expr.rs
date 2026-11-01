@@ -845,7 +845,7 @@ impl LlvmBackend {
                         let enum_handle = matches!(
                             &briev_ty,
                             Type::Custom(n) | Type::Applied(n, _)
-                                if self.ctx.enum_handle_types.contains(n)
+                                if self.is_enum_type_name(n)
                         );
                         if enum_handle && field_llvm_ty == "i64" && self.ctx.int_bits < 64 {
                             let tr = self.fun.gen_reg();
@@ -6604,7 +6604,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     fn call_param_llvm_type(&self, ty: &Type) -> String {
         match ty {
             Type::Custom(n) | Type::Applied(n, _)
-                if self.ctx.enum_handle_types.contains(n) =>
+                if self.is_enum_type_name(n) =>
             {
                 format!("i{}", self.ctx.int_bits)
             }
@@ -7213,7 +7213,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // are untouched by the probe.
         let match_result_hint = self.fun.item_return_type.clone();
         let expected_enum_result = match_result_hint.as_ref().filter(|ty| match ty {
-            Type::Custom(name) | Type::Applied(name, _) => self.ctx.enum_handle_types.contains(name),
+            Type::Custom(name) | Type::Applied(name, _) => self.is_enum_type_name(name),
             _ => false,
         });
         let probe_types = if let Some(expected) = expected_enum_result {
@@ -7233,7 +7233,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .into_iter()
             .map(|t| match &t {
                 Type::Applied(n, _) | Type::Custom(n)
-                    if self.ctx.enum_handle_types.contains(n) =>
+                    if self.is_enum_type_name(n) =>
                 {
                     Type::int()
                 }

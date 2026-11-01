@@ -3711,7 +3711,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     if !td.body.slots.is_empty()
                         && td.body.slots.iter().all(|s| s.name.starts_with("__variant_")) =>
                 {
-                    self.ctx.enum_handle_types.insert(td.name.clone());
                     // 2026-10-05 (json.bv match-binding): generic enum params
                     // are needed to substitute a variant's payload type at the
                     // match-binding site (Result<Frame,String> ⇒ T=Frame).
@@ -3788,7 +3787,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // 2026-08-23 (Phase 5d): ENUM VARIANT CONSTRUCTION
                     // registry — parser enums are TypeDefs whose slots are
                     // __variant_<Name>; declaration order is the tag index.
-                    self.ctx.enum_handle_types.insert(td.name.clone());
                     if !td.type_params.is_empty() {
                         self.ctx.obj_type_params.entry(td.name.clone())
                             .or_insert_with(|| td.type_params.iter().map(|p| p.name.clone()).collect());

@@ -1126,7 +1126,7 @@ impl LlvmBackend {
                 return format!("i{}", self.ctx.int_bits);
             }
             // 2026-08-26 (Track B): an enum value is the boxed-image handle.
-            if self.ctx.enum_handle_types.contains(name) {
+            if self.is_enum_type_name(name) {
                 return format!("i{}", self.ctx.int_bits);
             }
             if self.ctx.struct_types.contains_key(name) {
@@ -1141,7 +1141,7 @@ impl LlvmBackend {
                 return format!("i{}", self.ctx.int_bits);
             }
             // 2026-08-26 (Track B): an enum value is the boxed-image handle.
-            if self.ctx.enum_handle_types.contains(name) {
+            if self.is_enum_type_name(name) {
                 return format!("i{}", self.ctx.int_bits);
             }
         }

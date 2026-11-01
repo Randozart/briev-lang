@@ -253,6 +253,8 @@ Landed slices:
 - Removed `CompilerContext.variant_ctor`. Constructor tags now live in
   `EnumLoweringPlan.variant_ctor`, built in source declaration order so
   duplicate bare names keep the existing last-declaration-wins behavior.
+- Removed `CompilerContext.enum_handle_types`; enum-name checks read the
+  generalized plan's declared-enum map.
 
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.
