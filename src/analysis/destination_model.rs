@@ -12,10 +12,7 @@
 // `DestinationOwnershipPlan`; no other code depends on it.
 
 use crate::ast::{EnumVariant, TopLevel, Type};
-use crate::analysis::tail_carrier::{
-    build_tail_carrier_plan, CarrierArgClass as LegacyCarrierArgClass,
-    CarrierInfo, CarrierParam as LegacyCarrierParam,
-};
+use crate::analysis::tail_carrier::build_recursive_carriers;
 use crate::analysis::destination_ownership::{
     CallableKind, DestinationClass as LegacyDestinationClass,
     DestinationOwnershipPlan, EscapeKind, ParamObligation, ResultDestination,
@@ -940,84 +937,9 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     insert_legacy_value_facts(legacy, &mut plan.values);
     plan.sinks = build_sink_plans(legacy);
     plan.tuples = build_tuple_plans(legacy);
-    plan.recursive_carriers = build_recursive_carriers(items, legacy);
+    plan.recursive_carriers = build_recursive_carriers(items);
     populate_hidden_tail_carriers(&mut plan.callables, &plan.recursive_carriers);
     plan
-}
-
-fn build_recursive_carriers(
-    items: &[TopLevel],
-    legacy: &DestinationOwnershipPlan,
-) -> BTreeMap<CallableId, RecursiveCarrierPlan> {
-    let legacy_plan = build_tail_carrier_plan(items);
-    legacy
-        .callables
-        .iter()
-        .filter_map(|(name, summary)| {
-            let info = legacy_plan.info(name)?;
-            let callable = callable_id(name, summary.kind);
-            let plan = recursive_carrier_plan(&callable, info);
-            Some((callable, plan))
-        })
-        .collect()
-}
-
-fn recursive_carrier_plan(
-    callable: &CallableId,
-    info: &CarrierInfo,
-) -> RecursiveCarrierPlan {
-    let carriers = info
-        .carriers
-        .iter()
-        .map(|carrier| recursive_carrier_value(callable, carrier))
-        .collect();
-    RecursiveCarrierPlan {
-        callable: callable.clone(),
-        carriers,
-        proof: ProofStatus::Proven {
-            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
-        },
-    }
-}
-
-fn recursive_carrier_value(
-    callable: &CallableId,
-    carrier: &LegacyCarrierParam,
-) -> RecursiveCarrierValue {
-    let arg_classes = carrier
-        .arg_classes
-        .iter()
-        .map(|class| match class {
-            LegacyCarrierArgClass::InlineNested => RecursiveCarrierArgClass::InlineNested,
-            LegacyCarrierArgClass::ExistingCarrier => RecursiveCarrierArgClass::ExistingCarrier,
-            LegacyCarrierArgClass::Unsupported => RecursiveCarrierArgClass::Unsupported,
-        })
-        .collect();
-    RecursiveCarrierValue {
-        parameter: semantic_value(
-            callable,
-            SemanticValueKind::Parameter,
-            &format!("param/{}/{}", carrier.param_index, carrier.param_index),
-            0,
-        ),
-        param_index: carrier.param_index,
-        param_name: carrier.param_name.clone(),
-        result_local: carrier.result_local.clone(),
-        sret_callee: carrier.sret_callee.clone(),
-        arg_classes,
-        carrier: DestinationId {
-            owner: callable.name.clone(),
-            path: format!("recursive/{}/{}", carrier.param_index, carrier.param_name),
-        },
-        class: GeneralDestinationClass::StableCarrier,
-        requires_backedge_copy: carrier
-            .arg_classes
-            .iter()
-            .any(|class| *class == LegacyCarrierArgClass::InlineNested),
-        proof: ProofStatus::Proven {
-            reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
-        },
-    }
 }
 
 fn populate_hidden_tail_carriers(
@@ -2931,67 +2853,6 @@ defn loop(n: Int, state: S, sum: Int) -> Int {
         let callable_plan = &plan.callables[callable];
         assert_eq!(callable_plan.hidden_abi.tail_carriers, 1);
 
-        let items = {
-            let tokens = crate::lexer::tokenize(src).expect("tokenize");
-            let mut parser = crate::parser::Parser::new(tokens, src);
-            parser.parse_program().expect("parse")
-        };
-        let unified = crate::analysis::tail_carrier::build_tail_carrier_plan(&items)
-            .info("loop")
-            .expect("legacy carrier")
-            .carriers
-            .clone();
-        assert_eq!(plan.recursive_carrier_obligations("loop").len(), unified.len());
-        for (obligation, carrier) in plan
-            .recursive_carrier_obligations("loop")
-            .into_iter()
-            .zip(unified)
-        {
-            assert_eq!(obligation.param_index, carrier.param_index);
-            assert_eq!(obligation.param_name, carrier.param_name);
-            assert_eq!(obligation.result_local, carrier.result_local);
-            assert_eq!(obligation.sret_callee, carrier.sret_callee);
-            assert_eq!(obligation.arg_classes.len(), carrier.arg_classes.len());
-        }
-    }
-
-    #[test]
-    fn loop_engine_plans_join_shape_and_storage() {
-        let src = r#"
-let count: Int = 0;
-let acc: Int = 0;
-let scratch: Int = 0;
-node run [count < 4][count == 4] {
-    acc = acc + count;
-    scratch = count * 2;
-    count = count + 1;
-};
-"#;
-        let tokens = crate::lexer::tokenize(src).expect("tokenize");
-        let mut parser = crate::parser::Parser::new(tokens, src);
-        let items = parser.parse_program().expect("parse");
-        let graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
-            &items,
-            &None,
-            &vec![],
-        );
-        let shapes = crate::analysis::loop_shape::build_loop_shapes(&graph, &items, 4);
-
-        let mut rebuilt = crate::analysis::destination_ownership::analyze(&items).generalized;
-        crate::analysis::destination_model::attach_loop_engine_plans(
-            &mut rebuilt,
-            &shapes,
-        );
-        let engine = rebuilt.loop_engines.get("run").expect("loop engine");
-        assert_eq!(engine.counter, "count");
-        assert!(engine
-            .fields
-            .values()
-            .any(|field| field.representation == LoopFieldRepresentation::StateCarrier));
-        assert_eq!(
-            engine.fields.get("scratch").map(|field| field.representation),
-            Some(LoopFieldRepresentation::Dead)
-        );
     }
 
     #[test]

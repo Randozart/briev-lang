@@ -236,7 +236,13 @@ The collection-return runtime path is covered by `collection_rebind_gate`.
 
 Acceptance: no frame image can escape its owner lifetime by any path.
 
-## P4 — D8 retirement
+## P4 — D8 retirement — IN PROGRESS (2026-11-01)
+
+Landed slice: the legacy `TailCarrierPlan` / `CarrierInfo` / `CarrierParam`
+ABI view is deleted. `tail_carrier.rs` now emits unified
+`RecursiveCarrierPlan` directly, and the destination model no longer adapts a
+second carrier shape. Behavior is unchanged; recursive-carrier IR/daily gates
+are green.
 
 Only after P0–P3 are green.
 

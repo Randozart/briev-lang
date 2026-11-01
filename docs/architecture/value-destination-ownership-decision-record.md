@@ -902,11 +902,10 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** P0, P3 alias coverage, and D7a–D7h are complete. Runtime-
-helper inventory resolves to ForeignCall plans; wrappers cover hidden export
-slots; wasm/no-prelude/C bridge/Node-JS and real-browser I11 evidence are green.
-D4b inline enum-object payloads stay disabled after the `-O1`
-`net_stack_helpers` miscompile. Next: D8 retirement.
+**Current phase:** D8 retirement has started after P0, P3 alias coverage, and
+D7a–D7h completed. The legacy `TailCarrierPlan` ABI view is gone; recursive
+carriers are emitted directly as `RecursiveCarrierPlan`. D4b inline enum-object
+payloads stay disabled after the `-O1` `net_stack_helpers` miscompile.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.
