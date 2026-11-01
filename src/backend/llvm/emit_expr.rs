@@ -4140,7 +4140,7 @@ impl LlvmBackend {
         // lands here, that is a retired-path regression (the member body would
         // GEP a fake boxed self instead of the pool column) — fail loudly.
         let saved_destination_owner = self.fun.destination_owner.clone();
-        self.fun.destination_owner = member_destination_owner(member);
+        self.fun.destination_owner = member_destination_owner(type_name, member);
         let saved_prefix = self.fun.self_prefix.clone();
         let saved = self.fun.self_binding.clone();
         // 2026-08-13: clear the enclosing callable-txn convergence state while
@@ -9116,11 +9116,17 @@ mod tests {
 }
 
 /// 2026-07-31 (A5): the briev name of a member declaration (txn/defn/node).
-fn member_destination_owner(m: &crate::ast::TopLevel) -> Option<String> {
+fn member_destination_owner(type_name: &str, m: &crate::ast::TopLevel) -> Option<String> {
     match m {
-        crate::ast::TopLevel::Transaction(t) => Some(format!("txn:{}", t.name)),
-        crate::ast::TopLevel::Definition(d) => Some(format!("defn:{}", d.name)),
-        crate::ast::TopLevel::TypeDefOperator(d) => Some(format!("defn:{}", d.name)),
+        crate::ast::TopLevel::Transaction(t) => {
+            Some(format!("txn:{type_name}::{}", t.name))
+        }
+        crate::ast::TopLevel::Definition(d) => {
+            Some(format!("defn:{type_name}::{}", d.name))
+        }
+        crate::ast::TopLevel::TypeDefOperator(d) => {
+            Some(format!("defn:{type_name}::{}", d.name))
+        }
         _ => None,
     }
 }
