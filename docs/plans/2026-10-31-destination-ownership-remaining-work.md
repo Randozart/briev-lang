@@ -186,10 +186,17 @@ plan for `txn:go` has no LoopPlans at all (`loops = []`), so the legacy scan is
 the only source for names such as `r` and `done_slot`. This is not a missing
 source-name filter in R1; the body shape does not exist when R1 runs.
 
-The backend fallback therefore stays until inline/callable expansion is
-destination-plan-aware. The required fix is to replay callee loop-carrier facts
-(and any remapped locals) into the caller's emission context, or to run the
-destination adapter over the expanded body before emission.
+Partial progress (2026-11-01): `emit_member_body` now pushes the inlined
+member's destination owner for the body duration, so nested member/dyn bodies
+read their own plan instead of the caller's. This is behavior-neutral and all
+gates remain green.
+
+The fallback still stays: the remaining HashMap probe loops are synthesized
+collection-scaffold bodies that never exist in the analyzed AST. Owner
+switching cannot help because there is no callee LoopPlan to find. The next
+step is to carry carrier obligations with the synthesized scaffold/expansion
+record (or analyze the expanded body before emission), not another AST rewalk
+in the backend.
 
 The backend currently scans assignment names inside a foreach body only when
 R1 did not report them. This fallback exists because generated/macro-expanded

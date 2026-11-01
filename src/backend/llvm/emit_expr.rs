@@ -4139,6 +4139,8 @@ impl LlvmBackend {
         // construction, non-identifier receivers). If an obj receiver ever
         // lands here, that is a retired-path regression (the member body would
         // GEP a fake boxed self instead of the pool column) — fail loudly.
+        let saved_destination_owner = self.fun.destination_owner.clone();
+        self.fun.destination_owner = member_destination_owner(member);
         let saved_prefix = self.fun.self_prefix.clone();
         let saved = self.fun.self_binding.clone();
         // 2026-08-13: clear the enclosing callable-txn convergence state while
@@ -4410,6 +4412,7 @@ impl LlvmBackend {
         crate::backend::llvm::emit_stmt::emit_statement_sequence(self, out, &body, indent);
         self.fun.self_binding = saved;
         self.fun.self_prefix = saved_prefix;
+        self.fun.destination_owner = saved_destination_owner;
         self.fun.let_bindings = saved_bindings;
         self.fun.let_binding_types = saved_types;
         self.fun.let_original_types = saved_orig;
@@ -9113,6 +9116,15 @@ mod tests {
 }
 
 /// 2026-07-31 (A5): the briev name of a member declaration (txn/defn/node).
+fn member_destination_owner(m: &crate::ast::TopLevel) -> Option<String> {
+    match m {
+        crate::ast::TopLevel::Transaction(t) => Some(format!("txn:{}", t.name)),
+        crate::ast::TopLevel::Definition(d) => Some(format!("defn:{}", d.name)),
+        crate::ast::TopLevel::TypeDefOperator(d) => Some(format!("defn:{}", d.name)),
+        _ => None,
+    }
+}
+
 pub(crate) fn member_briev_name(m: &crate::ast::TopLevel) -> &str {
     match m {
         crate::ast::TopLevel::Transaction(t) => &t.name,
