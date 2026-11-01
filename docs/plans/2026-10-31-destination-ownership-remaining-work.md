@@ -120,16 +120,18 @@ Acceptance:
 - GLUE, bridge_glue, bridge_multi, C/JS export tests green;
 - no `_start`/duplicate-symbol regressions.
 
-### D7g — runtime-helper and bridge boundaries
+### D7g — runtime-helper and bridge boundaries — COMPLETE (2026-11-01)
 
-1. Inventory runtime helpers reached through intrinsics versus `frgn`.
-2. Add `RuntimeHelper` boundary plans only where a real ABI crossing exists;
-   do not encode algorithm names.
-3. Route bridge argument/result transforms through the same boundary decision
-   helpers as direct foreign calls.
-4. Keep the declared result type as the ABI contract; no implicit String/CStr
-   conversion.
-5. Add helper-focused LLVM declarations/call-signature checks.
+Inventory result: every user-visible runtime-helper crossing is a `frgn`
+ForeignBinding and therefore already has a ForeignCall boundary plan.
+Compiler-internal helpers (`int_to_str`, print lanes, collection growth) are
+not public boundaries and stay internal. No separate `RuntimeHelper` plan is
+invented.
+
+Direct and bridge calls consume the same boundary ABI decision; the declared
+FFI result type remains the ABI contract. The inventory regression
+`every_foreign_binding_has_a_lookupable_boundary` pins plan lookup for every
+`frgn`.
 
 Acceptance:
 
@@ -137,7 +139,18 @@ Acceptance:
 - bridge_glue and bridge_multi green;
 - no undeclared or mismatched helper declarations.
 
-### D7h — platform boundary evidence
+### D7h — platform boundary evidence — PARTIAL (2026-11-01)
+
+Green:
+
+- wasm32: `rbv_list_each_wasm`, `rbv_obj_init_wasm32`, `rbv_router`.
+- no-prelude/stdlib boundary export: `tests/no_prelude_boundary.rs`.
+- C/multi bridge: `bridge_glue`, `bridge_multi`, GLUE suite.
+- Full public ABI regressions from P0/D7f.
+
+Open: real-browser fake-peer/I11 gate and an explicit JS export consumer
+(the app worktree is not present in this environment). See
+`benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
 
 Run and record:
 

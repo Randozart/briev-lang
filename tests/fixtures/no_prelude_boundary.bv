@@ -1,0 +1,3 @@
+export defn add(a: Int, b: Int) -> Int {
+    term a + b;
+};

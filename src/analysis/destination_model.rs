@@ -2456,6 +2456,29 @@ defn drain(n: Int, q: List<Int>) -> Int {
     }
 
     #[test]
+    fn every_foreign_binding_has_a_lookupable_boundary() {
+        let (_, plan) = analyze_items(
+            r#"
+frgn one(x: Int) -> Int from "libc";
+frgn two(s: String) from "libc";
+"#,
+        );
+        let foreign: Vec<_> = plan
+            .boundaries
+            .values()
+            .filter(|boundary| boundary.kind == BoundaryKind::ForeignCall)
+            .collect();
+        assert_eq!(foreign.len(), 2);
+        for boundary in &foreign {
+            assert!(
+                plan.foreign_boundary(&boundary.boundary.owner).is_some(),
+                "missing foreign boundary lookup for {}",
+                boundary.boundary.owner
+            );
+        }
+    }
+
+    #[test]
     fn foreign_binding_creates_import_boundary_values() {
         let (_, plan) = analyze_items(
             r#"frgn strlen(s: String) -> Int from "libc";"#,

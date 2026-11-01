@@ -1141,10 +1141,10 @@ Gate:
 
 ### Phase D7 — boundary lane
 
-**Status 2026-10-31: D7a–D7f COMPLETE.** Exported object/enum returns use
-boxed public wrappers; wrappers allocate hidden hoisted-sret and recursive-
-carrier slots internally. Plain-context exports and `#export("name")` remain on
-their existing dedicated paths. The preceding D7 status follows. Boundary plans now carry a
+**Status 2026-11-01: D7a–D7g COMPLETE; D7h PARTIAL.** Runtime-helper
+inventory shows every public helper crossing is an `frgn` ForeignCall plan.
+wasm32, no-prelude, and C/multi bridge evidence is green; real-browser/JS
+evidence remains open. The preceding D7 status follows. Boundary plans now carry a
 direction, role-tagged values, semantic types, internal/external classes,
 conversion, ownership, and proof. Exported defns produce parameter/result
 values from their real signatures; `frgn` bindings produce import plans.

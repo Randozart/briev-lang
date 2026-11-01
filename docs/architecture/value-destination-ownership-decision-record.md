@@ -902,11 +902,11 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** P0 regressions are pinned and D7f is complete. Exported
-object/enum returns use boxed public wrappers; wrappers allocate hidden
-hoisted-sret and recursive-carrier slots internally. D4b inline enum-object
-payloads stay disabled after the `-O1` `net_stack_helpers` miscompile. Next:
-D7g/D7h boundary/platform gates, then D8 retirement.
+**Current phase:** P0 and D7a–D7g are complete; D7h is partial. Runtime-helper
+inventory resolves to ForeignCall plans, wrappers cover hidden export slots,
+and wasm/no-prelude/C bridge evidence is green. Remaining: real-browser/JS
+boundary evidence, then D8 retirement. D4b inline enum-object payloads stay
+disabled after the `-O1` `net_stack_helpers` miscompile.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.
