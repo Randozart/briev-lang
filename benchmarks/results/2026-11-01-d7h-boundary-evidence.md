@@ -24,5 +24,8 @@ and asserts both `@add` and `@add__briev_internal`.
 
 - Real-browser fake-peer/I11 gate: recommender app worktree is absent in this
   environment; do not claim browser evidence from compiler-only tests.
-- Explicit JS export consumer: the full `run_gate.sh` aborts on unavailable
-  host toolchains; CI must run the JS-only lane.
+- Explicit JS export consumer: `brievc export bench.bv node` reaches `llc`
+  and fails with `use of undefined value '@cstr_len'` in generated
+  `bridge.ll`. The bridge calls the pure-Briev `cstr_len` helper without
+  emitting/declaring it. The full `run_gate.sh` also aborts on unavailable Go
+  toolchains; CI must run the JS-only lane after the bridge liveness fix.

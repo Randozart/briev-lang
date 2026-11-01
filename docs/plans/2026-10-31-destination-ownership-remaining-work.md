@@ -148,8 +148,11 @@ Green:
 - C/multi bridge: `bridge_glue`, `bridge_multi`, GLUE suite.
 - Full public ABI regressions from P0/D7f.
 
-Open: real-browser fake-peer/I11 gate and an explicit JS export consumer
-(the app worktree is not present in this environment). See
+Open: real-browser fake-peer/I11 gate and the Node/JS export consumer. The
+JS lane currently fails before runtime: generated `bridge.ll` calls
+`@cstr_len` with no definition or declaration (`llc: use of undefined value
+'@cstr_len'`). This is a GLUE liveness/emission gap, not a destination-plan
+regression. The app worktree is absent in this environment. See
 `benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
 
 Run and record:
