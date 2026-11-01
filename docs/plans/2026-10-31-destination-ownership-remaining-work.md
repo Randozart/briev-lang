@@ -245,9 +245,12 @@ Landed slices:
 - Deleted `CompilerContext.variant_payload` and its declaration-time
   population. `enum_payload_type` now reads only
   `EnumLoweringPlan.variant(scrut_ty, name)`, including generic substitution.
+- Removed the backend's direct `EnumLayoutPlanner` fallback from
+  `enum_layout()` / `enum_value_repr_for()`. `EnumLoweringPlan` is now the sole
+  runtime enum-layout source; the planner only constructs that plan.
 
-Both are behavior-neutral: recursive-carrier IR/daily gates and the full enum
-corpus are green.
+All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
+tests, and full corpus determinism are green.
 
 Only after P0–P3 are green.
 

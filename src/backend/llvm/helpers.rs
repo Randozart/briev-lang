@@ -2680,20 +2680,10 @@ impl LlvmBackend {
         Some(slot)
     }
 
-    /// Joined enum layout view. The D3b plan is authoritative when it has a
-    /// concrete entry; the target layout planner remains the conservative
-    /// fallback for types not seen by the frontend pass.
+    /// Joined enum layout view. `EnumLoweringPlan` is the sole runtime source;
+    /// `EnumLayoutPlanner` is retained only to build that plan.
     pub(crate) fn enum_layout(&self, ty: &crate::ast::Type) -> Option<crate::analysis::enum_layout::EnumLayout> {
-        self.ctx
-            .enum_lowering
-            .layout(ty)
-            .cloned()
-            .or_else(|| {
-                self.ctx
-                    .enum_layout_planner
-                    .as_ref()
-                    .and_then(|planner| planner.layout_for(ty))
-            })
+        self.ctx.enum_lowering.layout(ty).cloned()
     }
 
     pub(crate) fn enum_value_repr_for(
@@ -2704,12 +2694,6 @@ impl LlvmBackend {
             .enum_lowering
             .entry(ty)
             .map(|entry| entry.representation)
-            .or_else(|| {
-                self.ctx
-                    .enum_layout_planner
-                    .as_ref()
-                    .and_then(|planner| planner.value_repr_for(ty))
-            })
     }
 
     /// 2026-10-25: an aggregate can outlive the caller-owned temporary image
