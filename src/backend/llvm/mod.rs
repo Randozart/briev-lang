@@ -3948,21 +3948,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             }
         }
 
-        // Build variant → (enum_name, discriminant, field_count) mapping.
-        for (enum_name, edef) in &self.ctx.enum_types {
-            let mut next_disc: u64 = 0;
-            for v in &edef.variants {
-                let (vname, field_count) = match v {
-                    crate::ast::EnumVariant::Unit(n) => (n.clone(), 0),
-                    crate::ast::EnumVariant::Tuple(n, fields) => (n.clone(), fields.len()),
-                    crate::ast::EnumVariant::Struct(n, fields) => (n.clone(), fields.len()),
-                };
-                let disc = next_disc;
-                next_disc += 1;
-                self.ctx.variant_disc.insert(vname, (enum_name.clone(), disc, field_count));
-            }
-        }
-
         // Fold complex float constant expressions (e.g. const m0: Float = 4.0 * pi * pi)
         // into simple Expr::Float(f64) literals so the global emission path
         // produces valid LLVM IR instead of `constant float 0`.

@@ -419,7 +419,7 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     pub cell_state_types: HashMap<String, (HashMap<String, usize>, Vec<String>)>,
     pub cell_wires: Vec<(String, String, String, String)>,
     pub cell_trigger_bindings: Vec<(String, String, String)>,
-    pub variant_disc: HashMap<String, (String, u64, usize)>,
+
     /// 2026-08-23 (Phase 5d): variant constructor registry from TypeDef
     /// enums — variant name → (enum name, tag index). Built during the
     /// definition walk; read by construction calls + match dispatch.
@@ -727,7 +727,6 @@ impl CompilerContext {
             cell_state_types: HashMap::new(),
             cell_wires: Vec::new(),
             cell_trigger_bindings: Vec::new(),
-            variant_disc: HashMap::new(),
             optimize_budget: 256,
             // 2026-07-31: Phase 3 (§8.2) — arena/stack sizing comes from
             // config/ir-lowering.toml instead of hardcoded literals.

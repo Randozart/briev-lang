@@ -3793,11 +3793,20 @@ fn test_enum_type_registered_and_variant_disc() {
     ];
     let _ = backend.generate(&program, None);
     assert!(backend.ctx.enum_types.contains_key("Option"));
-    assert!(backend.ctx.variant_disc.contains_key("None"));
-    assert!(backend.ctx.variant_disc.contains_key("Some"));
-    assert_eq!(backend.ctx.variant_disc.get("None").map(|(_, d, _)| *d), Some(0));
-    assert_eq!(backend.ctx.variant_disc.get("Some").map(|(_, d, _)| *d), Some(1));
-    assert_eq!(backend.ctx.variant_disc.get("Some").map(|(_, _, f)| *f), Some(1));
+    assert_eq!(
+        backend.ctx.enum_lowering.variant_ctor("None"),
+        Some(("Option".to_string(), 0))
+    );
+    assert_eq!(
+        backend.ctx.enum_lowering.variant_ctor("Some"),
+        Some(("Option".to_string(), 1))
+    );
+    let option = backend
+        .ctx
+        .enum_lowering
+        .entry(&Type::Custom("Option".to_string()))
+        .expect("Option entry");
+    assert_eq!(option.variants[1].payload, Some(Type::int()));
 }
 
 #[test]
@@ -3815,9 +3824,20 @@ fn test_enum_multi_variant_discriminants() {
         }),
     ];
     let _ = backend.generate(&program, None);
-    assert_eq!(backend.ctx.variant_disc.get("Leaf").map(|(_, d, _)| *d), Some(0));
-    assert_eq!(backend.ctx.variant_disc.get("Node").map(|(_, d, _)| *d), Some(1));
-    assert_eq!(backend.ctx.variant_disc.get("Node").map(|(_, _, f)| *f), Some(2));
+    assert_eq!(
+        backend.ctx.enum_lowering.variant_ctor("Leaf"),
+        Some(("Tree".to_string(), 0))
+    );
+    assert_eq!(
+        backend.ctx.enum_lowering.variant_ctor("Node"),
+        Some(("Tree".to_string(), 1))
+    );
+    let tree = backend
+        .ctx
+        .enum_lowering
+        .entry(&Type::Custom("Tree".to_string()))
+        .expect("Tree entry");
+    assert_eq!(tree.variants[1].payload, Some(Type::Tuple(vec![Type::int(), Type::int()])));
 }
 
 #[test]

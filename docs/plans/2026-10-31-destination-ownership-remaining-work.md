@@ -255,6 +255,8 @@ Landed slices:
   duplicate bare names keep the existing last-declaration-wins behavior.
 - Removed `CompilerContext.enum_handle_types`; enum-name checks read the
   generalized plan's declared-enum map.
+- Removed the unused `CompilerContext.variant_disc`; discriminant/payload tests
+  now assert `EnumLoweringPlan` directly.
 
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.
