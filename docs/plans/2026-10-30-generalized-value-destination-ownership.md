@@ -1141,10 +1141,9 @@ Gate:
 
 ### Phase D7 — boundary lane
 
-**Status 2026-11-01: D7a–D7g COMPLETE; D7h PARTIAL.** Runtime-helper
-inventory shows every public helper crossing is an `frgn` ForeignCall plan.
-wasm32, no-prelude, and C/multi bridge evidence is green; real-browser/JS
-evidence remains open. The preceding D7 status follows. Boundary plans now carry a
+**Status 2026-11-01: D7a–D7h COMPLETE.** Runtime-helper inventory resolves to
+ForeignCall plans. wasm32, no-prelude, C/multi bridge, Node/JS, and real-browser
+I11 evidence are green. The preceding D7 status follows. Boundary plans now carry a
 direction, role-tagged values, semantic types, internal/external classes,
 conversion, ownership, and proof. Exported defns produce parameter/result
 values from their real signatures; `frgn` bindings produce import plans.

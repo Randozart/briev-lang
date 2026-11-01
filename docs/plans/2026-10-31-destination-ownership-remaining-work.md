@@ -139,7 +139,7 @@ Acceptance:
 - bridge_glue and bridge_multi green;
 - no undeclared or mismatched helper declarations.
 
-### D7h — platform boundary evidence — PARTIAL (2026-11-01)
+### D7h — platform boundary evidence — COMPLETE (2026-11-01)
 
 Green:
 
@@ -154,8 +154,13 @@ Two JS blockers were fixed: `glue/c.bv` now explicitly imports its cast-lane
 dependency so bridge IR defines `cstr_len`; bridge export uses library-mode
 emission; and stateful export wrappers pass `%state` exactly once.
 
-Open: real-browser fake-peer/I11 gate (app worktree absent in this
-environment). See `benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
+Real-browser I11 gate: PASS against `odecode/recommender-app` PR #1 head
+`764275f` with the current compiler, PostgreSQL 18.6, MovieLens 100k, and
+Playwright Chromium. Key metrics: `maxLongTaskMs=0`,
+`resultBeforeDatabaseCommit=true`, `savedAfterCommit=true`,
+`recommendationRenderUnchangedAfterSave=true`, `synchronousXhrCount=0`,
+`followupGetCount=0`. Evidence:
+`benchmarks/results/2026-11-01-d7h-boundary-evidence.md`.
 
 Run and record:
 

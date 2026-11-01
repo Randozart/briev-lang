@@ -14,6 +14,7 @@ Branch: `feat/destination-ownership-d7-d8`
 | multi bridge | `bash benchmarks/build_and_bench.sh bridge_multi --correctness` — PASS |
 | GLUE config suite | `cargo test --test glue_bridge_tests` — 13/13 PASS |
 | Node export + native extension | `cargo test --test js_export_boundary` — PASS (`BRIEV_FH`, `BRIEV_ADD` via `gate.js`) |
+| Real-browser I11 | Playwright Chromium PASS: `maxLongTaskMs=0`, `resultBeforeDatabaseCommit=true`, `savedAfterCommit=true`, `recommendationRenderUnchangedAfterSave=true`, `synchronousXhrCount=0`, `followupGetCount=0` |
 | full runtime | `bash benchmarks/build_and_bench.sh --runtime` — all outputs MATCH |
 | public export ABI | wrapper tests: boxed object/enum `i64` public surface |
 
@@ -31,7 +32,19 @@ and asserts both `@add` and `@add__briev_internal`.
 - `brievc export ... node` + `brievc extension ... node` + `node gate.js`:
   PASS.
 
+## I11 environment
+
+- App: `odecode/recommender-app` PR #1, head `764275f`
+- Compiler: current branch release binary
+- PostgreSQL 18.6, local trust auth, database `briev_recommender_test`
+- MovieLens 100k at `/tmp/opencode/ml-100k`
+- Playwright Chromium
+
+The runner built the split WASM app and native server, served on a private
+port, registered/signed in, waited for recommendations, saved a rating, and
+verified the recommendation render did not mutate after save. Summary retained
+at `/tmp/opencode/recommender-i11-browser-run/summary.json`.
+
 ## Open
 
-- Real-browser fake-peer/I11 gate: recommender app worktree is absent in this
-  environment; do not claim browser evidence from compiler-only tests.
+None for D7h.
