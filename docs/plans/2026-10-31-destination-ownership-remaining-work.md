@@ -200,19 +200,22 @@ Acceptance: no AST liveness rewalk remains in backend loop lowering.
 
 ## P3 — harden object frame images and caller destinations — IN PROGRESS (2026-11-01)
 
-Landed: tuple elements now record `TupleStore` / `TupleLifetime`. A child
-object stored in a returned tuple stays heap-backed; the runtime fixture
-`tuple_object_alias` pins `41\n42\n` at O3/LTO. This closes the tuple alias hole
-found during the P3 audit.
+Landed: tuple elements record `TupleStore` / `TupleLifetime`; a child object
+stored in a returned tuple stays heap-backed (`tuple_object_alias`, `41\n42\n`
+at O3/LTO). Collection elements, object fields, loop-assigned parent fields,
+and `&object` address escapes now have destination-model regressions proving
+the child is materialized and excluded from `stack_object_types_by_owner`.
+The collection-return runtime path is covered by `collection_rebind_gate`.
 
 0. Re-enable D4b only after an O0/O1/O2/O3 + ASan proof of the i64 handle
    round-trip. Current status: disabled; object payloads stay boxed.
 1. Add alias tests for:
    - nested object literal fields;
    - object in tuple — DONE (`TupleLifetime` + `tuple_object_alias`);
-   - object in collection returned across a function;
-   - object field assigned in a loop;
-   - `&object` across FFI.
+   - object in collection returned across a function — DONE
+     (`CollectionLifetime` + `collection_rebind_gate`);
+   - object field assigned in a loop — DONE (`ObjectLifetime` regression);
+   - `&object` across FFI — DONE (`AddressLifetime` regression).
 2. Verify `stack_object_types_by_owner` is alias-wide: one escaping alias
    excludes frame images for that owner/type.
 3. Keep D4c eligibility proof-based; test both accepted and rejected call

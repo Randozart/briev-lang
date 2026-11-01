@@ -2705,6 +2705,83 @@ defn make(x: Int) -> (P, Int) {
     }
 
     #[test]
+    fn collection_element_aliases_collection_lifetime() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; };
+defn make(x: Int) -> List<P> {
+    term [P { x: x }];
+};
+"#,
+        );
+        let child = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "P")
+            .expect("collection child object");
+        assert!(child.requires_materialization);
+        assert!(child.escapes.contains(&EscapeKind::CollectionLifetime));
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("P")));
+    }
+
+    #[test]
+    fn object_address_escape_blocks_frame_image() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; };
+defn address(x: Int) -> Int {
+    let p: P = P { x: x };
+    let raw: Int = &p;
+    term raw;
+};
+"#,
+        );
+        let escaped = plan
+            .object_values
+            .values()
+            .find(|value| {
+                value.object == "P"
+                    && value.escapes.contains(&EscapeKind::AddressLifetime)
+            })
+            .expect("addressed object");
+        assert!(escaped.requires_materialization);
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:address")
+            .is_some_and(|types| types.contains("P")));
+    }
+
+    #[test]
+    fn loop_assigned_parent_field_child_stays_heap_backed() {
+        let (_, plan) = analyze_items(
+            r#"
+obj Child { x: Int; };
+obj Parent { child: Child; };
+defn make(n: Int) -> Parent {
+    let p: Parent = Parent { child: Child { x: 0 } };
+    foreach i in 0..n {
+        p = Parent { child: Child { x: i } };
+    };
+    term p;
+};
+"#,
+        );
+        let child = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "Child" && value.escapes.contains(&EscapeKind::ObjectLifetime))
+            .expect("loop-assigned field child");
+        assert!(child.requires_materialization);
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("Child")));
+    }
+
+    #[test]
     fn object_literal_field_aliases_parent_lifetime() {
         let (_, plan) = analyze_items(
             r#"
