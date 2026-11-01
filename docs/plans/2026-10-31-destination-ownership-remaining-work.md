@@ -201,6 +201,14 @@ The collection-return runtime path is covered by `collection_rebind_gate`.
 
 0. Re-enable D4b only after an O0/O1/O2/O3 + ASan proof of the i64 handle
    round-trip. Current status: disabled; object payloads stay boxed.
+
+   Re-enable probe (2026-11-01): D4c was isolated off, then inline enum-object
+   payloads were turned on. O0/O2/O3 pass; O1 still crashes on the **third**
+   `ws_message_complete` call with a heap frame pointer whose `payload_len` is
+   garbage. Zero-initializing the reserved payload area fixed the first two
+   calls (header/payload values now correct) but not the third. The remaining
+   defect is a stale/wrong enum-image frame source on one branch, not padding
+   poison alone. Keep disabled until that branch is identified.
 1. Add alias tests for:
    - nested object literal fields;
    - object in tuple — DONE (`TupleLifetime` + `tuple_object_alias`);
