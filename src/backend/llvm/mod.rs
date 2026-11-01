@@ -3850,7 +3850,6 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     }
                 }
                 TopLevel::Enum(e) => {
-                    self.ctx.enum_types.insert(e.name.clone(), e.clone());
                 }
                 // 2026-07-30: Unwrap Export to register defn/txn/asm_fn params
                 // from exported definitions. Without this, emit_user_call can't

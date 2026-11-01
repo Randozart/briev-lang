@@ -3792,7 +3792,6 @@ fn test_enum_type_registered_and_variant_disc() {
         }),
     ];
     let _ = backend.generate(&program, None);
-    assert!(backend.ctx.enum_types.contains_key("Option"));
     assert_eq!(
         backend.ctx.enum_lowering.variant_ctor("None"),
         Some(("Option".to_string(), 0))

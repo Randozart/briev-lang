@@ -257,6 +257,8 @@ Landed slices:
   generalized plan's declared-enum map.
 - Removed the unused `CompilerContext.variant_disc`; discriminant/payload tests
   now assert `EnumLoweringPlan` directly.
+- Removed write-only `CompilerContext.enum_types`; the generalized plan owns
+  enum declarations.
 
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.
