@@ -905,7 +905,8 @@ before their lane starts.
 **Current phase:** D8 retirement has started after P0, P3 alias coverage, and
 D7a–D7h completed. The legacy `TailCarrierPlan` and `variant_payload` metadata
 are gone; recursive carriers are emitted directly and runtime enum layout/binding
-reads only `EnumLoweringPlan` (the planner only builds it). D4b inline enum-object payloads stay disabled
+reads only `EnumLoweringPlan`. The planner is no longer backend state; it is a
+local join input. D4b inline enum-object payloads stay disabled
 after the `-O1` `net_stack_helpers` miscompile.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter

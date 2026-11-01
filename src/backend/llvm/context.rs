@@ -136,8 +136,6 @@ pub struct CompilerContext {
     pub tail_loop: crate::analysis::tail_recursion::TailLoopPlan,
     /// 2026-10-21 (nested carrier slots): loop-carried inline nested enum
     /// ownership plan for direct self-tail-recursive defns.
-    /// 2026-10-21 (nested enum layout): concrete enum image planner.
-    pub enum_layout_planner: Option<crate::analysis::enum_layout::EnumLayoutPlanner>,
     /// 2026-10-30 (D3b): semantic enum facts joined with physical layout.
     pub enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan,
     /// 2026-10-30 (destination ownership D3): generalized frontend plan.
@@ -662,7 +660,6 @@ impl CompilerContext {
             defn_hoisted_sret: HashMap::new(),
             tail_recursive: std::collections::HashSet::new(),
             tail_loop: crate::analysis::tail_recursion::TailLoopPlan::default(),
-            enum_layout_planner: None,
             enum_lowering: crate::backend::llvm::enum_lowering::EnumLoweringPlan::default(),
             generalized_destination_ownership: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default(),
             destination_plan_attached: false,

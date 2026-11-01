@@ -248,6 +248,8 @@ Landed slices:
 - Removed the backend's direct `EnumLayoutPlanner` fallback from
   `enum_layout()` / `enum_value_repr_for()`. `EnumLoweringPlan` is now the sole
   runtime enum-layout source; the planner only constructs that plan.
+- Removed `CompilerContext.enum_layout_planner`; the planner is now a local
+  join input used only to build `EnumLoweringPlan` and object-result facts.
 
 All slices are behavior-neutral: recursive-carrier IR/daily gates, full enum
 tests, and full corpus determinism are green.

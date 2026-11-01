@@ -3237,32 +3237,20 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-21 (B1 nested enum layout): concrete instance planner.
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
             .max_enum_inline_depth;
-        self.ctx.enum_layout_planner =
-            Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
-        let enum_lowering = self
-            .ctx
-            .enum_layout_planner
-            .as_ref()
-            .map(|layouts| {
-                crate::backend::llvm::enum_lowering::EnumLoweringPlan::build(
-                    &self.ctx.generalized_destination_ownership,
-                    layouts,
-                )
-            })
-            .unwrap_or_default();
-        self.ctx.enum_lowering = enum_lowering;
-        self.ctx.defn_object_sret = self
-            .ctx
-            .enum_layout_planner
-            .as_ref()
-            .map(|layouts| {
-                crate::analysis::object_repr::build_object_representation_plan(
-                    &reordered_items,
-                    layouts,
-                )
-            })
-            .map(|plan| plan.caller_destination_defns.into_iter().collect())
-            .unwrap_or_default();
+        let enum_layout_planner =
+            crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth);
+        self.ctx.enum_lowering = crate::backend::llvm::enum_lowering::EnumLoweringPlan::build(
+            &self.ctx.generalized_destination_ownership,
+            &enum_layout_planner,
+        );
+        self.ctx.defn_object_sret =
+            crate::analysis::object_repr::build_object_representation_plan(
+                &reordered_items,
+                &enum_layout_planner,
+            )
+            .caller_destination_defns
+            .into_iter()
+            .collect();
         // 2026-10-21 (P2-1 ReturnedSmall): only constructor-shaped, sret-safe
         // enum results take the hidden slot; the joined plan owns the verdict.
         self.ctx.defn_sret = self
