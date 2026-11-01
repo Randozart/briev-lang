@@ -198,13 +198,18 @@ Work:
 
 Acceptance: no AST liveness rewalk remains in backend loop lowering.
 
-## P3 — harden object frame images and caller destinations
+## P3 — harden object frame images and caller destinations — IN PROGRESS (2026-11-01)
+
+Landed: tuple elements now record `TupleStore` / `TupleLifetime`. A child
+object stored in a returned tuple stays heap-backed; the runtime fixture
+`tuple_object_alias` pins `41\n42\n` at O3/LTO. This closes the tuple alias hole
+found during the P3 audit.
 
 0. Re-enable D4b only after an O0/O1/O2/O3 + ASan proof of the i64 handle
    round-trip. Current status: disabled; object payloads stay boxed.
 1. Add alias tests for:
    - nested object literal fields;
-   - object in tuple;
+   - object in tuple — DONE (`TupleLifetime` + `tuple_object_alias`);
    - object in collection returned across a function;
    - object field assigned in a loop;
    - `&object` across FFI.

@@ -477,9 +477,20 @@ impl<'a> BodyAnalyzer<'a> {
     ) -> ValueId {
         match expr {
             Expr::Tuple(values) => {
+                let site = format!(
+                    "{}/expr/{}/tuple",
+                    cursor.body_path,
+                    format_path(cursor.path)
+                );
                 for (index, value) in values.iter().enumerate() {
                     let id = self.child_expr(value, index, cursor, scope);
                     self.use_value(&id);
+                    self.add_sink(
+                        &id,
+                        SinkKind::TupleStore,
+                        &site,
+                        EscapeKind::TupleLifetime,
+                    );
                 }
                 let id = self.temp_value(
                     cursor,

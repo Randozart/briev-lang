@@ -2682,6 +2682,29 @@ defn caller(x: Int) -> Int {
     }
 
     #[test]
+    fn tuple_element_aliases_tuple_lifetime() {
+        let (_, plan) = analyze_items(
+            r#"
+obj P { x: Int; };
+defn make(x: Int) -> (P, Int) {
+    term (P { x: x }, x);
+};
+"#,
+        );
+        let child = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "P")
+            .expect("tuple child object");
+        assert!(child.requires_materialization);
+        assert!(child.escapes.contains(&EscapeKind::TupleLifetime));
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:make")
+            .is_some_and(|types| types.contains("P")));
+    }
+
+    #[test]
     fn object_literal_field_aliases_parent_lifetime() {
         let (_, plan) = analyze_items(
             r#"

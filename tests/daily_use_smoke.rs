@@ -356,6 +356,18 @@ fn generated_foreach_binding_keeps_entry_slot() {
     );
 }
 
+/// P3 regression: a tuple element aliases the tuple lifetime. The object
+/// child must stay heap-backed across the return edge.
+#[test]
+fn tuple_object_alias_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("tuple_object_alias", "golden", &[]);
+    assert_eq!(out, "41\n42\n", "tuple object lifetime drifted: {out:?}");
+}
+
 /// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a/// 2026-10-20 (pointer provenance): a raw `Ptr<T>` read in one defn and a
 /// write in a sibling defn must not be reordered by LTO. The first iteration
 /// reads the zero slot; every later iteration reads the previous store. This

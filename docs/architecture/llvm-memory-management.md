@@ -85,7 +85,9 @@ D5b lifetime correction (2026-10-31): a value stored into an object-literal
 field records an object-field lifetime escape. The child aliases the parent's
 lifetime, so it can never be a function-frame image unless the parent's own
 lifetime proof covers both. This fixes the `HttpRequest` nested in `HttpParse`
-miscompile (`net_stack_helpers`).
+miscompile (`net_stack_helpers`). Tuple elements record the equivalent
+`TupleStore` / `TupleLifetime` escape; `tuple_object_alias` pins the runtime
+behavior.
 
 D6h lowers from those obligations. An attached plan is authoritative: absent
 bindings stay SSA. Proven/conservative carriers get frame slots; unknown

@@ -1,0 +1,15 @@
+obj P { x: Int; };
+
+defn make(x: Int) -> (P, Int) {
+    term (P { x: x }, x + 1);
+};
+
+let tick: Int = 0;
+
+node run [tick < 1][tick == 1] {
+    let pair: (P, Int) = make(41);
+    println!("{}", pair.0.x);
+    println!("{}", pair.1);
+    tick = 1;
+    endprogram;
+};

@@ -72,6 +72,8 @@ pub enum SinkKind {
     /// `&value` exposes the value's address; the referent may not use a
     /// function-frame image unless the borrow is separately proven.
     AddressEscape,
+    /// A tuple stores the child handle; the child aliases tuple lifetime.
+    TupleStore,
     LoopCarrier,
     ExportReturn,
 }
@@ -86,6 +88,7 @@ impl SinkKind {
             SinkKind::UnknownCallArgument => "unknown-call-argument",
             SinkKind::ClosureCapture => "closure-capture",
             SinkKind::AddressEscape => "address-escape",
+            SinkKind::TupleStore => "tuple-store",
             SinkKind::LoopCarrier => "loop-carrier",
             SinkKind::ExportReturn => "export-return",
         }
@@ -102,6 +105,7 @@ pub enum EscapeKind {
     UnknownCallLifetime,
     ClosureLifetime,
     AddressLifetime,
+    TupleLifetime,
     LoopLifetime,
     ExportLifetime,
 }
@@ -116,6 +120,7 @@ impl EscapeKind {
             EscapeKind::UnknownCallLifetime => "unknown-call-lifetime",
             EscapeKind::ClosureLifetime => "closure-lifetime",
             EscapeKind::AddressLifetime => "address-lifetime",
+            EscapeKind::TupleLifetime => "tuple-lifetime",
             EscapeKind::LoopLifetime => "loop-lifetime",
             EscapeKind::ExportLifetime => "export-lifetime",
         }
