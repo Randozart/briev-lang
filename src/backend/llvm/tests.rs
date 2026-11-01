@@ -170,6 +170,41 @@ fn default_contract() -> Contract {
 }
 
 #[test]
+fn exported_object_and_enum_returns_use_public_wrappers() {
+    let src = r#"
+obj P { a: Int; b: Int; };
+enum R { Ok(Int), Err(Int) };
+export defn make(x: Int) -> P { term P { a: x; b: 0 }; };
+export defn choose(x: Int) -> R { term Ok(x); };
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().expect("parse");
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let output = backend.generate(&items, None);
+    for name in ["make", "choose"] {
+        assert!(
+            output.contains(&format!("@{name}__briev_internal(")),
+            "{name}: internal body symbol missing"
+        );
+        let public = output
+            .lines()
+            .find(|line| line.starts_with("define ") && line.contains(&format!("@{name}(")))
+            .unwrap_or_else(|| panic!("{name}: public wrapper missing"));
+        assert!(
+            public.starts_with("define i64 "),
+            "{name}: boxed public ABI changed: {public}"
+        );
+        assert!(
+            !public.contains("%object_out") && !public.contains("%enum_out"),
+            "{name}: public wrapper leaked hidden ABI: {public}"
+        );
+    }
+}
+
+#[test]
 fn proven_non_escaping_object_literal_uses_frame_image() {
     let src = r#"
 obj P { x: Int; y: Int; };

@@ -83,11 +83,27 @@ fn object_return_definition(
     objects: &BTreeSet<String>,
 ) -> Option<(String, String, Vec<Statement>)> {
     match item {
-        TopLevel::Definition(d) => declared_object(&d.output_type, objects)
-            .map(|object| (d.name.clone(), object, d.body.clone())),
-        TopLevel::Export(export) => object_return_definition(export.inner.as_ref(), objects),
+        TopLevel::Definition(d) => {
+            // Exported callables keep the frozen boxed public ABI. Never hand
+            // them a hidden caller destination: the wrapper must be able to
+            // return a stable handle, not a pointer into its own frame.
+            if has_export_boundary(item, d) {
+                return None;
+            }
+            declared_object(&d.output_type, objects)
+                .map(|object| (d.name.clone(), object, d.body.clone()))
+        }
+        TopLevel::Export(_) => None,
         _ => None,
     }
+}
+
+fn has_export_boundary(item: &TopLevel, definition: &crate::ast::Definition) -> bool {
+    matches!(item, TopLevel::Export(_))
+        || definition
+            .modifiers
+            .iter()
+            .any(|modifier| modifier.name == "export")
 }
 
 fn declared_object(output: &Option<OutputType>, objects: &BTreeSet<String>) -> Option<String> {
@@ -388,6 +404,19 @@ obj F { a: Int; b: Int; };
 defn make(x: Int) -> F { term F { a: x; b: 0 }; };
 defn keep(f: F) -> F { term f; };
 defn caller(x: Int) -> F { term keep(make(x)); };
+"#,
+        );
+        let layouts = EnumLayoutPlanner::new(&items, 2);
+        let plan = build_object_representation_plan(&items, &layouts);
+        assert!(!plan.caller_destination_defns.contains("make"));
+    }
+
+    #[test]
+    fn exported_object_return_keeps_public_boxed_abi() {
+        let items = parse(
+            r#"
+obj F { a: Int; b: Int; };
+export defn make(x: Int) -> F { term F { a: x; b: 0 }; };
 "#,
         );
         let layouts = EnumLayoutPlanner::new(&items, 2);

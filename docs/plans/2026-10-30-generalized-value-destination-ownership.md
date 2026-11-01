@@ -1141,7 +1141,10 @@ Gate:
 
 ### Phase D7 — boundary lane
 
-**Status 2026-10-30: D7a–D7e COMPLETE.** Boundary plans now carry a
+**Status 2026-10-31: D7a–D7e COMPLETE; D7f PARTIAL.** Exported object/enum
+returns use boxed public wrappers. Hoisted-sret, recursive-carrier, and
+plain-context exports remain direct-symbol pending their wrapper slot proofs.
+The preceding D7 status follows. Boundary plans now carry a
 direction, role-tagged values, semantic types, internal/external classes,
 conversion, ownership, and proof. Exported defns produce parameter/result
 values from their real signatures; `frgn` bindings produce import plans.

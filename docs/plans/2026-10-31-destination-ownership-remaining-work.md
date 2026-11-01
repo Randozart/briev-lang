@@ -81,11 +81,18 @@ focused backend test, not only ad-hoc shell checks.
 
 ## P1 — finish D7 boundary lane
 
-### D7f — complex export wrappers
+### D7f — complex export wrappers — PARTIAL (2026-10-31)
 
-Current wrapper scope: simple top-level exports with no enum/object sret, no
-hoisted sret, no recursive carriers, no plain context, and no `#export` name
-remap. Everything else keeps the direct-symbol path.
+Landed: exported object and enum returns keep the frozen boxed public ABI and
+now receive public wrappers. `object_repr` never grants an exported callable a
+hidden `%object_out`; D3 already keeps exported enum results boxed. Public
+signatures remain `i64` handles; internal bodies are emitted under
+`<name>__briev_internal`.
+
+Still direct-symbol: hoisted-sret exports, recursive-carrier exports, and
+plain-context exports. Current wrapper scope remains simple top-level exports
+with no enum/object sret, no hoisted sret, no recursive carriers, no plain
+context, and no `#export` name remap.
 
 Work:
 

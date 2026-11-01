@@ -902,10 +902,11 @@ before their lane starts.
 **Implementation:** in progress on
 `feat/generalized-value-destination-ownership`.
 
-**Current phase:** D7e is complete; D4b inline enum-object payloads are
-disabled after an `-O1` miscompile in `net_stack_helpers`. D5b frame images and
-D4c direct-consumer object destinations remain enabled. Next: P0 regression
-pinning (done), D7 complex-export wrappers, then D8 retirement.
+**Current phase:** P0 regressions are pinned and D7f is partial. Exported
+object/enum returns now use boxed public wrappers; hoisted-sret,
+recursive-carrier, and plain-context exports remain direct. D4b inline
+enum-object payloads stay disabled after the `-O1` `net_stack_helpers`
+miscompile. Next: finish D7f, then D8 retirement.
 
 **Rollback:** delete `enum_lowering.rs` and its context field, restore emitter
 reads of `enum_layout_planner`, and restore `defn_sret` from `sret_safe_defns`.
