@@ -301,10 +301,20 @@ fn collect_boundary_enums(
 ) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in items {
-        let TopLevel::Export(export) = item else {
-            continue;
-        };
-        match export.inner.as_ref() {
+        match item {
+            TopLevel::Export(export) => match export.inner.as_ref() {
+                TopLevel::Definition(d) => {
+                    collect_signature_enums(&d.parameters, d.output_type.as_ref(), enums, &mut out);
+                }
+                TopLevel::Transaction(t) => {
+                    collect_signature_enums(&t.parameters, t.output_type.as_ref(), enums, &mut out);
+                }
+                _ => {}
+            },
+            // 2026-11-02 (whole-enum escape gate): any enum crossing a
+            // callable parameter/result boundary keeps the boxed payload.
+            // Inline object bytes are eligible only for values wholly local
+            // to one callable.
             TopLevel::Definition(d) => {
                 collect_signature_enums(&d.parameters, d.output_type.as_ref(), enums, &mut out);
             }
@@ -420,6 +430,18 @@ mod tests {
         assert_eq!(layout.image_words, 2);
         assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
         assert_eq!(layout.variant_payload_words, vec![1, 0]);
+    }
+
+    #[test]
+    fn callable_signature_enum_keeps_boxed_object_payload() {
+        let items = parse(
+            "struct P { a: Int; b: Int; };\n\
+             enum E { Wrap(P), Empty };\n\
+             defn take(e: E) -> Int { term 0; };\n",
+        );
+        let planner = EnumLayoutPlanner::new(&items, 2);
+        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
     }
 
     #[test]
