@@ -17,6 +17,7 @@ pub mod pattern;
 pub mod program;
 pub mod sinks;
 pub mod stats;
+pub mod tail_calls;
 pub mod type_facts;
 pub mod stmt;
 pub mod verify;
@@ -30,6 +31,7 @@ pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, H
 pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
+pub use tail_calls::{build_tail_call_facts, HirCallableTailCalls, HirTailCall, HirTailCallFacts};
 pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
 pub use verify::verify;
 
@@ -119,6 +121,17 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn tail_call_facts_only_count_return_position() {
+        let program = lower_program(&parse(
+            "defn f(n: Int) -> Int { let x: Int = f(n); term f(n); };\n",
+        ));
+        let facts = build_tail_call_facts(&program);
+        let callable = &facts.callables[&program.callables[0].id];
+        assert_eq!(callable.calls.len(), 1);
+        assert_eq!(callable.calls[0].args.len(), 1);
     }
 
     #[test]
