@@ -6006,6 +6006,32 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         Some(crate::typechecker::substitute_type(&declared, &subst))
     }
 
+    fn emit_owned_object_payload(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        scrutinee: &str,
+        ty: &Type,
+    ) -> TypedRegister {
+        // 2026-11-01: an inline payload points inside its enum's image, which
+        // may be a caller stack slot. A bound object is an owning value and
+        // can escape via a return, collection or field. Copy its byte image;
+        // retire the copy only with a proved non-retaining projection consumer.
+        let name = object_payload_name(ty).expect("inline object payload type");
+        let bytes = self.struct_type_size(name);
+        let base = self.fun.gen_reg();
+        let source = self.fun.gen_reg();
+        let owned = self.fun.gen_reg();
+        let handle = self.fun.gen_reg();
+        let width = format!("i{}", self.ctx.int_bits);
+        writeln!(out, "{indent}{base} = inttoptr {width} {scrutinee} to ptr").ok();
+        writeln!(out, "{indent}{source} = getelementptr i64, ptr {base}, i64 1").ok();
+        writeln!(out, "{indent}{owned} = call ptr @malloc(i64 {bytes})").ok();
+        writeln!(out, "{indent}call void @llvm.memcpy.p0.p0.i64(ptr {owned}, ptr {source}, i64 {bytes}, i1 false)").ok();
+        writeln!(out, "{indent}{handle} = ptrtoint ptr {owned} to {width}").ok();
+        TypedRegister { name: handle, ty: ty.clone() }
+    }
+
     /// Copy/construct a small object payload directly into the enum image.
     /// The layout planner marks an object payload inline only for internal
     /// enums; exported enums keep the boxed handle.
@@ -7666,18 +7692,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         .and_then(|l| l.variant_payload_inline_object.get(tag_idx).copied())
                         .unwrap_or(false);
                     let payload = if inline_object {
-                        let base = self.fun.gen_reg();
-                        { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok(); }
-                        let nested = self.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr i64, ptr {}, i64 1",
-                            indent, nested, base
-                        )
-                        .ok();
-                        let handle = self.fun.gen_reg();
-                        { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, handle, nested, hw).ok(); }
-                        TypedRegister { name: handle, ty: pty.clone() }
+                        self.emit_owned_object_payload(out, indent, scrut, &pty)
                     } else if inline_payload {
                         let base = self.fun.gen_reg();
                         { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok(); }

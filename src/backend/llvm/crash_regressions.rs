@@ -74,3 +74,22 @@ fn pooled_object_replacement_survives_reactor_firings() {
         super::logical_tests::clang_ir(&ir, optimization, true);
     }
 }
+
+fn normalized_program(source: &str) -> (Vec<crate::ast::TopLevel>, crate::type_universe::TypeUniverse) {
+    let (items, mut universe) = crate::library::parse_and_check("scratch/layout_regression.bv", source)
+        .expect("checked layout regression");
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
+        .expect("resolved regression types");
+    (items, universe)
+}
+
+#[test]
+fn extracted_enum_objects_survive_the_enum_result_frame() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+    let source = include_str!("../../../tests/tier1/enum_object_projection_lifetime.bv");
+    let (items, universe) = normalized_program(source);
+    let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
+    for optimization in ["-O0", "-O2"] {
+        super::logical_tests::clang_ir(&ir, optimization, true);
+    }
+}

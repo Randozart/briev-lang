@@ -1,0 +1,24 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj Payload { value: Int; padding: Int; };
+obj Holder { payload: Payload; };
+enum Outcome { Found(Payload), Missing };
+defn packed(value: Int) -> Outcome {
+    term Found(Payload { value: value, padding: value+1 });
+};
+defn extract(value: Int) -> Payload {
+    let outcome: Outcome = packed(value);
+    term match outcome {
+        Found(payload) => payload,
+        Missing() => Payload { value: 0, padding: 0 },
+    };
+};
+defn carry(value: Int) -> Holder { term Holder { payload: extract(value) }; };
+out let holder: Holder = carry(7);
+out node run [true][false] {
+    let other: Holder = carry(31);
+    when holder.payload.value != 7 || holder.payload.padding != 8 { endprogram 71; };
+    when other.payload.value != 31 || other.payload.padding != 32 { endprogram 72; };
+    endprogram 0;
+};

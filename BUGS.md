@@ -11491,3 +11491,8 @@ later constructors can overwrite or misinterpret those handles. Reproducer:
 
 This is part of the enum value model migration: collection elements must own a
 complete value or an explicitly owned box, never a borrowed constructor slot.
+
+
+## FIXED 2026-11-02: enum-object-projection-lifetime
+
+Own inline object payloads extracted from temporary enum images. Regression: extracted_enum_objects_survive_the_enum_result_frame.
