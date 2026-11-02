@@ -87,7 +87,9 @@ object sizes, and non-retaining parameter summaries, net_stack O0–O3 pass. I11
 still aborts with `malloc(): invalid next size`: the enum value can escape
 without a match binding, carrying the inline object pointer through the enum
 handle. Match-binding materialization alone is insufficient. D4b needs the
-whole-enum non-escape condition before enabling.
+whole-enum non-escape condition before enabling. A first whole-enum gate now
+keeps boxed payloads for any enum crossing a callable parameter/result
+signature; only wholly local enums remain inline-eligible.
 
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 

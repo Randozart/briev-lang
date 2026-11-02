@@ -87,7 +87,13 @@ can be enabled.
 - No `notail` reliance: a safe binding never points into a frame across a
   boundary that can outlive it.
 
-### Phase E — whole-region scalar replacement
+### Phase E — whole-region scalar replacement — GATE LANDED (2026-11-02)
+
+Whole-enum boundary gate: any enum appearing in a callable parameter/result
+signature keeps the boxed object payload. Only enums that never cross a callable
+signature remain eligible for inline object bytes. Regression:
+`callable_signature_enum_keeps_boxed_object_payload`. D4b is still disabled;
+activation must pass O0–O3/ASan/I11.
 
 - For a local enum + object region with no escape, scalar-replace the enum image
   and object fields together.
