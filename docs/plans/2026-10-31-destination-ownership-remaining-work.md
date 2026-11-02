@@ -263,8 +263,8 @@ respectively; details in
 `benchmarks/results/2026-11-01-d8-retention-audit.md`. Do not remove them
 without a proof-carrying replacement.
 
-D8 remains **partial**: P2’s generated-foreach fallback and the D4b re-enable
-decision are still open.
+D8 remains **partial**: final retention/cleanup audit remains. P2’s fallback
+is retired and D4b is fixed/enabled through PR49/50/51.
 
 Only after P0–P3 are green.
 

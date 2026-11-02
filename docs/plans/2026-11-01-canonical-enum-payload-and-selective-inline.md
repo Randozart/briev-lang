@@ -33,12 +33,12 @@ cost performance, never correctness.
 
 ## Phases
 
-### Phase A — safe baseline (current)
+### Phase A — safe baseline — HISTORICAL (superseded 2026-11-02)
 
-- D4b disabled; object payloads boxed.
-- Keep the stale `expected_enum_type` constructor-owner fix.
-- Delete or quarantine D4b-only code paths; `notail` is not a substitute for an
-  escape proof.
+- D4b was disabled while the borrowed-payload class was open.
+- The stale `expected_enum_type` constructor-owner fix was retained.
+- Superseded by PR49/50/51: resolved sizes, scoped context, and owned
+  extraction made D4b safe without `notail`.
 
 ### Phase B — parameter retention summaries — COMPLETE (2026-11-02)
 
@@ -69,13 +69,9 @@ argument whose callee parameter is `NonEscaping`; every other use is copied to a
 heap object before binding. Regression:
 `inline_object_view_requires_non_escaping_callee_param`.
 
-The path is inert while D4b is disabled. Activation probe (2026-11-02) with
-`notail` + exact sizes + parameter-summary materialization: net_stack O0–O3
-pass; I11 still aborts with `malloc(): invalid next size`. Reason: the enum
-value itself can escape without a match binding, so the inline object pointer
-leaks through the enum handle. Match-binding materialization alone is therefore
-insufficient; D4b needs the whole-enum non-escape condition in Phase E before it
-can be enabled.
+The path is active only as future copy-elision work. PR51 currently owns every
+inline object extraction unconditionally; the view helper must be connected to
+an enum-and-binding non-escape proof before it can skip that copy.
 
 - `EnumLoweringPlan` records per-enum/per-variant `object_payload_inline`.
 - Enable only when every match binding and constructor use satisfies the safety
@@ -97,8 +93,8 @@ can be enabled.
 Whole-enum boundary gate: any enum appearing in a callable parameter/result
 signature keeps the boxed object payload. Only enums that never cross a callable
 signature remain eligible for inline object bytes. Regression:
-`callable_signature_enum_keeps_boxed_object_payload`. D4b is still disabled;
-activation must pass O0–O3/ASan/I11.
+`callable_signature_enum_keeps_boxed_object_payload`. D4b is enabled with PR51
+owned extraction; selective copy elision remains future work.
 
 - For a local enum + object region with no escape, scalar-replace the enum image
   and object fields together.
