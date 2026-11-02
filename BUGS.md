@@ -11462,18 +11462,17 @@ lane still executes them.
 
 | Test | Observed |
 |---|---|
-| `cpp_roundtrip` | driver exits non-zero after C boundary check |
 | `host_cancellation_stops_briev_loop` | `CancelRequested#` unsupported by LLVM normalizer |
-| `needs_state_pass_matches_reference` | Briev pass returns 0, Rust reference 31 for `node_bridge.bv` |
-| `python_node_cross_language_bridge` | Node save/persist returns empty |
-| `python_native_extension_roundtrip` | `greet("world")` returns empty |
-| `go_roundtrip` | generated Go bridge references undefined `@cstr_len` |
+| `go_roundtrip` | generated Go bridge references undefined `@cstr_len` (Go toolchain absent here) |
 | `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
 
-Verification 2026-11-02: `boundary_types_roundtrip` is FIXED and unignored.
-The example double-converted `CStr → String`; `greet`/`join` now use the
-protocol cast once and pass. `c_driver_needs_state` still gets 0 vs expected 31;
-CLI entry tests still run >60s. These remain open.
+Verification 2026-11-02: `boundary_types_roundtrip`, `c_driver_needs_state`,
+`cpp_roundtrip`, `python_native_extension_roundtrip`, and
+`python_node_cross_language_bridge` are FIXED and unignored. Root cause for the
+bridge family: a `CStr` boundary value is a raw pointer; casting it through
+`String` parsed the allocation header instead of preserving the pointer. The
+examples and the Briev needs_state pass now use `CStr → Data → Int` before
+`cstr_to_briev`/`SysCall#`. CLI entry tests still run >60s.
 
 Removal conditions:
 - C string return/ownership fixed or the C bridge explicitly retired;

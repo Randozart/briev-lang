@@ -24,7 +24,7 @@ Priority ledger:
 6. Interpreter raw-address→String unsupported.
 7. Interpreter large `ws_encode` reactor path.
 8. Generic callable txn specialization deferred.
-9. C-driven bridge/CLI tests quarantined.
+9. C-driven bridge/CLI tests quarantined. (Bridge family fixed; CLI still open.)
 
 Result: `List<Result>`, JsonValue nested array, `list_concat`, Char cast,
 interpreter callable txn, raw-address→String, and 7000-byte `ws_encode` are
@@ -59,10 +59,11 @@ Exit: Rule-5 parity for callable txns and string construction.
 3. Make `cargo test --all` a required release gate.
 4. Add conformance coverage for every fixed bug.
 
-Progress 2026-11-02: C boundary (`greet`/`join`) fixed and
-`c_driver_boundary` unignored. Remaining: `needs_state` pass mismatch (0 vs 31),
-CLI entry hangs, generic callable txn specialization deferred, other
-C/Python/Node/Go drivers still quarantined.
+Progress 2026-11-02: C boundary (`greet`/`join`), `needs_state` (31/31),
+C++ roundtrip, Python native extension, and Python<->Node bridge are fixed and
+unignored. Root cause: `CStr` is a raw pointer at the boundary; casting through
+`String` parsed the allocation header. Remaining: CLI entry hangs, generic
+callable txn specialization, and Go roundtrip (Go toolchain absent here).
 
 ## Stage 4 — Platform ledger
 
