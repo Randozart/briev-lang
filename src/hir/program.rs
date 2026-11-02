@@ -5,6 +5,7 @@
 //! H0b lowers them. No analysis or backend consumes this program yet.
 
 use super::ids::{DefId, ItemId, NodeId, Span};
+use super::stmt::HirStmt;
 use crate::ast::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,10 +25,10 @@ pub struct HirParam {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct HirBodySkeleton {
+pub struct HirBody {
     pub node: NodeId,
     pub span: Option<Span>,
-    pub statement_count: usize,
+    pub statements: Vec<HirStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +42,7 @@ pub struct HirCallable {
     pub result: Option<Type>,
     pub exported: bool,
     pub export_symbol: Option<String>,
-    pub body: HirBodySkeleton,
+    pub body: HirBody,
     pub span: Option<Span>,
 }
 

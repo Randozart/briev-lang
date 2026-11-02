@@ -6,9 +6,12 @@
 //! slice assigns stable IDs, normalizes export wrappers, and verifies the
 //! callable surface. No consumer uses it yet.
 
+pub mod expr;
 pub mod ids;
 pub mod lower;
+pub mod pattern;
 pub mod program;
+pub mod stmt;
 pub mod verify;
 
 pub use lower::lower_program;
@@ -49,7 +52,32 @@ txn tick(x: Int) -> Int { term x + 1; };
         let b = lower_program(&items);
         assert_eq!(a, b);
         assert_eq!(a.callables[0].id.0, 0);
-        assert_eq!(a.callables[0].body.statement_count, 1);
+        assert_eq!(a.callables[0].body.statements.len(), 1);
+    }
+
+    #[test]
+    fn bodies_lower_to_typed_statement_nodes() {
+        let program = lower_program(&parse(
+            "defn f(x: Int) -> Int { let y: Int = x + 1; term y * 2; };
+",
+        ));
+        verify(&program).expect("valid HIR");
+        let body = &program.callables[0].body.statements;
+        assert_eq!(body.len(), 2);
+        assert!(matches!(body[0].kind, super::stmt::HirStmtKind::Let { .. }));
+        assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn foreach_and_match_patterns_lower() {
+        let program = lower_program(&parse(
+            "defn f(xs: List<Int>) -> Int { let s: Int = 0; foreach x in xs { s = s + x; }; term match s { 0 => 1, n => n }; };
+",
+        ));
+        verify(&program).expect("valid HIR");
+        let body = &program.callables[0].body.statements;
+        assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
+        assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
     }
 
     #[test]
