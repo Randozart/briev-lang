@@ -70,8 +70,11 @@ heap object before binding. Regression:
 `inline_object_view_requires_non_escaping_callee_param`.
 
 The path is active only as future copy-elision work. PR51 currently owns every
-inline object extraction unconditionally; the view helper must be connected to
-an enum-and-binding non-escape proof before it can skip that copy.
+inline object extraction unconditionally. Copy-elision probe (2026-11-02):
+skipping the owned copy for direct non-escaping call args passed all correctness
+gates, but a controlled `ws_frame` A/B regressed from 1.02x C (main) to 1.13x C.
+Do not enable this elision without an IR-level explanation and a win.
+
 
 - `EnumLoweringPlan` records per-enum/per-variant `object_payload_inline`.
 - Enable only when every match binding and constructor use satisfies the safety

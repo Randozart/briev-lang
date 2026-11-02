@@ -91,7 +91,10 @@ returned enums now that extraction copies) still corrupts I11 with
 object into owned storage, so the borrowed enum-image pointer class is gone;
 `notail`/selective view machinery is no longer required for correctness. D4b is
 enabled. Validation: net_stack O0–O3, ASan, I11, 3443 lib tests, 32 daily tests,
-determinism, and full runtime all pass. `ws_frame` 1.33x C in the final run.
+determinism, and full runtime all pass. A subsequent copy-elision probe
+(parameter-summary-gated view instead of owned copy) passed correctness but
+regressed controlled `ws_frame` from 1.02x C to 1.13x C, so PR51's unconditional
+owned extraction remains active.
 
 **Historical probe 2026-11-02 (parameter-summary materialization):** with `notail`, exact
 object sizes, and non-retaining parameter summaries, net_stack O0–O3 pass. I11
