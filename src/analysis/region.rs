@@ -1378,41 +1378,23 @@ fn has_ffi_or_terminator_stmt(stmt: &Statement) -> bool {
         match s {
             Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
             | Statement::InlineAsm { .. } => return true,
-            // 2026-07-19: Block precomputation for non-# calls (frgn, pure-Briev).
-            // # intrinsics are handled by the interpreter's execute_intrinsic
-            // and can be precomputed. All other calls prevent precomputation
-            // because the interpreter can't evaluate them efficiently.
-            Statement::Assign(_, expr) if expr_has_non_hash_call(expr) => return true,
+            // 2026-11-02 (precompute observability): ANY call blocks
+            // precomputation. The old non-`#` rule assumed every intrinsic was
+            // pure; `Print#` is an intrinsic and observable, so a lowering like
+            // `println!(x) -> Expression(Block([Expression(Call("Print#"))]))`
+            // was folded and its output dropped. Compile-time evaluation is an
+            // optimization; correctness of observable effects wins.
+            Statement::Assign(_, expr) if expr_has_call(expr) => return true,
             Statement::Let { expr, .. } => {
-                if let Some(e) = expr { if expr_has_non_hash_call(e) { return true; } }
+                if let Some(e) = expr { if expr_has_call(e) { return true; } }
             }
-            Statement::Expression(e) if expr_has_non_hash_call(e) => return true,
+            Statement::Expression(e) if expr_has_call(e) => return true,
             Statement::Guarded(condition, statements) => {
-                if expr_has_non_hash_call(condition) { return true; }
+                if expr_has_call(condition) { return true; }
                 work.extend(statements.iter().rev());
             }
             Statement::Foreach { body, .. } => {
                 work.extend(body.iter().rev());
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Check if an expression contains a call that does NOT end with '#'
-/// (# intrinsics are handled by the interpreter and can be precomputed).
-fn expr_has_non_hash_call(expr: &Expr) -> bool {
-    let mut work: Vec<&Expr> = vec![expr];
-    while let Some(s) = work.pop() {
-        match s {
-            Expr::Call(name, _, _) if !name.ends_with('#') => return true,
-            Expr::Tuple(elems) => work.extend(elems.iter().rev()),
-            Expr::Index(l, i) => { work.push(i); work.push(l); }
-            Expr::Field(o, _) => { work.push(o); }
-            Expr::Match(value, arms) => {
-                for arm in arms.iter().rev() { work.push(&arm.body); }
-                work.push(value);
             }
             _ => {}
         }
@@ -1460,34 +1442,22 @@ fn has_ffi_or_trigger_stmt(stmt: &Statement, trigger_vars: &HashSet<String>) -> 
 // stack overflow on deeply nested expression trees (officina-cli's complex
 // Match arms with deeply nested binary ops).
 fn expr_has_call(expr: &Expr) -> bool {
-    let mut work: Vec<&Expr> = vec![expr];
-    while let Some(e) = work.pop() {
-        match e {
-            // 2026-07-19: Only frgn calls block precomputation — pure-Briev
-            // function calls and # intrinsics are handled by the interpreter.
-            // Without frgn_names context, we conservatively skip all calls
-            // and let the interpreter handle them during eval.
-            Expr::Call(_, _, _) => return true,
-            Expr::Tuple(elems) => {
-                work.extend(elems.iter().rev());
-            }
-            Expr::Index(l, i) => {
-                work.push(i);
-                work.push(l);
-            }
-            Expr::Field(o, _) => {
-                work.push(o);
-            }
-            Expr::Match(value, arms) => {
-                for arm in arms.iter().rev() {
-                    work.push(&arm.body);
-                }
-                work.push(value);
-            }
-            _ => {}
+    // 2026-11-02 (precompute observability): the previous hand-rolled walker
+    // covered only Call/Tuple/Index/Field/Match. A print lowers to
+    // `Expression(Block([Expression(Call("Print#", ...))]))`, so a write-only
+    // loop looked pure and `is_fully_precomputable` dropped its observable
+    // output. Use the exhaustive visitor (Rule 17); any call-shaped node is
+    // conservative evidence that compile-time evaluation is unsafe.
+    let mut found = false;
+    crate::ast::visit::walk_expr(expr, &mut |e| {
+        if matches!(
+            e,
+            Expr::Call(..) | Expr::MethodCall(..) | Expr::Spawn { .. } | Expr::PluginIntercept { .. }
+        ) {
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 fn has_term_or_unify_escape(body: &[Statement]) -> bool {
@@ -2283,6 +2253,21 @@ mod tests {
         let mut ra = RegionAnalyzer::analyze(&program);
         ra.compose_chains();
         assert!(!ra.is_fully_precomputable(100));
+    }
+
+    #[test]
+    fn print_inside_block_blocks_precomputation() {
+        let print = Statement::Expression(Expr::Block(vec![
+            Statement::Expression(Expr::Call(
+                "Print#".into(),
+                vec![Expr::Identifier("count".into())],
+                None,
+            )),
+        ]));
+        assert!(
+            has_ffi_or_trigger_stmt_in_chain(&[print]),
+            "a Print# call nested in a block is observable"
+        );
     }
 
     #[test]

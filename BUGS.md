@@ -11484,22 +11484,26 @@ Removal conditions:
 - CLI entry tests complete with a bounded timeout.
 Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs`.
 
-## Modulo-rotated main omits the dispatch loop (OPEN 2026-11-02)
+## Modulo-rotated main omits the dispatch loop (FIXED 2026-11-02)
 
-`cargo test --all` leaves one failure:
-`stdout_flush_tail_test::modulo_switch_main_flushes_sub_cap_output`.
-The program prints `0..3` from two nodes partitioned on `count % 2`, but the
-binary prints nothing.
+`cargo test --all` failed on
+`stdout_flush_tail_test::modulo_switch_main_flushes_sub_cap_output`:
+the program printed `0..3` from two nodes partitioned on `count % 2`, but the
+binary printed nothing.
 
-Evidence: `target/briev_stdout_flush_tests/modulo_flush/modulo_flush.ll`
-contains `txn_even`, `txn_odd`, `pre_even`, and `pre_odd`, but `@main` only
-stores the initial state and calls `stdout_flush()`; there is no `.mr_loop`,
-no modulo switch, and no call to either txn. The typed-HIR branch has no
-backend/analysis changes, so this is not introduced by H3.
+Root cause: the program was misclassified as fully precomputable. The print
+lowers to `Expression(Block([Expression(Call("Print#", ...))]))`; the old
+precompute effect scan only recognized non-`#` calls and its hand-rolled
+expression walker did not descend into `Expr::Block`. The loop was folded to
+final state values, dropping every print.
 
-Next: trace why `modulo_partition` is absent or `try_modulo_switch_dispatch`
-returns before emitting when the two bounded nodes are present. Add a golden
-assertion on `@main` containing a txn call, not just the txn definitions.
+Fix: precompute effect detection now uses the exhaustive AST visitor and ANY
+call blocks precomputation. Compile-time folding is an optimization; it must
+never discard an observable call. Regression:
+`analysis::region::tests::print_inside_block_blocks_precomputation`.
+
+Evidence: `cargo test --all` is green; the modulo test reaches the runtime
+dispatch loop and prints `0\n1\n2\n3`.
 
 ## Malformed input panics in library lexing (FIXED 2026-10-25)
 
