@@ -702,6 +702,9 @@ pub struct GeneralizedDestinationOwnershipPlan {
     pub tuples: BTreeMap<DestinationId, TupleDestinationPlan>,
     pub recursive_carriers: BTreeMap<CallableId, RecursiveCarrierPlan>,
     pub loop_engines: BTreeMap<String, LoopEnginePlan>,
+    /// Callable parameter whose R1 value has zero escapes. Conservative:
+    /// unknown calls/stores/returns all make a parameter escaping.
+    pub non_escaping_params: BTreeMap<String, BTreeSet<usize>>,
 }
 
 impl GeneralizedDestinationOwnershipPlan {
@@ -766,6 +769,12 @@ impl GeneralizedDestinationOwnershipPlan {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    pub fn parameter_is_non_escaping(&self, callee: &str, index: usize) -> bool {
+        self.non_escaping_params
+            .get(callee)
+            .is_some_and(|params| params.contains(&index))
     }
 
     /// Binding names carried by foreach loops in an owner. The backend uses
@@ -941,7 +950,55 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
     plan.tuples = build_tuple_plans(legacy);
     plan.recursive_carriers = build_recursive_carriers(items);
     populate_hidden_tail_carriers(&mut plan.callables, &plan.recursive_carriers);
+    plan.non_escaping_params = build_non_escaping_params(legacy);
     plan
+}
+
+fn build_non_escaping_params(
+    legacy: &DestinationOwnershipPlan,
+) -> BTreeMap<String, BTreeSet<usize>> {
+    let mut out = BTreeMap::new();
+    for summary in legacy.callables.values() {
+        let Some(facts) = facts_for_summary(legacy, &summary.name) else {
+            continue;
+        };
+        out.insert(
+            summary.name.clone(),
+            non_escaping_param_indexes(summary, facts),
+        );
+    }
+    out
+}
+
+fn non_escaping_param_indexes(
+    summary: &crate::analysis::destination_ownership::CallableSummary,
+    facts: &crate::analysis::destination_ownership::CallableDestinationFacts,
+) -> BTreeSet<usize> {
+    (0..summary.parameters.len())
+        .filter(|index| {
+            let prefix = format!("param/{index}/");
+            facts
+                .values
+                .values()
+                .filter(|fact| fact.id.path.starts_with(&prefix))
+                .any(|fact| fact.escapes.is_empty() && fact.sinks.is_empty())
+        })
+        .collect()
+}
+
+fn facts_for_summary<'a>(
+    legacy: &'a DestinationOwnershipPlan,
+    name: &str,
+) -> Option<&'a crate::analysis::destination_ownership::CallableDestinationFacts> {
+    let owners = [
+        format!("defn:{name}"),
+        format!("txn:{name}"),
+        format!("ctxn:{name}"),
+    ];
+    legacy
+        .callables_by_owner
+        .values()
+        .find(|facts| owners.iter().any(|owner| owner == &facts.owner))
 }
 
 fn populate_hidden_tail_carriers(
@@ -2380,6 +2437,22 @@ defn drain(n: Int, q: List<Int>) -> Int {
             boundary.values.iter().filter(|value| value.role == BoundaryRole::Result).count(),
             1
         );
+    }
+
+    #[test]
+    fn parameter_retention_summary_is_conservative() {
+        let (_, plan) = analyze_items(
+            r#"
+obj F { a: Int; b: Int; };
+defn read(f: F) -> Int { term f.a; };
+defn keep(f: F) -> F { term f; };
+defn unknown(f: F) -> Int { term mystery(f); };
+"#,
+        );
+        assert!(plan.parameter_is_non_escaping("read", 0));
+        assert!(!plan.parameter_is_non_escaping("keep", 0));
+        assert!(!plan.parameter_is_non_escaping("unknown", 0));
+        assert!(!plan.parameter_is_non_escaping("missing", 0));
     }
 
     #[test]
