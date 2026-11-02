@@ -11454,15 +11454,10 @@ stores and Bool coercion used i32, producing `store i32 %ac3` / `trunc i32` on
 i64 registers. Stores now use the declared field type and coercions use the
 physical width. Regression: `bool_param_struct_wasm.rbv`.
 
-## C-driven bridge and CLI entry tests quarantined for v0.1 (OPEN 2026-10-25)
+## C-driven bridge and CLI entry tests (RESOLVED 2026-11-02)
 
 The first full `cargo test --all` stabilization run found failures outside the
-Tier 1 compiler path. They are quarantined, not deleted; the non-blocking CI
-lane still executes them.
-
-| Test | Observed |
-|---|---|
-| `go_roundtrip` | generated Go bridge references undefined `@cstr_len` (Go toolchain absent here) |
+Tier 1 compiler path. All are fixed and unignored; none remain quarantined.
 
 Verification 2026-11-02: `boundary_types_roundtrip`, `c_driver_needs_state`,
 `cpp_roundtrip`, `python_native_extension_roundtrip`, and
@@ -11475,14 +11470,11 @@ entry plugin appended its one-shot done flag after the body, but a trailing
 bare `term;` branched away before it; a terminal bare term is now removed so
 the flip executes. C cancellation is FIXED and unignored: `CancelRequested#`
 and `ClearCancel#` had working LLVM arms but were missing from the normalizer
-supported set.
+supported set. Go roundtrip is FIXED and unignored: the `cstr_len` import gap
+closed, and the gate passes with Go 1.22.12 installed. The gate remains
+toolchain-guarded and skips cleanly when Go is absent.
 
-Removal conditions:
-- C string return/ownership fixed or the C bridge explicitly retired;
-- needs-state Briev pass matches Rust on the corpus;
-- Python/Node binding strings round-trip;
-- CLI entry tests complete with a bounded timeout.
-Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs`.
+All former removal conditions are met.
 
 ## Modulo-rotated main omits the dispatch loop (FIXED 2026-11-02)
 

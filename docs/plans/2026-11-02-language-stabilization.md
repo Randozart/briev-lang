@@ -68,8 +68,10 @@ the boundary; casting through `String` parsed the allocation header. Modulo
 dispatch is fixed: precompute effect detection missed `Print#` inside an
 `Expr::Block`, folded the loop, and dropped output; full `cargo test --all` is
 green. C cancellation is fixed (normalizer gate admitted the existing
-`CancelRequested#`/`ClearCancel#` arms). Remaining: generic callable txn
-specialization and Go roundtrip (Go toolchain absent).
+`CancelRequested#`/`ClearCancel#` arms). Go roundtrip is fixed and unignored
+(verified with Go 1.22.12); the gate skips cleanly without a toolchain. Zero
+ignored tests remain; full `cargo test --all` is green. Remaining: generic
+callable txn specialization.
 
 ## Stage 4 — Platform ledger
 
