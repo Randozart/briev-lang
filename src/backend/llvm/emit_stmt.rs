@@ -76,7 +76,7 @@ pub(super) fn emit_web_flush_batch(backend: &mut LlvmBackend, out: &mut String, 
     // state-machine transaction. A stateless body has no %state parameter, so
     // flushing there emits undefined IR. Only real txn/reactive drivers set
     // txn_name and are eligible.
-    if txn_name.is_empty() || backend.fun.stateless_body {
+    if txn_name.is_empty() || backend.fun.stateless_body || backend.fun.in_inline_member {
         return;
     }
     // 2026-08-10: the write_set is frontend analysis — sorted by field index
@@ -1940,12 +1940,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // {handle, value_ptr, value_len} record, then __web_flush_state is
             // called with the buffer + count. The JS shim applies the DOM
             // mutations synchronously before the transaction completes.
-            if backend.ctx.webstack_enabled {
+            // 2026-11-01: value terms finish here; bare terms finish only
+            // when their post holds, through emit_bare_term_stop. Publishing
+            // or cleaning up here for a bare term duplicates its commit and
+            // exposes partial state when its post is still false.
+            // Keep deferred cleanup at the same successful firing boundary.
+            if val.is_some() {
                 emit_web_flush_batch(backend, out, indent);
+                backend.flush_defer_cleanup(out, indent);
             }
-            // 2026-08-09 (Phase 10): run deferred cleanup before the firing
-            // exits (term is a successful completion).
-            backend.flush_defer_cleanup(out, indent);
             if let Some(val) = val {
                 let saved_enum_ret = backend.fun.enum_return_context;
                 let saved_expected_enum = backend.fun.expected_enum_type.clone();

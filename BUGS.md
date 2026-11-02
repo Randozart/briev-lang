@@ -11491,3 +11491,8 @@ later constructors can overwrite or misinterpret those handles. Reproducer:
 
 This is part of the enum value model migration: collection elements must own a
 complete value or an explicitly owned box, never a borrowed constructor slot.
+
+
+## FIXED 2026-11-02: browser-transaction-publication
+
+Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
