@@ -2845,7 +2845,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 // nothing (same discipline as emit_ssa_main's per-txn reset).
                 backend.fun.terminated = false;
                 for p in &arm.patterns {
-                    backend.bind_pattern(p, &scrut.name, &scrut.ty, out, indent);
+                    backend.bind_pattern(p, &scrut.name, &scrut.ty, None, out, indent);
                 }
                 for s in &arm.body {
                     if backend.fun.terminated {

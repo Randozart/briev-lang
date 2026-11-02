@@ -56,7 +56,16 @@ call cases are escaping. Regression: `parameter_retention_summary_is_conservativ
 - Regression: field-reading consumer = non-escaping; consumer returning or
   storing the object = escaping; unknown callee = escaping.
 
-### Phase C — selective inline policy
+### Phase C/D — selective inline and match materialization — CODE LANDED (2026-11-02)
+
+Match-bound inline objects now resolve through
+`inline_object_binding_view_ok`: a view is retained only for a direct call
+argument whose callee parameter is `NonEscaping`; every other use is copied to a
+heap object before binding. Regression:
+`inline_object_view_requires_non_escaping_callee_param`.
+
+The path is inert while D4b is disabled. Activation still requires the full
+O0–O3/ASan/I11 matrix.
 
 - `EnumLoweringPlan` records per-enum/per-variant `object_payload_inline`.
 - Enable only when every match binding and constructor use satisfies the safety
