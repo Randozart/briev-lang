@@ -26,8 +26,8 @@
 ### Known limitations
 
 - `ws_frame` needs an explicit baseline exception or a deliberate re-lock.
-- I11/PostgreSQL/browser evidence must be re-run; the external app checkout is
-  not present here.
+- I11 real browser/server gate passes against the merged app (`d913cbe`) with
+  PostgreSQL 18.6, MovieLens 100K, and Playwright Chromium.
 - GPU/electronics/silicon/SPIR-V surfaces remain experimental.
 
 ## v0.1.0-preview — 2026-10-28
