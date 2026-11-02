@@ -82,22 +82,18 @@ From `2026-11-02-destination-ownership-final.md`; all outputs `MATCH`.
 | arena_bump | 0.3248s | 0.0499s | 6.51x |
 | spsc_ring | 0.1489s | 0.0732s | 2.03x |
 
-## Rows to verify before accepting no-regression
+## Verification (2026-11-02)
 
-These latest rows are above the post-baseline best known and therefore need a
-controlled same-commit A/B before a release verdict:
+Full runtime and controlled baseline A/B:
+`2026-11-02-runtime-no-regression.md`.
 
-| Benchmark | Best known | Latest | Delta |
-|---|---:|---:|---:|
-| arena_bump | 4.34x | 6.51x | +50% |
-| spsc_ring | 1.85x | 2.03x | +10% |
-| fsm_dispatch | 0.56x | 0.87x | +55% |
-| recommender | 0.93x | 1.04x | +12% |
-| hash_ops | 0.80x | 0.85x | +6% |
-| ws_frame | 0.93x | 1.33x | +43% |
-
-No row is declared regressed from these cross-date numbers alone. Machine and
-run variation are large enough that each needs the pinned-baseline A/B.
+- Every runtime row is within ±10% of `42279aaf` except `ws_frame`.
+- `ws_frame` is 1.83–2.14x the pinned baseline because the baseline’s fast
+  path returns a pointer into a dead callee frame; the current corrected-ABI
+  ratio is 1.33x C. This needs an explicit exception or re-lock, not an
+  optimization regression verdict.
+- The earlier cross-date deltas (arena/spsc/fsm/recommender/hash) were run
+  variation; controlled A/B passes them.
 
 ## Invalid historical records — do not use
 
