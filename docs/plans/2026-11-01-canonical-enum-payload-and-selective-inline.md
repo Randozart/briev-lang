@@ -40,7 +40,12 @@ cost performance, never correctness.
 - Delete or quarantine D4b-only code paths; `notail` is not a substitute for an
   escape proof.
 
-### Phase B — parameter retention summaries
+### Phase B — parameter retention summaries — COMPLETE (2026-11-02)
+
+Landed: `GeneralizedDestinationOwnershipPlan.non_escaping_params` and
+`parameter_is_non_escaping()`, derived conservatively from R1 parameter
+escapes/sinks. Field-read-only parameters are non-escaping; return/store/unknown
+call cases are escaping. Regression: `parameter_retention_summary_is_conservative`.
 
 - R1 already records parameter escapes. Expose a conservative summary keyed by
   callable name + parameter index:
