@@ -54,7 +54,7 @@ static void* canceller(void* arg) {
 int main(void) {
     g_st = __briev_init_state();
     int64_t small = cancellable_sum(g_st, 100000);      // full, small
-    int64_t mid   = cancellable_sum(g_st, 50000000);    // full, computable (~0.1s)
+    int64_t mid   = cancellable_sum(g_st, 1000000000);  // full reference
     __briev_clear_cancel(g_st);
     pthread_t th;
     pthread_create(&th, NULL, canceller, NULL);
@@ -91,11 +91,14 @@ int main(void) {
     let mid = read("mid:");
     let partial = read("partial:");
     assert_eq!(small, 14999850000, "sum(100000) mismatch: {}", stdout);
-    assert!(mid > small, "sum(2000000) should exceed sum(100000): {}", stdout);
-    // The 2e9 run is cancelled after ~20ms (~10M iterations at ~500M/s) —
-    // it must stop well before the 50M full run, let alone 2e9.
+    assert!(mid > small, "sum(1e9) should exceed sum(1e5): {}", stdout);
+    // 2026-11-02 (CI): the old 50M reference assumed ~500M iterations/s. A
+    // fast CI host completed ~95M iterations in the 20 ms cancellation window,
+    // so partial > mid even though cancellation worked. Compare against a 1B
+    // full run instead: any cancelled 2B run must land below it, while a
+    // missed cancel (~2B) must not.
     assert!(partial < mid,
-        "cancelled 2e9 run must stop before the 2M full run (partial {partial} < mid {mid}): {stdout}");
+        "cancelled 2e9 run must stop before the 1e9 full run (partial {partial} < mid {mid}): {stdout}");
 
     let _ = std::fs::remove_dir_all(&out_dir);
 }
