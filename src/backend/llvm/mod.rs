@@ -3237,8 +3237,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // 2026-10-21 (B1 nested enum layout): concrete instance planner.
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
             .max_enum_inline_depth;
-        self.ctx.enum_layout_planner =
-            Some(crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth));
+        self.ctx.enum_layout_planner = Some(
+            crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth)
+                .with_type_universe(self.ctx.type_universe.as_ref()),
+        );
         let enum_lowering = self
             .ctx
             .enum_layout_planner

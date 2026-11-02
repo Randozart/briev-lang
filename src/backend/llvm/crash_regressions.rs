@@ -74,3 +74,35 @@ fn pooled_object_replacement_survives_reactor_firings() {
         super::logical_tests::clang_ir(&ir, optimization, true);
     }
 }
+
+fn normalized_program(source: &str) -> (Vec<crate::ast::TopLevel>, crate::type_universe::TypeUniverse) {
+    let (items, mut universe) = crate::library::parse_and_check("scratch/layout_regression.bv", source)
+        .expect("checked layout regression");
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
+        .expect("resolved regression types");
+    (items, universe)
+}
+
+#[test]
+fn nested_object_enum_payload_fits_on_native_and_wasm_targets() {
+    let source = r#"
+        obj Stamp { epoch: String; account: Int; revision: String; };
+        obj Receipt { stamp: Stamp; operation: String; };
+        enum Event { Saved(Receipt), Empty };
+        defn receipt() -> Receipt {
+            term Receipt { stamp: Stamp { epoch: "epoch", account: 7, revision: "9" },
+                operation: "operation" };
+        };
+        defn wrap() -> Event { term Saved(receipt()); };
+        let current: Event = wrap();
+    "#;
+    let (items, universe) = normalized_program(source);
+    for bits in [32, 64] {
+        let mut backend = LlvmBackend::new().with_type_universe(universe.clone()).with_int_bits(bits);
+        if bits == 32 {
+            backend = backend.with_target_triple("wasm32-unknown-wasi");
+        }
+        let ir = backend.generate(&items, None);
+        assert!(!ir.is_empty(), "nested payload must reach code generation");
+    }
+}

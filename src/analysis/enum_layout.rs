@@ -52,6 +52,7 @@ pub struct EnumLayoutPlanner {
     /// layout; object payloads are never inlined there.
     boundary_enums: HashSet<String>,
     max_depth: usize,
+    object_bytes: Option<HashMap<String, u64>>,
 }
 
 impl EnumLayoutPlanner {
@@ -62,7 +63,21 @@ impl EnumLayoutPlanner {
             collect_declaration(item, &mut enums, &mut objects);
         }
         let boundary_enums = collect_boundary_enums(items, &enums);
-        Self { enums, objects, boundary_enums, max_depth }
+        Self { enums, objects, boundary_enums, max_depth, object_bytes: None }
+    }
+
+    /// 2026-11-01: object payload capacity must use the same resolved byte
+    /// image as object emission, including nested objects and packed fields.
+    /// Retire this snapshot when all object/enum layouts share a value plan.
+    pub fn with_type_universe(
+        mut self,
+        universe: Option<&crate::type_universe::TypeUniverse>,
+    ) -> Self {
+        self.object_bytes = universe.map(|universe| universe.types.iter()
+            .filter(|(_, resolved)| resolved.bytes > 0)
+            .map(|(name, resolved)| (name.clone(), resolved.bytes))
+            .collect());
+        self
     }
 
     /// Layout for a concrete enum instance. `None` when the type is not a
@@ -127,9 +142,10 @@ impl EnumLayoutPlanner {
     }
 
     fn is_inline_object(&self, ty: &Type, depth: usize) -> bool {
-        if depth >= self.max_depth {
-            return false;
-        }
+        // 2026-11-01: object images are finite resolved byte images, not enum
+        // recursion. Their representation must stay identical inside a nested
+        // enum and at its standalone calls/matches. Applying the enum depth cap
+        // here underallocates parent images. Retire with unified layout plans.
         self.object_words(ty, depth)
             .is_some_and(|words| words <= INLINE_OBJECT_MAX_WORDS)
     }
@@ -141,6 +157,10 @@ impl EnumLayoutPlanner {
             _ => return None,
         };
         let def = self.objects.get(name)?;
+        if let Some(bytes) = &self.object_bytes {
+            let size = bytes.get(name)?;
+            return usize::try_from(size.div_ceil(8)).ok();
+        }
         let subst: HashMap<String, Type> = def
             .params
             .iter()
@@ -375,6 +395,14 @@ mod tests {
             .expect("parse")
     }
 
+    fn resolved_items(source: &str) -> (Vec<TopLevel>, crate::type_universe::TypeUniverse) {
+        let (items, mut universe) = crate::library::parse_and_check("scratch/enum_layout.bv", source)
+            .expect("checked layout source");
+        crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
+            .expect("resolved object metadata");
+        (items, universe)
+    }
+
     fn planner() -> EnumLayoutPlanner {
         let items = parse(
             "enum TcpState { Closed, Listen };\n\
@@ -415,6 +443,45 @@ mod tests {
         assert_eq!(layout.image_words, 3);
         assert_eq!(layout.variant_payload_inline_object, vec![true, false]);
         assert_eq!(layout.variant_payload_words, vec![2, 0]);
+    }
+
+    #[test]
+    fn resolved_nested_object_capacity_matches_its_byte_image() {
+        let source = "obj Inner { first: Int; second: Int; third: Int; }; \
+            obj Outer { inner: Inner; tail: Int; }; enum E { Wrap(Outer), Empty };";
+        let (items, universe) = resolved_items(source);
+        let bytes = universe.get("Outer").expect("resolved object").bytes;
+        assert!(bytes > 16, "nested fields must exercise the former underallocation");
+        let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
+        let layout = planner.layout_for(&Type::Custom("E".into())).expect("layout");
+        assert_eq!(layout.variant_payload_words[0], bytes.div_ceil(8) as usize);
+        assert!(layout.variant_payload_inline_object[0]);
+    }
+
+    #[test]
+    fn resolved_object_size_controls_inline_limit_and_unknown_sizes_box() {
+        let source = "obj Item { value: Int; }; enum E { Wrap(Item), Empty };";
+        let (items, mut universe) = resolved_items(source);
+        for bytes in [0, (INLINE_OBJECT_MAX_WORDS as u64 + 1) * 8] {
+            universe.types.get_mut("Item").expect("object").bytes = bytes;
+            let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
+            let layout = planner.layout_for(&Type::Custom("E".into())).expect("layout");
+            assert!(!layout.variant_payload_inline_object[0]);
+            assert_eq!(layout.variant_payload_words[0], 1);
+        }
+    }
+
+    #[test]
+    fn nested_enum_keeps_its_object_payload_representation() {
+        let source = "obj Payload { first: Int; second: Int; }; \
+            enum Inner { Value(Payload), Empty }; enum Outer { Contained(Inner), Absent };";
+        let (items, universe) = resolved_items(source);
+        let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
+        let inner = planner.layout_for(&Type::Custom("Inner".into())).expect("inner layout");
+        let outer = planner.layout_for(&Type::Custom("Outer".into())).expect("outer layout");
+        assert!(inner.variant_payload_inline_object[0]);
+        assert!(outer.variant_payload_inline[0]);
+        assert_eq!(outer.variant_payload_words[0], inner.image_words);
     }
 
     #[test]

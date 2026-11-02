@@ -11491,3 +11491,8 @@ later constructors can overwrite or misinterpret those handles. Reproducer:
 
 This is part of the enum value model migration: collection elements must own a
 complete value or an explicitly owned box, never a borrowed constructor slot.
+
+
+## FIXED 2026-11-02: enum-object-layout
+
+Plan enum object capacity from resolved sizes and preserve nested object ABI. Regression: nested_object_enum_payload_fits_on_native_and_wasm_targets.
