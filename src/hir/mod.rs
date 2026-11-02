@@ -7,6 +7,7 @@
 //! callable surface. No consumer uses it yet.
 
 pub mod expr;
+pub mod frontend;
 pub mod ids;
 pub mod lower;
 pub mod pattern;
@@ -15,6 +16,7 @@ pub mod stats;
 pub mod stmt;
 pub mod verify;
 
+pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
@@ -23,6 +25,32 @@ pub use verify::verify;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{Expr, StageKind, TopLevel};
+    use crate::plugin::{Plugin, PluginManager};
+    use crate::type_universe::TypeUniverse;
+
+    #[derive(Debug)]
+    struct DemoPlugin;
+
+    impl Plugin for DemoPlugin {
+        fn name(&self) -> &str { "hir-demo" }
+        fn stages(&self) -> Vec<StageKind> { vec![StageKind::Parsed] }
+        fn on_ast(
+            &self,
+            program: &mut Vec<TopLevel>,
+            _universe: &mut TypeUniverse,
+        ) -> Result<(), String> {
+            let mut rewrite = |expr: &mut Expr| {
+                if matches!(expr, Expr::PluginIntercept { name, .. } if name == "demo") {
+                    *expr = Expr::Decimal(7);
+                }
+            };
+            for item in program {
+                crate::ast::visit_mut::walk_toplevel(item, &mut rewrite);
+            }
+            Ok(())
+        }
+    }
 
     fn parse(src: &str) -> Vec<crate::ast::TopLevel> {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
@@ -80,6 +108,19 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn frontend_plugins_run_before_checked_hir() {
+        let src = "defn f(x: Int) -> Int { term demo!(x); };\n";
+        let mut items = parse(src);
+        let mut pm = PluginManager::new();
+        pm.register(Box::new(DemoPlugin));
+        let mut universe = TypeUniverse::new();
+        let program = lower_program_after_frontend(&mut items, &pm, &mut universe)
+            .expect("plugin resolves before HIR");
+        verify(&program).expect("valid HIR");
+        assert_eq!(unsupported_counts(&program).total(), 0);
     }
 
     #[test]
