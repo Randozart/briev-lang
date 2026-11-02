@@ -1835,7 +1835,23 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         } else {
                             None
                         };
-                        let pushed = push_val.as_ref().unwrap_or(&val);
+                        // 2026-11-02 (enum value model): a pushed enum is an
+                        // OWNING collection element. Call results may point at
+                        // a caller-owned `%esrt` stack image; copy it to owned
+                        // storage before publishing the handle into the list.
+                        let owned_enum = if elem_ty
+                            .as_ref()
+                            .is_some_and(|et| is_enum_handle_type(backend, et))
+                        {
+                            let mut enum_val = val.clone();
+                            if let Some(et) = &elem_ty {
+                                enum_val.ty = et.clone();
+                            }
+                            backend.own_enum_value(out, indent, &enum_val)
+                        } else {
+                            val.clone()
+                        };
+                        let pushed = push_val.as_ref().unwrap_or(&owned_enum);
                         if emit_strategy_member_call(backend, out, indent, t, &op_def, Some(&pushed.name)).is_none() {
                             emit_strategy_fn_call(backend, out, indent, t, &op_def, Some(&pushed.name));
                         }

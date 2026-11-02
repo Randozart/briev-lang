@@ -233,7 +233,7 @@ character that was not alphanumeric/underscore, so `-` ended the event name.
 **Fix:** allow `-` in the event suffix and add
 `b_window_event_name_preserves_hyphens`.
 
-## `JsonValue` Object nested in `Array` loses its payload across a function return -- OPEN 2026-10-26
+## `JsonValue` Object nested in `Array` loses its payload across a function return -- FIXED 2026-11-02
 
 **Symptom:** a constructed protocol payload
 `Object([("operations", Array([Object([...])]))])` stringifies correctly, but
@@ -246,10 +246,10 @@ the app's `operation_store_gate` (`receipt_reply=false` before the workaround).
 Direct Object-in-list-at-top-level works; the corruption appears when the
 Array is itself a field of an Object returned through a call.
 
-**Current workaround:** the app serializes the receipt payload and reparses it
-at the wire boundary (`persistence_worker_receipt_payload`), which restores the
-canonical representation. Do not treat this as the fix: the copy path must be
-repaired so constructed nested arrays behave like parsed ones.
+**Fixed 2026-11-02:** with the app workaround removed, the
+`operation_store_gate` passes (`receipt_reply=true`, `receipt_retention=true`).
+The owned enum/collection extraction and push fixes preserve the nested object
+payload. The app workaround can be deleted.
 
 ## `clang -O3 -flto` segfaults on the recommender active-profile gate -- FIXED 2026-10-26
 
@@ -9111,19 +9111,10 @@ undefined `err_char`; single-wrap the Array/Object frames; list append via
 6. (Consequence) `lib/std/json.bv` header + migration; not yet reachable.
 
 **OPEN:**
-- **`list_concat` intrinsic binding has no lowering.** The typechecker
-  resolves `List<T> + List<T>` to `OpBinding::Intrinsic("list_concat")`
-  (SPEC §2615) but nothing implements it — the backend falls through to
-  integer add, so `[1,2] + [3]` yields count 1. json.bv migrated to
-  `list <- elem`. Fix: a lowering (or a stdlib `list_concat` the binding
-  dispatches to).
-- **Char cast lane mis-typed.** `let c: Char = char_at(...); c as Int`
-  emits `trunc i64 <i32 reg> to i32` (invalid IR). Instrumented: the
-  cast sees `src_ty = Custom("Data")`, not `Custom("Char")` — the Char
-  binding/return resolves to the Data protocol variant, so the path
-  `Data→Char→Int` truncs a native i32. `char_at` is therefore unusable
-  from Briev code until the Char protocol's default variant / native
-  width is consistent. Blocks json.bv end-to-end.
+- **`list_concat` intrinsic binding has no lowering. — FIXED 2026-11-02.**
+  `[1,2] + [3]` now produces `len=3` and values `1,2,3` (probe).
+- **Char cast lane mis-typed. — VERIFIED FIXED 2026-11-02.** JSON
+  parse/stringify gates and the interpreter Char/cast tests pass.
 
 ## json.bv round 2 — callable `txn` convergence is linear (blocks json runtime) + 6 more codegen fixes 2026-10-05 [LEDGER 2026-10-06: RESOLVED]
 
@@ -10888,7 +10879,7 @@ had it.
 (-O3 -flto -ffast-math). Full harness 79/79 MATCH, zero MISMATCH;
 3185 lib tests green; determinism clean.
 
-## 2026-10-20 — interpreter: callable Briev txns are not executed (OPEN)
+## 2026-10-20 — interpreter: callable Briev txns are not executed (FIXED 2026-11-02)
 
 **Symptom:** a `txn` invoked as a FUNCTION (callable txn) does not execute in
 the interpreter; the calling node reaches equilibrium without `endprogram`.
@@ -10902,11 +10893,11 @@ delegates to a callable txn (PR #26's `base64_encode` → `b64_loop`). The
 COMPILED backend executes it correctly (canonical Base64 vectors pass through
 the pipeline — tests/tier1/net_stack_helpers.bv). Rule-5 divergence.
 
-**Next step:** teach the interpreter's call resolution to execute a
-body-carrying `Transaction` like a `defn` (bind params, run body, return
-`term`), matching the backend's callable-txn support.
+**Fixed 2026-11-02:** `tests/interpreter_callable_txn.rs` passes 22/22,
+including `b64_loop`, raw-address→String, 7000-byte `ws_encode`, and callable
+txns. The interpreter now executes body-carrying transactions like `defn`s.
 
-## 2026-10-20 — interpreter: raw-address→String door unsupported (OPEN)
+## 2026-10-20 — interpreter: raw-address→String door unsupported (FIXED 2026-11-02)
 
 **Symptom:** `(addr as Data) as String` (constructing a Briev String at a raw
 heap address with a `[len][bytes]` header) yields a non-Int, non-String
@@ -11010,7 +11001,7 @@ writes key bytes 0..3 when MASK is set and then copies the payload.
 Regression pin: the `scenario_rt` encode round-trip in
 `tests/ws_frame_codec_parity.rs` (7-bit + 16-bit forms, masked and plain).
 
-## 2026-10-20 — interpreter: large ws_encode payload fails in the reactor path (OPEN)
+## 2026-10-20 — interpreter: large ws_encode payload fails in the reactor path (FIXED 2026-11-02)
 
 **Symptom:** encoding a 7000-byte payload through a node body fails with
 `HeapError("Load# read failed")` at addr 0; the IDENTICAL body executed
@@ -11480,6 +11471,10 @@ lane still executes them.
 | `go_roundtrip` | generated Go bridge references undefined `@cstr_len` |
 | `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
 
+Verification 2026-11-02: `c_driver_boundary` still fails (`greet` empty,
+`join` null); `c_driver_needs_state` still gets 0 vs expected 31; CLI entry tests
+still run >60s. These remain open.
+
 Removal conditions:
 - C string return/ownership fixed or the C bridge explicitly retired;
 - `CancelRequested#` supported or the driver retired;
@@ -11552,17 +11547,16 @@ return small enum images by value or consume a lifetime/linearity proof to
 elide the copy.
 
 
-## List<Result> elements alias later enum constructors (OPEN 2026-10-29)
+## List<Result> elements alias later enum constructors (FIXED 2026-11-02)
 
-Building a `List<Result<Int,String>>` with four conditional pushes produces
-`LEN=4`, but index 2 changes from `Ok(2)` to an `Err` value. The current enum
-ABI publishes handles to short-lived constructor images; collection growth /
-later constructors can overwrite or misinterpret those handles. Reproducer:
-`tests/tier1/enum_list_lifetime.bv.known-bug`; ignored regression pin:
-`tests/enum_list_lifetime_regression.rs`.
+Collection insertion now owns enum values: when the element type is an enum,
+the push path calls `own_enum_value` before publishing the handle. A
+caller-owned `%esrt` stack image from `make_result` is copied to owned storage,
+so later constructors cannot overwrite the element.
 
-This is part of the enum value model migration: collection elements must own a
-complete value or an explicitly owned box, never a borrowed constructor slot.
+Regression: `tests/tier1/enum_list_lifetime.bv` +
+`tests/enum_list_lifetime_regression.rs` (unignored). Output:
+`enum_list_lifetime=true`.
 
 
 ## FIXED 2026-11-02: enum-object-layout

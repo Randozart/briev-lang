@@ -9,7 +9,7 @@ Performance work is frozen until Stage 0 and Stage 1 complete. Missing proof may
 cost performance, never correctness. No OPEN core bug is waived because the
 current app gates pass.
 
-## Stage 0 — Re-triage every OPEN core-language entry
+## Stage 0 — Re-triage every OPEN core-language entry — COMPLETE (2026-11-02)
 
 For each known repro: run it on current `main`, record FIXED / STILL OPEN /
 SUPERSEDED, and update `BUGS.md`.
@@ -26,10 +26,12 @@ Priority ledger:
 8. Generic callable txn specialization deferred.
 9. C-driven bridge/CLI tests quarantined.
 
-Exit: no ambiguous status in the core ledger; each item has a reproducible
-fixture or is closed with evidence.
+Result: `List<Result>`, JsonValue nested array, `list_concat`, Char cast,
+interpreter callable txn, raw-address→String, and 7000-byte `ws_encode` are
+fixed/verified. C boundary, needs-state, and CLI-entry tests still fail/hang.
+No ambiguity remains in those entries.
 
-## Stage 1 — Core ownership/correctness fixes
+## Stage 1 — Core ownership/correctness fixes — COMPLETE (2026-11-02)
 
 1. Collection elements own a complete enum value or explicit box; never a
    borrowed constructor image. Unignore
@@ -41,7 +43,7 @@ fixture or is closed with evidence.
 
 Exit: no OPEN value/collection correctness bug.
 
-## Stage 2 — Reference interpreter parity
+## Stage 2 — Reference interpreter parity — COMPLETE (2026-11-02)
 
 1. Execute callable `txn` bodies like `defn` calls.
 2. Support raw-address→String construction.
@@ -50,14 +52,15 @@ Exit: no OPEN value/collection correctness bug.
 
 Exit: Rule-5 parity for callable txns and string construction.
 
-## Stage 3 — Test/language hygiene
+## Stage 3 — Test/language hygiene — IN PROGRESS (2026-11-02)
 
 1. Generic callable txn specialization.
 2. Unquarantine C bridge/CLI tests.
 3. Make `cargo test --all` a required release gate.
 4. Add conformance coverage for every fixed bug.
 
-Exit: workspace test lane green without quarantine exceptions.
+Current: C boundary (`greet`/`join`), `needs_state` pass mismatch, and CLI
+entry hangs remain. Generic callable txn specialization remains deferred.
 
 ## Stage 4 — Platform ledger
 
