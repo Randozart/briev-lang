@@ -59,8 +59,10 @@ Exit: Rule-5 parity for callable txns and string construction.
 3. Make `cargo test --all` a required release gate.
 4. Add conformance coverage for every fixed bug.
 
-Current: C boundary (`greet`/`join`), `needs_state` pass mismatch, and CLI
-entry hangs remain. Generic callable txn specialization remains deferred.
+Progress 2026-11-02: C boundary (`greet`/`join`) fixed and
+`c_driver_boundary` unignored. Remaining: `needs_state` pass mismatch (0 vs 31),
+CLI entry hangs, generic callable txn specialization deferred, other
+C/Python/Node/Go drivers still quarantined.
 
 ## Stage 4 — Platform ledger
 
