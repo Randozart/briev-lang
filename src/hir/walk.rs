@@ -317,3 +317,24 @@ fn walk_opt_box<F: FnMut(&HirExpr)>(expr: Option<&HirExpr>, f: &mut F) {
         walk_expr(expr, f);
     }
 }
+
+pub fn walk_pattern<F: FnMut(&HirPattern)>(pattern: &HirPattern, f: &mut F) {
+    match &pattern.kind {
+        HirPatternKind::EnumVariant(_, patterns)
+        | HirPatternKind::Tuple(patterns)
+        | HirPatternKind::Multi(patterns) => walk_patterns(patterns, f),
+        HirPatternKind::Wildcard
+        | HirPatternKind::Literal(_)
+        | HirPatternKind::Binding(_)
+        | HirPatternKind::TypedBinding(_, _)
+        | HirPatternKind::Range(_, _)
+        | HirPatternKind::RangeInclusive(_, _) => {}
+    }
+    f(pattern);
+}
+
+pub fn walk_patterns<F: FnMut(&HirPattern)>(patterns: &[HirPattern], f: &mut F) {
+    for pattern in patterns {
+        walk_pattern(pattern, f);
+    }
+}

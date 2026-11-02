@@ -7,6 +7,7 @@
 //! callable surface. No consumer uses it yet.
 
 pub mod cast_paths;
+pub mod constructors;
 pub mod expr;
 pub mod frontend;
 pub mod ids;
@@ -22,6 +23,7 @@ pub mod verify;
 pub mod walk;
 
 pub use cast_paths::resolve_cast_paths;
+pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
@@ -117,6 +119,17 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn enum_constructors_and_patterns_resolve_to_candidates() {
+        let program = lower_program(&parse(
+            "enum Maybe { None, Some(Int) }; defn f(x: Int) -> Int { term match Some(x) { Some(n) => n, None => 0 }; };\n",
+        ));
+        let facts = build_constructor_facts(&program);
+        assert!(facts.calls.values().any(|fact| fact.name == "Some"));
+        assert!(facts.patterns.values().any(|fact| fact.name == "Some"));
+        assert!(facts.patterns.values().any(|fact| fact.name == "None"));
     }
 
     #[test]
