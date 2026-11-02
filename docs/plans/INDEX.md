@@ -15,6 +15,11 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
+**Language stabilization (2026-11-02, active):**
+`docs/plans/2026-11-02-language-stabilization.md` — re-triage OPEN core bugs,
+fix enum/collection ownership and reference-interpreter parity, then unquarantine
+the full test lane.
+
 **Canonical enum payload + selective inline (2026-11-01, closed 2026-11-02):**
 `docs/plans/2026-11-01-canonical-enum-payload-and-selective-inline.md` —
 D4b enabled with PR49/50/51 owned extraction; callable-boundary gate mandatory;
