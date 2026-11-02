@@ -8,8 +8,10 @@ node main [done == false][done] {
     let b: List<B> = [B { y: 3 }];
     let c: List<A> = a + a;
     let d: List<B> = b + b;
-    println!(Count#(c));
-    println!(Count#(d));
+    Print#(Count#(c));
+    Print#('\n');
+    Print#(Count#(d));
+    Print#('\n');
     done = true;
     term;
 };
