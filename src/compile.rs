@@ -445,11 +445,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // checked HIR. Opt-in only; no backend consumes HIR yet.
     if std::env::var_os("BRIEV_HIR_AUDIT").is_some() {
         match briev_compiler::hir::lower_program_checked(&items) {
-            Ok(program) => eprintln!(
-                "HIR_AUDIT ok callables={} unsupported={}",
-                program.callables.len(),
-                briev_compiler::hir::unsupported_counts(&program).total()
-            ),
+            Ok(program) => {
+                let facts = briev_compiler::hir::build_facts(&program);
+                eprintln!(
+                    "HIR_AUDIT ok callables={} types={} values={} sinks={} unsupported={}",
+                    program.callables.len(),
+                    program.type_defs.len(),
+                    facts.values.values.len(),
+                    facts.sinks.sinks.len(),
+                    briev_compiler::hir::unsupported_counts(&program).total()
+                );
+            }
             Err(issues) => eprintln!(
                 "HIR_AUDIT unresolved: {}",
                 issues

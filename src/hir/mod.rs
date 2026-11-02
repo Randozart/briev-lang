@@ -9,6 +9,7 @@
 pub mod cast_paths;
 pub mod constructors;
 pub mod expr;
+pub mod facts;
 pub mod frontend;
 pub mod ids;
 pub mod lower;
@@ -25,6 +26,7 @@ pub mod walk;
 
 pub use cast_paths::resolve_cast_paths;
 pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};
+pub use facts::{build_facts, HirFacts};
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
@@ -121,6 +123,18 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn unified_facts_bundle_is_consistent() {
+        let program = lower_program(&parse(
+            "enum Maybe { None, Some(Int) }; struct Point { x: Int; y: Int; }; defn f(n: Int) -> Int { term f(n); };\n",
+        ));
+        let facts = build_facts(&program);
+        assert_eq!(facts.types.enums.len(), 1);
+        assert_eq!(facts.types.structs.len(), 1);
+        assert_eq!(facts.tail_calls.callables.len(), 1);
+        assert!(!facts.values.values.is_empty());
     }
 
     #[test]
