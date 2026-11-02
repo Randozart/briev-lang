@@ -11462,7 +11462,6 @@ lane still executes them.
 
 | Test | Observed |
 |---|---|
-| `boundary_types_roundtrip` | `greet` empty, `join` null from a C caller |
 | `cpp_roundtrip` | driver exits non-zero after C boundary check |
 | `host_cancellation_stops_briev_loop` | `CancelRequested#` unsupported by LLVM normalizer |
 | `needs_state_pass_matches_reference` | Briev pass returns 0, Rust reference 31 for `node_bridge.bv` |
@@ -11471,9 +11470,10 @@ lane still executes them.
 | `go_roundtrip` | generated Go bridge references undefined `@cstr_len` |
 | `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
 
-Verification 2026-11-02: `c_driver_boundary` still fails (`greet` empty,
-`join` null); `c_driver_needs_state` still gets 0 vs expected 31; CLI entry tests
-still run >60s. These remain open.
+Verification 2026-11-02: `boundary_types_roundtrip` is FIXED and unignored.
+The example double-converted `CStr → String`; `greet`/`join` now use the
+protocol cast once and pass. `c_driver_needs_state` still gets 0 vs expected 31;
+CLI entry tests still run >60s. These remain open.
 
 Removal conditions:
 - C string return/ownership fixed or the C bridge explicitly retired;
