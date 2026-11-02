@@ -6,6 +6,7 @@
 //! slice assigns stable IDs, normalizes export wrappers, and verifies the
 //! callable surface. No consumer uses it yet.
 
+pub mod cast_paths;
 pub mod expr;
 pub mod frontend;
 pub mod ids;
@@ -15,7 +16,9 @@ pub mod program;
 pub mod stats;
 pub mod stmt;
 pub mod verify;
+pub mod walk;
 
+pub use cast_paths::resolve_cast_paths;
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
@@ -108,6 +111,25 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn cast_paths_are_explicit_when_endpoints_are_typed() {
+        let mut program = lower_program(&parse(
+            "defn f(x: Int) -> Float { term 1 as Float; };\n",
+        ));
+        let graph = crate::casting::graph::CastingGraph::new();
+        let universe = TypeUniverse::new();
+        let resolved = resolve_cast_paths(&mut program, &graph, &universe);
+        assert_eq!(resolved, 1);
+        let body = &program.callables[0].body.statements;
+        let super::stmt::HirStmtKind::Term(Some(expr)) = &body[0].kind else {
+            panic!("term expression expected");
+        };
+        let super::expr::HirExprKind::Cast { via, .. } = &expr.kind else {
+            panic!("cast expected");
+        };
+        assert!(via.as_ref().is_some_and(|path| !path.is_empty()));
     }
 
     #[test]

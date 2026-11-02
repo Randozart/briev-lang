@@ -58,6 +58,8 @@ pub enum HirExprKind {
     Cast {
         inner: Box<HirExpr>,
         to: Type,
+        /// Resolved protocol lane sequence. `None` = endpoints not yet typed.
+        via: Option<Vec<crate::casting::graph::CastStep>>,
     },
     MethodCall {
         receiver: Box<HirExpr>,

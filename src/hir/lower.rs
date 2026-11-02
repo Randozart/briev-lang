@@ -281,6 +281,7 @@ fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
         Expr::Cast(inner, to) => (Some(to.clone()), HirExprKind::Cast {
             inner: Box::new(lower_expr(inner, ids)),
             to: to.clone(),
+            via: None,
         }),
         Expr::Tuple(items) => (None, HirExprKind::Tuple(items.iter().map(|item| lower_expr(item, ids)).collect())),
         Expr::List(items) => (None, HirExprKind::List(items.iter().map(|item| lower_expr(item, ids)).collect())),
