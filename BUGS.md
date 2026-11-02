@@ -11561,3 +11561,6 @@ Scope enum constructor context to the declared struct field type. Regression: en
 ## FIXED 2026-11-02: enum-object-projection-lifetime
 
 Own inline object payloads extracted from temporary enum images. Regression: extracted_enum_objects_survive_the_enum_result_frame.
+## FIXED 2026-11-02: callable-transaction-emission
+
+Emit callable transaction locals inside entry and preserve unique SSA names. Regression: callable_transaction_local_slots_are_inside_the_function.
