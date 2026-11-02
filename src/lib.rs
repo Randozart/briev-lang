@@ -29,6 +29,7 @@ pub mod casting;
 pub mod assertion_verify;
 pub mod ast;
 pub mod analysis;
+pub mod hir;
 pub mod archive;
 pub mod backend;
 pub mod beast;
