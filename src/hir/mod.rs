@@ -15,7 +15,7 @@ pub mod stats;
 pub mod stmt;
 pub mod verify;
 
-pub use lower::lower_program;
+pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use verify::verify;
@@ -80,6 +80,16 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn checked_lowering_rejects_frontend_only_syntax() {
+        let plain = parse("defn f(x: Int) -> Int { term x + 1; };\n");
+        assert!(lower_program_checked(&plain).is_ok());
+
+        let plugin = parse("defn f(x: Int) -> Int { term demo!(x); };\n");
+        let issues = lower_program_checked(&plugin).expect_err("plugin intercept must block HIR");
+        assert!(issues.iter().any(|issue| issue.tag == "plugin-intercept"));
     }
 
     #[test]

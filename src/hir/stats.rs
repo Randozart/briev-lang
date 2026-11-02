@@ -6,15 +6,18 @@ use super::expr::{HirExpr, HirExprKind};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{HirCallable, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnsupportedCounts {
     pub expressions: usize,
     pub statements: usize,
+    pub expression_tags: BTreeMap<&'static str, usize>,
+    pub statement_tags: BTreeMap<&'static str, usize>,
 }
 
 impl UnsupportedCounts {
-    pub fn total(self) -> usize {
+    pub fn total(&self) -> usize {
         self.expressions + self.statements
     }
 }
@@ -82,7 +85,10 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. } => {}
-        HirStmtKind::Other(_) => counts.statements += 1,
+        HirStmtKind::Other(tag) => {
+            counts.statements += 1;
+            *counts.statement_tags.entry(tag).or_insert(0) += 1;
+        }
     }
 }
 
@@ -169,7 +175,10 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
             count_expr_arms(arms, counts);
         }
         HirExprKind::Block(body) => count_body(body, counts),
-        HirExprKind::Other(_) => counts.expressions += 1,
+        HirExprKind::Other(tag) => {
+            counts.expressions += 1;
+            *counts.expression_tags.entry(tag).or_insert(0) += 1;
+        }
         HirExprKind::Literal(_)
         | HirExprKind::Identifier(_)
         | HirExprKind::UnitLiteral { .. } => {}

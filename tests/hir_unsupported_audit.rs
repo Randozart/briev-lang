@@ -36,6 +36,7 @@ fn corpus_lowers_with_verified_ids_and_bounded_unsupported_syntax() {
     let mut statements = 0usize;
     let mut parsed = 0usize;
     let mut worst: Vec<(usize, String)> = Vec::new();
+    let mut tags: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
     for path in &files {
         let Ok(source) = std::fs::read_to_string(path) else {
             continue;
@@ -53,6 +54,9 @@ fn corpus_lowers_with_verified_ids_and_bounded_unsupported_syntax() {
         let counts = unsupported_counts(&program);
         expressions += counts.expressions;
         statements += counts.statements;
+        for (tag, count) in &counts.expression_tags {
+            *tags.entry(*tag).or_insert(0) += *count;
+        }
         worst.push((
             counts.total(),
             path.strip_prefix(root).unwrap_or(path).display().to_string(),
@@ -63,6 +67,11 @@ fn corpus_lowers_with_verified_ids_and_bounded_unsupported_syntax() {
         "HIR_UNSUPPORTED files={parsed} expressions={expressions} statements={statements} total={}",
         expressions + statements
     );
+    let mut tag_rows: Vec<_> = tags.into_iter().collect();
+    tag_rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    for (tag, count) in tag_rows {
+        println!("HIR_UNSUPPORTED_TAG {count:4} {tag}");
+    }
     for (count, path) in worst.iter().take(12) {
         println!("HIR_UNSUPPORTED_FILE {count:4} {path}");
     }

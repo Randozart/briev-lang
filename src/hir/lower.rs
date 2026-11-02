@@ -431,3 +431,33 @@ fn expr_tag(expr: &Expr) -> &'static str {
         _ => "other-expression",
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirLowerIssue {
+    pub tag: &'static str,
+    pub count: usize,
+}
+
+/// Checked lowering for consumers: every `Other(tag)` is a frontend
+/// normalization gap. Corpus audits may use unchecked lowering to measure it.
+pub fn lower_program_checked(items: &[TopLevel]) -> Result<HirProgram, Vec<HirLowerIssue>> {
+    let program = lower_program(items);
+    let counts = super::stats::unsupported_counts(&program);
+    let mut issues: Vec<HirLowerIssue> = counts
+        .expression_tags
+        .into_iter()
+        .map(|(tag, count)| HirLowerIssue { tag, count })
+        .chain(
+            counts
+                .statement_tags
+                .into_iter()
+                .map(|(tag, count)| HirLowerIssue { tag, count }),
+        )
+        .collect();
+    issues.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(b.tag)));
+    if issues.is_empty() {
+        Ok(program)
+    } else {
+        Err(issues)
+    }
+}
