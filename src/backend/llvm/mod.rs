@@ -3238,7 +3238,8 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         let enum_depth = crate::config_tuning::target_settings_for(&self.ctx.target_triple)
             .max_enum_inline_depth;
         let enum_layout_planner =
-            crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth);
+            crate::analysis::enum_layout::EnumLayoutPlanner::new(&reordered_items, enum_depth)
+                .with_type_universe(self.ctx.type_universe.as_ref());
         self.ctx.enum_lowering = crate::backend::llvm::enum_lowering::EnumLoweringPlan::build(
             &self.ctx.generalized_destination_ownership,
             &enum_layout_planner,
