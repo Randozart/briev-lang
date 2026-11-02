@@ -2989,8 +2989,7 @@ impl LlvmBackend {
     }
 
     fn emit_struct_field_store(&mut self, out: &mut String, indent: &str, field: StructField<'_>) {
-        let fr = self.fun.gen_reg();
-        let val = self.emit_expr_inner(out, &fr, field.expr, indent);
+        let val = self.emit_struct_field_value(out, indent, &field);
         let val = self.own_enum_value(out, indent, &val);
         let offset = self.lookup_field_offset(field.type_name, field.name);
         let ptr_reg = self.fun.gen_reg();
@@ -3004,6 +3003,30 @@ impl LlvmBackend {
             return;
         }
         self.emit_struct_regular_field(out, indent, field, &val, &ptr_reg);
+    }
+
+    fn struct_field_type(&self, type_name: &str, name: &str) -> Option<Type> {
+        self.get_struct_fields(type_name)?
+            .iter().find(|(field, _)| field == name).map(|(_, ty)| ty.clone())
+    }
+
+    fn emit_struct_field_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        field: &StructField<'_>,
+    ) -> TypedRegister {
+        // 2026-11-01: a field constructor belongs to its declared enum, never
+        // an enclosing return's enum (whose tags/capacity may differ). Restore
+        // the outer context afterward; retire with per-expression type plans.
+        let field_enum = self.struct_field_type(field.type_name, field.name)
+            .filter(|ty| self.enum_layout(ty).is_some());
+        let saved = std::mem::replace(&mut self.fun.expected_enum_type, field_enum.clone());
+        let register = self.fun.gen_reg();
+        let mut value = self.emit_expr_inner(out, &register, field.expr, indent);
+        self.fun.expected_enum_type = saved;
+        if let Some(ty) = field_enum { value.ty = ty; }
+        value
     }
 
     fn emit_struct_atomic_field(
@@ -3047,12 +3070,7 @@ impl LlvmBackend {
             writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
             return;
         }
-        let field_ty = self
-            .ctx
-            .struct_types
-            .get(field.type_name)
-            .and_then(|fields| fields.iter().find(|(name, _)| name == field.name))
-            .map(|(_, ty)| ty.clone())
+        let field_ty = self.struct_field_type(field.type_name, field.name)
             .unwrap_or_else(|| val.ty.clone());
         let stored = self.coerce_register_value(out, indent, val, &field_ty);
         let fty = self.llvm_type(&field_ty);

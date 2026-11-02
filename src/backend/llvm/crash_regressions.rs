@@ -74,3 +74,35 @@ fn pooled_object_replacement_survives_reactor_firings() {
         super::logical_tests::clang_ir(&ir, optimization, true);
     }
 }
+
+fn normalized_program(source: &str) -> (Vec<crate::ast::TopLevel>, crate::type_universe::TypeUniverse) {
+    let (items, mut universe) = crate::library::parse_and_check("scratch/layout_regression.bv", source)
+        .expect("checked layout regression");
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
+        .expect("resolved regression types");
+    (items, universe)
+}
+
+#[test]
+fn enum_field_constructor_uses_its_declared_layout_and_restores_context() {
+    let source = r#"
+        obj Stamp { epoch: String; account: Int; revision: String; };
+        obj Tag { epoch: String; account: Int; revision: String; job: String; attempt: Int; generation: String; };
+        enum Job { NoJob, Owned(Tag) };
+        obj Record { job: Job; };
+        enum Status { Success(Record), Failure(Stamp) };
+    "#;
+    let (items, universe) = normalized_program(source);
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    backend.generate(&items, None);
+    let enclosing = Type::Custom("Status".into());
+    backend.fun.expected_enum_type = Some(enclosing.clone());
+    backend.fun.let_bindings.insert("input".into(), "%input".into());
+    backend.fun.let_binding_types.insert("input".into(), Type::Custom("Tag".into()));
+    let fields = vec![("job".into(), Expr::Call("Owned".into(),
+        vec![Expr::Identifier("input".into())], None))];
+    let mut ir = String::new();
+    backend.emit_struct_literal(&mut ir, "%record", "Record", &fields, "  ");
+    assert_eq!(backend.fun.expected_enum_type, Some(enclosing));
+    assert!(!ir.is_empty(), "field construction must reach code generation");
+}

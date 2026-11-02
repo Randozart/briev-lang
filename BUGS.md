@@ -11491,3 +11491,8 @@ later constructors can overwrite or misinterpret those handles. Reproducer:
 
 This is part of the enum value model migration: collection elements must own a
 complete value or an explicitly owned box, never a borrowed constructor slot.
+
+
+## FIXED 2026-11-02: enum-field-constructor-context
+
+Scope enum constructor context to the declared struct field type. Regression: enum_field_constructor_uses_its_declared_layout_and_restores_context.
