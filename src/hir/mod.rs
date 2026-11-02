@@ -11,6 +11,7 @@ pub mod expr;
 pub mod frontend;
 pub mod ids;
 pub mod lower;
+pub mod ownership;
 pub mod pattern;
 pub mod program;
 pub mod stats;
@@ -21,6 +22,7 @@ pub mod walk;
 pub use cast_paths::resolve_cast_paths;
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
+pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use verify::verify;
@@ -111,6 +113,27 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn ownership_facts_use_stable_binding_ids() {
+        let program = lower_program(&parse(
+            "defn f(x: Int) -> Int { let y: Int = 1; foreach z in [1,2] { y = y + z; }; term match y { n => n }; };\n",
+        ));
+        let facts = build_value_facts(&program);
+        assert_eq!(facts.values.len(), 4);
+        assert!(facts.values.contains_key(&HirValueKey::Param {
+            callable: program.callables[0].id,
+            index: 0,
+        }));
+        assert_eq!(
+            facts
+                .values
+                .values()
+                .filter(|fact| fact.destination == HirDestinationClass::Boxed)
+                .count(),
+            4
+        );
     }
 
     #[test]
