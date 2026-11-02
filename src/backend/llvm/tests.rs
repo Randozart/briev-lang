@@ -3778,39 +3778,6 @@ fn test_float_binary_add() {
 }
 
 #[test]
-fn inline_object_view_requires_non_escaping_callee_param() {
-    let mut backend = LlvmBackend::new();
-    backend
-        .ctx
-        .generalized_destination_ownership
-        .non_escaping_params
-        .insert("consume".to_string(), std::collections::BTreeSet::from([0]));
-    let direct = Expr::Call(
-        "consume".to_string(),
-        vec![Expr::Identifier("f".to_string())],
-        None,
-    );
-    assert!(backend.inline_object_binding_view_ok(Some(&direct), &["f".to_string()]));
-
-    let retained = Expr::Call(
-        "retain".to_string(),
-        vec![Expr::Identifier("f".to_string())],
-        None,
-    );
-    assert!(!backend.inline_object_binding_view_ok(Some(&retained), &["f".to_string()]));
-
-    let field_arg = Expr::Call(
-        "consume".to_string(),
-        vec![Expr::Field(
-            Box::new(Expr::Identifier("f".to_string())),
-            "a".to_string(),
-        )],
-        None,
-    );
-    assert!(!backend.inline_object_binding_view_ok(Some(&field_arg), &["f".to_string()]));
-}
-
-#[test]
 fn stale_expected_enum_does_not_override_constructor_owner() {
     let program = vec![
         TopLevel::Enum(EnumDefinition {

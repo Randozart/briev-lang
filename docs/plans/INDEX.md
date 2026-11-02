@@ -15,14 +15,16 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
-**Canonical enum payload + selective inline (2026-11-01):**
+**Canonical enum payload + selective inline (2026-11-01, closed 2026-11-02):**
 `docs/plans/2026-11-01-canonical-enum-payload-and-selective-inline.md` —
-canonical boxed enum payloads; selective inline only with parameter-retention
-and match-binding non-escape proof.
+D4b enabled with PR49/50/51 owned extraction; callable-boundary gate mandatory;
+copy elision removed after a controlled regression. Next performance work is
+region-local enum/object scalar replacement.
 
-**Active generalized destination implementation (2026-10-31):**
-merged to `main` at `3c2aeaea`. Phases D1–D6 and D7a–D7e landed. Remaining
-work: `docs/plans/2026-10-31-destination-ownership-remaining-work.md`.
+**Generalized destination implementation (2026-10-31, merged 2026-11-02):**
+`main` at `4dfa4e85` plus integration closeout. Phases D1–D7 landed; D8 cleanup
+complete. Historical execution queue:
+`docs/plans/2026-10-31-destination-ownership-remaining-work.md`.
 Umbrella: `docs/plans/2026-10-30-generalized-value-destination-ownership.md`.
 ADR: `docs/architecture/value-destination-ownership-decision-record.md`.
 Migration uses generalized value lanes with frozen public/runtime ABI.

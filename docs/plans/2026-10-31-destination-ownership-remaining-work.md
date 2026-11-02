@@ -230,7 +230,7 @@ The collection-return runtime path is covered by `collection_rebind_gate`.
 
 Acceptance: no frame image can escape its owner lifetime by any path.
 
-## P4 — D8 retirement — IN PROGRESS (2026-11-01)
+## P4 — D8 retirement — COMPLETE (2026-11-02)
 
 Landed slices:
 
@@ -263,8 +263,11 @@ respectively; details in
 `benchmarks/results/2026-11-01-d8-retention-audit.md`. Do not remove them
 without a proof-carrying replacement.
 
-D8 remains **partial**: final retention/cleanup audit remains. P2’s fallback
-is retired and D4b is fixed/enabled through PR49/50/51.
+D8 closeout (2026-11-02): P2’s fallback is retired; D4b is fixed/enabled through
+PR49/50/51; dormant selective-view and parameter-summary scaffolding removed
+after copy elision was refuted; retention helpers remain with audit evidence;
+PR49–53 closed as included. Remaining work is a separate region-local scalar
+replacement plan, not a legacy-path retirement.
 
 Only after P0–P3 are green.
 

@@ -1,5 +1,11 @@
 # Canonical enum payload and selective inline — 2026-11-01
 
+**Implementation status (2026-11-02): ACTIVE POLICY, OPTIMIZATION CLOSED.**
+D4b is enabled with PR49 resolved sizes + PR50 field context + PR51 owned
+extraction. The callable-boundary gate is mandatory. Copy-elision and selective
+view scaffolding were removed after the controlled `ws_frame` regression.
+Next performance work is region-local enum/object scalar replacement.
+
 ## Decision
 
 Canonical enum representation is **tag + owned payload handle**. Inline object

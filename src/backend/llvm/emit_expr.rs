@@ -7174,7 +7174,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // Undo only when match lowering carries frontend control-flow facts.
             self.fun.terminated = false;
             self.fun.tail_loop_backedge = false;
-            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, Some(&arm.body), &mut sink, indent);
+            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
             if matches!(*arm.body, Expr::List(_)) {
                 if let Some(expected) = expected_result {
                     tys.push(expected.clone());
@@ -7336,7 +7336,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // the merge is mis-emitted.
             self.fun.terminated = false;
             self.fun.tail_loop_backedge = false;
-            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, Some(&arm.body), out, indent);
+            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
             let body_reg;
             if let Some(guard) = &arm.guard {
                 let gv = self.emit_expr(out, guard, indent);
@@ -7630,42 +7630,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         }
     }
 
-    pub(super) fn inline_object_binding_view_ok(
-        &self,
-        body: Option<&Expr>,
-        names: &[String],
-    ) -> bool {
-        if names.is_empty() {
-            return true;
-        }
-        let Some(Expr::Call(callee, args, _)) = body else {
-            return false;
-        };
-        let mut allowed = std::collections::HashMap::new();
-        for (index, arg) in args.iter().enumerate() {
-            let Expr::Identifier(name) = arg else { continue };
-            if names.iter().any(|n| n == name)
-                && self
-                    .ctx
-                    .generalized_destination_ownership
-                    .parameter_is_non_escaping(callee, index)
-            {
-                *allowed.entry(name.clone()).or_insert(0usize) += 1;
-            }
-        }
-        let mut seen = std::collections::HashMap::new();
-        crate::ast::visit::walk_expr(body.expect("checked Some above"), &mut |e| {
-            if let Expr::Identifier(name) = e {
-                if names.iter().any(|n| n == name) {
-                    *seen.entry(name.clone()).or_insert(0usize) += 1;
-                }
-            }
-        });
-        names.iter().all(|name| {
-            seen.get(name).copied().unwrap_or(0) == allowed.get(name).copied().unwrap_or(0)
-        })
-    }
-
     /// Bind a pattern's Binding names to the scrutinee register (or sub-values)
     /// so the arm body resolves them. Tuple/EnumVariant bindings are not
     /// lowered (their conditions emit false, so the block is unreachable).
@@ -7674,7 +7638,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         pat: &crate::ast::Pattern,
         scrut: &str,
         scrut_ty: &Type,
-        _arm_body: Option<&Expr>,
         out: &mut String,
         indent: &str,
     ) {
