@@ -84,7 +84,10 @@ materialization at every match binding.
 
 **Resolution 2026-11-02:** contributor PR49 (resolved `TypeUniverse` object
 capacity), PR50 (declared field constructor context), and PR51 (owned extraction
-of inline object payloads) are integrated. PR51 copies every match-bound inline
+of inline object payloads) are integrated. The callable-signature boundary gate
+remains required: relaxing it (allowing inline object payloads for internally
+returned enums now that extraction copies) still corrupts I11 with
+`malloc(): invalid next size`. Only wholly callable-local enums may inline. PR51 copies every match-bound inline
 object into owned storage, so the borrowed enum-image pointer class is gone;
 `notail`/selective view machinery is no longer required for correctness. D4b is
 enabled. Validation: net_stack O0–O3, ASan, I11, 3443 lib tests, 32 daily tests,

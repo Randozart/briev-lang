@@ -96,6 +96,11 @@ signature remain eligible for inline object bytes. Regression:
 `callable_signature_enum_keeps_boxed_object_payload`. D4b is enabled with PR51
 owned extraction; selective copy elision remains future work.
 
+Relaxation probe (2026-11-02): removing this gate while keeping PR51 owned
+extraction still corrupts I11 (`malloc(): invalid next size`). Therefore the
+whole-enum boundary gate is mandatory, not an optimization policy to relax
+globally.
+
 - For a local enum + object region with no escape, scalar-replace the enum image
   and object fields together.
 - This is the general replacement for D4b’s type-wide inline layout.
