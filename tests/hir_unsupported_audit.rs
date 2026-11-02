@@ -7,7 +7,7 @@ use briev_compiler::hir::{lower_program, unsupported_counts, verify};
 use std::path::{Path, PathBuf};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
-const BASELINE_EXPRESSIONS: usize = 463;
+const BASELINE_EXPRESSIONS: usize = 56;
 const BASELINE_STATEMENTS: usize = 49;
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {

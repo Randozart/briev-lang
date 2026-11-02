@@ -270,6 +270,71 @@ fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
             arms: arms.iter().map(|arm| lower_expr_match_arm(arm, ids)).collect(),
         }),
         Expr::Block(body) => (None, HirExprKind::Block(lower_body(body, ids))),
+        other => return lower_special_expr(other, ids),
+    };
+    HirExpr {
+        id: ids.node(),
+        span: None,
+        ty,
+        kind,
+    }
+}
+
+fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
+    let (ty, kind) = match expr {
+        Expr::MethodCall(receiver, name, args, analysis_id, chain_refs) => (None, HirExprKind::MethodCall {
+            receiver: Box::new(lower_expr(receiver, ids)),
+            name: name.clone(),
+            args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
+            analysis_id: *analysis_id,
+            chain_refs: chain_refs.clone(),
+        }),
+        Expr::Reflect(receiver, name, kind) => (None, HirExprKind::Reflect {
+            receiver: Box::new(lower_expr(receiver, ids)),
+            name: name.clone(),
+            kind: *kind,
+        }),
+        Expr::Index(array, index) => (None, HirExprKind::Index(
+            Box::new(lower_expr(array, ids)),
+            Box::new(lower_expr(index, ids)),
+        )),
+        Expr::Slice { array, start, end, stride } => (None, HirExprKind::Slice {
+            array: Box::new(lower_expr(array, ids)),
+            start: start.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+            end: end.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+            stride: stride.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+        }),
+        Expr::Range { start, end, inclusive } => (None, HirExprKind::Range {
+            start: Box::new(lower_expr(start, ids)),
+            end: Box::new(lower_expr(end, ids)),
+            inclusive: *inclusive,
+        }),
+        Expr::Spawn { type_name, args, storage } => (None, HirExprKind::Spawn {
+            type_name: type_name.clone(),
+            args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
+            storage: *storage,
+        }),
+        Expr::If(condition, then_branch, else_branch) => (None, HirExprKind::If {
+            condition: Box::new(lower_expr(condition, ids)),
+            then_branch: Box::new(lower_expr(then_branch, ids)),
+            else_branch: else_branch.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
+        }),
+        Expr::Lambda(params, body) => (None, HirExprKind::Lambda {
+            params: params.clone(),
+            body: Box::new(lower_expr(body, ids)),
+        }),
+        Expr::IsType(inner, ty) => (None, HirExprKind::IsType {
+            inner: Box::new(lower_expr(inner, ids)),
+            ty: ty.clone(),
+        }),
+        Expr::Deref(inner) => (None, HirExprKind::Deref(Box::new(lower_expr(inner, ids)))),
+        Expr::AddrOf(inner) => (None, HirExprKind::AddrOf(Box::new(lower_expr(inner, ids)))),
+        Expr::Consume(inner) => (None, HirExprKind::Consume(Box::new(lower_expr(inner, ids)))),
+        Expr::Await(inner) => (None, HirExprKind::Await(Box::new(lower_expr(inner, ids)))),
+        Expr::UnitLiteral { value, unit } => (Some(Type::float()), HirExprKind::UnitLiteral {
+            value: *value,
+            unit: unit.clone(),
+        }),
         other => (None, HirExprKind::Other(expr_tag(other))),
     };
     HirExpr {
@@ -344,14 +409,12 @@ fn stmt_tag(statement: &Statement) -> &'static str {
 
 fn expr_tag(expr: &Expr) -> &'static str {
     match expr {
-        Expr::MethodCall(..) => "method-call",
-        Expr::Reflect(..) => "reflect",
-        Expr::Index(..) => "index",
-        Expr::Slice { .. } => "slice",
-        Expr::If(..) => "if",
-        Expr::Spawn { .. } => "spawn",
-        Expr::Lambda(..) => "lambda",
         Expr::PluginIntercept { .. } => "plugin-intercept",
+        Expr::Within(..) => "within",
+        Expr::DerivationBlock(..) => "derivation",
+        Expr::Capture { .. } => "capture",
+        Expr::FormattingAnnotation(..) => "formatting-annotation",
+        Expr::Exists(..) => "exists",
         _ => "other-expression",
     }
 }

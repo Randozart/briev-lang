@@ -131,8 +131,35 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
     match &expr.kind {
         HirExprKind::Call { args, .. } => verify_exprs(args, nodes),
         HirExprKind::Binary { left, right, .. } => verify_exprs([left.as_ref(), right.as_ref()], nodes),
-        HirExprKind::Unary { inner, .. } | HirExprKind::Cast { inner, .. } => verify_expr(inner, nodes),
-        HirExprKind::Field { receiver, .. } => verify_expr(receiver, nodes),
+        HirExprKind::Unary { inner, .. }
+        | HirExprKind::Cast { inner, .. }
+        | HirExprKind::Deref(inner)
+        | HirExprKind::AddrOf(inner)
+        | HirExprKind::Consume(inner)
+        | HirExprKind::Await(inner) => verify_expr(inner, nodes),
+        HirExprKind::Field { receiver, .. }
+        | HirExprKind::Reflect { receiver, .. } => verify_expr(receiver, nodes),
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            verify_expr(receiver, nodes)?;
+            verify_exprs(args, nodes)
+        }
+        HirExprKind::Index(array, index) => verify_exprs([array.as_ref(), index.as_ref()], nodes),
+        HirExprKind::Slice { array, start, end, stride } => {
+            verify_expr(array, nodes)?;
+            verify_opt_expr(start.as_deref(), nodes)?;
+            verify_opt_expr(end.as_deref(), nodes)?;
+            verify_opt_expr(stride.as_deref(), nodes)
+        }
+        HirExprKind::Range { start, end, .. } => verify_exprs([start.as_ref(), end.as_ref()], nodes),
+        HirExprKind::Spawn { args, .. } => verify_exprs(args, nodes),
+        HirExprKind::If { condition, then_branch, else_branch } => {
+            verify_expr(condition, nodes)?;
+            verify_expr(then_branch, nodes)?;
+            verify_opt_expr(else_branch.as_deref(), nodes)
+        }
+        HirExprKind::Lambda { body, .. } | HirExprKind::IsType { inner: body, .. } => {
+            verify_expr(body, nodes)
+        }
         HirExprKind::Tuple(items) | HirExprKind::List(items) => verify_exprs(items, nodes),
         HirExprKind::StructLiteral { fields, .. } => {
             verify_exprs(fields.iter().map(|(_, expr)| expr), nodes)
@@ -142,7 +169,10 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_expr_arms(arms, nodes)
         }
         HirExprKind::Block(body) => verify_body(body, nodes),
-        HirExprKind::Literal(_) | HirExprKind::Identifier(_) | HirExprKind::Other(_) => Ok(()),
+        HirExprKind::Literal(_)
+        | HirExprKind::Identifier(_)
+        | HirExprKind::UnitLiteral { .. }
+        | HirExprKind::Other(_) => Ok(()),
     }
 }
 

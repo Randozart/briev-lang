@@ -89,7 +89,7 @@ txn tick(x: Int) -> Int { term x + 1; };
         ));
         verify(&program).expect("valid HIR");
         let counts = unsupported_counts(&program);
-        assert_eq!(counts.expressions, 1, "method call is explicitly unsupported");
+        assert_eq!(counts.expressions, 0, "method call is now normalized");
         assert_eq!(counts.statements, 0);
     }
 

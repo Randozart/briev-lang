@@ -88,6 +88,12 @@ fn count_patterns(patterns: &[HirPattern], counts: &mut UnsupportedCounts) {
     }
 }
 
+fn count_opt_box_expr(expr: Option<&HirExpr>, counts: &mut UnsupportedCounts) {
+    if let Some(expr) = expr {
+        count_expr(expr, counts);
+    }
+}
+
 fn count_opt_expr(expr: Option<&HirExpr>, counts: &mut UnsupportedCounts) {
     if let Some(expr) = expr {
         count_expr(expr, counts);
@@ -107,8 +113,35 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
     match &expr.kind {
         HirExprKind::Call { args, .. } => count_exprs(args, counts),
         HirExprKind::Binary { left, right, .. } => count_exprs([left.as_ref(), right.as_ref()], counts),
-        HirExprKind::Unary { inner, .. } | HirExprKind::Cast { inner, .. } => count_expr(inner, counts),
-        HirExprKind::Field { receiver, .. } => count_expr(receiver, counts),
+        HirExprKind::Unary { inner, .. }
+        | HirExprKind::Cast { inner, .. }
+        | HirExprKind::Deref(inner)
+        | HirExprKind::AddrOf(inner)
+        | HirExprKind::Consume(inner)
+        | HirExprKind::Await(inner) => count_expr(inner, counts),
+        HirExprKind::Field { receiver, .. }
+        | HirExprKind::Reflect { receiver, .. } => count_expr(receiver, counts),
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            count_expr(receiver, counts);
+            count_exprs(args, counts);
+        }
+        HirExprKind::Index(array, index) => count_exprs([array.as_ref(), index.as_ref()], counts),
+        HirExprKind::Slice { array, start, end, stride } => {
+            count_expr(array, counts);
+            count_opt_box_expr(start.as_deref(), counts);
+            count_opt_box_expr(end.as_deref(), counts);
+            count_opt_box_expr(stride.as_deref(), counts);
+        }
+        HirExprKind::Range { start, end, .. } => count_exprs([start.as_ref(), end.as_ref()], counts),
+        HirExprKind::Spawn { args, .. } => count_exprs(args, counts),
+        HirExprKind::If { condition, then_branch, else_branch } => {
+            count_expr(condition, counts);
+            count_expr(then_branch, counts);
+            count_opt_box_expr(else_branch.as_deref(), counts);
+        }
+        HirExprKind::Lambda { body, .. } | HirExprKind::IsType { inner: body, .. } => {
+            count_expr(body, counts)
+        }
         HirExprKind::Tuple(items) | HirExprKind::List(items) => count_exprs(items, counts),
         HirExprKind::StructLiteral { fields, .. } => {
             count_exprs(fields.iter().map(|(_, expr)| expr), counts)
@@ -119,7 +152,9 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
         }
         HirExprKind::Block(body) => count_body(body, counts),
         HirExprKind::Other(_) => counts.expressions += 1,
-        HirExprKind::Literal(_) | HirExprKind::Identifier(_) => {}
+        HirExprKind::Literal(_)
+        | HirExprKind::Identifier(_)
+        | HirExprKind::UnitLiteral { .. } => {}
     }
 }
 

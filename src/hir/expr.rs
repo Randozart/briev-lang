@@ -5,7 +5,7 @@
 use super::ids::{NodeId, Span};
 use super::pattern::HirPattern;
 use super::stmt::HirStmt;
-use crate::ast::{BinaryOpKind, Type, UnaryOpKind};
+use crate::ast::{BinaryOpKind, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirLiteral {
@@ -58,6 +58,56 @@ pub enum HirExprKind {
     Cast {
         inner: Box<HirExpr>,
         to: Type,
+    },
+    MethodCall {
+        receiver: Box<HirExpr>,
+        name: String,
+        args: Vec<HirExpr>,
+        analysis_id: Option<usize>,
+        chain_refs: Vec<crate::ast::ChainRef>,
+    },
+    Reflect {
+        receiver: Box<HirExpr>,
+        name: String,
+        kind: ReflectKind,
+    },
+    Index(Box<HirExpr>, Box<HirExpr>),
+    Slice {
+        array: Box<HirExpr>,
+        start: Option<Box<HirExpr>>,
+        end: Option<Box<HirExpr>>,
+        stride: Option<Box<HirExpr>>,
+    },
+    Range {
+        start: Box<HirExpr>,
+        end: Box<HirExpr>,
+        inclusive: bool,
+    },
+    Spawn {
+        type_name: String,
+        args: Vec<HirExpr>,
+        storage: SpawnStorage,
+    },
+    If {
+        condition: Box<HirExpr>,
+        then_branch: Box<HirExpr>,
+        else_branch: Option<Box<HirExpr>>,
+    },
+    Lambda {
+        params: Vec<String>,
+        body: Box<HirExpr>,
+    },
+    IsType {
+        inner: Box<HirExpr>,
+        ty: Type,
+    },
+    Deref(Box<HirExpr>),
+    AddrOf(Box<HirExpr>),
+    Consume(Box<HirExpr>),
+    Await(Box<HirExpr>),
+    UnitLiteral {
+        value: f64,
+        unit: String,
     },
     Tuple(Vec<HirExpr>),
     List(Vec<HirExpr>),
