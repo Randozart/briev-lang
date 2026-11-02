@@ -5,7 +5,10 @@
 use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
-use super::program::{HirBody, HirCallable, HirCallableKind, HirParam, HirProgram};
+use super::program::{
+    HirBody, HirCallable, HirCallableKind, HirEnumVariant, HirField, HirParam, HirProgram,
+    HirTypeDef, HirTypeDefKind,
+};
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
     Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
@@ -15,10 +18,22 @@ use crate::ast::{
 pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut ids = IdSupply::default();
     let mut callables = Vec::new();
-    for item in items {
-        lower_item(item, false, None, &mut ids, &mut callables);
+    let mut type_defs = Vec::new();
+    {
+        let mut out = LowerOutputs {
+            callables: &mut callables,
+            types: &mut type_defs,
+        };
+        for item in items {
+            lower_item(item, false, None, &mut ids, &mut out);
+        }
     }
-    HirProgram { callables }
+    HirProgram { callables, type_defs }
+}
+
+struct LowerOutputs<'a> {
+    callables: &'a mut Vec<HirCallable>,
+    types: &'a mut Vec<HirTypeDef>,
 }
 
 fn lower_item(
@@ -26,31 +41,31 @@ fn lower_item(
     exported: bool,
     export_symbol: Option<String>,
     ids: &mut IdSupply,
-    out: &mut Vec<HirCallable>,
+    out: &mut LowerOutputs<'_>,
 ) {
     match item {
-        TopLevel::Definition(d) => out.push(lower_definition(
+        TopLevel::Definition(d) => out.callables.push(lower_definition(
             d,
             HirCallableKind::Defn,
             exported,
             export_symbol,
             ids,
         )),
-        TopLevel::Transaction(t) => out.push(lower_transaction(
+        TopLevel::Transaction(t) => out.callables.push(lower_transaction(
             t,
             HirCallableKind::Transaction,
             exported,
             export_symbol,
             ids,
         )),
-        TopLevel::CompileTimeDefn(d) => out.push(lower_definition(
+        TopLevel::CompileTimeDefn(d) => out.callables.push(lower_definition(
             d,
             HirCallableKind::CompileTimeDefn,
             exported,
             export_symbol,
             ids,
         )),
-        TopLevel::CompileTimeTxn(t) => out.push(lower_transaction(
+        TopLevel::CompileTimeTxn(t) => out.callables.push(lower_transaction(
             t,
             HirCallableKind::CompileTimeTxn,
             exported,
@@ -64,14 +79,14 @@ fn lower_item(
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
                 match member {
-                    TopLevel::Definition(d) => out.push(lower_definition(
+                    TopLevel::Definition(d) => out.callables.push(lower_definition(
                         d,
                         HirCallableKind::MemberDefn,
                         false,
                         None,
                         ids,
                     )),
-                    TopLevel::Transaction(t) => out.push(lower_transaction(
+                    TopLevel::Transaction(t) => out.callables.push(lower_transaction(
                         t,
                         HirCallableKind::MemberTransaction,
                         false,
@@ -81,8 +96,136 @@ fn lower_item(
                     _ => {}
                 }
             }
+            if let Some(decl) = lower_type_def(td, ids) {
+                out.types.push(decl);
+            }
         }
+        TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
+        TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
+        TopLevel::StaticStruct(def) => out.types.push(lower_struct(def, ids)),
         _ => {}
+    }
+}
+
+fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
+    if def.body.slots.iter().all(|slot| slot.name.starts_with("__variant_")) {
+        return Some(lower_enum_type_def(def, ids));
+    }
+    if def.body.slots.is_empty() {
+        return None;
+    }
+    Some(HirTypeDef {
+        node: ids.node(),
+        item: ids.item(),
+        name: def.name.clone(),
+        type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        kind: HirTypeDefKind::Struct {
+            fields: def
+                .body
+                .slots
+                .iter()
+                .map(|slot| HirField {
+                    name: slot.name.clone(),
+                    ty: slot.ty.clone(),
+                })
+                .collect(),
+        },
+        span: def.span,
+    })
+}
+
+fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirTypeDef {
+    let variants = def
+        .body
+        .slots
+        .iter()
+        .map(|slot| {
+            let name = slot.name.trim_start_matches("__variant_").to_string();
+            match &slot.ty {
+                Type::Void => HirEnumVariant::Unit(name),
+                Type::Tuple(types) => HirEnumVariant::Tuple(name, types.clone()),
+                ty => HirEnumVariant::Tuple(name, vec![ty.clone()]),
+            }
+        })
+        .collect();
+    HirTypeDef {
+        node: ids.node(),
+        item: ids.item(),
+        name: def.name.clone(),
+        type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        kind: HirTypeDefKind::Enum { variants },
+        span: def.span,
+    }
+}
+
+fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDef {
+    let variants = def
+        .variants
+        .iter()
+        .map(|variant| match variant {
+            crate::ast::EnumVariant::Unit(name) => HirEnumVariant::Unit(name.clone()),
+            crate::ast::EnumVariant::Tuple(name, types) => {
+                HirEnumVariant::Tuple(name.clone(), types.clone())
+            }
+            crate::ast::EnumVariant::Struct(name, fields) => HirEnumVariant::Struct(
+                name.clone(),
+                fields
+                    .iter()
+                    .map(|(name, ty)| HirField {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    })
+                    .collect(),
+            ),
+        })
+        .collect();
+    HirTypeDef {
+        node: ids.node(),
+        item: ids.item(),
+        name: def.name.clone(),
+        type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        kind: HirTypeDefKind::Enum { variants },
+        span: def.span,
+    }
+}
+
+fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTypeDef {
+    HirTypeDef {
+        node: ids.node(),
+        item: ids.item(),
+        name: def.name.clone(),
+        type_params: def.type_params.clone(),
+        kind: HirTypeDefKind::Object {
+            fields: def
+                .fields
+                .iter()
+                .map(|field| HirField {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                })
+                .collect(),
+        },
+        span: def.span,
+    }
+}
+
+fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
+    HirTypeDef {
+        node: ids.node(),
+        item: ids.item(),
+        name: def.name.clone(),
+        type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        kind: HirTypeDefKind::Struct {
+            fields: def
+                .fields
+                .iter()
+                .map(|(name, ty)| HirField {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                })
+                .collect(),
+        },
+        span: def.span,
     }
 }
 

@@ -46,7 +46,38 @@ pub struct HirCallable {
     pub span: Option<Span>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirField {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirEnumVariant {
+    Unit(String),
+    Tuple(String, Vec<Type>),
+    Struct(String, Vec<HirField>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirTypeDefKind {
+    Enum { variants: Vec<HirEnumVariant> },
+    Object { fields: Vec<HirField> },
+    Struct { fields: Vec<HirField> },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirTypeDef {
+    pub node: NodeId,
+    pub item: ItemId,
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub kind: HirTypeDefKind,
+    pub span: Option<Span>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HirProgram {
     pub callables: Vec<HirCallable>,
+    pub type_defs: Vec<HirTypeDef>,
 }

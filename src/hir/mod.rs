@@ -16,6 +16,7 @@ pub mod pattern;
 pub mod program;
 pub mod sinks;
 pub mod stats;
+pub mod type_facts;
 pub mod stmt;
 pub mod verify;
 pub mod walk;
@@ -27,6 +28,7 @@ pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, H
 pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
+pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
 pub use verify::verify;
 
 #[cfg(test)]
@@ -115,6 +117,18 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn type_declarations_are_captured_by_hir() {
+        let program = lower_program(&parse(
+            "enum Maybe { None, Some(Int) }; struct Point { x: Int; y: Int; }; defn f(x: Int) -> Int { term x; };\n",
+        ));
+        let facts = build_type_facts(&program);
+        assert!(facts.enums.contains_key("Maybe"));
+        assert_eq!(facts.structs["Point"].fields.len(), 2);
+        assert_eq!(program.type_defs.len(), 2);
+        assert_eq!(program.callables[0].name, "f");
     }
 
     #[test]
