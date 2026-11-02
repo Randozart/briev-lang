@@ -11484,6 +11484,23 @@ Removal conditions:
 - CLI entry tests complete with a bounded timeout.
 Each remains tracked here and in `tests/cli_args_test.rs` / `tests/c_driver_*.rs`.
 
+## Modulo-rotated main omits the dispatch loop (OPEN 2026-11-02)
+
+`cargo test --all` leaves one failure:
+`stdout_flush_tail_test::modulo_switch_main_flushes_sub_cap_output`.
+The program prints `0..3` from two nodes partitioned on `count % 2`, but the
+binary prints nothing.
+
+Evidence: `target/briev_stdout_flush_tests/modulo_flush/modulo_flush.ll`
+contains `txn_even`, `txn_odd`, `pre_even`, and `pre_odd`, but `@main` only
+stores the initial state and calls `stdout_flush()`; there is no `.mr_loop`,
+no modulo switch, and no call to either txn. The typed-HIR branch has no
+backend/analysis changes, so this is not introduced by H3.
+
+Next: trace why `modulo_partition` is absent or `try_modulo_switch_dispatch`
+returns before emitting when the two bounded nodes are present. Add a golden
+assertion on `@main` containing a txn call, not just the txn definitions.
+
 ## Malformed input panics in library lexing (FIXED 2026-10-25)
 
 `library::parse_and_check` unwrapped lexer results, so any malformed source
