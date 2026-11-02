@@ -200,7 +200,12 @@ fn build_supported_ops() -> HashSet<String> {
                     // 2026-08-15 (coll plan §3.6): the capacity intrinsics —
                     // compiler-owned coll capacity control (`Capacity#`,
                     // `Resize#`, `EnsureCap#`, `TrimCap#`).
-                    "Capacity#", "Resize#", "EnsureCap#", "TrimCap#"] {
+                    "Capacity#", "Resize#", "EnsureCap#", "TrimCap#",
+                    // 2026-11-02: host-cancellation pair. Both have working
+                    // LLVM arms (intrinsics.rs emit_cancel_requested / the
+                    // ClearCancel# arm) and runtime globals; they were missing
+                    // only from this gate, rejecting c_driver_cancel.
+                    "CancelRequested#", "ClearCancel#"] {
         set.insert(name.to_string());
     }
     set

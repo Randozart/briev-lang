@@ -67,8 +67,9 @@ branched past it. Root cause for the bridge family: `CStr` is a raw pointer at
 the boundary; casting through `String` parsed the allocation header. Modulo
 dispatch is fixed: precompute effect detection missed `Print#` inside an
 `Expr::Block`, folded the loop, and dropped output; full `cargo test --all` is
-green. Remaining: generic callable txn specialization, C cancellation, and Go
-roundtrip (Go toolchain absent).
+green. C cancellation is fixed (normalizer gate admitted the existing
+`CancelRequested#`/`ClearCancel#` arms). Remaining: generic callable txn
+specialization and Go roundtrip (Go toolchain absent).
 
 ## Stage 4 — Platform ledger
 
