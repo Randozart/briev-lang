@@ -14,6 +14,7 @@ pub mod lower;
 pub mod ownership;
 pub mod pattern;
 pub mod program;
+pub mod sinks;
 pub mod stats;
 pub mod stmt;
 pub mod verify;
@@ -23,6 +24,7 @@ pub use cast_paths::resolve_cast_paths;
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
+pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
 pub use program::{HirCallable, HirCallableKind, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use verify::verify;
@@ -113,6 +115,25 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn sink_facts_cover_returns_fields_collections_and_calls() {
+        let program = lower_program(&parse(
+            "defn f(x: Int) -> Int { let p: Point = Point { a: x; b: 2 }; let l: List<Int> = [x, 2]; term p.a; };\n",
+        ));
+        let facts = build_sink_facts(&program);
+        let fields = facts
+            .sinks
+            .keys()
+            .filter(|key| matches!(key, HirSinkKey::ObjectField { .. }))
+            .count();
+        assert_eq!(fields, 2);
+        assert!(facts.sinks.keys().any(|key| matches!(
+            key,
+            HirSinkKey::Aggregate { kind: HirAggregateKind::Collection, .. }
+        )));
+        assert!(facts.sinks.keys().any(|key| matches!(key, HirSinkKey::Return { .. })));
     }
 
     #[test]
