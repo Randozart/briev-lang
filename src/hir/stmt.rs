@@ -4,7 +4,7 @@
 use super::expr::HirExpr;
 use super::ids::{NodeId, Span};
 use super::pattern::HirPattern;
-use crate::ast::Type;
+use crate::ast::{PropertyValue, Type};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirStmtMatchArm {
@@ -46,6 +46,29 @@ pub enum HirStmtKind {
     Match {
         expr: HirExpr,
         arms: Vec<HirStmtMatchArm>,
+    },
+    Break,
+    Trap,
+    Halt,
+    Yield,
+    EndProgram(Option<HirExpr>),
+    Gate(HirExpr),
+    Rollback(Option<HirExpr>),
+    FreeHint(String),
+    KeepHint(String),
+    SyncBlock(Vec<HirStmt>),
+    Defer(Vec<HirStmt>),
+    Mutex(Vec<HirStmt>),
+    Open(HirExpr, HirExpr),
+    TrgBinding {
+        name: String,
+        instance: HirExpr,
+    },
+    MetadataAssignment(String, PropertyValue),
+    InlineAsm {
+        asm_string: String,
+        clobbers: Vec<String>,
+        span: Option<crate::errors::Span>,
     },
     Other(&'static str),
 }

@@ -64,6 +64,24 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
             count_expr(expr, counts);
             count_stmt_arms(arms, counts);
         }
+        HirStmtKind::EndProgram(expr) | HirStmtKind::Rollback(expr) => {
+            count_opt_expr(expr.as_ref(), counts)
+        }
+        HirStmtKind::Gate(expr) | HirStmtKind::TrgBinding { instance: expr, .. } => {
+            count_expr(expr, counts)
+        }
+        HirStmtKind::SyncBlock(body) | HirStmtKind::Defer(body) | HirStmtKind::Mutex(body) => {
+            count_body(body, counts)
+        }
+        HirStmtKind::Open(left, right) => count_exprs([left, right], counts),
+        HirStmtKind::Break
+        | HirStmtKind::Trap
+        | HirStmtKind::Halt
+        | HirStmtKind::Yield
+        | HirStmtKind::FreeHint(_)
+        | HirStmtKind::KeepHint(_)
+        | HirStmtKind::MetadataAssignment(_, _)
+        | HirStmtKind::InlineAsm { .. } => {}
         HirStmtKind::Other(_) => counts.statements += 1,
     }
 }

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const BASELINE_EXPRESSIONS: usize = 56;
-const BASELINE_STATEMENTS: usize = 49;
+const BASELINE_STATEMENTS: usize = 0;
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(root) else {

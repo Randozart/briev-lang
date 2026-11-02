@@ -94,7 +94,25 @@ fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_expr(expr, nodes)?;
             verify_stmt_arms(arms, nodes)
         }
-        HirStmtKind::Other(_) => Ok(()),
+        HirStmtKind::EndProgram(expr) | HirStmtKind::Rollback(expr) => {
+            verify_opt_expr(expr.as_ref(), nodes)
+        }
+        HirStmtKind::Gate(expr) | HirStmtKind::TrgBinding { instance: expr, .. } => {
+            verify_expr(expr, nodes)
+        }
+        HirStmtKind::SyncBlock(body) | HirStmtKind::Defer(body) | HirStmtKind::Mutex(body) => {
+            verify_body(body, nodes)
+        }
+        HirStmtKind::Open(left, right) => verify_exprs([left, right], nodes),
+        HirStmtKind::Break
+        | HirStmtKind::Trap
+        | HirStmtKind::Halt
+        | HirStmtKind::Yield
+        | HirStmtKind::FreeHint(_)
+        | HirStmtKind::KeepHint(_)
+        | HirStmtKind::MetadataAssignment(_, _)
+        | HirStmtKind::InlineAsm { .. }
+        | HirStmtKind::Other(_) => Ok(()),
     }
 }
 

@@ -210,6 +210,29 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
             expr: lower_expr(expr, ids),
             arms: arms.iter().map(|arm| lower_stmt_match_arm(arm, ids)).collect(),
         },
+        Statement::Break => HirStmtKind::Break,
+        Statement::Trap => HirStmtKind::Trap,
+        Statement::Halt => HirStmtKind::Halt,
+        Statement::Yield => HirStmtKind::Yield,
+        Statement::EndProgram(expr) => HirStmtKind::EndProgram(expr.as_ref().map(|expr| lower_expr(expr, ids))),
+        Statement::Gate(expr) => HirStmtKind::Gate(lower_expr(expr, ids)),
+        Statement::Rollback(expr) => HirStmtKind::Rollback(expr.as_ref().map(|expr| lower_expr(expr, ids))),
+        Statement::FreeHint(name) => HirStmtKind::FreeHint(name.clone()),
+        Statement::KeepHint(name) => HirStmtKind::KeepHint(name.clone()),
+        Statement::SyncBlock(body) => HirStmtKind::SyncBlock(lower_body(body, ids)),
+        Statement::Defer(body) => HirStmtKind::Defer(lower_body(body, ids)),
+        Statement::Mutex(body) => HirStmtKind::Mutex(lower_body(body, ids)),
+        Statement::Open(left, right) => HirStmtKind::Open(lower_expr(left, ids), lower_expr(right, ids)),
+        Statement::TrgBinding { name, instance } => HirStmtKind::TrgBinding {
+            name: name.clone(),
+            instance: lower_expr(instance, ids),
+        },
+        Statement::MetadataAssignment(name, value) => HirStmtKind::MetadataAssignment(name.clone(), value.clone()),
+        Statement::InlineAsm { asm_string, clobbers, span } => HirStmtKind::InlineAsm {
+            asm_string: asm_string.clone(),
+            clobbers: clobbers.clone(),
+            span: *span,
+        },
         other => HirStmtKind::Other(stmt_tag(other)),
     };
     HirStmt {
@@ -392,17 +415,7 @@ fn item_name(item: &TopLevel) -> Option<String> {
 
 fn stmt_tag(statement: &Statement) -> &'static str {
     match statement {
-        Statement::Let { .. } => "let",
-        Statement::Assign(..) => "assign",
-        Statement::ArrowAssign { .. } => "arrow-assign",
-        Statement::Term(_) => "term",
-        Statement::Tail(_) => "tail",
-        Statement::Check(_) => "check",
-        Statement::Expression(_) => "expression",
-        Statement::Guarded(..) => "guarded",
-        Statement::Block(_) => "block",
-        Statement::Foreach { .. } => "foreach",
-        Statement::Match { .. } => "match",
+        Statement::InlineDefn(_) => "inline-defn",
         _ => "other-statement",
     }
 }
