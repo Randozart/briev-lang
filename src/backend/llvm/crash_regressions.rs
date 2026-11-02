@@ -130,3 +130,13 @@ fn enum_field_constructor_uses_its_declared_layout_and_restores_context() {
     assert_eq!(backend.fun.expected_enum_type, Some(enclosing));
     assert!(!ir.is_empty(), "field construction must reach code generation");
 }
+#[test]
+fn extracted_enum_objects_survive_the_enum_result_frame() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+    let source = include_str!("../../../tests/tier1/enum_object_projection_lifetime.bv");
+    let (items, universe) = normalized_program(source);
+    let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
+    for optimization in ["-O0", "-O2"] {
+        super::logical_tests::clang_ir(&ir, optimization, true);
+    }
+}

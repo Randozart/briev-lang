@@ -11558,3 +11558,6 @@ Plan enum object capacity from resolved sizes and preserve nested object ABI. Re
 ## FIXED 2026-11-02: enum-field-constructor-context
 
 Scope enum constructor context to the declared struct field type. Regression: enum_field_constructor_uses_its_declared_layout_and_restores_context.
+## FIXED 2026-11-02: enum-object-projection-lifetime
+
+Own inline object payloads extracted from temporary enum images. Regression: extracted_enum_objects_survive_the_enum_result_frame.
