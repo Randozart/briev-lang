@@ -429,6 +429,14 @@ fn rewrite_transaction(
         rewritten.push(rewrite_stmt(stmt, &mut entries_body, arg_flags)?);
     }
     t.body = rewritten;
+    // 2026-11-02 (CLI entry livelock): a trailing bare `term;` is the
+    // node's normal completion; the appended done-flip IS its post-action.
+    // Keeping the term branches away before the flip, so the one-shot guard
+    // stays true and the reactor retries forever. Remove only a TERMINAL
+    // bare term; earlier terms still gate their continuation normally.
+    if matches!(t.body.last(), Some(Statement::Term(None))) {
+        t.body.pop();
+    }
     for cmd in &entries_body {
         let field = format!("__entry_{}_done", sanitize_flag(cmd));
         t.body.push(Statement::Assign(

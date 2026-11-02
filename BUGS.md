@@ -11464,7 +11464,6 @@ lane still executes them.
 |---|---|
 | `host_cancellation_stops_briev_loop` | `CancelRequested#` unsupported by LLVM normalizer |
 | `go_roundtrip` | generated Go bridge references undefined `@cstr_len` (Go toolchain absent here) |
-| `entry_cmd_greet_quiet` / `entry_cmd_greet_verbose_name` | build/link/run hangs >60s |
 
 Verification 2026-11-02: `boundary_types_roundtrip`, `c_driver_needs_state`,
 `cpp_roundtrip`, `python_native_extension_roundtrip`, and
@@ -11472,7 +11471,10 @@ Verification 2026-11-02: `boundary_types_roundtrip`, `c_driver_needs_state`,
 bridge family: a `CStr` boundary value is a raw pointer; casting it through
 `String` parsed the allocation header instead of preserving the pointer. The
 examples and the Briev needs_state pass now use `CStr → Data → Int` before
-`cstr_to_briev`/`SysCall#`. CLI entry tests still run >60s.
+`cstr_to_briev`/`SysCall#`. CLI entry tests are FIXED and unignored: the
+entry plugin appended its one-shot done flag after the body, but a trailing
+bare `term;` branched away before it; a terminal bare term is now removed so
+the flip executes.
 
 Removal conditions:
 - C string return/ownership fixed or the C bridge explicitly retired;
