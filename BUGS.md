@@ -72,9 +72,19 @@ the recommender worker report “Worker frame is incomplete; retain the bytes an
 continue reading” (no heap abort, but wrong frame data). This points to a
 remaining escaping match-binding/object-image lifetime gap, not layout width.
 
-**Next probe:** identify which match-bound inline object escapes the enum image
-on the worker frame path; add a materialization proof/copy for that escape.
-Do not re-enable until O0/O1/O2/O3 + ASan and I11 all pass.
+**Probe 2026-11-01 (match-binding views):** inline object bindings were kept as
+views only when every use in the arm was a direct call argument; other uses were
+copied to a heap image. With notail + exact sizes + this copy:
+- net_stack: O0–O3 pass.
+- I11 server starts and workers handshake, then later aborts with
+  `malloc(): invalid next size (unsorted)`; browser save-confirmation times out.
+So the syntactic direct-call rule is unsound: a direct callee can retain the
+pointer through state. D4b still needs a parameter-escape summary or full
+materialization at every match binding.
+
+**Next probe:** feed a non-retaining parameter summary into match-binding
+materialization, or always copy match-bound inline objects. Measure whether the
+latter leaves any D4b benefit; currently D4b stays disabled.
 
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 
