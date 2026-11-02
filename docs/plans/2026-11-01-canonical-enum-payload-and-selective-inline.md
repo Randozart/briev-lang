@@ -126,3 +126,56 @@ Safe baseline may ship alone. Selective inline ships only when:
 
 The policy is a plan flag; flipping it false restores canonical boxed layout.
 No source syntax or public ABI depends on it.
+
+## Contributor PR integration (2026-11-02)
+
+Contributor PRs are based on main `b85f953d` and target the same enum/object
+failure area.
+
+| PR | Role in this plan |
+|---|---|
+| 49 enum-object-layout | Exact resolved enum object capacity via `TypeUniverse`; supersedes ad-hoc object-size plumbing. |
+| 50 enum-field-constructor-context | Scopes enum constructor context to a declared struct field type; fixes the field subset of stale `expected_enum_type`. |
+| 51 enum-object-projection-lifetime | Owned extraction of inline object payloads. This is the safe baseline: unconditional byte-image copy. |
+| 52 callable-transaction-emission | Entry-local transaction allocas + unique SSA names. |
+| 53 browser-transaction-publication | Publication at the enclosing successful boundary only. |
+
+### Integration order
+
+1. PR 49 — resolved object capacity.
+2. PR 50 — field constructor context.
+3. PR 51 — owned extraction.
+4. PR 52 — callable transaction emission.
+5. PR 53 — browser publication.
+
+PR 53 depends functionally on PR 52. PRs 49–51 are independent, but the combined
+recommender and I11 must be validated after all five.
+
+### Conflict policy
+
+- Keep PR 49's `TypeUniverse` capacity source over duplicated local size maps.
+- Keep PR 50's declared-field scoping; retain the broader constructor-owner
+  validation only if it still catches non-field stale contexts.
+- Use PR 51's unconditional owned extraction as the safety baseline. Our
+  parameter-retention/view materialization becomes an optional copy-elision
+  optimization layered on top: skip the copy only when the extraction binding
+  is proven non-escaping.
+- Keep P2 (`HashMap` member owner analysis) and D8 metadata cleanups; they are
+  independent.
+- Keep one normalized-program test helper; retain every distinct regression
+  function and bug entry from all branches.
+- No app files in compiler PRs.
+
+### Decision gates after integration
+
+1. Rebuild and run `net_stack_helpers` at O0/O1/O2/O3.
+2. Run ASan and real recommender I11.
+3. Run full runtime.
+4. Measure D4b with PR 51:
+   - safe + faster → keep inline object payloads with owned extraction;
+   - safe but not faster → disable D4b and keep canonical boxed payloads;
+   - unsafe → PR 51 is incomplete; inline object payloads stay disabled.
+
+The long-term optimization is region-local enum/object scalar replacement, not
+type-wide inline layout. Owned extraction is the correctness floor; copy elision
+is a proof result.
