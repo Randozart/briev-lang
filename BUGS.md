@@ -11564,3 +11564,6 @@ Own inline object payloads extracted from temporary enum images. Regression: ext
 ## FIXED 2026-11-02: callable-transaction-emission
 
 Emit callable transaction locals inside entry and preserve unique SSA names. Regression: callable_transaction_local_slots_are_inside_the_function.
+## FIXED 2026-11-02: browser-transaction-publication
+
+Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.

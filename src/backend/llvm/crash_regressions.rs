@@ -176,3 +176,28 @@ fn assert_unique_ssa_definitions(ir: &str) {
         assert!(!name.starts_with('%') || names.insert(name), "duplicate local: {name}");
     }
 }
+
+#[test]
+fn inline_members_do_not_publish_the_enclosing_browser_transaction() {
+    let source = r#"
+        obj Counter {
+            value: Int;
+            defn read() -> Int { term value; };
+        };
+        let counter: Counter = Counter { value: 1 };
+        let chosen: Int = 0;
+        txn choose(value: Int) [value > 0][chosen == value] {
+            let current: Int = counter.read();
+            chosen = value+current-1;
+            term;
+        };
+        node drive [chosen == 0][chosen > 0] { choose(1); term; };
+    "#;
+    let (items, universe) = normalized_program(source);
+    let ir = LlvmBackend::new().with_type_universe(universe).with_webstack(true)
+        .with_int_bits(32).with_target_triple("wasm32-unknown-wasi").generate(&items, None);
+    let function = ir.split("define void @choose(").nth(1).expect("callable transaction");
+    let body = function.split("\n}").next().expect("function body");
+    assert_eq!(body.matches("call void @__web_flush_state(").count(), 1,
+        "only the outer transaction may publish browser state: {body}");
+}

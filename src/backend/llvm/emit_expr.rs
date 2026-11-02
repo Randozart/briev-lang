@@ -4427,7 +4427,13 @@ impl LlvmBackend {
         if (proven || pregrown) && member_is_push && body.first().is_some_and(is_grow_guard) {
             body.remove(0);
         }
+        // 2026-11-01: inline member `term` returns a value, not a transaction
+        // commit. Suppress intermediate DOM publication while preserving the
+        // enclosing txn identity used by analysis proofs. Restore for nesting.
+        // Retire with an explicit commit-boundary plan for every inline body.
+        let saved_member_context = std::mem::replace(&mut self.fun.in_inline_member, true);
         crate::backend::llvm::emit_stmt::emit_statement_sequence(self, out, &body, indent);
+        self.fun.in_inline_member = saved_member_context;
         self.fun.self_binding = saved;
         self.fun.self_prefix = saved_prefix;
         self.fun.destination_owner = saved_destination_owner;
