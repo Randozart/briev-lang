@@ -5825,6 +5825,10 @@ fn probe_ok_checks(
     }
 
     pub(super) fn emit_callable_txn(&mut self, out: &mut String, txn: &crate::ast::Transaction, name: &str) {
+        // 2026-11-01: entry allocas and body registers share one namespace.
+        // Reset before emitting either; a later reset can reuse entry names.
+        // Retire when function construction owns a dedicated register allocator.
+        self.fun.txn_counter = 0;
         // 2026-07-27: Set txn_name for per-function arena gating.
         self.fun.txn_name = name.to_string();
         self.fun.destination_owner = Some(format!("txn:{name}"));
@@ -5868,7 +5872,9 @@ fn probe_ok_checks(
         // before the parameter slots bind (:pN_s / let_bindings below), so a
         // body let shadows nothing and params win any collision exactly as
         // before. Default opts: this driver's selective clears above stand.
-        self.emit_body_prologue(out, &txn.body, PrologueOpts::default());
+        // 2026-11-01: Emit this prologue inside entry, below; reassigned lets
+        // allocate stack storage and cannot appear between function definitions.
+        // Keep it before parameter binding; retire with a unified function builder.
 
         let has_return = if let Some(ref ot) = txn.output_type {
             match ot {
@@ -5940,6 +5946,7 @@ fn probe_ok_checks(
         // only accesses memory through its pointer arguments.
         writeln!(out, ") local_unnamed_addr #8{} {{", inline_str).ok();
         writeln!(out, "  entry:").ok();
+        self.emit_body_prologue(out, &txn.body, PrologueOpts::default());
 
         // 2026-07-18: Use the function's return type for %result, not always i64.
         // Bool-returning functions need i8 result type to match the define i8 signature.
@@ -6049,7 +6056,6 @@ fn probe_ok_checks(
         self.fun.callable_txn_result = Some("%result".to_string());
         self.fun.callable_txn_post_label = Some("post".to_string());
         self.fun.in_callable_txn = true;
-        self.fun.txn_counter = 0;
         self.fun.terminated = false;
         self.fun.returns_i64 = has_return;
 

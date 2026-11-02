@@ -74,3 +74,39 @@ fn pooled_object_replacement_survives_reactor_firings() {
         super::logical_tests::clang_ir(&ir, optimization, true);
     }
 }
+
+#[test]
+fn callable_transaction_local_slots_are_inside_the_function() {
+    let source = r#"
+        let count: Int = 0;
+        txn choose(value: Int) [value > 0][count == value] {
+            let local: Int = 0;
+            when value > 0 { local = value; };
+            count = local;
+            term;
+        };
+        node drive [count == 0][count > 0] { choose(3); term; };
+    "#;
+    let (items, universe) = crate::library::parse_and_check("scratch/callable_local.bv", source)
+        .expect("checked callable transaction");
+    let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
+    let mut in_function = false;
+    for line in ir.lines() {
+        if line.trim_start().starts_with(';') { continue; }
+        if line.starts_with("define ") { in_function = true; }
+        assert!(in_function || !line.contains(" = alloca "), "module-level allocation: {line}");
+        if line == "}" { in_function = false; }
+    }
+    assert!(ir.contains(" = alloca "), "exercise stack allocation");
+    assert_unique_ssa_definitions(&ir);
+}
+
+fn assert_unique_ssa_definitions(ir: &str) {
+    let mut names = std::collections::HashSet::new();
+    for line in ir.lines().map(str::trim) {
+        if line.starts_with(';') { continue; }
+        if line.starts_with("define ") { names.clear(); }
+        let Some((name, _)) = line.split_once(" = ") else { continue; };
+        assert!(!name.starts_with('%') || names.insert(name), "duplicate local: {name}");
+    }
+}

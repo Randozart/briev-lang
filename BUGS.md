@@ -11491,3 +11491,8 @@ later constructors can overwrite or misinterpret those handles. Reproducer:
 
 This is part of the enum value model migration: collection elements must own a
 complete value or an explicitly owned box, never a borrowed constructor slot.
+
+
+## FIXED 2026-11-02: callable-transaction-emission
+
+Emit callable transaction locals inside entry and preserve unique SSA names. Regression: callable_transaction_local_slots_are_inside_the_function.
