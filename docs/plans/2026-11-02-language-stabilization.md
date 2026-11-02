@@ -73,8 +73,10 @@ green. C cancellation is fixed (normalizer gate admitted the existing
 ignored tests remain; full `cargo test --all` is green. Full runtime is
 correctness-clean, and controlled A/B shows no unexplained regression; only
 `ws_frame` exceeds the pinned baseline, explained by the baseline's invalid
-dead-frame pointer (needs an exception/re-lock). Remaining: generic callable
-txn specialization, `dyn`/PHI defects, I11 release evidence.
+dead-frame pointer (needs an exception/re-lock). Generic callable txn is
+verified by a two-struct `iter_chain` golden; the rejected partial port stays
+out. `dyn`/PHI paths have current unit and parity coverage and full-all passes.
+Remaining: I11/release evidence and the `ws_frame` baseline decision.
 
 ## Stage 4 — Platform ledger
 

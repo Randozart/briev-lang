@@ -11409,13 +11409,17 @@ callback to an IntToPtr representation cast. Applied wholesale, `test_bit_to_str
 and `test_bit_to_string_encoding_door` fail: Bit→String no longer materializes
 the `[len][bytes]` header. Keep the current encoding lane; adapt the app instead.
 
-## Generic callable transaction specialization deferred (OPEN 2026-10-25)
+## Generic callable transaction specialization (VERIFIED 2026-11-02)
 
-A partial port of `generic_txns` plus txn specialization worklist made a concrete
-`iter_chain` probe lose its list type (`Count#`/`.^Length` saw `Int`). The
-compiler regressed before the app catalogue gate could run. Deferred until the
-frontend type substitution and txn worklist are ported together and gated by a
-multi-struct catalogue concatenation fixture.
+A partial port of `generic_txns` plus a txn specialization worklist made a
+concrete `iter_chain` probe lose its list type (`Count#`/`.^Length` saw `Int`).
+That partial port stays out.
+
+The required gate now passes on the existing path:
+`tests/tier1/iter_chain_multi.bv` concatenates `List<A>` and `List<B>` through
+`iter_chain<T>`/`iter_chain_loop<T>` and prints `4` and `2`;
+`daily_use_smoke::iter_chain_multi_struct_golden_output` pins it. No
+specialization rewrite is needed for this shape.
 
 
 ## Portable cast path emits i32 Int64 constants (FIXED 2026-10-25)

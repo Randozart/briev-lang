@@ -533,6 +533,17 @@ fn result_object_gate_golden_output() {
     assert_eq!(out, "object_unwraps=true\n", "Result object unwrap golden drifted: {out:?}");
 }
 
+/// 2026-11-02 (stability Phase 2): the deferred generic-callable-txn gate.
+/// Two distinct object lists concatenate through `iter_chain<T>`, whose
+/// callable txn `iter_chain_loop<T>` must keep each list's element type.
+/// A partial specialization port previously made `Count#` see Int; this
+/// concrete multi-struct gate pins the working path.
+#[test]
+fn iter_chain_multi_struct_golden_output() {
+    let out = build_link_run("iter_chain_multi", "iter_chain_multi", &[]);
+    assert_eq!(out, "4\n2\n", "multi-struct iter_chain output");
+}
+
 #[test]
 fn collection_rebind_gate_golden_output() {
     let out = build_link_run("collection_rebind_gate", "golden", &[]);
