@@ -34,7 +34,7 @@ pub const INLINE_OBJECT_MAX_WORDS: usize = 8;
 /// Object payloads inside enum images are disabled: the frame image is returned
 /// through an i64 handle and miscompiles `net_stack_helpers` at -O1. Keep the
 /// layout facts so the pass can be re-enabled with a lifetime/alias proof.
-const OBJECT_PAYLOAD_INLINE_ENABLED: bool = false;
+pub const OBJECT_PAYLOAD_INLINE_ENABLED: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumLayout {
@@ -447,16 +447,16 @@ mod tests {
     }
 
     #[test]
-    fn small_object_payload_stays_boxed_until_lifetime_fix() {
+    fn small_object_payload_is_inline_in_internal_enum() {
         let items = parse(
             "struct P { a: Int; b: Int; };\n\
              enum E { Wrap(P), Empty };\n",
         );
         let planner = EnumLayoutPlanner::new(&items, 2);
         let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
-        assert_eq!(layout.image_words, 2);
-        assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
-        assert_eq!(layout.variant_payload_words, vec![1, 0]);
+        assert_eq!(layout.image_words, 3);
+        assert_eq!(layout.variant_payload_inline_object, vec![true, false]);
+        assert_eq!(layout.variant_payload_words, vec![2, 0]);
     }
 
     #[test]

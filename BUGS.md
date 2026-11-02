@@ -33,7 +33,7 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## D4b inline enum-object payload miscompiles at -O1 -- OPEN (disabled) 2026-11-01
+## D4b inline enum-object payload miscompiles at -O1 -- FIXED 2026-11-02
 
 **Symptom:** with `OBJECT_PAYLOAD_INLINE_ENABLED = true`, the O1 build of
 `tests/tier1/net_stack_helpers.bv` fails on the third websocket decode
@@ -82,7 +82,15 @@ So the syntactic direct-call rule is unsound: a direct callee can retain the
 pointer through state. D4b still needs a parameter-escape summary or full
 materialization at every match binding.
 
-**Probe 2026-11-02 (parameter-summary materialization):** with `notail`, exact
+**Resolution 2026-11-02:** contributor PR49 (resolved `TypeUniverse` object
+capacity), PR50 (declared field constructor context), and PR51 (owned extraction
+of inline object payloads) are integrated. PR51 copies every match-bound inline
+object into owned storage, so the borrowed enum-image pointer class is gone;
+`notail`/selective view machinery is no longer required for correctness. D4b is
+enabled. Validation: net_stack O0–O3, ASan, I11, 3443 lib tests, 32 daily tests,
+determinism, and full runtime all pass. `ws_frame` 1.33x C in the final run.
+
+**Historical probe 2026-11-02 (parameter-summary materialization):** with `notail`, exact
 object sizes, and non-retaining parameter summaries, net_stack O0–O3 pass. I11
 still aborts with `malloc(): invalid next size`: the enum value can escape
 without a match binding, carrying the inline object pointer through the enum

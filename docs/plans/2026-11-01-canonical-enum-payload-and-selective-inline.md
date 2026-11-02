@@ -56,7 +56,12 @@ call cases are escaping. Regression: `parameter_retention_summary_is_conservativ
 - Regression: field-reading consumer = non-escaping; consumer returning or
   storing the object = escaping; unknown callee = escaping.
 
-### Phase C/D — selective inline and match materialization — CODE LANDED (2026-11-02)
+### Phase C/D — selective inline and match materialization — CORRECTNESS FLOOR LANDED (2026-11-02)
+
+Contributor PR49/50/51 are integrated. PR51's unconditional owned extraction is
+the active correctness floor; our selective view path is retained only as
+future copy-elision work. D4b is enabled and passes O0–O3, ASan, I11, full lib,
+daily, determinism, and full runtime (`ws_frame` 1.33x C).
 
 Match-bound inline objects now resolve through
 `inline_object_binding_view_ok`: a view is retained only for a direct call
