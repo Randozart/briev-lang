@@ -11,11 +11,13 @@ pub mod ids;
 pub mod lower;
 pub mod pattern;
 pub mod program;
+pub mod stats;
 pub mod stmt;
 pub mod verify;
 
 pub use lower::lower_program;
 pub use program::{HirCallable, HirCallableKind, HirProgram};
+pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use verify::verify;
 
 #[cfg(test)]
@@ -78,6 +80,17 @@ txn tick(x: Int) -> Int { term x + 1; };
         let body = &program.callables[0].body.statements;
         assert!(matches!(body[1].kind, super::stmt::HirStmtKind::Foreach { .. }));
         assert!(matches!(body[2].kind, super::stmt::HirStmtKind::Term(Some(_))));
+    }
+
+    #[test]
+    fn nested_ids_are_verified_and_unsupported_is_counted() {
+        let program = lower_program(&parse(
+            "defn f(x: Int) -> Int { let y: Int = x.call(); term y + 1; };\n",
+        ));
+        verify(&program).expect("valid HIR");
+        let counts = unsupported_counts(&program);
+        assert_eq!(counts.expressions, 1, "method call is explicitly unsupported");
+        assert_eq!(counts.statements, 0);
     }
 
     #[test]
