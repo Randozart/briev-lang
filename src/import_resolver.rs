@@ -416,6 +416,14 @@ impl ImportResolver {
                 if installed_p.join("std").is_dir() {
                     return Some(installed_p);
                 }
+                // 2026-11-02 (package smoke): the reproducible release archive
+                // places `lib/` beside `brievc`, not under ../share. Without
+                // this probe a clean extracted package could not compile its
+                // own native examples (wasm worked through a different root).
+                let packaged_p = exe_dir.join("lib");
+                if packaged_p.join("std").is_dir() {
+                    return Some(packaged_p);
+                }
             }
         }
 

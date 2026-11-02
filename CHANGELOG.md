@@ -13,6 +13,8 @@
 - `CancelRequested#`/`ClearCancel#` admitted by the LLVM normalizer.
 - Multi-struct `iter_chain<T>` concatenation pinned as a generic-callable-txn
   gate.
+- Packaged release layouts resolve `lib/` beside `brievc`; extracted-package
+  native hello now compiles and runs.
 
 ### Gate state
 
