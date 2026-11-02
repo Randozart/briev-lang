@@ -82,9 +82,12 @@ So the syntactic direct-call rule is unsound: a direct callee can retain the
 pointer through state. D4b still needs a parameter-escape summary or full
 materialization at every match binding.
 
-**Next probe:** feed a non-retaining parameter summary into match-binding
-materialization, or always copy match-bound inline objects. Measure whether the
-latter leaves any D4b benefit; currently D4b stays disabled.
+**Probe 2026-11-02 (parameter-summary materialization):** with `notail`, exact
+object sizes, and non-retaining parameter summaries, net_stack O0–O3 pass. I11
+still aborts with `malloc(): invalid next size`: the enum value can escape
+without a match binding, carrying the inline object pointer through the enum
+handle. Match-binding materialization alone is insufficient. D4b needs the
+whole-enum non-escape condition before enabling.
 
 ## wasm32 generic list view state and Float/JSON conversion -- PARTIALLY FIXED 2026-10-27
 

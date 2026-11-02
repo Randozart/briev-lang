@@ -64,8 +64,13 @@ argument whose callee parameter is `NonEscaping`; every other use is copied to a
 heap object before binding. Regression:
 `inline_object_view_requires_non_escaping_callee_param`.
 
-The path is inert while D4b is disabled. Activation still requires the full
-O0–O3/ASan/I11 matrix.
+The path is inert while D4b is disabled. Activation probe (2026-11-02) with
+`notail` + exact sizes + parameter-summary materialization: net_stack O0–O3
+pass; I11 still aborts with `malloc(): invalid next size`. Reason: the enum
+value itself can escape without a match binding, so the inline object pointer
+leaks through the enum handle. Match-binding materialization alone is therefore
+insufficient; D4b needs the whole-enum non-escape condition in Phase E before it
+can be enabled.
 
 - `EnumLoweringPlan` records per-enum/per-variant `object_payload_inline`.
 - Enable only when every match binding and constructor use satisfies the safety
