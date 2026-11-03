@@ -11575,3 +11575,14 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## FIXED 2026-11-03: indexed collection writes omitted or misrepresented
+
+`holder.values[1] = 7` evaluated the value but emitted no collection store.
+Index writes now dispatch the declared SetAt capability; coll synthesis derives
+a bounds-checked writer. Its ordinary inline member requires a local return
+continuation, correctly coerced arguments and actual dynamic-arm phi predecessors.
+Fixed collections additionally require shared construction/read/write layouts
+for inline records, pointer handles and omitted initialized elements. Native
+regressions cover these boundaries, exactly-once side effects and bounds.
+Interpreter indexed-write parity remains a separate open execution-engine gap.

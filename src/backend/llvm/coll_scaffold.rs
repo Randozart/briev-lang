@@ -120,6 +120,35 @@ fn synth_op_at(seq_expr: &str, elem_ty: crate::ast::Type) -> Definition {
     }
 }
 
+/// 2026-11-03: indexed assignment needs the declared collection's write
+/// capability as well as At. Reuse the derived sequence, never a type name.
+/// Retire this synthesis only when collection declarations supply SetAt.
+fn synth_op_set_at(seq_expr: &str, elem_ty: Type, length: Option<i64>) -> Definition {
+    let mut member = synth_op_at(seq_expr, elem_ty.clone());
+    member.name = "SetAt".into();
+    member.parameters.push(("value".into(), elem_ty));
+    member.output_type = Some(OutputType::single(Type::void()));
+    member.outputs = vec![Type::void()];
+    member.body = vec![
+        Statement::Guarded(
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Or,
+                Box::new(Expr::BinaryOp(crate::ast::BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("i".into())), Box::new(Expr::Decimal(0)))),
+                Box::new(Expr::BinaryOp(crate::ast::BinaryOpKind::Ge,
+                    Box::new(Expr::Identifier("i".into())),
+                    Box::new(length.map(Expr::Decimal).unwrap_or_else(|| Expr::Identifier("len".into())))))),
+            vec![Statement::Trap],
+        ),
+        Statement::Assign(
+            Expr::Index(Box::new(seq_access(seq_expr)), Box::new(Expr::Identifier("i".into()))),
+            Expr::Identifier("value".into()),
+        ),
+        Statement::Term(None),
+    ];
+    member.doc = Some("scaffolded by `coll` (indexed element write)".into());
+    member
+}
+
 /// A synthesized `txn init_empty() [true][len == 0] { data = Malloc#(cap); cap = CAP; len = 0; }`
 /// member — the zero-arg construction. `seq_expr` is the sequence member;
 /// `cap_expr` is where the capacity lives (a `data`-side capacity for a
@@ -470,6 +499,7 @@ pub(crate) fn synthesize_members(
         None => TopLevel::TypeDefOperator(synth_op_count()),
     });
     members.push(TopLevel::TypeDefOperator(synth_op_at(seq_expr, elem_ty.clone())));
+    members.push(TopLevel::TypeDefOperator(synth_op_set_at(seq_expr, elem_ty.clone(), fixed_n)));
     if growable {
         members.push(TopLevel::Definition(synth_init_empty(
             seq_expr, elem_ty.clone(), elem_ty.clone(),
@@ -586,6 +616,7 @@ pub fn synthesize_members_for_check(
         return members;
     };
     members.push(TopLevel::TypeDefOperator(synth_op_at(&seq_expr, elem_ty.clone())));
+    members.push(TopLevel::TypeDefOperator(synth_op_set_at(&seq_expr, elem_ty.clone(), None)));
     // op InsertAt(v: T) — the push element type the `<-` dispatch reads.
     members.push(TopLevel::TypeDefOperator(synth_insert_at_op(elem_ty.clone())));
     members.push(TopLevel::TypeDefOperator(synth_extract_from_op(elem_ty.clone())));

@@ -1,0 +1,29 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj WriteTrace { order: Int; };
+defn write_value(trace: WriteTrace) -> Int {
+    trace.order = trace.order * 10 + 1;
+    term 7;
+};
+defn write_receiver(trace: WriteTrace, values: List<Int>) -> List<Int> {
+    trace.order = trace.order * 10 + 2;
+    term values;
+};
+defn write_index(trace: WriteTrace) -> Int {
+    trace.order = trace.order * 10 + 3;
+    term 1;
+};
+let done: Bool = false;
+node main [!done][done] {
+    let trace: WriteTrace = WriteTrace { order: 0 };
+    let values: List<Int> = [3,5];
+    write_receiver(trace,values)[write_index(trace)] = write_value(trace);
+    when trace.order != 123 { endprogram 1; };
+    when values[0] != 3 || values[1] != 7 { endprogram 2; };
+    values.SetAt(0,11);
+    when values[0] != 11 || values[1] != 7 { endprogram 3; };
+    println!("indexed_write_effects_once_in_order");
+    done = true;
+    endprogram;
+};
