@@ -8690,6 +8690,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // leaving `16 as Bits<4>` holding 16 in an i64 register. Truncate the
         // integer source to exactly N bits here, before the graph. A source
         // that is already i{N} (a packed field read) is an identity.
+        // 2026-11-03: widening must zero-extend and pointer inputs need
+        // ptrtoint; relabelling a ptr as Bits produces invalid SSA. Retire
+        // this path when width assertions are lowered by the casting graph.
         if let Some(n) = crate::type_universe::bits_width(target) {
             // 2026-09-11 (Phase A4): Bits(0) — the flexible `Bit`/`Bits` — is
             // the CONTENT-VIEW cast target (the old `#Bit` category): it routes
@@ -8698,12 +8701,21 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             if n > 0 {
                 let src_ll = self.llvm_type(&src.ty);
                 let tgt = format!("i{}", n);
-                if src_ll != tgt && src_ll.starts_with('i') {
+                if src_ll == "ptr" {
                     let reg = self.fun.gen_reg();
-                    writeln!(out, "{}{} = trunc {} {} to {}", indent, reg, src_ll, src.name, tgt).ok();
+                    writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, reg, src.name, tgt).ok();
                     return Some(TypedRegister { name: reg, ty: target.clone() });
                 }
-                return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
+                if src_ll != tgt && src_ll.starts_with('i') {
+                    let reg = self.fun.gen_reg();
+                    let width = src_ll[1..].parse::<u64>().ok()?;
+                    let op = if width < n { "zext" } else { "trunc" };
+                    writeln!(out, "{}{} = {} {} {} to {}", indent, reg, op, src_ll, src.name, tgt).ok();
+                    return Some(TypedRegister { name: reg, ty: target.clone() });
+                }
+                if src_ll == tgt {
+                    return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
+                }
             }
         }
         let graph = self.ctx.casting_graph.as_ref()?;
@@ -9029,9 +9041,10 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     // A registered CastFrom(Bit) override for the target type
                     // calls the override function; otherwise the String default
                     // is the UTF8 wrap: inttoptr the address, then
-                    // briev_cstr_to_briev materializes the [len][bytes] header
-                    // by construction (length derived from the bytes). The
-                    // header is never inherited from the bits — it is created.
+                    // briev_bits_to_str copies the [len][bytes] buffer into
+                    // newly owned String storage (including embedded NULs).
+                    // 2026-11-03: use the source's actual integer width at
+                    // pointer conversion; constructors keep their i64 ABI.
                     let override_fn = match target.universe_key() {
                         Some(key) => self
                             .ctx
@@ -9040,12 +9053,21 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                             .and_then(|g| g.get_cast_from_bit(key)),
                         None => None,
                     };
-                    if let Some(fn_name) = override_fn {
+                    if let Some(fn_name) = override_fn.map(str::to_owned) {
+                        // The constructor boundary receives an i64 storage
+                        // word even when the explicit raw-bit source is i32.
+                        let mut argument = cur.clone();
+                        if cur_ll != "i64" {
+                            let width = cur_ll.strip_prefix('i')?.parse::<u64>().ok()?;
+                            argument = self.fun.gen_reg();
+                            let op = if width < 64 { "zext" } else { "trunc" };
+                            writeln!(out, "{}{} = {} {} {} to i64", indent, argument, op, cur_ll, cur).ok();
+                        }
                         writeln!(out, "{}{} = call {} @{}(i64 {})",
-                            indent, dst, dst_ll, fn_name, cur).ok();
+                            indent, dst, dst_ll, fn_name, argument).ok();
                     } else {
                         let p = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, cur).ok();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, cur_ll, cur).ok();
                         writeln!(out, "{}{} = call ptr @briev_bits_to_str(ptr {})",
                             indent, dst, p).ok();
                     }
