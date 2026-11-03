@@ -103,10 +103,18 @@ the convention already solves, plus a call per allocation. Keep allocation
 inline; add an `AllocStrategy` call variant later only if measured.
 Plan: `docs/plans/2026-11-03-arena-enablement.md`.
 
-**Status:** OPEN — prerequisite for the per-worker-arena phase; all four
-defects above must be fixed together (arena allocation must be IR-safe in
-folded loops before selection is enabled). Recommended fix: (B), then (1)–(3),
-then re-enable selection behind an IR gate.
+**Status:** RESOLVED (selection) 2026-11-03 (`2fad776c`): ids are stamped by
+one pass, the version-DAG uses dedicated end trampolines + captured final
+blocks (IR-safe inline CF), lazy init covers every inlined-body main, and
+fini is brk-aware. `arena_folded_loop` uses `aacheck_` bumps and sums
+correctly; `arena_churn` computes the exact sum with the arena.
+
+**Follow-up (active):** runtime parity + folding —
+`docs/plans/2026-11-03-arena-runtime-parity-and-folding.md`. The arena is
+~1.4x the C arena (338 vs 240ms @50M) due to per-allocation `%state`
+round-trips; the baseline's ~18ms was a legal proof-driven fold. R:
+register-resident bump/end + cold grow (parity). O: dead-allocation
+elimination to keep the fold (restores ~18ms where semantics allow).
 
 ## Enum image escapes to state without owning (I11 root cause) — OPEN 2026-11-03
 

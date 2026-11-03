@@ -49,6 +49,14 @@ sinks → D gate replacement (export/FFI-only boundary) → E verification
 runtime A/B). State-store sink already fixed (`c4a5f4a1`); rest of Proof 3 is
 this workstream.
 
+**Arena runtime parity + allocation folding (2026-11-03, ACTIVE):**
+`docs/plans/2026-11-03-arena-runtime-parity-and-folding.md` — two goals:
+(R) runtime parity/better than the C arena on an observable workload —
+register-resident bump/end (local cursor, SROA-promoted), cold grow, scope
+reset; (O) keep proof-driven dead-allocation folding via the escape facts
+(restores the ~18ms fold where semantics allow). Evidence: current arena is
+~1.4x C (338 vs 240ms @50M); the baseline's 18ms was a legal fold.
+
 **Arena enablement (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-arena-enablement.md` — make `Alloc#` actually select a
 safe arena. Root cause: two analysis passes stamp conflicting `Alloc#` ids.
