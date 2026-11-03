@@ -102,6 +102,47 @@ proved impossible under new conditions or fixed.
 **Exit criterion:** named escape path (or refuted: gate relaxation safe
 under stated conditions — then conditions must encode why).
 
+**Step 0 RESULT (2026-11-03) — escape path NAMED and confirmed.**
+
+- **Escape sink:** the `Assign` state-store paths in
+  `src/backend/llvm/emit_stmt.rs` (`emit_state_store_i64` / pooled / self /
+  flat-dotted / `field_index_map` branches, ~line 1116+) publish an enum
+  handle **without calling `own_enum_value`**. (`own_enum_value` is only
+  called at collection push — emit_stmt.rs:1850 — and struct-field store —
+  emit_expr.rs:2993.)
+- **Mechanism (use-after-return):** an enum image returned by a call is an
+  `alloca` in the **producing callable's frame** (the sret slot). A non-txn
+  defn that stores such a value to global/node state leaves the state slot
+  pointing at its own dead frame. Under gate relaxation the object payload is
+  inline in that image, so the object bytes die with the frame; a later
+  firing reads garbage, and treating the garbage handle as an owned object
+  (free/memcpy) produces `malloc(): invalid next size`.
+- **Why the gate "hides" it (coincidence, not proof):** boxing the payload
+  keeps the object on the heap, so the dead-frame read usually still yields a
+  valid object pointer and the program happens to work. It is still a latent
+  UAF; the gate is a conservative proxy for escape-ownership, not the
+  property itself. This also explains why PR51 match-binding materialization
+  fixed the match class but relaxation still corrupted I11: **state stores
+  (and other non-match escapes) were never materialized.**
+- **Reproduction + confirmation (IR A/B):**
+  - Repro `defn_store.bv`: a defn does `let local: Box = make_box(42); saved = local;` and returns; `consume` reads `saved` in a later firing.
+  - Relaxed, `-O0 -fno-inline -fsanitize=address`: prints garbage
+    `94680470082656`; gate ON prints `42`.
+  - Hand-inserting `malloc(24)+memcpy(24)` (an `own_enum_value` equivalent)
+    before the relaxed state store makes it print `42` — **root cause
+    confirmed**.
+  - Artifacts: `/tmp/opencode/repro/{defn_store,state_enum,alias_enum,nested_enum}.bv`.
+- **NOT layout divergence:** the minimal shapes are layout-consistent
+  (alloca size == constructor write width) and the plan validators
+  (`validate_variants`/`validate_representation`) enforce agreement; the
+  divergence hypothesis is unconfirmed for these shapes.
+- **Fix direction (Proof 3 condition 2):** materialize enum images to owned
+  storage (`own_enum_value`) at every sink that can outlive the producing
+  frame — **state stores** (the confirmed gap), call arguments to retaining
+  callees, closure captures, cross-node publication, and returns — or prove
+  the producing frame outlives the sink. The whole-enum boundary gate may be
+  replaced by this proof once every sink is covered.
+
 ### Step 1 — ws_frame attribution (measure before building) — **DONE 2026-11-03**
 
 *Result:* see the Step 1 verdict above and

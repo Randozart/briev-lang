@@ -159,6 +159,17 @@ gate at `:333`, 2026-11-02 whole-enum escape gate).
 
 ### Proof 3 — boundary-gate relaxation (prereq for Proof 2)
 
+**Condition 2 escape confirmed 2026-11-03** (details: execution plan Step 0
+RESULT, BUGS.md "Enum image escapes to state without owning"): the state-store
+paths (`emit_stmt.rs` `Assign` → `emit_state_store_i64` and variants) publish
+an enum handle without `own_enum_value`, so a defn-local sret image stored to
+global/node state dangles after the defn returns. Minimal repro
+`defn_store.bv` prints garbage under relaxation and `42` after hand-inserting
+`malloc+memcpy` (owning) before the store. PR51 match-binding materialization
+covers only the match class; **non-match escapes (state, call args, returns)
+were never materialized.** Not layout divergence — minimal shapes are
+layout-consistent and the validators enforce it.
+
 Recorded fact (`docs/plans/2026-11-01-canonical-enum-payload-and-selective-inline.md`
 Phase E): relaxing the gate while keeping PR51 owned extraction **still
 corrupts I11** (`malloc(): invalid next size` — a size-mismatch write). The

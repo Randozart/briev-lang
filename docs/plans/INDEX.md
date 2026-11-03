@@ -28,7 +28,13 @@ re-scoped to the ≤ ~2.6 ms current-vs-C residual; Proof 2/3 are correctness
 work, off the `ws_frame` path. Measured data:
 `benchmarks/results/2026-11-03-ws-frame-attribution.md`; evidence/proofs:
 `docs/plans/2026-11-03-ws-frame-safe-fast-path.md`; benchmark flaw in
-`BUGS.md` (even `PASSES` hides checksum errors).
+`BUGS.md` (even `PASSES` hides checksum errors). **Step 0 DONE:** I11
+root-caused — enum images escape to state without `own_enum_value`
+(`emit_stmt.rs` state-store paths); a defn-local sret image stored to node
+state dangles after the defn returns. Confirmed by IR A/B
+(`/tmp/opencode/repro/defn_store.bv`: garbage under relaxation, `42` after
+owning). Not layout divergence. Fix = Proof 3 condition 2 (own at every
+escape sink); the boundary gate stays mandatory until then. See `BUGS.md`.
 
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR

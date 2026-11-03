@@ -33,6 +33,47 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Enum image escapes to state without owning (I11 root cause) — OPEN 2026-11-03
+
+**Symptom (root cause of the D4b/I11 `malloc(): invalid next size`):** the
+state-store paths in `src/backend/llvm/emit_stmt.rs` (`Assign` → pooled /
+self / flat-dotted / `field_index_map` → `emit_state_store_i64`) publish an
+enum handle **without calling `own_enum_value`**. An enum image returned by a
+call is an `alloca` in the producing callable's frame (the sret slot); a
+non-txn defn that stores such a value into global/node state leaves the state
+slot pointing into its own **dead frame**. Under the whole-enum boundary gate
+the object payload is boxed (heap), so the dead-frame read usually still
+yields a valid pointer and the bug stays latent. With inline object payloads
+(gate relaxed) the object bytes are inline in the dead frame, so the garbage
+handle produces `malloc(): invalid next size` when later freed/copied.
+
+**Repro (2026-11-03):** `/tmp/opencode/repro/defn_store.bv` —
+`defn build_and_store() { let local: Box = make_box(42); saved = local; ... }`
+then a later firing reads `saved`.
+
+- Relaxed gate, `-O0 -fno-inline -fsanitize=address`: prints garbage
+  `94680470082656`.
+- Gate ON: prints `42` (latent UAF, not proven safe).
+- Hand-inserting `malloc+memcpy` (an `own_enum_value` equivalent) before the
+  relaxed state store makes it print `42` — root cause confirmed.
+
+**IR evidence:** `build_and_store` emits `%esrt = alloca i64, 3;
+%t = call i64 @make_box(ptr %esrt); store i64 %t, ptr %state.saved` — no
+`own_enum_value` between the call and the state store.
+
+**Not layout divergence:** minimal shapes are layout-consistent; the
+`enum_lowering` validators enforce agreement. The divergence hypothesis is
+unconfirmed for these shapes.
+
+**Fix:** implement Proof 3 condition 2 — materialize enum images to owned
+storage at every sink that can outlive the producing frame: state stores
+(confirmed gap), call arguments to retaining callees, closure captures,
+cross-node publication, and returns; otherwise prove the producing frame
+outlives the sink. Until then the whole-enum boundary gate stays mandatory.
+
+**Status:** OPEN — escape path named and confirmed; fix belongs to Step 3 of
+`docs/plans/2026-11-03-ws-frame-fast-path-execution.md`.
+
 ## ws_frame benchmark hides checksum errors (even PASSES) — OPEN 2026-11-03
 
 **Symptom:** `benchmarks/ws_frame.bv` accumulates its payload checksum with
