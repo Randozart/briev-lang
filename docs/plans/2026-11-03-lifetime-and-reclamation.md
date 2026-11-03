@@ -251,11 +251,19 @@ Goal: every escape sink is correct (no UAF) while the model lands.
 
 Goal: real parallel `async` (the efficient default) with thread-safe memory.
 
-**Prerequisite (found 2026-11-03): the arena is currently never selected.**
-`benchmarks/arena_churn.bv` and even `Alloc#(64, Arena)` lower to `@malloc`
-(`BUGS.md` "Alloc# never selects the arena"). Fix the allocation-strategy
-selection (explicit override ordering, intrinsic escape semantics, cast
-linking) and add an IR gate before per-worker arenas can matter.
+**Prerequisite (found 2026-11-03): the arena is currently never selected and
+is unsafe when it is.** `arena_churn` lowers to `@malloc` because two analysis
+passes stamp conflicting `Alloc#` ids (the arena-need pass overwrites codegen's
+ids). Enabling selection exposes four coupled defects — all must be fixed as
+one arena-correctness pass (`BUGS.md` "Alloc# never selects the arena"):
+1. Direct-SSA main never calls `emit_arena_init` (inlined bodies grow from a
+   zero base).
+2. `emit_arena_fini` `@free`s a `brk` pointer (invalid free).
+3. Grow resets the bump to base (overwrites live arena data).
+4. Arena allocation emits check/grow/ok control flow that folded-loop phi
+   predecessor bookkeeping does not account for → invalid IR.
+Exit gate: an IR test that `arena_churn`/a folded-loop `Alloc#` program uses
+the arena and produces valid, runnable IR; then per-worker arenas.
 
 - **Substrate:** `SysCall#(SYS_clone, CLONE_VM|CLONE_FS|CLONE_FILES|
   CLONE_SIGHAND|CLONE_THREAD, …)` at startup; futex release/wait per tick;

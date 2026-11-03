@@ -66,7 +66,33 @@ escape semantics (address vs value; `Store#`/`Load#`/`Copy#` do not retain the
 address); (c) see through casts when linking an `Alloc#` producer to its
 binding; (d) add IR tests asserting `arena_churn` uses `aacheck_`/the arena.
 
-**Status:** OPEN — prerequisite for the per-worker-arena phase.
+**Root-cause detail (2026-11-03 investigation):** `analyze_alloc_strategies`
+and `analyze_arena_need` both run the DAG and both stamp `Expr::Call(Alloc#)`
+ids onto the AST, with different counters (global vs per-function). The second
+pass (`analyze_arena_need`) overwrites codegen's ids, so codegen looks up the
+wrong strategy and selects `Malloc`. Instrumentation confirmed
+`strategy=Some(Malloc)` for the in-txn allocation whose analysis default was
+`Arena`. Fixing only this (make `analyze_arena_need` not stamp) makes the
+arena get selected — and then exposes four further latent defects, so the
+arena must be fixed as one pass, not one at a time:
+1. **Direct-SSA main never initializes the arena** (`emit_ssa_main` inlines
+   txn bodies without `emit_arena_init`), so an arena alloc grows from a zero
+   base and calls `brk(0+size)` → bogus pointer/segfault.
+2. **`emit_arena_fini` calls `@free` on a `brk`-backed base** — invalid free
+   (the region was never malloc'd). Needs a brk-aware teardown (shrink the
+   break or no-op).
+3. **Arena grow resets the bump to base**, overwriting live arena data rather
+   than extending in place.
+4. **Enabling arena allocation in a folded countdown loop produces invalid IR**
+   ("PHI node entries do not match predecessors"): the arena alloc's
+   check/grow/ok blocks change the actual predecessor, but the countdown phi
+   still names its precomputed body label. This is the blocker that stops a
+   naive enable: arena allocation emits control flow that the loop's phi
+   predecessor bookkeeping does not account for.
+
+**Status:** OPEN — prerequisite for the per-worker-arena phase; all four
+defects above must be fixed together (arena allocation must be IR-safe in
+folded loops before selection is enabled).
 
 ## Enum image escapes to state without owning (I11 root cause) — OPEN 2026-11-03
 
