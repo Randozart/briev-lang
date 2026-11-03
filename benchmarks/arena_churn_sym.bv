@@ -1,0 +1,22 @@
+// arena_churn_sym — observable arena-churn runtime benchmark (2026-11-03).
+//
+// Same arena bump + reset/reuse as arena_churn, but the store/load go through
+// VolatileStore#/VolatileLoad# so the allocation's memory effect is observable
+// and cannot be forwarded away or dead-eliminated. This is the runtime
+// (arena-vs-arena) measurement; arena_churn remains the foldable optimizer
+// variant. Mirrors arena_churn_sym_c.c.
+let N: Int = get_env_int!("BOUND");
+let ops: Int = 0;
+let sum: Int = 0;
+
+node churn [ops < N][ops == N] {
+    let a: Int = Alloc#(64) as Int;
+    VolatileStore#(a as Ptr<Int>, ops);
+    let v: Int = VolatileLoad#(a as Ptr<Int>) as Int;
+    sum = sum + v;
+    ops = ops + 1;
+    when ops % 5000000 == 0 {
+        println!(sum);
+    };
+    term;
+};
