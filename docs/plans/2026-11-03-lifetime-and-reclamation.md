@@ -251,6 +251,12 @@ Goal: every escape sink is correct (no UAF) while the model lands.
 
 Goal: real parallel `async` (the efficient default) with thread-safe memory.
 
+**Prerequisite (found 2026-11-03): the arena is currently never selected.**
+`benchmarks/arena_churn.bv` and even `Alloc#(64, Arena)` lower to `@malloc`
+(`BUGS.md` "Alloc# never selects the arena"). Fix the allocation-strategy
+selection (explicit override ordering, intrinsic escape semantics, cast
+linking) and add an IR gate before per-worker arenas can matter.
+
 - **Substrate:** `SysCall#(SYS_clone, CLONE_VM|CLONE_FS|CLONE_FILES|
   CLONE_SIGHAND|CLONE_THREAD, …)` at startup; futex release/wait per tick;
   fn-pointer body table; join at exit; per-phase watchdog; no pthreads, no C

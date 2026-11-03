@@ -33,6 +33,41 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## `Alloc#` never selects the arena (arena subsystem effectively dead) — OPEN 2026-11-03
+
+**Symptom:** `benchmarks/arena_churn.bv` (`let a: Int = Alloc#(64) as Int;` in a
+reactive node) lowers to `call ptr @malloc`, never the bump arena: no
+`aacheck_`/`aagrow_` labels are emitted. Even the explicit override
+`Alloc#(64, Arena)` lowers to `@malloc`. The benchmark's stated intent ("Alloc#s
+64 bytes from the per-txn arena") is not met; it measures malloc.
+
+**Evidence (IR inspection, 2026-11-03):**
+- `arena_churn.ll`: `%t35_p = call ptr @malloc(i64 ...)`, `aacheck_` count 0,
+  while arena init (`brk`) is present — so the arena is initialized but unused.
+- `emit_alloc` (`src/backend/llvm/intrinsics.rs`) consults
+  `analysis_alloc_strategies` and **returns inside that match before** the
+  `if args.len() >= 2` explicit-strategy check — contradicting its own comment
+  ("explicit user override takes priority over analysis"). An analysis-assigned
+  strategy therefore shadows `Alloc#(size, Arena)`.
+- `src/analysis/allocation.rs` never constructs a `DagNode::Call`
+  (the `Call` escape arm at ~:203 is dead), and the `Alloc#` producer is linked
+  to its binding only when the initializer is a bare `Expr::Call("Alloc#")`;
+  `Alloc#(...) as T` is a `Cast`, so the producer is not linked and escape
+  analysis is inconsistent. The exact path that resolves the default
+  `Alloc#(64)` to `Malloc` must be pinned by instrumentation.
+
+**Impact:** per-worker arenas (lifetime plan Phase 1) and the arena strategy
+deliver no value until the arena is actually selected; `arena_churn` cannot
+monitor the arena; `Alloc#`'s "max efficient default" (Rule 2) is not met.
+
+**Fix candidates:** (a) move the explicit strategy-arg check before the
+analysis lookup; (b) construct `DagNode::Call` with correct per-intrinsic
+escape semantics (address vs value; `Store#`/`Load#`/`Copy#` do not retain the
+address); (c) see through casts when linking an `Alloc#` producer to its
+binding; (d) add IR tests asserting `arena_churn` uses `aacheck_`/the arena.
+
+**Status:** OPEN — prerequisite for the per-worker-arena phase.
+
 ## Enum image escapes to state without owning (I11 root cause) — OPEN 2026-11-03
 
 **Symptom (root cause of the D4b/I11 `malloc(): invalid next size`):** the
