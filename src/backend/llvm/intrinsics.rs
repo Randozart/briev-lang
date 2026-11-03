@@ -690,6 +690,15 @@ fn emit_alloc(
 ) -> BTypedRegister {
     let size = emit_arg(backend, out, &args[0], indent);
 
+    // 2026-11-03: an explicit strategy argument (`Alloc#(n, Arena)`) must win
+    // over the analysis default — the analysis is a heuristic, the argument is
+    // the programmer's intent. This check therefore precedes the analysis
+    // lookup (it previously followed it, so analysis silently shadowed the
+    // override; see BUGS.md "Alloc# never selects the arena").
+    if args.len() >= 2 {
+        return emit_alloc_with_strategy(backend, out, v, args, indent, &size);
+    }
+
     // 2026-07-18: Phase 4 — Check pre-computed strategy from analysis pass.
     // If the analysis determined Malloc (escape detected), use it directly.
     if let Some(aid) = analysis_id {
@@ -746,11 +755,6 @@ fn emit_alloc(
         }
     }
 
-    // Check for optional 2nd arg (strategy override) — explicit user override
-    // takes priority over analysis.
-    if args.len() >= 2 {
-        return emit_alloc_with_strategy(backend, out, v, args, indent, &size);
-    }
     // Default triple dispatch (no strategy arg).
     // Strategy 1: Arena scope active → bump allocate.
     // 2026-07-19: Arena is in %State fields — available in any function that
