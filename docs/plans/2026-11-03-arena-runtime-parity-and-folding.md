@@ -56,16 +56,27 @@ The real gap is per-iteration **control flow and address conversion**:
 - lazy-init check + capacity check branches every allocation;
 - `i64` ⇄ `ptr` conversions around the bump.
 
-**Fix (proof-licensed reservation):**
-- For a contract-bounded loop, reserve `N * K` once before the loop
-  (N = bound register, K = constant alloc per iteration) and **hoist the
-  capacity check out of the loop** (the loop cannot overflow a correctly-sized
-  reservation). This is the "prove it can be faster" lever.
-- Hoist arena init to the loop preheader (drop the per-alloc init check).
-- Keep the cursor pointer-typed in registers (no inttoptr/ptrtoint per iter).
-- Embed version keeps the static-heap path.
+**Update (2026-11-03, after trying both):**
+- Reservation (reserve N*K, bump unchecked) was implemented and **regressed**
+  (~1270 ms): it grows to N*64 = 3.2 GB with no reuse (cache-hostile). Reverted.
+- The benchmark C reference had an 8-byte vs 64-byte stride mismatch; fixed.
+  With a symmetric stride, a **correct growing** arena is at **parity**
+  (Briev ~1270 vs C ~1370 ms). Briev's current ~320 ms comes entirely from
+  **reset-on-grow reuse**, which overwrites live arena allocations — a latent
+  soundness bug (`BUGS.md`).
 
-Gate: `arena_churn_sym` ≤ C (target < 200 ms at 50M), no regression.
+**Real fix (scope-lifetime reset with a liveness proof):**
+- Prove which arena allocations do not cross a scope boundary (loop iteration
+  / txn firing). Reset the arena at that boundary only when no live allocation
+  outside the released set remains.
+- Then reuse is **sound and fast** (bounded, cache-hot), no per-allocation
+  capacity check needed within the scope, no unbounded growth.
+- This is the proof-licensed lever: Briev proves the lifetime and reuses;
+  a naive/growing arena is the floor.
+
+Gate: `arena_churn_sym` ≤ C with a **sound** reuse proof (no live allocation
+overwritten), plus a regression that a live arena allocation spanning a reset
+point is either preserved (heap) or rejected.
 
 ### R3. Reset/reclaim
 
