@@ -60,3 +60,34 @@ iteration) and **hoist the capacity check out of the loop**; hoist arena init
 to the preheader; keep the cursor pointer-typed in registers to avoid the
 conversions. This is the "if Briev can prove it, it should" optimization and
 the path to ≤ C.
+
+## Correction (2026-11-03, fair-stride comparison)
+
+The original `arena_churn_sym_c.c` allocated **8-byte** slots while the .bv
+(`Alloc#(64)`) bumps **64 bytes** per iteration — an 8x stride mismatch, so the
+first Briev-vs-C ratio was not like-for-like. The C reference now allocates
+64 bytes/iteration (same stride, same volatile store/load).
+
+At BOUND=50M, same output:
+
+| variant | time |
+|---|---:|
+| Briev, current arena (reset-on-grow **reuse**) | ~315–334 ms |
+| C, 64-byte stride, **growing** arena | ~1345–1395 ms |
+| Briev, grow-preserving (reservation experiment) | ~1270 ms |
+
+So:
+- Against a **correct growing** arena (no reuse), Briev is at **parity** with C
+  (~1270 vs ~1370 ms).
+- Briev's current ~320 ms comes from **reset-on-grow reuse** — it overwrites
+  earlier arena allocations when it grows. That is a **latent soundness bug**
+  (any live arena allocation spanning a grow could be corrupted) and it is not
+  the same behavior as C's growing arena.
+
+The reservation experiment (reserve N*K, bump unchecked) regressed to
+~1270 ms because it grows to N*64 = 3.2 GB with no reuse (cache-hostile);
+reverted.
+
+**Conclusion:** runtime parity for a correct arena is met; the fast reuse must
+be made *sound* via scope-lifetime proofs (reset at scope boundaries only when
+allocations are proven not to cross the scope), which is the next workstream.
