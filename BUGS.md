@@ -11575,3 +11575,13 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## FIXED 2026-11-03: enum result address incorrectly declared nocapture
+
+The caller-owned enum result address is returned as an integer handle. The
+callee therefore captures it, contrary to its LLVM nocapture parameter
+attribute. O3/LTO could remove stores observed through that returned handle.
+Remove only nocapture, preserving noalias, alignment and the existing ABI.
+Native regression compares returned page/tick values with independent getconf
+queries. Controlled IR A/B rejected changes to noalias and memory effects;
+removing nocapture alone corrected the observed corruption.

@@ -11167,7 +11167,7 @@ defn make() -> Option {
     // 2026-10-21 (P2-1 ReturnedSmall): `make` has only constructor-shaped
     // returns, so it now takes the hidden sret slot instead of boxing.
     assert!(
-        ir.contains("define i64 @make(ptr noalias nocapture align 8 %enum_out)"),
+        ir.contains("define i64 @make(ptr noalias align 8 %enum_out)"),
         "constructor-returning defn should use the sret enum slot:\n{}",
         &ir[..ir.len().min(4000)]
     );
