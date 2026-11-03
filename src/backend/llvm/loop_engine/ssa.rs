@@ -131,6 +131,7 @@ impl LlvmBackend {
             writeln!(out, "  br label %.end").ok();
         }
         writeln!(out, ".end:").ok();
+        self.emit_arena_fini(out, "  ");
         // 2026-09-25 (bug 12): the buffered stdout lane flushes only when the
         // buffer fills (@__STDOUT_CAP) or at __exit (endprogram). A host main
         // returning through this path printed nothing when total output was
@@ -457,6 +458,10 @@ impl LlvmBackend {
         };
         writeln!(out, "  br label %.ss_main_loop").ok();
         writeln!(out, ".ss_main_loop:").ok();
+        // Per-tick arena rewind: arena images are non-escaping (escaping
+        // allocations are heap by strategy), so reclaiming them each tick is
+        // sound and bounds memory.
+        self.emit_arena_reset(out, "  ");
         // Reset active flag each iteration
         if let Some(ref slot) = active_slot {
             writeln!(out, "  store i64 0, ptr {}", slot).ok();

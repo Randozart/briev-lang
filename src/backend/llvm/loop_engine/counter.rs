@@ -1374,6 +1374,15 @@ impl LlvmBackend {
         let absent_label = format!(".{}_absent", vd_prefix);
         let latch_label = format!(".{}_latch", vd_prefix);
         let present_label = format!(".{}_present", vd_prefix);
+        // 2026-11-03: dedicated backedge trampolines. The bodies can emit inline
+        // control flow (arena bump/grow, when/match, bounds guards), so their
+        // final block is not necessarily `latch_label`/`present_label`. The
+        // header phi's incoming block must be a block known ahead of time and
+        // reached by exactly one `br` — this mirrors the established `.cdl_`
+        // latch convention and the captured-final-block pattern
+        // (`body_final`/`guard_pred` in emit_countable_main).
+        let latch_end_label = format!(".{}_latch_end", vd_prefix);
+        let present_end_label = format!(".{}_present_end", vd_prefix);
         let end_label = format!(".{}_end", vd_prefix);
 
         self.emit_main_header(out, "#0", true);
@@ -1440,8 +1449,8 @@ impl LlvmBackend {
         let be_p_count = be_present_regs.get(&counter_key)
             .cloned().unwrap_or_else(|| self.fun.next_reg_with_prefix("bp"));
         writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
-            counter_name, counter_ty, init_name, init_pred, be_l_count, latch_label,
-            be_p_count, present_label).ok();
+            counter_name, counter_ty, init_name, init_pred, be_l_count, latch_end_label,
+            be_p_count, present_end_label).ok();
         for fname in &sorted_fields {
             if let Some(cv) = counter_var {
                 if fname.as_str() == cv {
@@ -1471,7 +1480,7 @@ impl LlvmBackend {
                 }
                 _ => {
                     writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ], [ {}, %{} ]",
-                        phi_f, phi_ty, init_f, init_pred, be_l, latch_label, be_p, present_label).ok();
+                        phi_f, phi_ty, init_f, init_pred, be_l, latch_end_label, be_p, present_end_label).ok();
                     self.fun.phi_field_regs.insert((*fname).clone(), phi_f);
                 }
             }
@@ -1568,6 +1577,8 @@ impl LlvmBackend {
             }
         }
         // 2026-07-31: Exit check is at the header; the latch just backs to it.
+        writeln!(out, "  br label %{}", latch_end_label).ok();
+        writeln!(out, "{}:", latch_end_label).ok();
         writeln!(out, "  br label %{}", header_label).ok();
 
         // ── Guard-present block: [pre] [guard] [post] ───────────────
@@ -1608,6 +1619,8 @@ impl LlvmBackend {
                 }
             }
         }
+        writeln!(out, "  br label %{}", present_end_label).ok();
+        writeln!(out, "{}:", present_end_label).ok();
         writeln!(out, "  br label %{}", header_label).ok();
 
         // ── End: post-loop prints ───────────────────────────────────
@@ -2040,6 +2053,13 @@ impl LlvmBackend {
                     writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
                     writeln!(out, "{}:", body_label).ok();
                     self.emit_countable_body(out, stmts, write_set, hoisted);
+                    // 2026-11-03: the body may have inserted inline control
+                    // flow (arena bump/grow, when/match); the merge phi's
+                    // predecessor is the body's ACTUAL final block, not the
+                    // precomputed `body_label`. Capture it before the `br`
+                    // below (same pattern as body_final/guard_pred).
+                    let body_actual = self.fun.cur_block.clone()
+                        .unwrap_or_else(|| body_label.clone());
                     // Snapshot what the BODY wrote, keyed by field, BEFORE the
                     // merge phis (their inputs come from this block).
                     let mut written: Vec<(String, String)> = Vec::new();
@@ -2059,7 +2079,7 @@ impl LlvmBackend {
                             .unwrap_or_else(|| "0".to_string());
                         let mrg = self.fun.next_reg_with_prefix("cmgm");
                         writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-                            mrg, ty, v, body_label, old_v, pre_guard_block).ok();
+                            mrg, ty, v, body_actual, old_v, pre_guard_block).ok();
                         self.fun.pending_phi_backedge.insert(f.clone(), mrg);
                     }
                     for (f, v) in &self.fun.last_val_temps {

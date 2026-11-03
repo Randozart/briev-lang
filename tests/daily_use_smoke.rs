@@ -374,6 +374,32 @@ fn enum_tuple_escape_asan_no_inline() {
     assert_eq!(out, "tuple_enum=true\n", "tuple-enum escape drifted: {out:?}");
 }
 
+/// Arena enablement (2026-11-03): a folded loop with `Alloc#` must select the
+/// bump arena (not @malloc) and sum correctly. Guards the two-pass id
+/// clobbering, the inlined-main arena lifecycle (lazy init), and brk-aware
+/// teardown (no @free on a brk pointer).
+#[test]
+fn arena_folded_loop_uses_arena() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("arena_folded_loop", "arena", &[]);
+    assert_eq!(out, "499500\n", "arena sum drifted: {out:?}");
+    let out_dir = Path::new(PROJECT_ROOT)
+        .join("target/briev_daily_use_smoke/arena_folded_loop__arena");
+    let ir = std::fs::read_to_string(out_dir.join("arena_folded_loop.ll"))
+        .expect("read emitted IR");
+    assert!(
+        ir.contains("aacheck_"),
+        "default Alloc# did not select the bump arena"
+    );
+    assert!(
+        !ir.contains("call void @free"),
+        "brk-backed arena must not be @free'd"
+    );
+}
+
 /// P0 regression: generated/macro-expanded foreach bindings must keep their
 /// alloca in the loop preheader, never in a conditional body. The fixture's
 /// HashMap probe previously produced invalid dominance IR here.

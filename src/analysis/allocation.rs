@@ -95,6 +95,12 @@ struct DagBuilder<'a> {
     result: &'a mut HashMap<usize, AllocStrategy>,
     in_txn: bool,
     in_bounded: bool,
+    /// 2026-11-03: stamp `analysis_id` onto `Expr::Call(Alloc#, ..)` nodes.
+    /// Exactly one pass may do this (the strategy pass whose map codegen reads);
+    /// `analyze_arena_need` runs the same walk but must NOT re-stamp, or it
+    /// overwrites codegen's ids with a different (per-function) counter and
+    /// codegen looks up the wrong strategy.
+    stamp_ids: bool,
     /// 2026-07-27: Track whether ANY Alloc# in this function uses Arena strategy.
     /// Set during walk_expr when default_strategy() returns Arena for an Alloc# call.
     /// Used by analyze_arena_need for transitive call-graph propagation.
@@ -103,7 +109,7 @@ struct DagBuilder<'a> {
 
 impl<'a> DagBuilder<'a> {
     fn new(counter: &'a mut usize, result: &'a mut HashMap<usize, AllocStrategy>, in_txn: bool, in_bounded: bool) -> Self {
-        DagBuilder { graph: DataflowGraph::new(), counter, result, in_txn, in_bounded, needs_arena: false }
+        DagBuilder { graph: DataflowGraph::new(), counter, result, in_txn, in_bounded, stamp_ids: true, needs_arena: false }
     }
 
     fn default_strategy(&self) -> AllocStrategy {
@@ -272,7 +278,9 @@ impl<'a> DagBuilder<'a> {
             Expr::Call(name, args, id) if name == "Alloc#" => {
                 let analysis_id = *self.counter;
                 *self.counter += 1;
-                *id = Some(analysis_id);
+                if self.stamp_ids {
+                    *id = Some(analysis_id);
+                }
                 if let Some(size_expr) = args.first() {
                     self.graph.alloc_sizes.insert(analysis_id, size_expr.clone());
                 }
@@ -381,6 +389,9 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
         let mut counter = 0usize;
         let mut result_map = HashMap::new();
         let mut builder = DagBuilder::new(&mut counter, &mut result_map, false, false);
+        // 2026-11-03: this pass only needs `needs_arena`; it must not overwrite
+        // the ids stamped by analyze_alloc_strategies (codegen reads those).
+        builder.stamp_ids = false;
         match item {
             TopLevel::Transaction(txn) => {
                 builder.in_txn = true;

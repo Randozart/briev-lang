@@ -1,0 +1,22 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Arena enablement (2026-11-03): a folded counted loop with `Alloc#` must use
+// the bump arena and produce valid IR. Regression for "Alloc# never selects
+// the arena" (two analysis passes clobbered the strategy id) and for the
+// arena lifecycle in inlined main emitters (lazy init) + brk-aware teardown.
+// Expected: sum(0..999) = 499500.
+let N: Int = 1000;
+let i: Int = 0;
+let sum: Int = 0;
+
+node churn [i < N][i == N] {
+    let a: Int = Alloc#(64) as Int;
+    Store#(a, i);
+    sum = sum + Load#(a);
+    i = i + 1;
+    when i == N {
+        println!(sum);
+    };
+    term;
+};

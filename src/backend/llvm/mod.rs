@@ -2279,6 +2279,29 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         let check_l = format!("aacheck_{}", ok_l_n);
         let grow_l = format!("aagrow_{}", ok_l_n);
 
+        // 2026-11-03: lazy arena initialization. Every main emitter that inlines
+        // txn bodies (Direct-SSA, version-DAG, counted, folded) would otherwise
+        // have to remember to call emit_arena_init; one that forgets grew the
+        // arena from a zero base and returned a bogus pointer. Initialize on
+        // first use instead: if the base field is 0, run emit_arena_init, then
+        // fall through. Inline control flow here is safe because the loop
+        // emitters now route bodies through dedicated end blocks / captured
+        // final blocks.
+        let base_i = self.fun.next_reg_with_prefix("aalb");
+        let base_g = self.fun.next_reg_with_prefix("aalbg");
+        writeln!(out, "{}{} = getelementptr inbounds %State, ptr %state, i32 0, i32 {}",
+            indent, base_g, abase_idx).ok();
+        writeln!(out, "{}{} = load i64, ptr {}", indent, base_i, base_g).ok();
+        let zero = self.fun.next_reg_with_prefix("aalz");
+        writeln!(out, "{}{} = icmp eq i64 {}, 0", indent, zero, base_i).ok();
+        let init_l = format!("aalinit_{}", ok_l_n);
+        let ready_l = format!("aalready_{}", ok_l_n);
+        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, zero, init_l, ready_l).ok();
+        writeln!(out, "{}{}:", indent, init_l).ok();
+        self.emit_arena_init(out, indent);
+        writeln!(out, "{}br label %{}", indent, ready_l).ok();
+        writeln!(out, "{}{}:", indent, ready_l).ok();
+
         // Load current ptr and end from %State
         let cur = load_state_ptr!(aptr_idx, "aac");
         let end = load_state_ptr!(aend_idx, "aae");
@@ -2322,17 +2345,22 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 let new_end = self.fun.next_reg_with_prefix("aane");
                 writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, end_g, min_sz).ok();
                 store_state_ptr!(aend_idx, "aaes", &new_end);
+                // 2026-11-03: the arena reuses its buffer: on grow the bump
+                // restarts at base (valid because arena allocations are
+                // non-escaping — escaping allocations take Malloc). Keeping the
+                // bump would grow monotonically (arena_churn went 20ms -> 1.3s
+                // and 3.2GB); reset-on-grow is the intended contract.
                 let base = load_state_ptr!(abase_idx, "aaob");
                 store_state_ptr!(aptr_idx, "aaps", &base);
                 grow_incoming = base;
             } else {
-                let base = load_state_ptr!(abase_idx, "aaob");
+                let base_ptr = load_state_ptr!(abase_idx, "aaob");
                 let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
                 writeln!(out, "{}{} = shl i64 {}, 1", indent, grow_sz2, size_reg).ok();
                 let min_sz2 = self.fun.next_reg_with_prefix("aams2");
                 writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz2, grow_sz2, self.ctx.arena_initial_size).ok();
                 let new_base = self.fun.next_reg_with_prefix("aanb");
-                writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base, min_sz2).ok();
+                writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base_ptr, min_sz2).ok();
                 store_state_ptr!(aptr_idx, "aaps", &new_base);
                 store_state_ptr!(abase_idx, "aabs", &new_base);
                 let new_end = self.fun.next_reg_with_prefix("aane");
@@ -2451,9 +2479,26 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
             return;
         }
         let (base_val, _) = self.emit_state_load_i64_by_idx(out, indent, abase_idx);
+        // 2026-11-03: the hosted arena is brk-backed on Linux (init does
+        // brk(0)/brk(base+size)). Calling @free on a brk pointer is invalid
+        // (it was never malloc'd) and corrupted the heap. Shrink the program
+        // break back to the arena base instead — this releases the region so
+        // the next per-tick init reuses it (no 64KB/tick growth).
+        if self.arena_uses_brk() {
+            let t = self.fun.next_reg_with_prefix("afb");
+            let _ = self.emit_brk_syscall(out, &t, &base_val, indent);
+            return;
+        }
         let base_ptr = self.fun.next_reg_with_prefix("afp");
         writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base_ptr, base_val).ok();
         writeln!(out, "{}call void @free(ptr {})", indent, base_ptr).ok();
+    }
+
+    /// True when the hosted arena is brk-backed (Linux x86_64/aarch64).
+    pub(crate) fn arena_uses_brk(&self) -> bool {
+        let t = &self.ctx.target_triple;
+        (t.starts_with("x86_64") && t.contains("linux"))
+            || (t.starts_with("aarch64") && t.contains("linux"))
     }
 
     // 2026-07-18: Check if we're in a scope with a known contract-proven bound.
