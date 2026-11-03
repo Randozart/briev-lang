@@ -1,9 +1,9 @@
 # ws_frame safe fast path — proofs, evidence, options — 2026-11-03
 
-**Status: FINDINGS RECORDED, DECISION PENDING.** No code changes. This file
-captures the investigation into recovering `ws_frame` baseline speed without
-violating compiler rules, so the options can be discussed from a written
-record.
+**Status: FINDINGS RECORDED.** Execution plan (Steps 0–3, ACTIVE):
+`2026-11-03-ws-frame-fast-path-execution.md`. This file captures the
+investigation into recovering `ws_frame` baseline speed without
+violating compiler rules. Measured results are appended here as they land.
 
 ## Context
 
@@ -123,6 +123,11 @@ outlives its image slot. Step 0 of any gate work = reproduce and root-cause
 the I11 corruption.
 
 ## Options (for discussion)
+
+**Decision 2026-11-03 (owner):** all steps — attribution first, then
+Proof 1, then Proof 0/3/2 workstream; investigate any bugs found en route.
+Execution: `2026-11-03-ws-frame-fast-path-execution.md`. Options below
+retained as the record of what was on the table.
 
 1. **Attribution only (no code).** Run interleaved A/B ×5 + perf/instruction
    counts; if the retain copies are a small fraction, the baseline gap is

@@ -15,12 +15,12 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
-**ws_frame safe fast path (2026-11-03, findings recorded, decision pending):**
-`docs/plans/2026-11-03-ws-frame-safe-fast-path.md` — IR evidence for the
-baseline gap (retain-copy sites only; float mallocs cold), the refuted
-no-copy control experiment, and the three proofs needed for a legal fast path
-(returned-image ownership threading; object consumption; boundary-gate
-relaxation with I11 root-cause first). Options list awaits owner decision.
+**ws_frame safe fast path (2026-11-03, ACTIVE):**
+`docs/plans/2026-11-03-ws-frame-fast-path-execution.md` — execution plan,
+Steps 0–3: I11 gate-relaxation root cause → attribution A/B → Proof 1
+image-ownership threading (parity) → Proof 3 boundary three-condition proof
+→ Proof 2 `ws_partial` caller-destination (below baseline). Evidence and
+proof definitions: `docs/plans/2026-11-03-ws-frame-safe-fast-path.md`.
 
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
