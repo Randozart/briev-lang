@@ -49,6 +49,20 @@ sinks → D gate replacement (export/FFI-only boundary) → E verification
 runtime A/B). State-store sink already fixed (`c4a5f4a1`); rest of Proof 3 is
 this workstream.
 
+**Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
+`docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
+XIII, D27–D33). The long-term ownership/health model: lifetime is a proof in
+the destination plan (`Frame`/`TxnBody`/`StateField`/`LoopCarrier`/`Program`/
+`External`); allocation follows lifetime (construction-time strategy via the
+`Alloc#` escape DAG); reclamation follows lifetime (txn arena, owned state
+slots, boxed/leak for Unknown); immutable images with copy-on-escape or
+destination threading. No GC, no pervasive refcount, no new syntax. Phases
+0–7: correctness net (closure-let gap) → construction-time strategy →
+general `Lifetime` fact → region-end deallocation → state slots →
+observability (`memcheck` leak/fallback reporting) → optional sound refcount →
+enum boundary-gate removal. This is the durable plan the enum gate-removal
+workstream executes; the two share Phase 0.
+
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
 becomes the semantic source for analyses and lowering.

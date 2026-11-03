@@ -921,3 +921,65 @@ return to D1/D2 analysis-only state.
 
 This record is authoritative for destination/ownership lowering. Implementation
 status lives in the execution plan; do not edit historical evidence in place.
+
+---
+
+## Part XIII — Lifetime and reclamation (2026-11-03)
+
+Full plan and phasing: `docs/plans/2026-11-03-lifetime-and-reclamation.md`.
+This part fixes the durable decisions; it does not renumber Parts I–XII.
+
+### D27. Lifetime is a proof in the destination plan — DECIDED
+
+Every semantic value carries a derived `Lifetime`
+(`Frame`/`TxnBody`/`StateField(i)`/`LoopCarrier`/`Program`/`External`) in
+addition to shape/ownership/destination. It is derived from the existing
+`SinkKind`/`EscapeKind` escape facts plus reactor reachability. There is no
+second ownership analysis.
+
+### D28. Allocation follows lifetime (construction-time strategy) — DECIDED
+
+The region a value's lifetime names selects its allocation at construction,
+reusing the `Alloc#` escape-DAG strategy bridge (`analysis/allocation.rs` →
+`analysis_alloc_strategies`). Sinks must not copy values whose constructed
+storage is already correct for the destination region. A heap aggregate may
+not hold a frame-region element image: container and embedded enum images
+share one lifetime.
+
+### D29. Immutable images; copy-on-escape or destination threading — DECIDED
+
+Shared images are immutable. When the source lifetime does not dominate the
+destination, either construct into the destination (D19 conditions) or emit an
+explicit copy (D22). Buffer reuse and free-on-overwrite are forbidden unless a
+sole-escape/no-alias proof holds. This supersedes the rejected intermediary
+"persistent buffer reuse" idea.
+
+### D30. Reclamation follows lifetime; no GC, no pervasive refcount — DECIDED
+
+`Frame`/`TxnBody` are reclaimed by the txn bump arena; `StateField` by an owned
+slot (threading or proven free-on-overwrite) plus a scheduled final free;
+`Program`/`Unknown` are boxed and leaked, reported by diagnostics; `External`
+is boundary. No tracing GC. A runtime refcount is permitted only as a proven,
+opt-in fallback for shapes that must be shared (D31), carrying the
+firing/ownership proof the earlier free-check lacked.
+
+### D31. Diagnostics make every fallback visible — DECIDED
+
+`memcheck` and strict profiles report, per value/lifetime, the proven
+deallocation point or the fallback with its reason. No silent leaks.
+
+### D32. Async is a lifetime dimension — DECIDED
+
+`async` worker threads mean cross-thread transfer is part of the proof. No
+shared-slot reuse for concurrent writers; sendable/unknown values stay heap and
+immutable. The explicit-concurrency contract is unchanged.
+
+### D33. Consumption, linear tasks, and free/keep unify under this model — DECIDED
+
+`~<-` consume, task linearity, and the `free`/`keep` hints express `Consumed`
+ownership and reclamation points in the same plan; they are not a parallel
+ownership system. `free` on a non-owned/untracked backing remains a no-op
+today and becomes a verified deallocation point only for tracked owned images.
+
+**Migration:** Phases 0–7 in the plan. Unknown ⇒ box/copy/leak at every phase.
+**Rollback:** delete this part; D1–D26 remain authoritative.
