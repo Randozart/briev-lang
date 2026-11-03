@@ -5,6 +5,14 @@ Root cause of the I11 corruption and the state-store fix:
 `BUGS.md` ("Enum image escapes to state without owning"),
 `docs/plans/2026-11-03-ws-frame-safe-fast-path.md` Proof 3.
 
+Progress:
+- Phase C (partial): state stores (`c4a5f4a1`), tuple elements + lambda
+  captures (`f397dcae`) own enum images. Validated; ASan-no-inline regression
+  harness proven to catch the bug.
+- Remaining: Phase A lifetime classification (for reclamation) → Phase B
+  reclamation (txn arena + persistent management) → Phase C residual
+  (unknown/FFI aggregates) → Phase D gate replacement → Phase E full matrix.
+
 Owner decisions (2026-11-03):
 - Pursue full gate removal (option 2).
 - Reclamation must be designed, not incidental (no copy-and-leak sprawl).
