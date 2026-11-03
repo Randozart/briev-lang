@@ -1,17 +1,36 @@
 # ws_frame safe fast path — execution plan — 2026-11-03
 
-**Status: ACTIVE.** Companion findings file (evidence, IR diff, refuted
-experiment, proof definitions): `2026-11-03-ws-frame-safe-fast-path.md`.
+**Status: Step 1 DONE — objective revised (2026-11-03).** Companion findings
+file (evidence, IR diff, refuted experiment, proof definitions):
+`2026-11-03-ws-frame-safe-fast-path.md`. Measured attribution:
+`benchmarks/results/2026-11-03-ws-frame-attribution.md`.
 Owner decision 2026-11-03: cover **all steps** (0–3); investigate any
 additional bugs found along the way.
 
-## Goal
+> **Step 1 verdict (2026-11-03).** The "2x vs baseline" regression is a
+> phantom: the locked baseline `42279aaf` is **numerically wrong** (dead-frame
+> UB; `PASSES=1` checksum `7441` vs C's `103005804`; segfaults on
+> payload-heavy frames and under `LD_PRELOAD`). The current tree is
+> **correct** (exact match to the C reference) and within **~8% of C in
+> instructions (~13% wall)**: C 78.65 M, current 85.22 M, baseline 23.60 M.
+> The baseline's speed is the speed of skipping the checksum via UB — no
+> legal proof can reproduce it. **A requested baseline-parity target is
+> unachievable and must be retired**; the only legitimate target is C
+> parity (current already meets it within noise). See "Revised objective".
 
-Recover `ws_frame` baseline speed — and where profitable, beat it — by
-**deriving** the fast shape from proofs at every site where it is legal.
-Never a benchmark-specific match arm (Rules 2/23/24). Zero tolerance for
-"probably fine": every optimization is gated on a proof, every proof on a
-measurement.
+## Revised objective (2026-11-03, post-Step-1)
+
+- **Parity target = the C reference**, not the locked baseline. Current is at
+  C parity (≤1.13x wall); C is the correctness-and-performance ground truth
+  per Golden Rules / benchmark doctrine.
+- **Proof 1 (retain elision) is re-scoped** to closing the residual
+  **current-vs-C** gap (≤ ~2.6 ms / ~8% instructions), not the void baseline
+  gap. Measure the retain blocks alone before writing emission code.
+- **Proof 2/3 (I11, boundary gate)** remain real compiler-correctness work
+  but are **not** on the `ws_frame` critical path.
+- **Do not re-lock or exempt the baseline to chase a wrong number.** The
+  baseline is not a "fast-but-safe" reference here; it is incorrect.
+
 
 ## Background (one paragraph)
 
@@ -83,7 +102,18 @@ proved impossible under new conditions or fixed.
 **Exit criterion:** named escape path (or refuted: gate relaxation safe
 under stated conditions — then conditions must encode why).
 
-### Step 1 — ws_frame attribution (measure before building)
+### Step 1 — ws_frame attribution (measure before building) — **DONE 2026-11-03**
+
+*Result:* see the Step 1 verdict above and
+`benchmarks/results/2026-11-03-ws-frame-attribution.md`. Numbers:
+C 78.65 M / 20.4 ms, current 85.22 M / 23.0 ms, baseline 23.60 M / 12.6 ms
+(baseline incorrect). Build phase at parity; decode difference is the
+legitimate checksum the baseline skips via UB. **Exit criterion met:** the
+dominant cost is named (correct payload checksum), and the sizing verdict is
+that Proof 1 can recover **at most the ~2.6 ms current-vs-C residual** — the
+baseline gap is not a legitimate target.
+
+Original procedure (kept for the record):
 
 *Why:* static IR math (~11K executed 2-word copies + branches) may not
 explain the 0.0057–0.0100s gap; harness variance on the identical tree was
@@ -152,14 +182,16 @@ fresh-alloca + copy fallback stays for every unproved site.
 8. Behavioral: `cargo test --lib`; `ws_frame` output `0016384`; full
    `--runtime` A/B; determinism quick; ASan incl.
    stack-use-after-return; I11; daily; Praetor on changed dirs.
-9. Perf gate: interleaved A/B ×5 — must land within tolerance of baseline
-   **and** beat current; record in results file. If it does not beat
-   current meaningfully, the change still ships only if it is
-   complexity-neutral and correctness-clean — otherwise revert (record
-   the refutation).
+9. Perf gate: interleaved A/B ×5 — must land **within tolerance of the C
+   reference** (≤1.05x) **and** beat current; record in results file. (The
+   old "within tolerance of the locked baseline" gate is retired — the
+   baseline is incorrect, see Step 1 verdict.) If it does not beat current
+   meaningfully, the change still ships only if it is complexity-neutral and
+   correctness-clean — otherwise revert (record the refutation).
 
-**Exit criterion:** `ws_frame` at parity (≤1.05x baseline, no other
-benchmark regressed), all gates green.
+**Exit criterion:** `ws_frame` **at C parity** (≤1.05x the C reference, no
+other benchmark regressed), all gates green, output matches C at an **odd
+`PASSES`** (even `PASSES` masks checksum errors — see BUGS.md 2026-11-03).
 
 ### Step 3 — Proof 3 conditions → gate replacement → Proof 2
 

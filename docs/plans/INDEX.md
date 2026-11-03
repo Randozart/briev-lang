@@ -15,12 +15,20 @@ warns).
 
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
-**ws_frame safe fast path (2026-11-03, ACTIVE):**
+**ws_frame safe fast path (2026-11-03, Step 1 DONE — objective revised):**
 `docs/plans/2026-11-03-ws-frame-fast-path-execution.md` — execution plan,
 Steps 0–3: I11 gate-relaxation root cause → attribution A/B → Proof 1
-image-ownership threading (parity) → Proof 3 boundary three-condition proof
-→ Proof 2 `ws_partial` caller-destination (below baseline). Evidence and
-proof definitions: `docs/plans/2026-11-03-ws-frame-safe-fast-path.md`.
+image-ownership threading → Proof 3 boundary three-condition proof
+→ Proof 2 `ws_partial` caller-destination. **Verdict:** the "2x vs baseline"
+regression is a phantom — the locked baseline `42279aaf` is numerically
+**wrong** (dead-frame UB; `PASSES=1` checksum `7441` vs C's `103005804`;
+segfaults on payload-heavy frames), while the current tree is correct and at
+**C parity** (C 78.65 M / 20.4 ms vs current 85.22 M / 23.0 ms). Proof 1 is
+re-scoped to the ≤ ~2.6 ms current-vs-C residual; Proof 2/3 are correctness
+work, off the `ws_frame` path. Measured data:
+`benchmarks/results/2026-11-03-ws-frame-attribution.md`; evidence/proofs:
+`docs/plans/2026-11-03-ws-frame-safe-fast-path.md`; benchmark flaw in
+`BUGS.md` (even `PASSES` hides checksum errors).
 
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR

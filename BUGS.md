@@ -33,6 +33,35 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## ws_frame benchmark hides checksum errors (even PASSES) — OPEN 2026-11-03
+
+**Symptom:** `benchmarks/ws_frame.bv` accumulates its payload checksum with
+`acc = acc ^ sum` once per tick, and `PASSES` is a compile-time constant. With
+the shipped `PASSES=4` (even), every frame is decoded and XOR-folded four
+times, so `acc ^ s ^ s ^ s ^ s = 0` for **any** implementation — correct or
+broken. The printed first field is therefore always `0`, and the benchmark's
+output-equality gate cannot detect a wrong checksum.
+
+**Evidence (2026-11-03):** rebuilding the identical source at `PASSES=1` shows
+the C reference and the current compiler both print `acc=103005804`, while the
+locked baseline compiler `42279aaf` prints `acc=7441` (wrong) and segfaults on
+a payload-heavy variant. At `PASSES=4` all three print `0016384` and appear
+identical. Full data: `benchmarks/results/2026-11-03-ws-frame-attribution.md`.
+
+**Impact:** performance comparisons against the locked baseline for this
+benchmark are misleading — the baseline's speed is the speed of a truncated
+(buggy) checksum, not a faster correct implementation.
+
+**Fix options (do not silently weaken the benchmark):**
+(a) use an odd `PASSES` (e.g. 3) so `acc = s1^s2^s3 ≠ 0` is
+correctness-sensitive; or (b) replace the XOR accumulator with a sum. Either
+changes the benchmark geometry/results and must be recorded as a dated
+results entry and coordinated with `BASELINE.lock`. Until fixed, any
+`ws_frame` correctness check must run a separate odd-`PASSES` build.
+
+**Status:** OPEN — needs owner decision on (a) vs (b) since it moves the
+benchmark's historical numbers.
+
 ## D4b inline enum-object payload miscompiles at -O1 -- FIXED 2026-11-02
 
 **Symptom:** with `OBJECT_PAYLOAD_INLINE_ENABLED = true`, the O1 build of

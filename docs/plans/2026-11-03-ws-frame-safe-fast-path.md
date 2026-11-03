@@ -68,6 +68,53 @@ explain a 5.7 ms gap; harness run variance on the identical tree was observed
 required before any fix is sized. Do not treat the current ratio as fully
 attributed to the retain copies.
 
+### Attribution RESULT (2026-11-03) — the regression is a phantom
+
+Full data: `benchmarks/results/2026-11-03-ws-frame-attribution.md`.
+
+**The locked baseline is numerically wrong; the current tree is correct and
+at C parity.** Measured with `perf_event_open` + interleaved ×8 timing,
+`F_TOTAL=4096, PASSES=4`:
+
+| impl | correct? | instructions | wall |
+|---|---|---:|---:|
+| C reference | yes | 78.65 M | 20.4 ms |
+| current | **yes** | 85.22 M | 23.0 ms |
+| locked baseline `42279aaf` | **no** | 23.60 M | 12.6 ms |
+
+Correctness proof: `PASSES` is compile-time; at the benchmark's even
+`PASSES=4`, `acc ^= sum` is 0 for every implementation, so the benchmark
+cannot see a wrong checksum. Rebuilding at `PASSES=1` shows the C reference
+and the current compiler both print `acc=103005804` (exact match), while the
+baseline compiler prints `acc=7441`. The baseline also segfaults on a
+payload-heavy variant and under any `LD_PRELOAD` — the recorded dead-frame
+UB. Its decoded `payload_len` is garbage, so it checksums a truncated range:
+fast **because** it is wrong.
+
+Phase isolation (`PASSES=1` vs `=4`, solving for per-frame cost): build is at
+parity (~4,878 vs ~5,013 instr/frame, identical SIMD fill); decode is
+~221 (baseline, bogus) vs ~3,947 (current) instr/frame, and the current
+decode cost scales with payload bytes (~1.34 instr/byte) exactly as the C
+reference does. A `SIGALRM`/`ucontext` sampler puts ~48% of current samples in
+the two `ws_payload_byte` checksum loops; the baseline sampler output is
+truncated by the crash.
+
+Consequences for the plan:
+
+- **The baseline gap cannot be recovered by any legal proof** — it is the cost
+  of the checksum work the baseline skipped via UB. Step 2's target is void.
+- The only legitimate headroom is the **current-vs-C** gap: ~6.6 M
+  instructions / ~2.6 ms (~8%). The retain copies are a *candidate* for it
+  but are not shown to be the whole residual; measure the retain blocks alone
+  before sizing Proof 1.
+- **Proof 1 ceiling ≈ 2.6 ms** (to C parity), not ~10 ms.
+- **Proof 2/3 (I11, boundary gate) are real correctness work** but are **not
+  required for `ws_frame`** — correct-code parity with C already holds.
+
+Benchmark bug recorded (BUGS.md, 2026-11-03): even `PASSES` makes the XOR
+accumulator identically 0, hiding checksum errors; a correctness gate needs
+odd `PASSES` or a non-XOR accumulator.
+
 ## The three proofs
 
 All are ownership/alias facts derived from existing analysis — **no type-name
