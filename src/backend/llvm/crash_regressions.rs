@@ -201,3 +201,24 @@ fn inline_members_do_not_publish_the_enclosing_browser_transaction() {
     assert_eq!(body.matches("call void @__web_flush_state(").count(), 1,
         "only the outer transaction may publish browser state: {body}");
 }
+
+#[test]
+fn guarded_tail_backedge_does_not_swallow_later_return() {
+    let source = r#"
+        defn identity(value: Int) -> Int { term value; };
+        defn descend(n: Int) -> Int {
+            when n > 0 { term descend(n-1); };
+            term identity(7);
+        };
+        let answer: Int = descend(2);
+    "#;
+    let (items, universe) = crate::library::parse_and_check("scratch/tail_guard_return.bv", source)
+        .expect("checked tail recursion");
+    let ir = LlvmBackend::new().with_type_universe(universe).with_int_bits(32)
+        .with_target_triple("wasm32-unknown-wasi").generate(&items, None);
+    let function = ir.split("define i32 @descend(").nth(1).expect("live recursive function");
+    let body = function.split("\n}").next().expect("function body");
+    assert!(body.contains(".tail_header_"), "must exercise tail-loop lowering: {body}");
+    assert!(body.contains("call i32 @identity("), "must exercise the later return: {body}");
+    assert!(!body.contains("ret i32 0"), "later call result was discarded: {body}");
+}

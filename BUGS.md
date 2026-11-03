@@ -11575,3 +11575,11 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## Guarded tail recursion discards a later return (FIXED 2026-11-03)
+
+A recursive term inside a when left tail_loop_backedge set on the false
+continuation, so a later terminal call lost its return and defaulted to zero.
+Reset the flag at the guard merge. Regression:
+guarded_tail_backedge_does_not_swallow_later_return. This caused wasm float
+formatting to display zero for valid recommender prediction scores.
