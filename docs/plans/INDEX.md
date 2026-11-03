@@ -31,10 +31,23 @@ work, off the `ws_frame` path. Measured data:
 `BUGS.md` (even `PASSES` hides checksum errors). **Step 0 DONE:** I11
 root-caused — enum images escape to state without `own_enum_value`
 (`emit_stmt.rs` state-store paths); a defn-local sret image stored to node
-state dangles after the defn returns. Confirmed by IR A/B
-(`/tmp/opencode/repro/defn_store.bv`: garbage under relaxation, `42` after
-owning). Not layout divergence. Fix = Proof 3 condition 2 (own at every
-escape sink); the boundary gate stays mandatory until then. See `BUGS.md`.
+state. A defn-local sret image stored to node state dangles after the defn
+returns. Confirmed by IR A/B (`/tmp/opencode/repro/defn_store.bv`: garbage
+under relaxation, `42` after owning). Not layout divergence. Fix = Proof 3
+condition 2 (own at every escape sink); the boundary gate stays mandatory
+until then. See `BUGS.md`.
+
+**Enum boundary-gate removal (2026-11-03, ACTIVE):**
+`docs/plans/2026-11-03-enum-boundary-gate-removal.md` — finish Proof 3 so the
+blanket gate becomes `conditions1∧2∧3` (layout agreement ∧ escape ownership ∧
+no external raw-byte consumer; `Unknown ⇒ box`). Phases: A analysis
+(transitive enum-handle containment + txn-local/persistent lifetime facts) →
+B reclamation (txn arena for txn-local, destination threading / managed slot
+for persistent state) → C emission at tuple/closure/aggregate/collection/state
+sinks → D gate replacement (export/FFI-only boundary) → E verification
+(minimal escape repros, ASan/UAR, LSan, net_stack O0–O3, determinism, Kani,
+runtime A/B). State-store sink already fixed (`c4a5f4a1`); rest of Proof 3 is
+this workstream.
 
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
