@@ -90,19 +90,18 @@ arena must be fixed as one pass, not one at a time:
    naive enable: arena allocation emits control flow that the loop's phi
    predecessor bookkeeping does not account for.
 
-**Fix options for defect 4 (choose one before enabling):**
-- **(A) Trampoline end-labels.** Emit `latch_end`/`present_end` blocks and
-  reference them in the header phis; the body's final `br` targets the
-  trampoline, which branches to the header. Universal and simple, but adds an
-  unconditional block to every version-DAG loop (may perturb exact-IR tests
-  and register allocation).
-- **(B) Out-of-line arena helper (recommended).** Move the bump check/grow into
-  a noinline `@__briev_arena_alloc(ptr %state, i64 size)` returning i64. The
-  allocation site becomes a single call — no inline control flow, so no phi
-  predecessor can change, and every loop/dispatch shape is safe by
-  construction. Costs one call per allocation (measure; the arena exists to
-  avoid per-element malloc, a call is still cheaper).
-- **(C) Pre-size and never grow.** Not general (unbounded loops).
+**Defect-4 resolution (2026-11-03): reuse the existing wheel.** The loop
+emitters already solve this with dedicated latch/end blocks and by capturing
+the actual final block from `cur_block` (`body_final`/`guard_pred`,
+`counter.rs:986`/`:1074`). Only two sites hardcode the body label: the
+version-DAG header phis (`:1442`/`:1473`, bodies branch to `header_label` from
+their final block at `:1571`/`:1611`) and the merge phi at `:2061`. Fix: add
+`*.latch_end`/`*.present_end` trampolines to the version-DAG and use the
+captured final block in the merge phi. **Rejected:** an out-of-line
+`@__briev_arena_alloc` helper (option B) — a second mechanism for a problem
+the convention already solves, plus a call per allocation. Keep allocation
+inline; add an `AllocStrategy` call variant later only if measured.
+Plan: `docs/plans/2026-11-03-arena-enablement.md`.
 
 **Status:** OPEN — prerequisite for the per-worker-arena phase; all four
 defects above must be fixed together (arena allocation must be IR-safe in

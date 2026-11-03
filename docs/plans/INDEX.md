@@ -49,6 +49,14 @@ sinks → D gate replacement (export/FFI-only boundary) → E verification
 runtime A/B). State-store sink already fixed (`c4a5f4a1`); rest of Proof 3 is
 this workstream.
 
+**Arena enablement (2026-11-03, ACTIVE):**
+`docs/plans/2026-11-03-arena-enablement.md` — make `Alloc#` actually select a
+safe arena. Root cause: two analysis passes stamp conflicting `Alloc#` ids.
+Fix reuses the existing loop convention (dedicated latch/end blocks +
+captured final block) at the two hardcoded sites, then fixes the arena
+subsystem (Direct-SSA init, brk-aware fini, grow preserves the bump) and
+re-enables selection behind an IR gate. Prerequisite for per-worker arenas.
+
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
 XIII, D27–D33). The long-term ownership/health model: lifetime is a proof in

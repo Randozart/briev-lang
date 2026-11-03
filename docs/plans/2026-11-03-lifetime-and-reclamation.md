@@ -264,6 +264,9 @@ one arena-correctness pass (`BUGS.md` "Alloc# never selects the arena"):
    predecessor bookkeeping does not account for → invalid IR.
 Exit gate: an IR test that `arena_churn`/a folded-loop `Alloc#` program uses
 the arena and produces valid, runnable IR; then per-worker arenas.
+Implementation plan: `2026-11-03-arena-enablement.md`. Chosen fix reuses the
+existing loop convention (dedicated latch/end blocks + captured final block),
+not an out-of-line allocation helper.
 
 - **Substrate:** `SysCall#(SYS_clone, CLONE_VM|CLONE_FS|CLONE_FILES|
   CLONE_SIGHAND|CLONE_THREAD, …)` at startup; futex release/wait per tick;
