@@ -46,24 +46,26 @@ benchmark doctrine:
 Gate: Briev output == C output at the harness geometry; timing ratio ≤ 1.0
 (record in `benchmarks/results/`).
 
-### R2. Register-resident bump/end (the 1.4x)
+### R2. Register-resident bump/end — FINDING: already promoted
 
-Today each allocation round-trips `%state`: load ptr, load end, check, store
-ptr (plus the lazy-init base load/branch). C keeps `used`/`buf`/`cap` in
-registers. Fix:
-- Give each callable/txn a **local arena cursor** (entry alloca) initialized
-  from the shared arena base; use it for allocations; reset at scope entry;
-  write back/sync to `%state` only at scope boundaries or on cold grow.
-  LLVM's SROA/mem2reg promotes the alloca to a register, and loop-carried
-  promotion makes the bump a phi — no per-allocation memory op.
-- **Cold grow**: move the grow path out of line (a noinline helper or a
-  cold block) so the hot bump is `ptr += size; check`.
-- Initialize the local cursor once per scope (no lazy-init branch per alloc
-  once initialized).
-- Embedded (`@embedded_heap`) keeps the static-heap path.
+A local-cursor experiment (entry allocas) gave no gain (~338 vs ~343 ms):
+LLVM's **SROA already promotes** the inlined main's `%State` arena fields to
+loop-carried phis (zero allocas in `-O3` IR). The change was reverted.
 
-Gate: `arena_churn_sym` ≤ C (target < 200 ms at 50M), allocations/firing
-unchanged, no regression elsewhere.
+The real gap is per-iteration **control flow and address conversion**:
+- lazy-init check + capacity check branches every allocation;
+- `i64` ⇄ `ptr` conversions around the bump.
+
+**Fix (proof-licensed reservation):**
+- For a contract-bounded loop, reserve `N * K` once before the loop
+  (N = bound register, K = constant alloc per iteration) and **hoist the
+  capacity check out of the loop** (the loop cannot overflow a correctly-sized
+  reservation). This is the "prove it can be faster" lever.
+- Hoist arena init to the loop preheader (drop the per-alloc init check).
+- Keep the cursor pointer-typed in registers (no inttoptr/ptrtoint per iter).
+- Embed version keeps the static-heap path.
+
+Gate: `arena_churn_sym` ≤ C (target < 200 ms at 50M), no regression.
 
 ### R3. Reset/reclaim
 

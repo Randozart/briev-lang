@@ -37,3 +37,26 @@ prevent the fold (linear, ~324 ms). Preserving the fold is workstream O
 
 Register-resident bump/end (local cursor promoted by SROA, cold out-of-line
 grow, scope init/reset) — target ≤ C (~234 ms) and ideally below.
+
+## R2 investigation (2026-11-03): the memory round-trip was not the gap
+
+A local arena cursor (entry allocas, gated to inlined mains with no
+arena-using callees) was implemented and measured: **no meaningful change**
+(~338 ms vs ~343 ms pre-change, within noise). Inspecting the `-O3` IR showed
+why: LLVM's SROA already splits the inlined main's `%State` alloca and promotes
+the arena ptr/end/base fields to loop-carried **phis** (`state.sroa.*`), with
+zero `alloca i64` remaining. The local-cursor change was therefore **reverted**
+(accidental complexity).
+
+The real per-iteration overhead is control flow and address conversion:
+- lazy-init check (`aalz`/`aalneed`) and capacity check (`aaok`) branches every
+  allocation;
+- `i64` ⇄ `ptr` conversions around the bump (inttoptr / getelementptr /
+  ptrtoint) each iteration.
+
+**Next lever (proof-licensed):** for a contract-bounded loop, reserve
+`N * K` bytes once before the loop (N = bound register, K = constant alloc per
+iteration) and **hoist the capacity check out of the loop**; hoist arena init
+to the preheader; keep the cursor pointer-typed in registers to avoid the
+conversions. This is the "if Briev can prove it, it should" optimization and
+the path to ≤ C.
