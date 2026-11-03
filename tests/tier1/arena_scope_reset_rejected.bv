@@ -1,0 +1,23 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// The arena reset proof must REJECT this: the allocation pointer is copied to
+// an outer state variable and read on a later iteration, so it cannot be
+// reclaimed at the iteration boundary. Arena grows (preserving the bump)
+// instead; the output must still be sum(0..999)=499500.
+let N: Int = get_env_int!("BOUND");
+let i: Int = 0;
+let sum: Int = 0;
+let holder: Int = 0;
+
+node churn [i < N][i == N] {
+    let a: Int = Alloc#(64) as Int;
+    VolatileStore#(a as Ptr<Int>, i);
+    holder = a;
+    sum = sum + (VolatileLoad#(holder as Ptr<Int>) as Int);
+    i = i + 1;
+    when i % 5000000 == 0 {
+        println!(sum);
+    };
+    term;
+};

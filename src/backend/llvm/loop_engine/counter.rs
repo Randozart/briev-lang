@@ -976,6 +976,14 @@ impl LlvmBackend {
                 .cloned().unwrap_or_else(|| "0".to_string());
             self.fun.pending_phi_backedge.insert((*fname).clone(), init_val.clone());
         }
+        // 2026-11-03 (arena scope reset): the previous iteration's arena
+        // allocations are proven dead at this boundary, so rewind the bump to
+        // base — sound reuse, bounded memory, no per-allocation growth.
+        if self.arena_ptr_idx.is_some()
+            && self.arena_scope_reset_safe(&batch.inner_body, &batch.guard_body)
+        {
+            self.emit_arena_reset(out, "  ");
+        }
         let mut empty = Vec::new();
         self.emit_countable_body(out, &batch.inner_body, write_set, &mut empty);
         // Countdown: remaining-- (loop-carried, independent of the counter).
@@ -1678,6 +1686,164 @@ impl LlvmBackend {
 
     /// Load the loop bound into a register: from a state field, a const
     /// name, or 0.
+    /// 2026-11-03 (arena scope reset): is it sound to reset the arena at the
+    /// start of each iteration of this bounded body? True iff every Alloc#
+    /// result is bound to a body-local `let` and used ONLY as an argument to a
+    /// known non-retaining intrinsic (so no pointer can survive the iteration
+    /// via a state field, collection, return, or outer variable), and the
+    /// guard body adds no arena allocation that violates the same rule.
+    fn arena_scope_reset_safe(&self, inner: &[crate::ast::Statement], guard: &[crate::ast::Statement]) -> bool {
+        const NON_RETAINING: &[&str] = &[
+            "Store#", "VolatileStore#", "Load#", "VolatileLoad#", "Copy#", "Fill#", "Memset#",
+        ];
+        fn expr_has_alloc(e: &crate::ast::Expr) -> bool {
+            use crate::ast::Expr;
+            match e {
+                Expr::Call(n, _, _) if n == "Alloc#" => true,
+                Expr::Call(_, args, _) => args.iter().any(expr_has_alloc),
+                Expr::BinaryOp(_, l, r) => expr_has_alloc(l) || expr_has_alloc(r),
+                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => expr_has_alloc(x),
+                Expr::Index(x, i) => expr_has_alloc(x) || expr_has_alloc(i),
+                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(expr_has_alloc),
+                Expr::If(c, t, el) => expr_has_alloc(c) || expr_has_alloc(t)
+                    || el.as_ref().map(|x| expr_has_alloc(x)).unwrap_or(false),
+                Expr::Block(stmts) => stmts.iter().any(stmt_has_alloc),
+                Expr::Match(x, arms) => expr_has_alloc(x) || arms.iter().any(|a| expr_has_alloc(&a.body)),
+                _ => false,
+            }
+        }
+        fn stmt_has_alloc(st: &crate::ast::Statement) -> bool {
+            use crate::ast::Statement;
+            match st {
+                Statement::Let { expr: Some(e), .. } => expr_has_alloc(e),
+                Statement::Assign(_, e) => expr_has_alloc(e),
+                Statement::ArrowAssign { value, .. } => expr_has_alloc(value),
+                Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
+                | Statement::Tail(e) | Statement::Check(e) => expr_has_alloc(e),
+                Statement::Guarded(c, b) => expr_has_alloc(c) || b.iter().any(stmt_has_alloc),
+                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+                    b.iter().any(stmt_has_alloc)
+                }
+                Statement::Foreach { list, body, .. } => expr_has_alloc(list) || body.iter().any(stmt_has_alloc),
+                Statement::Match { expr, arms } => expr_has_alloc(expr)
+                    || arms.iter().any(|a| a.body.iter().any(stmt_has_alloc)),
+                _ => false,
+            }
+        }
+        fn collect_vars(stmts: &[crate::ast::Statement], out: &mut Vec<String>) {
+            use crate::ast::Statement;
+            for st in stmts {
+                match st {
+                    Statement::Let { name, expr: Some(e), .. } if expr_has_alloc(e) => out.push(name.clone()),
+                    Statement::Guarded(_, b) | Statement::Block(b) | Statement::Defer(b)
+                    | Statement::Mutex(b) | Statement::SyncBlock(b) => collect_vars(b, out),
+                    Statement::Foreach { body, .. } => collect_vars(body, out),
+                    Statement::Match { arms, .. } => {
+                        for a in arms {
+                            collect_vars(&a.body, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        /// Count every Alloc# occurrence (expression + nested statements).
+        fn count_allocs_expr(e: &crate::ast::Expr) -> usize {
+            use crate::ast::Expr;
+            match e {
+                Expr::Call(n, args, _) => (if n == "Alloc#" { 1 } else { 0 })
+                    + args.iter().map(count_allocs_expr).sum::<usize>(),
+                Expr::BinaryOp(_, l, r) => count_allocs_expr(l) + count_allocs_expr(r),
+                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => count_allocs_expr(x),
+                Expr::Index(x, i) => count_allocs_expr(x) + count_allocs_expr(i),
+                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().map(count_allocs_expr).sum(),
+                Expr::If(c, t, el) => count_allocs_expr(c) + count_allocs_expr(t)
+                    + el.as_ref().map(|x| count_allocs_expr(x)).unwrap_or(0),
+                Expr::Block(stmts) => stmts.iter().map(count_allocs_stmt).sum(),
+                Expr::Match(x, arms) => count_allocs_expr(x)
+                    + arms.iter().map(|a| count_allocs_expr(&a.body)).sum::<usize>(),
+                _ => 0,
+            }
+        }
+        fn count_allocs_stmt(st: &crate::ast::Statement) -> usize {
+            use crate::ast::Statement;
+            match st {
+                Statement::Let { expr: Some(e), .. } => count_allocs_expr(e),
+                Statement::Assign(_, e) => count_allocs_expr(e),
+                Statement::ArrowAssign { value, .. } => count_allocs_expr(value),
+                Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
+                | Statement::Tail(e) | Statement::Check(e) => count_allocs_expr(e),
+                Statement::Guarded(c, b) => count_allocs_expr(c) + b.iter().map(count_allocs_stmt).sum::<usize>(),
+                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+                    b.iter().map(count_allocs_stmt).sum()
+                }
+                Statement::Foreach { list, body, .. } => {
+                    count_allocs_expr(list) + body.iter().map(count_allocs_stmt).sum::<usize>()
+                }
+                Statement::Match { expr, arms } => count_allocs_expr(expr)
+                    + arms.iter().map(|a| a.body.iter().map(count_allocs_stmt).sum::<usize>()).sum::<usize>(),
+                _ => 0,
+            }
+        }
+        /// Every occurrence of `v` must be (transitively) inside a whitelisted
+        /// call's argument list.
+        fn expr_ok(e: &crate::ast::Expr, v: &str, allowed: bool) -> bool {
+            use crate::ast::Expr;
+            match e {
+                Expr::Identifier(n) => n != v || allowed,
+                Expr::Call(name, args, _) => {
+                    let a = NON_RETAINING.contains(&name.as_str());
+                    args.iter().all(|x| expr_ok(x, v, a))
+                }
+                Expr::BinaryOp(_, l, r) => expr_ok(l, v, allowed) && expr_ok(r, v, allowed),
+                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => expr_ok(x, v, allowed),
+                Expr::Index(x, i) => expr_ok(x, v, allowed) && expr_ok(i, v, allowed),
+                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().all(|x| expr_ok(x, v, allowed)),
+                Expr::If(c, t, el) => expr_ok(c, v, allowed) && expr_ok(t, v, allowed)
+                    && el.as_ref().map(|x| expr_ok(x, v, allowed)).unwrap_or(true),
+                Expr::Block(stmts) => stmts_ok(stmts, v),
+                _ => true,
+            }
+        }
+        fn stmts_ok(stmts: &[crate::ast::Statement], v: &str) -> bool {
+            use crate::ast::Statement;
+            for st in stmts {
+                let ok = match st {
+                    Statement::Let { expr: Some(e), .. } => expr_ok(e, v, false),
+                    Statement::Assign(_, e) => expr_ok(e, v, false),
+                    Statement::ArrowAssign { value, .. } => expr_ok(value, v, false),
+                    Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
+                    | Statement::Tail(e) | Statement::Check(e) => expr_ok(e, v, false),
+                    Statement::Guarded(c, b) => expr_ok(c, v, false) && stmts_ok(b, v),
+                    Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+                        stmts_ok(b, v)
+                    }
+                    Statement::Foreach { list, body, .. } => expr_ok(list, v, false) && stmts_ok(body, v),
+                    Statement::Match { expr, arms } => expr_ok(expr, v, false)
+                        && arms.iter().all(|a| stmts_ok(&a.body, v)),
+                    _ => true,
+                };
+                if !ok { return false; }
+            }
+            true
+        }
+        let mut inner_vars = Vec::new();
+        collect_vars(inner, &mut inner_vars);
+        if inner_vars.is_empty() { return false; }
+        // Every Alloc# must be a collected body-local let — otherwise an
+        // unbound allocation would be reset without its uses being checked.
+        let inner_allocs: usize = inner.iter().map(count_allocs_stmt).sum();
+        if inner_allocs != inner_vars.len() { return false; }
+        if !inner_vars.iter().all(|v| stmts_ok(inner, v)) { return false; }
+        // Guard allocations must obey the same rule (or be absent).
+        let mut guard_vars = Vec::new();
+        collect_vars(guard, &mut guard_vars);
+        guard_vars.iter().all(|v| stmts_ok(guard, v))
+    }
+
     fn emit_countable_load_bound(
         &mut self,
         out: &mut String,

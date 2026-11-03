@@ -400,6 +400,37 @@ fn arena_folded_loop_uses_arena() {
     );
 }
 
+/// Arena scope-lifetime reset (2026-11-03): the safe body resets the arena at
+/// the iteration boundary (`emit_arena_reset` → `arbp` register); the
+/// live-across-iteration body must NOT (the pointer escapes to an outer
+/// state variable), and must still produce the correct sum via the
+/// grow-preserving path.
+#[test]
+fn arena_scope_reset_gate() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let b = [("BOUND", "5000001")];
+    let safe_out = build_link_run("arena_scope_reset", "safe", &b);
+    assert_eq!(safe_out, "12499997500000\n", "safe arena sum drifted: {safe_out:?}");
+    let rejected_out = build_link_run("arena_scope_reset_rejected", "rejected", &b);
+    assert_eq!(rejected_out, "12499997500000\n", "rejected-path sum drifted: {rejected_out:?}");
+    let dir = |name: &str, slot: &str| {
+        Path::new(PROJECT_ROOT)
+            .join("target/briev_daily_use_smoke")
+            .join(format!("{name}__{slot}"))
+            .join(format!("{name}.ll"))
+    };
+    let safe_ir = std::fs::read_to_string(dir("arena_scope_reset", "safe")).expect("safe ir");
+    assert!(safe_ir.contains("arbp"), "safe loop must emit an arena scope reset");
+    let rej_ir = std::fs::read_to_string(dir("arena_scope_reset_rejected", "rejected")).expect("rej ir");
+    assert!(
+        !rej_ir.contains("arbp"),
+        "escaping allocation must NOT get an arena scope reset"
+    );
+}
+
 /// P0 regression: generated/macro-expanded foreach bindings must keep their
 /// alloca in the loop preheader, never in a conditional body. The fixture's
 /// HashMap probe previously produced invalid dominance IR here.

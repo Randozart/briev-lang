@@ -2345,14 +2345,12 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 let new_end = self.fun.next_reg_with_prefix("aane");
                 writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, end_g, min_sz).ok();
                 store_state_ptr!(aend_idx, "aaes", &new_end);
-                // 2026-11-03: the arena reuses its buffer: on grow the bump
-                // restarts at base (valid because arena allocations are
-                // non-escaping — escaping allocations take Malloc). Keeping the
-                // bump would grow monotonically (arena_churn went 20ms -> 1.3s
-                // and 3.2GB); reset-on-grow is the intended contract.
-                let base = load_state_ptr!(abase_idx, "aaob");
-                store_state_ptr!(aptr_idx, "aaps", &base);
-                grow_incoming = base;
+                // 2026-11-03 (soundness): grow EXTENDS in place and KEEPS the
+                // bump. Resetting to base would overwrite live arena
+                // allocations. Bounded reuse is provided by scope-lifetime
+                // reset (`emit_arena_reset` at a proven-dead scope boundary),
+                // never by grow.
+                grow_incoming = cur.clone();
             } else {
                 let base_ptr = load_state_ptr!(abase_idx, "aaob");
                 let grow_sz2 = self.fun.next_reg_with_prefix("aags2");
@@ -2361,12 +2359,24 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 writeln!(out, "{}{} = add i64 {}, {}", indent, min_sz2, grow_sz2, self.ctx.arena_initial_size).ok();
                 let new_base = self.fun.next_reg_with_prefix("aanb");
                 writeln!(out, "{}{} = call ptr @realloc(ptr {}, i64 {})", indent, new_base, base_ptr, min_sz2).ok();
-                store_state_ptr!(aptr_idx, "aaps", &new_base);
                 store_state_ptr!(abase_idx, "aabs", &new_base);
                 let new_end = self.fun.next_reg_with_prefix("aane");
                 writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, new_end, new_base, min_sz2).ok();
                 store_state_ptr!(aend_idx, "aaes", &new_end);
-                grow_incoming = new_base;
+                // Rebase the bump onto the moved base (preserve live data).
+                let cur_i = self.fun.next_reg_with_prefix("aacurb");
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, cur_i, cur).ok();
+                let base_i = self.fun.next_reg_with_prefix("aabasi");
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, base_i, base_ptr).ok();
+                let off = self.fun.next_reg_with_prefix("aaoff");
+                writeln!(out, "{}{} = sub i64 {}, {}", indent, off, cur_i, base_i).ok();
+                let nb_i = self.fun.next_reg_with_prefix("aanbi");
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, nb_i, new_base).ok();
+                let nc_i = self.fun.next_reg_with_prefix("aanc");
+                writeln!(out, "{}{} = add i64 {}, {}", indent, nc_i, nb_i, off).ok();
+                let nc = self.fun.next_reg_with_prefix("aancp");
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, nc, nc_i).ok();
+                grow_incoming = nc;
             }
             writeln!(out, "{}br label %aaok_{}", indent, ok_l_n).ok();
         }

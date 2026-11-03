@@ -1,0 +1,21 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Arena scope-lifetime reset (2026-11-03): a bounded loop where each Alloc#
+// is a body-local let used only by non-retaining intrinsics may reset the
+// arena at the iteration boundary (sound reuse). Expected sum(0..999)=499500.
+let N: Int = get_env_int!("BOUND");
+let ops: Int = 0;
+let sum: Int = 0;
+
+node churn [ops < N][ops == N] {
+    let a: Int = Alloc#(64) as Int;
+    VolatileStore#(a as Ptr<Int>, ops);
+    let v: Int = VolatileLoad#(a as Ptr<Int>) as Int;
+    sum = sum + v;
+    ops = ops + 1;
+    when ops % 5000000 == 0 {
+        println!(sum);
+    };
+    term;
+};
