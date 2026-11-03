@@ -11575,3 +11575,11 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## FIXED 2026-11-03: discarded enum payload allocations
+
+`Present(_)` allocated an owned copy of its inline object payload although no
+binding could use it. `bind_pattern` now leaves all-wildcard payloads untouched
+while retaining variant tag checks. Zero-payload variants likewise need no
+payload read. The allocation-count native regression checks O0 and O3. Named
+payload ownership and general returned-value reclamation are unchanged.
