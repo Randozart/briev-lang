@@ -42,6 +42,10 @@ fn is_library_surface(src: &str) -> bool {
 enum LinkProfile {
     Harness,
     Asan,
+    /// ASan with inlining disabled: exposes stack-image use-after-return that
+    /// -O1 inlining can mask (the escaping image is otherwise hoisted into a
+    /// longer-lived frame and survives by accident).
+    AsanNoInline,
 }
 
 /// Build + link + run one program-surface fixture. Returns stdout and asserts
@@ -107,6 +111,16 @@ fn build_link_run_profile(
                 "-g",
                 "-fsanitize=address",
                 "-fno-omit-frame-pointer",
+                "-march=native",
+            ]);
+        }
+        LinkProfile::AsanNoInline => {
+            link.args([
+                "-O0",
+                "-g",
+                "-fsanitize=address",
+                "-fno-omit-frame-pointer",
+                "-fno-inline",
                 "-march=native",
             ]);
         }
@@ -338,6 +352,26 @@ fn net_stack_helpers_asan_stack_lifetime() {
         out, "aGVsbG8=|s3pPLMBiTxaQ9kYGzzhZRbK+xOo=|OK",
         "net-stack ASan lifetime run drifted: {out:?}"
     );
+}
+
+/// Proof 3 condition 2 (2026-11-03): a tuple element that is an enum is stored
+/// as a handle in the heap tuple image. The tuple escapes into a list and later
+/// firings read it, so the element must own its image; otherwise the handle
+/// points at the producing frame. `churn` reuses that stack region. Without the
+/// owning fix this SEGVs at -O0 -fno-inline under ASan.
+#[test]
+fn enum_tuple_escape_asan_no_inline() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run_profile(
+        "enum_tuple_escape",
+        "asan_noinline",
+        &[("ASAN_OPTIONS", "detect_stack_use_after_return=1")],
+        LinkProfile::AsanNoInline,
+    );
+    assert_eq!(out, "tuple_enum=true\n", "tuple-enum escape drifted: {out:?}");
 }
 
 /// P0 regression: generated/macro-expanded foreach bindings must keep their

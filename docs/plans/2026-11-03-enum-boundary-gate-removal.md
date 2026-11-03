@@ -41,6 +41,20 @@ no leaks introduced, `ws_frame` at or below C parity (Proof 2 unblocked:
 - State-store escape sink fixed (commit `c4a5f4a1`): the `Assign` state
   family calls `own_enum_value` before publishing (`own_enum_for_state`,
   `emit_stmt.rs`). Correctness validated under gate relaxation.
+- Tuple-element and lambda-capture escape sinks fixed (2026-11-03): enum
+  elements/captures are owned before storing into the heap tuple image / env
+  block (`emit_expr.rs::emit_tuple_materialize`, `Expr::Lambda`). Validated:
+  `enum_tuple_escape.bv` SEGVed at `-O0 -fno-inline` under ASan before the
+  fix, passes after; new daily-smoke test `enum_tuple_escape_asan_no_inline`
+  with `LinkProfile::AsanNoInline`.
+- **Shallow-owning insight (simplifies Phase A):** container materializers
+  recurse, so owning each *enum element/capture* at its store site already
+  covers nested aggregates (a nested tuple/struct is materialized by its own
+  materializer, which owns its enum elements; a struct/collection of an enum
+  is owned at that store). A deep transitive predicate is only needed for
+  aggregates arriving from unknown/FFI sources. Phase A therefore reduces to
+  `type_is_enum` checks at container-store sites + lifetime classification
+  for reclamation, not a full transitive walk.
 - Remaining gaps (transitive containment):
   - Tuple elements store enum handles raw (`emit_expr.rs::emit_tuple_materialize`).
   - Lambda env captures store enum handles raw (`emit_expr.rs` `Expr::Lambda`).
@@ -118,12 +132,12 @@ firings); persistent slots stable under repeated overwrites.
 
 Recursively materialize embedded enum handles, driven by Phase A facts:
 
-- Tuple: `emit_expr.rs::emit_tuple_materialize`.
-- Lambda env: `emit_expr.rs` `Expr::Lambda`.
-- Struct/object fields: `emit_expr.rs::emit_struct_field_store` (extend from
-  direct enums to aggregates).
-- Collection push: `emit_stmt.rs` push path (extend likewise).
-- State stores: reuse `own_enum_for_state`, now lifecycle-aware.
+- Tuple: `emit_expr.rs::emit_tuple_materialize`. **DONE** (enum elements owned).
+- Lambda env: `emit_expr.rs` `Expr::Lambda`. **DONE** (enum captures owned).
+- Struct/object fields: `emit_expr.rs::emit_struct_field_store` (already owns
+  direct enum fields).
+- Collection push: `emit_stmt.rs` push path (already owns direct enum elements).
+- State stores: reuse `own_enum_for_state` (already owns).
 - Skip materialization when the value is proven non-escaping (Proof 1) or
   already owned (no double-copy).
 

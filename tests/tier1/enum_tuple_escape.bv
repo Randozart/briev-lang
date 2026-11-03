@@ -1,0 +1,50 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Proof 3 condition 2 (2026-11-03): an enum handle stored inside a heap tuple
+// image must own its image; the tuple/list can outlive the producing frame.
+// `churn` reuses the stack region, so the dangling enum image is read unless
+// the element is owned. Run with ASan `detect_stack_use_after_return=1`; this
+// SEGVed (garbage pointer) before the tuple element owning fix.
+obj P { a: Int; b: Int; };
+enum E { Wrap(P), Empty };
+
+defn make_e(v: Int) -> E {
+    term E.Wrap(P { a: v, b: v + 1 });
+};
+
+defn build() -> List<(E, Int)> {
+    let xs: List<(E, Int)> = [];
+    foreach v in 0..3 {
+        xs <- (make_e(v), v);
+    };
+    term xs;
+};
+
+defn churn(v: Int) -> Int {
+    let a: E = make_e(v);
+    let b: E = make_e(v + 100);
+    let c: Int = match a { Wrap(p) => p.a, Empty => 0 };
+    let d: Int = match b { Wrap(p) => p.a, Empty => 0 };
+    term c + d;
+};
+
+let tick: Int = 0;
+
+node run [tick < 1][tick == 1] {
+    let xs: List<(E, Int)> = build();
+    let j1: Int = churn(70);
+    let j2: Int = churn(80);
+    let j3: Int = churn(90);
+    let ok: Bool = match xs[0].0 {
+        Wrap(p) => p.a == 0,
+        Empty => false,
+    };
+    let ok2: Bool = match xs[2].0 {
+        Wrap(p) => p.a == 2,
+        Empty => false,
+    };
+    println!("tuple_enum={}", ok && ok2);
+    tick = 1;
+    endprogram;
+};

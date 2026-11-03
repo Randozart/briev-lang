@@ -1498,6 +1498,67 @@ node produce [step == 0][step == 1] {
     );
 }
 
+/// 2026-11-03 (Proof 3 condition 2): an enum element stored as a handle into a
+/// heap tuple image must own its image first — the tuple (and anything holding
+/// it) can outlive the frame that produced the element. Regression:
+/// `tuple_enum2.bv` SEGVs under `-O0 -fno-inline -fsanitize=address` without
+/// owning. A tuple of plain Ints must NOT emit an ownership copy (negative
+/// control), so the memcpy assertion is meaningful.
+#[test]
+fn tuple_element_enum_is_owned_before_storing() {
+    let enum_src = r#"
+obj P { a: Int; b: Int; };
+enum E { Wrap(P), Empty };
+defn make_e(v: Int) -> E { term E.Wrap(P { a: v, b: v + 1 }); };
+defn build() -> (E, Int) {
+    let e: E = make_e(1);
+    term (e, 7);
+};
+let tick: Int = 0;
+let sink_val: Int = 0;
+node run [tick == 0][tick == 1] {
+    let t: (E, Int) = build();
+    sink_val = t.1;
+    tick = 1;
+    term;
+};
+"#;
+    let int_src = r#"
+defn build() -> (Int, Int) {
+    term (1, 2);
+};
+let tick: Int = 0;
+let sink_val: Int = 0;
+node run [tick == 0][tick == 1] {
+    let t: (Int, Int) = build();
+    sink_val = t.1;
+    tick = 1;
+    term;
+};
+"#;
+    let compile = |src: &str| {
+        let mut items = parse_bv_source(src);
+        let mut universe = crate::type_universe::TypeUniverse::new();
+        let mut pm = crate::plugin::PluginManager::new();
+        pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+            .expect("plugin stage failed");
+        crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+            .expect("type registration failed");
+        let mut backend = LlvmBackend::new().with_type_universe(universe);
+        backend.generate(&items, None)
+    };
+    let enum_body = function_body(&compile(enum_src), "@build");
+    assert!(
+        enum_body.contains("@llvm.memcpy"),
+        "tuple enum element must be owned (memcpy) before storing:\n{enum_body}"
+    );
+    let int_body = function_body(&compile(int_src), "@build");
+    assert!(
+        !int_body.contains("@llvm.memcpy"),
+        "a tuple of plain Ints must not emit an ownership copy:\n{int_body}"
+    );
+}
+
 /// Mini-verifier (BUGS.md int-literal-float-init), per FUNCTION: a register
 /// defined as i64 may never feed a float-typed operand or store. Register
 /// names repeat across functions, so defs reset at each `define`.

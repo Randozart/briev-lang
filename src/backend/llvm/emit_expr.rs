@@ -1963,6 +1963,10 @@ impl LlvmBackend {
                 writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
                 for (j, var) in free_vars.iter().enumerate() {
                     let cap = self.emit_expr(out, &Expr::Identifier(var.clone()), indent);
+                    // 2026-11-03 (Proof 3 condition 2): a captured enum must own
+                    // its image; the closure (heap env) can outlive the frame
+                    // that produced the captured image. No-op for non-enums.
+                    let cap = self.own_enum_value(out, indent, &cap);
                     let slot = self.fun.gen_reg();
                     writeln!(
                         out,
@@ -2747,6 +2751,12 @@ impl LlvmBackend {
             writeln!(out, "{}store i64 {}, ptr {}", indent, count as i64, hdr).ok();
             for (i, elem) in exprs.iter().enumerate() {
                 let e = self.emit_expr(out, elem, indent);
+                // 2026-11-03 (Proof 3 condition 2): a tuple element stored as a
+                // handle must not point at the producing callable's stack image,
+                // which dies before the (heap) tuple image is read. Own enum
+                // elements (no-op for non-enum types). Nested aggregates are
+                // owned recursively by their own materializers.
+                let e = self.own_enum_value(out, indent, &e);
                 let slot = self.fun.gen_reg();
                 writeln!(
                     out,
