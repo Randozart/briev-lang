@@ -143,6 +143,18 @@ under stated conditions — then conditions must encode why).
   the producing frame outlives the sink. The whole-enum boundary gate may be
   replaced by this proof once every sink is covered.
 
+**Step 3 progress (2026-11-03): state-store sink FIXED.** The `Assign`
+state-store family (`emit_stmt.rs`: pooled column, self-slot, plain-let,
+`field_index_map`, `emit_state_store_self_slot`, `emit_array_state_store`,
+arrow store) now materializes enum images via `own_enum_for_state` before
+publishing. Regression test `enum_state_store_owns_image_before_publishing`.
+Under gate relaxation the escape repro now prints the correct value
+(`defn_store.bv` 42; `state_enum`/`alias_enum`/`nested_enum` correct).
+Remaining before gate removal: call arguments to retaining callees, closures,
+cross-node publication. Known cost: one leaked image per owned state store
+(the compiler frees nothing; consistent with existing push/field owning) —
+follow-up. The boundary gate **stays** until the remaining sinks are covered.
+
 ### Step 1 — ws_frame attribution (measure before building) — **DONE 2026-11-03**
 
 *Result:* see the Step 1 verdict above and

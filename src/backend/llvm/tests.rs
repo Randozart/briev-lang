@@ -1450,6 +1450,54 @@ node report [beginprogram][true] {
     assert!(rewrap.contains("inttoptr"), "String payload must inttoptr:\n{rewrap}");
 }
 
+/// 2026-11-03 (Proof 3 condition 2, I11 root cause): an enum image stored into
+/// longer-lived state must be heap-owned first. The image produced by a call is
+/// a stack slot in the producing callable's frame; storing the raw handle into
+/// `%state` leaves it dangling after the callable returns (use-after-return).
+/// The emitter must call `own_enum_value` (malloc + memcpy) before the state
+/// store. Regression for `defn_store.bv`: garbage output under gate relaxation.
+#[test]
+fn enum_state_store_owns_image_before_publishing() {
+    let src = r#"
+obj P { a: Int; b: Int; };
+enum E { Wrap(P), Empty };
+let saved: E = E.Empty;
+let step: Int = 0;
+defn make_e() -> E { term E.Wrap(P { a: 1, b: 2 }); };
+defn store_it() -> Int {
+    let local: E = make_e();
+    saved = local;
+    term 0;
+};
+node produce [step == 0][step == 1] {
+    let r: Int = store_it();
+    step = 1;
+    term;
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let body = function_body(&ir, "@store_it");
+    assert!(
+        body.contains("@malloc"),
+        "state-stored enum image must be owned (malloc) before publishing:\n{body}"
+    );
+    assert!(
+        body.contains("@llvm.memcpy"),
+        "state-stored enum image must be copied to owned storage:\n{body}"
+    );
+    let memcpy_pos = body.find("@llvm.memcpy").expect("memcpy");
+    let store_pos = body.rfind("store i64").expect("state store");
+    assert!(
+        memcpy_pos < store_pos,
+        "ownership copy must precede the state store:\n{body}"
+    );
+}
+
 /// Mini-verifier (BUGS.md int-literal-float-init), per FUNCTION: a register
 /// defined as i64 may never feed a float-typed operand or store. Register
 /// names repeat across functions, so defs reset at each `define`.

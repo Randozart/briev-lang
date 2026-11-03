@@ -71,8 +71,21 @@ storage at every sink that can outlive the producing frame: state stores
 cross-node publication, and returns; otherwise prove the producing frame
 outlives the sink. Until then the whole-enum boundary gate stays mandatory.
 
-**Status:** OPEN — escape path named and confirmed; fix belongs to Step 3 of
-`docs/plans/2026-11-03-ws-frame-fast-path-execution.md`.
+**Progress 2026-11-03:** the **state-store sinks are fixed** — the `Assign`
+state branches (pooled / self-slot / plain-let / `field_index_map` /
+`emit_state_store_self_slot` / `emit_array_state_store` / arrow store) now
+call `own_enum_value` before publishing (helper `own_enum_for_state`,
+`emit_stmt.rs`). Regression: `enum_state_store_owns_image_before_publishing`.
+Validated under relaxation: `defn_store.bv` now prints `42` (was garbage);
+`state_enum`/`alias_enum`/`nested_enum` all correct. **Remaining sinks**
+(call arguments to retaining callees, closures, cross-node publication) are
+not yet covered — the boundary gate stays until they are. Known cost: each
+owned state store leaks one image (the compiler's owning model does not free;
+same as collection-push/struct-field owning) — a follow-up, not a
+correctness issue.
+
+**Status:** PARTIALLY FIXED 2026-11-03 (state-store sink); gate removal awaits
+the remaining sinks. Plan: `docs/plans/2026-11-03-ws-frame-fast-path-execution.md`.
 
 ## ws_frame benchmark hides checksum errors (even PASSES) — OPEN 2026-11-03
 

@@ -27,6 +27,26 @@ fn is_enum_handle_type(backend: &LlvmBackend, ty: &Type) -> bool {
     }
 }
 
+/// 2026-11-03 (Proof 3 condition 2, I11 root cause): an enum value published
+/// into longer-lived storage (node/global state) must own its image before the
+/// store. The image may be a stack slot in the producing callable's frame,
+/// which dies before the state is read — a use-after-return. `own_enum_value`
+/// heap-copies the image and is a no-op for non-enum slot types.
+fn own_enum_for_state(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    slot_ty: &Type,
+    val: &TypedRegister,
+) -> TypedRegister {
+    if !is_enum_handle_type(backend, slot_ty) {
+        return val.clone();
+    }
+    let mut owned = val.clone();
+    owned.ty = slot_ty.clone();
+    backend.own_enum_value(out, indent, &owned)
+}
+
 /// Emit LLVM IR for a statement. Returns the last expression's register.
 /// 2026-07-31 (A5): emit a sequence of statements (an obj member body).
 pub fn emit_statement_sequence(
@@ -1008,6 +1028,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                                 writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}", indent, gep, col_ty, base, row_reg).ok();
                                 gep
                             };
+                            // 2026-11-03 (Proof 3 condition 2): a pooled column
+                            // outlives the producing frame — own enum images.
+                            let slot_briev_ty = backend.ctx.field_briev_types.get(idx).cloned();
+                            let val = match slot_briev_ty.as_ref() {
+                                Some(ty) => own_enum_for_state(backend, out, indent, ty, &val),
+                                None => val,
+                            };
                             // Mirror the standard top-level field store: use the
                             // slot's actual LLVM type and box Ptr/float values.
                             let val_ty = backend.llvm_type(&val.ty);
@@ -1084,6 +1111,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                                 backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
                                 return TypedRegister { name: val.name, ty: Type::void() };
                             }
+                            // 2026-11-03 (Proof 3 condition 2): an instance slot
+                            // outlives the producing frame — own enum images.
+                            let val = own_enum_for_state(backend, out, indent, &slot_ty, &val);
                             // 2026-08-01 (D3): a Ptr-typed self-slot stores the
                             // HANDLE at i{int_bits} (the value is already
                             // ptrtoint'd) — not `ptr`, matching the self-slot
@@ -1113,7 +1143,10 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     // `stdout_buf = Alloc#(...)` seed in the first plain run;
                     // R1 in the protocol's risk register).
                     if backend.ctx.plain_lets.contains(name) {
-                        backend.emit_state_store_i64(out, indent, name, &val.name.clone());
+                        // 2026-11-03 (Proof 3 condition 2): plain globals are
+                        // longer-lived than the producing frame — own the image.
+                        let owned = own_enum_for_state(backend, out, indent, &val.ty.clone(), &val);
+                        backend.emit_state_store_i64(out, indent, name, &owned.name.clone());
                         backend.fun.last_val_temps.insert(name.clone(), val.name.clone());
                         backend.fun.last_val_types.insert(name.clone(), val.ty.clone());
                         return TypedRegister { name: val.name, ty: Type::void() };
@@ -1145,6 +1178,9 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                         // stored (`store i64 %ptr`) — an LLVM type error on
                         // String state fields (node_bridge.save, main's
                         // flat-dotted branch).
+                        // 2026-11-03 (Proof 3 condition 2): a state slot outlives
+                        // the producing frame — an enum image must be owned first.
+                        let val = own_enum_for_state(backend, out, indent, &field_briev_ty, &val);
                         let fidx = *backend.ctx.field_index_map.get(name).unwrap();
                         let fty = backend.ctx.field_types.get(fidx).cloned().unwrap_or_else(|| "i64".to_string());
                         let store_val = backend.ensure_typed_value(
@@ -2972,6 +3008,9 @@ pub(super) fn emit_array_state_store(
         .rsplit_once('x')
         .map(|(_, t)| t.trim().trim_end_matches(']').to_string())
         .unwrap_or_else(|| "i64".to_string());
+    // 2026-11-03 (Proof 3 condition 2): an array state element outlives the
+    // producing frame — own enum images before storing.
+    let val = own_enum_for_state(backend, out, indent, &val.ty.clone(), val);
     let universe = backend.ctx.type_universe.clone();
     let store_val = backend.ensure_typed_value(
         out,
@@ -3209,6 +3248,16 @@ fn emit_state_store_self_slot(
         writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}", indent, gep, col_ty, base, row_reg).ok();
         (gep, "i64".to_string())
     };
+    // 2026-11-03 (Proof 3 condition 2): a pooled state column outlives the
+    // producing frame — own enum images before storing.
+    let owned_val;
+    let val: &TypedRegister = match backend.ctx.field_briev_types.get(idx).cloned() {
+        Some(ty) => {
+            owned_val = own_enum_for_state(backend, out, indent, &ty, val);
+            &owned_val
+        }
+        None => val,
+    };
     if backend.llvm_type(&val.ty) == elem_ty {
         writeln!(out, "{}store {} {}, ptr {}", indent, elem_ty, val.name, gep).ok();
     } else {
@@ -3240,6 +3289,13 @@ fn emit_arrow_store_local(
     if backend.ctx.field_index_map.contains_key(name) {
         let fidx = *backend.ctx.field_index_map.get(name).unwrap();
         let fty = backend.ctx.field_types.get(fidx).cloned().unwrap_or_else(|| "i64".to_string());
+        // 2026-11-03 (Proof 3 condition 2): a state field outlives the
+        // producing frame — own enum images before storing.
+        let slot_briev_ty = backend.ctx.field_briev_types.get(fidx).cloned();
+        let val = match slot_briev_ty.as_ref() {
+            Some(ty) => own_enum_for_state(backend, out, indent, ty, val),
+            None => val.clone(),
+        };
         let store_val = backend.ensure_typed_value(
             out, indent, &fty, &val.name, Some(val.ty.clone()),
             backend.ctx.type_universe.clone().as_ref(),
