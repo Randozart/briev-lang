@@ -57,10 +57,14 @@ the destination plan (`Frame`/`TxnBody`/`StateField`/`LoopCarrier`/`Program`/
 `Alloc#` escape DAG); reclamation follows lifetime (txn arena, owned state
 slots, boxed/leak for Unknown); immutable images with copy-on-escape or
 destination threading. No GC, no pervasive refcount, no new syntax. Phases
-0–7: correctness net (closure-let gap) → construction-time strategy →
-general `Lifetime` fact → region-end deallocation → state slots →
-observability (`memcheck` leak/fallback reporting) → optional sound refcount →
-enum boundary-gate removal. This is the durable plan the enum gate-removal
+0–7: correctness net (closure-let gap) → **execution substrate (parallel
+`async` via `SysCall#(SYS_clone)`+futex, per-worker arenas in worker-indexed
+slots, real `sync<group>` join, capability-gated cooperative fallback)** →
+`Lifetime`/`Sendable` facts + per-worker allocation strategy → construction-time
+strategy → state slots → observability (`memcheck`) → optional sound refcount →
+enum boundary-gate removal. Decisions: parallel by default where threads exist;
+shared `%State` safe for fields via the gate's XOR-disjoint proof; async output
+interleaving contract-unspecified. This is the durable plan the enum gate-removal
 workstream executes; the two share Phase 0.
 
 **Typed HIR (2026-11-02, active):**

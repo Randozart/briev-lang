@@ -981,5 +981,40 @@ ownership and reclamation points in the same plan; they are not a parallel
 ownership system. `free` on a non-owned/untracked backing remains a no-op
 today and becomes a verified deallocation point only for tracked owned images.
 
+### D34. `async` is parallel by default where threads exist — DECIDED
+
+`async` is a semantic declaration of simultaneous firing; the efficient default
+is real parallel execution. Cooperative execution is a **declared capability
+fallback** (with a diagnostic) for targets without threads, never a silent
+downgrade. Substrate: `SysCall#(SYS_clone)` + futex (no pthreads, no C runtime),
+restoring the parallelism Family H documented as lost.
+
+### D35. Arenas are per-worker — DECIDED
+
+The bump arena is per-worker, addressed through worker-indexed global slots
+(`@__arena[worker]`: ptr/end/base) rather than TLS. `emit_arena_alloc` uses the
+current worker's slot; init/reset/free is per worker per tick. The shared
+`%State` arena fields and the vestigial `%arena_mutex` are removed/repurposed.
+
+### D36. `sync<group>` is a real join — DECIDED
+
+In the parallel reactor, members of a fired sync group commit at a join
+barrier; the cooperative group-commit path remains only in the capability
+fallback.
+
+### D37. Shared `%State` is safe for fields under the gate — DECIDED
+
+The concurrency gate proves eligible `async` pairs have no XOR read-write
+overlap and each tick reads pre-tick state; only the arena/allocator/output are
+shared mutable infrastructure (per-worker/atomic). Cross-thread values are
+immutable images with atomic handle swaps; no shared-slot reuse.
+
+### D38. Async interleaving is contract-unspecified — DECIDED
+
+Compiler/IR determinism is preserved; output interleaving across simultaneously
+firing nodes is not. Tests compare per-txn sequences or run the cooperative
+mode. This does not weaken the "never faster via a keyword" rule: parallel is
+the default for the semantics, not an opt-in speed keyword.
+
 **Migration:** Phases 0–7 in the plan. Unknown ⇒ box/copy/leak at every phase.
 **Rollback:** delete this part; D1–D26 remain authoritative.

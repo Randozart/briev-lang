@@ -15,6 +15,26 @@ plan, consumed uniformly by emission — never per-construct sink patches, never
 a tracing GC, never pervasive runtime refcounting. Unknown ⇒ box/copy/leak,
 surfaced by diagnostics, never a premature free.**
 
+### Decisions fixed by this revision (2026-11-03)
+
+1. **Full arc, no interim.** Implement the correct end-state directly: the
+   lifetime model *and* the parallel async substrate, with per-worker arenas.
+   No "async stays on heap until later" half measure.
+2. **Parallel by default where threads exist.** `async` means simultaneous
+   firing; the efficient default is real parallelism. Cooperative execution
+   remains only as a **declared capability fallback** for targets without
+   threads (with a diagnostic), never a silent downgrade.
+3. **Per-worker arenas via worker-indexed slots** (`@__arena[worker]`:
+   ptr/end/base), not TLS — no `wrfsbase`/SETTLS setup, deterministic indexing,
+   compatible with `clone(CLONE_VM)`.
+4. **`sync<group>` is a real join** in the parallel reactor.
+5. **Shared `%State` is safe for fields** because the concurrency gate proves
+   eligible `async` pairs have no XOR read-write overlap and each tick reads
+   pre-tick state. Only the arena/allocator/output are shared infrastructure.
+6. **Determinism policy:** async output interleaving is contract-unspecified;
+   compiler/IR determinism is preserved; tests compare per-txn sequences or run
+   the cooperative mode.
+
 ## 1. Why (the health problem this fixes)
 
 The compiler currently gets enum images right by patching individual sinks
@@ -125,19 +145,29 @@ not dominate the destination lifetime, either:
 Never mutate a shared immutable image. Never reuse a slot while an alias may
 still read it (this is why buffer-reuse/`B1-lite` is rejected).
 
-### 3.6 Async/sendability dimension
+### 3.6 Async/sendability dimension (corrected 2026-11-03)
 
-`async` txns run on a worker pool (`strategy.rs`, `dispatch.rs`). Lifetime
-proofs must include cross-thread transfer:
+`async` is a **semantic declaration of simultaneous firing**
+(`docs/architecture/concurrency-and-modifiers.md:67`); the efficient default is
+real parallel execution. Family H replaced the pthread pool with a cooperative
+sequential phase and documented that multicore parallelism is LOST
+(`briev-native-runtime.md:120-168`); the intended substrate is
+`SysCall#(SYS_clone)` + futex. Phase 1 restores that substrate; the cooperative
+form survives only as a **capability-gated** fallback (with a diagnostic) on
+targets without threads.
 
-- `Frame`/`TxnBody` images are **not** shared (arena is thread-local or
-  mutex-guarded; default: async programs use `Malloc` for anything that could
-  cross a task).
-- `StateField` images written by async txns keep the existing explicit-
-  concurrency contract; a reused slot is forbidden (tearing); heap images are
-  immutable and swapped atomically.
-- Add a `Sendable`/thread dimension when the plan gains task/message sinks,
-  reusing the `SinkKind` escape vocabulary.
+Consequences for lifetime:
+
+- `Frame`/`TxnBody` images live in a **per-worker arena**, never shared.
+- `StateField` images are immutable; handle swaps are atomic; no shared-slot
+  reuse (tearing).
+- Shared `%State` is safe for fields because the concurrency gate proves
+  eligible `async` pairs have no XOR read-write overlap and each tick reads
+  pre-tick state.
+- A `Sendable`/thread dimension records cross-thread transfer; active only
+  where workers are.
+- Async interleaving is contract-unspecified; compiler/IR determinism is
+  preserved; tests compare per-sequence or run cooperative mode.
 
 ### 3.7 Relation to existing machinery (reuse map)
 
@@ -151,6 +181,23 @@ proofs must include cross-thread transfer:
 | `free`/`keep`/`defer`, `~<-` consume, linear tasks | explicit ownership/move surface; `Consumed` ownership |
 | `enum_lowering.rs` validators | condition 1 (layout agreement) |
 | `boundary_ownership.rs`, `collect_boundary_enums` | condition 3 (external boundary) |
+
+### 3.8 Execution substrate (parallel async, Phase 1)
+
+- **Workers:** `SysCall#(SYS_clone, CLONE_VM|CLONE_FS|CLONE_FILES|
+  CLONE_SIGHAND|CLONE_THREAD, …)` once at startup; no pthreads, no C runtime.
+- **Per tick:** release workers (futex/atomic), each runs its assigned
+  `async_body_*` on the shared `%State`, join; `sync<group>` is a real join.
+- **Arenas:** per-worker, worker-indexed global slots (`@__arena[worker]`:
+  ptr/end/base) — chosen over TLS. `emit_arena_alloc` reads/writes the current
+  worker's slot.
+- **Lifecycle:** init/reset/free per worker per tick. This also fixes the
+  current async-arena-lifecycle gap (async bodies never init/fini the arena
+  today; the parallel reactor's `reactor_tick` no-ops for async).
+- **Capabilities:** parallel `async` only on thread-capable targets; elsewhere
+  cooperative is the declared fallback with a diagnostic.
+- **Shutdown/watchdog:** join workers at program end; per-phase watchdog.
+- **Remove** the vestigial `%arena_mutex` alloca (`mod.rs:2379`).
 
 ## 4. Diagnostics and language surface
 
@@ -177,103 +224,106 @@ Tracked per commit/benchmark:
 
 ## 6. Phased plan
 
-Each phase is independently valuable, gated, and reversible. Unknown ⇒ box at
-every phase.
+Each phase is the final mechanism (no throwaway interim) and is gated and
+reversible. Unknown ⇒ box/copy/leak at every phase. Dependency order: the
+substrate and per-worker arenas land before any arena allocation in async
+bodies; analysis facts land before the emission that consumes them.
 
-### Phase 0 — Correctness net (interim; unblocks gate removal)
+### Phase 0 — Correctness net
 
 Goal: every escape sink is correct (no UAF) while the model lands.
 
-- Fix the **closure-let env site** (`emit_stmt.rs:494`; the earlier fix only
-  covered `emit_expr.rs:1955`): own enum captures before storing. **DONE**
-  (`f397dcae` covered `Expr::Lambda`; the `let` arm landed with its own IR
-  regression `closure_let_capture_enum_is_owned`).
+- Closure-let env site owned — **DONE** (`f397dcae` + its `let`-arm fix).
 - Audit remaining sinks: state (done), tuple elements (done), both closure
   sites, struct field, collection push, array element, aggregate recursion.
-- Add the ASan-no-inline escape corpus (tuple, closure-let, closure-expr,
-  aggregate field, collection-of-aggregate, cross-firing state).
+- ASan-no-inline escape corpus (tuple, closure-let, closure-expr, aggregate
+  field, collection-of-aggregate, cross-firing state).
 - Exit: corpus green; `cargo test --lib`, `daily_use_smoke`; no new Praetor
   diagnostics.
 - Undo: revert the additive out sites; state-store fix stays.
 
-### Phase 1 — Construction-time strategy (local region inference)
+### Phase 1 — Execution substrate + per-worker arenas
+
+Goal: real parallel `async` (the efficient default) with thread-safe memory.
+
+- **Substrate:** `SysCall#(SYS_clone, CLONE_VM|CLONE_FS|CLONE_FILES|
+  CLONE_SIGHAND|CLONE_THREAD, …)` at startup; futex release/wait per tick;
+  fn-pointer body table; join at exit; per-phase watchdog; no pthreads, no C
+  runtime.
+- **Per-worker arenas:** worker-indexed global slots (`@__arena[worker]`:
+  ptr/end/base); `emit_arena_alloc` uses the current worker's slot; per-worker
+  init/reset/free per tick. Removes the vestigial `%arena_mutex`.
+- **`sync<group>`:** real join barrier in the parallel reactor.
+- **Async lifecycle fix:** init/fini the arena per worker per tick (the current
+  async path neither inits nor frees it).
+- **Capabilities:** parallel `async` on thread-capable targets only; elsewhere
+  cooperative is the declared fallback with a diagnostic.
+- **Determinism:** IR/timing determinism preserved; async interleaving is
+  contract-unspecified; tests compare per-txn sequences or run cooperative mode.
+- Validate: async parallel correctness (per-sequence), `sync<group>` join,
+  many-firing arena correctness (leak growth, no cross-firing corruption),
+  `net_stack` O0–O3, determinism, capability diagnostics.
+- Exit: `async` runs in parallel on capable targets; arenas per worker; no
+  shared-arena race; cooperative fallback documented and gated.
+- Undo: restore cooperative `emit_async_phase`; delete the substrate; per-worker
+  slots may stay (harmless with one worker).
+
+### Phase 2 — Analysis: `Lifetime` + `Sendable` + per-worker strategy
+
+Goal: the single fact set every later phase consumes.
+
+- Add `Lifetime` derivation (`Frame`/`TxnBody`/`StateField`/`LoopCarrier`/
+  `Program`/`External`) to `ValueFact` from `SinkKind`/`EscapeKind` + reactor
+  reachability; add the `Sendable`/thread dimension.
+- Extend the `Alloc#` escape DAG to enum constructors, tuple literals, closure
+  envs; emit per-worker allocation strategy (arena vs heap).
+- Conservative meet (D23): `Unknown`/alias ⇒ `Program`.
+- Every fact has a named consumer (no dangling facts).
+- Exit: unit tests per lattice cell + meet; plan snapshot; `memcheck` can
+  report per-value lifetime.
+
+### Phase 3 — Emission: construction-time strategy
 
 Goal: reclaim txn-local images; remove sink copies where construction decides.
 
-- Extend `analysis/allocation.rs` DAG to enum constructors, tuple literals,
-  closure envs; stamp ids; emit strategies.
-- Backend: constructor/materializer consult the strategy; `Frame`/`TxnBody`
-  → arena, else heap. Aggregate container and element images share strategy.
-- Arena: reuse when `needs_arena` is already set; otherwise add a **small
-  demand-sized** arena for the txn (never force the 64KB default per firing;
-  never `alloca` inside an inlined txn loop — stack growth).
-- Async programs: heap-only.
+- Backend constructs into the region (`Frame`/`TxnBody` → per-worker arena,
+  else heap); aggregate container and element images share strategy.
+- Retire the ad-hoc `own_enum_*` sink calls for proven regions; keep the heap
+  implementation for `Program`/heap and as the conservative fallback.
 - Validate: LSan leak-growth flat for non-escaping corpus; allocations/firing;
   no benchmark regression; determinism.
-- Exit: non-escaping enum/aggregate images reclaimed; sink copies for those
-  regions removed; delay no regression.
-
-### Phase 2 — General `Lifetime` fact in the plan
-
-Goal: one fact for all shapes, not just enums.
-
-- Add `Lifetime` derivation to `ValueFact` from `SinkKind`/`EscapeKind` +
-  reactor reachability; extend `CallablePlan`/`ArgumentPlan` with the resulting
-  allocation/reclamation requirement.
-- Conservative meet; `Unknown`/alias ⇒ `Program` (box/leak).
-- Unit tests for each lattice cell and the meet.
-- Exit: plan snapshot test; `memcheck` can report per-value lifetime.
-
-### Phase 3 — Region-end deallocation + copy-on-escape
-
-Goal: retire sink-copy for proven regions across all shapes.
-
-- Emission consumes `Lifetime` uniformly (shared lowering helper): construct
-  in region, copy-on-escape only when domination fails, destination-thread
-  where Proof 19 holds.
-- Migrate tuple/closure/collection/struct/state sites off ad-hoc
-  `own_enum_value`; keep it only as the `Program` (heap) implementation.
-- Exit: sink-copy removed for proven regions; leaks flat for Frame/TxnBody;
-  performance A/B; all gates.
+- Exit: non-escaping enum/aggregate images reclaimed; sink copies removed for
+  those regions.
 
 ### Phase 4 — State-field slots (`StateField(i)`)
 
 Goal: bound persistent-image memory.
 
-- Owned slot discipline: either destination-thread into a per-slot image or
-  free-on-overwrite, legal only when the value's sole escape is that slot (no
-  alias). Where unprovable ⇒ heap/leak (reported).
+- Owned slot discipline: destination-thread or free-on-overwrite, legal only
+  when the sole escape is that slot (no alias); else heap/leak (reported).
 - Extend `global_lifetime` to schedule the final free for owned slots; honor
-  `keep`/`free` hints and the free-check move rules.
-- Async: no slot reuse (immutable swap only).
+  `keep`/`free` and the free-check move rules.
+- Async: no shared-slot reuse (immutable swap only).
 - Exit: state-image leaks bounded to one per slot; free-then-read is a compile
   error; `memcheck` reflects it.
 
 ### Phase 5 — Observability
 
-Goal: no silent leaks.
-
 - `memcheck`/strict: per-value region, proven deallocation or fallback reason;
   owned-value leak report.
-- Add leak-growth and allocations-per-firing to benchmark evidence.
+- Leak-growth and allocations-per-firing in benchmark evidence.
 - Exit: fallback counts tracked; docs updated.
 
 ### Phase 6 — Optional sound refcount (only if proven necessary)
 
-Goal: reclaim `Program`-region values that must be shared.
-
-- Only for shapes the plan proves require shared ownership (e.g., cross-thread
-  closures), with the firing/ownership proof the free-check lacked; atomics
-  only where sendable; never pervasive.
-- Exit: gated behind a proof; default path unchanged.
+- Only for shapes the plan proves require shared ownership, with the
+  firing/ownership proof the free-check lacked; atomics only where sendable;
+  never pervasive.
 
 ### Phase 7 — Gate removal (Proof 3 conditions 1/2/3)
 
-Goal: replace the blanket enum boundary gate.
-
-- Condition 1: single `EnumLoweringPlan` at every materialization site
-  (validators).
-- Condition 2: lifetime/escape ownership complete for all sinks (Phase 3 + 4).
+- Condition 1: single `EnumLoweringPlan` at every materialization site.
+- Condition 2: lifetime/escape ownership complete for all sinks (Phase 3/4).
 - Condition 3: `collect_boundary_enums` keeps only export/FFI.
 - `allow_object_inline = c1 ∧ c2 ∧ c3`; `Unknown ⇒ boxed`.
 - Exit: gate removed for proven-internal enums; Proof 2 unblocked
@@ -303,14 +353,19 @@ Goal: replace the blanket enum boundary gate.
   Program` (heap/leak); ASan/UAR; Kani; never free without a proof.
 - **Aliasing** → immutable images; copy-on-escape; no buffer reuse; free only
   for sole-escape slots.
-- **Async races** → no shared-slot reuse; heap for sendable/unknown; explicit
-  concurrency contract unchanged.
-- **Arena cost** → reuse existing arena; demand-sized; never 64KB/firing;
-  never loop-body alloca.
+- **Shared infrastructure races** → per-worker arenas; shared `%State` fields
+  are safe by the gate's XOR-disjoint write proof; cross-thread values are
+  immutable with atomic handle swaps; no shared-slot reuse.
+- **Thread substrate risk** (clone/futex, join, shutdown, watchdog) → isolated
+  in Phase 1; capability-gated; cooperative fallback; dedicated async tests.
+- **Interleaving nondeterminism** → contract-unspecified for async; IR/timing
+  determinism preserved; per-sequence comparison or cooperative test mode.
+- **Arena cost** → per-worker, demand-sized; never loop-body alloca; no 64KB
+  forced per firing.
 - **Drag on compile time/complexity** → facts live in `src/analysis`; DAG is
   already O(program); Praetor ≤15/≤100.
 - **Two ownership systems drift** → unify `Consumed`/linear/`free`/`keep` into
-  the same plan (Phase 2/4); one shared lowering helper.
+  the same plan; one shared lowering helper.
 
 ## 9. Undo
 
@@ -322,17 +377,22 @@ Goal: replace the blanket enum boundary gate.
   the full `collect_boundary_enums` arms.
 - Decision record Part VII: revert the section; the existing D1–D26 stand.
 
-## 10. Open questions
+## 10. Open questions (remaining)
 
-1. Arena sizing policy for `Frame`/`TxnBody` images: demand-sized dedicated
-   arena vs reuse the 64KB arena when already needed. Default: reuse when
-   present; dedicated only if a benchmark proves it.
-2. `StateField` reclamation: destination threading vs free-on-overwrite. Default:
-   threading where Proof 19 holds, free-on-overwrite for the sole-escape case,
-   leak otherwise.
-3. Async: whether any `Frame`-region image may live in a thread-shared arena.
-   Default: no; heap for sendable/unknown.
-4. When to promote `Lifetime` from the allocation DAG into the full plan
-   (Phase 2) — after Phase 1 proves the DAG strategy on enums/aggregates.
-5. Whether `memcheck` fallbacks should become errors under `.s` strict
-   profiles for owned-value leaks. Default: warning until Phase 5 stabilizes.
+1. Arena sizing per worker: demand-sized vs a fixed per-worker floor. Default:
+   demand-sized, grown via the existing arena growth contract.
+2. `StateField` reclamation: destination threading vs free-on-overwrite.
+   Default: threading where Proof 19 holds, free-on-overwrite for the
+   sole-escape case, leak otherwise.
+3. Which thread-capable targets get the parallel substrate at first (Linux
+   x86_64 only vs aarch64 too). Default: x86_64 first, capability table drives
+   the rest.
+4. Whether the cooperative mode is also a user-selectable execution mode
+   (`seq`-like) or only a capability fallback. Default: capability fallback +
+   a test/benchmark flag, not new syntax.
+5. Whether `memcheck` fallbacks become errors under `.s` strict profiles for
+   owned-value leaks. Default: warning until Phase 5 stabilizes.
+
+Resolved this revision: full arc (no interim); parallel by default where
+threads exist; worker-indexed arena slots; `sync<group>` real join; shared
+`%State` safe for fields; async interleaving contract-unspecified.
