@@ -91,3 +91,24 @@ reverted.
 **Conclusion:** runtime parity for a correct arena is met; the fast reuse must
 be made *sound* via scope-lifetime proofs (reset at scope boundaries only when
 allocations are proven not to cross the scope), which is the next workstream.
+
+## Sound scope-lifetime reset (implemented 2026-11-03)
+
+Grow now preserves the bump (sound). Per-iteration arena reset is emitted only
+when `arena_scope_reset_safe` proves every `Alloc#` in the body is a body-local
+let used only by non-retaining intrinsics; an allocation whose pointer reaches
+an outer variable rejects the proof and takes the grow path.
+
+| variant | time (BOUND=50M) | notes |
+|---|---:|---|
+| `arena_churn_sym`, safe body | **~35–41 ms** | per-iteration reset, 64 KB hot |
+| C, 64-byte growing arena | ~1370 ms | no reuse |
+| escaping variant (proof rejected) | correct | grows; pointer preserved |
+
+The ~35 ms is legitimate: the proof establishes the allocation cannot outlive
+the iteration, so resetting to base is sound reuse (not an unsound shortcut).
+Regression: `arena_scope_reset_gate` — reset present for the safe body, absent
+for the escaping one, both sums exact.
+
+Follow-up: the reset is wired into the countdown emitter only; extend it to the
+SSA/version-DAG inlined loop emitters.

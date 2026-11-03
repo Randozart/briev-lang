@@ -74,6 +74,12 @@ The real gap is per-iteration **control flow and address conversion**:
 - This is the proof-licensed lever: Briev proves the lifetime and reuses;
   a naive/growing arena is the floor.
 
+**Implemented 2026-11-03 (countdown emitter):** grow preserves the bump;
+per-iteration reset emitted under `arena_scope_reset_safe`. Result:
+`arena_churn_sym` **~35 ms** (sound) vs C ~1370 ms; the escaping variant is
+correct and rejects the reset. Regression: `arena_scope_reset_gate`.
+Follow-up: extend the reset to the SSA/version-DAG inlined loop emitters.
+
 Gate: `arena_churn_sym` ≤ C with a **sound** reuse proof (no live allocation
 overwritten), plus a regression that a live arena allocation spanning a reset
 point is either preserved (heap) or rejected.
