@@ -185,7 +185,9 @@ every phase.
 Goal: every escape sink is correct (no UAF) while the model lands.
 
 - Fix the **closure-let env site** (`emit_stmt.rs:494`; the earlier fix only
-  covered `emit_expr.rs:1955`): own enum captures before storing.
+  covered `emit_expr.rs:1955`): own enum captures before storing. **DONE**
+  (`f397dcae` covered `Expr::Lambda`; the `let` arm landed with its own IR
+  regression `closure_let_capture_enum_is_owned`).
 - Audit remaining sinks: state (done), tuple elements (done), both closure
   sites, struct field, collection push, array element, aggregate recursion.
 - Add the ASan-no-inline escape corpus (tuple, closure-let, closure-expr,

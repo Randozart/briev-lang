@@ -503,6 +503,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     for (j, var) in free_vars.iter().enumerate() {
                         let cap = backend
                             .emit_expr(out, &crate::ast::Expr::Identifier(var.clone()), indent);
+                        // 2026-11-03 (Proof 3 condition 2): a captured enum must
+                        // own its image; the closure (heap env) can outlive the
+                        // frame that produced the captured image. The `let g =
+                        // x => …` path constructs its own env here, separate
+                        // from the Expr::Lambda arm — both must own. No-op for
+                        // non-enum captures.
+                        let cap = backend.own_enum_value(out, indent, &cap);
                         let slot = backend.fun.gen_reg();
                         writeln!(
                             out,

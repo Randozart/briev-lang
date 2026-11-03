@@ -1415,6 +1415,60 @@ fn function_body(ir: &str, sig: &str) -> String {
     rest[..end].to_string()
 }
 
+/// Run the plugin stage, register layout facts, and generate IR. Required for
+/// fixtures that use collection/closure/function-type surfaces resolved by
+/// plugins (the plain `parse_bv_source` + `register_typedefs` path cannot).
+fn generate_ir_plugin_pipeline(src: &str) -> String {
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    let mut pm = crate::plugin::PluginManager::new();
+    pm.run_ast(crate::ast::StageKind::Parsed, &mut items, &mut universe)
+        .expect("plugin stage failed");
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    backend.generate(&items, None)
+}
+
+/// 2026-11-03 (Proof 3 condition 2): the `let g = x -> …` arm builds its own
+/// closure env block (a separate site from `Expr::Lambda`). An enum captured
+/// there must own its image: the closure can outlive the producing frame.
+/// A closure with no free variables is the negative control (no ownership copy).
+#[test]
+fn closure_let_capture_enum_is_owned() {
+    let enum_src = r#"
+enum E { Val(Int), Empty };
+defn make_e(v: Int) -> E { term E.Val(v); };
+defn use() -> Int {
+    let e: E = make_e(7);
+    let f: fn(Int) -> Int = x -> match e { Val(n) => n + x, Empty => x };
+    term f(1);
+};
+let tick: Int = 0;
+let sink_val: Int = 0;
+node run [tick == 0][tick == 1] { sink_val = use(); tick = 1; term; };
+"#;
+    let plain_src = r#"
+defn use_plain() -> Int {
+    let f: fn(Int) -> Int = x -> x + 1;
+    term f(1);
+};
+let tick: Int = 0;
+let sink_val: Int = 0;
+node run [tick == 0][tick == 1] { sink_val = use_plain(); tick = 1; term; };
+"#;
+    let enum_body = function_body(&generate_ir_plugin_pipeline(enum_src), "@use(");
+    assert!(
+        enum_body.contains("@llvm.memcpy"),
+        "closure-let enum capture must own its image:\n{enum_body}"
+    );
+    let plain_body = function_body(&generate_ir_plugin_pipeline(plain_src), "@use_plain(");
+    assert!(
+        !plain_body.contains("@llvm.memcpy"),
+        "a capture-free closure must not emit an ownership copy:\n{plain_body}"
+    );
+}
+
 /// 2026-10-05 (json.bv): an enum arm that BINDS a String payload (`Err(e)`)
 /// must unbox it to a ptr — a raw i64 typed String re-boxed as
 /// `ptrtoint ptr <i64>` (invalid IR).

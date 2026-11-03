@@ -71,18 +71,22 @@ storage at every sink that can outlive the producing frame: state stores
 cross-node publication, and returns; otherwise prove the producing frame
 outlives the sink. Until then the whole-enum boundary gate stays mandatory.
 
-**Progress 2026-11-03:** the **state-store sinks are fixed** — the `Assign`
-state branches (pooled / self-slot / plain-let / `field_index_map` /
-`emit_state_store_self_slot` / `emit_array_state_store` / arrow store) now
-call `own_enum_value` before publishing (helper `own_enum_for_state`,
-`emit_stmt.rs`). Regression: `enum_state_store_owns_image_before_publishing`.
-Validated under relaxation: `defn_store.bv` now prints `42` (was garbage);
-`state_enum`/`alias_enum`/`nested_enum` all correct. **Remaining sinks**
-(call arguments to retaining callees, closures, cross-node publication) are
-not yet covered — the boundary gate stays until they are. Known cost: each
-owned state store leaks one image (the compiler's owning model does not free;
-same as collection-push/struct-field owning) — a follow-up, not a
-correctness issue.
+**Progress 2026-11-03:** corrected sinks — **state stores** (`Assign`
+pooled / self-slot / plain-let / `field_index_map` /
+`emit_state_store_self_slot` / `emit_array_state_store` / arrow store via
+`own_enum_for_state`), **tuple elements**
+(`emit_tuple_materialize`), and **both closure-env sites**
+(`Expr::Lambda` in `emit_expr.rs` and the `let g = x -> …` arm in
+`emit_stmt.rs`). Regressions: `enum_state_store_owns_image_before_publishing`,
+`tuple_element_enum_is_owned_before_storing`,
+`closure_let_capture_enum_is_owned`, `enum_tuple_escape_asan_no_inline`.
+Validated under relaxation: `defn_store.bv` prints `42` (was garbage);
+`state_enum`/`alias_enum`/`nested_enum` correct. Call-argument retention
+resolves at the callee's sink (now owning); cross-node publication is the
+state-store sink. **Remaining:** unknown/FFI aggregate sources; **known cost:**
+owned images are malloc'd and not yet reclaimed (owned-value reclamation is
+the lifetime plan, `docs/plans/2026-11-03-lifetime-and-reclamation.md`). The
+boundary gate stays until condition 3 (Phase 7) lands.
 
 **Status:** PARTIALLY FIXED 2026-11-03 (state-store sink); gate removal awaits
 the remaining sinks. Plan: `docs/plans/2026-11-03-ws-frame-fast-path-execution.md`.
