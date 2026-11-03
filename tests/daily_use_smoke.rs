@@ -431,6 +431,27 @@ fn arena_scope_reset_gate() {
     );
 }
 
+/// Arena Free# through a cast (2026-11-03): `Free#(a as Ptr<T>)` on an arena-
+/// backed Alloc# must be a no-op (no @free on a brk pointer). The cast emits a
+/// new register, so the allocation strategy must be propagated through it.
+#[test]
+fn arena_free_through_cast_is_noop() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("arena_free_cast", "freecast", &[]);
+    assert_eq!(out, "7", "arena_free_cast output drifted: {out:?}");
+    let out_dir = Path::new(PROJECT_ROOT)
+        .join("target/briev_daily_use_smoke/arena_free_cast__freecast");
+    let ir = std::fs::read_to_string(out_dir.join("arena_free_cast.ll"))
+        .expect("read emitted IR");
+    assert!(
+        !ir.contains("call void @free"),
+        "Free# on an arena allocation must not emit @free:\n{ir}"
+    );
+}
+
 /// P0 regression: generated/macro-expanded foreach bindings must keep their
 /// alloca in the loop preheader, never in a conditional body. The fixture's
 /// HashMap probe previously produced invalid dominance IR here.

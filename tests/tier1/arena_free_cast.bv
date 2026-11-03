@@ -1,0 +1,18 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// An Alloc# result cast to Ptr<T> and passed to Free# must NOT lower to
+// @free when the allocation is arena-backed (Free# is a no-op for Arena).
+// Regression for an invalid free on a brk pointer (the recommender corpus
+// does `Free#(ts0 as Ptr<Bit<8>>)`). Expected output: 7.
+let i: Int = 0;
+let sum: Int = 0;
+node run [i < 1][i == 1] {
+    let a: Int = Alloc#(16) as Int;
+    Store#(a, 7);
+    sum = sum + Load#(a);
+    Free#(a as Ptr<Bit<8>>);
+    i = i + 1;
+    print_int(sum);
+    term;
+};

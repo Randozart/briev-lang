@@ -1843,8 +1843,22 @@ impl LlvmBackend {
             // Falls through to LLVM coercion when no graph path exists.
             Expr::Cast(expr, target) => {
                 let src = self.emit_expr(out, expr, indent);
+                // 2026-11-03: propagate the allocation strategy through an
+                // address cast. `Alloc#` records its strategy under the
+                // allocation register; `Free#(a as Ptr<T>)` evaluates the cast
+                // to a NEW register, so without this the strategy lookup missed
+                // and `@free` ran on a brk-backed arena pointer (invalid free).
+                let src_strategy = self.fun.alloc_strategies.get(&src.name).cloned();
+                let address_cast = matches!(target, Type::Ptr(_)) || matches!(src.ty, Type::Ptr(_));
                 // Try casting graph path first
                 if let Some(result) = self.emit_cast_path(out, v, &src, target, indent) {
+                    if address_cast {
+                        if let Some(st) = &src_strategy {
+                            if result.name != src.name {
+                                self.fun.alloc_strategies.insert(result.name.clone(), st.clone());
+                            }
+                        }
+                    }
                     return result;
                 }
                 let target_ll = self.llvm_type(target);
@@ -1904,6 +1918,11 @@ impl LlvmBackend {
                         indent, v, src_ll, src.name, target_ll
                     )
                     .ok();
+                }
+                if address_cast {
+                    if let Some(st) = &src_strategy {
+                        self.fun.alloc_strategies.insert(v.to_string(), st.clone());
+                    }
                 }
                 TypedRegister {
                     name: v.to_string(),
