@@ -991,10 +991,13 @@ restoring the parallelism Family H documented as lost.
 
 ### D35. Arenas are per-worker — DECIDED
 
-The bump arena is per-worker, addressed through worker-indexed global slots
-(`@__arena[worker]`: ptr/end/base) rather than TLS. `emit_arena_alloc` uses the
-current worker's slot; init/reset/free is per worker per tick. The shared
-`%State` arena fields and the vestigial `%arena_mutex` are removed/repurposed.
+The bump arena is per-worker. A shared worker-id global races under
+`clone(CLONE_VM)`, so worker identity comes from **TLS** on thread-capable
+targets (`clone(CLONE_SETTLS)`, FS-relative arena cursor); cooperative/embedded
+targets use a single arena. `emit_arena_alloc` uses the current worker's
+cursor; init/reset/free is per worker per tick. The shared `%State` arena
+fields and the vestigial `%arena_mutex` are removed. (Corrected 2026-11-03:
+worker-indexed global slots without TLS are unsound.)
 
 ### D36. `sync<group>` is a real join — DECIDED
 

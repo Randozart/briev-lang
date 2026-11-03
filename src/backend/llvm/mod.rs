@@ -2376,10 +2376,10 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         let Some(abase_idx) = self.arena_base_idx else { return; };
         // 2026-07-19: Uses next_reg_with_prefix (txn_counter) for unique names.
         // Eliminates arena_counter — consistent with emit_arena_alloc pattern.
-        if self.has_async_txns {
-            writeln!(out, "{}%arena_mutex = alloca i64, align 8", indent).ok();
-            writeln!(out, "{}store i64 0, ptr %arena_mutex, align 8", indent).ok();
-        }
+        // 2026-11-03 (D35): the vestigial %arena_mutex was removed. It was
+        // per-call (an alloca) and never consulted by emit_arena_alloc, so it
+        // provided no cross-thread protection. Per-worker arenas are the real
+        // fix (Phase 1).
         // 2026-08-04 (Phase 4): embedded freestanding — point the bump pointer
         // at the static @embedded_heap global (no @malloc, no heap growth).
         if self.ctx.is_embedded {

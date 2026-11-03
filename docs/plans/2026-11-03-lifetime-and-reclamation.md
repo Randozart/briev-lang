@@ -24,9 +24,13 @@ surfaced by diagnostics, never a premature free.**
    firing; the efficient default is real parallelism. Cooperative execution
    remains only as a **declared capability fallback** for targets without
    threads (with a diagnostic), never a silent downgrade.
-3. **Per-worker arenas via worker-indexed slots** (`@__arena[worker]`:
-   ptr/end/base), not TLS — no `wrfsbase`/SETTLS setup, deterministic indexing,
-   compatible with `clone(CLONE_VM)`.
+3. **Per-worker arenas require per-worker identity.** Under
+   `clone(CLONE_VM)` a shared worker-id global races, so worker-indexed global
+   slots alone are insufficient. Decision: on **thread-capable (hosted)
+   targets** the arena cursor lives in a **per-worker TLS control block**
+   (`clone(CLONE_SETTLS)`, FS-relative); **cooperative/embedded targets** use a
+   single arena. No shared mutable worker id. (Corrected 2026-11-03 after the
+   worker-indexed-without-TLS idea was shown unsound.)
 4. **`sync<group>` is a real join** in the parallel reactor.
 5. **Shared `%State` is safe for fields** because the concurrency gate proves
    eligible `async` pairs have no XOR read-write overlap and each tick reads
@@ -188,9 +192,10 @@ Consequences for lifetime:
   CLONE_SIGHAND|CLONE_THREAD, …)` once at startup; no pthreads, no C runtime.
 - **Per tick:** release workers (futex/atomic), each runs its assigned
   `async_body_*` on the shared `%State`, join; `sync<group>` is a real join.
-- **Arenas:** per-worker, worker-indexed global slots (`@__arena[worker]`:
-  ptr/end/base) — chosen over TLS. `emit_arena_alloc` reads/writes the current
-  worker's slot.
+- **Arenas:** per-worker TLS control block on thread-capable targets
+  (`clone(CLONE_SETTLS)`; FS-relative arena cursor), a single arena on
+  cooperative/embedded targets. `emit_arena_alloc` reads/writes the current
+  worker's cursor. Worker identity comes from TLS, never a shared global.
 - **Lifecycle:** init/reset/free per worker per tick. This also fixes the
   current async-arena-lifecycle gap (async bodies never init/fini the arena
   today; the parallel reactor's `reactor_tick` no-ops for async).
@@ -386,7 +391,7 @@ Goal: bound persistent-image memory.
    sole-escape case, leak otherwise.
 3. Which thread-capable targets get the parallel substrate at first (Linux
    x86_64 only vs aarch64 too). Default: x86_64 first, capability table drives
-   the rest.
+   the rest. Worker identity/TLS is required on those targets (see §3.8).
 4. Whether the cooperative mode is also a user-selectable execution mode
    (`seq`-like) or only a capability fallback. Default: capability fallback +
    a test/benchmark flag, not new syntax.
