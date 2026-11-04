@@ -24,6 +24,7 @@ pub mod storage_class;
 pub mod stats;
 pub mod tail_calls;
 pub mod type_facts;
+pub mod slp_isomorphism;
 pub mod stmt;
 pub mod swan_song;
 pub mod loop_carried;
