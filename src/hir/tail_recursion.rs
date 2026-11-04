@@ -8,6 +8,7 @@
 use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
+use super::expr_walk::walk_stmts;
 use crate::analysis::tail_recursion::{TailLoopPlan, TailRecursionClass, TailRecursionPlan};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -89,7 +90,7 @@ fn has_cleanup_or_boundary(stmts: &[HirStmt]) -> bool {
     if bad {
         return true;
     }
-    walk_all_stmts(stmts, &mut |e| {
+    walk_stmts(stmts, &mut |e| {
         if let HirExprKind::Block(arm_stmts) = &e.kind {
             bad |= has_cleanup_or_boundary(arm_stmts);
         }
@@ -256,133 +257,5 @@ fn count_self_calls_expr(expr: &HirExpr, name: &str) -> usize {
         HirExprKind::Tuple(items) | HirExprKind::List(items) => items.iter().map(rec).sum(),
         HirExprKind::StructLiteral { fields, .. } => fields.iter().map(|(_, e)| rec(e)).sum(),
         _ => 0,
-    }
-}
-
-/// Visit every expression in a statement tree (mirrors AST `visit::walk_stmts`).
-fn walk_all_stmts(stmts: &[HirStmt], f: &mut dyn FnMut(&HirExpr)) {
-    for s in stmts {
-        walk_all_stmt(s, f);
-    }
-}
-
-fn walk_all_stmt(stmt: &HirStmt, f: &mut dyn FnMut(&HirExpr)) {
-    let rec = |e: &HirExpr, f: &mut dyn FnMut(&HirExpr)| walk_all_expr(e, f);
-    match &stmt.kind {
-        HirStmtKind::Let { expr: Some(e), .. } => rec(e, f),
-        HirStmtKind::Assign(l, r) => {
-            rec(l, f);
-            rec(r, f);
-        }
-        HirStmtKind::ArrowAssign { target, value, .. } => {
-            if let Some(t) = target {
-                rec(t, f);
-            }
-            rec(value, f);
-        }
-        HirStmtKind::Term(Some(e))
-        | HirStmtKind::EndProgram(Some(e))
-        | HirStmtKind::Rollback(Some(e))
-        | HirStmtKind::Tail(e)
-        | HirStmtKind::Check(e)
-        | HirStmtKind::Gate(e)
-        | HirStmtKind::Expression(e) => rec(e, f),
-        HirStmtKind::Guarded(c, b) => {
-            rec(c, f);
-            walk_all_stmts(b, f);
-        }
-        HirStmtKind::Block(b)
-        | HirStmtKind::SyncBlock(b)
-        | HirStmtKind::Defer(b)
-        | HirStmtKind::Mutex(b)
-        | HirStmtKind::Foreach { body: b, .. } => walk_all_stmts(b, f),
-        HirStmtKind::Match { expr: e, arms } => {
-            rec(e, f);
-            for a in arms {
-                walk_all_stmts(&a.body, f);
-            }
-        }
-        HirStmtKind::TrgBinding { instance, .. } => rec(instance, f),
-        HirStmtKind::Open(l, r) => {
-            rec(l, f);
-            rec(r, f);
-        }
-        _ => {}
-    }
-}
-
-fn walk_all_expr(expr: &HirExpr, f: &mut dyn FnMut(&HirExpr)) {
-    f(expr);
-    match &expr.kind {
-        HirExprKind::Call { args, .. } | HirExprKind::Tuple(args) | HirExprKind::List(args) => {
-            for a in args {
-                walk_all_expr(a, f);
-            }
-        }
-        HirExprKind::MethodCall { receiver, args, .. } => {
-            walk_all_expr(receiver, f);
-            for a in args {
-                walk_all_expr(a, f);
-            }
-        }
-        HirExprKind::Binary { left, right, .. } => {
-            walk_all_expr(left, f);
-            walk_all_expr(right, f);
-        }
-        HirExprKind::Unary { inner, .. }
-        | HirExprKind::Cast { inner, .. }
-        | HirExprKind::IsType { inner, .. }
-        | HirExprKind::Deref(inner)
-        | HirExprKind::AddrOf(inner)
-        | HirExprKind::Consume(inner)
-        | HirExprKind::Await(inner)
-        | HirExprKind::Field { receiver: inner, .. }
-        | HirExprKind::Reflect { receiver: inner, .. }
-        | HirExprKind::Lambda { body: inner, .. } => walk_all_expr(inner, f),
-        HirExprKind::Index(a, b) => {
-            walk_all_expr(a, f);
-            walk_all_expr(b, f);
-        }
-        HirExprKind::Slice { array, start, end, stride } => {
-            walk_all_expr(array, f);
-            if let Some(s) = start {
-                walk_all_expr(s, f);
-            }
-            if let Some(e) = end {
-                walk_all_expr(e, f);
-            }
-            if let Some(s) = stride {
-                walk_all_expr(s, f);
-            }
-        }
-        HirExprKind::Range { start, end, .. } => {
-            walk_all_expr(start, f);
-            walk_all_expr(end, f);
-        }
-        HirExprKind::Spawn { args, .. } => {
-            for a in args {
-                walk_all_expr(a, f);
-            }
-        }
-        HirExprKind::Block(stmts) => walk_all_stmts(stmts, f),
-        HirExprKind::If { condition, then_branch, else_branch } => {
-            walk_all_expr(condition, f);
-            walk_all_expr(then_branch, f);
-            if let Some(e) = else_branch {
-                walk_all_expr(e, f);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            walk_all_expr(scrutinee, f);
-            for a in arms {
-                walk_all_expr(&a.body, f);
-            }
-        }
-        HirExprKind::StructLiteral { fields, .. } => {
-            for (_, e) in fields {
-                walk_all_expr(e, f);
-            }
-        }
-        _ => {}
     }
 }

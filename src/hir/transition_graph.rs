@@ -913,6 +913,9 @@ fn collect_identifiers(expr: &HirExpr, out: &mut HashSet<String>) {
         }
         HirExprKind::Match { arms, .. } => {
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_identifiers(guard, out);
+                }
                 collect_identifiers(&arm.body, out);
             }
         }

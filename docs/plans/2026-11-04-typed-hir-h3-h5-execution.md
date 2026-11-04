@@ -44,10 +44,12 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
 - **H3.4b-2 (partial) ✅** `loop_carried`, `swan_song`, and
   `slp_isomorphism` over HIR — corpus parity (113 compared, 104 skipped,
   **0 mismatches** each).
-- **Next:** H3.4b-2 continued — `loop_shape` consuming the HIR
-  graph/carried/swan/slp facts;
-  `tail_carrier` needs `enum_repr` over HIR; then H3.5 task/collection,
-  H3.6 generic txn, H4/H5.
+- **H3.4b-2 (complete) ✅** `loop_shape` over HIR (consumes HIR graph +
+  carried + swan + SLP facts) — corpus parity **113/0**, including
+  field classes, local/carried sets, vector groups, pressure counts,
+  convergence and program-level natural exit.
+- **H3.4b-3:** `tail_carrier` over HIR (needs `enum_repr` over HIR), then
+  H3.5 task/collection, H3.6 generic txn, H4/H5.
 
 ## Current state
 

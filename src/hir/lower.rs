@@ -6,7 +6,7 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField,
+    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirInit,
     HirForeign, HirGlobal, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind,
     HirWatchdog,
     HirWatchdogOnFire,
@@ -25,6 +25,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut always_stateful = Vec::new();
     let mut foreign = Vec::new();
     let mut constants = Vec::new();
+    let mut const_exprs = Vec::new();
+    let mut inits = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -33,6 +35,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             globals: &mut globals,
             foreign: &mut foreign,
             constants: &mut constants,
+            const_exprs: &mut const_exprs,
+            inits: &mut inits,
             always_stateful: &mut always_stateful,
             has_triggers: false,
         };
@@ -47,6 +51,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         globals,
         foreign,
         constants,
+        const_exprs,
+        inits,
         always_stateful,
         has_triggers,
     }
@@ -58,6 +64,8 @@ struct LowerOutputs<'a> {
     globals: &'a mut Vec<HirGlobal>,
     foreign: &'a mut Vec<HirForeign>,
     constants: &'a mut Vec<String>,
+    const_exprs: &'a mut Vec<(String, HirExpr)>,
+    inits: &'a mut Vec<HirInit>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
 }
@@ -186,7 +194,7 @@ fn lower_item(
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
         TopLevel::Statement(stmt) if !exported => {
-            if let crate::ast::Statement::Let { name, ty, modifiers, .. } = stmt.as_ref() {
+            if let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt.as_ref() {
                 let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
                     "state" => Some("state".to_string()),
                     "plain" => Some("plain".to_string()),
@@ -197,7 +205,7 @@ fn lower_item(
                     item: ids.item(),
                     name: name.clone(),
                     ty: ty.clone(),
-                    expr: None,
+                    expr: expr.as_ref().map(|e| lower_expr(e, ids)),
                     declared_storage,
                     is_state_decl: false,
                     modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
@@ -224,7 +232,16 @@ fn lower_item(
             params: fb.inputs.clone(),
             ret: fb.success_output.first().map(|(_, t)| t.clone()),
         }),
-        TopLevel::Constant(c) => out.constants.push(c.name.clone()),
+        TopLevel::Constant(c) => {
+            out.constants.push(c.name.clone());
+            out.const_exprs
+                .push((c.name.clone(), lower_expr(&c.expr, ids)));
+        }
+        TopLevel::Init(i) => out.inits.push(HirInit {
+            name: i.name.clone(),
+            value: i.value.as_ref().map(|e| lower_expr(e, ids)),
+            body: lower_body(&i.body, ids),
+        }),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
@@ -715,6 +732,7 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
 fn lower_expr_match_arm(arm: &MatchArm, ids: &mut IdSupply) -> HirMatchArm {
     HirMatchArm {
         pattern: lower_pattern(&arm.pattern, ids),
+        guard: arm.guard.as_ref().map(|g| lower_expr(g, ids)),
         body: lower_expr(&arm.body, ids),
     }
 }

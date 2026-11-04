@@ -185,6 +185,9 @@ pub(crate) fn collect_raw_idents(expr: &HirExpr, out: &mut HashSet<String>) {
         HirExprKind::Match { scrutinee, arms } => {
             collect_raw_idents(scrutinee, out);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_raw_idents(guard, out);
+                }
                 collect_raw_idents(&arm.body, out);
             }
         }

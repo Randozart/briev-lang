@@ -164,6 +164,13 @@ pub struct HirGlobal {
     pub span: Option<Span>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirInit {
+    pub name: String,
+    pub value: Option<HirExpr>,
+    pub body: Vec<HirStmt>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HirProgram {
     pub callables: Vec<HirCallable>,
@@ -173,6 +180,10 @@ pub struct HirProgram {
     pub foreign: Vec<HirForeign>,
     /// Top-level `const` names (boundary state-field set includes them).
     pub constants: Vec<String>,
+    /// Top-level `const` initializers (name, value) for surface walks.
+    pub const_exprs: Vec<(String, HirExpr)>,
+    /// Top-level `init` declarations (runtime-seeded invariants).
+    pub inits: Vec<HirInit>,
     /// At least one top-level `trigger` declaration exists.
     pub has_triggers: bool,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
