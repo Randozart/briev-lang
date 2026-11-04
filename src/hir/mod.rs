@@ -8,6 +8,7 @@
 
 pub mod cast_paths;
 pub mod constructors;
+pub mod defn_liveness;
 pub mod expr;
 pub mod facts;
 pub mod frontend;

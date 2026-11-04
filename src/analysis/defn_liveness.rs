@@ -929,7 +929,7 @@ impl<'a> Builder<'a> {
 /// Rows only matter when the helper defn is present in the unit (the gate
 /// `mark` is a no-op otherwise) — e.g. with `--no-std` none of these exist
 /// and the intrinsics keep their C symbols.
-fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
+pub(crate) fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
     match intrinsic {
         // Print# lowers per argument type (Int/Float/Float64/Bool/Char/
         // String) — root the whole family when any print appears. The

@@ -6,12 +6,13 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirEnumVariant, HirField, HirParam, HirProgram,
-    HirGlobal, HirTypeDef, HirTypeDefKind,
+    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField,
+    HirGlobal, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
+    HirWatchdogOnFire,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
-    Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
+    Contract, Definition, Expr, MatchArm, OutputType, Pattern, Statement, StmtMatchArm,
     TopLevel, Transaction, Type,
 };
 
@@ -161,6 +162,7 @@ fn lower_item(
                     item: ids.item(),
                     name: name.clone(),
                     ty: ty.clone(),
+                    expr: None,
                     is_state_decl: false,
                     span: None,
                 });
@@ -171,6 +173,7 @@ fn lower_item(
             item: ids.item(),
             name: s.name.clone(),
             ty: Some(s.ty.clone()),
+            expr: None,
             is_state_decl: true,
             span: s.span,
         }),
@@ -312,11 +315,15 @@ fn lower_definition(
     export_symbol: Option<String>,
     ids: &mut IdSupply,
 ) -> HirCallable {
+    let contract = lower_contract(&d.contract, ids);
     lower_callable(
         ids,
         CallableLowerSpec {
             name: &d.name,
             kind,
+            contract: Some(contract),
+            is_reactive: false,
+            is_async: false,
             parameters: &d.parameters,
             result: result_type(d.output_type.as_ref(), &d.outputs),
             body: &d.body,
@@ -334,11 +341,15 @@ fn lower_transaction(
     export_symbol: Option<String>,
     ids: &mut IdSupply,
 ) -> HirCallable {
+    let contract = lower_contract(&t.contract, ids);
     lower_callable(
         ids,
         CallableLowerSpec {
             name: &t.name,
             kind,
+            contract: Some(contract),
+            is_reactive: t.is_reactive,
+            is_async: t.is_async,
             parameters: &t.parameters,
             result: result_type(t.output_type.as_ref(), &t.outputs),
             body: &t.body,
@@ -352,12 +363,33 @@ fn lower_transaction(
 struct CallableLowerSpec<'a> {
     name: &'a str,
     kind: HirCallableKind,
+    contract: Option<HirContract>,
+    is_reactive: bool,
+    is_async: bool,
     parameters: &'a [(String, Type)],
     result: Option<Type>,
     body: &'a [Statement],
     span: Option<Span>,
     exported: bool,
     export_symbol: Option<String>,
+}
+
+fn lower_contract(c: &Contract, ids: &mut IdSupply) -> HirContract {
+    let pre = lower_expr(&c.pre_condition, ids);
+    let post = lower_expr(&c.post_condition, ids);
+    let watchdog = c.watchdog.as_ref().map(|w| {
+        let condition = lower_expr(&w.condition, ids);
+        let fallback = w.fallback.as_deref().map(|e| lower_expr(e, ids));
+        HirWatchdog {
+            condition,
+            fallback,
+            on_fire: w.on_fire.as_ref().map(|f| HirWatchdogOnFire {
+                handler: f.handler.clone(),
+                arg: f.arg.clone(),
+            }),
+        }
+    });
+    HirContract { pre, post, watchdog }
 }
 
 fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallable {
@@ -369,6 +401,9 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
         node: ids.node(),
         name: spec.name.to_string(),
         kind: spec.kind,
+        contract: spec.contract,
+        is_reactive: spec.is_reactive,
+        is_async: spec.is_async,
         owner: None,
         trait_default: false,
         params: spec

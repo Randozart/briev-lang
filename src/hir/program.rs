@@ -4,6 +4,7 @@
 //! Body expressions/statements are represented by a counted placeholder until
 //! H0b lowers them. No analysis or backend consumes this program yet.
 
+use super::expr::HirExpr;
 use super::ids::{DefId, ItemId, NodeId, Span};
 use super::stmt::HirStmt;
 use crate::ast::Type;
@@ -31,6 +32,29 @@ pub struct HirBody {
     pub statements: Vec<HirStmt>,
 }
 
+/// A watchdog `-> handler(val)` callback (H3.2 liveness: the handler NAME is
+/// emitted code a body walk can never see).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirWatchdogOnFire {
+    pub handler: String,
+    pub arg: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirWatchdog {
+    pub condition: HirExpr,
+    pub fallback: Option<HirExpr>,
+    pub on_fire: Option<HirWatchdogOnFire>,
+}
+
+/// Contract expressions are emitted code — liveness walks them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirContract {
+    pub pre: HirExpr,
+    pub post: HirExpr,
+    pub watchdog: Option<HirWatchdog>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirCallable {
     pub id: DefId,
@@ -38,6 +62,13 @@ pub struct HirCallable {
     pub node: NodeId,
     pub name: String,
     pub kind: HirCallableKind,
+    /// 2026-11-04 (H3.2): contract expressions (pre/post/watchdog) — emitted
+    /// code whose call edges liveness must follow.
+    pub contract: Option<HirContract>,
+    /// Reactive txns are reactor-dispatched by name (liveness roots).
+    pub is_reactive: bool,
+    /// Async txns pull in `wait_for_trigger` at the main tail.
+    pub is_async: bool,
     /// 2026-11-04 (H3.0): owning type for member/impl functions
     /// (`Type::member` keys, matching the AST `type_member_key` format).
     pub owner: Option<String>,
@@ -90,6 +121,9 @@ pub struct HirGlobal {
     pub item: ItemId,
     pub name: String,
     pub ty: Option<Type>,
+    /// Initializer (top-level statements are emitted into the init path; their
+    /// callees are liveness roots).
+    pub expr: Option<HirExpr>,
     /// `state name: T;` (vs a top-level `let`).
     pub is_state_decl: bool,
     pub span: Option<Span>,
