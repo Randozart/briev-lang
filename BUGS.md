@@ -11798,3 +11798,11 @@ Remove only nocapture, preserving noalias, alignment and the existing ABI.
 Native regression compares returned page/tick values with independent getconf
 queries. Controlled IR A/B rejected changes to noalias and memory effects;
 removing nocapture alone corrected the observed corruption.
+
+## FIXED 2026-11-04: native integer printing retained a string per value
+
+Printing a signed integer constructed an owned decimal string, copied the bytes
+to buffered stdout, and lost its backing allocation. Emit the decimal digits
+directly to the existing byte sink. Keeping the magnitude nonpositive covers
+INT64_MIN without overflow. Native allocator and byte-output gates cover
+repeated writes across a flush and the old allocation-count failure.
