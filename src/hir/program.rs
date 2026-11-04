@@ -81,8 +81,23 @@ pub struct HirTypeDef {
     pub span: Option<Span>,
 }
 
+/// 2026-11-04 (H3.0): a top-level `let` / state declaration — the globals
+/// the needs_state/storage-class analyses partition into machine state,
+/// plain state, and constants.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirGlobal {
+    pub node: NodeId,
+    pub item: ItemId,
+    pub name: String,
+    pub ty: Option<Type>,
+    /// `state name: T;` (vs a top-level `let`).
+    pub is_state_decl: bool,
+    pub span: Option<Span>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HirProgram {
     pub callables: Vec<HirCallable>,
     pub type_defs: Vec<HirTypeDef>,
+    pub globals: Vec<HirGlobal>,
 }

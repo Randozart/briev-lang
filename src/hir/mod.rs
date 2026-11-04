@@ -139,6 +139,24 @@ impl Box {
     }
 
     #[test]
+    fn top_level_globals_are_lowered() {
+        let program = lower_program(&parse(
+            r#"
+let counter: Int = 0;
+let label: String = "x";
+"#,
+        ));
+        assert_eq!(program.globals.len(), 2);
+        assert_eq!(program.globals[0].name, "counter");
+        assert_eq!(
+            program.globals[0].ty,
+            Some(crate::ast::Type::Custom("Int".to_string()))
+        );
+        assert!(!program.globals[0].is_state_decl);
+        assert_eq!(program.globals[1].name, "label");
+    }
+
+    #[test]
     fn bodies_lower_to_typed_statement_nodes() {
         let program = lower_program(&parse(
             "defn f(x: Int) -> Int { let y: Int = x + 1; term y * 2; };

@@ -7,7 +7,7 @@ use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
     HirBody, HirCallable, HirCallableKind, HirEnumVariant, HirField, HirParam, HirProgram,
-    HirTypeDef, HirTypeDefKind,
+    HirGlobal, HirTypeDef, HirTypeDefKind,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
 use crate::ast::{
@@ -19,21 +19,24 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut ids = IdSupply::default();
     let mut callables = Vec::new();
     let mut type_defs = Vec::new();
+    let mut globals = Vec::new();
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
             types: &mut type_defs,
+            globals: &mut globals,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
     }
-    HirProgram { callables, type_defs }
+    HirProgram { callables, type_defs, globals }
 }
 
 struct LowerOutputs<'a> {
     callables: &'a mut Vec<HirCallable>,
     types: &'a mut Vec<HirTypeDef>,
+    globals: &'a mut Vec<HirGlobal>,
 }
 
 fn lower_item(
@@ -145,6 +148,29 @@ fn lower_item(
                 out.callables.push(c);
             }
         }
+        // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
+        // for needs_state/storage_class. `constant` items are deliberately
+        // excluded (they lower to immutable loads, not %State).
+        TopLevel::Statement(stmt) => {
+            if let crate::ast::Statement::Let { name, ty, .. } = stmt.as_ref() {
+                out.globals.push(HirGlobal {
+                    node: ids.node(),
+                    item: ids.item(),
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    is_state_decl: false,
+                    span: None,
+                });
+            }
+        }
+        TopLevel::StateDecl(s) => out.globals.push(HirGlobal {
+            node: ids.node(),
+            item: ids.item(),
+            name: s.name.clone(),
+            ty: Some(s.ty.clone()),
+            is_state_decl: true,
+            span: s.span,
+        }),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
         TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
         TopLevel::StaticStruct(def) => out.types.push(lower_struct(def, ids)),
