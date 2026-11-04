@@ -1,0 +1,14 @@
+// Nested environment expansion must reach loop bounds, guards and arguments.
+let done: Bool = false;
+node main [!done][done] {
+    let total: Int = 0;
+    foreach index in 0..get_env_int!("BRIEV_ENV_READS") {
+        when get_env_int!("BRIEV_ENV_ENABLED") == 1 {
+            total = total + get_env_int!(get_env!("BRIEV_ENV_KEY"));
+        };
+    };
+    when total != 21 { endprogram 3; };
+    println!("nested_env_ok");
+    done = true;
+    endprogram;
+};

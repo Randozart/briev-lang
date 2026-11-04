@@ -54,7 +54,7 @@ impl BoundaryOwnership {
     /// ZeroCost is "no boundary" and dominates only because there is nothing
     /// to copy; for a value that ALSO crosses a real boundary, the real
     /// boundary's classification wins (see `meet_with_boundary`).
-    fn meet(self, other: BoundaryOwnership) -> BoundaryOwnership {
+    pub(crate) fn meet(self, other: BoundaryOwnership) -> BoundaryOwnership {
         let rank = |o: BoundaryOwnership| match o {
             BoundaryOwnership::Value => 0,
             BoundaryOwnership::Owned | BoundaryOwnership::ZeroCopy => 1,
@@ -66,7 +66,7 @@ impl BoundaryOwnership {
 
     /// Meet that treats ZeroCost as a non-constraint: a value which is ZeroCost
     /// (pure LTO) but ALSO crosses a c_abi boundary keeps the c_abi class.
-    fn meet_with_boundary(self, other: BoundaryOwnership) -> BoundaryOwnership {
+    pub(crate) fn meet_with_boundary(self, other: BoundaryOwnership) -> BoundaryOwnership {
         match (self, other) {
             (BoundaryOwnership::ZeroCost, o) => o,
             (o, BoundaryOwnership::ZeroCost) => o,
@@ -200,7 +200,7 @@ pub fn compute_boundary_ownership(
 
 /// Direction the value crosses the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
+pub(crate) enum Direction {
     /// Host → Briev (a frgn parameter, or an export parameter coming from host)
     Param,
     /// Briev → Host (an export return, or a frgn return coming from Briev's use)
@@ -208,7 +208,7 @@ enum Direction {
 }
 
 /// Seed a type's boundary ownership from its protocol variant + convention.
-fn seed_from_protocol(
+pub(crate) fn seed_from_protocol(
     ty: &Type,
     convention: &str,
     dir: Direction,
@@ -506,7 +506,7 @@ fn output_type_ownership(
 }
 
 /// Meet a sequence of ownership signals, preserving None when none exist.
-fn fold_ownership(
+pub(crate) fn fold_ownership(
     mut it: impl Iterator<Item = BoundaryOwnership>,
 ) -> Option<BoundaryOwnership> {
     let first = it.next()?;
@@ -514,7 +514,7 @@ fn fold_ownership(
 }
 
 /// Meet two optional ownership signals.
-fn meet_option(
+pub(crate) fn meet_option(
     a: Option<BoundaryOwnership>,
     b: Option<BoundaryOwnership>,
 ) -> Option<BoundaryOwnership> {

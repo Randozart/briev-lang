@@ -22,6 +22,7 @@ pub enum HirLiteral {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirMatchArm {
     pub pattern: HirPattern,
+    pub guard: Option<HirExpr>,
     pub body: HirExpr,
 }
 

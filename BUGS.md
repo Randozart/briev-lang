@@ -11898,3 +11898,5 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+FIXED: nested environment intercepts in runtime operands now expand using the shared postorder visitor. See tests/nested_environment.rs.

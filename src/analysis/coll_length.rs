@@ -21,10 +21,10 @@ pub(crate) const COLL_DEFAULT_CAP: i64 = 16;
 
 /// Capacity-write intrinsics: calling any of these on a coll makes its capacity
 /// unknown → the coll can no longer be proven non-overflowing.
-const CAPACITY_WRITES: [&str; 3] = ["Resize#", "EnsureCap#", "TrimCap#"];
+pub(crate) const CAPACITY_WRITES: [&str; 3] = ["Resize#", "EnsureCap#", "TrimCap#"];
 
 /// Known capacity/read intrinsics on a coll — reads only, harmless to the proof.
-const CAPACITY_READS: [&str; 2] = ["Capacity#", "Size#"];
+pub(crate) const CAPACITY_READS: [&str; 2] = ["Capacity#", "Size#"];
 
 /// Per-coll tracked state: `len` is the MAX over all paths of the current
 /// length (an upper bound); `max` is the peak; `cap` is the known capacity

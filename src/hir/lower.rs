@@ -6,8 +6,9 @@ use super::expr::{HirExpr, HirExprKind, HirLiteral, HirMatchArm};
 use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
-    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField,
-    HirGlobal, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
+    HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField, HirInit,
+    HirForeign, HirGlobal, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind,
+    HirWatchdog,
     HirWatchdogOnFire,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
@@ -22,25 +23,51 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut type_defs = Vec::new();
     let mut globals = Vec::new();
     let mut always_stateful = Vec::new();
+    let mut foreign = Vec::new();
+    let mut constants = Vec::new();
+    let mut const_exprs = Vec::new();
+    let mut inits = Vec::new();
+    let has_triggers;
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
             types: &mut type_defs,
             globals: &mut globals,
+            foreign: &mut foreign,
+            constants: &mut constants,
+            const_exprs: &mut const_exprs,
+            inits: &mut inits,
             always_stateful: &mut always_stateful,
+            has_triggers: false,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
+        has_triggers = out.has_triggers;
     }
-    HirProgram { callables, type_defs, globals, always_stateful }
+    HirProgram {
+        callables,
+        type_defs,
+        globals,
+        foreign,
+        constants,
+        const_exprs,
+        inits,
+        always_stateful,
+        has_triggers,
+    }
 }
 
 struct LowerOutputs<'a> {
     callables: &'a mut Vec<HirCallable>,
     types: &'a mut Vec<HirTypeDef>,
     globals: &'a mut Vec<HirGlobal>,
+    foreign: &'a mut Vec<HirForeign>,
+    constants: &'a mut Vec<String>,
+    const_exprs: &'a mut Vec<(String, HirExpr)>,
+    inits: &'a mut Vec<HirInit>,
     always_stateful: &'a mut Vec<String>,
+    has_triggers: bool,
 }
 
 fn lower_item(
@@ -79,9 +106,20 @@ fn lower_item(
             export_symbol,
             ids,
         )),
+        TopLevel::Trigger(_) => out.has_triggers = true,
         TopLevel::Export(export) => {
             let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
             lower_item(&export.inner, true, symbol, ids, out);
+        }
+        // 2026-11-05 (H3.4b): `sync<group>` wraps a transaction that the
+        // reactor still dispatches. `analysis::effective_txns` walks these;
+        // HIR must contain them or live-field/dispatch analyses lose the node.
+        TopLevel::SyncGroup { item, domains } => {
+            let before = out.callables.len();
+            lower_item(item, exported, export_symbol, ids, out);
+            for c in &mut out.callables[before..] {
+                c.sync_domains = domains.clone();
+            }
         }
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
@@ -156,14 +194,21 @@ fn lower_item(
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
         TopLevel::Statement(stmt) if !exported => {
-            if let crate::ast::Statement::Let { name, ty, .. } = stmt.as_ref() {
+            if let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt.as_ref() {
+                let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
+                    "state" => Some("state".to_string()),
+                    "plain" => Some("plain".to_string()),
+                    _ => None,
+                });
                 out.globals.push(HirGlobal {
                     node: ids.node(),
                     item: ids.item(),
                     name: name.clone(),
                     ty: ty.clone(),
-                    expr: None,
+                    expr: expr.as_ref().map(|e| lower_expr(e, ids)),
+                    declared_storage,
                     is_state_decl: false,
+                    modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
                     span: None,
                 });
             }
@@ -174,8 +219,29 @@ fn lower_item(
             name: s.name.clone(),
             ty: Some(s.ty.clone()),
             expr: None,
+            declared_storage: None,
             is_state_decl: true,
+            modifiers: Vec::new(),
             span: s.span,
+        }),
+        TopLevel::ForeignBinding(fb) => out.foreign.push(HirForeign {
+            name: fb
+                .briev_name
+                .clone()
+                .unwrap_or_else(|| fb.foreign_name.clone()),
+            params: fb.inputs.clone(),
+            ret: fb.success_output.first().map(|(_, t)| t.clone()),
+        }),
+        TopLevel::Constant(c) => {
+            out.constants.push(c.name.clone());
+            out.const_exprs
+                .push((c.name.clone(), lower_expr(&c.expr, ids)));
+        }
+        TopLevel::Init(i) => out.inits.push(HirInit {
+            name: i.name.clone(),
+            bound: i.bound.clone(),
+            value: i.value.as_ref().map(|e| lower_expr(e, ids)),
+            body: lower_body(&i.body, ids),
         }),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
@@ -187,11 +253,24 @@ fn lower_item(
 }
 
 fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
+    // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
+    // when it carries a protocol; otherwise it has no HIR shape.
+    if def.body.slots.is_empty() {
+        let protocol = def.protocol.clone()?;
+        return Some(HirTypeDef {
+            node: ids.node(),
+            item: ids.item(),
+            name: def.name.clone(),
+            type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+            kind: HirTypeDefKind::Struct { fields: Vec::new() },
+            protocol: Some(protocol),
+            is_coll: def.coll,
+            op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+            span: def.span,
+        });
+    }
     if def.body.slots.iter().all(|slot| slot.name.starts_with("__variant_")) {
         return Some(lower_enum_type_def(def, ids));
-    }
-    if def.body.slots.is_empty() {
-        return None;
     }
     Some(HirTypeDef {
         node: ids.node(),
@@ -209,6 +288,9 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
                 })
                 .collect(),
         },
+        protocol: def.protocol.clone(),
+        is_coll: def.coll,
+        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
         span: def.span,
     })
 }
@@ -233,6 +315,9 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
         kind: HirTypeDefKind::Enum { variants },
+        protocol: def.protocol.clone(),
+        is_coll: def.coll,
+        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
         span: def.span,
     }
 }
@@ -264,6 +349,9 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
         kind: HirTypeDefKind::Enum { variants },
+        protocol: None,
+        is_coll: false,
+        op_bindings: Vec::new(),
         span: def.span,
     }
 }
@@ -284,6 +372,9 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
                 })
                 .collect(),
         },
+        protocol: None,
+        is_coll: false,
+        op_bindings: Vec::new(),
         span: def.span,
     }
 }
@@ -304,6 +395,9 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
                 })
                 .collect(),
         },
+        protocol: None,
+        is_coll: false,
+        op_bindings: Vec::new(),
         span: def.span,
     }
 }
@@ -325,7 +419,11 @@ fn lower_definition(
             is_reactive: false,
             is_async: false,
             parameters: &d.parameters,
+            type_params: d.type_params.iter().map(|p| p.name.clone()).collect(),
+            variadic: d.variadic_param.is_some(),
             result: result_type(d.output_type.as_ref(), &d.outputs),
+            output_list: d.outputs.clone(),
+            outputs: d.output_type.as_ref().map(lower_output),
             body: &d.body,
             span: d.span,
             exported,
@@ -351,7 +449,11 @@ fn lower_transaction(
             is_reactive: t.is_reactive,
             is_async: t.is_async,
             parameters: &t.parameters,
+            type_params: t.type_params.iter().map(|p| p.name.clone()).collect(),
+            variadic: t.variadic_param.is_some(),
             result: result_type(t.output_type.as_ref(), &t.outputs),
+            output_list: t.outputs.clone(),
+            outputs: t.output_type.as_ref().map(lower_output),
             body: &t.body,
             span: t.span,
             exported,
@@ -367,11 +469,25 @@ struct CallableLowerSpec<'a> {
     is_reactive: bool,
     is_async: bool,
     parameters: &'a [(String, Type)],
+    type_params: Vec<String>,
+    variadic: bool,
     result: Option<Type>,
+    output_list: Vec<Type>,
+    outputs: Option<HirOutput>,
     body: &'a [Statement],
     span: Option<Span>,
     exported: bool,
     export_symbol: Option<String>,
+}
+
+fn lower_output(o: &OutputType) -> HirOutput {
+    match o {
+        OutputType::Single(t) => HirOutput::Single(t.clone()),
+        OutputType::Union(v) => HirOutput::Union(v.iter().map(lower_output).collect()),
+        OutputType::Tuple(v) => HirOutput::Tuple(v.iter().map(lower_output).collect()),
+        OutputType::Array(inner) => HirOutput::Array(Box::new(lower_output(inner))),
+        OutputType::Named(n, inner) => HirOutput::Named(n.clone(), Box::new(lower_output(inner))),
+    }
 }
 
 fn lower_contract(c: &Contract, ids: &mut IdSupply) -> HirContract {
@@ -414,7 +530,12 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
                 ty: ty.clone(),
             })
             .collect(),
+        type_params: spec.type_params,
+        variadic: spec.variadic,
+        sync_domains: Vec::new(),
         result: spec.result,
+        output_list: spec.output_list,
+        outputs: spec.outputs,
         exported: spec.exported,
         export_symbol: spec.export_symbol,
         body: HirBody {
@@ -628,6 +749,7 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
 fn lower_expr_match_arm(arm: &MatchArm, ids: &mut IdSupply) -> HirMatchArm {
     HirMatchArm {
         pattern: lower_pattern(&arm.pattern, ids),
+        guard: arm.guard.as_ref().map(|g| lower_expr(g, ids)),
         body: lower_expr(&arm.body, ids),
     }
 }

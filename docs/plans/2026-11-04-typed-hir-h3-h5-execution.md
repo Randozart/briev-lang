@@ -16,6 +16,69 @@ Finish the migration from AST-driven semantics to typed HIR:
 Hard constraint: **no behavior change per slice**. AST remains authoritative
 until its HIR replacement is proven equal; every slice preserves emitted IR.
 
+## Progress (2026-11-04)
+
+- **H3.0 ✅** HIR coverage: impl/trait-default members with owner/trait_default,
+  top-level globals (+declared storage, initializer), always_stateful
+  (asm/bad), contracts (pre/post/watchdog + on-fire), transaction
+  reactive/async flags, full output types, `frgn` bindings, declared
+  protocols (body-less `type CStr: String<C_String>`), constants.
+- **H3.1 ✅** `needs_state`/`needs_plain` over HIR — corpus parity: 103
+  compared, 29 skipped (unsupported HIR), **0 mismatches**.
+- **H3.2 ✅** `defn_liveness` over HIR — curated parity (dead/export/reactive/
+  closure/endprogram/print-helper/construction/eq-helper).
+- **H3.3 ✅** `classify_plain_lets` (corpus parity, 0 mismatches) +
+  `compute_boundary_ownership` (curated parity: frgn seeding, params,
+  lto, state reads, export chain).
+- Each slice is behind parity tests; AST remains authoritative and no
+  consumer is switched yet.
+- **H3.4a ✅** `tail_recursion` / `tail-loop` plans over HIR — corpus parity:
+  103 compared, 29 skipped, **0 mismatches**. HIR gained `type_params` /
+  `variadic` fidelity.
+- **H3.4b-1 ✅** `transition_graph` over HIR — corpus parity (113 compared,
+  104 skipped unsupported, **0 mismatches**), including node facts
+  (bounded_pre/increments/purity/write_set/lexicographic/effectively-pure),
+  live fields, triggers, unguarded FFI. HIR gained `sync_domains` on
+  callables, `has_triggers` + global `modifiers` (`out`/`vol` liveness pins),
+  and a bug-for-bug mirror of the mutually exclusive purity arms.
+- **H3.4b-2 (partial) ✅** `loop_carried`, `swan_song`, and
+  `slp_isomorphism` over HIR — corpus parity (113 compared, 104 skipped,
+  **0 mismatches** each).
+- **H3.4b-2 (complete) ✅** `loop_shape` over HIR (consumes HIR graph +
+  carried + swan + SLP facts) — corpus parity **113/0**, including
+  field classes, local/carried sets, vector groups, pressure counts,
+  convergence and program-level natural exit.
+- **H3.4b-3 ✅** `enum_repr` + `tail_carrier` over HIR — corpus parity
+  **113/0** (defns/variants/escaping lets; carrier identity, arg classes,
+  sret locals, proofs). `sret_safe_defns` stays AST-only until its backend
+  consumer moves (H4).
+- **H3.4 COMPLETE.** Every H3.4 analysis (transition graph, loop carried,
+  swan song, SLP, loop shape, tail recursion, enum repr, tail carrier) has
+  an HIR mirror at corpus parity. All 14 HIR parity suites green.
+- **H3.5 ✅** Task/collection analyses over HIR: `task_segments`
+  (segmentation, spawn targets, task ABI), `task_linear` (handle
+  linearity), `spawn_pool` (static/dependent capacities, storage classes,
+  bounded-init sizing), `coll_length` (grow-guard elimination + pre-grow
+  proofs) — corpus parity **113/0** each.
+- **H3.6 (primitive) ✅** Generic callable-txn specialization by HIR
+  substitution: `hir::specialize` maps type params → concrete args, re-ids
+  every node, substitutes param/result/output/contract/body type slots, and
+  retargets call sites at peer instantiations. Gate: the two-struct
+  `iter_chain<T>`/`iter_chain_loop<T>` fixture (A and B) plus a new
+  body-local generic txn; both instantiations verify. NOTE: wiring this in
+  place of the backend's ad-hoc monomorphization is H4 work (its golden
+  output/runtime gate), not this slice.
+- **H4.1 (plumbing) ✅** `AnalysisResults` now carries the typed `HirProgram`
+  for the post-desugar AST, built exactly once per analysis run.
+  `BRIEV_HIR_EMIT=1` verifies HIR id/export invariants but does not change
+  emission yet. Gate: `benchmarks/hir_emit_ab.sh` (AST vs HIR `.ll`
+  byte-compare) — quick corpus green; `tests/hir_emit_plumbing.rs` pins
+  one-lowering equality. This is the always-on tripwire for each family flip.
+- **Next:** H4.1 family flip — feed inferred HIR value types/cast lanes from
+  the frontend typer (today `HirExpr.ty`/`Cast.via` are syntactic/None), then
+  emit expressions/calls/casts from HIR under the flag. H4.2–H4.4 follow.
+  H5 retires AST paths. `soa_projection`/`soa_reorder` stay with H4 layout.
+
 ## Current state
 
 - `lower_program` / `lower_program_checked` (H0–H2) build `HirProgram` with

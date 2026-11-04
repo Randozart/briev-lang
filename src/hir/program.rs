@@ -32,6 +32,29 @@ pub struct HirBody {
     pub statements: Vec<HirStmt>,
 }
 
+/// Declared output type (mirrors AST `OutputType`; unions/tuples matter for
+/// boundary-return ownership).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirOutput {
+    Single(Type),
+    Union(Vec<HirOutput>),
+    Tuple(Vec<HirOutput>),
+    Array(Box<HirOutput>),
+    Named(String, Box<HirOutput>),
+}
+
+impl HirOutput {
+    pub fn all_types(&self) -> Vec<Type> {
+        match self {
+            HirOutput::Single(ty) => vec![ty.clone()],
+            HirOutput::Union(types) | HirOutput::Tuple(types) => {
+                types.iter().flat_map(|t| t.all_types()).collect()
+            }
+            HirOutput::Array(inner) | HirOutput::Named(_, inner) => inner.all_types(),
+        }
+    }
+}
+
 /// A watchdog `-> handler(val)` callback (H3.2 liveness: the handler NAME is
 /// emitted code a body walk can never see).
 #[derive(Debug, Clone, PartialEq)]
@@ -75,7 +98,17 @@ pub struct HirCallable {
     /// Trait DEFAULT function (indexed by bare name, not type-qualified).
     pub trait_default: bool,
     pub params: Vec<HirParam>,
+    /// Generic type-parameter names.
+    pub type_params: Vec<String>,
+    /// Has a trailing variadic rest parameter.
+    pub variadic: bool,
+    /// `sync<domains>` wrapping this txn; empty for unwrapped callables.
+    pub sync_domains: Vec<String>,
     pub result: Option<Type>,
+    /// Explicit multi-output list (`defn f() -> A, B`), if any.
+    pub output_list: Vec<Type>,
+    /// Full declared output shape (union/tuple/array fidelity).
+    pub outputs: Option<HirOutput>,
     pub exported: bool,
     pub export_symbol: Option<String>,
     pub body: HirBody,
@@ -102,6 +135,16 @@ pub enum HirTypeDefKind {
     Struct { fields: Vec<HirField> },
 }
 
+/// 2026-11-04 (H3.3b): a `frgn` foreign binding — the FFI boundary surface
+/// boundary-ownership inference classifies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirForeign {
+    /// Effective Briev name (`as <name>` or the foreign symbol).
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub ret: Option<Type>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeDef {
     pub node: NodeId,
@@ -109,6 +152,12 @@ pub struct HirTypeDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub kind: HirTypeDefKind,
+    /// Declared boundary protocol (`type CStr: String<C_String>`), if any.
+    pub protocol: Option<String>,
+    /// `coll obj` type (collection proof + grow-guard elimination).
+    pub is_coll: bool,
+    /// Declared op-binding names (`op Grow: ...`).
+    pub op_bindings: Vec<String>,
     pub span: Option<Span>,
 }
 
@@ -124,9 +173,22 @@ pub struct HirGlobal {
     /// Initializer (top-level statements are emitted into the init path; their
     /// callees are liveness roots).
     pub expr: Option<HirExpr>,
+    /// Declared storage assertion (`state let` / `plain let`), if any.
+    pub declared_storage: Option<String>,
     /// `state name: T;` (vs a top-level `let`).
     pub is_state_decl: bool,
+    /// Declared modifier names (`out`, `vol`, `state`, `plain`, …).
+    pub modifiers: Vec<String>,
     pub span: Option<Span>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirInit {
+    pub name: String,
+    /// Declared value set (dependent pool sizing).
+    pub bound: Option<crate::ast::top::BoundSpec>,
+    pub value: Option<HirExpr>,
+    pub body: Vec<HirStmt>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -134,6 +196,16 @@ pub struct HirProgram {
     pub callables: Vec<HirCallable>,
     pub type_defs: Vec<HirTypeDef>,
     pub globals: Vec<HirGlobal>,
+    /// `frgn` foreign bindings (effective Briev name → params/result).
+    pub foreign: Vec<HirForeign>,
+    /// Top-level `const` names (boundary state-field set includes them).
+    pub constants: Vec<String>,
+    /// Top-level `const` initializers (name, value) for surface walks.
+    pub const_exprs: Vec<(String, HirExpr)>,
+    /// Top-level `init` declarations (runtime-seeded invariants).
+    pub inits: Vec<HirInit>,
+    /// At least one top-level `trigger` declaration exists.
+    pub has_triggers: bool,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
     /// with the implicit `%state` first ABI arg, so a call always carries
     /// state (the AST always_stateful leaf set).
