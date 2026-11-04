@@ -58,14 +58,12 @@ pub struct VectorGroup {
 pub enum Convergence {
     /// counter >= bound is the convergence proof.
     CounterGeBound { counter: String, bound: Bound },
-    /// The program carries an explicit exit condition (#!exit / term!).
-    Explicit(Expr),
     /// Not provable — a conservative reactor loop must be emitted.
     Unprovable,
 }
 
 /// The structural shape of a foldable bounded-counter transaction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LoopShape {
     /// Transaction / node name.
     pub txn_name: String,
@@ -113,16 +111,37 @@ pub struct LoopShape {
     pub convergence: Convergence,
 }
 
+/// Backend-neutral exit bound: a literal value or a named state field/const.
+/// 2026-11-05 (H4 slice A): replaces the AST `Expr` in
+/// `ProgramConvergence.counter_ge_bounds` so the HIR analysis returns the
+/// exact consumer type; the backend rebuilds the expression at emission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundExpr {
+    Literal(i64),
+    Var(String),
+}
+
+impl BoundExpr {
+    /// Rebuild the source-shaped expression the exit-check emitter consumes
+    /// (a literal bound carries its VALUE — 2026-08-08 two-node reactor fix).
+    pub fn to_expr(&self) -> Expr {
+        match self {
+            BoundExpr::Literal(n) => Expr::Decimal(*n),
+            BoundExpr::Var(n) => Expr::Identifier(n.clone()),
+        }
+    }
+}
+
 /// Program-level convergence: whether the whole program is guaranteed to exit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramConvergence {
     /// (counter, bound) pairs for every foldable reactive txn, ANDed.
-    /// The bound is an Expr so a literal bound (`[ticksA < 3]`) carries its
-    /// VALUE (`Decimal(3)`) — a synthetic `__lit__ticksA` name would emit an
-    /// undefined `@__lit__ticksA` global in the exit check
+    /// A literal bound (`[ticksA < 3]`) carries its VALUE
+    /// (`BoundExpr::Literal(3)`) — a synthetic `__lit__ticksA` name would
+    /// emit an undefined `@__lit__ticksA` global in the exit check
     /// (2026-08-08, two-node reactor fix). Empty when the program has an
     /// explicit exit condition or cannot exit.
-    pub counter_ge_bounds: Vec<(String, Expr)>,
+    pub counter_ge_bounds: Vec<(String, BoundExpr)>,
     /// True when a natural exit was derived (no explicit #!exit present).
     pub has_natural_exit: bool,
 }
@@ -189,7 +208,7 @@ pub fn program_convergence(
             has_natural_exit: false,
         };
     }
-    let mut counter_ge_bounds: Vec<(String, Expr)> = Vec::new();
+    let mut counter_ge_bounds: Vec<(String, BoundExpr)> = Vec::new();
     for (name, t) in &txns {
         if !t.is_reactive {
             continue;
@@ -206,11 +225,11 @@ pub fn program_convergence(
             // bound by bp.bound_var. Emit the VALUE, not a synthetic name —
             // the synthetic `__lit__ticksA` has no backing global and the exit
             // check would reference an undefined `@__lit__ticksA`.
-            let bound_expr = match bp.bound_literal {
-                Some(n) => Expr::Decimal(n),
-                None => Expr::Identifier(bp.bound_var.clone()),
+            let bound = match bp.bound_literal {
+                Some(n) => BoundExpr::Literal(n),
+                None => BoundExpr::Var(bp.bound_var.clone()),
             };
-            counter_ge_bounds.push((bp.var.clone(), bound_expr));
+            counter_ge_bounds.push((bp.var.clone(), bound));
         }
     }
     // 2026-09-30 (BUGS.md: async exit-condition order nondeterminism):
@@ -1098,7 +1117,7 @@ node tick [count < total][count == total] {
         assert!(conv.has_natural_exit);
         assert_eq!(
             conv.counter_ge_bounds,
-            vec![("count".to_string(), Expr::Identifier("bound".to_string()))]
+            vec![("count".to_string(), BoundExpr::Var("bound".to_string()))]
         );
     }
 
@@ -1118,7 +1137,7 @@ node tick [count < total][count == total] {
         assert!(conv.has_natural_exit);
         assert_eq!(
             conv.counter_ge_bounds,
-            vec![("count".to_string(), Expr::Decimal(3))]
+            vec![("count".to_string(), BoundExpr::Literal(3))]
         );
     }
 

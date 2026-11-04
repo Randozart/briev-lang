@@ -16,44 +16,15 @@ use super::stmt::{HirStmt, HirStmtKind};
 use super::storage_class::collect_raw_idents;
 use super::swan_song::{has_swan_song, hoist_swan_song};
 use super::transition_graph::{HirReactorNode, HirReactorTransitionGraph};
+// 2026-11-05 (H4 slice A): the HIR analysis returns the shared consumer
+// types (`LoopShape`, `ProgramConvergence`) — the AST types are AST-free
+// since the dead `Convergence::Explicit(Expr)` was deleted, so there are no
+// HIR duplicates and no drift surface.
 use crate::analysis::loop_carried::FieldClass;
-use crate::analysis::loop_shape::{Bound, VectorGroup};
+use crate::analysis::loop_shape::{Bound, BoundExpr, LoopShape, ProgramConvergence, Convergence, VectorGroup};
 use crate::analysis::transition_graph::{BoundedPre, ConvergeDirection};
 use crate::ast::Type;
 use std::collections::{BTreeMap, HashMap, HashSet};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum HirConvergence {
-    CounterGeBound { counter: String, bound: Bound },
-    Explicit(HirExpr),
-    Unprovable,
-}
-
-#[derive(Debug, Clone)]
-pub struct HirLoopShape {
-    pub txn_name: String,
-    pub counter: String,
-    pub bound: Bound,
-    pub direction: ConvergeDirection,
-    pub counter_only_writes: bool,
-    pub field_classes: BTreeMap<String, FieldClass>,
-    pub carried_fields: Vec<String>,
-    pub local_fields: Vec<String>,
-    pub vector_groups: Vec<VectorGroup>,
-    pub carried_float_count: usize,
-    pub carried_scalar_count: usize,
-    pub carried_aggregate_count: usize,
-    pub temp_mediated_float_count: usize,
-    pub has_swan_song: bool,
-    pub is_pure: bool,
-    pub convergence: HirConvergence,
-}
-
-#[derive(Debug, Clone)]
-pub struct HirProgramConvergence {
-    pub counter_ge_bounds: Vec<(String, HirExpr)>,
-    pub has_natural_exit: bool,
-}
 
 struct ItemNames {
     state_fields: HashSet<String>,
@@ -75,7 +46,7 @@ pub fn build_loop_shapes(
     program: &HirProgram,
     graph: &HirReactorTransitionGraph,
     min_width: usize,
-) -> HashMap<String, HirLoopShape> {
+) -> HashMap<String, LoopShape> {
     let names = ItemNames::collect(program);
     let txns = collect_txns(program);
     let mut shapes = HashMap::new();
@@ -104,9 +75,9 @@ pub fn program_convergence(
     program: &HirProgram,
     graph: &HirReactorTransitionGraph,
     has_explicit_exit: bool,
-) -> HirProgramConvergence {
+) -> ProgramConvergence {
     if has_explicit_exit {
-        return HirProgramConvergence {
+        return ProgramConvergence {
             counter_ge_bounds: Vec::new(),
             has_natural_exit: false,
         };
@@ -119,12 +90,12 @@ pub fn program_convergence(
             })
     });
     if has_persistent_txn {
-        return HirProgramConvergence {
+        return ProgramConvergence {
             counter_ge_bounds: Vec::new(),
             has_natural_exit: false,
         };
     }
-    let mut counter_ge_bounds: Vec<(String, HirExpr)> = Vec::new();
+    let mut counter_ge_bounds: Vec<(String, BoundExpr)> = Vec::new();
     for (name, t) in &txns {
         if !t.is_reactive {
             continue;
@@ -136,32 +107,18 @@ pub fn program_convergence(
             continue;
         };
         if bp.var == inc.var {
-            let bound_expr = match bp.bound_literal {
-                Some(n) => int_lit(n),
-                None => HirExpr {
-                    id: NodeId(0),
-                    span: None,
-                    ty: None,
-                    kind: HirExprKind::Identifier(bp.bound_var.clone()),
-                },
+            let bound = match bp.bound_literal {
+                Some(n) => BoundExpr::Literal(n),
+                None => BoundExpr::Var(bp.bound_var.clone()),
             };
-            counter_ge_bounds.push((bp.var.clone(), bound_expr));
+            counter_ge_bounds.push((bp.var.clone(), bound));
         }
     }
     counter_ge_bounds.sort_by(|a, b| a.0.cmp(&b.0));
     let has_natural_exit = !counter_ge_bounds.is_empty();
-    HirProgramConvergence {
+    ProgramConvergence {
         counter_ge_bounds,
         has_natural_exit,
-    }
-}
-
-fn int_lit(n: i64) -> HirExpr {
-    HirExpr {
-        id: NodeId(0),
-        span: None,
-        ty: None,
-        kind: HirExprKind::Literal(HirLiteral::Int(n)),
     }
 }
 
@@ -171,7 +128,7 @@ fn build_shape(
     names: &ItemNames,
     min_width: usize,
     program: &HirProgram,
-) -> HirLoopShape {
+) -> LoopShape {
     let bp = node.bounded_pre.as_ref().unwrap();
     let bound = resolve_bound(bp, names);
     let counter_only_writes = node.write_set.len() == 1 && node.write_set.contains(&bp.var);
@@ -193,7 +150,7 @@ fn build_shape(
         count_temp_mediated_float_writes(txn, &carried_fields, program);
     let has_swan = has_swan_song(&txn.body.statements);
     let is_pure = node.is_pure_body || node.is_effectively_pure;
-    HirLoopShape {
+    LoopShape {
         txn_name: node.name.clone(),
         counter: bp.var.clone(),
         bound: bound.clone(),
@@ -209,7 +166,7 @@ fn build_shape(
         temp_mediated_float_count,
         has_swan_song: has_swan,
         is_pure,
-        convergence: HirConvergence::CounterGeBound {
+        convergence: Convergence::CounterGeBound {
             counter: bp.var.clone(),
             bound,
         },
@@ -232,10 +189,6 @@ fn resolve_bound(bp: &BoundedPre, names: &ItemNames) -> Bound {
     Bound::Unknown(bp.bound_var.clone())
 }
 
-fn is_same_txn(a: &HirCallable, b: &HirCallable) -> bool {
-    a.id == b.id
-}
-
 fn classify_local_fields(
     node: &HirReactorNode,
     txn: &HirCallable,
@@ -247,7 +200,17 @@ fn classify_local_fields(
         collect_raw_idents(&ct.post, &mut external);
     }
     for c in &program.callables {
-        if is_same_txn(c, txn) {
+        // AST parity: only a BARE top-level transaction with the same name is
+        // skipped (its body is the loop). Sync-wrapped and export-wrapped
+        // copies are `walk_toplevel`-ed as foreign surfaces in the AST, so
+        // their bodies — including a same-named sync-wrapped self — count as
+        // external observation (mixed_effect_shape's temp depends on this).
+        let bare_self = c.name == node.name
+            && matches!(c.kind, HirCallableKind::Transaction)
+            && c.owner.is_none()
+            && !c.exported
+            && c.sync_domains.is_empty();
+        if bare_self {
             continue;
         }
         collect_callable_surface(c, &mut external);
@@ -412,87 +375,6 @@ fn carried_float_names(carried: &[String], program: &HirProgram) -> HashSet<Stri
         })
         .cloned()
         .collect()
-}
-
-pub fn prefer_effect_carry(
-    shape: &HirLoopShape,
-    float_registers: usize,
-    vector_min_width: usize,
-    temp_min: usize,
-) -> bool {
-    if shape.carried_float_count == 0
-        || shape.temp_mediated_float_count >= shape.carried_float_count
-        || shape.carried_float_count > float_registers
-    {
-        return false;
-    }
-    let partial_capture = shape.temp_mediated_float_count >= temp_min.max(1);
-    let min_width_group = shape
-        .vector_groups
-        .iter()
-        .any(|g| g.width <= vector_min_width.max(1));
-    partial_capture || min_width_group
-}
-
-pub fn all_direct_loops_prefer_carry(
-    shapes: &HashMap<String, HirLoopShape>,
-    float_registers: usize,
-    vector_min_width: usize,
-    temp_min: usize,
-) -> bool {
-    let mut any = false;
-    for shape in shapes.values() {
-        if shape.carried_float_count == 0 {
-            continue;
-        }
-        any = true;
-        if !prefer_effect_carry(shape, float_registers, vector_min_width, temp_min) {
-            return false;
-        }
-    }
-    any
-}
-
-pub fn program_carry_mode(
-    shapes: &HashMap<String, HirLoopShape>,
-    batch_txns: &HashSet<String>,
-    float_registers: usize,
-    vector_min_width: usize,
-    temp_min: usize,
-) -> bool {
-    if !all_direct_loops_prefer_carry(shapes, float_registers, vector_min_width, temp_min) {
-        return false;
-    }
-    shapes
-        .iter()
-        .all(|(name, shape)| shape.carried_float_count == 0 || batch_txns.contains(name))
-}
-
-pub fn escaped_effect_cause(
-    shapes: &HashMap<String, HirLoopShape>,
-    float_registers: usize,
-    fp_reserved_temps: usize,
-) -> Option<String> {
-    if float_registers >= u32::MAX as usize {
-        return None;
-    }
-    if float_registers.saturating_sub(fp_reserved_temps) == 0 {
-        return None;
-    }
-    let mut names: Vec<&String> = shapes.keys().collect();
-    names.sort();
-    for name in names {
-        let shape = &shapes[name];
-        if shape.carried_aggregate_count != 0 || shape.carried_float_count == 0 {
-            continue;
-        }
-        let fully_temp_mediated =
-            shape.temp_mediated_float_count == shape.carried_float_count;
-        if !fully_temp_mediated {
-            return Some(name.clone());
-        }
-    }
-    None
 }
 
 fn classify_write_fields(

@@ -37,6 +37,9 @@ CORPUS=(
     "pp-types|pp-types.bv|"
     # 2026-11-05: two object instances' Init blocks (sorted emission).
     "test_collections|tests/tier1/test_collections.bv|"
+    # 2026-11-05 (H4 slice A): merged vector-group order (sorted SLP merge).
+    "nbody_sqrt|benchmarks/nbody_sqrt.bv|"
+    "mixed_effect_shape|tests/tier1/mixed_effect_shape.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(

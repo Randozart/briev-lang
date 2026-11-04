@@ -254,7 +254,20 @@ pub fn analyze_program(
             is_trg: std::collections::HashSet::new(),
             all_vars: std::collections::HashSet::new(),
         });
-    let loop_shapes = crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width);
+    // 2026-11-05 (H4 slice A): loop shapes come from typed HIR under the
+    // flag — LoopShape is AST-free, so this is a direct consumer flip with a
+    // debug equality cross-check.
+    let loop_shapes = if hir_emit_enabled() {
+        let hir_graph =
+            crate::hir::transition_graph::HirReactorTransitionGraph::build(&hir, None, &[]);
+        let ast =
+            crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width);
+        let h = crate::hir::loop_shape::build_loop_shapes(&hir, &hir_graph, min_width);
+        debug_assert_eq!(h, ast, "HIR/AST loop-shape drift");
+        h
+    } else {
+        crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width)
+    };
     let swan_songs = build_swan_songs(items);
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once here so
     // every backend consumer reads frontend analysis instead of re-walking

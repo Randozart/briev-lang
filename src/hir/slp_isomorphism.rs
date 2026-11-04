@@ -389,7 +389,14 @@ fn merge_groups(body: &[HirStmt], groups: Vec<VectorPhiCandidate>) -> Vec<Vector
     }
 
     let mut merged = Vec::new();
-    for (_, bucket) in sig_buckets {
+    // 2026-11-05 (house rule §4): HashMap iteration order varies with the
+    // per-process SipHash seed; unsorted iteration randomized the merged
+    // vector-group order, drifting loop IR run-to-run (nbody_sqrt). Iterate
+    // signature keys in sorted order so the merge output is byte-stable.
+    let mut sig_keys: Vec<Vec<u8>> = sig_buckets.keys().cloned().collect();
+    sig_keys.sort();
+    for sig in sig_keys {
+        let bucket = sig_buckets.remove(&sig).unwrap();
         if bucket.len() < 2 {
             merged.extend(bucket);
             continue;
@@ -398,7 +405,10 @@ fn merge_groups(body: &[HirStmt], groups: Vec<VectorPhiCandidate>) -> Vec<Vector
         for g in bucket {
             by_width.entry(g.width).or_default().push(g);
         }
-        for (_, same_width_groups) in by_width {
+        let mut width_keys: Vec<usize> = by_width.keys().copied().collect();
+        width_keys.sort_unstable();
+        for width_key in width_keys {
+            let same_width_groups = by_width.remove(&width_key).unwrap();
             if same_width_groups.len() < 2 {
                 merged.extend(same_width_groups);
                 continue;

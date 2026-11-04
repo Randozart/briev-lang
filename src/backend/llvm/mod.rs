@@ -5009,9 +5009,26 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // for ALL programs (not just wake-triggered ones) whenever every reactive
         // txn is foldable and no explicit exit condition exists.
         let explicit_exit = self.ctx.exit_condition.clone();
-        let program_conv = crate::analysis::loop_shape::program_convergence(
-            graph, items, explicit_exit.is_some(),
-        );
+        // 2026-11-05 (H4 slice A): under BRIEV_HIR_EMIT=1 the program-level
+        // convergence comes from typed HIR; debug builds assert exact AST
+        // equality before the synthetic exit is synthesized from it.
+        let program_conv = if crate::backend::hir_emit_enabled() {
+            let hir_graph = crate::hir::transition_graph::HirReactorTransitionGraph::build(
+                &analysis.hir, None, &[],
+            );
+            let ast = crate::analysis::loop_shape::program_convergence(
+                graph, items, explicit_exit.is_some(),
+            );
+            let h = crate::hir::loop_shape::program_convergence(
+                &analysis.hir, &hir_graph, explicit_exit.is_some(),
+            );
+            debug_assert_eq!(h, ast, "HIR/AST program-convergence drift");
+            h
+        } else {
+            crate::analysis::loop_shape::program_convergence(
+                graph, items, explicit_exit.is_some(),
+            )
+        };
         self.ctx.has_natural_exit = program_conv.has_natural_exit;
         if explicit_exit.is_none() && !program_conv.counter_ge_bounds.is_empty() {
             // 2026-08-08 (two-node reactor fix): the bound is already an Expr
@@ -5020,7 +5037,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 .map(|(counter, bound)| Expr::BinaryOp(
                     crate::ast::BinaryOpKind::Ge,
                     Box::new(Expr::Identifier(counter)),
-                    Box::new(bound),
+                    Box::new(bound.to_expr()),
                 ))
                 .reduce(|a, b| Expr::BinaryOp(crate::ast::BinaryOpKind::And, Box::new(a), Box::new(b)))
                 .unwrap();
