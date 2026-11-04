@@ -125,9 +125,16 @@ And/Or short-circuit falls back to whole-expression conversion) and the
 **txn body loop** routed through the seam (mirrors the defn loop). Deep
 coverage guard (`hir_expr_family_covered`) extended to Unary/Binary.
 
+Landed this increment: **Consume/Await/Deref** native families — the AST
+arms extracted verbatim into shared helpers (`emit_consume_operand`,
+`emit_await_handle`, `emit_deref_load`), HIR arms mirror via
+`emit_hir_operand`, deep coverage extended. Txn-loop routing also landed
+earlier in this slice.
+
 Remaining families: Call (intrinsic/enum/user — needs register-level operand
-helpers, the deeper refactor), then `Cast`/`MethodCall`/`Reflect` need HIR
-`Cast.via` typing (frontend typer).
+helpers, the deeper refactor), Field/Index (large arms, same extraction
+pattern), then `Cast`/`MethodCall`/`Reflect` need HIR `Cast.via` typing
+(frontend typer).
 
 ## Slice D (original plan, kept for the record)
 

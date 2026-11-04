@@ -157,6 +157,82 @@ impl LlvmBackend {
     }
 
     /// Inner dispatch: one arm per Expr variant.
+    /// 2026-11-05 (H4 slice D): the AST Consume arm, extracted verbatim so the
+    /// HIR native family shares ONE implementation. Undo: inline back into
+    /// emit_expr_inner's `Expr::Consume` arm.
+    pub(crate) fn emit_consume_operand(
+        &mut self,
+        out: &mut String,
+        inner: &crate::ast::Expr,
+        indent: &str,
+    ) -> TypedRegister {
+                // 2026-08-01 (Phase 3): the consumed operand's value is used
+                // normally; its backing is destroyed after the enclosing op —
+                // recorded here and freed at the statement boundary.
+                let reg = self.emit_expr(out, inner, indent);
+                self.fun.pending_consumes.push(reg.name.clone());
+                reg
+    }
+
+    /// 2026-11-05 (H4 slice D): the AST Await arm, extracted verbatim so the
+    /// HIR native family shares ONE implementation. Undo: inline back into
+    /// emit_expr_inner's `Expr::Await` arm.
+    pub(crate) fn emit_await_handle(
+        &mut self,
+        out: &mut String,
+        inner: &crate::ast::Expr,
+        indent: &str,
+    ) -> TypedRegister {
+                let h = self.emit_expr(out, inner, indent);
+                let hi = self.adapt_to_i64(out, indent, &h);
+                let r = self.fun.gen_reg();
+                let sched_i = self.fun.gen_reg();
+                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
+                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
+                TypedRegister { name: r, ty: Type::int() }
+    }
+
+    /// 2026-11-05 (H4 slice D): the AST Deref arm, extracted verbatim so the
+    /// HIR native family shares ONE implementation. Undo: inline back into
+    /// emit_expr_inner's `Expr::Deref` arm.
+    pub(crate) fn emit_deref_load(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        inner: &crate::ast::Expr,
+        indent: &str,
+    ) -> TypedRegister {
+                let ptr_reg = self.emit_expr(out, inner, indent);
+                // 2026-07-30: Ptr values are stored as i64 internally (see
+                // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
+                // LLVM ptr before loading.
+                let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
+                    self.canonical_ptr(out, indent, &ptr_reg.name)
+                } else {
+                    ptr_reg.name.clone()
+                };
+                let pointee_ty = match &ptr_reg.ty {
+                    Type::Ptr(inner_ty) => inner_ty.as_ref().clone(),
+                    _ => Type::int(), // fallback
+                };
+                let llvm_ty = self.llvm_type(&pointee_ty);
+                writeln!(
+                    out,
+                    "{}{} = load {}{}, ptr {}, align 8",
+                    indent,
+                    v,
+                    if self.fun.volatile_read { "volatile " } else { "" },
+                    llvm_ty,
+                    load_ptr
+                )
+                .ok();
+                TypedRegister {
+                    name: v.to_string(),
+                    ty: pointee_ty,
+                }
+    }
+
     /// 2026-11-05 (H4 slice D): native HIR expression emission for the first
     /// families — literals and identifiers. The arms mirror the AST arms
     /// exactly (same helpers, same IR shapes); `None` means the family is not
@@ -207,6 +283,51 @@ impl LlvmBackend {
                 }
             },
             HirExprKind::Identifier(name) => self.emit_identifier_load(out, &v, name, indent),
+            HirExprKind::Consume(inner) => {
+                let Some(reg) = self.emit_hir_operand(out, inner, indent) else {
+                    return None;
+                };
+                self.fun.pending_consumes.push(reg.name.clone());
+                reg
+            }
+            HirExprKind::Await(inner) => {
+                let Some(h) = self.emit_hir_operand(out, inner, indent) else {
+                    return None;
+                };
+                let hi = self.adapt_to_i64(out, indent, &h);
+                let r = self.fun.gen_reg();
+                let sched_i = self.fun.gen_reg();
+                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
+                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
+                TypedRegister { name: r, ty: Type::int() }
+            }
+            HirExprKind::Deref(inner) => {
+                let Some(ptr_reg) = self.emit_hir_operand(out, inner, indent) else {
+                    return None;
+                };
+                let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
+                    self.canonical_ptr(out, indent, &ptr_reg.name)
+                } else {
+                    ptr_reg.name.clone()
+                };
+                let pointee_ty = match &ptr_reg.ty {
+                    Type::Ptr(inner_ty) => inner_ty.as_ref().clone(),
+                    _ => Type::int(),
+                };
+                let llvm_ty = self.llvm_type(&pointee_ty);
+                writeln!(
+                    out,
+                    "{}{} = load {}{}, ptr {}, align 8",
+                    indent,
+                    v,
+                    if self.fun.volatile_read { "volatile " } else { "" },
+                    llvm_ty,
+                    load_ptr
+                )
+                .ok();
+                TypedRegister { name: v.clone(), ty: pointee_ty }
+            }
             HirExprKind::Unary { op, inner } => {
                 let Some(operand) = self.emit_hir_operand(out, inner, indent) else {
                     return None;
@@ -918,28 +1039,14 @@ impl LlvmBackend {
     ) -> TypedRegister {
         match expr {
             // ── Literals ─────────────────────────────────────────────
-            Expr::Consume(inner) => {
-                // 2026-08-01 (Phase 3): the consumed operand's value is used
-                // normally; its backing is destroyed after the enclosing op —
-                // recorded here and freed at the statement boundary.
-                let reg = self.emit_expr(out, inner, indent);
-                self.fun.pending_consumes.push(reg.name.clone());
-                reg
-            }
+            Expr::Consume(inner) => self.emit_consume_operand(out, inner, indent),
+
             // 2026-08-26 (async Phase C): await drives the segmented task
             // through the C scheduler's round-robin and returns its result.
             // A non-task value passes through unchanged (briev_await returns
             // out-of-range handles as-is — the deadlock-posture identity).
-            Expr::Await(inner) => {
-                let h = self.emit_expr(out, inner, indent);
-                let hi = self.adapt_to_i64(out, indent, &h);
-                let r = self.fun.gen_reg();
-                let sched_i = self.fun.gen_reg();
-                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
-                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
-                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
-                TypedRegister { name: r, ty: Type::int() }
-            }
+            Expr::Await(inner) => self.emit_await_handle(out, inner, indent),
+
             Expr::Decimal(n) => {
                 self.emit_int(out, v, *n, indent)
             }
@@ -2093,36 +2200,7 @@ impl LlvmBackend {
             }
 
             // ── Dereference ───────────────────────────────────────────
-            Expr::Deref(inner) => {
-                let ptr_reg = self.emit_expr(out, inner, indent);
-                // 2026-07-30: Ptr values are stored as i64 internally (see
-                // ptrtoint at emit_toplevel.rs:1188). Convert back to actual
-                // LLVM ptr before loading.
-                let load_ptr = if matches!(ptr_reg.ty, Type::Ptr(_)) {
-                    self.canonical_ptr(out, indent, &ptr_reg.name)
-                } else {
-                    ptr_reg.name.clone()
-                };
-                let pointee_ty = match &ptr_reg.ty {
-                    Type::Ptr(inner_ty) => inner_ty.as_ref().clone(),
-                    _ => Type::int(), // fallback
-                };
-                let llvm_ty = self.llvm_type(&pointee_ty);
-                writeln!(
-                    out,
-                    "{}{} = load {}{}, ptr {}, align 8",
-                    indent,
-                    v,
-                    if self.fun.volatile_read { "volatile " } else { "" },
-                    llvm_ty,
-                    load_ptr
-                )
-                .ok();
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: pointee_ty,
-                }
-            }
+            Expr::Deref(inner) => self.emit_deref_load(out, v, inner, indent),
 
             // ── Field access / reflection / method call (2026-07-31) ─
             Expr::Field(recv, name) => {
@@ -9578,6 +9656,7 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
         K::Literal(_) | K::Identifier(_) => true,
+        K::Consume(inner) | K::Await(inner) | K::Deref(inner) => hir_expr_family_covered(inner),
         K::Unary { inner, .. } => hir_expr_family_covered(inner),
         K::Binary { op, left, right }
             if !matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>
