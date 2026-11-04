@@ -11575,3 +11575,11 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## FIXED 2026-11-04: native integer printing retained a string per value
+
+Printing a signed integer constructed an owned decimal string, copied the bytes
+to buffered stdout, and lost its backing allocation. Emit the decimal digits
+directly to the existing byte sink. Keeping the magnitude nonpositive covers
+INT64_MIN without overflow. Native allocator and byte-output gates cover
+repeated writes across a flush and the old allocation-count failure.

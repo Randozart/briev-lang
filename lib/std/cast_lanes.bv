@@ -689,8 +689,21 @@ out defn eprint_str(s: String) [true][term >= 0] -> Int {
     term 0;
 };
 
+// 2026-11-04: numeric stdout needs bytes only. Constructing an owned String
+// for each write leaked its backing allocation in long-lived processes.
+// Work in the negative domain so INT64_MIN is representable. Recursing on
+// the quotient emits at most 19 digits, most significant first. Retire with
+// a shared decimal-to-byte-sink formatter that preserves this lifetime.
+defn stdout_decimal_digits(value: Int) [value <= 0][term == 0] -> Int {
+    when value <= -10 { stdout_decimal_digits(value / 10); };
+    stdout_byte(48 - (value % 10));
+    term 0;
+};
+
 out defn print_int(n: Int) [true][term >= 0] -> Int {
-    let _r: Int = write_all(1, int_to_str(n));
+    when n < 0 { stdout_byte(45); };
+    when n > 0 { term stdout_decimal_digits(0 - n); };
+    stdout_decimal_digits(n);
     term 0;
 };
 
