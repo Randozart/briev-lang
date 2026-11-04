@@ -26,6 +26,7 @@ pub mod tail_calls;
 pub mod type_facts;
 pub mod stmt;
 pub mod tail_recursion;
+pub mod transition_graph;
 pub mod verify;
 pub mod walk;
 

@@ -35,9 +35,15 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
 - **H3.4a ✅** `tail_recursion` / `tail-loop` plans over HIR — corpus parity:
   103 compared, 29 skipped, **0 mismatches**. HIR gained `type_params` /
   `variadic` fidelity.
-- **Next:** H3.4b `loop_shape` (needs `transition_graph` over HIR) +
-  `tail_carrier` (needs `enum_repr` over HIR), then H3.5 task/collection,
-  H3.6 generic txn, H4/H5.
+- **H3.4b-1 ✅** `transition_graph` over HIR — corpus parity (113 compared,
+  104 skipped unsupported, **0 mismatches**), including node facts
+  (bounded_pre/increments/purity/write_set/lexicographic/effectively-pure),
+  live fields, triggers, unguarded FFI. HIR gained `sync_domains` on
+  callables, `has_triggers` + global `modifiers` (`out`/`vol` liveness pins),
+  and a bug-for-bug mirror of the mutually exclusive purity arms.
+- **Next:** H3.4b-2 `loop_shape` over HIR (needs `loop_carried`, `swan_song`,
+  `slp_isomorphism` ports) + `tail_carrier` (needs `enum_repr` over HIR),
+  then H3.5 task/collection, H3.6 generic txn, H4/H5.
 
 ## Current state
 

@@ -25,6 +25,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut always_stateful = Vec::new();
     let mut foreign = Vec::new();
     let mut constants = Vec::new();
+    let has_triggers;
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
@@ -33,12 +34,22 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             foreign: &mut foreign,
             constants: &mut constants,
             always_stateful: &mut always_stateful,
+            has_triggers: false,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
+        has_triggers = out.has_triggers;
     }
-    HirProgram { callables, type_defs, globals, foreign, constants, always_stateful }
+    HirProgram {
+        callables,
+        type_defs,
+        globals,
+        foreign,
+        constants,
+        always_stateful,
+        has_triggers,
+    }
 }
 
 struct LowerOutputs<'a> {
@@ -48,6 +59,7 @@ struct LowerOutputs<'a> {
     foreign: &'a mut Vec<HirForeign>,
     constants: &'a mut Vec<String>,
     always_stateful: &'a mut Vec<String>,
+    has_triggers: bool,
 }
 
 fn lower_item(
@@ -86,6 +98,7 @@ fn lower_item(
             export_symbol,
             ids,
         )),
+        TopLevel::Trigger(_) => out.has_triggers = true,
         TopLevel::Export(export) => {
             let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
             lower_item(&export.inner, true, symbol, ids, out);
@@ -93,8 +106,12 @@ fn lower_item(
         // 2026-11-05 (H3.4b): `sync<group>` wraps a transaction that the
         // reactor still dispatches. `analysis::effective_txns` walks these;
         // HIR must contain them or live-field/dispatch analyses lose the node.
-        TopLevel::SyncGroup { item, .. } => {
+        TopLevel::SyncGroup { item, domains } => {
+            let before = out.callables.len();
             lower_item(item, exported, export_symbol, ids, out);
+            for c in &mut out.callables[before..] {
+                c.sync_domains = domains.clone();
+            }
         }
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
@@ -183,6 +200,7 @@ fn lower_item(
                     expr: None,
                     declared_storage,
                     is_state_decl: false,
+                    modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
                     span: None,
                 });
             }
@@ -195,6 +213,7 @@ fn lower_item(
             expr: None,
             declared_storage: None,
             is_state_decl: true,
+            modifiers: Vec::new(),
             span: s.span,
         }),
         TopLevel::ForeignBinding(fb) => out.foreign.push(HirForeign {
@@ -480,6 +499,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
             .collect(),
         type_params: spec.type_params,
         variadic: spec.variadic,
+        sync_domains: Vec::new(),
         result: spec.result,
         outputs: spec.outputs,
         exported: spec.exported,

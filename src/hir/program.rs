@@ -90,6 +90,8 @@ pub struct HirCallable {
     pub type_params: Vec<String>,
     /// Has a trailing variadic rest parameter.
     pub variadic: bool,
+    /// `sync<domains>` wrapping this txn; empty for unwrapped callables.
+    pub sync_domains: Vec<String>,
     pub result: Option<Type>,
     /// Full declared output shape (union/tuple/array fidelity).
     pub outputs: Option<HirOutput>,
@@ -157,6 +159,8 @@ pub struct HirGlobal {
     pub declared_storage: Option<String>,
     /// `state name: T;` (vs a top-level `let`).
     pub is_state_decl: bool,
+    /// Declared modifier names (`out`, `vol`, `state`, `plain`, …).
+    pub modifiers: Vec<String>,
     pub span: Option<Span>,
 }
 
@@ -169,6 +173,8 @@ pub struct HirProgram {
     pub foreign: Vec<HirForeign>,
     /// Top-level `const` names (boundary state-field set includes them).
     pub constants: Vec<String>,
+    /// At least one top-level `trigger` declaration exists.
+    pub has_triggers: bool,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
     /// with the implicit `%state` first ABI arg, so a call always carries
     /// state (the AST always_stateful leaf set).
