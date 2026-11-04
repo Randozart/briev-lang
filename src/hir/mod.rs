@@ -6,6 +6,7 @@
 //! slice assigns stable IDs, normalizes export wrappers, and verifies the
 //! callable surface. No consumer uses it yet.
 
+pub mod boundary_ownership;
 pub mod cast_paths;
 pub mod constructors;
 pub mod defn_liveness;
@@ -35,7 +36,7 @@ pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
 pub use needs_state::{compute_defn_needs_plain, compute_defn_needs_state, compute_export_needs_state};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
 pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
-pub use program::{HirCallable, HirCallableKind, HirProgram};
+pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use tail_calls::{build_tail_call_facts, HirCallableTailCalls, HirTailCall, HirTailCallFacts};
 pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
@@ -181,6 +182,21 @@ type CStr: String<C_String> { };
             .find(|t| t.name == "CStr")
             .expect("CStr alias");
         assert_eq!(cstr.protocol.as_deref(), Some("String<C_String>"));
+    }
+
+    #[test]
+    fn outputs_and_constants_are_lowered() {
+        let program = lower_program(&parse(
+            r#"
+const K: Int = 1;
+defn f() -> Int { term 1; };
+"#,
+        ));
+        assert!(program.constants.contains(&"K".to_string()));
+        assert!(matches!(
+            program.callables[0].outputs,
+            Some(HirOutput::Single(_))
+        ));
     }
 
     #[test]

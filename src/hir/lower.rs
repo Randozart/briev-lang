@@ -7,7 +7,8 @@ use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
     HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField,
-    HirForeign, HirGlobal, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
+    HirForeign, HirGlobal, HirOutput, HirParam, HirProgram, HirTypeDef, HirTypeDefKind,
+    HirWatchdog,
     HirWatchdogOnFire,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
@@ -23,19 +24,21 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut globals = Vec::new();
     let mut always_stateful = Vec::new();
     let mut foreign = Vec::new();
+    let mut constants = Vec::new();
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
             types: &mut type_defs,
             globals: &mut globals,
             foreign: &mut foreign,
+            constants: &mut constants,
             always_stateful: &mut always_stateful,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
     }
-    HirProgram { callables, type_defs, globals, foreign, always_stateful }
+    HirProgram { callables, type_defs, globals, foreign, constants, always_stateful }
 }
 
 struct LowerOutputs<'a> {
@@ -43,6 +46,7 @@ struct LowerOutputs<'a> {
     types: &'a mut Vec<HirTypeDef>,
     globals: &'a mut Vec<HirGlobal>,
     foreign: &'a mut Vec<HirForeign>,
+    constants: &'a mut Vec<String>,
     always_stateful: &'a mut Vec<String>,
 }
 
@@ -195,6 +199,7 @@ fn lower_item(
             params: fb.inputs.clone(),
             ret: fb.success_output.first().map(|(_, t)| t.clone()),
         }),
+        TopLevel::Constant(c) => out.constants.push(c.name.clone()),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
@@ -360,6 +365,7 @@ fn lower_definition(
             is_async: false,
             parameters: &d.parameters,
             result: result_type(d.output_type.as_ref(), &d.outputs),
+            outputs: d.output_type.as_ref().map(lower_output),
             body: &d.body,
             span: d.span,
             exported,
@@ -386,6 +392,7 @@ fn lower_transaction(
             is_async: t.is_async,
             parameters: &t.parameters,
             result: result_type(t.output_type.as_ref(), &t.outputs),
+            outputs: t.output_type.as_ref().map(lower_output),
             body: &t.body,
             span: t.span,
             exported,
@@ -402,10 +409,21 @@ struct CallableLowerSpec<'a> {
     is_async: bool,
     parameters: &'a [(String, Type)],
     result: Option<Type>,
+    outputs: Option<HirOutput>,
     body: &'a [Statement],
     span: Option<Span>,
     exported: bool,
     export_symbol: Option<String>,
+}
+
+fn lower_output(o: &OutputType) -> HirOutput {
+    match o {
+        OutputType::Single(t) => HirOutput::Single(t.clone()),
+        OutputType::Union(v) => HirOutput::Union(v.iter().map(lower_output).collect()),
+        OutputType::Tuple(v) => HirOutput::Tuple(v.iter().map(lower_output).collect()),
+        OutputType::Array(inner) => HirOutput::Array(Box::new(lower_output(inner))),
+        OutputType::Named(n, inner) => HirOutput::Named(n.clone(), Box::new(lower_output(inner))),
+    }
 }
 
 fn lower_contract(c: &Contract, ids: &mut IdSupply) -> HirContract {
@@ -449,6 +467,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
             })
             .collect(),
         result: spec.result,
+        outputs: spec.outputs,
         exported: spec.exported,
         export_symbol: spec.export_symbol,
         body: HirBody {

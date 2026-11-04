@@ -32,6 +32,17 @@ pub struct HirBody {
     pub statements: Vec<HirStmt>,
 }
 
+/// Declared output type (mirrors AST `OutputType`; unions/tuples matter for
+/// boundary-return ownership).
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirOutput {
+    Single(Type),
+    Union(Vec<HirOutput>),
+    Tuple(Vec<HirOutput>),
+    Array(Box<HirOutput>),
+    Named(String, Box<HirOutput>),
+}
+
 /// A watchdog `-> handler(val)` callback (H3.2 liveness: the handler NAME is
 /// emitted code a body walk can never see).
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +87,8 @@ pub struct HirCallable {
     pub trait_default: bool,
     pub params: Vec<HirParam>,
     pub result: Option<Type>,
+    /// Full declared output shape (union/tuple/array fidelity).
+    pub outputs: Option<HirOutput>,
     pub exported: bool,
     pub export_symbol: Option<String>,
     pub body: HirBody,
@@ -150,6 +163,8 @@ pub struct HirProgram {
     pub globals: Vec<HirGlobal>,
     /// `frgn` foreign bindings (effective Briev name → params/result).
     pub foreign: Vec<HirForeign>,
+    /// Top-level `const` names (boundary state-field set includes them).
+    pub constants: Vec<String>,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
     /// with the implicit `%state` first ABI arg, so a call always carries
     /// state (the AST always_stateful leaf set).
