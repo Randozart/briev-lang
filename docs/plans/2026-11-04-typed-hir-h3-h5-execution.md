@@ -41,9 +41,13 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   live fields, triggers, unguarded FFI. HIR gained `sync_domains` on
   callables, `has_triggers` + global `modifiers` (`out`/`vol` liveness pins),
   and a bug-for-bug mirror of the mutually exclusive purity arms.
-- **Next:** H3.4b-2 `loop_shape` over HIR (needs `loop_carried`, `swan_song`,
-  `slp_isomorphism` ports) + `tail_carrier` (needs `enum_repr` over HIR),
-  then H3.5 task/collection, H3.6 generic txn, H4/H5.
+- **H3.4b-2 (partial) ✅** `loop_carried` classification over HIR and
+  `swan_song` detection/hoisting over HIR — corpus parity (113 compared,
+  104 skipped, **0 mismatches** each).
+- **Next:** H3.4b-2 continued — `slp_isomorphism` over HIR, then
+  `loop_shape` consuming the HIR graph/carried/swan/slp facts;
+  `tail_carrier` needs `enum_repr` over HIR; then H3.5 task/collection,
+  H3.6 generic txn, H4/H5.
 
 ## Current state
 
