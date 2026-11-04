@@ -106,7 +106,21 @@ Risk: highest of the four — control-flow state (member.exit labels, P-gating,
 defer stacks) lives in `emit_stmt.rs` (3.3k lines). Land kind-by-kind; never
 convert-and-delegate a whole body.
 
-## Slice D — expression families
+## Slice D — expression families (NOT STARTED — next session)
+
+Refined first step after reading the emission arms: the AST `Expression`
+statement arm (emit_stmt.rs ~1621) has three special cases before the plain
+path — `AddrOf` extract-strategy dispatch, void-match rerouting to the
+statement-match path, and the plain `emit_expr` fallthrough. The first
+native arm must reproduce that dispatch for `HirStmtKind::Expression` when
+the expression is family-covered (Literal/Identifier), and fall back to
+conversion otherwise. Literal emitters to reuse directly: `emit_int`,
+`emit_string_literal`, `emit_byte_literal` (emit_expr.rs 2712/2728); the
+`Identifier` arm (emit_expr.rs ~259-860) is large — extract it into a
+name-keyed helper (`emit_identifier_load`) so the AST arm and the native HIR
+arm share one implementation rather than duplicating 600 lines.
+
+## Slice D (original plan, kept for the record)
 
 1. `emit_hir_expr` for leaf families: `Literal`, `Identifier`, `Unary`,
    `Binary`, `Call` (with `to_ast::expr` only for arguments outside the
