@@ -4416,10 +4416,20 @@ impl LlvmBackend {
                 // coercion as ordinary calls (boxed Bool/Char are i64).
                 // Keep conversion centralized; retire with uniform call ABI.
                 let argument = TypedRegister { name: reg.clone(), ty: rty.clone() };
-                let argument = self.coerce_register_value(out, indent, &argument, pty);
+                // A generic receiver can itself be inside an unspecialized
+                // callable. Its element parameter has no concrete ABI yet.
+                // Bind the operand representation instead of coercing to
+                // the fallback LLVM width of the abstract parameter.
+                let param_ty = match pty {
+                    Type::Custom(name) if self.ctx.obj_type_params.get(&recv_base)
+                        .is_some_and(|names| names.contains(name))
+                        && self.ctx.type_universe.as_ref().and_then(|u| u.get(name)).is_none() => rty,
+                    _ => pty,
+                };
+                let argument = self.coerce_register_value(out, indent, &argument, param_ty);
                 self.fun.let_bindings.insert(pname.clone(), argument.name);
-                self.fun.let_binding_types.insert(pname.clone(), pty.clone());
-                self.fun.let_original_types.insert(pname.clone(), pty.clone());
+                self.fun.let_binding_types.insert(pname.clone(), param_ty.clone());
+                self.fun.let_original_types.insert(pname.clone(), param_ty.clone());
             }
             let _ = rty;
         }

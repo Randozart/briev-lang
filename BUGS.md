@@ -11597,3 +11597,10 @@ coverage includes a renamed shape-bearing type and invalid ordinary places.
 Library mode must register declared types before checking these places, so
 shape metadata is visible in every frontend entry. Unresolved element storage
 is admitted only for a type parameter of the enclosing callable.
+
+### 2026-11-04 — wasm allocation and abstract member operand widths
+Malloc# emitted i64 addresses while declaring target-width pointers. Reusing
+the allocation lowering keeps address and remaining-length provenance aligned.
+Inline member coercion also widened unresolved element parameters before
+target-width stores. Preserve the actual operand type for abstract parameters.
+The rbv_list_each_wasm corpus reproduces both failures and now passes.

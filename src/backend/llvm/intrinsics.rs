@@ -600,40 +600,23 @@ fn emit_char_count(
 fn emit_malloc(
     backend: &mut LlvmBackend, out: &mut String, v: &str,
     args: &[Expr], indent: &str,
-) -> BTypedRegister {    let size = emit_arg(backend, out, &args[0], indent);
-    // 2026-08-11 (wasm32 obj-member fix): the size is an Int value at
-    // i{int_bits} (i32 on wasm32) — widen to i64 for the C malloc ABI. The
-    // old bare `i64 {size}` broke wasm32 (i32 value in an i64 call arg). A
-    // no-op on x86_64 (int_bits=64).
-    let size64 = widen_to_i64(backend, out, &size, indent);
-    // 2026-07-17: Return Ptr<Int> so Expr::Index correctly identifies this
-    // as a pointer type and emits GEP+load/store (not extractelement). The
-    // raw bits are still i64 (ptrtoint); the type annotation only affects
-    // downstream codegen dispatch. State storage boxes via adapt_to_i64.
-    let name = v.trim_start_matches('%');
-    // 2026-08-04 (Phase 4, .ebv heap reframe): embedded freestanding — Malloc#
-    // routes to the static bump arena (@embedded_heap), never @malloc. The
-    // arena result is an i64 (the bump address); emit_arena_alloc returns the
-    // ptrtoint'd i64 which we re-interpret as a pointer for the Ptr<Int> ABI.
+) -> BTypedRegister {
+    let size = emit_arg(backend, out, &args[0], indent);
+    // 2026-11-04: Malloc# exposes a target-width Ptr<Int>. Keep the address
+    // and remaining length at that width even when the allocator takes i64.
+    // Revisit only if the pointer representation or allocation ABI changes.
     if backend.ctx.is_embedded {
-        let arena_result = backend.emit_arena_alloc(out, indent, &size64);
-        writeln!(out, "{}%{}_p = inttoptr i64 {} to ptr", indent, name, arena_result).ok();
-        writeln!(out, "{}{} = ptrtoint ptr %{}_p to i64", indent, v, name).ok();
+        // Freestanding targets take storage from the static bump arena.
+        let size64 = widen_to_i64(backend, out, &size, indent);
+        let address = backend.emit_arena_alloc(out, indent, &size64);
+        let width = backend.ptr_int_ty();
+        writeln!(out, "{indent}{v}_p = inttoptr i64 {address} to ptr").ok();
+        writeln!(out, "{indent}{v} = ptrtoint ptr {v}_p to {width}").ok();
         backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
-        let remaining_reg = backend.fun.gen_reg();
-        writeln!(out, "{} {} = add i64 {}, 0", indent, remaining_reg, size64).ok();
-        backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), remaining_reg));
-        return BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::int()) };
+        backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), size));
+    } else {
+        emit_malloc_inline(backend, out, v, &size, indent);
     }
-    writeln!(out, "{}%{}_p = call ptr @malloc(i64 {})", indent, name, size64).ok();
-    writeln!(out, "{}{} = ptrtoint ptr %{}_p to i64", indent, v, name).ok();
-    // 2026-07-18: Record Malloc strategy so Free# can dispatch correctly.
-    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
-    // 2026-07-18: Record fat pointer provenance — base points to alloc,
-    // offset 0, remaining = size. This enables O(1) Length#(ptr).
-    let remaining_reg = backend.fun.gen_reg();
-    writeln!(out, "{} {} = add i64 {}, 0", indent, remaining_reg, size64).ok();
-    backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), remaining_reg));
     BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::int()) }
 }
 
@@ -1518,9 +1501,8 @@ fn emit_len(
     let arg_reg = emit_arg(backend, out, &args[0], indent);
     // Check if this argument has fat pointer provenance — if so, read
     // the remaining length directly from the provenance metadata.
-    if let Some((_base, _offset, ref remaining)) = backend.fun.fat_ptrs.get(&arg_reg).cloned() {
-        writeln!(out, "{}{} = add i64 {}, 0", indent, v, remaining).ok();
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+    if let Some((_base, _offset, remaining)) = backend.fun.fat_ptrs.get(&arg_reg) {
+        return BTypedRegister { name: remaining.clone(), ty: Type::int() };
     }
     // Fallback: load length from string/list header slot 0.
     let ptr = backend.fun.gen_reg();

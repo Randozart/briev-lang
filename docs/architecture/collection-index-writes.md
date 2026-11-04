@@ -46,3 +46,8 @@ the caller.
 Enum classification uses the centralized destination-ownership query; it does
 not depend on the retired enum-handle cache. Enum carriers remain distinct
 from inline static-record images.
+
+Malloc pointer images and tracked remaining lengths use target width. The
+allocator call alone widens its size argument to the allocation ABI. Inline
+generic member bindings preserve the operand representation when the element
+parameter remains abstract, avoiding conversions to an unresolved fallback.
