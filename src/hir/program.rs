@@ -43,6 +43,18 @@ pub enum HirOutput {
     Named(String, Box<HirOutput>),
 }
 
+impl HirOutput {
+    pub fn all_types(&self) -> Vec<Type> {
+        match self {
+            HirOutput::Single(ty) => vec![ty.clone()],
+            HirOutput::Union(types) | HirOutput::Tuple(types) => {
+                types.iter().flat_map(|t| t.all_types()).collect()
+            }
+            HirOutput::Array(inner) | HirOutput::Named(_, inner) => inner.all_types(),
+        }
+    }
+}
+
 /// A watchdog `-> handler(val)` callback (H3.2 liveness: the handler NAME is
 /// emitted code a body walk can never see).
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +105,8 @@ pub struct HirCallable {
     /// `sync<domains>` wrapping this txn; empty for unwrapped callables.
     pub sync_domains: Vec<String>,
     pub result: Option<Type>,
+    /// Explicit multi-output list (`defn f() -> A, B`), if any.
+    pub output_list: Vec<Type>,
     /// Full declared output shape (union/tuple/array fidelity).
     pub outputs: Option<HirOutput>,
     pub exported: bool,
@@ -140,6 +154,10 @@ pub struct HirTypeDef {
     pub kind: HirTypeDefKind,
     /// Declared boundary protocol (`type CStr: String<C_String>`), if any.
     pub protocol: Option<String>,
+    /// `coll obj` type (collection proof + grow-guard elimination).
+    pub is_coll: bool,
+    /// Declared op-binding names (`op Grow: ...`).
+    pub op_bindings: Vec<String>,
     pub span: Option<Span>,
 }
 
@@ -167,6 +185,8 @@ pub struct HirGlobal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirInit {
     pub name: String,
+    /// Declared value set (dependent pool sizing).
+    pub bound: Option<crate::ast::top::BoundSpec>,
     pub value: Option<HirExpr>,
     pub body: Vec<HirStmt>,
 }

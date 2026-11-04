@@ -55,8 +55,14 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
 - **H3.4 COMPLETE.** Every H3.4 analysis (transition graph, loop carried,
   swan song, SLP, loop shape, tail recursion, enum repr, tail carrier) has
   an HIR mirror at corpus parity. All 14 HIR parity suites green.
-- **Next:** H3.5 task/collection, H3.6 generic txn, then H4 (byte-identical
-  IR A/B per family, flip consumers) and H5 (retire AST paths).
+- **H3.5 ✅** Task/collection analyses over HIR: `task_segments`
+  (segmentation, spawn targets, task ABI), `task_linear` (handle
+  linearity), `spawn_pool` (static/dependent capacities, storage classes,
+  bounded-init sizing), `coll_length` (grow-guard elimination + pre-grow
+  proofs) — corpus parity **113/0** each.
+- **Next:** H3.6 generic callable-txn specialization on HIR, then H4
+  (byte-identical IR A/B per family, flip consumers) and H5 (retire AST
+  paths). `soa_projection`/`soa_reorder` stay with H4 layout work.
 
 ## Current state
 
