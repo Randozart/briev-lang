@@ -67,3 +67,19 @@ at 500 Hz, RSS went from 354 to 5,954 pages in the control and stayed at 366
 pages at both endpoints in the experiment. Both emitted 5,000 valid rows.
 These edits establish the successful path only. Production reclamation must
 also preserve aliases, borrowed payloads, error returns and caller storage.
+
+
+## Follow-up resolution (2026-11-04, merged implementation)
+
+The recursive `stdout_decimal_digits` formatter removed the temporary String
+but was **40-60% slower** on print-heavy benchmarks (`print_loop` 14.4→24.4 ms,
+`queue_drain` 15.0→24.1 ms; C unchanged). Controlled A/B isolated it to this
+change (restoring `int_to_str` recovered the times; `%enum_out` nocapture was
+unrelated).
+
+Final implementation keeps the fast `int_to_str` path and removes the leak at
+both sites: `int_to_str` frees the intermediate `Data` buffer (which
+`briev_bits_to_str` copies from), and `print_int` frees the returned String
+after `write_all`. `print_integer_lifetime` (no live allocations across 2,048
+signed-extrema pairs) passes, and print-heavy benchmarks return to their prior
+times. `stdout_decimal_digits` is retired.
