@@ -87,6 +87,14 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   exercising all debug cross-checks). Next type-agnostic candidates need a
   type shim: spawn pools (AST-typed dependent terms) and task segments
   (AST statements).
+- **H4.1 (tail-plan flip + cross-check catch) ✅** Backend tail-recursion /
+  tail-loop plans are consumed from HIR under `BRIEV_HIR_EMIT=1` (name-keyed,
+  order-independent; debug asserts AST equality on reordered items). The
+  debug cross-check then caught a real HIR gap: `proto` cast-edge/cross-op
+  binding fns (e.g. `op Concat = cstring_concat`) were dropped by lowering,
+  so HIR liveness lost `cstring_concat` on `pp-types.bv`. HIR now carries
+  `protocol_binding_fns` + per-type `binding_fns`, and liveness roots/joins
+  them. A/B quick corpus includes `pp-types` to pin it.
 - **H4.1 (plumbing) ✅** `AnalysisResults` now carries the typed `HirProgram`
   for the post-desugar AST, built exactly once per analysis run.
   `BRIEV_HIR_EMIT=1` verifies HIR id/export invariants but does not change

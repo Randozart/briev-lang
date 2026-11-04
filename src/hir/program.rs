@@ -158,6 +158,8 @@ pub struct HirTypeDef {
     pub is_coll: bool,
     /// Declared op-binding names (`op Grow: ...`).
     pub op_bindings: Vec<String>,
+    /// Op-binding implementation fn names (`op Add: cstring_concat`).
+    pub binding_fns: Vec<String>,
     pub span: Option<Span>,
 }
 
@@ -206,6 +208,9 @@ pub struct HirProgram {
     pub inits: Vec<HirInit>,
     /// At least one top-level `trigger` declaration exists.
     pub has_triggers: bool,
+    /// Binding fns named by `proto` cast edges / cross-ops. The casting graph
+    /// calls them at emission, so liveness must root them.
+    pub protocol_binding_fns: Vec<String>,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
     /// with the implicit `%state` first ABI arg, so a call always carries
     /// state (the AST always_stateful leaf set).

@@ -1011,7 +1011,7 @@ pub(crate) fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
 /// (`op Add: func(#Lh,#Rh)` — the fn name is an Identifier among the
 /// binding's property values). `mark`-side existence checks make a stray
 /// identifier harmless.
-fn collect_binding_fns(pv: &PropertyValue, out: &mut impl Extend<String>) {
+pub(crate) fn collect_binding_fns(pv: &PropertyValue, out: &mut impl Extend<String>) {
     match pv {
         PropertyValue::Identifier(name) => {
             out.extend(std::iter::once(name.clone()));

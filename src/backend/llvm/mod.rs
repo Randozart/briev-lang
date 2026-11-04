@@ -3316,9 +3316,27 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .hidden_result_callables()
             .into_iter()
             .collect();
-        let tail_plan = crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
-        self.ctx.tail_loop =
-            crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);
+        // 2026-11-05 (H4.1): tail plans are name-keyed and order-independent,
+        // so the HIR plan (built from the analysis run's HIR) is directly
+        // consumable by the backend. With BRIEV_HIR_EMIT=1 use it; debug
+        // builds assert equality against the AST plan on the reordered items.
+        let (tail_plan, tail_loop) = if crate::backend::hir_emit_enabled() {
+            let ast_tail =
+                crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items);
+            let ast_loop =
+                crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items);
+            let hir_tail = crate::hir::tail_recursion::build_tail_recursion_plan(&analysis.hir);
+            let hir_loop = crate::hir::tail_recursion::build_tail_loop_plan(&analysis.hir);
+            debug_assert_eq!(hir_tail.defns, ast_tail.defns, "HIR/AST tail-class drift");
+            debug_assert_eq!(hir_loop.defns, ast_loop.defns, "HIR/AST tail-loop drift");
+            (hir_tail, hir_loop)
+        } else {
+            (
+                crate::analysis::tail_recursion::build_tail_recursion_plan(&reordered_items),
+                crate::analysis::tail_recursion::build_tail_loop_plan(&reordered_items),
+            )
+        };
+        self.ctx.tail_loop = tail_loop;
         self.ctx.tail_recursive = tail_plan
             .defns
             .iter()

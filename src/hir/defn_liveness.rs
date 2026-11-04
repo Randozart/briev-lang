@@ -40,6 +40,18 @@ impl DefnLiveness {
         for c in &program.callables {
             b.index_callable(c);
         }
+        // 2026-11-05: op-binding implementation fns (`op Add: cstring_concat`)
+        // join the owner type's member set, matching the AST index. Without
+        // this, liveness misses binding fns on constructed types.
+        for td in &program.type_defs {
+            if td.binding_fns.is_empty() {
+                continue;
+            }
+            b.type_members
+                .entry(td.name.clone())
+                .or_default()
+                .extend(td.binding_fns.iter().cloned());
+        }
         for g in &program.globals {
             if let Some(e) = &g.expr {
                 let mut found = Vec::new();
@@ -52,6 +64,7 @@ impl DefnLiveness {
         for name in &program.always_stateful {
             b.roots.insert(name.clone());
         }
+        b.roots.extend(program.protocol_binding_fns.iter().cloned());
         b.roots.extend(extra_roots.iter().cloned());
 
         let mut queue: Vec<String> = b.roots.iter().cloned().collect();

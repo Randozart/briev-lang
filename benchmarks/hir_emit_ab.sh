@@ -28,6 +28,8 @@ if [ "${1:-}" = "--quick" ]; then
         "recommender|benchmarks/recommender.bv|"
         "queue_drain|benchmarks/queue_drain.bv|"
         "iter_chain|tests/tier1/iter_chain_multi.bv|"
+        # catches protocol/cross-op liveness roots (glue C_String binding)
+        "pp-types|pp-types.bv|"
     )
 fi
 

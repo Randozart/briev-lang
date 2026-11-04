@@ -67,6 +67,11 @@ fn curated_defn_liveness_parity() {
         "runtime-reflect",
     );
 
+    // 2026-11-05: `proto` cast-edge/cross-op bindings (`op Concat = ...`)
+    // are emission roots; HIR must carry them or a constructed boundary type
+    // loses its binding fns (caught on pp-types by the debug cross-check).
+    assert_parity(include_str!("../lib/glue/c.bv"), "protocol-bindings");
+
     // Binary `==` roots the string-equality helper when present.
     assert_parity(
         "defn briev_str_eq(a: Int, b: Int) -> Int { term 1; };\nexport defn cmp(x: Int, y: Int) -> Bool { term x == y; };",

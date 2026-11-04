@@ -27,6 +27,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut constants = Vec::new();
     let mut const_exprs = Vec::new();
     let mut inits = Vec::new();
+    let mut protocol_binding_fns = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -37,6 +38,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             constants: &mut constants,
             const_exprs: &mut const_exprs,
             inits: &mut inits,
+            protocol_binding_fns: &mut protocol_binding_fns,
             always_stateful: &mut always_stateful,
             has_triggers: false,
         };
@@ -53,6 +55,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         constants,
         const_exprs,
         inits,
+        protocol_binding_fns,
         always_stateful,
         has_triggers,
     }
@@ -66,6 +69,7 @@ struct LowerOutputs<'a> {
     constants: &'a mut Vec<String>,
     const_exprs: &'a mut Vec<(String, HirExpr)>,
     inits: &'a mut Vec<HirInit>,
+    protocol_binding_fns: &'a mut Vec<String>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
 }
@@ -107,6 +111,23 @@ fn lower_item(
             ids,
         )),
         TopLevel::Trigger(_) => out.has_triggers = true,
+        TopLevel::ProtocolDef(pd) => {
+            // 2026-11-05: cast-edge / cross-op bindings are called by the
+            // casting graph at emission — root them like the AST index does.
+            for edge in &pd.cast_edges {
+                if let Some(b) = &edge.binding {
+                    out.protocol_binding_fns.push(b.fn_name.clone());
+                }
+            }
+            for op in &pd.cross_ops {
+                if let Some(pv) = &op.impl_args {
+                    crate::analysis::defn_liveness::collect_binding_fns(
+                        pv,
+                        out.protocol_binding_fns,
+                    );
+                }
+            }
+        }
         TopLevel::Export(export) => {
             let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
             lower_item(&export.inner, true, symbol, ids, out);
@@ -252,6 +273,16 @@ fn lower_item(
     }
 }
 
+fn binding_fns(def: &crate::ast::TypeDef) -> Vec<String> {
+    let mut out = Vec::new();
+    for op in &def.body.operators {
+        if let Some(pv) = &op.impl_args {
+            crate::analysis::defn_liveness::collect_binding_fns(pv, &mut out);
+        }
+    }
+    out
+}
+
 fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
     // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
     // when it carries a protocol; otherwise it has no HIR shape.
@@ -266,6 +297,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             protocol: Some(protocol),
             is_coll: def.coll,
             op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+            binding_fns: binding_fns(def),
             span: def.span,
         });
     }
@@ -291,6 +323,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        binding_fns: binding_fns(def),
         span: def.span,
     })
 }
@@ -318,6 +351,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        binding_fns: binding_fns(def),
         span: def.span,
     }
 }
@@ -352,6 +386,7 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         protocol: None,
         is_coll: false,
         op_bindings: Vec::new(),
+        binding_fns: Vec::new(),
         span: def.span,
     }
 }
@@ -375,6 +410,7 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         protocol: None,
         is_coll: false,
         op_bindings: Vec::new(),
+        binding_fns: Vec::new(),
         span: def.span,
     }
 }
@@ -398,6 +434,7 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         protocol: None,
         is_coll: false,
         op_bindings: Vec::new(),
+        binding_fns: Vec::new(),
         span: def.span,
     }
 }
