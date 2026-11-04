@@ -6281,7 +6281,11 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
 
         if self.bootstrap_bad.is_none() && !self.ctx.is_embedded && !self.ctx.library_mode && !self.ctx.is_shared_lib && self.ctx.needs_arena.is_empty() && self.ctx.int_bits == 64 && self.ctx.target_triple.starts_with("x86_64") && self.ctx.target_triple.contains("linux") {
             if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation: {:?}", analysis.reclamation); }
-            return reclamation::lower(out, &analysis.reclamation);
+            // A configured encoding callback may return borrowed storage or retain its input.
+            // Only consume default-provider proofs when the final registry agrees.
+            let overridden = self.ctx.casting_graph.as_ref().is_some_and(|graph|
+                analysis.reclamation.default_encoding_targets.iter().any(|key| graph.get_cast_from_bit(key).is_some()));
+            if !overridden { return reclamation::lower(out, &analysis.reclamation); }
         }
         out
     }

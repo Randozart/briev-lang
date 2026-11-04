@@ -9075,7 +9075,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     } else {
                         let p = self.fun.gen_reg();
                         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, cur_ll, cur).ok();
-                        writeln!(out, "{}{} = call ptr @briev_bits_to_str(ptr {})",
+                        writeln!(out, "{}{} = call ptr @briev_bits_to_str(ptr {}) ; briev.owned_return",
                             indent, dst, p).ok();
                     }
                 }

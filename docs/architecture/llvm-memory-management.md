@@ -1262,3 +1262,10 @@ Non-scalar pointer slots use target-width handles. Store adaptation consumes
 recorded physical register types or casting-graph resolution, including values
 widened at member-call boundaries. A generic parameter's spelling cannot prove
 its physical width; it must not bypass the normal narrowing conversion.
+
+Native encoding conversions may allocate in the C provider. Its default copy
+returns fresh string storage. The frontend models the copy and the LLVM emitter
+marks the owning result. Region lowering registers that actual pointer before
+its first use, with the same bookkeeping and allocation-failure behavior as
+malloc. A registered encoding override invalidates a default-provider proof.
+Raw address casts retain the original allocation identity.

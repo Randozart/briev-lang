@@ -462,20 +462,35 @@ impl Builder<'_> {
             self.unsupported(); return value
         };
         if self.has_user_operators(&source) || self.has_user_operators(target) { self.unsupported(); return value; }
+        let encoding_target = target.universe_key().map(str::to_owned);
+        let address_cast = matches!(&source, crate::ast::Type::Ptr(_)) || matches!(target, crate::ast::Type::Ptr(_));
         let (source, source_variant) = self.graph.casts.type_to_protocol(&self.graph.universe, &source);
         let (target, target_variant) = self.graph.casts.type_to_protocol(&self.graph.universe, target);
-        let Some(steps) = self.graph.casts.find_path(&source, &source_variant, &target, &target_variant) else { self.unsupported(); return value };
-        for step in steps { value = self.cast_lane(&step.lane, value); }
+        let Some(steps) = self.graph.casts.find_path(&source, &source_variant, &target, &target_variant) else {
+            // LLVM lowers a raw address cast even without a registered lane.
+            // Preserve its alias identity, and reject other unclassified casts.
+            if !address_cast { self.unsupported(); }
+            return value;
+        };
+        for step in steps { value = self.cast_lane(&step.lane, value, encoding_target.as_deref()); }
         value
     }
 
-    fn cast_lane(&mut self, lane: &crate::casting::graph::LaneKind, value: Node) -> Node {
+    fn cast_lane(&mut self, lane: &crate::casting::graph::LaneKind, value: Node, encoding_target: Option<&str>) -> Node {
         use crate::casting::graph::LaneKind;
         match lane {
             LaneKind::ExtCall(name) => self.call_nodes(name, &[value]),
             LaneKind::ExtCallDyn(name) => self.call_nodes(name, &[value]),
-            LaneKind::Chain(first, second) => { let value = self.cast_lane(first, value); self.cast_lane(second, value) }
-            LaneKind::CastFromBitCallback => { self.unsupported(); value }
+            LaneKind::Chain(first, second) => { let value = self.cast_lane(first, value, encoding_target); self.cast_lane(second, value, encoding_target) }
+            LaneKind::CastFromBitCallback => {
+                let Some(target) = encoding_target else { self.unsupported(); return value };
+                // The native encoding provider copies the input bytes into fresh storage.
+                // The consumer must check the resolved override registry before using this fact.
+                self.graph.default_encoding_targets.insert(target.into());
+                let fresh = self.graph.allocation(self.owner);
+                self.graph.constraints.push(Constraint::CopyMemory(value, fresh));
+                fresh
+            }
             _ => value,
         }
     }

@@ -31,6 +31,7 @@
         extern void *__briev_region_suspend(void);
         extern void __briev_region_restore(void *);
         extern void *__briev_region_malloc(uint64_t);
+        extern void *__briev_region_adopt(void *);
         extern void *__briev_region_realloc(void *, uint64_t);
         extern void __briev_region_free(void *);
         int main(void) {
@@ -38,6 +39,8 @@
             char *borrowed = __briev_region_malloc(32);
             borrowed[0] = 42;
             __briev_region_enter(outer);
+            void *external = __wrap_malloc(24);
+            if (__briev_region_adopt(external) != external) return 7;
             void *first = __briev_region_malloc(16);
             void *growing = __briev_region_malloc(16);
             __briev_region_free(first);

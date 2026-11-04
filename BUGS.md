@@ -11881,3 +11881,20 @@ guessed that a one-letter generic type meant an i32 register, even after member
 argument coercion had widened it. Consume recorded register representation or
 the casting-graph type instead. The existing wasm collection/JSON corpus
 exercises both paths; the native collector's allocation ABI is preserved.
+
+## 2026-11-04 — native encoding ownership in call regions
+
+The default bit-to-string provider allocates a byte copy in C. Tracking only
+module-local allocator instructions lost this returned buffer. Treat the
+default conversion as a fresh copy, register the returned allocation in the
+active region, and check the final casting registry for overrides. The native
+alias fixture exercises borrowed, owned and multibyte strings under Valgrind.
+The native character formatter now reserves room for the full UTF-8 encoding
+and its terminator. The bounded-memory fixture reads resident pages from Linux
+statm using upstream stdlib facilities.
+
+Dynamic-dispatch thunk signatures can span lines. Inserting region entry after
+the first line put an instruction inside the parameter list. Consume the full
+signature before instrumenting its body, and attach inlining attributes at the
+body brace so aggregate return types keep their layout. The two tier-2 dynamic
+payload ABI fixtures exercise the generated thunks at O0.

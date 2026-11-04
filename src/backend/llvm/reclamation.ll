@@ -35,6 +35,12 @@ entry:
 define internal ptr @__briev_region_malloc(i64 %size) {
 entry:
   %data = call ptr @malloc(i64 %size)
+  %owned = call ptr @__briev_region_adopt(ptr %data)
+  ret ptr %owned
+}
+
+define internal ptr @__briev_region_adopt(ptr %data) {
+entry:
   %frame = load ptr, ptr @__briev_region_current
   %inactive = icmp eq ptr %frame, null
   %failed = icmp eq ptr %data, null

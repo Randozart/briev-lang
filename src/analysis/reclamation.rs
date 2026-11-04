@@ -18,6 +18,7 @@ type Node = usize;
 #[derive(Clone, Debug, Default)]
 pub struct ReclamationPlan {
     pub entry_region: bool,
+    pub default_encoding_targets: BTreeSet<String>,
     pub known: BTreeSet<String>,
     pub mutating: BTreeSet<String>,
     pub regions: BTreeSet<String>,
@@ -53,6 +54,7 @@ struct Graph {
     bodies: BTreeMap<String, (Vec<(String, crate::ast::Type)>, Vec<Statement>)>,
     built: BTreeSet<String>,
     handle_returns: BTreeSet<String>,
+    default_encoding_targets: BTreeSet<String>,
     entry_nodes: BTreeSet<String>,
     user_operators: BTreeSet<String>,
     points: Vec<BTreeSet<Node>>,
@@ -73,7 +75,7 @@ struct Graph {
 impl Default for Graph {
     fn default() -> Self {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
-            return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
+            return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
             globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new() }
     }
@@ -315,6 +317,7 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         if plan.regions.contains(&owner) { result.regions.insert(owner.clone()); }
         result.barriers.extend(plan.barriers);
         result.known.extend(plan.known);
+        result.default_encoding_targets.extend(graph.default_encoding_targets);
         if let Some(reason) = plan.reasons.get(&owner) { result.reasons.insert(owner, reason.clone()); }
     }
     result.regions.retain(|owner| !result.barriers.contains(owner));

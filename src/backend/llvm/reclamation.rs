@@ -12,10 +12,28 @@ pub(super) fn lower(module: String, plan: &ReclamationPlan) -> String {
     if (!plan.entry_region && plan.regions.is_empty()) || module.contains("musttail ") || !has_heap_calls(&module) { return module; }
     let groups = EffectGroups::build(&module);
     let mut lowering = ModuleLowering { plan, groups: &groups, output: String::with_capacity(module.len()), mode: None, entry: false };
-    for line in module.lines() { lowering.line(line); }
+    let mut lines = module.lines();
+    while let Some(line) = lines.next() {
+        if !line.starts_with("define ") { lowering.line(line); continue; }
+        let Some(header) = definition_header(line, &mut lines) else { return module };
+        lowering.definition(&header);
+    }
     lowering.output.push_str(&groups.definitions);
     for line in include_str!("reclamation.ll").lines().filter(|line| !line.starts_with(';')) { writeln!(lowering.output, "{line}").ok(); }
     lowering.output
+}
+
+/// Signatures, including dynamic-dispatch thunks, may span multiple lines.
+fn definition_header<'a>(first: &'a str, lines: &mut std::str::Lines<'a>) -> Option<std::borrow::Cow<'a, str>> {
+    let mut header = std::borrow::Cow::Borrowed(first);
+    loop {
+        if header.trim_end().ends_with('{') { return Some(header); }
+        // An inline body needs instruction-level parsing. Leave such modules alone.
+        if header.trim_end().ends_with('}') { return None; }
+        let next = lines.next()?;
+        header.to_mut().push('\n');
+        header.to_mut().push_str(next);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,7 +49,6 @@ struct ModuleLowering<'a> {
 
 impl ModuleLowering<'_> {
     fn line(&mut self, line: &str) {
-        if line.starts_with("define ") { self.definition(line); return; }
         if line == "}" { self.mode = None; }
         self.boundaries(line);
         let line = if self.mode.is_some() { rewrite_allocator_call(line) } else { line.to_string() };
@@ -49,7 +66,10 @@ impl ModuleLowering<'_> {
         let scoped = self.mode == Some(Mode::Region);
         let line = if scoped { strip_inline_attributes(line) } else { line.into() };
         let mut line = if changes_effects { self.groups.rewrite_reference(&line, scoped) } else { line };
-        if scoped && !line.contains(" #") { line = line.replacen('{', "noinline {", 1); }
+        if scoped && !attribute_pattern().captures_iter(&line).any(|capture| capture.get(1).is_some()) {
+            // An aggregate return type can also contain braces.
+            if let Some(body) = line.rfind('{') { line.insert_str(body, "noinline "); }
+        }
         writeln!(self.output, "{line}").ok();
     }
 
@@ -174,10 +194,23 @@ fn allocator_pattern() -> &'static regex::Regex {
 }
 
 fn has_heap_calls(module: &str) -> bool {
-    module.lines().any(|line| allocator_pattern().captures(line).is_some_and(|captures| &captures[2] == "malloc"))
+    module.lines().any(|line| owned_call(line).is_some() ||
+        allocator_pattern().captures(line).is_some_and(|captures| &captures[2] == "malloc"))
+}
+
+fn owned_call(line: &str) -> Option<(&str, &str, &str)> {
+    let call = line.strip_suffix(" ; briev.owned_return")?;
+    let (register, instruction) = call.trim_start().split_once(" = ")?;
+    if !register.starts_with('%') || !instruction.starts_with("call ptr @") { return None; }
+    Some((&call[..call.len() - call.trim_start().len()], register, instruction))
 }
 
 fn rewrite_allocator_call(line: &str) -> String {
+    // The encoding provider allocates outside this module. Adopt its owned
+    // result at the ABI boundary, after the call and before any possible use.
+    if let Some((indent, register, instruction)) = owned_call(line) {
+        return format!("{indent}{register}.untracked = {instruction}\n{indent}{register} = call ptr @__briev_region_adopt(ptr {register}.untracked)");
+    }
     allocator_pattern().replace(line, |captures: &regex::Captures<'_>| {
         format!("{}@__briev_region_{}(", &captures[1], &captures[2])
     }).into_owned()
@@ -236,6 +269,15 @@ pub(super) fn permits_raw_memory(ir: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiline_signature_preserves_the_aggregate_return_and_starts_tracking_in_the_body() {
+        let module = "declare ptr @malloc(i64)\ndefine { i64, i64 } @owned(\ni64 %arg) {\nentry:\n  %value = call ptr @malloc(i64 %arg)\n  ret { i64, i64 } zeroinitializer\n}\n";
+        let mut plan = ReclamationPlan::default();
+        plan.regions.insert("owned".into());
+        let ir = lower(module.into(), &plan);
+        assert!(ir.contains("define { i64, i64 } @owned(\ni64 %arg) noinline {\nentry:\n  %briev.region.frame = alloca"));
+    }
 
     #[test]
     fn undefined_attribute_references_cannot_collide_with_new_groups() {
