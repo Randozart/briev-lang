@@ -11835,3 +11835,5 @@ the allocation lowering keeps address and remaining-length provenance aligned.
 Inline member coercion also widened unresolved element parameters before
 target-width stores. Preserve the actual operand type for abstract parameters.
 The rbv_list_each_wasm corpus reproduces both failures and now passes.
+
+FIXED: nested environment intercepts in runtime operands now expand using the shared postorder visitor. See tests/nested_environment.rs.
