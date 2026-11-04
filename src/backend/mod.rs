@@ -184,6 +184,55 @@ pub fn hir_emit_enabled() -> bool {
 // 2026-07-31: Phase 3 (§8.1) — `min_width` is the target-config vector-phi
 // promotion gate (config/targets.dbvl `vector_min_width`), threaded into
 // loop-shape building.
+fn ast_task_segments(
+    items: &[TopLevel],
+    targets: &std::collections::HashSet<String>,
+) -> HashMap<String, Vec<Vec<Statement>>> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let TopLevel::Definition(d) = item else {
+                return None;
+            };
+            if !targets.contains(&d.name) {
+                return None;
+            }
+            let params: Vec<String> = d.parameters.iter().map(|(n, _)| n.clone()).collect();
+            Some((
+                d.name.clone(),
+                crate::analysis::task_segments::split_task_body(&d.body, &params),
+            ))
+        })
+        .collect()
+}
+
+/// `None` when any segment contains a node the HIR→AST boundary cannot
+/// reconstruct (`Other`) — callers fall back to the AST result.
+fn hir_task_segments(
+    program: &crate::hir::HirProgram,
+    targets: &std::collections::HashSet<String>,
+) -> Option<HashMap<String, Vec<Vec<Statement>>>> {
+    let mut out = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        matches!(c.kind, crate::hir::HirCallableKind::Defn)
+            && c.owner.is_none()
+            && !c.trait_default
+            && !c.exported
+    }) {
+        if !targets.contains(&c.name) {
+            continue;
+        }
+        let params: Vec<String> = c.params.iter().map(|p| p.name.clone()).collect();
+        let segments = crate::hir::task_segments::split_task_body(&c.body.statements, &params);
+        let mut converted = Vec::with_capacity(segments.len());
+        for seg in segments {
+            converted.push(crate::hir::to_ast::stmt_body(&seg)?);
+        }
+        out.insert(c.name.clone(), converted);
+    }
+    Some(out)
+}
+
 pub fn analyze_program(
     items: &[TopLevel],
     optimize: bool,
@@ -289,21 +338,31 @@ pub fn analyze_program(
     };
     // 2026-08-26 (async Phase C): segment every SPAWN-TARGETED defn once.
     // Non-targeted defns keep their ordinary single-body lowering.
-    let spawn_targets = crate::analysis::task_segments::collect_spawn_targets(items);
-    let task_segments: HashMap<String, Vec<Vec<Statement>>> = items
-        .iter()
-        .filter_map(|item| {
-            let d = match item {
-                TopLevel::Definition(d) => d,
-                _ => return None,
-            };
-            if !spawn_targets.contains(&d.name) {
-                return None;
+    // 2026-11-05 (H4.1): spawn targets and task segment boundaries come from
+    // HIR under the flag. Segment bodies are reconstructed to AST at this
+    // boundary (the emitter still walks AST); any unsupported HIR node makes
+    // the whole program fall back to the AST result — never a guessed body.
+    let spawn_targets = if hir_emit_enabled() {
+        let ast = crate::analysis::task_segments::collect_spawn_targets(items);
+        let h = crate::hir::task_segments::collect_spawn_targets(&hir);
+        debug_assert_eq!(h, ast, "HIR/AST spawn-target drift");
+        h
+    } else {
+        crate::analysis::task_segments::collect_spawn_targets(items)
+    };
+    let task_segments: HashMap<String, Vec<Vec<Statement>>> = if hir_emit_enabled() {
+        let ast = ast_task_segments(items, &spawn_targets);
+        let converted = hir_task_segments(&hir, &spawn_targets);
+        match converted {
+            Some(segs) => {
+                debug_assert_eq!(segs, ast, "HIR/AST task-segment drift");
+                segs
             }
-            let params: Vec<String> = d.parameters.iter().map(|(n, _)| n.clone()).collect();
-            Some((d.name.clone(), crate::analysis::task_segments::split_task_body(&d.body, &params)))
-        })
-        .collect();
+            None => ast,
+        }
+    } else {
+        ast_task_segments(items, &spawn_targets)
+    };
     let module_metadata = collect_module_metadata(items);
     let accel = crate::analysis::accel::analyze(items, &module_metadata, type_universe);
     // 2026-09-18 (M3.5, plan coalesced-kv-memory-path): the coalescing

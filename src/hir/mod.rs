@@ -38,6 +38,7 @@ pub mod tail_carrier;
 pub mod task_linear;
 pub mod task_segments;
 pub mod tail_recursion;
+pub mod to_ast;
 pub mod transition_graph;
 pub mod verify;
 pub mod walk;

@@ -384,7 +384,7 @@ fn walk_body(body: &[HirStmt], tracks: &mut HashMap<String, Track>, coll_obj: &H
 
 fn walk_stmt(stmt: &HirStmt, tracks: &mut HashMap<String, Track>, coll_obj: &HashSet<String>) {
     match &stmt.kind {
-        HirStmtKind::Let { name, ty, expr } => {
+        HirStmtKind::Let { name, ty, expr, .. } => {
             if tracks.contains_key(name) {
                 if let Some(t) = tracks.get_mut(name) {
                     t.fail();

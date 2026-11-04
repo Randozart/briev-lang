@@ -25,6 +25,8 @@ pub enum HirStmtKind {
         name: String,
         ty: Option<Type>,
         expr: Option<HirExpr>,
+        /// Declared modifiers (`state`, `plain`, `out`, `vol`, …).
+        modifiers: Vec<String>,
     },
     Assign(HirExpr, HirExpr),
     ArrowAssign {

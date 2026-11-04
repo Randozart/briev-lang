@@ -87,6 +87,17 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   exercising all debug cross-checks). Next type-agnostic candidates need a
   type shim: spawn pools (AST-typed dependent terms) and task segments
   (AST statements).
+- **H4.1 (task-segments flip + lossless bridge) ✅** Added `hir::to_ast`
+  (faithful HIR→AST reconstruction; `None` on unsupported `Other`). HIR now
+  keeps let `modifiers` and struct-literal `spec` fields, so the bridge is
+  lossless for supported nodes. Under the flag, spawn targets and task
+  segment boundaries come from HIR, reconstructed to AST at the boundary;
+  any unsupported node falls back to the AST result (never a guessed body).
+  Tests: `tests/hir_to_ast.rs` (txn-body round-trip, nested control flow).
+- **Fixed a second run-to-run IR nondeterminism:** `emit_inline_init_stores`
+  iterated `obj_instance_inits` (HashMap) unsorted (the twin of the
+  `emit_init_state` fix). Two instances' Init blocks swapped across
+  processes. Sorted; `test_collections` now stable across 5 runs.
 - **H4.1 (spawn-pool consumer flip) ✅** `spawn_pool::DependentTerm.bound` is
   now a backend-neutral `PoolBound` (literal/var/field/product); the backend
   rebuilds the AST expression at emission (`to_expr`), so analysis results

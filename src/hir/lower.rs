@@ -590,10 +590,11 @@ fn lower_body(body: &[Statement], ids: &mut IdSupply) -> Vec<HirStmt> {
 
 fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
     let kind = match statement {
-        Statement::Let { name, ty, expr, .. } => HirStmtKind::Let {
+        Statement::Let { name, ty, expr, modifiers, .. } => HirStmtKind::Let {
             name: name.clone(),
             ty: ty.clone(),
             expr: expr.as_ref().map(|expr| lower_expr(expr, ids)),
+            modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
         },
         Statement::Assign(target, value) => {
             HirStmtKind::Assign(lower_expr(target, ids), lower_expr(value, ids))
@@ -699,9 +700,10 @@ fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
         }),
         Expr::Tuple(items) => (None, HirExprKind::Tuple(items.iter().map(|item| lower_expr(item, ids)).collect())),
         Expr::List(items) => (None, HirExprKind::List(items.iter().map(|item| lower_expr(item, ids)).collect())),
-        Expr::StructLiteral { type_name, fields, .. } => (None, HirExprKind::StructLiteral {
+        Expr::StructLiteral { type_name, fields, specs, .. } => (None, HirExprKind::StructLiteral {
             type_name: type_name.clone(),
             fields: fields.iter().map(|(name, value)| (name.clone(), lower_expr(value, ids))).collect(),
+            specs: specs.iter().map(|(name, value)| (name.clone(), lower_expr(value, ids))).collect(),
         }),
         Expr::Match(scrutinee, arms) => (None, HirExprKind::Match {
             scrutinee: Box::new(lower_expr(scrutinee, ids)),

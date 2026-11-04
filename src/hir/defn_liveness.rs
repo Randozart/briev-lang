@@ -379,7 +379,7 @@ impl<'a> Builder<'a> {
                     self.walk_expr(s, queue);
                 }
             }
-            HirExprKind::StructLiteral { type_name, fields } => {
+            HirExprKind::StructLiteral { type_name, fields, .. } => {
                 self.on_construction(type_name, queue);
                 for (_, e) in fields {
                     self.walk_expr(e, queue);
@@ -459,7 +459,7 @@ fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        HirExprKind::StructLiteral { type_name, fields } => {
+        HirExprKind::StructLiteral { type_name, fields, .. } => {
             out.push(type_name.clone());
             for (_, e) in fields {
                 collect_call_names_expr(e, out);

@@ -60,6 +60,7 @@ pub fn analyze(
                 name: g.name.clone(),
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
+                modifiers: g.modifiers.clone(),
             },
         };
         let mut live: HashMap<String, i64> = HashMap::new();

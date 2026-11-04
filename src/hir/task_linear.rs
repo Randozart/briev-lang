@@ -44,6 +44,7 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
                 name: g.name.clone(),
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
+                modifiers: g.modifiers.clone(),
             },
         };
         check_list(

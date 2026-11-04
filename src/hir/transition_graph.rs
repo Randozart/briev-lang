@@ -457,10 +457,11 @@ fn simplify_stmt(stmt: &HirStmt) -> HirStmt {
         HirStmtKind::Assign(lhs, rhs) => {
             HirStmtKind::Assign(lhs.clone(), simplify_expr(rhs))
         }
-        HirStmtKind::Let { name, ty, expr } => HirStmtKind::Let {
+        HirStmtKind::Let { name, ty, expr, modifiers } => HirStmtKind::Let {
             name: name.clone(),
             ty: ty.clone(),
             expr: expr.as_ref().map(simplify_expr),
+            modifiers: modifiers.clone(),
         },
         HirStmtKind::Expression(e) => HirStmtKind::Expression(simplify_expr(e)),
         HirStmtKind::Guarded(cond, stmts) => HirStmtKind::Guarded(

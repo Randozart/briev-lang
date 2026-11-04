@@ -117,6 +117,9 @@ pub enum HirExprKind {
     StructLiteral {
         type_name: String,
         fields: Vec<(String, HirExpr)>,
+        /// `spec` fields (component physics parameters), distinct from
+        /// ordinary literal fields; empty for ordinary struct literals.
+        specs: Vec<(String, HirExpr)>,
     },
     Match {
         scrutinee: Box<HirExpr>,

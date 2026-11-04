@@ -3271,9 +3271,13 @@ impl LlvmBackend {
         // 2026-08-07 (object instance pools): the unpacked instances' Init
         // members run here too (the reactor uses the inline init stores, not
         // @init_state).
-        let instance_inits: Vec<(String, String, Expr)> = self.ctx.obj_instance_inits.iter()
+        // 2026-11-05 (house rule §4): same deterministic order as
+        // emit_init_state — HashMap iteration would swap instances' Init
+        // blocks across runs/processes and drift every GEP in this function.
+        let mut instance_inits: Vec<(String, String, Expr)> = self.ctx.obj_instance_inits.iter()
             .map(|(n, (b, e))| (n.clone(), b.clone(), e.clone()))
             .collect();
+        instance_inits.sort_by(|a, b| a.0.cmp(&b.0));
         for init in &instance_inits {
             self.emit_instance_init(out, indent, init);
         }
