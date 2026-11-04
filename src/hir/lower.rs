@@ -590,8 +590,9 @@ fn lower_body(body: &[Statement], ids: &mut IdSupply) -> Vec<HirStmt> {
 
 fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
     let kind = match statement {
-        Statement::Let { name, ty, expr, modifiers, .. } => HirStmtKind::Let {
+        Statement::Let { name, names, ty, expr, modifiers, .. } => HirStmtKind::Let {
             name: name.clone(),
+            names: names.clone(),
             ty: ty.clone(),
             expr: expr.as_ref().map(|expr| lower_expr(expr, ids)),
             modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),

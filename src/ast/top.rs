@@ -533,10 +533,20 @@ impl PartialEq for Statement {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Statement::InlineDefn(_), _) | (_, Statement::InlineDefn(_)) => false,
-            (Statement::Let { name: n1, ty: t1, expr: e1, modifiers: m1, .. },
-             Statement::Let { name: n2, ty: t2, expr: e2, modifiers: m2, .. }) =>
-                n1 == n2 && t1 == t2 && e1 == e2 && m1 == m2,
+            (Statement::Let { name: n1, names: ns1, ty: t1, expr: e1, modifiers: m1, .. },
+             Statement::Let { name: n2, names: ns2, ty: t2, expr: e2, modifiers: m2, .. }) =>
+                n1 == n2 && ns1 == ns2 && t1 == t2 && e1 == e2 && m1 == m2,
             (Statement::Assign(l1, r1), Statement::Assign(l2, r2)) => l1 == l2 && r1 == r2,
+            (Statement::ArrowAssign { target: t1, value: v1, consume: c1 },
+             Statement::ArrowAssign { target: t2, value: v2, consume: c2 }) =>
+                t1 == t2 && v1 == v2 && c1 == c2,
+            (Statement::Tail(e1), Statement::Tail(e2)) => e1 == e2,
+            (Statement::FreeHint(n1), Statement::FreeHint(n2)) => n1 == n2,
+            (Statement::KeepHint(n1), Statement::KeepHint(n2)) => n1 == n2,
+            (Statement::Defer(b1), Statement::Defer(b2)) => b1 == b2,
+            (Statement::Mutex(b1), Statement::Mutex(b2)) => b1 == b2,
+            (Statement::Trap, Statement::Trap) => true,
+            (Statement::Halt, Statement::Halt) => true,
              (Statement::Term(e1), Statement::Term(e2)) => e1 == e2,
             (Statement::Break, Statement::Break) => true,
             (Statement::Yield, Statement::Yield) => true,

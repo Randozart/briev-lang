@@ -87,6 +87,15 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   exercising all debug cross-checks). Next type-agnostic candidates need a
   type shim: spawn pools (AST-typed dependent terms) and task segments
   (AST statements).
+- **H4.2 (body-source hook) ✅** Under `BRIEV_HIR_EMIT=1`, unique top-level
+  defn/txn bodies are reconstructed from HIR once per round and emitted
+  through the existing statement emitter; duplicates/unsupported nodes fall
+  back to AST. Debug asserts body equality per callable. This is the single
+  choke point where direct HIR statement emission will land.
+  - Found while wiring it: HIR dropped `let` **destructuring names**
+    (`let (a, kk) = …`), and `Statement::PartialEq` was incomplete (missing
+    ArrowAssign/Tail/FreeHint/KeepHint/Defer/Mutex/Trap/Halt and ignoring
+    `names`). Both fixed; `tests/hir_to_ast.rs` pins destructuring.
 - **H4.1 (task-segments flip + lossless bridge) ✅** Added `hir::to_ast`
   (faithful HIR→AST reconstruction; `None` on unsupported `Other`). HIR now
   keeps let `modifiers` and struct-literal `spec` fields, so the bridge is

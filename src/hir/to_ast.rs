@@ -172,9 +172,9 @@ pub fn pattern(p: &HirPattern) -> Option<Pattern> {
 
 pub fn stmt(s: &HirStmt) -> Option<Statement> {
     Some(match &s.kind {
-        HirStmtKind::Let { name, ty, expr: e, modifiers } => Statement::Let {
+        HirStmtKind::Let { name, names, ty, expr: e, modifiers } => Statement::Let {
             name: name.clone(),
-            names: vec![name.clone()],
+            names: names.clone(),
             ty: ty.clone(),
             expr: opt_expr(e)?,
             modifiers: modifiers

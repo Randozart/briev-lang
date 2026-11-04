@@ -56,3 +56,25 @@ fn nested_control_flow_round_trips() {
         ast_txn.body
     );
 }
+
+#[test]
+fn destructuring_names_survive() {
+    let src = "defn g() -> (Int, Int) { term (1, 2); };\n\
+               defn f() -> Int { let (a, kk): (Int, Int) = g(); term a + kk; };";
+    let items = parse(src);
+    let program = lower_program(&items);
+    let hir_f = program
+        .callables
+        .iter()
+        .find(|c| c.name == "f" && matches!(c.kind, HirCallableKind::Defn))
+        .expect("hir f");
+    let round = to_ast::stmt_body(&hir_f.body.statements).expect("supported");
+    let names = round
+        .iter()
+        .find_map(|st| match st {
+            briev_compiler::ast::Statement::Let { names, .. } => Some(names.clone()),
+            _ => None,
+        })
+        .expect("let");
+    assert_eq!(names, vec!["a".to_string(), "kk".to_string()]);
+}

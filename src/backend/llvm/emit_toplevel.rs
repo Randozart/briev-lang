@@ -3741,6 +3741,22 @@ impl LlvmBackend {
         d: &crate::ast::Definition,
         needs_state: bool,
     ) {
+        // 2026-11-05 (H4.2): under BRIEV_HIR_EMIT=1 the body comes from typed
+        // HIR (reconstructed losslessly). Debug builds pin it equal to the
+        // AST body; names without a converted body fall back here.
+        let hir_subst;
+        let d: &crate::ast::Definition = if crate::backend::hir_emit_enabled() {
+            match self.hir_bodies.get(&d.name) {
+                Some(body) => {
+                    debug_assert_eq!(body, &d.body, "HIR/AST defn body drift: {}", d.name);
+                    hir_subst = crate::ast::Definition { body: body.clone(), ..d.clone() };
+                    &hir_subst
+                }
+                None => d,
+            }
+        } else {
+            d
+        };
         // A defn is not a state-machine transaction. Leaving the previous
         // txn's name here made emit_web_flush_batch treat every defn `term`
         // as a commit: a recursive title lookup flushed all 32 bound fields
@@ -4532,6 +4548,21 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     }
 
     pub(super) fn emit_transaction(&mut self, out: &mut String, txn: &crate::ast::Transaction, name: &str, range_meta: &mut Vec<String>) {
+        // 2026-11-05 (H4.2): HIR-driven body when a unique converted body
+        // exists; AST fallback otherwise (members, duplicates, Other nodes).
+        let hir_subst;
+        let txn: &crate::ast::Transaction = if crate::backend::hir_emit_enabled() {
+            match self.hir_bodies.get(&txn.name) {
+                Some(body) => {
+                    debug_assert_eq!(body, &txn.body, "HIR/AST txn body drift: {}", txn.name);
+                    hir_subst = crate::ast::Transaction { body: body.clone(), ..txn.clone() };
+                    &hir_subst
+                }
+                None => txn,
+            }
+        } else {
+            txn
+        };
         let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
         // 2026-09-14 (machine-entry plan): non-reactive txns are CALLABLES —
         // bare-name emission for ALL of them, not just param/output ones.

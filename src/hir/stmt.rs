@@ -23,6 +23,9 @@ pub struct HirStmt {
 pub enum HirStmtKind {
     Let {
         name: String,
+        /// All bound names for destructuring lets (`let (a, b) = ...`);
+        /// single-name lets carry `vec![name]`.
+        names: Vec<String>,
         ty: Option<Type>,
         expr: Option<HirExpr>,
         /// Declared modifiers (`state`, `plain`, `out`, `vol`, …).

@@ -1436,6 +1436,11 @@ pub struct LlvmBackend {
     pub ctx: CompilerContext,
     pub fun: FunctionContext,
 
+    /// 2026-11-05 (H4.2): unique top-level defn/txn bodies converted from
+    /// typed HIR. Presence means body emission is HIR-driven (the bridge
+    /// returns the same statements the AST has; absent names fall back).
+    pub(crate) hir_bodies: HashMap<String, Vec<crate::ast::Statement>>,
+
     // ── Optimization ───────────────────────────────────────
     pgo_guard_idx: usize,
 
@@ -1613,6 +1618,7 @@ impl LlvmBackend {
         LlvmBackend {
             ctx: CompilerContext::new(),
             fun: FunctionContext::new(),
+            hir_bodies: HashMap::new(),
             pgo_guard_idx: 0,
             has_async_txns: false,
             has_stdout_flush: false,
@@ -2815,6 +2821,13 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // Red-proven: without the reset, test_trap_frame_survives_fixpoint_round
         // fails on the missing global.
         self.trap_frame_emitted = false;
+        // 2026-11-05 (H4.2): expose the HIR bodies that can be emitted. Only
+        // unique top-level defn/txn names qualify; duplicates and unsupported
+        // nodes fall back to AST, never a guessed body.
+        self.hir_bodies.clear();
+        if crate::backend::hir_emit_enabled() {
+            self.hir_bodies = build_hir_bodies(&analysis.hir);
+        }
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
         // 2026-09-17: ALSO gate on liveness — the defn existing is not
@@ -8621,3 +8634,33 @@ fn walk_expr_children(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+/// Unique top-level defn/txn bodies reconstructed from HIR (`None` conversions
+/// and duplicate names are omitted so emission falls back to AST).
+fn build_hir_bodies(
+    program: &crate::hir::HirProgram,
+) -> HashMap<String, Vec<crate::ast::Statement>> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        c.owner.is_none()
+            && matches!(
+                c.kind,
+                crate::hir::HirCallableKind::Defn | crate::hir::HirCallableKind::Transaction
+            )
+    }) {
+        *counts.entry(c.name.as_str()).or_insert(0) += 1;
+    }
+    let mut out = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        c.owner.is_none()
+            && matches!(
+                c.kind,
+                crate::hir::HirCallableKind::Defn | crate::hir::HirCallableKind::Transaction
+            )
+            && counts.get(c.name.as_str()) == Some(&1)
+    }) {
+        if let Some(body) = crate::hir::to_ast::stmt_body(&c.body.statements) {
+            out.insert(c.name.clone(), body);
+        }
+    }
+    out
+}

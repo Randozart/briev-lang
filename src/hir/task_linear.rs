@@ -42,6 +42,7 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
             span: g.span,
             kind: HirStmtKind::Let {
                 name: g.name.clone(),
+                names: vec![g.name.clone()],
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
                 modifiers: g.modifiers.clone(),
