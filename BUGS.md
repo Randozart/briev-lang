@@ -33,7 +33,7 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
-## `Alloc#` never selects the arena (arena subsystem effectively dead) — OPEN 2026-11-03
+## `Alloc#` never selects the arena (arena subsystem effectively dead) — FIXED 2026-11-03 (selection)
 
 **Symptom:** `benchmarks/arena_churn.bv` (`let a: Int = Alloc#(64) as Int;` in a
 reactive node) lowers to `call ptr @malloc`, never the bump arena: no
@@ -116,7 +116,7 @@ round-trips; the baseline's ~18ms was a legal proof-driven fold. R:
 register-resident bump/end + cold grow (parity). O: dead-allocation
 elimination to keep the fold (restores ~18ms where semantics allow).
 
-## Enum image escapes to state without owning (I11 root cause) — OPEN 2026-11-03
+## Enum image escapes to state without owning (I11 root cause) — PARTIALLY FIXED 2026-11-03 (state/tuple/closure sinks; boundary gate stays)
 
 **Symptom (root cause of the D4b/I11 `malloc(): invalid next size`):** the
 state-store paths in `src/backend/llvm/emit_stmt.rs` (`Assign` → pooled /

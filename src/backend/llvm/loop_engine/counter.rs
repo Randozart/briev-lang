@@ -1692,157 +1692,234 @@ impl LlvmBackend {
     /// known non-retaining intrinsic (so no pointer can survive the iteration
     /// via a state field, collection, return, or outer variable), and the
     /// guard body adds no arena allocation that violates the same rule.
-    fn arena_scope_reset_safe(&self, inner: &[crate::ast::Statement], guard: &[crate::ast::Statement]) -> bool {
+    fn arena_scope_reset_safe(
+        &self,
+        inner: &[crate::ast::Statement],
+        guard: &[crate::ast::Statement],
+    ) -> bool {
+        let mut inner_vars = Vec::new();
+        Self::collect_alloc_vars(inner, &mut inner_vars);
+        if inner_vars.is_empty() {
+            return false;
+        }
+        // Every Alloc# must be a collected body-local let — otherwise an
+        // unbound allocation would be reset without its uses being checked.
+        let inner_allocs: usize = inner.iter().map(Self::count_allocs_stmt).sum();
+        if inner_allocs != inner_vars.len() {
+            return false;
+        }
+        if !inner_vars.iter().all(|v| Self::stmts_use_var_safely(inner, v)) {
+            return false;
+        }
+        // Guard allocations must obey the same rule (or be absent).
+        let mut guard_vars = Vec::new();
+        Self::collect_alloc_vars(guard, &mut guard_vars);
+        guard_vars.iter().all(|v| Self::stmts_use_var_safely(guard, v))
+    }
+
+    fn expr_has_alloc(e: &crate::ast::Expr) -> bool {
+        use crate::ast::Expr;
+        match e {
+            Expr::Call(n, _, _) if n == "Alloc#" => true,
+            Expr::Call(_, args, _) => args.iter().any(Self::expr_has_alloc),
+            Expr::BinaryOp(_, l, r) => Self::expr_has_alloc(l) || Self::expr_has_alloc(r),
+            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
+                Self::expr_has_alloc(x)
+            }
+            Expr::Index(x, i) => Self::expr_has_alloc(x) || Self::expr_has_alloc(i),
+            Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(Self::expr_has_alloc),
+            Expr::If(c, t, el) => {
+                Self::expr_has_alloc(c)
+                    || Self::expr_has_alloc(t)
+                    || el.as_ref().map(|x| Self::expr_has_alloc(x)).unwrap_or(false)
+            }
+            Expr::Block(stmts) => stmts.iter().any(Self::stmt_has_alloc),
+            Expr::Match(x, arms) => {
+                Self::expr_has_alloc(x) || arms.iter().any(|a| Self::expr_has_alloc(&a.body))
+            }
+            _ => false,
+        }
+    }
+
+    fn stmt_has_alloc(st: &crate::ast::Statement) -> bool {
+        use crate::ast::Statement;
+        match st {
+            Statement::Let { expr: Some(e), .. } => Self::expr_has_alloc(e),
+            Statement::Assign(_, e) => Self::expr_has_alloc(e),
+            Statement::ArrowAssign { value, .. } => Self::expr_has_alloc(value),
+            Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
+            | Statement::Tail(e) | Statement::Check(e) => Self::expr_has_alloc(e),
+            Statement::Guarded(c, b) => Self::expr_has_alloc(c) || b.iter().any(Self::stmt_has_alloc),
+            Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+                b.iter().any(Self::stmt_has_alloc)
+            }
+            Statement::Foreach { list, body, .. } => {
+                Self::expr_has_alloc(list) || body.iter().any(Self::stmt_has_alloc)
+            }
+            Statement::Match { expr, arms } => {
+                Self::expr_has_alloc(expr)
+                    || arms.iter().any(|a| a.body.iter().any(Self::stmt_has_alloc))
+            }
+            _ => false,
+        }
+    }
+
+    fn collect_alloc_vars(stmts: &[crate::ast::Statement], out: &mut Vec<String>) {
+        for st in stmts {
+            Self::collect_alloc_vars_stmt(st, out);
+        }
+    }
+
+    fn collect_alloc_vars_stmt(st: &crate::ast::Statement, out: &mut Vec<String>) {
+        use crate::ast::Statement;
+        match st {
+            Statement::Let { name, expr: Some(e), .. } if Self::expr_has_alloc(e) => {
+                out.push(name.clone())
+            }
+            Statement::Guarded(_, b) | Statement::Block(b) | Statement::Defer(b)
+            | Statement::Mutex(b) | Statement::SyncBlock(b) => Self::collect_alloc_vars(b, out),
+            Statement::Foreach { body, .. } => Self::collect_alloc_vars(body, out),
+            Statement::Match { arms, .. } => {
+                for a in arms {
+                    Self::collect_alloc_vars(&a.body, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn count_allocs_expr(e: &crate::ast::Expr) -> usize {
+        use crate::ast::Expr;
+        match e {
+            Expr::Call(n, args, _) => {
+                (if n == "Alloc#" { 1 } else { 0 })
+                    + args.iter().map(Self::count_allocs_expr).sum::<usize>()
+            }
+            Expr::BinaryOp(_, l, r) => Self::count_allocs_expr(l) + Self::count_allocs_expr(r),
+            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
+                Self::count_allocs_expr(x)
+            }
+            Expr::Index(x, i) => Self::count_allocs_expr(x) + Self::count_allocs_expr(i),
+            Expr::Tuple(xs) | Expr::List(xs) => xs.iter().map(Self::count_allocs_expr).sum(),
+            Expr::If(c, t, el) => {
+                Self::count_allocs_expr(c)
+                    + Self::count_allocs_expr(t)
+                    + el.as_ref().map(|x| Self::count_allocs_expr(x)).unwrap_or(0)
+            }
+            Expr::Block(stmts) => stmts.iter().map(Self::count_allocs_stmt).sum(),
+            Expr::Match(x, arms) => {
+                Self::count_allocs_expr(x)
+                    + arms.iter().map(|a| Self::count_allocs_expr(&a.body)).sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    fn count_allocs_stmt(st: &crate::ast::Statement) -> usize {
+        use crate::ast::Statement;
+        match st {
+            Statement::Let { expr: Some(e), .. } => Self::count_allocs_expr(e),
+            Statement::Assign(_, e) => Self::count_allocs_expr(e),
+            Statement::ArrowAssign { value, .. } => Self::count_allocs_expr(value),
+            Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
+            | Statement::Tail(e) | Statement::Check(e) => Self::count_allocs_expr(e),
+            Statement::Guarded(c, b) => {
+                Self::count_allocs_expr(c) + b.iter().map(Self::count_allocs_stmt).sum::<usize>()
+            }
+            Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+                b.iter().map(Self::count_allocs_stmt).sum()
+            }
+            Statement::Foreach { list, body, .. } => {
+                Self::count_allocs_expr(list)
+                    + body.iter().map(Self::count_allocs_stmt).sum::<usize>()
+            }
+            Statement::Match { expr, arms } => {
+                Self::count_allocs_expr(expr)
+                    + arms
+                        .iter()
+                        .map(|a| a.body.iter().map(Self::count_allocs_stmt).sum::<usize>())
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    /// Every occurrence of `v` must be (transitively) inside a whitelisted
+    /// call's argument list.
+    fn expr_uses_var_safely(e: &crate::ast::Expr, v: &str, allowed: bool) -> bool {
+        use crate::ast::Expr;
         const NON_RETAINING: &[&str] = &[
             "Store#", "VolatileStore#", "Load#", "VolatileLoad#", "Copy#", "Fill#", "Memset#",
         ];
-        fn expr_has_alloc(e: &crate::ast::Expr) -> bool {
-            use crate::ast::Expr;
-            match e {
-                Expr::Call(n, _, _) if n == "Alloc#" => true,
-                Expr::Call(_, args, _) => args.iter().any(expr_has_alloc),
-                Expr::BinaryOp(_, l, r) => expr_has_alloc(l) || expr_has_alloc(r),
-                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => expr_has_alloc(x),
-                Expr::Index(x, i) => expr_has_alloc(x) || expr_has_alloc(i),
-                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().any(expr_has_alloc),
-                Expr::If(c, t, el) => expr_has_alloc(c) || expr_has_alloc(t)
-                    || el.as_ref().map(|x| expr_has_alloc(x)).unwrap_or(false),
-                Expr::Block(stmts) => stmts.iter().any(stmt_has_alloc),
-                Expr::Match(x, arms) => expr_has_alloc(x) || arms.iter().any(|a| expr_has_alloc(&a.body)),
-                _ => false,
+        match e {
+            Expr::Identifier(n) => n != v || allowed,
+            Expr::Call(name, args, _) => {
+                let a = NON_RETAINING.contains(&name.as_str());
+                args.iter().all(|x| Self::expr_uses_var_safely(x, v, a))
             }
-        }
-        fn stmt_has_alloc(st: &crate::ast::Statement) -> bool {
-            use crate::ast::Statement;
-            match st {
-                Statement::Let { expr: Some(e), .. } => expr_has_alloc(e),
-                Statement::Assign(_, e) => expr_has_alloc(e),
-                Statement::ArrowAssign { value, .. } => expr_has_alloc(value),
-                Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-                | Statement::Tail(e) | Statement::Check(e) => expr_has_alloc(e),
-                Statement::Guarded(c, b) => expr_has_alloc(c) || b.iter().any(stmt_has_alloc),
-                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
-                    b.iter().any(stmt_has_alloc)
-                }
-                Statement::Foreach { list, body, .. } => expr_has_alloc(list) || body.iter().any(stmt_has_alloc),
-                Statement::Match { expr, arms } => expr_has_alloc(expr)
-                    || arms.iter().any(|a| a.body.iter().any(stmt_has_alloc)),
-                _ => false,
+            Expr::BinaryOp(_, l, r) => {
+                Self::expr_uses_var_safely(l, v, allowed)
+                    && Self::expr_uses_var_safely(r, v, allowed)
             }
-        }
-        fn collect_vars(stmts: &[crate::ast::Statement], out: &mut Vec<String>) {
-            use crate::ast::Statement;
-            for st in stmts {
-                match st {
-                    Statement::Let { name, expr: Some(e), .. } if expr_has_alloc(e) => out.push(name.clone()),
-                    Statement::Guarded(_, b) | Statement::Block(b) | Statement::Defer(b)
-                    | Statement::Mutex(b) | Statement::SyncBlock(b) => collect_vars(b, out),
-                    Statement::Foreach { body, .. } => collect_vars(body, out),
-                    Statement::Match { arms, .. } => {
-                        for a in arms {
-                            collect_vars(&a.body, out);
-                        }
-                    }
-                    _ => {}
-                }
+            Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
+            | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => {
+                Self::expr_uses_var_safely(x, v, allowed)
             }
-        }
-        /// Count every Alloc# occurrence (expression + nested statements).
-        fn count_allocs_expr(e: &crate::ast::Expr) -> usize {
-            use crate::ast::Expr;
-            match e {
-                Expr::Call(n, args, _) => (if n == "Alloc#" { 1 } else { 0 })
-                    + args.iter().map(count_allocs_expr).sum::<usize>(),
-                Expr::BinaryOp(_, l, r) => count_allocs_expr(l) + count_allocs_expr(r),
-                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => count_allocs_expr(x),
-                Expr::Index(x, i) => count_allocs_expr(x) + count_allocs_expr(i),
-                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().map(count_allocs_expr).sum(),
-                Expr::If(c, t, el) => count_allocs_expr(c) + count_allocs_expr(t)
-                    + el.as_ref().map(|x| count_allocs_expr(x)).unwrap_or(0),
-                Expr::Block(stmts) => stmts.iter().map(count_allocs_stmt).sum(),
-                Expr::Match(x, arms) => count_allocs_expr(x)
-                    + arms.iter().map(|a| count_allocs_expr(&a.body)).sum::<usize>(),
-                _ => 0,
+            Expr::Index(x, i) => {
+                Self::expr_uses_var_safely(x, v, allowed)
+                    && Self::expr_uses_var_safely(i, v, allowed)
             }
-        }
-        fn count_allocs_stmt(st: &crate::ast::Statement) -> usize {
-            use crate::ast::Statement;
-            match st {
-                Statement::Let { expr: Some(e), .. } => count_allocs_expr(e),
-                Statement::Assign(_, e) => count_allocs_expr(e),
-                Statement::ArrowAssign { value, .. } => count_allocs_expr(value),
-                Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-                | Statement::Tail(e) | Statement::Check(e) => count_allocs_expr(e),
-                Statement::Guarded(c, b) => count_allocs_expr(c) + b.iter().map(count_allocs_stmt).sum::<usize>(),
-                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
-                    b.iter().map(count_allocs_stmt).sum()
-                }
-                Statement::Foreach { list, body, .. } => {
-                    count_allocs_expr(list) + body.iter().map(count_allocs_stmt).sum::<usize>()
-                }
-                Statement::Match { expr, arms } => count_allocs_expr(expr)
-                    + arms.iter().map(|a| a.body.iter().map(count_allocs_stmt).sum::<usize>()).sum::<usize>(),
-                _ => 0,
+            Expr::Tuple(xs) | Expr::List(xs) => {
+                xs.iter().all(|x| Self::expr_uses_var_safely(x, v, allowed))
             }
-        }
-        /// Every occurrence of `v` must be (transitively) inside a whitelisted
-        /// call's argument list.
-        fn expr_ok(e: &crate::ast::Expr, v: &str, allowed: bool) -> bool {
-            use crate::ast::Expr;
-            match e {
-                Expr::Identifier(n) => n != v || allowed,
-                Expr::Call(name, args, _) => {
-                    let a = NON_RETAINING.contains(&name.as_str());
-                    args.iter().all(|x| expr_ok(x, v, a))
-                }
-                Expr::BinaryOp(_, l, r) => expr_ok(l, v, allowed) && expr_ok(r, v, allowed),
-                Expr::UnaryOp(_, x) | Expr::Cast(x, _) | Expr::IsType(x, _) | Expr::Deref(x)
-                | Expr::AddrOf(x) | Expr::Consume(x) | Expr::Await(x) | Expr::Field(x, _) => expr_ok(x, v, allowed),
-                Expr::Index(x, i) => expr_ok(x, v, allowed) && expr_ok(i, v, allowed),
-                Expr::Tuple(xs) | Expr::List(xs) => xs.iter().all(|x| expr_ok(x, v, allowed)),
-                Expr::If(c, t, el) => expr_ok(c, v, allowed) && expr_ok(t, v, allowed)
-                    && el.as_ref().map(|x| expr_ok(x, v, allowed)).unwrap_or(true),
-                Expr::Block(stmts) => stmts_ok(stmts, v),
-                _ => true,
+            Expr::If(c, t, el) => {
+                Self::expr_uses_var_safely(c, v, allowed)
+                    && Self::expr_uses_var_safely(t, v, allowed)
+                    && el
+                        .as_ref()
+                        .map(|x| Self::expr_uses_var_safely(x, v, allowed))
+                        .unwrap_or(true)
             }
+            Expr::Block(stmts) => Self::stmts_use_var_safely(stmts, v),
+            _ => true,
         }
-        fn stmts_ok(stmts: &[crate::ast::Statement], v: &str) -> bool {
-            use crate::ast::Statement;
-            for st in stmts {
-                let ok = match st {
-                    Statement::Let { expr: Some(e), .. } => expr_ok(e, v, false),
-                    Statement::Assign(_, e) => expr_ok(e, v, false),
-                    Statement::ArrowAssign { value, .. } => expr_ok(value, v, false),
-                    Statement::Expression(e) | Statement::Term(Some(e)) | Statement::EndProgram(Some(e))
-                    | Statement::Tail(e) | Statement::Check(e) => expr_ok(e, v, false),
-                    Statement::Guarded(c, b) => expr_ok(c, v, false) && stmts_ok(b, v),
-                    Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
-                        stmts_ok(b, v)
-                    }
-                    Statement::Foreach { list, body, .. } => expr_ok(list, v, false) && stmts_ok(body, v),
-                    Statement::Match { expr, arms } => expr_ok(expr, v, false)
-                        && arms.iter().all(|a| stmts_ok(&a.body, v)),
-                    _ => true,
-                };
-                if !ok { return false; }
-            }
-            true
-        }
-        let mut inner_vars = Vec::new();
-        collect_vars(inner, &mut inner_vars);
-        if inner_vars.is_empty() { return false; }
-        // Every Alloc# must be a collected body-local let — otherwise an
-        // unbound allocation would be reset without its uses being checked.
-        let inner_allocs: usize = inner.iter().map(count_allocs_stmt).sum();
-        if inner_allocs != inner_vars.len() { return false; }
-        if !inner_vars.iter().all(|v| stmts_ok(inner, v)) { return false; }
-        // Guard allocations must obey the same rule (or be absent).
-        let mut guard_vars = Vec::new();
-        collect_vars(guard, &mut guard_vars);
-        guard_vars.iter().all(|v| stmts_ok(guard, v))
     }
+
+    fn stmts_use_var_safely(stmts: &[crate::ast::Statement], v: &str) -> bool {
+        use crate::ast::Statement;
+        for st in stmts {
+            let ok = match st {
+                Statement::Let { expr: Some(e), .. } => Self::expr_uses_var_safely(e, v, false),
+                Statement::Assign(_, e) => Self::expr_uses_var_safely(e, v, false),
+                Statement::ArrowAssign { value, .. } => Self::expr_uses_var_safely(value, v, false),
+                Statement::Expression(e) | Statement::Term(Some(e))
+                | Statement::EndProgram(Some(e)) | Statement::Tail(e) | Statement::Check(e) => {
+                    Self::expr_uses_var_safely(e, v, false)
+                }
+                Statement::Guarded(c, b) => {
+                    Self::expr_uses_var_safely(c, v, false) && Self::stmts_use_var_safely(b, v)
+                }
+                Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b)
+                | Statement::SyncBlock(b) => Self::stmts_use_var_safely(b, v),
+                Statement::Foreach { list, body, .. } => {
+                    Self::expr_uses_var_safely(list, v, false)
+                        && Self::stmts_use_var_safely(body, v)
+                }
+                Statement::Match { expr, arms } => {
+                    Self::expr_uses_var_safely(expr, v, false)
+                        && arms.iter().all(|a| Self::stmts_use_var_safely(&a.body, v))
+                }
+                _ => true,
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+
 
     fn emit_countable_load_bound(
         &mut self,
