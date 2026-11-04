@@ -7,7 +7,12 @@ use briev_compiler::hir::{lower_program, unsupported_counts, verify};
 use std::path::{Path, PathBuf};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
-const BASELINE_EXPRESSIONS: usize = 56;
+// 2026-11-03: 56 -> 60. The new arena/intrinsic regression fixtures
+// (arena_scope_reset, arena_scope_reset_rejected, arena_free_cast) use
+// VolatileStore#/VolatileLoad#/Free#/Ptr casts, which surface as
+// `plugin-intercept` unsupported nodes when lower_program runs on raw source
+// (no plugin expansion). H3/H4 lower these; the baseline stays downward.
+const BASELINE_EXPRESSIONS: usize = 60;
 const BASELINE_STATEMENTS: usize = 0;
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {

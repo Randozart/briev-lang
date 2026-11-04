@@ -2218,6 +2218,12 @@ impl LlvmBackend {
                     self.fun.txn_counter += 1;
                     writeln!(out, "  br i1 {}, label %{}, label %{}", bool_reg, body_label, next_label).ok();
                     writeln!(out, "{}:", body_label).ok();
+                    // 2026-11-03: the merge phi below uses the body's ACTUAL
+                    // final block. Seed cur_block with the body label so a
+                    // body with no inline control flow resolves to `.cmgbN`
+                    // (not the pre-guard block, which was a duplicate
+                    // predecessor); inline CF advances it to the real block.
+                    self.fun.cur_block = Some(body_label.clone());
                     self.emit_countable_body(out, stmts, write_set, hoisted);
                     // 2026-11-03: the body may have inserted inline control
                     // flow (arena bump/grow, when/match); the merge phi's
