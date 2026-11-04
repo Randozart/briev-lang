@@ -83,6 +83,13 @@ shared `%State` safe for fields via the gate's XOR-disjoint proof; async output
 interleaving contract-unspecified. This is the durable plan the enum gate-removal
 workstream executes; the two share Phase 0.
 
+**Typed HIR H3–H5 execution (2026-11-04, ACTIVE):**
+`docs/plans/2026-11-04-typed-hir-h3-h5-execution.md` — port every analysis to
+HIR (needs_state/needs_plain → defn_liveness → storage_class/boundary_ownership
+→ loop_shape/tail_recursion → task/collection → generic txn), each with corpus
+parity; then backend consumes HIR family-by-family behind byte-identical IR
+A/B; finally retire AST paths. No behavior change per slice.
+
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
 becomes the semantic source for analyses and lowering.
