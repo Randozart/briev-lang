@@ -13,6 +13,7 @@ pub mod facts;
 pub mod frontend;
 pub mod ids;
 pub mod lower;
+pub mod needs_state;
 pub mod ownership;
 pub mod pattern;
 pub mod program;
@@ -29,6 +30,7 @@ pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantF
 pub use facts::{build_facts, HirFacts};
 pub use frontend::lower_program_after_frontend;
 pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
+pub use needs_state::{compute_defn_needs_plain, compute_defn_needs_state, compute_export_needs_state};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
 pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
 pub use program::{HirCallable, HirCallableKind, HirProgram};

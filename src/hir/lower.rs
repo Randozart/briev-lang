@@ -20,23 +20,26 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut callables = Vec::new();
     let mut type_defs = Vec::new();
     let mut globals = Vec::new();
+    let mut always_stateful = Vec::new();
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
             types: &mut type_defs,
             globals: &mut globals,
+            always_stateful: &mut always_stateful,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
     }
-    HirProgram { callables, type_defs, globals }
+    HirProgram { callables, type_defs, globals, always_stateful }
 }
 
 struct LowerOutputs<'a> {
     callables: &'a mut Vec<HirCallable>,
     types: &'a mut Vec<HirTypeDef>,
     globals: &'a mut Vec<HirGlobal>,
+    always_stateful: &'a mut Vec<String>,
 }
 
 fn lower_item(
@@ -151,7 +154,7 @@ fn lower_item(
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
-        TopLevel::Statement(stmt) => {
+        TopLevel::Statement(stmt) if !exported => {
             if let crate::ast::Statement::Let { name, ty, .. } = stmt.as_ref() {
                 out.globals.push(HirGlobal {
                     node: ids.node(),
@@ -163,7 +166,7 @@ fn lower_item(
                 });
             }
         }
-        TopLevel::StateDecl(s) => out.globals.push(HirGlobal {
+        TopLevel::StateDecl(s) if !exported => out.globals.push(HirGlobal {
             node: ids.node(),
             item: ids.item(),
             name: s.name.clone(),
@@ -171,6 +174,8 @@ fn lower_item(
             is_state_decl: true,
             span: s.span,
         }),
+        TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
+        TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
         TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
         TopLevel::StaticStruct(def) => out.types.push(lower_struct(def, ids)),

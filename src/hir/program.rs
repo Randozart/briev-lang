@@ -100,4 +100,8 @@ pub struct HirProgram {
     pub callables: Vec<HirCallable>,
     pub type_defs: Vec<HirTypeDef>,
     pub globals: Vec<HirGlobal>,
+    /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
+    /// with the implicit `%state` first ABI arg, so a call always carries
+    /// state (the AST always_stateful leaf set).
+    pub always_stateful: Vec<String>,
 }
