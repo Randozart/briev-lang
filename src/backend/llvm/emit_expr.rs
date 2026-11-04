@@ -10,6 +10,7 @@
 // 2026-06-28: fix empty-indent emit_expr — default indent prevents %t{N} violations.
 
 use crate::ast::*;
+use crate::analysis::generic_specialization::{unify_generic_binding, mangle_specialization};
 use crate::ast::{Expr, Statement, Type};
 use crate::backend::llvm::emit_stmt;
 use crate::backend::llvm::helpers::WordImageCopy;
@@ -105,47 +106,6 @@ pub(crate) struct MemberInvocation<'a> {
     pub prefix: Option<(String, String)>,
 }
 
-/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): bind a
-/// generic defn's type params from a (declared param type, concrete arg type)
-/// pair. A declared type that IS a type param binds to the concrete arg;
-/// structured types recurse (`List<T>` vs `List<Int>` binds `T=Int`). Only
-/// the type params in `params` are bound; everything else is left alone.
-fn unify_generic_binding(
-    declared: &Type,
-    concrete: &Type,
-    params: &[String],
-    subst: &mut std::collections::HashMap<String, Type>,
-) {
-    if let Type::Custom(declared_name) = declared {
-        if params.iter().any(|p| p == declared_name) {
-            subst.entry(declared_name.clone()).or_insert_with(|| concrete.clone());
-            return;
-        }
-    }
-    match (declared, concrete) {
-        (Type::Applied(_, dps), Type::Applied(_, cps)) if dps.len() == cps.len() => {
-            for (dp, cp) in dps.iter().zip(cps.iter()) {
-                unify_generic_binding(dp, cp, params, subst);
-            }
-        }
-        (Type::Ptr(dp), Type::Ptr(cp)) | (Type::PtrConst(dp), Type::PtrConst(cp)) => {
-            unify_generic_binding(dp, cp, params, subst);
-        }
-        _ => {}
-    }
-}
-
-/// 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6): the mangled
-/// LLVM symbol for a specialization — `bump_twice$Tally` for one concrete arg,
-/// multiple joined by `$`. The `$` is a legal LLVM identifier character, so no
-/// quoting is needed; a nominal type name is already identifier-safe.
-///
-/// 2026-10-14 (fix): COMPOUND concrete args (`List<String>`, nested `Result`)
-/// are encoded recursively — the old Display fallback produced
-/// `List<String>`-shaped suffixes (`<`, `>`, `,` are invalid in an LLVM
-/// identifier), which is why the Custom-only guard below rejected every
-/// compound instantiation and its call sites fell back to the plain
-/// (never-emitted) name. To undo: revert to the Display fallback + guard.
 /// 2026-10-15 (type-dependent member statefulness): the bare nominal name of a
 /// concrete type binding, for looking it up in `type_stateful_members`
 /// (`Custom("GrowBuf")` / `Applied("Stack", …)` → the base name). Compound and
@@ -155,43 +115,6 @@ fn concrete_type_name(ty: &Type) -> Option<&str> {
         Type::Custom(n) => Some(n.as_str()),
         Type::Applied(n, _) | Type::Generic(n, _) => Some(n.as_str()),
         _ => None,
-    }
-}
-
-fn mangle_specialization(name: &str, concrete: &[Type]) -> String {
-    let args = concrete
-        .iter()
-        .map(mangle_type_suffix)
-        .collect::<Vec<_>>()
-        .join("$");
-    format!("{}${}", name, args)
-}
-
-/// Identifier-safe encoding of one concrete type for `mangle_specialization`:
-/// nominal names pass through, applied types flatten recursively
-/// (`List<String>` → `List$String`), everything else keeps only its
-/// alphanumeric runs (deterministic, no ambiguity in practice — the shapes
-/// that reach here are nominal or applied).
-fn mangle_type_suffix(ty: &Type) -> String {
-    match ty {
-        Type::Custom(n) => n.clone(),
-        Type::Applied(n, args) | Type::Generic(n, args) => {
-            if args.is_empty() {
-                n.clone()
-            } else {
-                format!(
-                    "{}${}",
-                    n,
-                    args.iter().map(mangle_type_suffix).collect::<Vec<_>>().join("$")
-                )
-            }
-        }
-        other => {
-            let disp = format!("{other}");
-            disp.chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '$')
-                .collect()
-        }
     }
 }
 

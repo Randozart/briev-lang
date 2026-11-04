@@ -1,0 +1,86 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import { Ok, Err, unwrap, is_err } from "std/result.bv";
+
+obj RetainedBuffer { address: Ptr<Bit<8>>; };
+
+defn returned_buffer(depth: Int) -> Ptr<Bit<8>> {
+    when depth == 0 { term Malloc#(32); };
+    term returned_buffer(depth-1);
+};
+
+defn retain_in_argument(destination: RetainedBuffer) -> Bool {
+    destination.address = returned_buffer(2);
+    term true;
+};
+
+defn local_aliases() -> Bool {
+    let original: Ptr<Bit<8>> = returned_buffer(3);
+    let alias: Ptr<Bit<8>> = original;
+    Store#(original,42,8);
+    let before: Int = Load#(original,8);
+    Store#(alias,43,8);
+    term before == 42 && Load#(alias,8) == 43;
+};
+
+defn retained_alias() -> Bool {
+    let destination: RetainedBuffer = RetainedBuffer { address: 0 as Ptr<Bit<8>> };
+    retain_in_argument(destination);
+    Store#(destination.address,71,8);
+    term Load#(destination.address,8) == 71;
+};
+
+defn mixed_payload(owned: Bool, borrowed: String) -> Result<String,Int> {
+    when owned { term Ok(12345 as String); };
+    term Ok(borrowed);
+};
+
+defn recursive_result(depth: Int, borrowed: String) -> Result<Result<String,Int>,Int> {
+    when depth == 0 { term Ok(mixed_payload(true,borrowed)); };
+    term recursive_result(depth-1,borrowed);
+};
+
+defn payload_aliases(owned: Bool) -> Bool {
+    let original: Result<String,Int> = mixed_payload(owned,"static");
+    let alias: String = unwrap(original);
+    when is_err(original) { term false; };
+    when owned { term alias .^Length == 5 && byte_at(alias,0) == 49; };
+    term alias .^Length == 6 && byte_at(alias,0) == 115;
+};
+
+defn nested_payloads() -> Bool {
+    let original: Result<Result<String,Int>,Int> = recursive_result(3,"static");
+    let inner: Result<String,Int> = unwrap(original);
+    let alias: String = unwrap(inner);
+    when is_err(original) || is_err(inner) { term false; };
+    term byte_at(alias,4) == 53;
+};
+
+defn borrowed_heap_payload() -> Bool {
+    let backing: String = 54321 as String;
+    let original: Result<String,Int> = mixed_payload(false,backing);
+    let alias: String = unwrap(original);
+    when is_err(original) { term false; };
+    term byte_at(alias,0) == 53 && byte_at(backing,4) == 49;
+};
+
+defn early_exit(early: Bool) -> Bool {
+    let value: Ptr<Bit<8>> = returned_buffer(2);
+    Store#(value,17,8);
+    when early { term Load#(value,8) == 17; };
+    term Load#(value,8) == 17;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    foreach index in 0..64 {
+        when !local_aliases() || !retained_alias() { endprogram 3; };
+        when !payload_aliases(true) || !payload_aliases(false) || !nested_payloads() { endprogram 4; };
+        when !borrowed_heap_payload() { endprogram 6; };
+        when !early_exit(true) || !early_exit(false) { endprogram 5; };
+    };
+    println!("reclamation_ok");
+    done = true;
+    endprogram;
+};

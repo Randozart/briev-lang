@@ -11835,3 +11835,49 @@ the allocation lowering keeps address and remaining-length provenance aligned.
 Inline member coercion also widened unresolved element parameters before
 target-width stores. Preserve the actual operand type for abstract parameters.
 The rbv_list_each_wasm corpus reproduces both failures and now passes.
+
+## 2026-11-04 — local returned allocations lack reclamation (repair in progress)
+
+Whole-file results, parser list storage, object observations and enum images
+outlived local consumers. Destination representation did not prove ownership of
+the image or active payload, and returned heap allocations were not registered
+for general destruction. Do not infer permission to free from Result<T,E> or
+an LLVM register's shape.
+
+The new frontend call-region analysis separates incoming borrowed storage from
+allocations created during a call, propagates recursive/alias/memory facts and
+uses concrete generic specializations. Its native consumer tracks actual
+allocations, including explicit free and realloc, and releases only within a
+proved non-escaping scope. The independent runtime and native alias fixtures
+pass Valgrind with zero lost bytes or memory errors. Collector verification and
+final regression gates remain pending; no memory-stability claim yet.
+
+### 2026-11-04 memory closure verification
+
+The local returned-allocation repair is FIXED for the hosted Linux x86-64
+collector path. All nine Valgrind cases now report zero definite/indirect loss
+and zero errors. Both 5,000-row self-preflights have flat RSS/virtual memory
+after warmup. Alias, borrowed/static and caller-storage native fixtures pass;
+the independent allocator runtime passes O0 and O3/LTO with failure injection.
+Full evidence and target/conservative fallback limits are in
+`docs/plans/2026-11-04-collector-reclamation-closure.md`.
+
+Two prerequisite defects were also fixed: runtime reflection omitted receiver
+calls from definition liveness, and LLVM attribute group 15 was accidentally
+commented out by literal escaped newlines. Cloned attribute IDs must reserve
+all references, including undefined ones; otherwise a new group silently gives
+old functions incorrect effects (including `norecurse`). Region frames also
+need separate calls to preserve the recursive driver's bounded tail execution;
+the generated-IR A/B and native bounded-execution fixture pin that requirement.
+
+Exact-number effects must propagate uncertainty: `SysCall#(number+1,pointer)`
+cannot borrow merely because one operand is literal 1. Computed or partly
+unknown numbers now conservatively capture; focused tests cover both cases.
+
+Wasm verification also exposed two representation defects. `Malloc#` returned
+an i64 SSA value with a wasm32 pointer type; reuse target-width allocator
+emission/provenance rather than duplicating it. Non-scalar pointer stores also
+guessed that a one-letter generic type meant an i32 register, even after member
+argument coercion had widened it. Consume recorded register representation or
+the casting-graph type instead. The existing wasm collection/JSON corpus
+exercises both paths; the native collector's allocation ABI is preserved.

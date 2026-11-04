@@ -1,0 +1,27 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/os/proc_stat.bv";
+
+defn rss_pages() -> Int {
+    let result: Result<ProcStat,Int> = proc_stat_read(SysCall#(39));
+    when is_err(result) { endprogram 2; };
+    term unwrap(result).resident_pages;
+};
+
+defn sample_repeatedly(remaining: Int) -> Int {
+    when remaining == 0 { term rss_pages(); };
+    let current: Int = rss_pages();
+    term sample_repeatedly(remaining-1);
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let warmup: Int = sample_repeatedly(32);
+    let before: Int = rss_pages();
+    let after: Int = sample_repeatedly(5000);
+    when before <= 0 || after > before + 128 { endprogram 3; };
+    println!("bounded_regions_ok");
+    done = true;
+    endprogram;
+};

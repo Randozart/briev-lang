@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use super::*;
+use super::reclamation::contains_heap_allocation;
 use crate::ast::*;
 
 fn empty_program() -> Vec<TopLevel> {
@@ -345,7 +346,7 @@ defn read(x: Int) -> Int {
         "proven object literal must use frame image:\n{function}"
     );
     assert!(
-        !function.contains("call ptr @malloc(i64 16)"),
+        !contains_heap_allocation(&function, 16),
         "proven object literal must not heap allocate:\n{function}"
     );
 }
@@ -6358,7 +6359,7 @@ fn test_addr_of_struct_literal() {
     // function ptr. 2026-08-13 (struct value lifetime): the struct literal is
     // HEAP-allocated (a stack alloca's handle dangles once the constructing
     // function returns), so the assertion is malloc, not `alloca`.
-    assert!(output.contains("call ptr @malloc(i64 16)"),
+    assert!(contains_heap_allocation(&output, 16),
         "Struct literal should malloc 16 bytes (2 x 8B fields).\nGot:\n{}", output);
     assert!(output.contains("ptrtoint ptr %t"),
         "Should emit ptrtoint of the struct allocation for &pt.\nGot:\n{}", output);
@@ -7885,7 +7886,7 @@ fn test_bit_to_string_encoding_door() {
         let s: String = "hello";
         let tick: Int = 0;
         node report [tick < 1][tick == 1] {
-            let b: Bit = s as Bit;
+            let b: Bits<64> = s as Bits<64>;
             let r: String = b as String;
             term;
         };
@@ -10887,7 +10888,7 @@ fn test_struct_literal_alloca_deferred_in_loop() {
     assert_eq!(backend.fun.pending_struct_allocas.len(), 1,
         "the allocation must be deferred to pending_struct_allocas");
     backend.flush_pending_struct_allocas(&mut out);
-    assert!(out.contains("call ptr @malloc(i64 16)"),
+    assert!(contains_heap_allocation(&out, 16),
         "flush_pending_struct_allocas must write the malloc call; got:\n{out}");
     let _ = reg;
 }
@@ -11357,7 +11358,7 @@ defn make() -> Option {
         "constructor-returning defn should use the sret enum slot:\n{}",
         &ir[..ir.len().min(4000)]
     );
-    assert!(!ir.contains("call ptr @malloc(i64 16)"), "enum result should be unboxed");
+    assert!(!contains_heap_allocation(&ir, 16), "enum result should be unboxed");
 }
 
 /// 2026-09-24 (stateless-defn × arena): in a program whose %State carries
@@ -11391,7 +11392,7 @@ node go [tick < 1][tick == 1] { let r: R = outer(1); tick = 1; term; };
     let outer = ir.split("define i64 @outer").nth(1).expect("outer definition");
     let body = outer.split("\n}").next().unwrap();
     assert!(
-        body.contains("call ptr @malloc(i64 16)"),
+        contains_heap_allocation(&body, 16),
         "boxed enum return through an sret callee must own a heap slot:\n{body}"
     );
 }
@@ -11432,8 +11433,8 @@ fn test_stateless_defn_concat_uses_malloc_when_arena_program() {
         "stateless body must not reach into %State:\n{shout_body}"
     );
     assert!(
-        shout_body.contains("@malloc"),
-        "stateless concat must fall back to @malloc:\n{shout_body}"
+        shout_body.contains("@malloc(") || shout_body.contains("@__briev_region_malloc("),
+        "stateless concat must use heap allocation independently of region bookkeeping:\n{shout_body}"
     );
     // The program still has an arena somewhere (the node's Alloc#).
     assert!(
@@ -12088,7 +12089,7 @@ node go [done == false][done == true] {
     // The construction stores tagged boxes (16-byte mallocs) — the Switch-form
     // element shape.
     assert!(
-        ir.contains("call ptr @malloc(i64 16)"),
+        contains_heap_allocation(&ir, 16),
         "the tagged-box construction must be present for a Switch-form List<dyn>:\n{ir}"
     );
     use std::process::Command;

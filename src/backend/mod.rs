@@ -28,6 +28,7 @@ use std::collections::HashMap;
 /// Backends check `optimize_mode` to decide whether to use optimized paths
 /// (pre-scheduled DAG emission) or fall back to full idiomatic codegen.
 pub struct AnalysisResults {
+    pub reclamation: crate::analysis::reclamation::ReclamationPlan,
     pub call_graph: CallGraph,
     pub param_ranges: ParameterRanges,
     pub fusable_pairs: Vec<(String, String)>,
@@ -340,6 +341,7 @@ pub fn analyze_program(
         &loop_shapes,
     );
         AnalysisResults {
+        reclamation: crate::analysis::reclamation::analyze(items, &crate::analysis::defn_liveness::DefnLiveness::build(items).live, type_universe),
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),
         fusable_pairs: Vec::new(),

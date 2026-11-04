@@ -731,6 +731,13 @@ impl<'a> Builder<'a> {
                 // unknown reflection retains the conservative fallback below.
                 self.walk_expr(receiver, queue);
             }
+            Expr::Reflect(receiver, _, crate::ast::ReflectKind::Runtime) => {
+                // 2026-11-04: runtime metadata still evaluates its receiver.
+                // Calls under `value.^Length` must be live before ownership
+                // analysis, not discovered by the emitted-call fixpoint.
+                // Retire only with exhaustive shared dependency traversal.
+                self.walk_expr(receiver, queue);
+            }
             Expr::Reflect(_, _, kind) => {
                 // `.^^` compile-time reflection can reach members by name —
                 // coarse keep-all (sound; refinement deferred).
@@ -1107,6 +1114,7 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_call_names_expr(r, out);
         }
         Expr::UnaryOp(_, i) => collect_call_names_expr(i, out),
+        Expr::Reflect(receiver, _, _) => collect_call_names_expr(receiver, out),
         Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
         | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _)
         => collect_call_names_expr(o, out),
@@ -1512,6 +1520,26 @@ mod tests {
             assert!(liveness.is_live("receiver"), "{target} still evaluates its receiver");
             assert!(!liveness.is_live("unrelated_target_wrapper"));
         }
+    }
+
+    #[test]
+    fn runtime_reflection_keeps_its_receiver_and_transitive_calls() {
+        let expression = Expr::Reflect(Box::new(Expr::Call("receiver".into(), vec![], None)),
+            "Length".into(), crate::ast::ReflectKind::Runtime);
+        let items = vec![
+            txn("main_node", true, vec![Statement::Expression(expression.clone())]),
+            defn("receiver", vec![Statement::Term(Some(Expr::Call("nested".into(), vec![], None)))]),
+            defn("nested", vec![Statement::Term(Some(Expr::Quoted(vec![])))]),
+            defn("unrelated", vec![Statement::Term(None)]),
+        ];
+        let plan = DefnLiveness::build(&items);
+        assert!(plan.is_live("receiver"));
+        assert!(plan.is_live("nested"));
+        assert!(!plan.is_live("unrelated"));
+        assert!(!plan.keep_all);
+        let mut calls = Vec::new();
+        collect_call_names_expr(&expression, &mut calls);
+        assert_eq!(calls, ["receiver"]);
     }
 
     #[test]

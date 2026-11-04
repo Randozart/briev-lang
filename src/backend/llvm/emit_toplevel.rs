@@ -7968,26 +7968,12 @@ mod tests {
             ir.contains("@alloc_box"),
             "the Malloc#-wrapping defn must be emitted: {ir}"
         );
-        // The function definition line selects an attribute group; find it and
-        // confirm the referenced group is readwrite, never read-only. The
-        // defn-attr emitter uses #13 (memory(readwrite)) for raw-memory defns
-        // and #8 (memory(read)) otherwise, so the fix flips alloc_box to #13.
-        let def_line = ir
-            .lines()
-            .find(|l| l.contains("define") && l.contains("@alloc_box"))
-            .expect("alloc_box definition line");
-        assert!(
-            def_line.contains("#13"),
-            "a Malloc#-wrapping defn must use the raw-memory (readwrite) \
-             attribute group, not the read-only one: {def_line}"
-        );
-        assert!(
-            !def_line.contains("#8"),
-            "the defn must NOT get the memory(read) attribute group that lets \
-             LLVM CSE two distinct allocations: {def_line}"
-        );
+        // The original regression selected #13 instead of read-only #8.
+        // 2026-11-04: ownership lowering may clone groups to update effects;
+        // check the resulting memory contract, not the historical group ID.
+        assert!(super::super::reclamation::permits_raw_memory(&ir, "@alloc_box"),
+            "an allocating function must permit unrestricted memory effects: {ir}");
     }
-
     #[test]
     fn defn_indexing_raw_ptr_is_memory_readwrite() {
         // A defn whose only memory operation is `p[i] = 1` must carry #13
@@ -8011,18 +7997,8 @@ mod tests {
         let mut backend = LlvmBackend::new();
         let ir = backend.generate(&program, None);
         for name in ["@store_pick", "@load_pick"] {
-            let def_line = ir
-                .lines()
-                .find(|l| l.contains("define") && l.contains(name))
-                .unwrap_or_else(|| panic!("{name} definition line missing: {ir}"));
-            assert!(
-                def_line.contains("#13"),
-                "{name} must use the raw-memory (readwrite) attribute group: {def_line}"
-            );
-            assert!(
-                !def_line.contains("#8"),
-                "{name} must not claim argmem-only access: {def_line}"
-            );
+            assert!(super::super::reclamation::permits_raw_memory(&ir, name),
+                "raw address access must permit unrestricted memory effects: {name}");
         }
     }
 }

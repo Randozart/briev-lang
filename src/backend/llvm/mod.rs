@@ -3,6 +3,7 @@ pub mod builder;
 pub(crate) mod coll_scaffold;
 mod collection_assignment;
 pub mod context;
+mod reclamation;
 pub mod directive;
 pub mod dispatch;
 pub mod enum_lowering;
@@ -5742,7 +5743,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         writeln!(out, "attributes #14 = {{").ok();
         writeln!(out, "    mustprogress nofree nosync nounwind noreturn memory(readwrite)").ok();
         writeln!(out, "}}").ok();
-// 2026-10-25: may-trap/halt defns. No willreturn: an unused call is observable.\nattributes #15 = {\n    nofree norecurse nosync nounwind memory(readwrite)\n}\n        // Range metadata
+        // 2026-10-25: may-trap/halt defns. No willreturn: an unused call is observable.
+        // 2026-11-04: emit this group as IR (the old escaped-newline comment
+        // emitted nothing). These defns may recurse, free or synchronize;
+        // omit promises that their source/effect proofs do not establish.
+        writeln!(out, "attributes #15 = {{ nounwind memory(readwrite) }}").ok();
+        // Range metadata
         if !range_meta.is_empty() {
             writeln!(out).ok();
             for m in &range_meta {
@@ -6273,6 +6279,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // stack); hosted targets without the field skip the check.
         self.check_frame_limits(&out);
 
+        if self.bootstrap_bad.is_none() && !self.ctx.is_embedded && !self.ctx.library_mode && !self.ctx.is_shared_lib && self.ctx.needs_arena.is_empty() && self.ctx.int_bits == 64 && self.ctx.target_triple.starts_with("x86_64") && self.ctx.target_triple.contains("linux") {
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation: {:?}", analysis.reclamation); }
+            return reclamation::lower(out, &analysis.reclamation);
+        }
         out
     }
 
