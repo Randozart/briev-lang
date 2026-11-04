@@ -28,6 +28,7 @@ pub mod tail_calls;
 pub mod type_facts;
 pub mod slp_isomorphism;
 pub mod spawn_pool;
+pub mod specialize;
 pub mod expr_walk;
 pub mod stmt;
 pub mod swan_song;

@@ -60,9 +60,17 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   linearity), `spawn_pool` (static/dependent capacities, storage classes,
   bounded-init sizing), `coll_length` (grow-guard elimination + pre-grow
   proofs) — corpus parity **113/0** each.
-- **Next:** H3.6 generic callable-txn specialization on HIR, then H4
-  (byte-identical IR A/B per family, flip consumers) and H5 (retire AST
-  paths). `soa_projection`/`soa_reorder` stay with H4 layout work.
+- **H3.6 (primitive) ✅** Generic callable-txn specialization by HIR
+  substitution: `hir::specialize` maps type params → concrete args, re-ids
+  every node, substitutes param/result/output/contract/body type slots, and
+  retargets call sites at peer instantiations. Gate: the two-struct
+  `iter_chain<T>`/`iter_chain_loop<T>` fixture (A and B) plus a new
+  body-local generic txn; both instantiations verify. NOTE: wiring this in
+  place of the backend's ad-hoc monomorphization is H4 work (its golden
+  output/runtime gate), not this slice.
+- **Next:** H4 (byte-identical IR A/B per family, flip consumers) and H5
+  (retire AST paths). `soa_projection`/`soa_reorder` stay with H4 layout
+  work.
 
 ## Current state
 
