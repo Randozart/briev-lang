@@ -12815,3 +12815,57 @@ fn bit_encoding_override_receives_canonical_storage_word() {
         }
     }
 }
+
+#[test]
+fn hir_native_literal_family_matches_ast_emission() {
+    // 2026-11-05 (H4 slice D): the native HIR literal arms must produce
+    // byte-identical IR text to the AST arms they mirror.
+    use crate::ast::Expr;
+    use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
+    let mut backend = LlvmBackend::new();
+    let cases: Vec<(HirExpr, Expr)> = vec![
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(42)) },
+            Expr::Decimal(42),
+        ),
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Bool(true)) },
+            Expr::Bool(true),
+        ),
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Float(3.5)) },
+            Expr::Float(3.5),
+        ),
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Bytes(b"hi".to_vec())) },
+            Expr::Quoted(b"hi".to_vec()),
+        ),
+    ];
+    let norm = |s: &str| {
+        s.lines()
+            .map(|l| l.trim())
+            .map(|l| {
+                let mut out = String::new();
+                let mut skip = false;
+                for ch in l.chars() {
+                    if ch == '%' { skip = true; continue; }
+                    if skip {
+                        if ch.is_ascii_alphanumeric() || ch == '_' { continue; }
+                        skip = false;
+                    }
+                    out.push(ch);
+                }
+                out
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for (hir, ast) in cases {
+        let mut hir_out = String::new();
+        let mut ast_out = String::new();
+        let hr = backend.emit_hir_expr(&mut hir_out, &hir, "").expect("native family");
+        let ar = backend.emit_expr(&mut ast_out, &ast, "");
+        assert_eq!(norm(&hir_out), norm(&ast_out), "IR text drift for {:?}", ast);
+        assert_eq!(hr.ty, ar.ty);
+    }
+}

@@ -106,7 +106,23 @@ Risk: highest of the four — control-flow state (member.exit labels, P-gating,
 defer stacks) lives in `emit_stmt.rs` (3.3k lines). Land kind-by-kind; never
 convert-and-delegate a whole body.
 
-## Slice D — expression families (NOT STARTED — next session)
+## Slice D — expression families 🚜 IN PROGRESS (first family landed 2026-11-05)
+
+Landed: the 605-line AST `Identifier` arm extracted verbatim into
+`emit_identifier_load` (single shared implementation); `emit_hir_expr` with
+the literal families (Int/TaggedInt/Char/Float/Bool/BeginProgram/Bytes/
+TaggedBytes) plus Identifier via the shared helper; the defn body loop now
+routes through `emit_hir_statement` — a family-covered `Expression`
+statement emits natively (no AST conversion, mirrors the plain fallthrough
+including `last_expr_reg`), everything else converts/falls back per
+statement. Unit test pins literal-family IR text equality (registers and
+indent normalized).
+
+Remaining families: Call (intrinsic/enum/user), Unary, Binary, then the
+txn-body loop routing; `Cast`/`MethodCall`/`Reflect` need HIR `Cast.via`
+typing (frontend typer).
+
+## Slice D (original plan, kept for the record)
 
 Refined first step after reading the emission arms: the AST `Expression`
 statement arm (emit_stmt.rs ~1621) has three special cases before the plain

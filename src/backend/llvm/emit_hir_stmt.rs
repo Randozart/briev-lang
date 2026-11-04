@@ -61,6 +61,17 @@ pub(crate) fn emit_hir_statement(
     stmt: &HirStmt,
     indent: &str,
 ) -> Option<TypedRegister> {
+    // 2026-11-05 (H4 slice D): native families first. An `Expression`
+    // statement whose expression is family-covered (literal/identifier) is
+    // emitted without any AST conversion; the plain fallthrough mirrors the
+    // AST arm (the AddrOf/Match special cases cannot fire on these leaves).
+    if let HirStmtKind::Expression(e) = &stmt.kind {
+        if super::emit_expr::hir_expr_family_covered(e) {
+            let reg = backend.emit_hir_expr(out, e, indent)?;
+            backend.fun.last_expr_reg = Some(reg.name.clone());
+            return Some(reg);
+        }
+    }
     match convert_hir_statement(stmt) {
         Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
         None => None,

@@ -4207,6 +4207,23 @@ impl LlvmBackend {
                     continue;
                 }
             }
+            // 2026-11-05 (H4 slice D): route through the HIR statement seam
+            // when this callable has a HIR body — native families emit
+            // without conversion; the seam's None falls back to the AST
+            // statement (and the substituted body already IS the converted
+            // AST when the flag is on).
+            if crate::backend::hir_emit_enabled() {
+                if let Some(hir_body) = self.hir_stmt_bodies.get(&d.name).cloned() {
+                    if let Some(hir_stmt) = hir_body.get(idx) {
+                        if let Some(reg) =
+                            super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
+                        {
+                            self.fun.last_expr_reg = Some(reg.name);
+                            continue;
+                        }
+                    }
+                }
+            }
             emit_statement(self, out, s, "  ");
         }
         // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.

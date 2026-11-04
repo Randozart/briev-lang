@@ -157,106 +157,71 @@ impl LlvmBackend {
     }
 
     /// Inner dispatch: one arm per Expr variant.
-    pub(crate) fn emit_expr_inner(
+    /// 2026-11-05 (H4 slice D): native HIR expression emission for the first
+    /// families — literals and identifiers. The arms mirror the AST arms
+    /// exactly (same helpers, same IR shapes); `None` means the family is not
+    /// ported yet and the caller must convert via `hir::to_ast::expr`.
+    pub(crate) fn emit_hir_expr(
+        &mut self,
+        out: &mut String,
+        expr: &crate::hir::expr::HirExpr,
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        use crate::hir::expr::{HirExprKind, HirLiteral};
+        let v = self.fun.gen_reg();
+        let reg = match &expr.kind {
+            HirExprKind::Literal(lit) => match lit {
+                HirLiteral::Int(n) => self.emit_int(out, &v, *n, indent),
+                HirLiteral::TaggedInt(n, _) => self.emit_int(out, &v, *n, indent),
+                HirLiteral::Char(c) => {
+                    writeln!(out, "{}{} = add i32 0, {}", indent, v, *c as i64).ok();
+                    TypedRegister { name: v.clone(), ty: Type::char_() }
+                }
+                HirLiteral::Float(f) => {
+                    let h = crate::backend::llvm::float_to_llvm_hex(*f);
+                    writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, h).ok();
+                    TypedRegister { name: v.clone(), ty: Type::float() }
+                }
+                HirLiteral::Bool(b) => {
+                    let val = if *b { 1 } else { 0 };
+                    writeln!(out, "{}{} = add i8 0, {}", indent, v, val).ok();
+                    TypedRegister { name: v.clone(), ty: Type::bool_() }
+                }
+                HirLiteral::BeginProgram => {
+                    let flag = format!("@briev_begin_{}", self.fun.txn_name);
+                    if self.fun.txn_name.is_empty() {
+                        writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
+                    } else {
+                        let loaded = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i1, ptr {}", indent, loaded, flag).ok();
+                        writeln!(out, "{}{} = zext i1 {} to i8", indent, v, loaded).ok();
+                    }
+                    TypedRegister { name: v.clone(), ty: Type::bool_() }
+                }
+                HirLiteral::Bytes(bytes) => self.emit_string_literal(out, &v, bytes, indent),
+                HirLiteral::TaggedBytes(bytes, prefix) if prefix == "b" => {
+                    self.emit_byte_literal(out, &v, bytes, indent)
+                }
+                HirLiteral::TaggedBytes(bytes, _) => {
+                    self.emit_string_literal(out, &v, bytes, indent)
+                }
+            },
+            HirExprKind::Identifier(name) => self.emit_identifier_load(out, &v, name, indent),
+            _ => return None,
+        };
+        Some(reg)
+    }
+
+    /// 2026-11-05 (H4 slice D): the AST Identifier arm, extracted verbatim so
+    /// the HIR native expression family shares ONE implementation. Undo:
+    /// inline back into emit_expr_inner's `Expr::Identifier` arm.
+    pub(crate) fn emit_identifier_load(
         &mut self,
         out: &mut String,
         v: &str,
-        expr: &Expr,
+        name: &String,
         indent: &str,
     ) -> TypedRegister {
-        match expr {
-            // ── Literals ─────────────────────────────────────────────
-            Expr::Consume(inner) => {
-                // 2026-08-01 (Phase 3): the consumed operand's value is used
-                // normally; its backing is destroyed after the enclosing op —
-                // recorded here and freed at the statement boundary.
-                let reg = self.emit_expr(out, inner, indent);
-                self.fun.pending_consumes.push(reg.name.clone());
-                reg
-            }
-            // 2026-08-26 (async Phase C): await drives the segmented task
-            // through the C scheduler's round-robin and returns its result.
-            // A non-task value passes through unchanged (briev_await returns
-            // out-of-range handles as-is — the deadlock-posture identity).
-            Expr::Await(inner) => {
-                let h = self.emit_expr(out, inner, indent);
-                let hi = self.adapt_to_i64(out, indent, &h);
-                let r = self.fun.gen_reg();
-                let sched_i = self.fun.gen_reg();
-                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
-                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
-                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
-                TypedRegister { name: r, ty: Type::int() }
-            }
-            Expr::Decimal(n) => {
-                self.emit_int(out, v, *n, indent)
-            }
-            Expr::Char(c) => {
-                // 2026-08-01 (audit): a Char literal emits at its NATIVE i32
-                // width (the universe declares Char = 32-bit), matching Char
-                // state fields and cast results. Boxed Char params are the
-                // sole i64 exception (zext at defn entry). The Print#
-                // dispatch and adapt_to_i64 widen i32 → i64 for the runtime
-                // ABI; the register's ty carries `Char` so the generic
-                // Print# routes it to __print_char (not __print_int).
-                writeln!(out, "{}{} = add i32 0, {}", indent, v, *c as i64).ok();
-                TypedRegister { name: v.to_string(), ty: Type::char_() }
-            }
-            Expr::TaggedLiteral(n, _) => {
-                self.emit_int(out, v, *n, indent)
-            }
-            Expr::Float(f) => {
-                // 2026-07-29: Direct bitcast from i32 hex bits to float.
-                // The `add i32 0, N` + `fadd float 0.0` wrappers were removed
-                // — LLVM IR accepts i32 bit patterns directly in bitcast, and
-                // the bitcast result is already float-typed without fadd.
-                // The hex bits avoid LLVM's verifier rejecting high-precision
-                // float literals like "0.001660076642744037" as f32.
-                let h = crate::backend::llvm::float_to_llvm_hex(*f);
-                writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, h).ok();
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: Type::float(),
-                }
-            }
-            Expr::Bool(b) => {
-                let val = if *b { 1 } else { 0 };
-                writeln!(out, "{}{} = add i8 0, {}", indent, v, val).ok();
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: Type::bool_(),
-                }
-            }
-            Expr::BeginProgram => {
-                // True exactly once at program start (entry-loop). Reads the
-                // node's `@briev_begin_<name>` flag; the node's body clears it
-                // when its goal is met, so the precondition stops gating after
-                // the entry loop completes. Outside a transaction (no txn_name)
-                // it evaluates as `true`.
-                let flag = format!("@briev_begin_{}", self.fun.txn_name);
-                if self.fun.txn_name.is_empty() {
-                    writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
-                } else {
-                    let loaded = self.fun.gen_reg();
-                    writeln!(out, "{}{} = load i1, ptr {}", indent, loaded, flag).ok();
-                    writeln!(out, "{}{} = zext i1 {} to i8", indent, v, loaded).ok();
-                }
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: Type::bool_(),
-                }
-            }
-            Expr::Quoted(bytes) => self.emit_string_literal(out, v, bytes, indent),
-            // 2026-08-06 (Phase 7): `#b"..."` is a raw-bytes Data literal —
-            // the [len][bytes] constant must carry the EXACT bytes (the lossy
-            // UTF-8 string path would turn \x89 into the replacement char).
-            Expr::TaggedQuotedLiteral(bytes, prefix) if prefix == "b" => {
-                self.emit_byte_literal(out, v, bytes, indent)
-            }
-            Expr::TaggedQuotedLiteral(bytes, _) => self.emit_string_literal(out, v, bytes, indent),
-
-            // ── Identifier ───────────────────────────────────────────
-            Expr::Identifier(name) => {
                 // 2026-08-27 (Slice B): @-addressed trigger VALUE read — an
                 // MMIO input pin: volatile load at the static address through
                 // the boxed-pointer ABI. Writes never reach here (the
@@ -857,10 +822,109 @@ impl LlvmBackend {
                         ty: Type::int(),
                     }
                 }
-            }
+    }
 
-            // ── Call ─────────────────────────────────────────────────
-            // 2026-07-12: Intrinsic call if name ends with '#', else user call.
+    pub(crate) fn emit_expr_inner(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        expr: &Expr,
+        indent: &str,
+    ) -> TypedRegister {
+        match expr {
+            // ── Literals ─────────────────────────────────────────────
+            Expr::Consume(inner) => {
+                // 2026-08-01 (Phase 3): the consumed operand's value is used
+                // normally; its backing is destroyed after the enclosing op —
+                // recorded here and freed at the statement boundary.
+                let reg = self.emit_expr(out, inner, indent);
+                self.fun.pending_consumes.push(reg.name.clone());
+                reg
+            }
+            // 2026-08-26 (async Phase C): await drives the segmented task
+            // through the C scheduler's round-robin and returns its result.
+            // A non-task value passes through unchanged (briev_await returns
+            // out-of-range handles as-is — the deadlock-posture identity).
+            Expr::Await(inner) => {
+                let h = self.emit_expr(out, inner, indent);
+                let hi = self.adapt_to_i64(out, indent, &h);
+                let r = self.fun.gen_reg();
+                let sched_i = self.fun.gen_reg();
+                writeln!(out, "{indent}{sched_i} = ptrtoint ptr @__briev_sched to i64").ok();
+                let st = if self.ctx.defn_takes_state("briev_await_impl") { "ptr %state, " } else { "" };
+                writeln!(out, "{indent}{r} = call i64 @briev_await_impl({st}i64 {sched_i}, i64 {hi})").ok();
+                TypedRegister { name: r, ty: Type::int() }
+            }
+            Expr::Decimal(n) => {
+                self.emit_int(out, v, *n, indent)
+            }
+            Expr::Char(c) => {
+                // 2026-08-01 (audit): a Char literal emits at its NATIVE i32
+                // width (the universe declares Char = 32-bit), matching Char
+                // state fields and cast results. Boxed Char params are the
+                // sole i64 exception (zext at defn entry). The Print#
+                // dispatch and adapt_to_i64 widen i32 → i64 for the runtime
+                // ABI; the register's ty carries `Char` so the generic
+                // Print# routes it to __print_char (not __print_int).
+                writeln!(out, "{}{} = add i32 0, {}", indent, v, *c as i64).ok();
+                TypedRegister { name: v.to_string(), ty: Type::char_() }
+            }
+            Expr::TaggedLiteral(n, _) => {
+                self.emit_int(out, v, *n, indent)
+            }
+            Expr::Float(f) => {
+                // 2026-07-29: Direct bitcast from i32 hex bits to float.
+                // The `add i32 0, N` + `fadd float 0.0` wrappers were removed
+                // — LLVM IR accepts i32 bit patterns directly in bitcast, and
+                // the bitcast result is already float-typed without fadd.
+                // The hex bits avoid LLVM's verifier rejecting high-precision
+                // float literals like "0.001660076642744037" as f32.
+                let h = crate::backend::llvm::float_to_llvm_hex(*f);
+                writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, h).ok();
+                TypedRegister {
+                    name: v.to_string(),
+                    ty: Type::float(),
+                }
+            }
+            Expr::Bool(b) => {
+                let val = if *b { 1 } else { 0 };
+                writeln!(out, "{}{} = add i8 0, {}", indent, v, val).ok();
+                TypedRegister {
+                    name: v.to_string(),
+                    ty: Type::bool_(),
+                }
+            }
+            Expr::BeginProgram => {
+                // True exactly once at program start (entry-loop). Reads the
+                // node's `@briev_begin_<name>` flag; the node's body clears it
+                // when its goal is met, so the precondition stops gating after
+                // the entry loop completes. Outside a transaction (no txn_name)
+                // it evaluates as `true`.
+                let flag = format!("@briev_begin_{}", self.fun.txn_name);
+                if self.fun.txn_name.is_empty() {
+                    writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
+                } else {
+                    let loaded = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load i1, ptr {}", indent, loaded, flag).ok();
+                    writeln!(out, "{}{} = zext i1 {} to i8", indent, v, loaded).ok();
+                }
+                TypedRegister {
+                    name: v.to_string(),
+                    ty: Type::bool_(),
+                }
+            }
+            Expr::Quoted(bytes) => self.emit_string_literal(out, v, bytes, indent),
+            // 2026-08-06 (Phase 7): `#b"..."` is a raw-bytes Data literal —
+            // the [len][bytes] constant must carry the EXACT bytes (the lossy
+            // UTF-8 string path would turn \x89 into the replacement char).
+            Expr::TaggedQuotedLiteral(bytes, prefix) if prefix == "b" => {
+                self.emit_byte_literal(out, v, bytes, indent)
+            }
+            Expr::TaggedQuotedLiteral(bytes, _) => self.emit_string_literal(out, v, bytes, indent),
+
+            // ── Identifier ───────────────────────────────────────────
+            Expr::Identifier(name) => self.emit_identifier_load(out, v, name, indent),
+
             Expr::Call(name, args, analysis_id) => {
                 if name.ends_with('#') {
                     self.emit_intrinsic_call_dispatch(out, v, name, args, *analysis_id, indent)
@@ -9421,4 +9485,13 @@ impl crate::backend::llvm::LlvmBackend {
             }
         }
     }
+}
+
+/// 2026-11-05 (H4 slice D): true when `emit_hir_expr` can emit this HIR
+/// expression natively (ported families only).
+pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool {
+    matches!(
+        expr.kind,
+        crate::hir::expr::HirExprKind::Literal(_) | crate::hir::expr::HirExprKind::Identifier(_)
+    )
 }
