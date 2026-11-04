@@ -207,9 +207,94 @@ impl LlvmBackend {
                 }
             },
             HirExprKind::Identifier(name) => self.emit_identifier_load(out, &v, name, indent),
+            HirExprKind::Unary { op, inner } => {
+                let Some(operand) = self.emit_hir_operand(out, inner, indent) else {
+                    return None;
+                };
+                self.emit_unary_op(out, &v, op, &operand, indent)
+            }
+            HirExprKind::Binary { op, left, right } => {
+                // And/Or short-circuit: emit_short_circuit consumes AST
+                // operands; fall back to whole-expression conversion.
+                if matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) {
+                    return None;
+                }
+                // 2026-07-21 Mod special case (phi-tracked counter dividend),
+                // mirrored from the AST arm.
+                if matches!(op, crate::ast::BinaryOpKind::Mod)
+                    && matches!(
+                        &left.kind,
+                        HirExprKind::Identifier(name)
+                            if self.fun.phi_field_regs.contains_key(name)
+                    )
+                {
+                    let Some(l) = self.emit_hir_operand(out, left, indent) else {
+                        return None;
+                    };
+                    let Some(r) = self.emit_hir_operand(out, right, indent) else {
+                        return None;
+                    };
+                    let tr_l = self.fun.gen_reg();
+                    let tr_r = self.fun.gen_reg();
+                    writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr_l, l.name).ok();
+                    writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr_r, r.name).ok();
+                    let ur = self.fun.gen_reg();
+                    writeln!(out, "{}{} = urem i32 {}, {}", indent, ur, tr_l, tr_r).ok();
+                    writeln!(out, "{}{} = zext i32 {} to i64", indent, v, ur).ok();
+                    return Some(TypedRegister { name: v.clone(), ty: Type::int() });
+                }
+                let Some(l) = self.emit_hir_operand(out, left, indent) else {
+                    return None;
+                };
+                let Some(r) = self.emit_hir_operand(out, right, indent) else {
+                    return None;
+                };
+                // 2026-07-21: operand type mix (float/int), mirrored verbatim.
+                let (conv_l, conv_r) = if l.ty != r.ty
+                    && (l.ty == Type::float() || r.ty == Type::float())
+                {
+                    if l.ty == Type::float() && r.ty == Type::int() {
+                        let conv = self.fun.gen_reg();
+                        writeln!(out, "{}{} = trunc i64 {} to i32", indent, conv, r.name).ok();
+                        let fl = self.fun.gen_reg();
+                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, fl, conv).ok();
+                        (l.clone(), TypedRegister { name: fl, ty: Type::float() })
+                    } else if l.ty == Type::int() && r.ty == Type::float() {
+                        let conv = self.fun.gen_reg();
+                        writeln!(out, "{}{} = trunc i64 {} to i32", indent, conv, l.name).ok();
+                        let fl = self.fun.gen_reg();
+                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, fl, conv).ok();
+                        (TypedRegister { name: fl, ty: Type::float() }, r.clone())
+                    } else {
+                        (l.clone(), r.clone())
+                    }
+                } else {
+                    (l.clone(), r.clone())
+                };
+                self.emit_binary_op(out, &v, op, &conv_l, &conv_r, indent)
+            }
             _ => return None,
         };
         Some(reg)
+    }
+
+    /// Emit one operand natively when its family is ported; otherwise convert
+    /// just this leaf to AST and emit it. Callers guard whole expressions with
+    /// `hir_expr_family_covered` (deep), so a `None` here means an
+    /// unreconstructable node — never partial emission.
+    fn emit_hir_operand(
+        &mut self,
+        out: &mut String,
+        expr: &crate::hir::expr::HirExpr,
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        match self.emit_hir_expr(out, expr, indent) {
+            Some(reg) => Some(reg),
+            None => {
+                let ast = crate::hir::to_ast::expr(expr)?;
+                Some(self.emit_expr(out, &ast, indent))
+            }
+        }
     }
 
     /// 2026-11-05 (H4 slice D): the AST Identifier arm, extracted verbatim so
@@ -9490,8 +9575,15 @@ impl crate::backend::llvm::LlvmBackend {
 /// 2026-11-05 (H4 slice D): true when `emit_hir_expr` can emit this HIR
 /// expression natively (ported families only).
 pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool {
-    matches!(
-        expr.kind,
-        crate::hir::expr::HirExprKind::Literal(_) | crate::hir::expr::HirExprKind::Identifier(_)
-    )
+    use crate::hir::expr::HirExprKind as K;
+    match &expr.kind {
+        K::Literal(_) | K::Identifier(_) => true,
+        K::Unary { inner, .. } => hir_expr_family_covered(inner),
+        K::Binary { op, left, right }
+            if !matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>
+        {
+            hir_expr_family_covered(left) && hir_expr_family_covered(right)
+        }
+        _ => false,
+    }
 }

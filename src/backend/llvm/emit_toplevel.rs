@@ -4949,8 +4949,24 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             }
             // 2026-07-29: Statement reordering removed — proven counterproductive.
             // LLVM's scheduler does this better within each basic block.
-        for s in &txn.body {
+        // 2026-11-05 (H4 slice D): the txn body loop routes through the HIR
+        // statement seam too (native families emit without conversion; the
+        // seam's None falls back to the AST statement). Index-aligned with the
+        // substituted body, which is the converted AST when the flag is on.
+        for (idx, s) in txn.body.iter().enumerate() {
             if self.fun.terminated { break; }
+            if crate::backend::hir_emit_enabled() {
+                if let Some(hir_body) = self.hir_stmt_bodies.get(name).cloned() {
+                    if let Some(hir_stmt) = hir_body.get(idx) {
+                        if let Some(reg) =
+                            super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
+                        {
+                            self.fun.last_expr_reg = Some(reg.name);
+                            continue;
+                        }
+                    }
+                }
+            }
             emit_statement(self, out, s, "  ");
         }
             // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.

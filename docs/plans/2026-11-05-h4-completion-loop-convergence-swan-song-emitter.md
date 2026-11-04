@@ -118,9 +118,16 @@ including `last_expr_reg`), everything else converts/falls back per
 statement. Unit test pins literal-family IR text equality (registers and
 indent normalized).
 
-Remaining families: Call (intrinsic/enum/user), Unary, Binary, then the
-txn-body loop routing; `Cast`/`MethodCall`/`Reflect` need HIR `Cast.via`
-typing (frontend typer).
+Landed this increment: **Unary + Binary** native families (operand recursion
+via `emit_hir_operand` — native when covered, per-leaf conversion otherwise;
+Mod phi-counter special case and float-mix conversion mirrored verbatim;
+And/Or short-circuit falls back to whole-expression conversion) and the
+**txn body loop** routed through the seam (mirrors the defn loop). Deep
+coverage guard (`hir_expr_family_covered`) extended to Unary/Binary.
+
+Remaining families: Call (intrinsic/enum/user — needs register-level operand
+helpers, the deeper refactor), then `Cast`/`MethodCall`/`Reflect` need HIR
+`Cast.via` typing (frontend typer).
 
 ## Slice D (original plan, kept for the record)
 

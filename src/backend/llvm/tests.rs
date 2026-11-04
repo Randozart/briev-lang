@@ -12840,6 +12840,14 @@ fn hir_native_literal_family_matches_ast_emission() {
             HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Bytes(b"hi".to_vec())) },
             Expr::Quoted(b"hi".to_vec()),
         ),
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Unary { op: crate::ast::UnaryOpKind::Neg, inner: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(7)) }) } },
+            Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, Box::new(Expr::Decimal(7))),
+        ),
+        (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Binary { op: crate::ast::BinaryOpKind::Add, left: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(2)) }), right: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(3)) }) } },
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(Expr::Decimal(2)), Box::new(Expr::Decimal(3))),
+        ),
     ];
     let norm = |s: &str| {
         s.lines()
