@@ -72,8 +72,19 @@ defn early_exit(early: Bool) -> Bool {
     term Load#(value,8) == 17;
 };
 
+// Exercise the native header and the longest UTF-8 writes under Valgrind.
+defn encoded_scalars() -> Bool {
+    let small: String = char_to_str(0x7ff);
+    let medium: String = char_to_str(0xffff);
+    let large: String = char_to_str(0x10ffff);
+    term small .^Length == 2 && byte_at(small,1) == 191 &&
+        medium .^Length == 3 && byte_at(medium,2) == 191 &&
+        large .^Length == 4 && byte_at(large,0) == 244 && byte_at(large,3) == 191;
+};
+
 let done: Bool = false;
 node main [!done][done] {
+    when !encoded_scalars() { endprogram 7; };
     foreach index in 0..64 {
         when !local_aliases() || !retained_alias() { endprogram 3; };
         when !payload_aliases(true) || !payload_aliases(false) || !nested_payloads() { endprogram 4; };
