@@ -190,6 +190,9 @@ pub fn analyze_program(
     min_width: usize,
     type_universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> AnalysisResults {
+    // 2026-11-05 (H4.1): one typed-HIR lowering per analysis run. The HIR
+    // consumer flip below and every later family reads this tree.
+    let hir = build_hir(items);
     let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
         items, &None, &vec![],
     );
@@ -243,8 +246,25 @@ pub fn analyze_program(
         .collect();
     let global_lifetime = crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
     let observable_names = collect_observable_names(items);
-    let coll_safe_txns = crate::analysis::coll_length::analyze(items);
-    let coll_pregrow = crate::analysis::coll_length::analyze_pregrow(items);
+    // 2026-11-05 (H4.1): first consumer flip. With BRIEV_HIR_EMIT=1 the coll
+    // grow-guard / pre-grow proofs come from typed HIR; the AST proofs are
+    // still computed in debug builds and must agree exactly (parity suites
+    // pin this over the corpus). Emission is unchanged, so IR must stay
+    // byte-identical — benchmarks/hir_emit_ab.sh is the gate.
+    let (coll_safe_txns, coll_pregrow) = if hir_emit_enabled() {
+        let ast_safe = crate::analysis::coll_length::analyze(items);
+        let ast_pregrow = crate::analysis::coll_length::analyze_pregrow(items);
+        let hir_safe = crate::hir::coll_length::analyze(&hir);
+        let hir_pregrow = crate::hir::coll_length::analyze_pregrow(&hir);
+        debug_assert_eq!(hir_safe, ast_safe, "HIR/AST coll safe-pair drift");
+        debug_assert_eq!(hir_pregrow, ast_pregrow, "HIR/AST coll pre-grow drift");
+        (hir_safe, hir_pregrow)
+    } else {
+        (
+            crate::analysis::coll_length::analyze(items),
+            crate::analysis::coll_length::analyze_pregrow(items),
+        )
+    };
     // 2026-10-12 (SPEC §8.6.1 Option B): per-`Collection<dyn Trait>`-binding
     // concrete sets + the dispatch form each use-site may use. Computed once
     // in the frontend; the backend reads it at element read-sites (never
@@ -387,7 +407,7 @@ pub fn analyze_program(
         electronics: crate::analysis::electronics::derive_netlist(items),
         defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
         dyn_collection_info,
-        hir: build_hir(items),
+        hir,
     }
 }
 

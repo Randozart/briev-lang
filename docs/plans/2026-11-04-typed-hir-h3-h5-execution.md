@@ -78,6 +78,11 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   body-local generic txn; both instantiations verify. NOTE: wiring this in
   place of the backend's ad-hoc monomorphization is H4 work (its golden
   output/runtime gate), not this slice.
+- **H4.1 (first consumer flip) ✅** `coll_length` grow-guard / pre-grow
+  proofs come from typed HIR when `BRIEV_HIR_EMIT=1`; AST proofs are still
+  computed in debug builds and asserted equal. Emission unchanged; A/B
+  byte-identical (release, quick corpus). This is the pattern for the
+  remaining type-agnostic analysis consumers (spawn pools, task segments).
 - **H4.1 (plumbing) ✅** `AnalysisResults` now carries the typed `HirProgram`
   for the post-desugar AST, built exactly once per analysis run.
   `BRIEV_HIR_EMIT=1` verifies HIR id/export invariants but does not change
