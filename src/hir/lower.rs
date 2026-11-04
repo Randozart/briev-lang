@@ -90,6 +90,12 @@ fn lower_item(
             let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
             lower_item(&export.inner, true, symbol, ids, out);
         }
+        // 2026-11-05 (H3.4b): `sync<group>` wraps a transaction that the
+        // reactor still dispatches. `analysis::effective_txns` walks these;
+        // HIR must contain them or live-field/dispatch analyses lose the node.
+        TopLevel::SyncGroup { item, .. } => {
+            lower_item(item, exported, export_symbol, ids, out);
+        }
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
                 match member {
