@@ -158,6 +158,17 @@ pub struct AnalysisResults {
     /// the PER-COLLECTION tag table — never the global per-trait set.
     pub dyn_collection_info:
         std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
+    /// 2026-11-05 (H4.1): the typed HIR for the post-desugar program. Built
+    /// once here; `BRIEV_HIR_EMIT=1` verifies it and (in later H4 slices)
+    /// selects the HIR-driven emission family. Inert until then: emission
+    /// still walks the AST, so IR is byte-identical either way.
+    pub hir: crate::hir::HirProgram,
+}
+
+/// True when the dual-mode HIR backend is requested. Off by default; H4 flips
+/// each family only after a byte-identical IR A/B.
+pub fn hir_emit_enabled() -> bool {
+    std::env::var_os("BRIEV_HIR_EMIT").is_some()
 }
 
 /// Intent: Run shared program analysis for backend code generation.
@@ -374,7 +385,22 @@ pub fn analyze_program(
         electronics: crate::analysis::electronics::derive_netlist(items),
         defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
         dyn_collection_info,
+        hir: build_hir(items),
     }
+}
+
+/// 2026-11-05 (H4.1): lower the post-desugar AST to typed HIR exactly once per
+/// analysis run. `BRIEV_HIR_EMIT=1` additionally verifies the id/export
+/// invariants so a future HIR-driven family cannot consume a malformed tree;
+/// the flag never changes emitted IR yet.
+fn build_hir(items: &[TopLevel]) -> crate::hir::HirProgram {
+    let program = crate::hir::lower_program(items);
+    if hir_emit_enabled() {
+        if let Err(err) = crate::hir::verify(&program) {
+            eprintln!("HIR_EMIT verify: {err}");
+        }
+    }
+    program
 }
 
 /// 2026-08-06 (accel plan): merge `TopLevel::ModuleMetadata` nodes into one

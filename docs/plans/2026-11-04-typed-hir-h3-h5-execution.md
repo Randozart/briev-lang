@@ -68,9 +68,16 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   body-local generic txn; both instantiations verify. NOTE: wiring this in
   place of the backend's ad-hoc monomorphization is H4 work (its golden
   output/runtime gate), not this slice.
-- **Next:** H4 (byte-identical IR A/B per family, flip consumers) and H5
-  (retire AST paths). `soa_projection`/`soa_reorder` stay with H4 layout
-  work.
+- **H4.1 (plumbing) ✅** `AnalysisResults` now carries the typed `HirProgram`
+  for the post-desugar AST, built exactly once per analysis run.
+  `BRIEV_HIR_EMIT=1` verifies HIR id/export invariants but does not change
+  emission yet. Gate: `benchmarks/hir_emit_ab.sh` (AST vs HIR `.ll`
+  byte-compare) — quick corpus green; `tests/hir_emit_plumbing.rs` pins
+  one-lowering equality. This is the always-on tripwire for each family flip.
+- **Next:** H4.1 family flip — feed inferred HIR value types/cast lanes from
+  the frontend typer (today `HirExpr.ty`/`Cast.via` are syntactic/None), then
+  emit expressions/calls/casts from HIR under the flag. H4.2–H4.4 follow.
+  H5 retires AST paths. `soa_projection`/`soa_reorder` stay with H4 layout.
 
 ## Current state
 
