@@ -102,6 +102,16 @@ pub enum HirTypeDefKind {
     Struct { fields: Vec<HirField> },
 }
 
+/// 2026-11-04 (H3.3b): a `frgn` foreign binding — the FFI boundary surface
+/// boundary-ownership inference classifies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirForeign {
+    /// Effective Briev name (`as <name>` or the foreign symbol).
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub ret: Option<Type>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeDef {
     pub node: NodeId,
@@ -109,6 +119,8 @@ pub struct HirTypeDef {
     pub name: String,
     pub type_params: Vec<String>,
     pub kind: HirTypeDefKind,
+    /// Declared boundary protocol (`type CStr: String<C_String>`), if any.
+    pub protocol: Option<String>,
     pub span: Option<Span>,
 }
 
@@ -136,6 +148,8 @@ pub struct HirProgram {
     pub callables: Vec<HirCallable>,
     pub type_defs: Vec<HirTypeDef>,
     pub globals: Vec<HirGlobal>,
+    /// `frgn` foreign bindings (effective Briev name → params/result).
+    pub foreign: Vec<HirForeign>,
     /// 2026-11-04 (H3.0): `asm fn` / `bad fn` names — compiled out of band
     /// with the implicit `%state` first ABI arg, so a call always carries
     /// state (the AST always_stateful leaf set).

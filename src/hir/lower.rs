@@ -7,7 +7,7 @@ use super::ids::{IdSupply, Span};
 use super::pattern::{HirPattern, HirPatternKind};
 use super::program::{
     HirBody, HirCallable, HirCallableKind, HirContract, HirEnumVariant, HirField,
-    HirGlobal, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
+    HirForeign, HirGlobal, HirParam, HirProgram, HirTypeDef, HirTypeDefKind, HirWatchdog,
     HirWatchdogOnFire,
 };
 use super::stmt::{HirStmt, HirStmtKind, HirStmtMatchArm};
@@ -22,24 +22,27 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut type_defs = Vec::new();
     let mut globals = Vec::new();
     let mut always_stateful = Vec::new();
+    let mut foreign = Vec::new();
     {
         let mut out = LowerOutputs {
             callables: &mut callables,
             types: &mut type_defs,
             globals: &mut globals,
+            foreign: &mut foreign,
             always_stateful: &mut always_stateful,
         };
         for item in items {
             lower_item(item, false, None, &mut ids, &mut out);
         }
     }
-    HirProgram { callables, type_defs, globals, always_stateful }
+    HirProgram { callables, type_defs, globals, foreign, always_stateful }
 }
 
 struct LowerOutputs<'a> {
     callables: &'a mut Vec<HirCallable>,
     types: &'a mut Vec<HirTypeDef>,
     globals: &'a mut Vec<HirGlobal>,
+    foreign: &'a mut Vec<HirForeign>,
     always_stateful: &'a mut Vec<String>,
 }
 
@@ -184,6 +187,14 @@ fn lower_item(
             is_state_decl: true,
             span: s.span,
         }),
+        TopLevel::ForeignBinding(fb) => out.foreign.push(HirForeign {
+            name: fb
+                .briev_name
+                .clone()
+                .unwrap_or_else(|| fb.foreign_name.clone()),
+            params: fb.inputs.clone(),
+            ret: fb.success_output.first().map(|(_, t)| t.clone()),
+        }),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
@@ -194,11 +205,22 @@ fn lower_item(
 }
 
 fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
+    // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
+    // when it carries a protocol; otherwise it has no HIR shape.
+    if def.body.slots.is_empty() {
+        let protocol = def.protocol.clone()?;
+        return Some(HirTypeDef {
+            node: ids.node(),
+            item: ids.item(),
+            name: def.name.clone(),
+            type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+            kind: HirTypeDefKind::Struct { fields: Vec::new() },
+            protocol: Some(protocol),
+            span: def.span,
+        });
+    }
     if def.body.slots.iter().all(|slot| slot.name.starts_with("__variant_")) {
         return Some(lower_enum_type_def(def, ids));
-    }
-    if def.body.slots.is_empty() {
-        return None;
     }
     Some(HirTypeDef {
         node: ids.node(),
@@ -216,6 +238,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
                 })
                 .collect(),
         },
+        protocol: def.protocol.clone(),
         span: def.span,
     })
 }
@@ -240,6 +263,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
         kind: HirTypeDefKind::Enum { variants },
+        protocol: def.protocol.clone(),
         span: def.span,
     }
 }
@@ -271,6 +295,7 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
         kind: HirTypeDefKind::Enum { variants },
+        protocol: None,
         span: def.span,
     }
 }
@@ -291,6 +316,7 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
                 })
                 .collect(),
         },
+        protocol: None,
         span: def.span,
     }
 }
@@ -311,6 +337,7 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
                 })
                 .collect(),
         },
+        protocol: None,
         span: def.span,
     }
 }

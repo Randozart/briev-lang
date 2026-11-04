@@ -161,6 +161,29 @@ let label: String = "x";
     }
 
     #[test]
+    fn foreign_bindings_and_declared_protocols_are_lowered() {
+        let program = lower_program(&parse(
+            r#"
+frgn HostAdd(a: Int, b: Int) -> Int : host_add from "host";
+type CStr: String<C_String> { };
+"#,
+        ));
+        assert_eq!(program.foreign.len(), 1);
+        assert_eq!(program.foreign[0].name, "HostAdd");
+        assert_eq!(program.foreign[0].params.len(), 2);
+        assert_eq!(
+            program.foreign[0].ret,
+            Some(crate::ast::Type::Custom("Int".to_string()))
+        );
+        let cstr = program
+            .type_defs
+            .iter()
+            .find(|t| t.name == "CStr")
+            .expect("CStr alias");
+        assert_eq!(cstr.protocol.as_deref(), Some("String<C_String>"));
+    }
+
+    #[test]
     fn bodies_lower_to_typed_statement_nodes() {
         let program = lower_program(&parse(
             "defn f(x: Int) -> Int { let y: Int = x + 1; term y * 2; };
