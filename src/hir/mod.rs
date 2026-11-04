@@ -101,6 +101,44 @@ txn tick(x: Int) -> Int { term x + 1; };
     }
 
     #[test]
+    fn members_and_trait_defaults_carry_owner() {
+        let program = lower_program(&parse(
+            r#"
+obj Box { side: Int;
+    defn area(this: Box) -> Int { term 2; };
+};
+trait Shape {
+    defn area(this: Self) -> Int;
+    defn twice(this: Self) -> Int { term 4; };
+};
+impl Box {
+    defn scale(this: Box, k: Int) -> Int { term k * 2; };
+};
+"#,
+        ));
+        verify(&program).expect("valid HIR");
+        let box_area = program
+            .callables
+            .iter()
+            .find(|c| c.name == "area" && c.owner.as_deref() == Some("Box"))
+            .expect("Box::area");
+        assert!(!box_area.trait_default);
+        let twice = program
+            .callables
+            .iter()
+            .find(|c| c.name == "twice")
+            .expect("trait default twice");
+        assert!(twice.trait_default);
+        assert_eq!(twice.owner.as_deref(), Some("Shape"));
+        let scale = program
+            .callables
+            .iter()
+            .find(|c| c.name == "scale" && c.owner.as_deref() == Some("Box"))
+            .expect("impl Box::scale");
+        assert!(!scale.trait_default);
+    }
+
+    #[test]
     fn bodies_lower_to_typed_statement_nodes() {
         let program = lower_program(&parse(
             "defn f(x: Int) -> Int { let y: Int = x + 1; term y * 2; };

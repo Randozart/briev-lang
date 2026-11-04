@@ -79,25 +79,70 @@ fn lower_item(
         TopLevel::TypeDef(td) => {
             for member in &td.body.members {
                 match member {
-                    TopLevel::Definition(d) => out.callables.push(lower_definition(
-                        d,
-                        HirCallableKind::MemberDefn,
-                        false,
-                        None,
-                        ids,
-                    )),
-                    TopLevel::Transaction(t) => out.callables.push(lower_transaction(
-                        t,
-                        HirCallableKind::MemberTransaction,
-                        false,
-                        None,
-                        ids,
-                    )),
+                    TopLevel::Definition(d) => {
+                        let mut c = lower_definition(
+                            d,
+                            HirCallableKind::MemberDefn,
+                            false,
+                            None,
+                            ids,
+                        );
+                        c.owner = Some(td.name.clone());
+                        out.callables.push(c);
+                    }
+                    TopLevel::Transaction(t) => {
+                        let mut c = lower_transaction(
+                            t,
+                            HirCallableKind::MemberTransaction,
+                            false,
+                            None,
+                            ids,
+                        );
+                        c.owner = Some(td.name.clone());
+                        out.callables.push(c);
+                    }
                     _ => {}
                 }
             }
             if let Some(decl) = lower_type_def(td, ids) {
                 out.types.push(decl);
+            }
+        }
+        // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
+        // the keys the needs_state fixpoint and type_stateful_members use.
+        TopLevel::Impl(imp) => {
+            for f in &imp.functions {
+                if f.body.is_empty() {
+                    continue;
+                }
+                let mut c = lower_definition(
+                    f,
+                    HirCallableKind::MemberDefn,
+                    false,
+                    None,
+                    ids,
+                );
+                c.owner = Some(imp.target.clone());
+                out.callables.push(c);
+            }
+        }
+        // Trait defaults are indexed by BARE name (no type qualification), so a
+        // default shared by stateful and stateless conformers stays one node.
+        TopLevel::Trait(tr) => {
+            for f in &tr.functions {
+                if f.body.is_empty() {
+                    continue;
+                }
+                let mut c = lower_definition(
+                    f,
+                    HirCallableKind::MemberDefn,
+                    false,
+                    None,
+                    ids,
+                );
+                c.owner = Some(tr.name.clone());
+                c.trait_default = true;
+                out.callables.push(c);
             }
         }
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
@@ -293,6 +338,8 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
         node: ids.node(),
         name: spec.name.to_string(),
         kind: spec.kind,
+        owner: None,
+        trait_default: false,
         params: spec
             .parameters
             .iter()

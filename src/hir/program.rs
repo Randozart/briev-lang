@@ -38,6 +38,11 @@ pub struct HirCallable {
     pub node: NodeId,
     pub name: String,
     pub kind: HirCallableKind,
+    /// 2026-11-04 (H3.0): owning type for member/impl functions
+    /// (`Type::member` keys, matching the AST `type_member_key` format).
+    pub owner: Option<String>,
+    /// Trait DEFAULT function (indexed by bare name, not type-qualified).
+    pub trait_default: bool,
     pub params: Vec<HirParam>,
     pub result: Option<Type>,
     pub exported: bool,
