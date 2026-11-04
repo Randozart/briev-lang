@@ -24,6 +24,16 @@ fn has(cmd: &str) -> bool {
     Command::new(cmd).arg("--version").output().is_ok()
 }
 
+/// Text of the function containing `sig` (from its `define` to the closing
+/// brace). Used to scope IR assertions (e.g. no @free in the arena-owning
+/// function) without rejecting legitimate frees in the print helpers.
+fn function_text<'a>(ir: &'a str, sig: &str) -> &'a str {
+    let start = ir.find(sig).and_then(|p| ir[..p].rfind("define ")).unwrap_or(0);
+    let rest = &ir[start..];
+    let end = rest.find("\n}").map(|e| e + 2).unwrap_or(rest.len());
+    &rest[..end]
+}
+
 /// Program surface = the fixture declares a `node`/`txn` entry (comment
 /// lines stripped so a mention in prose does not misclassify).
 fn is_library_surface(src: &str) -> bool {
@@ -394,9 +404,10 @@ fn arena_folded_loop_uses_arena() {
         ir.contains("aacheck_"),
         "default Alloc# did not select the bump arena"
     );
+    let main = function_text(&ir, "@main(");
     assert!(
-        !ir.contains("call void @free"),
-        "brk-backed arena must not be @free'd"
+        !main.contains("call void @free"),
+        "brk-backed arena must not be @free'd in the arena-owning function:\n{main}"
     );
 }
 
@@ -446,9 +457,10 @@ fn arena_free_through_cast_is_noop() {
         .join("target/briev_daily_use_smoke/arena_free_cast__freecast");
     let ir = std::fs::read_to_string(out_dir.join("arena_free_cast.ll"))
         .expect("read emitted IR");
+    let main = function_text(&ir, "@main(");
     assert!(
-        !ir.contains("call void @free"),
-        "Free# on an arena allocation must not emit @free:\n{ir}"
+        !main.contains("call void @free"),
+        "Free# on an arena allocation must not emit @free in the arena function:\n{main}"
     );
 }
 
