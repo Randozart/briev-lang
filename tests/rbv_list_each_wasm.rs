@@ -101,4 +101,5 @@ fn per_instantiation_list_each_builds_for_wasm() {
     // Tuple return/destructure/field access on wasm32 (the float_fmt `sscale`
     // shape used by JSON parsing).
     build_fixture(brievc, "tuple_return_wasm", &out);
+    build_fixture(brievc, "bit_string_roundtrip_wasm", &out);
 }

@@ -11763,3 +11763,12 @@ Emit callable transaction locals inside entry and preserve unique SSA names. Reg
 ## FIXED 2026-11-02: browser-transaction-publication
 
 Publish browser state only at the enclosing successful transaction boundary. Regression: inline_members_do_not_publish_the_enclosing_browser_transaction.
+
+## Concrete bit casts emit invalid LLVM (FIXED 2026-11-03)
+
+String-to-Bits<N> relabelled a pointer register without ptrtoint, while
+widening integer-to-Bits casts emitted trunc. Emit pointer conversion and
+zero extension as required by actual register widths. Encoding constructors
+use the source width or adapt to the declared i64 argument ABI. Covered by
+bit_encoding_override_receives_canonical_storage_word and the browser
+bit_string_roundtrip_wasm fixture.

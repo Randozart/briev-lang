@@ -12771,3 +12771,23 @@ node entry [beginprogram][true] {
     }
     assert!(ir.contains("call i64 @caller"), "the unused may-trap call must survive: {ir}");
 }
+
+#[test]
+fn bit_encoding_override_receives_canonical_storage_word() {
+    for width in [8, 32, 64, 128] {
+        let mut backend = LlvmBackend::new()
+            .with_type_universe(crate::type_universe::TypeUniverse::new())
+            .with_cast_from_bit_overrides(std::collections::HashMap::from([
+                ("String".to_string(), "decode_bits".to_string()),
+            ]));
+        let source = super::TypedRegister { name: "%raw".to_string(), ty: Type::Bits(width) };
+        let mut ir = String::new();
+        backend.emit_cast_path(&mut ir, "%decoded", &source, &Type::string(), "")
+            .expect("raw bits have an encoding route");
+        assert!(ir.contains("call ptr @decode_bits(i64 "), "constructor ABI: {ir}");
+        if width != 64 {
+            let op = if width < 64 { "zext" } else { "trunc" };
+            assert!(ir.contains(&format!("{op} i{width} %raw to i64")), "storage-word conversion: {ir}");
+        }
+    }
+}

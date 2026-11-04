@@ -1,0 +1,25 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+defn encode(source: String) -> String {
+    let raw: Bits<32> = source as Bits<32>;
+    term raw as String;
+};
+defn preserve(source: String) -> String {
+    let representation: Data = source as Data;
+    term representation as String;
+};
+let encoded: String = encode("hello");
+let preserved: String = preserve("hello");
+defn widen_bits(value: Int) -> Int {
+    let narrow: Bits<8> = value as Bits<8>;
+    let wide: Bits<32> = narrow as Bits<32>;
+    term wide as Int;
+};
+let widened: Int = widen_bits(127);
+
+<view>
+  <span b-text="encoded">pending</span>
+  <span b-text="preserved">pending</span>
+  <span b-text="widened">0</span>
+</view>
