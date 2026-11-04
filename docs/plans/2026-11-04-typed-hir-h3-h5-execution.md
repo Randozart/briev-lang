@@ -16,6 +16,26 @@ Finish the migration from AST-driven semantics to typed HIR:
 Hard constraint: **no behavior change per slice**. AST remains authoritative
 until its HIR replacement is proven equal; every slice preserves emitted IR.
 
+## Progress (2026-11-04)
+
+- **H3.0 ✅** HIR coverage: impl/trait-default members with owner/trait_default,
+  top-level globals (+declared storage, initializer), always_stateful
+  (asm/bad), contracts (pre/post/watchdog + on-fire), transaction
+  reactive/async flags, full output types, `frgn` bindings, declared
+  protocols (body-less `type CStr: String<C_String>`), constants.
+- **H3.1 ✅** `needs_state`/`needs_plain` over HIR — corpus parity: 103
+  compared, 29 skipped (unsupported HIR), **0 mismatches**.
+- **H3.2 ✅** `defn_liveness` over HIR — curated parity (dead/export/reactive/
+  closure/endprogram/print-helper/construction/eq-helper).
+- **H3.3 ✅** `classify_plain_lets` (corpus parity, 0 mismatches) +
+  `compute_boundary_ownership` (curated parity: frgn seeding, params,
+  lto, state reads, export chain).
+- Each slice is behind parity tests; AST remains authoritative and no
+  consumer is switched yet.
+- **Next:** H3.4 `loop_shape`/`tail_recursion`/`tail_carrier` (needs the
+  transition graph over HIR), then H3.5 task/collection, H3.6 generic txn,
+  H4/H5.
+
 ## Current state
 
 - `lower_program` / `lower_program_checked` (H0–H2) build `HirProgram` with
