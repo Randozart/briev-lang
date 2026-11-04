@@ -55,17 +55,6 @@ jobs:
       - name: All-target tests
         run: cargo test --all
 
-      - name: Diagnose native smoke failures
-        if: failure()
-        shell: bash
-        run: |
-          clang --version
-          for exe in target/briev_daily_use_smoke/*__golden/*; do
-            [[ -x "$exe" && -f "$exe.ll" ]] || continue
-            "$exe" >/dev/null && continue
-            gdb -batch -ex run -ex 'bt 16' -ex 'x/12i $pc-16' -ex 'info registers' --args "$exe" || true
-          done
-
       - name: Quarantined tests (non-blocking)
         continue-on-error: true
         run: timeout 600s cargo test --all -- --ignored --test-threads=1

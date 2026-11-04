@@ -1,12 +1,29 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
-import "std/os/proc_stat.bv";
-
+import { to_c_string } from "std/string_c.bv";
+// Linux statm field two is current resident memory in pages. A fresh page
+// per read makes an unreclaimed region observable after repeated tail calls.
 defn rss_pages() -> Int {
-    let result: Result<ProcStat,Int> = proc_stat_read(SysCall#(39));
-    when is_err(result) { endprogram 2; };
-    term unwrap(result).resident_pages;
+    let path: Int = to_c_string("/proc/self/statm");
+    let fd: Int = SysCall#(2, path, 0, 0);
+    when fd < 0 { endprogram 2; };
+    let buf: Int = Alloc#(4096) as Int;
+    let count: Int = SysCall#(0, fd, buf, 4096);
+    let closed: Int = SysCall#(3, fd);
+    when count <= 0 || closed != 0 { endprogram 2; };
+    let field: Int = 0;
+    let pages: Int = 0;
+    foreach index in 0..count {
+        let byte: Int = Load#(buf + index, 1);
+        when byte == 32 { field += 1; };
+        when field == 1 && byte != 32 {
+            when byte < 48 || byte > 57 { endprogram 2; };
+            pages = pages * 10 + byte - 48;
+        };
+    };
+    when pages <= 0 { endprogram 2; };
+    term pages;
 };
 
 defn sample_repeatedly(remaining: Int) -> Int {

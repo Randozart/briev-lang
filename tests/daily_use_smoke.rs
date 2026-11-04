@@ -155,8 +155,8 @@ fn build_link_run_profile(
     let run = run.output().unwrap_or_else(|e| panic!("{name}: failed to run: {e}"));
     assert!(
         run.status.success(),
-        "{name}: run failed (exit {:?}): {}",
-        run.status.code(),
+        "{name}: run failed ({}): {}",
+        run.status,
         String::from_utf8_lossy(&run.stderr)
     );
     String::from_utf8_lossy(&run.stdout).to_string()
