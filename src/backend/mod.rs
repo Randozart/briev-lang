@@ -268,7 +268,7 @@ pub fn analyze_program(
     } else {
         crate::analysis::loop_shape::build_loop_shapes(&transition_graph, items, min_width)
     };
-    let swan_songs = build_swan_songs(items);
+    let swan_songs = build_swan_songs(items, Some(&hir));
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once here so
     // every backend consumer reads frontend analysis instead of re-walking
     // bodies. See docs/plans/2026-07-31-frontend-driven-dispatch.md §7.
@@ -652,19 +652,65 @@ fn build_node_inline_decisions(items: &[TopLevel]) -> HashMap<String, crate::ana
 /// agreement. See docs/plans/2026-07-31-frontend-driven-dispatch.md §6.
 fn build_swan_songs(
     items: &[TopLevel],
+    hir: Option<&crate::hir::HirProgram>,
 ) -> HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)> {
     let state_fields = crate::analysis::loop_shape::collect_state_fields(items);
+    // 2026-11-05 (H4 slice B): under the flag the hoist runs on typed HIR and
+    // crosses the lossless HIR→AST boundary; any unsupported node falls back
+    // to the AST result for the whole program (never a guessed body). Debug
+    // builds assert exact AST equality. The txn set mirrors the AST loop:
+    // BARE top-level transactions only (sync/export-wrapped copies are not
+    // raw `TopLevel::Transaction` items).
+    if let Some(hir) = hir {
+        if hir_emit_enabled() {
+            if let Some(hir_songs) = hir_swan_songs(hir, &state_fields) {
+                let ast_songs = ast_swan_songs(items, &state_fields);
+                debug_assert_eq!(hir_songs, ast_songs, "HIR/AST swan-song drift");
+                return hir_songs;
+            }
+        }
+    }
+    ast_swan_songs(items, &state_fields)
+}
+
+fn ast_swan_songs(
+    items: &[TopLevel],
+    state_fields: &std::collections::HashSet<String>,
+) -> HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)> {
     let mut songs = HashMap::new();
     for item in items {
         if let TopLevel::Transaction(t) = item {
-            let (stripped, hoisted) = crate::analysis::swan_song::hoist_swan_song(
-                &t.body,
-                &state_fields,
-            );
+            let (stripped, hoisted) =
+                crate::analysis::swan_song::hoist_swan_song(&t.body, state_fields);
             songs.insert(t.name.clone(), (stripped, hoisted));
         }
     }
     songs
+}
+
+/// `None` when any hoisted body contains a node the boundary cannot
+/// reconstruct (`Other`).
+fn hir_swan_songs(
+    program: &crate::hir::HirProgram,
+    state_fields: &std::collections::HashSet<String>,
+) -> Option<HashMap<String, (Vec<Statement>, Vec<Vec<Statement>>)>> {
+    let mut songs = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        matches!(c.kind, crate::hir::HirCallableKind::Transaction)
+            && c.owner.is_none()
+            && !c.exported
+            && c.sync_domains.is_empty()
+    }) {
+        let (stripped, hoisted) =
+            crate::hir::swan_song::hoist_swan_song(&c.body.statements, state_fields);
+        let stripped = crate::hir::to_ast::stmt_body(&stripped)?;
+        let mut hoisted_ast = Vec::with_capacity(hoisted.len());
+        for body in &hoisted {
+            hoisted_ast.push(crate::hir::to_ast::stmt_body(body)?);
+        }
+        songs.insert(c.name.clone(), (stripped, hoisted_ast));
+    }
+    Some(songs)
 }
 
 /// Intent: Apply peephole optimization after analysis. Returns a new set of top-level items
@@ -1208,7 +1254,7 @@ mod tests {
             top_level_let("escapes"),
             swan_song_txn(),
         ];
-        let songs = build_swan_songs(&items);
+        let songs = build_swan_songs(&items, None);
         let (_, hoist) = songs.get("mb").expect("mb swan song must exist");
         let song = &hoist[0];
         let Statement::Expression(Expr::Call(_, args, _)) = &song[0] else {

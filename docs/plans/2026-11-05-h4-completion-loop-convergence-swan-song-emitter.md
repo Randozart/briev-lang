@@ -51,7 +51,15 @@ The biggest remaining semantic dispatch that needs no emitter work.
 Risk: low-moderate. Diff mostly type unification. Impact: loop-lowering
 strategy (carry mode, tiling, vector groups, natural exit) becomes HIR-driven.
 
-## Slice B — swan-song / batch-shape consumer flip
+## Slice B — swan-song / batch-shape consumer flip ✅ DONE (2026-11-05)
+
+Under the flag the hoist runs on typed HIR and crosses the lossless
+HIR→AST boundary; unsupported nodes fall back to the AST result for the
+whole program; debug asserts exact AST equality. Txn set mirrors the AST
+loop (bare top-level transactions only). Sweep 131/0; A/B byte-identical;
+lib 3497.
+
+## Slice B (plan, kept for the record)
 
 `build_swan_songs` (backend/mod.rs ~640) consumes AST statements. Under the
 flag: compute `has_swan_song`/`hoist_swan_song` from HIR and reconstruct
