@@ -270,7 +270,23 @@ pub fn analyze_program(
     // in the frontend; the backend reads it at element read-sites (never
     // re-derives — the frontend-driven-dispatch pillar).
     let dyn_collection_info = crate::analysis::dyn_concrete_sets::analyze(items);
-    let (spawn_pools, dependent_pools, _spawn_errors, spawn_storage) = crate::analysis::spawn_pool::analyze(items);
+    // 2026-11-05 (H4.1): spawn pools now return backend-neutral `PoolBound`
+    // terms, so the HIR analysis is directly consumable. Debug builds assert
+    // exact AST equality; emission rebuilds the bound expression from the
+    // neutral shape (byte-identical IR).
+    let (spawn_pools, dependent_pools, _spawn_errors, spawn_storage) = if hir_emit_enabled() {
+        let (ast_pools, ast_dep, ast_err, ast_storage) =
+            crate::analysis::spawn_pool::analyze(items);
+        let (hir_pools, hir_dep, hir_err, hir_storage) =
+            crate::hir::spawn_pool::analyze(&hir);
+        debug_assert_eq!(hir_pools, ast_pools, "HIR/AST spawn capacity drift");
+        debug_assert_eq!(hir_dep, ast_dep, "HIR/AST dependent-term drift");
+        debug_assert_eq!(hir_err, ast_err, "HIR/AST spawn-error drift");
+        debug_assert_eq!(hir_storage, ast_storage, "HIR/AST spawn-storage drift");
+        (hir_pools, hir_dep, hir_err, hir_storage)
+    } else {
+        crate::analysis::spawn_pool::analyze(items)
+    };
     // 2026-08-26 (async Phase C): segment every SPAWN-TARGETED defn once.
     // Non-targeted defns keep their ordinary single-body lowering.
     let spawn_targets = crate::analysis::task_segments::collect_spawn_targets(items);

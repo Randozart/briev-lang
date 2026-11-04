@@ -2,8 +2,8 @@
 //! H3.5 parity: HIR spawn-pool capacities/terms/errors must equal the AST ones.
 
 use briev_compiler::analysis::spawn_pool::analyze as ast_analyze;
-use briev_compiler::ast::{Expr, TopLevel};
-use briev_compiler::hir::expr::{HirExpr, HirExprKind, HirLiteral};
+use briev_compiler::analysis::spawn_pool::DependentTerm;
+use briev_compiler::ast::TopLevel;
 use briev_compiler::hir::lower_program;
 use briev_compiler::hir::spawn_pool::analyze as hir_analyze;
 use std::collections::HashMap;
@@ -29,31 +29,10 @@ fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn ast_bound(e: &Expr) -> String {
-    match e {
-        Expr::Identifier(n) => format!("id:{n}"),
-        Expr::Decimal(n) => format!("lit:{n}"),
-        Expr::Field(o, f) => format!("field:{}:{f}", ast_bound(o)),
-        Expr::BinaryOp(op, l, r) => format!("bin:{op:?}:{}:{}", ast_bound(l), ast_bound(r)),
-        _ => "other".to_string(),
-    }
-}
-
-fn hir_bound(e: &HirExpr) -> String {
-    match &e.kind {
-        HirExprKind::Identifier(n) => format!("id:{n}"),
-        HirExprKind::Literal(HirLiteral::Int(n)) => format!("lit:{n}"),
-        HirExprKind::Field { receiver, name } => format!("field:{}:{name}", hir_bound(receiver)),
-        HirExprKind::Binary { op, left, right } => {
-            format!("bin:{op:?}:{}:{}", hir_bound(left), hir_bound(right))
-        }
-        _ => "other".to_string(),
-    }
-}
-
-fn canon_terms(mut terms: Vec<(i64, String)>) -> Vec<(i64, String)> {
-    terms.sort();
-    terms
+fn canon_terms(terms: Vec<DependentTerm>) -> Vec<String> {
+    let mut out: Vec<String> = terms.into_iter().map(|t| format!("{t:?}")).collect();
+    out.sort();
+    out
 }
 
 fn compare(src: &str) -> Vec<String> {
@@ -71,17 +50,13 @@ fn compare(src: &str) -> Vec<String> {
     if a_storage != h_storage {
         bad.push(format!("storage ast={a_storage:?} hir={h_storage:?}"));
     }
-    let a_terms: HashMap<String, Vec<(i64, String)>> = a_dep
+    let a_terms: HashMap<String, Vec<String>> = a_dep
         .into_iter()
-        .map(|(k, v)| {
-            (k, canon_terms(v.into_iter().map(|t| (t.multiplier, ast_bound(&t.bound))).collect()))
-        })
+        .map(|(k, v)| (k, canon_terms(v)))
         .collect();
-    let h_terms: HashMap<String, Vec<(i64, String)>> = h_dep
+    let h_terms: HashMap<String, Vec<String>> = h_dep
         .into_iter()
-        .map(|(k, v)| {
-            (k, canon_terms(v.into_iter().map(|t| (t.multiplier, hir_bound(&t.bound))).collect()))
-        })
+        .map(|(k, v)| (k, canon_terms(v)))
         .collect();
     if a_terms != h_terms {
         bad.push(format!("dependent ast={a_terms:?} hir={h_terms:?}"));

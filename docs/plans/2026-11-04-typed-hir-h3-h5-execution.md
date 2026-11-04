@@ -87,6 +87,14 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   exercising all debug cross-checks). Next type-agnostic candidates need a
   type shim: spawn pools (AST-typed dependent terms) and task segments
   (AST statements).
+- **H4.1 (spawn-pool consumer flip) ✅** `spawn_pool::DependentTerm.bound` is
+  now a backend-neutral `PoolBound` (literal/var/field/product); the backend
+  rebuilds the AST expression at emission (`to_expr`), so analysis results
+  carry no AST nodes and HIR/AST share the exact type. Under
+  `BRIEV_HIR_EMIT=1` capacities/dependent terms/storage/errors come from HIR
+  with debug equality asserts. Full-corpus debug sweep stays clean (131/0).
+  `task_segments` cannot flip yet: its segments are AST statements consumed by
+  emission (needs H4.2).
 - **H4.1 full-corpus debug sweep ✅** 135 corpus programs compiled in both
   modes with all debug cross-checks active: **131 byte-identical, 0
   mismatches, 0 HIR-only failures** (4 skipped: AST fails too). The sweep

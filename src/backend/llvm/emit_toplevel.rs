@@ -2615,7 +2615,7 @@ impl LlvmBackend {
             // only by malloc slop in spr.bv).
             let mut acc_reg: Option<String> = None;
             for term in terms {
-                let vr = self.emit_expr(out, &term.bound, indent);
+                let vr = self.emit_expr(out, &term.bound.to_expr(), indent);
                 let scaled = if term.multiplier != 1 {
                     let r = self.fun.gen_reg();
                     writeln!(out, "{}{} = mul i64 {}, {}", indent, r, vr.name, term.multiplier).ok();

@@ -32,20 +32,63 @@ enum Firing {
     Static(i64),
     /// `[count < N]` with a runtime N (a state field or a named const) — the
     /// pool is sized at runtime from the bound (dependent capacity). Carries
-    /// the bound EXPRESSION so the backend can size the heap buffer.
-    Dependent(Expr),
+    /// the bound expression so the backend can size the heap buffer.
+    Dependent(PoolBound),
     /// Not a countdown (a `[true]` precondition, a non-bounded guard) — an
     /// unprovable spawn here is an error.
     Unprovable,
 }
 
+/// Backend-neutral bound expression for a dependent spawn pool. The HIR and
+/// AST analyses both produce this shape; the backend rebuilds an AST
+/// expression at emission (`to_expr`), so no AST node is stored in analysis
+/// results. Covers exactly what the analysis can prove: constants, state
+/// fields, and products of those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PoolBound {
+    Literal(i64),
+    Var(String),
+    Field(Box<PoolBound>, String),
+    Mul(Box<PoolBound>, Box<PoolBound>),
+}
+
+impl PoolBound {
+    /// Rebuild the source-shaped expression the emitter consumes. Structure
+    /// matches what the analysis saw, so emission stays byte-identical.
+    pub fn to_expr(&self) -> Expr {
+        match self {
+            PoolBound::Literal(n) => Expr::Decimal(*n),
+            PoolBound::Var(n) => Expr::Identifier(n.clone()),
+            PoolBound::Field(base, name) => {
+                Expr::Field(Box::new(base.to_expr()), name.clone())
+            }
+            PoolBound::Mul(a, b) => Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Mul,
+                Box::new(a.to_expr()),
+                Box::new(b.to_expr()),
+            ),
+        }
+    }
+}
+
+/// Project an expression onto the provable bound shape; `None` means the
+/// analysis cannot reason about it (conservative, never guessed).
+pub fn expr_bound(e: &Expr) -> Option<PoolBound> {
+    match e {
+        Expr::Decimal(n) => Some(PoolBound::Literal(*n)),
+        Expr::Identifier(n) => Some(PoolBound::Var(n.clone())),
+        Expr::Field(base, name) => expr_bound(base).map(|b| PoolBound::Field(Box::new(b), name.clone())),
+        _ => None,
+    }
+}
+
 /// One runtime-bound spawn context for a base: a compile-time multiplier
 /// (the enclosing const foreach products) times the runtime bound expression
 /// (a countdown bound or a runtime-range foreach bound).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DependentTerm {
     pub multiplier: i64,
-    pub bound: Expr,
+    pub bound: PoolBound,
 }
 
 /// The result: `base` → the proven TOTAL lifetime spawn count for STATIC
@@ -265,7 +308,7 @@ fn walk_expr_for_storage(e: &Expr, out: &mut HashMap<String, crate::ast::SpawnSt
 /// the firing count times the product of those bounds).
 struct WalkCtx<'a> {
     firing: &'a Firing,
-    bound_terms: &'a [Expr],
+    bound_terms: &'a [PoolBound],
 }
 
 /// Classify a reactive node's firing: a countdown `[count < N][count == N]`
@@ -293,7 +336,7 @@ fn node_firing(t: &crate::ast::Transaction, init_maxes: &HashMap<String, i64>) -
                     // A bounded init: the seeded value is one of the set, so
                     // the max is a provable static capacity.
                     Some(&max) => Firing::Static(max),
-                    None => Firing::Dependent((**r).clone()),
+                    None => Firing::Dependent(PoolBound::Var(name.clone())),
                 },
                 _ => Firing::Unprovable,
             }
@@ -328,13 +371,11 @@ fn bound_term_value(term: &crate::ast::top::BoundTerm) -> Option<i64> {
 /// The runtime bound of a foreach list expression, when it is a runtime
 /// value (a `0..M` range with a runtime end). A const range and a list
 /// literal are statically known; anything else cannot bound a spawn.
-fn foreach_bound(list: &Expr) -> Option<Expr> {
+fn foreach_bound(list: &Expr) -> Option<PoolBound> {
     match list {
         Expr::Range { start, end, .. } => match (start.as_ref(), end.as_ref()) {
             (Expr::Decimal(_), Expr::Decimal(_)) => None,
-            (_, Expr::Identifier(_)) | (_, _) if matches!(end.as_ref(), Expr::Identifier(_) | Expr::Field(_, _)) => {
-                Some((**end).clone())
-            }
+            (_, Expr::Identifier(_) | Expr::Field(_, _)) => expr_bound(end),
             _ => None,
         },
         _ => None,
@@ -383,7 +424,7 @@ fn walk_stmt(
                     // so inner spawns accumulate it.
                     if let Some(bound) = foreach_bound(list.as_ref()) {
                         let nested = ctx.bound_terms;
-                        let extended: Vec<Expr> = nested.iter().cloned().chain(std::iter::once(bound)).collect();
+                        let extended: Vec<PoolBound> = nested.iter().cloned().chain(std::iter::once(bound)).collect();
                         let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
                         walk_stmts(body, multiplier, &mut inner_ctx, live, terms, errors);
                     } else {
@@ -392,7 +433,7 @@ fn walk_stmt(
                         let mut inner_terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
                         let mut inner_errors = Vec::new();
                         let nested = ctx.bound_terms;
-                        let extended: Vec<Expr> = nested.to_vec();
+                        let extended: Vec<PoolBound> = nested.to_vec();
                         let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
                         walk_stmts(body, 0, &mut inner_ctx, &mut inner_live, &mut inner_terms, &mut inner_errors);
                         // An unprovable firing context (not a countdown) inside
@@ -465,7 +506,7 @@ fn walk_expr(
                                 Firing::Dependent(countdown_bound) => {
                     // The countdown bound N is the runtime firing count; each
                     // enclosing runtime-bound foreach multiplies it.
-                    let mut bounds: Vec<Expr> = Vec::with_capacity(ctx.bound_terms.len() + 1);
+                    let mut bounds: Vec<PoolBound> = Vec::with_capacity(ctx.bound_terms.len() + 1);
                     bounds.push(countdown_bound.clone());
                     bounds.extend(ctx.bound_terms.iter().cloned());
                     let bound = product(&bounds);
@@ -542,13 +583,13 @@ fn walk_expr(
 }
 
 /// Product of the runtime foreach bounds — `a * b * c` as a nested expr.
-fn product(bounds: &[Expr]) -> Expr {
+fn product(bounds: &[PoolBound]) -> PoolBound {
     if bounds.is_empty() {
-        return Expr::Decimal(1);
+        return PoolBound::Literal(1);
     }
     let mut acc = bounds[0].clone();
     for b in &bounds[1..] {
-        acc = Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, Box::new(acc), Box::new(b.clone()));
+        acc = PoolBound::Mul(Box::new(acc), Box::new(b.clone()));
     }
     acc
 }
@@ -640,7 +681,7 @@ mod tests {
         let terms = dependent.get("Counter").expect("a runtime-bound spawn must be dependent");
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].multiplier, 1);
-        assert!(matches!(terms[0].bound, Expr::Identifier(ref n) if n == "N"));
+        assert!(matches!(terms[0].bound, PoolBound::Var(ref n) if n == "N"));
     }
 
     #[test]
@@ -662,8 +703,7 @@ mod tests {
         let terms = dependent.get("Counter").expect("dependent pool expected");
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].multiplier, 1);
-        assert!(matches!(&terms[0].bound,
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, _, _)));
+        assert!(matches!(&terms[0].bound, PoolBound::Mul(_, _)));
     }
 
     fn countdown_with_body(bound: Expr, body: Vec<Statement>) -> TopLevel {
@@ -812,7 +852,7 @@ mod tests {
         assert!(!caps.contains_key("Counter"),
             "a ref-containing bound set is not statically bounded");
         let terms = dependent.get("Counter").expect("must use the dependent path");
-        assert!(matches!(&terms[0].bound, Expr::Identifier(n) if n == "N"));
+        assert!(matches!(&terms[0].bound, PoolBound::Var(n) if n == "N"));
     }
 
     // ── 2026-08-09 (Phase 5): box/spill storage classification ────────

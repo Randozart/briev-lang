@@ -8,6 +8,7 @@
 use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
+use crate::analysis::spawn_pool::{DependentTerm, PoolBound};
 use crate::ast::top::{BoundSpec, BoundTerm};
 use crate::ast::SpawnStorage;
 use std::collections::HashMap;
@@ -15,26 +16,20 @@ use std::collections::HashMap;
 #[derive(Clone, PartialEq)]
 enum Firing {
     Static(i64),
-    Dependent(HirExpr),
+    Dependent(PoolBound),
     Unprovable,
-}
-
-#[derive(Clone, Debug)]
-pub struct HirDependentTerm {
-    pub multiplier: i64,
-    pub bound: HirExpr,
 }
 
 pub fn analyze(
     program: &HirProgram,
 ) -> (
     HashMap<String, usize>,
-    HashMap<String, Vec<HirDependentTerm>>,
+    HashMap<String, Vec<DependentTerm>>,
     Vec<String>,
     HashMap<String, SpawnStorage>,
 ) {
     let mut capacities: HashMap<String, usize> = HashMap::new();
-    let mut dependent: HashMap<String, Vec<HirDependentTerm>> = HashMap::new();
+    let mut dependent: HashMap<String, Vec<DependentTerm>> = HashMap::new();
     let mut errors: Vec<String> = Vec::new();
     let init_maxes: HashMap<String, i64> = program
         .inits
@@ -49,7 +44,7 @@ pub fn analyze(
     }) {
         let firing = node_firing(c, &init_maxes);
         let mut live: HashMap<String, i64> = HashMap::new();
-        let mut terms: HashMap<String, Vec<HirDependentTerm>> = HashMap::new();
+        let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
         let mut ctx = WalkCtx { firing: &firing, bound_terms: &[] };
         walk_stmts(&c.body.statements, 1, &mut ctx, &mut live, &mut terms, &mut errors);
         merge_total(&mut capacities, &live);
@@ -68,7 +63,7 @@ pub fn analyze(
             },
         };
         let mut live: HashMap<String, i64> = HashMap::new();
-        let mut terms: HashMap<String, Vec<HirDependentTerm>> = HashMap::new();
+        let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
         let mut ctx = WalkCtx { firing: &Firing::Static(1), bound_terms: &[] };
         walk_stmt(&stmt, 1, &mut ctx, &mut live, &mut terms, &mut errors);
         merge_total(&mut capacities, &live);
@@ -209,7 +204,7 @@ fn walk_expr_for_storage(e: &HirExpr, out: &mut HashMap<String, SpawnStorage>) {
 
 struct WalkCtx<'a> {
     firing: &'a Firing,
-    bound_terms: &'a [HirExpr],
+    bound_terms: &'a [PoolBound],
 }
 
 fn node_firing(
@@ -237,7 +232,7 @@ fn node_firing(
             }
             HirExprKind::Identifier(name) => match init_maxes.get(name) {
                 Some(&max) => Firing::Static(max),
-                None => Firing::Dependent((**right).clone()),
+                None => Firing::Dependent(PoolBound::Var(name.clone())),
             },
             _ => Firing::Unprovable,
         },
@@ -263,16 +258,29 @@ fn bound_term_value(term: &BoundTerm) -> Option<i64> {
     }
 }
 
-fn foreach_bound(list: &HirExpr) -> Option<HirExpr> {
+fn foreach_bound(list: &HirExpr) -> Option<PoolBound> {
     match &list.kind {
         HirExprKind::Range { start, end, .. } => match (&start.kind, &end.kind) {
             (
                 HirExprKind::Literal(super::expr::HirLiteral::Int(_)),
                 HirExprKind::Literal(super::expr::HirLiteral::Int(_)),
             ) => None,
-            (_, HirExprKind::Identifier(_) | HirExprKind::Field { .. }) => Some((**end).clone()),
+            (_, HirExprKind::Identifier(_) | HirExprKind::Field { .. }) => hir_expr_bound(end),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// Project an HIR expression onto the provable bound shape (shared with the
+/// AST analysis via `PoolBound`).
+fn hir_expr_bound(e: &HirExpr) -> Option<PoolBound> {
+    match &e.kind {
+        HirExprKind::Literal(super::expr::HirLiteral::Int(n)) => Some(PoolBound::Literal(*n)),
+        HirExprKind::Identifier(n) => Some(PoolBound::Var(n.clone())),
+        HirExprKind::Field { receiver, name } => {
+            hir_expr_bound(receiver).map(|b| PoolBound::Field(Box::new(b), name.clone()))
+        }
         _ => None,
     }
 }
@@ -282,7 +290,7 @@ fn walk_stmts(
     multiplier: i64,
     ctx: &mut WalkCtx,
     live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<HirDependentTerm>>,
+    terms: &mut HashMap<String, Vec<DependentTerm>>,
     errors: &mut Vec<String>,
 ) {
     for s in stmts {
@@ -295,7 +303,7 @@ fn walk_stmt(
     multiplier: i64,
     ctx: &mut WalkCtx,
     live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<HirDependentTerm>>,
+    terms: &mut HashMap<String, Vec<DependentTerm>>,
     errors: &mut Vec<String>,
 ) {
     match &stmt.kind {
@@ -318,7 +326,7 @@ fn walk_stmt(
                 None => {
                     if let Some(bound) = foreach_bound(list) {
                         let nested = ctx.bound_terms;
-                        let extended: Vec<HirExpr> = nested
+                        let extended: Vec<PoolBound> = nested
                             .iter()
                             .cloned()
                             .chain(std::iter::once(bound))
@@ -327,10 +335,10 @@ fn walk_stmt(
                         walk_stmts(body, multiplier, &mut inner_ctx, live, terms, errors);
                     } else {
                         let mut inner_live: HashMap<String, i64> = HashMap::new();
-                        let mut inner_terms: HashMap<String, Vec<HirDependentTerm>> =
+                        let mut inner_terms: HashMap<String, Vec<DependentTerm>> =
                             HashMap::new();
                         let mut inner_errors = Vec::new();
-                        let extended: Vec<HirExpr> = ctx.bound_terms.to_vec();
+                        let extended: Vec<PoolBound> = ctx.bound_terms.to_vec();
                         let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
                         walk_stmts(
                             body,
@@ -374,7 +382,7 @@ fn walk_expr(
     multiplier: i64,
     ctx: &mut WalkCtx,
     live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<HirDependentTerm>>,
+    terms: &mut HashMap<String, Vec<DependentTerm>>,
     errors: &mut Vec<String>,
 ) {
     match &expr.kind {
@@ -393,19 +401,19 @@ fn walk_expr(
                 Firing::Static(n) => {
                     let bound = product(ctx.bound_terms);
                     let entry = terms.entry(type_name.clone()).or_default();
-                    entry.push(HirDependentTerm {
+                    entry.push(DependentTerm {
                         multiplier: multiplier * (*n).max(1),
                         bound,
                     });
                 }
                 Firing::Dependent(countdown_bound) => {
-                    let mut bounds: Vec<HirExpr> =
+                    let mut bounds: Vec<PoolBound> =
                         Vec::with_capacity(ctx.bound_terms.len() + 1);
                     bounds.push(countdown_bound.clone());
                     bounds.extend(ctx.bound_terms.iter().cloned());
                     let bound = product(&bounds);
                     let entry = terms.entry(type_name.clone()).or_default();
-                    entry.push(HirDependentTerm { multiplier, bound });
+                    entry.push(DependentTerm { multiplier, bound });
                 }
                 Firing::Unprovable => {
                     errors.push(format!(
@@ -482,31 +490,13 @@ fn walk_expr(
     }
 }
 
-fn product(bounds: &[HirExpr]) -> HirExpr {
+fn product(bounds: &[PoolBound]) -> PoolBound {
     if bounds.is_empty() {
-        return HirExpr {
-            id: super::ids::NodeId(0),
-            span: None,
-            ty: None,
-            kind: HirExprKind::Literal(super::expr::HirLiteral::Int(1)),
-        };
+        return PoolBound::Literal(1);
     }
     let mut acc = bounds[0].clone();
     for b in &bounds[1..] {
-        let kind = HirExprKind::Binary {
-            op: crate::ast::BinaryOpKind::Mul,
-            left: Box::new(std::mem::replace(
-                &mut acc,
-                HirExpr {
-                    id: super::ids::NodeId(0),
-                    span: None,
-                    ty: None,
-                    kind: HirExprKind::Other("temporary"),
-                },
-            )),
-            right: Box::new(b.clone()),
-        };
-        acc = HirExpr { id: super::ids::NodeId(0), span: None, ty: None, kind };
+        acc = PoolBound::Mul(Box::new(acc), Box::new(b.clone()));
     }
     acc
 }
