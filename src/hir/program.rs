@@ -86,6 +86,10 @@ pub struct HirCallable {
     /// Trait DEFAULT function (indexed by bare name, not type-qualified).
     pub trait_default: bool,
     pub params: Vec<HirParam>,
+    /// Generic type-parameter names.
+    pub type_params: Vec<String>,
+    /// Has a trailing variadic rest parameter.
+    pub variadic: bool,
     pub result: Option<Type>,
     /// Full declared output shape (union/tuple/array fidelity).
     pub outputs: Option<HirOutput>,
