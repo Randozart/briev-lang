@@ -2455,6 +2455,9 @@ impl LlvmBackend {
         let size = self.struct_type_size(&type_key);
         let inst = self.fun.gen_reg();
         writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, inst, size).ok();
+        // 2026-11-03: omitted fixed-collection elements are zero initialized.
+        // Keep this until destination analysis proves every image byte written.
+        writeln!(out, "{indent}call void @llvm.memset.p0.i64(ptr {inst}, i8 0, i64 {size}, i1 false)").ok();
         let hw = format!("i{}", self.ctx.int_bits);
         let addr = self.fun.gen_reg();
         writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, addr, inst, hw).ok();
@@ -2482,6 +2485,8 @@ impl LlvmBackend {
         writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, data_gep, inst, offset).ok();
         let agg_ty = self.vector_array_llvm_type(&data_ty)
             .unwrap_or_else(|| "i64".to_string());
+        let Type::Vector(element, _) = &data_ty else { return None; };
+        let element_llvm = self.array_element_llvm_type(element);
         for (i, e) in elems.iter().enumerate() {
             let idx = i as i64;
             let elem_ptr = self.fun.gen_reg();
@@ -2493,11 +2498,12 @@ impl LlvmBackend {
             .ok();
             let val_tmp = self.fun.gen_reg();
             let val = self.emit_expr_inner(out, &val_tmp, e, indent);
+            if self.emit_non_scalar_store(out, indent, (&elem_ptr, element, &element_llvm), &val) { continue; }
             let store_val = self.ensure_typed_value(
-                out, indent, "i64", &val.name, Some(val.ty.clone()),
+                out, indent, &element_llvm, &val.name, Some(val.ty.clone()),
                 self.ctx.type_universe.clone().as_ref(),
             );
-            writeln!(out, "{}store i64 {}, ptr {}", indent, store_val, elem_ptr).ok();
+            writeln!(out, "{}store {} {}, ptr {}", indent, element_llvm, store_val, elem_ptr).ok();
         }
         let _ = base;
         Some(TypedRegister {

@@ -1384,31 +1384,20 @@ impl LlvmBackend {
                          if let Some((inner, dims)) = slot_ty {
                              if dims.len() >= 1 {
                                      let offset = self.lookup_field_offset(&self_type, sname);
-                                     let elem_size = crate::backend::llvm::types::type_size(&inner, self.ctx.type_universe.as_ref());
-                                     // 2026-08-07: multi-dim — the row stride
-                                     // is the product of the REMAINING dims
-                                     // (`data[row]` jumps a whole row of the
-                                     // inner sub-array).
-                                     let row_elems: usize = dims.iter().skip(1)
-                                         .map(|d| match d {
-                                             crate::ast::Dimension::Anonymous(n) => *n,
-                                             crate::ast::Dimension::Named(n, c) if *c > 0 => *c,
-                                             _ => 1,
-                                         })
-                                         .product::<usize>().max(1);
-                                      let scaled = self.fun.gen_reg();
+                                     // 2026-08-07: indexing selects a whole row.
+                                     // 2026-11-03: derive its stride from the same
+                                     // storage array used by construction; an obj
+                                     // element occupies a handle, not its full image.
+                                     // Retire with unified destination addressing.
+                                     let array_ty = self.vector_array_llvm_type(&Type::Vector(Box::new(inner.clone()), dims.clone()))
+                                         .unwrap_or_else(|| "i64".into());
                                       let gep_idx = self.gep_index(out, indent, &idx_clone);
-                                      writeln!(out, "{}{} = mul i64 {}, {}", indent, scaled, gep_idx, elem_size * row_elems as u64).ok();
-                                     let total = self.fun.gen_reg();
-                                     writeln!(out, "{}{} = add i64 {}, {}", indent, total, offset, scaled).ok();
+                                     let base = self.fun.gen_reg();
+                                     writeln!(out, "{indent}{base} = getelementptr i8, ptr {self_ptr}, i64 {offset}").ok();
                                      let gep = self.fun.gen_reg();
-                                     writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, self_ptr, total).ok();
+                                     writeln!(out, "{indent}{gep} = getelementptr {array_ty}, ptr {base}, i64 0, i64 {gep_idx}").ok();
                                      if dims.len() == 1 {
-                                         let elem_llvm = self.llvm_type(&inner);
-                                         let val = self.fun.gen_reg();
-                                         writeln!(out, "{}{} = load {}, ptr {}", indent, val, elem_llvm, gep).ok();
-                                         let _ = v;
-                                         return TypedRegister { name: val, ty: inner.clone() };
+                                         return self.emit_array_element_load(out, indent, &gep, &inner);
                                      }
                                       // A row view — the enclosing index GEPs
                                       // into it (the row-view path below).
@@ -1464,15 +1453,7 @@ impl LlvmBackend {
                                       indent, elem, agg_ty, base, gep_idx
                                   )
                                   .ok();
-                                 let val = self.fun.gen_reg();
-                                 writeln!(
-                                     out,
-                                     "{}{} = load {}, ptr {}",
-                                     indent, val, self.llvm_type(inner), elem
-                                 )
-                                 .ok();
-                                 let _ = v;
-                                 return TypedRegister { name: val, ty: (**inner).clone() };
+                                 return self.emit_array_element_load(out, indent, &elem, inner);
                              }
                              // 2026-08-07 (Phase 7): multi-dim field
                              // (`[M x [N x T]]`) — the index selects a ROW: a
@@ -1503,38 +1484,11 @@ impl LlvmBackend {
                 // whole fields; this handles a Vector-typed ROW register.
                 if let Type::Vector(inner, dims) = &obj_reg.ty {
                     if !dims.is_empty() {
-                        // 2026-08-23 (bugfix): STRUCT-element arrays
-                        // (`frames.data[i]`, data: Frame[256]) must be
-                        // byte-addressed — llvm_type(struct) is "ptr" here,
-                        // so the typed `[256 x ptr]` GEP loaded a pointer as
-                        // the element and the following `.field` inttoptr
-                        // rejected it ('ptr' vs 'i64'). The element register
-                        // is its ADDRESS as a boxed i64 handle (the same
-                        // convention instance fields use), typed as the
-                        // struct so a following `.field` resolves offsets.
-                        // To undo: delete this block (restores [N x ptr] GEP).
-                        if let Type::Custom(sname) = &**inner {
-                            // ONLY genuine structs (registered fields) take
-                            // byte-addressing — resolve_field_type carries
-                            // scalar element names as Custom("Int") too, and
-                            // routing those here returned slot ADDRESSES as
-                            // values (2026-08-23 follow-up bug).
-                            if dims.len() == 1 && self.get_struct_fields(sname).is_some() {
-                                let idxr = self.gep_index(out, indent, &idx_clone);
-                                let esz = self.struct_byte_size(sname);
-                                let off = self.fun.gen_reg();
-                                let addr = self.fun.gen_reg();
-                                let handle = self.fun.gen_reg();
-                                writeln!(out, "  {} = mul i64 {}, {}", off, idxr, esz).ok();
-                                writeln!(out, "  {} = getelementptr i8, ptr {}, i64 {}", addr, obj_reg.name, off).ok();
-                                writeln!(out, "  {} = ptrtoint ptr {} to i64", handle, addr).ok();
-                                let _ = v;
-                                return TypedRegister {
-                                    name: handle,
-                                    ty: (**inner).clone(),
-                                };
-                            }
-                        }
+                        // 2026-08-23: struct elements require their image address,
+                        // not the callable pointer ABI. 2026-11-03: array storage
+                        // and loads now share that rule for every registered
+                        // inline type; scalar and object handles retain values.
+                        // Retire this seam with unified destination layouts.
                         let agg_ty = self.vector_array_llvm_type(&obj_reg.ty)
                             .unwrap_or_else(|| "i64".to_string());
                         let elem = self.fun.gen_reg();
@@ -1546,15 +1500,7 @@ impl LlvmBackend {
                         )
                         .ok();
                         if dims.len() == 1 {
-                            let val = self.fun.gen_reg();
-                            writeln!(
-                                out,
-                                "{}{} = load {}, ptr {}",
-                                indent, val, self.llvm_type(inner), elem
-                            )
-                            .ok();
-                            let _ = v;
-                            return TypedRegister { name: val, ty: (**inner).clone() };
+                            return self.emit_array_element_load(out, indent, &elem, inner);
                         }
                         let _ = v;
                         return TypedRegister {
@@ -3103,7 +3049,42 @@ impl LlvmBackend {
             .unwrap_or_else(|| val.ty.clone());
         let stored = self.coerce_register_value(out, indent, val, &field_ty);
         let fty = self.llvm_type(&field_ty);
+        if self.emit_non_scalar_store(out, indent, (ptr_reg, &field_ty, &fty), &stored) { return; }
         writeln!(out, "{}  store {} {}, ptr {}", indent, fty, stored.name, ptr_reg).ok();
+    }
+
+    /// 2026-11-03: physical pointer slots need pointers, while aggregate slots
+    /// contain an image rather than its address carrier. Load the whole image
+    /// before storing to preserve overlap. Retire with unified destination stores.
+    pub(super) fn emit_non_scalar_store(
+        &mut self, out: &mut String, indent: &str, target: (&str, &Type, &str),
+        value: &TypedRegister,
+    ) -> bool {
+        let (destination, ty, layout) = target;
+        if let Some(bytes) = self.inline_struct_bytes(ty) {
+            let source = self.pointer_from_handle(out, indent, &value.name);
+            let image = self.fun.gen_reg();
+            writeln!(out, "{indent}{image} = load [{bytes} x i8], ptr {source}, align 1").ok();
+            writeln!(out, "{indent}store [{bytes} x i8] {image}, ptr {destination}, align 1").ok();
+            return true;
+        }
+        if layout == "i64" && matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) {
+            let stored = self.adapt_to_i64(out, indent, value);
+            writeln!(out, "{indent}store i64 {stored}, ptr {destination}").ok();
+            return true;
+        }
+        if layout == "ptr" {
+            let handle = self.pointer_handle_of(out, indent, value);
+            let pointer = self.pointer_from_handle(out, indent, &handle);
+            writeln!(out, "{indent}store ptr {pointer}, ptr {destination}").ok();
+            return true;
+        }
+        if !layout.starts_with('{') && !layout.starts_with("<{") { return false; }
+        let source = self.pointer_from_handle(out, indent, &value.name);
+        let image = self.fun.gen_reg();
+        writeln!(out, "{indent}{image} = load {layout}, ptr {source}").ok();
+        writeln!(out, "{indent}store {layout} {image}, ptr {destination}").ok();
+        true
     }
 
     /// 2026-07-31: `p.name` — load a struct field. The receiver register
@@ -3213,6 +3194,9 @@ impl LlvmBackend {
                 if let Some(&idx) = self.ctx.field_index_map.get(&slot) {
                     let (row, row_ty, load_ty) =
                         self.emit_instance_column_row(out, indent, idx, &row_reg);
+                    if let Some(value) = self.inline_field_handle(out, indent, &row, &row_ty) {
+                        return value;
+                    }
                     let loaded = self.fun.gen_reg();
                     writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
                     return TypedRegister { name: loaded, ty: row_ty };
@@ -3232,7 +3216,11 @@ impl LlvmBackend {
                         writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr, hw, row_reg).ok();
                         let gep = self.fun.gen_reg();
                         writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, ptr, off).ok();
-                        let llvm_ty = self.llvm_type(mty);
+                        let mty = mty.clone();
+                        let llvm_ty = self.llvm_type(&mty);
+                        if let Some(value) = self.inline_field_handle(out, indent, &gep, &mty) {
+                            return value;
+                        }
                         let loaded = self.fun.gen_reg();
                         writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, llvm_ty, gep).ok();
                         return TypedRegister { name: loaded, ty: mty.clone() };
@@ -3332,9 +3320,41 @@ impl LlvmBackend {
         if let Type::Vector(..) = &field_ty {
             return TypedRegister { name: gep, ty: field_ty.clone() };
         }
+        if let Some(value) = self.inline_field_handle(out, indent, &gep, &field_ty) {
+            return value;
+        }
         let val = self.fun.gen_reg();
         writeln!(out, "{}  {} = load {}, ptr {}", indent, val, llvm_ty, gep).ok();
         TypedRegister { name: val, ty: field_ty }
+    }
+
+    fn emit_array_element_load(
+        &mut self, out: &mut String, indent: &str, address: &str, ty: &Type,
+    ) -> TypedRegister {
+        if let Some(value) = self.inline_field_handle(out, indent, address, ty) { return value; }
+        let layout = self.array_element_llvm_type(ty);
+        let loaded = self.fun.gen_reg();
+        writeln!(out, "{indent}{loaded} = load {layout}, ptr {address}").ok();
+        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) && self.ctx.int_bits != 64 {
+            let handle = self.fun.gen_reg();
+            let opcode = if self.ctx.int_bits < 64 { "trunc" } else { "zext" };
+            writeln!(out, "{indent}{handle} = {opcode} i64 {loaded} to i{}", self.ctx.int_bits).ok();
+            return TypedRegister { name: handle, ty: ty.clone() };
+        }
+        TypedRegister { name: loaded, ty: ty.clone() }
+    }
+
+    /// 2026-11-03: inline aggregate fields retain their storage identity for
+    /// nested projection and member writes. Loading an aggregate SSA value
+    /// violated the address-carrier ABI. Retire with unified destination lanes.
+    fn inline_field_handle(
+        &mut self, out: &mut String, indent: &str, address: &str, ty: &Type,
+    ) -> Option<TypedRegister> {
+        let layout = self.llvm_type(ty);
+        if self.inline_struct_bytes(ty).is_none() && !layout.starts_with('{') && !layout.starts_with("<{") { return None; }
+        let handle = self.fun.gen_reg();
+        writeln!(out, "{indent}{handle} = ptrtoint ptr {address} to i{}", self.ctx.int_bits).ok();
+        Some(TypedRegister { name: handle, ty: ty.clone() })
     }
 
     /// 2026-07-31: `x.^Meta` (runtime) / `x.^^Meta` (compile-time).
@@ -3865,9 +3885,10 @@ impl LlvmBackend {
         writeln!(out, "{}]", indent).ok();
         // Emit each arm: label, inline the impl body (its `term` records
         // member_result — the arm's result register), br to the end block.
-        let mut arm_results: Vec<(String, &String)> = Vec::new();
+        let mut arm_results: Vec<(String, String)> = Vec::new();
         for (i, concrete) in concretes.iter().enumerate() {
             writeln!(out, "{}:", arm_labels[i]).ok();
+            self.fun.cur_block = Some(arm_labels[i].clone());
             let impl_key = format!("{}::{}", concrete, lookup_name);
             let member_owned: Option<crate::ast::TopLevel> = self.ctx.dyn_impl_member.get(&impl_key).cloned();
             let member = match member_owned.as_ref() {
@@ -3877,7 +3898,6 @@ impl LlvmBackend {
                     // default (which traps). Unreachable for a well-typed program
                     // (the typechecker's coherence pass proves conformance).
                     writeln!(out, "{}  br label %{}", indent, default_label).ok();
-                    arm_results.push((String::new(), concrete));
                     continue;
                 }
             };
@@ -3908,7 +3928,11 @@ impl LlvmBackend {
             // prefixed (the `term` value's register name), so use it verbatim
             // in the phi — prefixing another `%` would yield `%%t99` (invalid
             // IR). The phi cites the register by name.
-            arm_results.push((arm_result.name.clone(), concrete));
+            // 2026-11-03: inline bodies can end in a new block. Phi inputs
+            // must name the actual predecessor, not the switch arm entry.
+            // Keep this tracking until shared CFG construction owns edges.
+            let predecessor = self.fun.cur_block.clone().unwrap_or_else(|| arm_labels[i].clone());
+            arm_results.push((arm_result.name.clone(), predecessor));
             writeln!(out, "{}  br label %{}", indent, end_label).ok();
         }
         // The default arm: trap (an unresolvable tag is a soundness violation).
@@ -3928,12 +3952,11 @@ impl LlvmBackend {
         // name (no `%` from next_label), so it needs a `%` prefix: `[%t94,
         // %dynsw_89]`.
         writeln!(out, "{}:", end_label).ok();
+        self.fun.cur_block = Some(end_label);
         let result = self.fun.gen_reg();
         let phi_list: Vec<String> = arm_results
             .iter()
-            .enumerate()
-            .filter(|(_, (r, _))| !r.is_empty())
-            .map(|(i, (r, _))| format!("[{}, %{}]", r, arm_labels[i]))
+            .map(|(register, predecessor)| format!("[{}, %{}]", register, predecessor))
             .collect();
         writeln!(out, "{}{} = phi i64 {}", indent, result, phi_list.join(", ")).ok();
         TypedRegister { name: result, ty: Type::int() }
@@ -4418,9 +4441,24 @@ impl LlvmBackend {
                 // The previous pre-boxing here (ptrtoint at the boundary) made
                 // wasm32 DOUBLE-box (the store adapts again), producing
                 // `ptrtoint ptr <i64 handle>`.
-                self.fun.let_bindings.insert(pname.clone(), reg.clone());
-                self.fun.let_binding_types.insert(pname.clone(), pty.clone());
-                self.fun.let_original_types.insert(pname.clone(), pty.clone());
+                // 2026-11-03: member parameters need the same physical-width
+                // coercion as ordinary calls (boxed Bool/Char are i64).
+                // Keep conversion centralized; retire with uniform call ABI.
+                let argument = TypedRegister { name: reg.clone(), ty: rty.clone() };
+                // A generic receiver can itself be inside an unspecialized
+                // callable. Its element parameter has no concrete ABI yet.
+                // Bind the operand representation instead of coercing to
+                // the fallback LLVM width of the abstract parameter.
+                let param_ty = match pty {
+                    Type::Custom(name) if self.ctx.obj_type_params.get(&recv_base)
+                        .is_some_and(|names| names.contains(name))
+                        && self.ctx.type_universe.as_ref().and_then(|u| u.get(name)).is_none() => rty,
+                    _ => pty,
+                };
+                let argument = self.coerce_register_value(out, indent, &argument, param_ty);
+                self.fun.let_bindings.insert(pname.clone(), argument.name);
+                self.fun.let_binding_types.insert(pname.clone(), param_ty.clone());
+                self.fun.let_original_types.insert(pname.clone(), param_ty.clone());
             }
             let _ = rty;
         }
@@ -4461,7 +4499,18 @@ impl LlvmBackend {
         // enclosing txn identity used by analysis proofs. Restore for nesting.
         // Retire with an explicit commit-boundary plan for every inline body.
         let saved_member_context = std::mem::replace(&mut self.fun.in_inline_member, true);
+        // 2026-11-03: bare member terms must leave only this inline body.
+        // Scope the exit label for nesting; never inherit a reactor abort.
+        // Retire when inline calls have a shared value/void return plan.
+        let member_exit = format!("member.exit.{}", self.fun.gen_reg().trim_start_matches('%'));
+        let saved_member_exit = self.fun.inline_member_exit.replace(member_exit.clone());
         crate::backend::llvm::emit_stmt::emit_statement_sequence(self, out, &body, indent);
+        if !self.fun.terminated {
+            writeln!(out, "{indent}br label %{member_exit}").ok();
+        }
+        writeln!(out, "{member_exit}:").ok();
+        self.fun.cur_block = Some(member_exit);
+        self.fun.inline_member_exit = saved_member_exit;
         self.fun.in_inline_member = saved_member_context;
         self.fun.self_binding = saved;
         self.fun.self_prefix = saved_prefix;

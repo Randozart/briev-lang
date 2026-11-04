@@ -90,7 +90,11 @@ pub fn parse_and_check(file_path: &str, source: &str) -> Result<(Vec<TopLevel>, 
     items = resolver.resolve_imports(items, &std::path::PathBuf::from(file_path))
         .map_err(|e| format!("import resolution error: {}", e))?;
 
-    let universe = TypeUniverse::new();
+    // 2026-11-04: library checking needs the same declaration metadata as
+    // check/build (for example, dimensions on indexed storage). This library
+    // emitter targets x86_64 below. Retire when both use one frontend entry.
+    let mut universe = TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&items, &mut universe, 64)?;
     typechecker::check_program(&mut items, &universe)
         .map_err(|errors| {
             let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();

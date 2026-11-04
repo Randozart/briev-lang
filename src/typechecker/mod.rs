@@ -13,6 +13,7 @@
 mod output_inference;
 mod call_literals;
 mod elaboration_scope;
+mod index_assignment;
 mod validate;
 pub use validate::*;
 
@@ -4234,6 +4235,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Assign(lhs, rhs) => {
+            index_assignment::validate(lhs, rhs, ctx)?;
             // 2026-10-19 (contract tiers): an assignment conservatively kills
             // every fact mentioning the written variable (a bare-identifier
             // target invalidates its facts; field/index writes kill the BASE

@@ -3881,3 +3881,13 @@ It must not retain removed aliases in the normal parser merely for compatibility
 No compatibility parser or `briev migrate` tool is part of this migration. The canonical parser accepts only this specification.
 
 The implementation plan following this specification defines parser, AST, analysis, interpreter, backend, stdlib, tooling, documentation, and verification order.
+
+### Indexed mutation capability (2026-11-03)
+
+For a collection with a declared `op SetAt(i: Int, value: T) -> Void`,
+`c[i] = value` dispatches that operation. `coll` scaffolds `SetAt` from its
+sequence storage, alongside `At`. Scaffolded writes require an existing index
+(0 <= i < Count); invalid indices trap and assignment never grows the sequence.
+The operation is explicit and type-independent. It can also be invoked as the
+declared member `c.SetAt(i, value)`. Pointer and array indexed assignment retain
+their storage semantics.

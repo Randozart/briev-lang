@@ -3020,7 +3020,13 @@ fn test_aggregate_zero_init_memset_threshold() {    // 2026-10-16 (cpp-vs-briev 
         ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(16)]),
         span: None,
     });
-    let mut backend = LlvmBackend::new();
+    // 2026-11-03: element widths now use the registered numeric protocols.
+    // Supply the same universe as a real compilation instead of relying on
+    // a type-name exception in the array emitter.
+    let (_, universe) = crate::library::parse_and_check(
+        "scratch/aggregate_widths.bv", "let floating: Float = 0.0;",
+    ).expect("numeric type universe");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
     // A txn is required so the program takes the standard init-state emission
     // path (a state-only program emits no init stores), and the arrays must
     // be LIVE (observability-as-liveness: an unobserved field gets no init).
@@ -8354,6 +8360,13 @@ node go [done == 0][done == 1] {
     // In the buggy code the arg register is dead and the +100 add takes a field
     // load; in the fixed code the arg register feeds the add. Robustly verify
     // the arg register is consumed by an `add nsw` (the +100 computation).
+    // 2026-11-03: SSA register names are local to a function. Restrict this
+    // data-flow check to the caller carrying the seed, so an unrelated
+    // function's reused register number cannot masquerade as its store.
+    // Retire this structural check when the fixture uses native execution.
+    let ir = ir.split("\ndefine ")
+        .find(|function| function.contains("add i64 0, 600"))
+        .expect("a caller must carry the member argument");
     let seed_reg = ir
         .lines()
         .find(|l| l.contains("add i64 0, 600"))
@@ -8629,11 +8642,22 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
         .expect("plugin stage failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
+    // 2026-11-03: validate each emitted function separately because SSA
+    // register names may repeat across functions. Both copies still count;
+    // remove this split only with an execution-based replacement gate.
+    let callers: Vec<&str> = ir.split("\ndefine ").skip(1)
+        .filter(|function| function.contains("call i64 @__print_int")).collect();
+    assert_eq!(callers.len(), 2, "both emitted callers must be checked");
+    for caller in callers { assert_arrow_push_caller_ir(caller); }
+}
+
+// 2026-11-03: keep SSA checks local to one emitted function; register names
+// are not globally unique. Retire this helper with native-only assertions.
+fn assert_arrow_push_caller_ir(ir: &str) {
     let lines: Vec<&str> = ir.lines().collect();
 
     // The transaction body is emitted twice (the alwaysinline @txn_go defn +
-    // main's reactive replay), each with its own registers; any assertion must
-    // hold over the WHOLE IR (both copies count the same way).
+    // main's reactive replay). Apply the same assertions to both functions.
 
     // Bug (a) — the `[<list>]` seed wrapper. When `let ks: MyList = b.keys()`
     // was misrouted to the collection seed constructor, the RETURNED list was
@@ -8667,10 +8691,9 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
 
     // Bug (b) — the pooled member-field push. `items <- e` must emit the List
     // push inline: the len field is INCREMENTED once per push (`add nsw i64
-    // {..}, 1`, stored to a len GEP). There are 3 keys-scan pushes + 3 put
-    // pushes per copy, two copies = 12. When the push was SILENTLY DROPPED the
-    // put bodies emitted nothing (only the argument eval), so the count fell to
-    // 3 per copy.
+    // {..}, 1`, stored to a len GEP). Each copy contains one keys-scan loop
+    // body and three put calls. When the push was SILENTLY DROPPED the put
+    // bodies emitted nothing (only the argument eval), leaving just the loop.
     let increment_stores: Vec<&str> = lines
         .iter()
         .cloned()
@@ -8689,8 +8712,8 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
         .collect();
     assert_eq!(
         increment_stores.len(),
-        8,
-        "the len fields must be written by exactly 8 push increments (1 keys-scan loop body + 3 member-field puts, twice); got:\n{ir}"
+        4,
+        "each caller must contain 4 push increments (1 keys-scan loop body + 3 member-field puts); got:\n{ir}"
     );
 
     // Sanity: the printed values (n = ks.Count#(), s = p.size()) are LOADs of a
@@ -8710,7 +8733,7 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
             "the printed value {p} must be a load (the returned/member list length); got:\n{ir}"
         );
     }
-    assert_eq!(prints.len(), 4, "expected four prints (two per copy); got:\n{ir}");
+    assert_eq!(prints.len(), 2, "expected two prints per caller; got:\n{ir}");
 }
 
 /// 2026-08-18 (Phase E, BUGS.md SSA-main destructure): a FOREACH loop variable

@@ -5,6 +5,44 @@ use super::{LlvmBackend, TypedRegister};
 use crate::ast::Expr;
 use std::fmt::Write;
 
+pub(super) struct IndexStore<'a> {
+    pub receiver: &'a TypedRegister,
+    pub index: &'a Expr,
+    pub value: &'a TypedRegister,
+}
+
+/// 2026-11-03: preserve indexed collection writes through an explicit SetAt
+/// capability. Bind evaluated operands once so nested receivers and RHS calls
+/// keep their effects. Remove when all lvalues share capability dispatch.
+pub(super) fn emit_collection_index_store(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    operands: IndexStore<'_>,
+) -> bool {
+    let IndexStore { receiver, index, value } = operands;
+    let Some(key) = backend.resolve_obj_key(&receiver.ty) else { return false; };
+    let supported = backend.ctx.obj_members.get(&key).is_some_and(|members| {
+        members.iter().any(|member| matches!(member,
+            crate::ast::TopLevel::TypeDefOperator(definition) if definition.name == "SetAt"))
+    });
+    if !supported { return false; }
+    let receiver_name = format!("__index_receiver_{}", backend.fun.gen_reg());
+    let value_name = format!("__index_value_{}", backend.fun.gen_reg());
+    for (name, register) in [(&receiver_name, receiver), (&value_name, value)] {
+        backend.fun.let_bindings.insert(name.clone(), register.name.clone());
+        backend.fun.let_binding_types.insert(name.clone(), register.ty.clone());
+    }
+    let result = backend.fun.gen_reg();
+    backend.emit_method_call(out, &result, &Expr::Identifier(receiver_name.clone()),
+        "SetAt", &[index.clone(), Expr::Identifier(value_name.clone())], &[], indent);
+    for name in [&receiver_name, &value_name] {
+        backend.fun.let_bindings.remove(name);
+        backend.fun.let_binding_types.remove(name);
+    }
+    true
+}
+
 /// 2026-10-21: ordinary same-type collection assignment replaces the local
 /// handle, as in the interpreter. The historical InsertAt fallback instead
 /// inserted the replacement handle as an element, corrupting concat accumulators.
@@ -50,6 +88,73 @@ pub(super) fn emit_collection_rebind(
 mod tests {
     use super::*;
     use crate::ast::Type;
+
+    #[test]
+    fn narrow_pointer_storage_preserves_address_bits() {
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+        let mut backend = LlvmBackend::new();
+        backend.ctx.int_bits = 32;
+        let mut body = String::new();
+        let stored = backend.adapt_to_i64(&mut body, "  ", &TypedRegister {
+            name: "%value".into(), ty: Type::Ptr(Box::new(Type::int())),
+        });
+        let ir = format!("define i64 @box(i32 %value) {{\nentry:\n{body}  ret i64 {stored}\n}}\n\
+            define i32 @main() {{\nentry:\n  %got = call i64 @box(i32 3735928559)\n\
+            %wrong = icmp ne i64 %got, 3735928559\n  %status = zext i1 %wrong to i32\n\
+            ret i32 %status\n}}\n");
+        super::super::logical_tests::clang_ir(&ir, "-O2", true);
+    }
+
+    #[test]
+    fn narrow_float_storage_preserves_its_bits() {
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+        let (items, universe) = crate::library::parse_and_check(
+            "scratch/float_storage.bv", "let value: Float = 0.5;",
+        ).expect("registered numeric protocols");
+        let mut backend = LlvmBackend::new().with_type_universe(universe);
+        backend.generate(&items, None);
+        let mut body = String::new();
+        let stored = backend.ensure_typed_value(&mut body, "  ", "i64", "%value",
+            Some(Type::float()), None);
+        let ir = format!("define i64 @box(float %value) {{\nentry:\n{body}  ret i64 {stored}\n}}\n\
+            define i32 @main() {{\nentry:\n  %got = call i64 @box(float 5.000000e-01)\n\
+            %wrong = icmp ne i64 %got, 1056964608\n  %status = zext i1 %wrong to i32\n\
+            ret i32 %status\n}}\n");
+        super::super::logical_tests::clang_ir(&ir, "-O2", true);
+    }
+
+    #[test]
+    fn collection_field_index_writes_reach_storage() {
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) { return; }
+        let source = r#"
+            coll struct Samples<T> { data: T[2]; };
+            obj Buckets { values: Samples<Int>; };
+            defn update(buckets: Buckets) -> Int {
+                buckets.values[1] = 7;
+                term 13;
+            };
+            let done: Bool = false;
+            node main [!done][done] {
+                let initial: Samples<Int> = [0,0];
+                let buckets: Buckets = Buckets { values: initial };
+                when update(buckets) != 13 { SysCall#(60,3); };
+                when buckets.values[1] != 7 { SysCall#(60,1); };
+                let fractions: Samples<Float> = [0.5,1.5];
+                fractions[1] = 2.5;
+                when fractions[0] != 0.5 || fractions[1] != 2.5 { SysCall#(60,2); };
+                done = true;
+                endprogram;
+            };
+        "#;
+        let (items, mut universe) = crate::library::parse_and_check("scratch/index_store.bv", source)
+            .expect("checked indexed assignment");
+        crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
+            .expect("registered collection fields");
+        let ir = LlvmBackend::new().with_type_universe(universe).generate(&items, None);
+        for optimization in ["-O0", "-O2"] {
+            super::super::logical_tests::clang_ir(&ir, optimization, true);
+        }
+    }
 
     fn collection_backend(allocated: bool) -> LlvmBackend {
         let mut backend = LlvmBackend::new();

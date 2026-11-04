@@ -1,0 +1,22 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj CounterBuckets { values: List<Int>; };
+coll obj SampleSeries<T> { data: Ptr<T>; };
+let done: Bool = false;
+node main [!done][done] {
+    let initial: List<Int> = [0,0];
+    let buckets: CounterBuckets = CounterBuckets { values: initial };
+    buckets.values[1] = 7;
+    println!("stored={}",buckets.values[1]);
+    when buckets.values[1] != 7 { endprogram 1; };
+    let custom: SampleSeries<Int> = [1,2,3];
+    custom[2] = 19;
+    when custom[0] != 1 || custom[2] != 19 { endprogram 2; };
+    let fractions: List<Float> = [0.5,1.5];
+    fractions[1] = 2.5;
+    when fractions[0] != 0.5 || fractions[1] != 2.5 { endprogram 3; };
+    println!("collection_index_store_complete");
+    done = true;
+    endprogram;
+};

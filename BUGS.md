@@ -11806,3 +11806,32 @@ to buffered stdout, and lost its backing allocation. Emit the decimal digits
 directly to the existing byte sink. Keeping the magnitude nonpositive covers
 INT64_MIN without overflow. Native allocator and byte-output gates cover
 repeated writes across a flush and the old allocation-count failure.
+
+## FIXED 2026-11-03: indexed collection writes omitted or misrepresented
+
+`holder.values[1] = 7` evaluated the value but emitted no collection store.
+Index writes now dispatch the declared SetAt capability; coll synthesis derives
+a bounds-checked writer. Its ordinary inline member requires a local return
+continuation, correctly coerced arguments and actual dynamic-arm phi predecessors.
+Fixed collections additionally require shared construction/read/write layouts
+for inline records, pointer handles and omitted initialized elements. Native
+regressions cover these boundaries, exactly-once side effects and bounds.
+Interpreter indexed-write parity remains a separate open execution-engine gap.
+
+## FIXED 2026-11-04: collection writer check rejected non-collection indexed places
+
+PR #59 rejected pin-array wiring, dimensioned GPU storage, and parametric
+vector stores in five existing conformance sources. Classify the receiver
+before requiring SetAt. Keep explicit writer signature checks and reject
+const pointers and nominal records without writable storage. Regression
+coverage includes a renamed shape-bearing type and invalid ordinary places.
+Library mode must register declared types before checking these places, so
+shape metadata is visible in every frontend entry. Unresolved element storage
+is admitted only for a type parameter of the enclosing callable.
+
+### 2026-11-04 — wasm allocation and abstract member operand widths
+Malloc# emitted i64 addresses while declaring target-width pointers. Reusing
+the allocation lowering keeps address and remaining-length provenance aligned.
+Inline member coercion also widened unresolved element parameters before
+target-width stores. Preserve the actual operand type for abstract parameters.
+The rbv_list_each_wasm corpus reproduces both failures and now passes.

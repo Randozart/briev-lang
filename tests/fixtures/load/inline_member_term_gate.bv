@@ -1,0 +1,25 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj InlineCounter {
+    value: Int;
+    defn advance(skip: Bool) -> Void {
+        when skip { term; };
+        value += 1;
+        term;
+    };
+};
+defn invoke(counter: InlineCounter, skip: Bool) -> Int {
+    counter.advance(skip);
+    term 17;
+};
+let done: Bool = false;
+node main [!done][done] {
+    let counter: InlineCounter = InlineCounter { value: 0 };
+    let skip: Bool = SysCall#(39) > 0;
+    when invoke(counter,skip) != 17 || counter.value != 0 { endprogram 1; };
+    when invoke(counter,!skip) != 17 || counter.value != 1 { endprogram 2; };
+    println!("inline_member_returns_to_caller");
+    done = true;
+    endprogram;
+};

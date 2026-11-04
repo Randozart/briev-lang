@@ -1113,6 +1113,8 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// An inlined member returns to its enclosing transaction; it cannot
     /// publish that transaction's partially updated browser state.
     pub in_inline_member: bool,
+    /// Local continuation for a bare return from an inlined member body.
+    pub inline_member_exit: Option<String>,
     /// 2026-10-21 (plain-context experiment): the `%plain` pointer parameter
     /// for the current function/main. Plain loads/stores GEP through it.
     pub plain_ptr: Option<String>,
@@ -1514,6 +1516,7 @@ impl FunctionContext {
             main_body: false,
             in_callable_txn: false,
             in_inline_member: false,
+            inline_member_exit: None,
             last_expr_reg: None,
             callable_txn_result: None,
             callable_txn_post_label: None,
@@ -1679,6 +1682,7 @@ impl FunctionContext {
         self.main_body = false;
         self.in_callable_txn = false;
         self.in_inline_member = false;
+        self.inline_member_exit = None;
         self.callable_txn_result = None;
         self.callable_txn_post_label = None;
         self.convergence_target = None;

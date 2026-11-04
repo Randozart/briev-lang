@@ -1588,6 +1588,32 @@ impl LlvmBackend {
         p
     }
 
+    /// 2026-11-03: static structs occupy their complete image in containers,
+    /// although their callable ABI is a pointer. Keep storage sizing distinct
+    /// from the callable carrier until destination layouts own both queries.
+    pub(super) fn inline_struct_bytes(&self, ty: &Type) -> Option<u64> {
+        let base = match ty {
+            Type::Custom(name) | Type::Applied(name, _) => name,
+            _ => return None,
+        };
+        if self.ctx.obj_types.contains(base) || self.is_enum_type_name(base) {
+            return None;
+        }
+        let key = ty.to_string();
+        if !self.ctx.struct_types.contains_key(&key) { return None; }
+        Some(self.struct_type_size(&key))
+    }
+
+    pub(super) fn array_element_llvm_type(&self, ty: &Type) -> String {
+        if let Some(bytes) = self.inline_struct_bytes(ty) {
+            return format!("[{bytes} x i8]");
+        }
+        // 2026-11-03: arrays preserve the existing word-sized pointer-handle
+        // storage ABI; scalar floating widths come from the casting graph.
+        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) { return "i64".into(); }
+        self.llvm_type(ty)
+    }
+
     /// 2026-08-07 (Phase 7): the nested LLVM array type for a Vector —
     /// `Int[2][3]` → `[2 x [3 x i64]]`. Resolves each dimension (anonymous or
     /// a compile-time constant), mirroring push_field_type. Used by the
@@ -1616,19 +1642,7 @@ impl LlvmBackend {
                 }
             }
         }
-        let inner_llvm = if **inner == crate::ast::Type::float64() {
-            "double".to_string()
-        } else if **inner == crate::ast::Type::float() {
-            "float".to_string()
-        } else if matches!(inner.as_ref(), crate::ast::Type::Ptr(_) | crate::ast::Type::PtrConst(_)) {
-            // Ptr state slots hold the i64 HANDLE (uniform %State), not a raw
-            // ptr — a Ptr member column is `[2 x i64]`.
-            "i64".to_string()
-        } else {
-            // Struct/other inners use their real LLVM type — a member column
-            // of `{ ptr, i64 }` must be `[2 x { ptr, i64 }]`, not `[2 x i64]`.
-            self.llvm_type(inner).to_string()
-        };
+        let inner_llvm = self.array_element_llvm_type(inner);
         let mut arr_ty = inner_llvm;
         for n in resolved.iter().rev() {
             arr_ty = format!("[{} x {}]", n, arr_ty);
@@ -2553,11 +2567,23 @@ impl LlvmBackend {
                 return tr;
             }
         }
-        // Ptr: already i64 (via ptrtoint in emit_malloc).
-        if matches!(ty, Type::Ptr(_)) {
-            return reg.name.clone();
+        // 2026-11-03: pointer handles have target width; boxed storage has
+        // 64 bits. Preserve address bits rather than assuming a native i64.
+        // Retire this conversion only with a coordinated boxed-ABI change.
+        if matches!(ty, Type::Ptr(_) | Type::PtrConst(_)) {
+            return self.pointer_handle_to_word(out, indent, reg);
         }
         reg.name.clone()
+    }
+
+    fn pointer_handle_to_word(
+        &mut self, out: &mut String, indent: &str, reg: &TypedRegister,
+    ) -> String {
+        if self.ctx.int_bits == 64 { return reg.name.clone(); }
+        let widened = self.fun.gen_reg();
+        let opcode = if self.ctx.int_bits < 64 { "zext" } else { "trunc" };
+        writeln!(out, "{indent}{widened} = {opcode} i{} {} to i64", self.ctx.int_bits, reg.name).ok();
+        widened
     }
 
     /// Emit a getelementptr for a state field and return the GEP register name.
@@ -3183,7 +3209,17 @@ impl LlvmBackend {
         }
         let actual_ty_clone = actual_ty.to_string();
         match (actual_ty.as_ref(), expected_llvm_ty) {
-            ("double", "i64") | ("float", "i64") => {
+            // 2026-11-03: LLVM bitcasts require equal widths. Preserve the
+            // Float32 image in the low word and zero-extend the carrier;
+            // retire when all storage conversions share destination lowering.
+            ("float", "i64") => {
+                let bits = self.fun.gen_reg();
+                let carrier = self.fun.gen_reg();
+                writeln!(out, "{indent}{bits} = bitcast float {val} to i32").ok();
+                writeln!(out, "{indent}{carrier} = zext i32 {bits} to i64").ok();
+                carrier
+            }
+            ("double", "i64") => {
                 let r = self.fun.gen_reg();
                 writeln!(
                     out,
