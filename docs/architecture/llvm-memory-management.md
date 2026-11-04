@@ -1188,3 +1188,84 @@ the traditional `@malloc` + `@free` per operation. This is correct but
 not optimized — these paths are single-shot and don't benefit from
 arena reuse. If a callable txn is hot, it should be refactored as a
 reactive txn with a contract-proven bound to enable arena + preallocation.
+
+## Proof-directed call regions (2026-11-04)
+
+`analysis/reclamation.rs` derives a separate allocation-identity graph for each
+candidate callable. Its incoming storage is borrowed; allocations made during
+that invocation have distinct identities even when an earlier caller used the
+same allocation site. Copy, projection, raw memory, return and call constraints
+reach a fixed point across recursive edges. Generic bodies use the same concrete
+specialization identity as codegen (`analysis/generic_specialization.rs`).
+
+The initial consumer targets hosted native Linux x86-64 executables. Library,
+shared-library, embedded, wasm and existing arena paths keep their existing
+lowering. A scope is eligible only if no owned allocation reaches a returned
+value, incoming storage or an unclassified consumer. Owning result images remain
+with their caller. Global escapes and unknown effects suspend inheritance;
+`keep` remains a lifetime constraint. Conservative reasons remain queryable in
+`ReclamationPlan`; an absent proof is never permission to release a handle.
+
+Private region records track actual malloc results rather than type-shaped
+handles. Thus static/borrowed payloads and caller destination images never enter
+the owned-allocation list. Explicit free removes a record, realloc updates it,
+and failed realloc preserves the original record. A separate active-scope chain
+allows explicit releases of older allocations even while tracking is suspended.
+The source/runtime allocator ABI is unchanged. Reclamation occurs at proved call
+exits after all in-scope aliases; it does not depend on helper or type names.
+
+The LLVM consumer preserves parameter ABI and target/inlining attributes while
+invalidating stale memory-effect promises. It rewrites allocator instructions,
+never string data or inline-assembly text. The platform borrowing syscall table
+is in `config/memory-effects.toml`; unknown interfaces remain conservative.
+
+Native safety fixtures cover returned/late-used aliases, recursive and nested
+enum payloads, borrowed static strings, caller-held fields and early exits.
+Runtime bookkeeping is independently checked under Valgrind at O0 and O3/LTO.
+Collector memory readiness is a separate required gate; these architectural
+rules alone are not a claim that the application memory gate passes.
+
+Field constraints keep independent object members and enum variant payloads
+separate. Runtime reflection evaluates its receiver, so definition liveness must
+include calls beneath that receiver before deriving ownership. Syscall borrowing
+requires an exact number: a known literal mixed with an unknown value or used in
+arithmetic is not evidence that the resulting number names a borrowing interface.
+The constant lattice propagates uncertainty as well as known alternatives.
+
+Recursive functions inherit enclosing scopes rather than receiving a return
+epilogue that would prevent tail-call elimination. Proved nonrecursive scopes
+retain their frames in separate `noinline` calls. A generated-IR A/B established
+that inlining the TLS-visible frame causes linear stack growth; retire this
+restriction only with a consumer that preserves bounded tail execution. Clone
+memory-effect attribute groups without changing pure functions, reserve every
+referenced group ID, and preserve quoted attribute values. Group 15 is explicitly
+defined as potentially trapping, read/write code; it cannot promise `norecurse`.
+
+The sole reactive node's proof maps to the compiler-owned process driver,
+independently of its source name. Multiple reactive nodes do not license this
+entry scope. An explicit program-end marker drains active scopes after evaluating
+the exit value. Process-lifetime global allocations remain outside these scopes.
+
+Entry eligibility additionally requires closed scalar global initializers.
+State declarations or executable/allocating initializers without global lifetime
+facts disable the process scope; independently proved helper scopes still work.
+Reactor pre/postcondition expressions participate in the graph because their
+calls execute in the same driver as the node body. Global binding types come
+from declarations, so ordinary scalar state tests retain their proved effects.
+
+`Malloc#` and hosted `Alloc#` share allocator emission and provenance bookkeeping.
+Their handles and remaining-size metadata use the target pointer width; only
+the allocator's size argument widens to its existing ABI. This prevents a
+wasm32 pointer-typed register from containing an undeclared i64 result.
+
+Non-scalar pointer slots use target-width handles. Store adaptation consumes
+recorded physical register types or casting-graph resolution, including values
+widened at member-call boundaries. A generic parameter's spelling cannot prove
+its physical width; it must not bypass the normal narrowing conversion.
+
+Native encoding conversions may allocate in the C provider. Its default copy
+returns fresh string storage. The frontend models the copy and the LLVM emitter
+marks the owning result. Region lowering registers that actual pointer before
+its first use, with the same bookkeeping and allocation-failure behavior as
+malloc. A registered encoding override invalidates a default-provider proof.
+Raw address casts retain the original allocation identity.

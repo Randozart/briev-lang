@@ -1,0 +1,9 @@
+# 2026-11-04: Linux x86-64 calls which borrow user buffers synchronously.
+# The buffers remain caller-owned. References copied out of those buffers
+# still escape; unknown/dynamic interfaces are conservatively capturing.
+# Retire entries only when equivalent explicit platform effect contracts exist.
+[linux_x86_64]
+# read, write, open, close, fstat, poll, lseek, access, nanosleep, getpid,
+# readlink, gettimeofday, getrlimit, getuid, getgid, geteuid, getegid,
+# getppid, clock_gettime, clock_getres, exit, exit_group.
+synchronous_borrowing = [0, 1, 2, 3, 5, 7, 8, 21, 35, 39, 89, 96, 97, 102, 104, 107, 108, 110, 228, 229, 60, 231]

@@ -1446,18 +1446,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                             // target-width boxed handles (i32 on wasm32).
                             let slot_ty = format!("i{}", backend.ctx.int_bits);
                             writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, slot_ty, ptr, offset).ok();
-                            let actual = match &val.ty {
-                                // A bare generic parameter's fallback LLVM type
-                                // is i64, but its register is the target-width
-                                // collection handle (i32 on wasm32).
-                                Type::Custom(n)
-                                    if n.len() == 1
-                                        && n.chars().next().is_some_and(|c| c.is_uppercase()) =>
-                                {
-                                    slot_ty.clone()
-                                }
-                                _ => backend.llvm_type(&val.ty),
-                            };
+                            // 2026-11-04: member argument coercion may have
+                            // widened a generic value. Its spelling cannot
+                            // establish physical width (T is not always i32).
+                            // Consume recorded representation or the casting
+                            // graph type; retire with uniformly typed LLVM values.
+                            let actual = backend.fun.reg_llvm_ty.get(&val.name).cloned()
+                                .unwrap_or_else(|| backend.llvm_type(&val.ty));
                             let store_val = if actual == "ptr" {
                                 let r = backend.fun.gen_reg();
                                 writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, r, val.name, slot_ty).ok();
@@ -2221,6 +2216,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             } else {
                 "0".to_string()
             };
+            // 2026-11-04: this is the semantic process boundary, independent
+            // of the selected exit provider. The region consumer drains owned
+            // scopes after the value's side effects and before termination.
+            // Retire this marker with structured lowered exit instructions.
+            writeln!(out, "{}; briev.program_end", indent).ok();
             // 2026-09-09 (Family B): a pure-Briev exit_prog defn returns i64
             // (defns cannot be void); the C wrapper was void. Adapt the call
             // to whichever provider exists.

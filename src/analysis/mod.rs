@@ -29,6 +29,8 @@ pub mod narrow_slice;
 pub mod provenance;
 pub mod protocol;
 pub mod global_lifetime;
+pub mod reclamation;
+pub mod generic_specialization;
 pub mod range;
 pub mod roofline;
 pub mod struct_generator;

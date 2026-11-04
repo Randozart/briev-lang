@@ -126,8 +126,10 @@ out defn float_to_str(f: Float) [true][term .^Length >= 0] -> String {
 // heap String — the copy is replaced by pure-Briev Alloc#+Copy# in Family C;
 // the UTF8 encoding here matches C char_to_str: 1-4 bytes by codepoint).
 out defn char_to_str(c: Int) [c >= 0][term .^Length >= 1] -> String {
-    let addr: Int = Alloc#(10) as Int;
+    // Reserve the eight-byte header, up to four UTF-8 bytes and the terminator.
+    let addr: Int = Alloc#(13) as Int;
     let n: Int = utf8_encode(addr + 8, c);
+    Store#(addr + 8 + n, 0, 1);
     Store#(addr, n, 8);
     term (addr as Data) as String;
 };
