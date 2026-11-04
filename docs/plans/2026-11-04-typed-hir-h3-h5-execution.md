@@ -32,9 +32,12 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   lto, state reads, export chain).
 - Each slice is behind parity tests; AST remains authoritative and no
   consumer is switched yet.
-- **Next:** H3.4 `loop_shape`/`tail_recursion`/`tail_carrier` (needs the
-  transition graph over HIR), then H3.5 task/collection, H3.6 generic txn,
-  H4/H5.
+- **H3.4a ✅** `tail_recursion` / `tail-loop` plans over HIR — corpus parity:
+  103 compared, 29 skipped, **0 mismatches**. HIR gained `type_params` /
+  `variadic` fidelity.
+- **Next:** H3.4b `loop_shape` (needs `transition_graph` over HIR) +
+  `tail_carrier` (needs `enum_repr` over HIR), then H3.5 task/collection,
+  H3.6 generic txn, H4/H5.
 
 ## Current state
 
