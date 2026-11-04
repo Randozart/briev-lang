@@ -11586,3 +11586,14 @@ Fixed collections additionally require shared construction/read/write layouts
 for inline records, pointer handles and omitted initialized elements. Native
 regressions cover these boundaries, exactly-once side effects and bounds.
 Interpreter indexed-write parity remains a separate open execution-engine gap.
+
+## FIXED 2026-11-04: collection writer check rejected non-collection indexed places
+
+PR #59 rejected pin-array wiring, dimensioned GPU storage, and parametric
+vector stores in five existing conformance sources. Classify the receiver
+before requiring SetAt. Keep explicit writer signature checks and reject
+const pointers and nominal records without writable storage. Regression
+coverage includes a renamed shape-bearing type and invalid ordinary places.
+Library mode must register declared types before checking these places, so
+shape metadata is visible in every frontend entry. Unresolved element storage
+is admitted only for a type parameter of the enclosing callable.

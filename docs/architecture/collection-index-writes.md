@@ -15,8 +15,14 @@ LLVM preserves the existing RHS evaluation order, evaluates the receiver once,
 and binds those values temporarily while dispatching SetAt. Ordinary pointer
 and array stores retain their existing paths. Tests must cover direct and
 nested collection receivers, user-named coll types, scalar and object elements,
-bounds, RHS effects and O0/O2 native behavior. Type checking rejects receivers
-without SetAt and validates its argument types and arity. Interpreter parity
+bounds, RHS effects and O0/O2 native behavior. Type checking rejects declared collections
+without SetAt and validates its argument types and arity. Shape-bearing
+storage, indexed pin declarations and generic storage with unresolved element
+types are checked through their existing indexing rules. The element must
+be a type parameter of the enclosing callable for the parametric case. Ordinary records,
+scalars and const pointers do not acquire a writable index. Library mode
+registers declared types before checking, as the build and check pipelines do,
+so shape metadata is available through the same universe query. Interpreter parity
 remains required before declaring this feature complete across execution engines.
 
 Evidence: histogram_record previously emitted the increment but no store;
