@@ -67,7 +67,19 @@ bodies through the lossless `hir::to_ast` boundary; unsupported nodes fall
 back to the AST result for that program. Debug-assert equality. `batch_shape`
 consumes the same structure unchanged. Small, gated identically.
 
-## Slice C — statement emitter seam
+## Slice C — statement emitter seam ✅ infrastructure DONE (2026-11-05)
+
+`src/backend/llvm/emit_hir_stmt.rs` lands the seam: the choke point walks the
+HIR body per statement — supported statements are emitted from HIR (native
+count), statements containing unsupported nodes are spliced from the AST body
+at the same index (fallback count), length drift falls back to the whole AST
+body. Coverage counters live on the backend (`hir_stmts_seen/native/fallback`)
+with unit tests. The body-equality debug assert still guards every emission.
+Native per-kind arms (Guarded/Foreach/Match recursion, then leaf kinds with
+HIR expressions) are the remaining work, tracked below — they replace the
+conversion inside `convert_hir_statement` kind-by-kind.
+
+## Slice C (plan, kept for the record)
 
 Make the H4.2 choke point emit **HIR statement kinds directly** instead of
 reconstructed AST bodies.

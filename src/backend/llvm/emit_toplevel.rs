@@ -3746,14 +3746,21 @@ impl LlvmBackend {
         // AST body; names without a converted body fall back here.
         let hir_subst;
         let d: &crate::ast::Definition = if crate::backend::hir_emit_enabled() {
-            match self.hir_bodies.get(&d.name) {
-                Some(body) => {
-                    debug_assert_eq!(body, &d.body, "HIR/AST defn body drift: {}", d.name);
-                    hir_subst = crate::ast::Definition { body: body.clone(), ..d.clone() };
-                    &hir_subst
+            let hir_body = self.hir_stmt_bodies.get(&d.name).cloned();
+            if let Some(hir_body) = hir_body {
+                {
+                        match super::emit_hir_stmt::hir_sourced_body(self, &hir_body, &d.body, &d.name) {
+                            Some(body) => {
+                                debug_assert_eq!(body, d.body, "HIR/AST defn body drift: {}", d.name);
+                                hir_subst = crate::ast::Definition { body, ..d.clone() };
+                                &hir_subst
+                            }
+                            None => d,
+                        }
+                    }
+                } else {
+                    d
                 }
-                None => d,
-            }
         } else {
             d
         };
@@ -4552,14 +4559,21 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // exists; AST fallback otherwise (members, duplicates, Other nodes).
         let hir_subst;
         let txn: &crate::ast::Transaction = if crate::backend::hir_emit_enabled() {
-            match self.hir_bodies.get(&txn.name) {
-                Some(body) => {
-                    debug_assert_eq!(body, &txn.body, "HIR/AST txn body drift: {}", txn.name);
-                    hir_subst = crate::ast::Transaction { body: body.clone(), ..txn.clone() };
-                    &hir_subst
+            let hir_body = self.hir_stmt_bodies.get(&txn.name).cloned();
+            if let Some(hir_body) = hir_body {
+                {
+                        match super::emit_hir_stmt::hir_sourced_body(self, &hir_body, &txn.body, &txn.name) {
+                            Some(body) => {
+                                debug_assert_eq!(body, txn.body, "HIR/AST txn body drift: {}", txn.name);
+                                hir_subst = crate::ast::Transaction { body, ..txn.clone() };
+                                &hir_subst
+                            }
+                            None => txn,
+                        }
+                    }
+                } else {
+                    txn
                 }
-                None => txn,
-            }
         } else {
             txn
         };

@@ -8,6 +8,7 @@ pub mod directive;
 pub mod dispatch;
 pub mod enum_lowering;
 pub mod emit_expr;
+pub mod emit_hir_stmt;
 pub mod emit_stmt;
 pub mod emit_toplevel;
 pub(crate) mod kernel;
@@ -1436,10 +1437,13 @@ pub struct LlvmBackend {
     pub ctx: CompilerContext,
     pub fun: FunctionContext,
 
-    /// 2026-11-05 (H4.2): unique top-level defn/txn bodies converted from
-    /// typed HIR. Presence means body emission is HIR-driven (the bridge
-    /// returns the same statements the AST has; absent names fall back).
-    pub(crate) hir_bodies: HashMap<String, Vec<crate::ast::Statement>>,
+    /// 2026-11-05 (H4.2): unique top-level defn/txn HIR bodies. At the hook
+    /// each statement is reconstructed (native) or spliced from AST
+    /// (unsupported `Other`), with coverage counted.
+    pub(crate) hir_stmt_bodies: HashMap<String, Vec<crate::hir::stmt::HirStmt>>,
+    pub(crate) hir_stmts_seen: usize,
+    pub(crate) hir_stmts_native: usize,
+    pub(crate) hir_stmts_fallback: usize,
 
     // ── Optimization ───────────────────────────────────────
     pgo_guard_idx: usize,
@@ -1618,7 +1622,10 @@ impl LlvmBackend {
         LlvmBackend {
             ctx: CompilerContext::new(),
             fun: FunctionContext::new(),
-            hir_bodies: HashMap::new(),
+            hir_stmt_bodies: HashMap::new(),
+            hir_stmts_seen: 0,
+            hir_stmts_native: 0,
+            hir_stmts_fallback: 0,
             pgo_guard_idx: 0,
             has_async_txns: false,
             has_stdout_flush: false,
@@ -2824,9 +2831,12 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // 2026-11-05 (H4.2): expose the HIR bodies that can be emitted. Only
         // unique top-level defn/txn names qualify; duplicates and unsupported
         // nodes fall back to AST, never a guessed body.
-        self.hir_bodies.clear();
+        self.hir_stmt_bodies.clear();
+        self.hir_stmts_seen = 0;
+        self.hir_stmts_native = 0;
+        self.hir_stmts_fallback = 0;
         if crate::backend::hir_emit_enabled() {
-            self.hir_bodies = build_hir_bodies(&analysis.hir);
+            self.hir_stmt_bodies = build_hir_stmt_bodies(&analysis.hir);
         }
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.
@@ -8651,11 +8661,11 @@ fn walk_expr_children(e: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
-/// Unique top-level defn/txn bodies reconstructed from HIR (`None` conversions
-/// and duplicate names are omitted so emission falls back to AST).
-fn build_hir_bodies(
+/// Unique top-level defn/txn HIR bodies (duplicate names omitted so emission
+/// falls back to AST).
+fn build_hir_stmt_bodies(
     program: &crate::hir::HirProgram,
-) -> HashMap<String, Vec<crate::ast::Statement>> {
+) -> HashMap<String, Vec<crate::hir::stmt::HirStmt>> {
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for c in program.callables.iter().filter(|c| {
         c.owner.is_none()
@@ -8666,18 +8676,17 @@ fn build_hir_bodies(
     }) {
         *counts.entry(c.name.as_str()).or_insert(0) += 1;
     }
-    let mut out = HashMap::new();
-    for c in program.callables.iter().filter(|c| {
-        c.owner.is_none()
-            && matches!(
-                c.kind,
-                crate::hir::HirCallableKind::Defn | crate::hir::HirCallableKind::Transaction
-            )
-            && counts.get(c.name.as_str()) == Some(&1)
-    }) {
-        if let Some(body) = crate::hir::to_ast::stmt_body(&c.body.statements) {
-            out.insert(c.name.clone(), body);
-        }
-    }
-    out
+    program
+        .callables
+        .iter()
+        .filter(|c| {
+            c.owner.is_none()
+                && matches!(
+                    c.kind,
+                    crate::hir::HirCallableKind::Defn | crate::hir::HirCallableKind::Transaction
+                )
+                && counts.get(c.name.as_str()) == Some(&1)
+        })
+        .map(|c| (c.name.clone(), c.body.statements.clone()))
+        .collect()
 }

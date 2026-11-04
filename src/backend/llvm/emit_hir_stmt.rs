@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//! H4.2 statement seam: per-statement HIR-driven body construction.
+//!
+//! The choke point (`emit_definition`/`emit_transaction`) walks the HIR body
+//! statement-by-statement: a statement whose HIR can be reconstructed
+//! losslessly is emitted from HIR (counted `native`); a statement containing
+//! an unsupported node (`Other`) is spliced from the AST body (counted
+//! `fallback`) — never guessed. Native HIR statement arms land here
+//! kind-by-kind; expressions cross `hir::to_ast::expr` until the expression
+//! families (slice D) replace them.
+
+use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
+use crate::ast::Statement;
+use crate::hir::stmt::{HirStmt, HirStmtKind};
+
+/// Reconstruct one HIR statement for emission. `None` = unsupported node;
+/// the caller splices the AST statement at the same index.
+pub(crate) fn convert_hir_statement(stmt: &HirStmt) -> Option<Statement> {
+    match &stmt.kind {
+        HirStmtKind::Other(_) => None,
+        _ => crate::hir::to_ast::stmt(stmt),
+    }
+}
+
+/// Build a HIR-sourced body: per-statement conversion with AST splice and
+/// coverage accounting. Returns `None` when the HIR body length does not
+/// match the AST body (lowering drift) — callers fall back to the AST body.
+pub(crate) fn hir_sourced_body(
+    backend: &mut LlvmBackend,
+    hir_body: &[HirStmt],
+    ast_body: &[Statement],
+    name: &str,
+) -> Option<Vec<Statement>> {
+    if hir_body.len() != ast_body.len() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(hir_body.len());
+    for (hir_stmt, ast_stmt) in hir_body.iter().zip(ast_body.iter()) {
+        backend.hir_stmts_seen += 1;
+        match convert_hir_statement(hir_stmt) {
+            Some(s) => {
+                backend.hir_stmts_native += 1;
+                out.push(s);
+            }
+            None => {
+                backend.hir_stmts_fallback += 1;
+                out.push(ast_stmt.clone());
+            }
+        }
+    }
+    let _ = name;
+    Some(out)
+}
+
+/// Entry point for future native statement arms (slice C/D). Today every
+/// supported kind converts and delegates; native arms replace the conversion
+/// for their kind only, keeping the AST emitter for everything else.
+pub(crate) fn emit_hir_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    indent: &str,
+) -> Option<TypedRegister> {
+    match convert_hir_statement(stmt) {
+        Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
+    use crate::hir::ids::NodeId;
+    use crate::hir::program::{HirCallableKind, HirProgram};
+
+    fn parse(src: &str) -> Vec<crate::ast::TopLevel> {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn per_statement_accounting_native_and_fallback() {
+        let src = "node n [true][true] { let a: Int = 1; a = a + 1; term; };";
+        let items = parse(src);
+        let program = crate::hir::lower_program(&items);
+        let hir_body = program
+            .callables
+            .iter()
+            .find(|c| matches!(c.kind, HirCallableKind::Transaction))
+            .expect("txn")
+            .body
+            .statements
+            .clone();
+        let ast_body: Vec<Statement> = items
+            .iter()
+            .find_map(|i| match i {
+                crate::ast::TopLevel::Transaction(t) => Some(t.body.clone()),
+                _ => None,
+            })
+            .expect("ast txn");
+
+        let mut backend = LlvmBackend::new();
+        let out = hir_sourced_body(&mut backend, &hir_body, &ast_body, "n")
+            .expect("supported body converts");
+        assert_eq!(out, ast_body);
+        assert_eq!(backend.hir_stmts_native, 3);
+        assert_eq!(backend.hir_stmts_fallback, 0);
+
+        // An unsupported statement splices the AST statement and counts.
+        let other = HirStmt {
+            id: NodeId(0),
+            span: None,
+            kind: HirStmtKind::Other("plugin_intercept"),
+        };
+        let mut mixed = hir_body.clone();
+        mixed[1] = other;
+        let mut backend = LlvmBackend::new();
+        let out = hir_sourced_body(&mut backend, &mixed, &ast_body, "n")
+            .expect("mixed body falls back per statement");
+        assert_eq!(out, ast_body, "spliced statement equals AST");
+        assert_eq!(backend.hir_stmts_native, 2);
+        assert_eq!(backend.hir_stmts_fallback, 1);
+    }
+
+    #[test]
+    fn length_mismatch_falls_back() {
+        let mut backend = LlvmBackend::new();
+        let hir_body: Vec<HirStmt> = Vec::new();
+        let ast_body = vec![Statement::Break];
+        assert!(hir_sourced_body(&mut backend, &hir_body, &ast_body, "x").is_none());
+    }
+}
