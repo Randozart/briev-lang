@@ -19,6 +19,7 @@ pub mod ownership;
 pub mod pattern;
 pub mod program;
 pub mod sinks;
+pub mod storage_class;
 pub mod stats;
 pub mod tail_calls;
 pub mod type_facts;

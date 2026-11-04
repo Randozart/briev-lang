@@ -156,13 +156,19 @@ fn lower_item(
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
         TopLevel::Statement(stmt) if !exported => {
-            if let crate::ast::Statement::Let { name, ty, .. } = stmt.as_ref() {
+            if let crate::ast::Statement::Let { name, ty, modifiers, .. } = stmt.as_ref() {
+                let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
+                    "state" => Some("state".to_string()),
+                    "plain" => Some("plain".to_string()),
+                    _ => None,
+                });
                 out.globals.push(HirGlobal {
                     node: ids.node(),
                     item: ids.item(),
                     name: name.clone(),
                     ty: ty.clone(),
                     expr: None,
+                    declared_storage,
                     is_state_decl: false,
                     span: None,
                 });
@@ -174,6 +180,7 @@ fn lower_item(
             name: s.name.clone(),
             ty: Some(s.ty.clone()),
             expr: None,
+            declared_storage: None,
             is_state_decl: true,
             span: s.span,
         }),

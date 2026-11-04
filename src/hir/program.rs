@@ -124,6 +124,8 @@ pub struct HirGlobal {
     /// Initializer (top-level statements are emitted into the init path; their
     /// callees are liveness roots).
     pub expr: Option<HirExpr>,
+    /// Declared storage assertion (`state let` / `plain let`), if any.
+    pub declared_storage: Option<String>,
     /// `state name: T;` (vs a top-level `let`).
     pub is_state_decl: bool,
     pub span: Option<Span>,
