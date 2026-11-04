@@ -1,0 +1,66 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/result.bv";
+import { read_file } from "std/os/fs.bv";
+
+// 2026-11-03: Linux x86_64 auxiliary-vector words are eight bytes. Query
+// kernel-supplied units instead of assuming 100 ticks/s or 4096-byte pages.
+// Replace this ABI projection when the native OS family gains other targets.
+const AUX_PAGE_SIZE: Int = 6;
+const AUX_CLOCK_TICKS: Int = 17;
+obj ProcessUnits { page_bytes: Int; ticks_per_second: Int; };
+
+// Return a nonnegative signed-Int value. Unknown tags are skipped, missing
+// tags return -2, malformed vectors -22, values beyond Int range -34.
+defn auxv_value(bytes: String, wanted: Int) -> Result<Int,Int> {
+    when wanted <= 0 || bytes .^Length % 16 != 0 { term Err(-22); };
+    let base: Int = ((bytes as Data) as Int) + 8;
+    let found: Bool = false;
+    let value: Int = 0;
+    foreach index in 0..(bytes .^Length / 16) {
+        let tag: Int = Load#(base + index * 16,8);
+        when tag == 0 {
+            when !found { term Err(-2); };
+            when value < 0 { term Err(-34); };
+            term Ok(value);
+        };
+        when tag == wanted {
+            when found { term Err(-22); };
+            found = true;
+            value = Load#(base + index * 16 + 8,8);
+        };
+    };
+    term Err(-22);
+};
+
+defn process_units() -> Result<ProcessUnits,Int> {
+    let content: Result<String,Int> = read_file("/proc/self/auxv");
+    when is_err(content) { term Err(unwrap_err(content)); };
+    let pages: Result<Int,Int> = auxv_value(unwrap(content),AUX_PAGE_SIZE);
+    when is_err(pages) { term Err(unwrap_err(pages)); };
+    let ticks: Result<Int,Int> = auxv_value(unwrap(content),AUX_CLOCK_TICKS);
+    when is_err(ticks) { term Err(unwrap_err(ticks)); };
+    when unwrap(pages) < 1 || unwrap(ticks) < 1 { term Err(-22); };
+    term Ok(ProcessUnits { page_bytes: unwrap(pages), ticks_per_second: unwrap(ticks) });
+};
+
+import "std/os/time.bv";
+
+defn print_units(units: ProcessUnits) -> Void {
+    when sleep_ms(1) < 0 { trap; };
+    println!(units.page_bytes);
+    println!(units.ticks_per_second);
+};
+let done: Bool = false;
+node main [!done][done] {
+    let queried: Result<ProcessUnits,Int> = process_units();
+    when is_err(queried) { endprogram 1; };
+    let units: ProcessUnits = unwrap(queried);
+    print_units(units);
+    done = true;
+    endprogram;
+};

@@ -3811,7 +3811,11 @@ impl LlvmBackend {
             if needs_state || needs_plain {
                 let _ = write!(out, ", ");
             }
-            write!(out, "ptr noalias nocapture align 8 %enum_out").ok();
+            // 2026-11-03: this caller-owned result address is returned as an
+            // integer handle. That return captures it: nocapture lets O3/LTO
+            // discard stores later read through the returned address. Retain
+            // this ABI until result calls stop returning the destination handle.
+            write!(out, "ptr noalias align 8 %enum_out").ok();
         }
         if sret_object {
             if needs_state || needs_plain || sret_enum {

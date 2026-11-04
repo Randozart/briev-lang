@@ -11788,3 +11788,13 @@ binding could use it. `bind_pattern` now leaves all-wildcard payloads untouched
 while retaining variant tag checks. Zero-payload variants likewise need no
 payload read. The allocation-count native regression checks O0 and O3. Named
 payload ownership and general returned-value reclamation are unchanged.
+
+## FIXED 2026-11-03: enum result address incorrectly declared nocapture
+
+The caller-owned enum result address is returned as an integer handle. The
+callee therefore captures it, contrary to its LLVM nocapture parameter
+attribute. O3/LTO could remove stores observed through that returned handle.
+Remove only nocapture, preserving noalias, alignment and the existing ABI.
+Native regression compares returned page/tick values with independent getconf
+queries. Controlled IR A/B rejected changes to noalias and memory effects;
+removing nocapture alone corrected the observed corruption.
