@@ -11780,3 +11780,11 @@ continuation, so a later terminal call lost its return and defaulted to zero.
 Reset the flag at the guard merge. Regression:
 guarded_tail_backedge_does_not_swallow_later_return. This caused wasm float
 formatting to display zero for valid recommender prediction scores.
+
+## FIXED 2026-11-03: discarded enum payload allocations
+
+`Present(_)` allocated an owned copy of its inline object payload although no
+binding could use it. `bind_pattern` now leaves all-wildcard payloads untouched
+while retaining variant tag checks. Zero-payload variants likewise need no
+payload read. The allocation-count native regression checks O0 and O3. Named
+payload ownership and general returned-value reclamation are unchanged.

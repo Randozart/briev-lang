@@ -1,0 +1,15 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj PairSample { first: Int; second: Int; };
+enum SampleChoice { Present(PairSample), Absent, Several(PairSample,Int) };
+defn wildcard_probe(sample: SampleChoice) -> Bool {
+    term match sample { Present(_) => true, Absent() => false, Several(_,_) => false };
+};
+let done: Bool = false;
+node main [!done][done] {
+    let sample: SampleChoice = Present(PairSample { first: 7, second: 8 });
+    when !wildcard_probe(sample) { endprogram 1; };
+    done = true;
+    endprogram;
+};

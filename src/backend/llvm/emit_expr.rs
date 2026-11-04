@@ -7660,8 +7660,8 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     }
 
     /// Bind a pattern's Binding names to the scrutinee register (or sub-values)
-    /// so the arm body resolves them. Tuple/EnumVariant bindings are not
-    /// lowered (their conditions emit false, so the block is unreachable).
+    /// so the arm body resolves them. Variant tag tests are emitted separately;
+    /// discarded subpatterns require no payload materialization.
     pub(crate) fn bind_pattern(
         &mut self,
         pat: &crate::ast::Pattern,
@@ -7700,6 +7700,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // the slot — Binding/Wildcard sub-patterns read elements at
             // [1..] of that image, symmetric with construction. Non-binding
             // sub-patterns (literals/nested) remain a staged boundary.
+            // 2026-11-03: tag-only matches bind no payload. Materializing an
+            // owned inline-object copy for `_` leaks an unreachable allocation;
+            // zero-payload variants must not read a nonexistent slot either.
+            // Retire this arm only with shared demand-driven pattern lowering.
+            crate::ast::Pattern::EnumVariant(_, subpats)
+                if subpats.iter().all(|pattern| matches!(pattern, crate::ast::Pattern::Wildcard)) => {}
             crate::ast::Pattern::EnumVariant(vname, subpats) => {
                 let nested = subpats.iter().any(|sp| {
                     matches!(
