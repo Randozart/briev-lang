@@ -66,129 +66,27 @@ fn extract_string_arg(args: &[Expr]) -> Option<String> {
     }
 }
 
+// 2026-11-04: nested environment macros in collector loop/operand positions
+// escaped the partial walker and reached codegen unresolved. Use the shared
+// postorder visitor so children are lowered before their enclosing intercept.
+// Preserve the 2026-09-16 receiver-first fix and 2026-09-28 sync-group
+// descent (including 2026-08-09 init seeding). Retire this callback if expansion moves
+// into a common plugin dispatcher, retaining the exhaustive traversal contract.
 fn walk_item(item: &mut TopLevel) {
-    match item {
-        TopLevel::Definition(d) => walk_stmts(&mut d.body),
-        TopLevel::Transaction(t) => walk_stmts(&mut t.body),
-        TopLevel::Constant(c) => walk_expr(&mut c.expr),
-        TopLevel::Statement(stmt) => walk_stmt(stmt),
-        // 2026-08-09: `init` seeding (`get_env_int!` etc.) is runtime input —
-        // walk the value expr and any body statements like a const/let.
-        TopLevel::Init(init) => {
-            if let Some(value) = &mut init.value {
-                walk_expr(value);
-            }
-            walk_stmts(&mut init.body);
-        }
-        // 2026-09-28 (usage-readiness): `sync<g> node` wraps the item in a
-        // SyncGroup — a `get_env_int!` in the node body previously skipped
-        // env resolution and hit the codegen panic at emit_expr.rs:1700.
-        // Walk the wrapped item like any other.
-        TopLevel::SyncGroup { item, .. } => walk_item(item),
-        TopLevel::StateDecl(_) | TopLevel::Trigger(_) => {}
-        TopLevel::ForeignBinding(_) => {}
-        _ => {}
-    }
+    crate::ast::visit_mut::walk_toplevel(item, &mut resolve_expr);
 }
 
-fn walk_stmts(stmts: &mut [crate::ast::Statement]) {
-    for stmt in stmts.iter_mut() {
-        walk_stmt(stmt);
+fn resolve_expr(expr: &mut Expr) {
+    let Expr::PluginIntercept { name, args, receiver, .. } = expr else { return };
+    let mut full_args = Vec::with_capacity(args.len() + usize::from(receiver.is_some()));
+    if let Some(recv) = receiver {
+        full_args.push((**recv).clone());
+    }
+    full_args.extend(args.iter().cloned());
+    if let Some(replacement) = resolve_intercept(name, &full_args) {
+        *expr = replacement;
     }
 }
-
-fn walk_stmt(stmt: &mut crate::ast::Statement) {
-    match stmt {
-        crate::ast::Statement::Assign(_, expr)
-        | crate::ast::Statement::Let { expr: Some(expr), .. } => {
-            walk_expr(expr);
-        }
-        crate::ast::Statement::Expression(expr)
-        | crate::ast::Statement::Term(Some(expr))
-        | crate::ast::Statement::Tail(expr)
-        | crate::ast::Statement::EndProgram(Some(expr)) => {
-            walk_expr(expr);
-        }
-        crate::ast::Statement::Guarded(_, body) => {
-            walk_stmts(body);
-        }
-        _ => {}
-    }
-}
-
-fn walk_expr(expr: &mut Expr) {
-    match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } => {
-            // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
-            // prepend it as the first argument (UFCS-style chaining) so it is
-            // not silently dropped.
-            let mut full_args = args.clone();
-            if let Some(recv) = receiver {
-                walk_expr(recv);
-                full_args.insert(0, (**recv).clone());
-            }
-            if let Some(replacement) = resolve_intercept(name, &full_args) {
-                *expr = replacement;
-            }
-        }
-        // 2026-09-28 (E3): the `[*]` selector is a leaf — no nested intercepts.
-        Expr::Wildcard => {}
-        Expr::BinaryOp(_, lhs, rhs) => {
-            walk_expr(lhs);
-            walk_expr(rhs);
-        }
-        Expr::UnaryOp(_, inner) => walk_expr(inner),
-        Expr::Consume(inner) => walk_expr(inner),
-        Expr::Char(_) => {}
-        Expr::Decimal(_) | Expr::Bool(_) | Expr::BeginProgram | Expr::Float(_) => {}
-        Expr::Call(_, args, _) | Expr::Spawn { args, .. } => {
-            for a in args { walk_expr(a); }
-        }
-        Expr::If(cond, then, else_) => {
-            walk_expr(cond);
-            walk_expr(then);
-            if let Some(el) = else_ { walk_expr(el); }
-        }
-        Expr::Match(_, arms) => {
-            for arm in arms { walk_expr(&mut arm.body); }
-        }
-        Expr::Block(stmts) => walk_stmts(stmts),
-        Expr::Tuple(elems) | Expr::List(elems) => {
-            for e in elems { walk_expr(e); }
-        }
-        Expr::Field(obj, _) | Expr::Index(obj, _) => walk_expr(obj),
-        Expr::Cast(inner, _) | Expr::IsType(inner, _) | Expr::Deref(inner) | Expr::Await(inner)
-        | Expr::AddrOf(inner) => walk_expr(inner),
-        Expr::Within(body, _) => walk_expr(body),
-        Expr::Lambda(_, body) => walk_expr(body),
-        Expr::DerivationBlock(db) => {
-            for ex in &mut db.examples {
-                for inp in &mut ex.inputs { walk_expr(inp); }
-                walk_expr(&mut ex.output);
-            }
-        }
-        // Leaves — no sub-expressions
-        Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Bool(_) | Expr::Float(_) | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _)
-        | Expr::Identifier(_)
-        | Expr::FormattingAnnotation(_)
-        | Expr::UnitLiteral { .. } => {}
-        Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
-            walk_expr(recv);
-        }
-        Expr::MethodCall(recv, _, args, _, _) => {
-            walk_expr(recv);
-            for a in args { walk_expr(a); }
-        }
-        Expr::StructLiteral { .. } => {}
-        Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Slice { .. } => {},
-Expr::Slice { .. } => {},
-        Expr::Range { .. } => {},
-        Expr::Capture { expr, .. } => walk_expr(expr),
-
-    }
-}
-
 /// 2026-08-01: Resolve a plugin-intercept call to a typed stdlib function
 /// call. Only lowercase macro names are rewritten; PascalCase legacy names
 /// fall through to the typechecker, which rejects them with a rename hint.
@@ -199,5 +97,77 @@ fn resolve_intercept(name: &str, args: &[Expr]) -> Option<Expr> {
         "get_env_int" => Some(Expr::Call("get_env_int".to_string(), call_args, None)),
         "get_env_or_default" => Some(Expr::Call("get_env_or_default".to_string(), call_args, None)),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand(source: &str) -> Vec<TopLevel> {
+        let tokens = crate::lexer::tokenize(source).expect("tokens");
+        let mut program = crate::parser::Parser::new(tokens, source)
+            .parse_program().expect("syntax");
+        resolve_const_env_vars(&mut program);
+        program.iter_mut().for_each(walk_item);
+        program
+    }
+
+    #[test]
+    fn expands_environment_calls_in_nested_control_flow_and_operands() {
+        let program = expand(r#"
+            defn check(values: List<Int>) -> Int {
+                foreach index in 0..get_env_int!("READS") {
+                    when get_env_int!("MODE") > 0 {
+                        let value: Int = values[get_env_int!("INDEX")];
+                    };
+                };
+                term get_env_int!(get_env_or_default!("KEY", "READS"));
+            };
+        "#);
+        let mut calls = Vec::new();
+        for item in &program {
+            crate::ast::visit::walk_toplevel(item, &mut |expr| match expr {
+                Expr::PluginIntercept { .. } => panic!("environment intercept survived expansion"),
+                Expr::Call(name, _, _) => calls.push(name.clone()),
+                _ => {}
+            });
+        }
+        assert_eq!(calls.iter().filter(|name| *name == "get_env_int").count(), 4);
+        assert_eq!(calls.iter().filter(|name| *name == "get_env_or_default").count(), 1);
+    }
+
+    #[test]
+    fn expands_children_of_unknown_plugins_without_rewriting_the_parent() {
+        let program = expand(r#"
+            defn check() -> Int {
+                term another_plugin!(get_env_int!("READS"));
+            };
+        "#);
+        let TopLevel::Definition(definition) = &program[0] else { panic!("definition") };
+        let crate::ast::Statement::Term(Some(Expr::PluginIntercept { name, args, .. })) =
+            &definition.body[0] else { panic!("unknown plugin must remain") };
+        assert_eq!(name, "another_plugin");
+        assert!(matches!(&args[0], Expr::Call(name, _, _) if name == "get_env_int"));
+    }
+
+    #[test]
+    fn chained_environment_call_keeps_receiver_before_expanded_arguments() {
+        let mut expression = Expr::PluginIntercept {
+            name: "get_env_or_default".into(),
+            args: vec![Expr::PluginIntercept {
+                name: "get_env".into(),
+                args: vec![Expr::Quoted(b"DEFAULT".to_vec())],
+                type_args: vec![], receiver: None, chain_refs: vec![],
+            }],
+            type_args: vec![],
+            receiver: Some(Box::new(Expr::Quoted(b"KEY".to_vec()))),
+            chain_refs: vec![],
+        };
+        crate::ast::visit_mut::walk_expr(&mut expression, &mut resolve_expr);
+        let Expr::Call(name, args, _) = expression else { panic!("expanded call") };
+        assert_eq!(name, "get_env_or_default");
+        assert_eq!(args[0], Expr::Quoted(b"KEY".to_vec()));
+        assert!(matches!(&args[1], Expr::Call(name, _, _) if name == "get_env"));
     }
 }
