@@ -6,7 +6,8 @@
 use briev_compiler::ast::{TopLevel, Type};
 use briev_compiler::hir::ids::IdSupply;
 use briev_compiler::hir::specialize::{
-    specialize_callable, specialize_callable_with_renames, substitution_for,
+    bind_from_arguments, mangled_instantiation_name, specialize_callable,
+    specialize_callable_with_renames, substitution_for,
 };
 use briev_compiler::hir::{lower_program, verify, HirCallable, HirCallableKind};
 use std::collections::HashMap;
@@ -52,6 +53,18 @@ fn iter_chain_two_struct_specialization() {
     let mut ids = IdSupply::default();
     assert!(specialize_callable(loop_txn, &[], "iter_chain_loop__bad", &mut ids).is_none());
     assert!(substitution_for(loop_txn, &[Type::int(), Type::int()]).is_none());
+
+    // Shared identity: binding a call's arg types and mangling agree with
+    // backend emission (analysis::generic_specialization, PR #62).
+    let arg_types = vec![list_of("A"), list_of("A"), list_of("A"), Type::int()];
+    let bound = bind_from_arguments(loop_txn, &arg_types).expect("bind T=A");
+    assert_eq!(bound.get("T"), Some(&Type::Custom("A".to_string())));
+    assert_eq!(
+        mangled_instantiation_name("iter_chain_loop", &[Type::Custom("A".to_string())]),
+        "iter_chain_loop$A"
+    );
+    assert!(bind_from_arguments(loop_txn, &vec![Type::int(); 4]).is_none(),
+        "Int args cannot bind List<T>");
 
     let mut ids = IdSupply::default();
     let a = Type::Custom("A".to_string());

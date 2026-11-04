@@ -309,15 +309,17 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
-            HirExprKind::Reflect { receiver, name, kind } => {
-                if matches!(kind, crate::ast::ReflectKind::CompileTime)
-                    && matches!(name.as_str(), "Size" | "Bytes" | "Alignment" | "Type")
+            HirExprKind::Reflect { receiver, name, kind } => match kind {
+                // 2026-11-04 (PR #62 parity): runtime metadata still evaluates
+                // its receiver — calls under `value.^Length` must be live.
+                crate::ast::ReflectKind::Runtime => self.walk_expr(receiver, queue),
+                crate::ast::ReflectKind::CompileTime
+                    if matches!(name.as_str(), "Size" | "Bytes" | "Alignment" | "Type") =>
                 {
-                    self.walk_expr(receiver, queue);
-                } else if matches!(kind, crate::ast::ReflectKind::CompileTime) {
-                    self.keep_all = true;
+                    self.walk_expr(receiver, queue)
                 }
-            }
+                crate::ast::ReflectKind::CompileTime => self.keep_all = true,
+            },
             HirExprKind::Binary { op, left, right } => {
                 self.mark("briev_str_eq", queue);
                 self.mark("rt_free", queue);

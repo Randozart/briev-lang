@@ -60,6 +60,13 @@ fn curated_defn_liveness_parity() {
         "construction",
     );
 
+    // 2026-11-04 (PR #62): runtime `.^Length` evaluates its receiver, so a
+    // call under it is live (the pre-fix AST/HIR both dropped it).
+    assert_parity(
+        "defn receiver() -> String { term \"x\"; };\nnode n [true][true] { let len: Int = receiver().^Length; Print#(len); term; };",
+        "runtime-reflect",
+    );
+
     // Binary `==` roots the string-equality helper when present.
     assert_parity(
         "defn briev_str_eq(a: Int, b: Int) -> Int { term 1; };\nexport defn cmp(x: Int, y: Int) -> Bool { term x == y; };",

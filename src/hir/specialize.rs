@@ -32,6 +32,39 @@ pub fn substitution_for(c: &HirCallable, type_args: &[Type]) -> Option<HashMap<S
     )
 }
 
+/// Identifier-safe instantiation symbol, shared with backend emission
+/// (`analysis::generic_specialization`, PR #62). Do not re-derive the mangling:
+/// analysis and codegen must agree on the concrete callable identity.
+pub fn mangled_instantiation_name(name: &str, type_args: &[Type]) -> String {
+    crate::analysis::generic_specialization::mangle_specialization(name, type_args)
+}
+
+/// Bind the callable's type parameters from a concrete call's argument types
+/// (declared param type vs concrete arg type), using the shared unifier.
+/// Returns `None` when a declared type param remains unbound — an under-
+/// constrained call is not silently specialized to the wrong type.
+pub fn bind_from_arguments(
+    c: &HirCallable,
+    arg_types: &[Type],
+) -> Option<HashMap<String, Type>> {
+    if c.type_params.is_empty() || c.params.len() != arg_types.len() {
+        return None;
+    }
+    let mut subst = HashMap::new();
+    for (param, arg) in c.params.iter().zip(arg_types.iter()) {
+        crate::analysis::generic_specialization::unify_generic_binding(
+            &param.ty,
+            arg,
+            &c.type_params,
+            &mut subst,
+        );
+    }
+    c.type_params
+        .iter()
+        .all(|p| subst.contains_key(p))
+        .then_some(subst)
+}
+
 /// Convenience wrapper without call-site retargeting.
 pub fn specialize_callable(
     c: &HirCallable,

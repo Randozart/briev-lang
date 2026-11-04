@@ -18,6 +18,16 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
 
 ## Progress (2026-11-04)
 
+- **Collaborator PRs merged:** #61 (nested environment macros — exhaustive
+  postorder expansion) and #62 (native allocation reclamation at proved call
+  boundaries; shared `analysis::generic_specialization`, runtime-reflection
+  liveness fix, memory-effects config). Both merged with `--no-ff`; full
+  `cargo test --all`, HIR suites, and the AST/HIR `.ll` A/B are green.
+- **HIR follow-ups for #62:** `hir::defn_liveness` mirrors the runtime
+  `.^Length` receiver walk (new curated parity case); `hir::specialize` now
+  consumes the shared `unify_generic_binding` / `mangle_specialization`
+  (single source of truth for concrete callable identity).
+
 - **H3.0 ✅** HIR coverage: impl/trait-default members with owner/trait_default,
   top-level globals (+declared storage, initializer), always_stateful
   (asm/bad), contracts (pre/post/watchdog + on-fire), transaction
