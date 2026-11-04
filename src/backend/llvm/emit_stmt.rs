@@ -2270,6 +2270,11 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // Reset so the false-path (guard condition not met) continues
             // emitting the rest of the body after guard.endN.
             backend.fun.terminated = false;
+            // 2026-11-02: a recursive term in the true branch may emit a
+            // tail-loop backedge. The false branch still reaches later terms;
+            // it must not inherit that backedge and drop their return values.
+            // Retire when each CFG edge carries its own termination state.
+            backend.fun.tail_loop_backedge = false;
             // 2026-08-15 (coll grow-on-full): record the block the emitter is
             // now writing into. The countdown loop's latch phis key their body
             // predecessor on `fun.cur_block` (the FINAL block of the emitted

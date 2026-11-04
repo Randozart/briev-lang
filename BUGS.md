@@ -11772,3 +11772,11 @@ zero extension as required by actual register widths. Encoding constructors
 use the source width or adapt to the declared i64 argument ABI. Covered by
 bit_encoding_override_receives_canonical_storage_word and the browser
 bit_string_roundtrip_wasm fixture.
+
+## Guarded tail recursion discards a later return (FIXED 2026-11-03)
+
+A recursive term inside a when left tail_loop_backedge set on the false
+continuation, so a later terminal call lost its return and defaulted to zero.
+Reset the flag at the guard merge. Regression:
+guarded_tail_backedge_does_not_swallow_later_return. This caused wasm float
+formatting to display zero for valid recommender prediction scores.
