@@ -35,6 +35,8 @@ CORPUS=(
     # (glue/c.bv cast lanes → @str_to_int round-2 re-emission) — a standing
     # tripwire for IR stability of re-entrant emission.
     "pp-types|pp-types.bv|"
+    # 2026-11-05: two object instances' Init blocks (sorted emission).
+    "test_collections|tests/tier1/test_collections.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(

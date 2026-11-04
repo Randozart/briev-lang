@@ -72,6 +72,14 @@ fn curated_defn_liveness_parity() {
     // loses its binding fns (caught on pp-types by the debug cross-check).
     assert_parity(include_str!("../lib/glue/c.bv"), "protocol-bindings");
 
+    // 2026-11-05: trait defaults are never bare-name live (the backend emits
+    // specialized copies); calls to them must not root them (caught by the
+    // full-corpus debug sweep on byte_sink/net_stack/trait_generics).
+    assert_parity(
+        include_str!("../tests/tier1/byte_sink_trait_smoke.bv"),
+        "trait-defaults",
+    );
+
     // Binary `==` roots the string-equality helper when present.
     assert_parity(
         "defn briev_str_eq(a: Int, b: Int) -> Int { term 1; };\nexport defn cmp(x: Int, y: Int) -> Bool { term x == y; };",

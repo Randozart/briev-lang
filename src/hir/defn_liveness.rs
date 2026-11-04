@@ -107,6 +107,14 @@ struct Builder<'a> {
 
 impl<'a> Builder<'a> {
     fn index_callable(&mut self, c: &'a HirCallable) {
+        // 2026-11-05 (H4.1 sweep): the AST index never records trait defaults
+        // in `defns`/`type_members`; the backend emits specialized copies under
+        // mangled names and tracks their dependencies separately. Bare-name
+        // calls to a default must not root it, or HIR over-approximates
+        // (caught on byte_sink/trait_generics/net_stack).
+        if c.trait_default {
+            return;
+        }
         match c.kind {
             HirCallableKind::Transaction | HirCallableKind::MemberTransaction => {
                 self.txns.entry(c.name.clone()).or_insert(&c.body.statements);

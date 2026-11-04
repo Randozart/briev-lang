@@ -22,6 +22,7 @@ CORPUS=(
     "queue_drain|benchmarks/queue_drain.bv|"
     "iter_chain|tests/tier1/iter_chain_multi.bv|"
     "pp-types|pp-types.bv|"
+    "test_collections|tests/tier1/test_collections.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(

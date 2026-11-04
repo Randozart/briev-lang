@@ -87,6 +87,17 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   exercising all debug cross-checks). Next type-agnostic candidates need a
   type shim: spawn pools (AST-typed dependent terms) and task segments
   (AST statements).
+- **H4.1 full-corpus debug sweep ✅** 135 corpus programs compiled in both
+  modes with all debug cross-checks active: **131 byte-identical, 0
+  mismatches, 0 HIR-only failures** (4 skipped: AST fails too). The sweep
+  found and fixed two real defects:
+  - HIR liveness over-rooted **trait defaults** (AST never indexes them;
+    the backend emits specialized copies). Bare-name calls no longer root
+    them; parity pinned on `byte_sink_trait_smoke.bv`.
+  - `emit_init_state` iterated `obj_instance_inits` (HashMap) unsorted, so
+    two instances' Init blocks could swap across modes/processes and drift
+    every GEP. Sorted by instance name; determinism corpus adds
+    `test_collections`.
 - **H4.1 (tail-plan flip + cross-check catch) ✅** Backend tail-recursion /
   tail-loop plans are consumed from HIR under `BRIEV_HIR_EMIT=1` (name-keyed,
   order-independent; debug asserts AST equality on reordered items). The
