@@ -96,7 +96,7 @@ pub struct BoundaryEntry {
 }
 
 /// All boundary ownership results for a program.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryOwnershipResult {
     /// exports keyed by defn name
     pub exports: HashMap<String, BoundaryEntry>,

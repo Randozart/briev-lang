@@ -356,12 +356,41 @@ pub fn analyze_program(
     // parameter and return. The calling convention is defaulted to c_abi here
     // (the glue config lives in compile.rs); the GLUE wiring refines
     // lto/wasm_import when it consumes the result.
-    let boundary_ownership =
-        crate::analysis::boundary_ownership::compute_boundary_ownership(
+    // 2026-11-05 (H4.1): second and third consumer flips. HIR and AST produce
+    // the same consumer-facing types for boundary ownership and defn
+    // liveness; with BRIEV_HIR_EMIT=1 the HIR result is used, and debug
+    // builds still assert exact AST equality. The reclamation plan shares the
+    // same liveness set (one source of truth per run).
+    let defn_liveness = if hir_emit_enabled() {
+        let ast = crate::analysis::defn_liveness::DefnLiveness::build(items);
+        let h = crate::hir::defn_liveness::DefnLiveness::build(&hir);
+        debug_assert_eq!(h.live, ast.live, "HIR/AST defn-liveness drift");
+        debug_assert_eq!(h.keep_all, ast.keep_all, "HIR/AST keep_all drift");
+        crate::analysis::defn_liveness::DefnLiveness { live: h.live, keep_all: h.keep_all }
+    } else {
+        crate::analysis::defn_liveness::DefnLiveness::build(items)
+    };
+    let boundary_ownership = if hir_emit_enabled() {
+        let ast = crate::analysis::boundary_ownership::compute_boundary_ownership(
             items,
             type_universe,
             &|_| None,
         );
+        let h = crate::hir::boundary_ownership::compute_boundary_ownership(
+            &hir,
+            type_universe,
+            &|_| None,
+        );
+        debug_assert_eq!(h, ast, "HIR/AST boundary-ownership drift");
+        h
+    } else {
+        crate::analysis::boundary_ownership::compute_boundary_ownership(
+            items,
+            type_universe,
+            &|_| None,
+        )
+    };
+    let reclamation = crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe);
     let mut destination_ownership =
         crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the
@@ -372,7 +401,7 @@ pub fn analyze_program(
         &loop_shapes,
     );
         AnalysisResults {
-        reclamation: crate::analysis::reclamation::analyze(items, &crate::analysis::defn_liveness::DefnLiveness::build(items).live, type_universe),
+        reclamation,
         call_graph: CallGraph::new(),
         param_ranges: ParameterRanges::new(),
         fusable_pairs: Vec::new(),
@@ -405,7 +434,7 @@ pub fn analyze_program(
         boundary_ownership,
         destination_ownership,
         electronics: crate::analysis::electronics::derive_netlist(items),
-        defn_liveness: crate::analysis::defn_liveness::DefnLiveness::build(items),
+        defn_liveness,
         dyn_collection_info,
         hir,
     }
