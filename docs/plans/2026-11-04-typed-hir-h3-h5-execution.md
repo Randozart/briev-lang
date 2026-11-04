@@ -48,8 +48,15 @@ until its HIR replacement is proven equal; every slice preserves emitted IR.
   carried + swan + SLP facts) — corpus parity **113/0**, including
   field classes, local/carried sets, vector groups, pressure counts,
   convergence and program-level natural exit.
-- **H3.4b-3:** `tail_carrier` over HIR (needs `enum_repr` over HIR), then
-  H3.5 task/collection, H3.6 generic txn, H4/H5.
+- **H3.4b-3 ✅** `enum_repr` + `tail_carrier` over HIR — corpus parity
+  **113/0** (defns/variants/escaping lets; carrier identity, arg classes,
+  sret locals, proofs). `sret_safe_defns` stays AST-only until its backend
+  consumer moves (H4).
+- **H3.4 COMPLETE.** Every H3.4 analysis (transition graph, loop carried,
+  swan song, SLP, loop shape, tail recursion, enum repr, tail carrier) has
+  an HIR mirror at corpus parity. All 14 HIR parity suites green.
+- **Next:** H3.5 task/collection, H3.6 generic txn, then H4 (byte-identical
+  IR A/B per family, flip consumers) and H5 (retire AST paths).
 
 ## Current state
 
