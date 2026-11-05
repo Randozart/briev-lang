@@ -23,6 +23,9 @@ CORPUS=(
     "iter_chain|tests/tier1/iter_chain_multi.bv|"
     "pp-types|pp-types.bv|"
     "test_collections|tests/tier1/test_collections.bv|"
+    # 2026-11-05 (H4 slice D): op-free call chains — caught the
+    # emit_hir_operand register-burn drift on the native Call path.
+    "rating_population_gate|tests/tier1/rating_population_gate.bv|"
 )
 if [ "${1:-}" = "--quick" ]; then
     CORPUS=(
