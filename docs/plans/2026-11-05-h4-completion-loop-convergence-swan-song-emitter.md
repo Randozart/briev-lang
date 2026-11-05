@@ -324,6 +324,16 @@ labels, string-lane early exit) is shared verbatim. The list reconstructs
 before any emission. Every `foreach` in the corpus now emits from HIR
 control flow.
 
+## Native Assign statement (2026-11-05)
+
+The AST Assign arm extracted verbatim into `emit_assign_statement` with a
+dual-fueled RHS (`AssignValue::Hir` emits covered leaves natively through
+`emit_hir_operand`; `Ast` keeps the legacy path). The dispatch still reads
+the reconstructed LHS/RHS shapes — provenance, AddrOf-pop early return,
+typed-list collection construction, provenance copy — which is what drives
+assignment semantics; both cross the boundary, reconstructed before any
+emission.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

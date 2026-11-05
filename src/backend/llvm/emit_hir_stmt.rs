@@ -135,6 +135,27 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    // 2026-11-05 (H4 slice D): native Assign — the dispatch reads the
+    // reconstructed LHS/RHS shapes (provenance/collection assignment), so
+    // both cross the boundary; covered RHS leaves emit natively through the
+    // dual-fueled value path. Reconstructibility is checked BEFORE any
+    // emission (the AddrOf-pop path early-returns emit no IR, but the
+    // collection-construction path starts emitting immediately).
+    if let HirStmtKind::Assign(lhs, rhs) = &stmt.kind {
+        let Some(ast_lhs) = crate::hir::to_ast::expr(lhs) else {
+            return None;
+        };
+        let Some(ast_rhs) = crate::hir::to_ast::expr(rhs) else {
+            return None;
+        };
+        return Some(super::emit_stmt::emit_assign_statement(
+            backend,
+            out,
+            indent,
+            &ast_lhs,
+            &super::emit_stmt::AssignValue::Hir(rhs, &ast_rhs),
+        ));
+    }
     // 2026-11-05 (H4 slice D): native Foreach — the iteration-source dispatch
     // reads the reconstructed list's shape (identical), the loop engine is
     // the shared extracted helper, and body children route through the seam
