@@ -30,6 +30,27 @@ Costs: one lowering per compile; **mirror maintenance until H5** (every
 AST behavior fix needs an HIR mirror — #69 is the live example); the
 `to_ast` bridge until structural expression families land.
 
+## Outcome (2026-11-05 — executed)
+
+- Phase 0: `feat/typed-hir` verified fully contained in `main` (nothing to
+  merge); HEAD compiles from a clean checkout (fixed a missing
+  `pub(crate) emit_hir_operand` that had been left uncommitted).
+- Phase 1: #63, #64, #66, #68, #70, #67, #71 merged `--no-ff`. #64/#66/#68
+  BUGS.md keep-both; #66+#68 reclamation.rs/walk.rs conflicts resolved as
+  unions (both modules; struct fields `variant_types` + `methods`; method
+  arms = intrinsic-check-first then call-graph edges). #70 auto-adapted our
+  HIR Field arm; sweep re-verified.
+- Phase 2: #69 merged — AST Match merge fixed + **native HIR Match arm
+  mirrored** (merge stays open); his runtime fixture green; full battery
+  green. #65 merged — `emit_let_statement` kept; his destructure port
+  applied to BOTH tuple paths in the helper (elem_tys from the
+  initializer's semantic tuple type; element extraction through
+  `tuple_values::emit_tuple_element`; `unbox_tuple_float_element`
+  retired); reclamation walk union (#68 lifetime facts + #65 tuple
+  shapes); `tests/tuple_values.rs` green.
+- Final battery at `364f42eb`: lib 3512, all HIR suites, sweep 131/0,
+  release A/B byte-identical, determinism, daily_use_smoke 37/37.
+
 ## Branch state (Phase 0)
 
 All H4 work is already on `origin/main` (HEAD `be420d69`); there is no
