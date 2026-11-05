@@ -1,0 +1,22 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj Inner { number: Int; };
+obj Outer { inner: Inner; };
+let calls: Int = 0;
+defn factory() -> Inner { calls += 1; term Inner { number: calls }; };
+defn nested() -> Outer { calls += 1; term Outer { inner: Inner { number: calls } }; };
+defn pair() -> (Int,Int) { calls += 1; term (calls,7); };
+let done: Bool = false;
+node main [!done][done] {
+    let first: Int = factory().number;
+    when first != 1 || calls != 1 { endprogram 1; };
+    let second: Int = nested().inner.number;
+    when second != 2 || calls != 2 { endprogram 2; };
+    let holder: Inner = Inner { number: 0 };
+    holder.number = factory().number;
+    when holder.number != 3 || calls != 3 { endprogram 3; };
+    let number: Int = pair().0;
+    when number != 4 || calls != 4 { endprogram 4; };
+    println!("field_receiver_once_ok"); done = true; endprogram;
+};

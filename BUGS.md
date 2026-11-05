@@ -11899,3 +11899,7 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## FIXED 2026-11-05 — Field receivers evaluated twice
+
+Field projection on a call result evaluated the receiver twice. sock_tcp_nonblocking().fd opened and leaked an extra descriptor. Reproducer: tests/fixtures/load/field_receiver_once.bv. The general loader now consumes the already evaluated typed register.

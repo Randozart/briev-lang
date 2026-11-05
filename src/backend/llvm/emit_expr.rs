@@ -1630,7 +1630,7 @@ impl LlvmBackend {
                 // struct-literal), so GEP-by-offset + load is the correct
                 // access; extractvalue on an address is invalid IR.
                 let _ = (field_idx, field_ty);
-                return self.emit_field_access(out, v, obj, field, indent);
+                return self.emit_field_access(out, Some(&obj_reg), obj, field, indent);
             }
 
             // ── Index ────────────────────────────────────────────────
@@ -2244,7 +2244,7 @@ impl LlvmBackend {
 
             // ── Field access / reflection / method call (2026-07-31) ─
             Expr::Field(recv, name) => {
-                return self.emit_field_access(out, v, recv, name, indent);
+                return self.emit_field_access(out, None, recv, name, indent);
             }
             Expr::Reflect(recv, target, kind) => {
                 return self.emit_reflection(out, v, recv, target, *kind, indent);
@@ -3346,10 +3346,14 @@ impl LlvmBackend {
         TypedRegister { name: fat_handle, ty: Type::Dyn(Box::new(Type::Custom(trait_name.to_string()))) }
     }
 
+    fn field_receiver(&mut self, out: &mut String, receiver: &Expr, indent: &str) -> TypedRegister {
+        if let Some(value) = self.deref_struct_receiver(out, indent, receiver) { return value; }
+        self.emit_expr(out, receiver, indent)
+    }
     fn emit_field_access(
         &mut self,
         out: &mut String,
-        v: &str,
+        evaluated: Option<&TypedRegister>,
         recv: &Expr,
         name: &str,
         indent: &str,
@@ -3418,13 +3422,14 @@ impl LlvmBackend {
                 }
             }
         }
-        let _ = v;
-        let recv_tmp = self.fun.gen_reg();
-        // 2026-08-23 (bugfix): `(*p).field` routes through the pointer handle
-        // — see deref_struct_receiver.
-        let recv_reg = match self.deref_struct_receiver(out, indent, recv) {
-            Some(r) => r,
-            None => self.emit_expr_inner(out, &recv_tmp, recv, indent),
+        // 2026-11-05: the dispatcher already evaluated ordinary receivers
+        // for tuple/layout routing. Reuse that value so factory calls and
+        // nested field projections execute once. Unevaluated entry paths
+        // retain the pointer-aware receiver logic from 2026-08-23.
+        let recv_reg = if let Some(evaluated) = evaluated {
+            evaluated.clone()
+        } else {
+            self.field_receiver(out, recv, indent)
         };
         let type_name = match self.resolve_obj_key(&recv_reg.ty) {
             Some(n) => n,

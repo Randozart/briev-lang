@@ -420,3 +420,7 @@ There is no TS emitter.
 3. **Vulkan smoke test** — needs an installed runner.
 4. **LLVM diagnostics sweep** — eprintln warnings (AddressOf#, main.rs
    unused) remain an opportunistic house-style pass.
+
+### Field receivers evaluated twice — 2026-11-05
+
+A field receiver is evaluated exactly once. Tuple/layout dispatch and the general loader share that typed value; nested projections preserve source evaluation counts.
