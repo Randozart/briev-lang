@@ -1,0 +1,64 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/http_response.bv";
+
+defn framing_case(text: String, expected: Int) -> Bool {
+    let bytes: ByteBuf = buf_new(text .^Length+1);
+    let frame: HttpResponseFrame = http_response_frame(256,32);
+    let verdict: Int = 0;
+    foreach index in 0..text .^Length {
+        Store#(bytes.ptr+index,text[index],1); bytes.len += 1;
+        verdict = http_response_progress(frame,bytes,false);
+        when expected == 1 && verdict != 0 && index+1 != text .^Length { buf_free(bytes); term false; };
+    };
+    verdict = http_response_progress(frame,bytes,true);
+    buf_free(bytes);
+    term verdict == expected;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata",1) { endprogram 1; };
+    when !framing_case("HTTP/1.0 503 Unavailable\r\ncOnTeNt-LeNgTh:\t0 \r\n\r\n",1) { endprogram 2; };
+    when !framing_case("HTTP/1.1 204 Empty\r\n\r\n",1) { endprogram 3; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabc",-1) { endprogram 4; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nab",-1) { endprogram 5; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 0\r\ncontent-length: 0\r\n\r\n",-1) { endprogram 6; };
+    when !framing_case("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",-1) { endprogram 7; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 33\r\n\r\n",-1) { endprogram 8; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 9999999999999999999999\r\n\r\n",-1) { endprogram 9; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: +1\r\n\r\nx",-1) { endprogram 10; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length : 0\r\n\r\n",-1) { endprogram 11; };
+    when !framing_case("HTTP/1.1 200 OK\r\n Content-Length: 0\r\n\r\n",-1) { endprogram 12; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 1 0\r\n\r\n",-1) { endprogram 13; };
+    when !framing_case("HTTP/1.1 200 OK\r\n\r\n",-1) { endprogram 14; };
+    when !framing_case("HTTP/1.1 100 Continue\r\nContent-Length: 0\r\n\r\n",-1) { endprogram 15; };
+    when !framing_case("HTTP/1.1 200 OK\nContent-Length: 0\n\n",-1) { endprogram 16; };
+    when !framing_case("http/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",-1) { endprogram 17; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: \r\n\r\n",-1) { endprogram 18; };
+    when !framing_case("HTTP/1.1 204 Empty\r\nContent-Length: 1\r\n\r\nx",-1) { endprogram 19; };
+    when !framing_case("HTTP/1.1 200 OK\r\nContent-Length: 32\r\n\r\n01234567890123456789012345678901",1) { endprogram 20; };
+    framing_reuse();
+    println!("http_response_framing_ok"); done = true; endprogram;
+};
+
+defn framing_reuse() -> Void {
+    let text: String = "HTTP/1.1 204 Empty\r\n\r\n";
+    let bytes: ByteBuf = buf_new(64);
+    foreach index in 0..text .^Length { Store#(bytes.ptr+index,text[index],1); };
+    bytes.len = text .^Length;
+    let frame: HttpResponseFrame = http_response_frame(text .^Length,0);
+    when http_response_progress(frame,bytes,false) != 1 { trap; };
+    bytes.len -= 1;
+    when http_response_progress(frame,bytes,false) != -1 { trap; };
+    bytes.len += 1;
+    when http_response_progress(frame,bytes,false) != -1 { trap; };
+    http_response_reset(frame);
+    when http_response_progress(frame,bytes,true) != 1 { trap; };
+    http_response_reset(frame); frame.header_limit -= 1;
+    when http_response_progress(frame,bytes,false) != -1 { trap; };
+    http_response_reset(frame); bytes.len = 0;
+    when http_response_progress(frame,bytes,true) != -1 { trap; };
+    buf_free(bytes);
+};

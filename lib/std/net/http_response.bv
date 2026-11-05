@@ -1,0 +1,156 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/bytes.bv";
+
+// 2026-11-05: bounded GET-response framing for nonblocking clients. Retain
+// explicit limits and rejection of unsupported framing when extending this
+// profile. This is not a HEAD, CONNECT, upgrade or chunked-response decoder.
+obj HttpResponseFrame {
+    header_limit: Int; body_limit: Int; scanned: Int; previous: Int;
+    header_bytes: Int; body_bytes: Int; status: Int; failed: Bool;
+};
+
+defn http_response_frame(header_limit: Int, body_limit: Int) -> HttpResponseFrame {
+    when header_limit < 16 || body_limit < 0 || body_limit > 9223372036854775807-header_limit { trap; };
+    term HttpResponseFrame { header_limit: header_limit, body_limit: body_limit,
+        scanned: 0, previous: 0, header_bytes: 0, body_bytes: -1, status: 0, failed: false };
+};
+
+defn http_response_reset(frame: HttpResponseFrame) -> Void {
+    frame.scanned = 0; frame.previous = 0; frame.header_bytes = 0;
+    frame.body_bytes = -1; frame.status = 0; frame.failed = false;
+};
+
+defn response_lower(value: Int) -> Int {
+    when value >= 65 && value <= 90 { term value+32; };
+    term value;
+};
+
+defn response_matches(bytes: ByteBuf, start: Int, end: Int, expected: String) -> Bool {
+    when end-start != expected .^Length { term false; };
+    foreach index in 0..expected .^Length {
+        when response_lower(get_u8(bytes,start+index)) != response_lower(expected[index]) { term false; };
+    };
+    term true;
+};
+
+defn response_token(value: Int) -> Bool {
+    when (value >= 48 && value <= 57) || (value >= 65 && value <= 90) || (value >= 97 && value <= 122) { term true; };
+    let punctuation: String = "!#$%&'*+-.^_`|~";
+    foreach index in 0..punctuation .^Length { when value == punctuation[index] { term true; }; };
+    term false;
+};
+
+defn response_line_end(bytes: ByteBuf, start: Int, end: Int) -> Int {
+    foreach index in start..end {
+        when get_u8(bytes,index) == 13 && index+1 < end && get_u8(bytes,index+1) == 10 { term index; };
+    };
+    term -1;
+};
+
+defn response_status(frame: HttpResponseFrame, bytes: ByteBuf, end: Int) -> Bool {
+    when end < 13 { term false; };
+    let protocol: String = "HTTP/";
+    foreach index in 0..5 { when get_u8(bytes,index) != protocol[index] { term false; }; };
+    when !response_matches(bytes,0,9,"HTTP/1.1 ") && !response_matches(bytes,0,9,"HTTP/1.0 ") { term false; };
+    let status: Int = 0;
+    foreach index in 9..12 {
+        let digit: Int = get_u8(bytes,index)-48;
+        when digit < 0 || digit > 9 { term false; };
+        status = status*10+digit;
+    };
+    when status < 200 || status > 599 || get_u8(bytes,12) != 32 { term false; };
+    foreach index in 13..end {
+        let value: Int = get_u8(bytes,index);
+        when (value < 32 && value != 9) || value == 127 { term false; };
+    };
+    frame.status = status;
+    term true;
+};
+
+defn response_header(frame: HttpResponseFrame, bytes: ByteBuf, start: Int, end: Int) -> Bool {
+    let colon: Int = -1;
+    foreach index in start..end {
+        when colon == -1 {
+            let value: Int = get_u8(bytes,index);
+            when value == 58 { colon = index; };
+            when value != 58 && !response_token(value) { term false; };
+        };
+    };
+    when colon <= start { term false; };
+    foreach index in (colon+1)..end {
+        let value: Int = get_u8(bytes,index);
+        when (value < 32 && value != 9) || value == 127 { term false; };
+    };
+    when response_matches(bytes,start,colon,"transfer-encoding") { term false; };
+    when !response_matches(bytes,start,colon,"content-length") { term true; };
+    when frame.body_bytes >= 0 { term false; };
+    let first: Int = colon+1;
+    foreach index in (colon+1)..end {
+        when index == first && (get_u8(bytes,index) == 32 || get_u8(bytes,index) == 9) { first += 1; };
+    };
+    let value: Int = 0;
+    let digits: Int = 0;
+    let trailing: Bool = false;
+    foreach index in first..end {
+        let byte: Int = get_u8(bytes,index);
+        when byte == 32 || byte == 9 { trailing = true; };
+        when byte != 32 && byte != 9 {
+            when trailing || byte < 48 || byte > 57 { term false; };
+            let digit: Int = byte-48;
+            when digit > frame.body_limit || value > (frame.body_limit-digit)/10 { term false; };
+            value = value*10+digit; digits += 1;
+        };
+    };
+    when digits == 0 { term false; };
+    frame.body_bytes = value;
+    term true;
+};
+
+defn response_headers(frame: HttpResponseFrame, bytes: ByteBuf) -> Bool {
+    let end: Int = response_line_end(bytes,0,frame.header_bytes);
+    when end < 0 || !response_status(frame,bytes,end) { term false; };
+    let start: Int = end+2;
+    foreach index in start..(frame.header_bytes-2) {
+        when index == start {
+            let last: Int = response_line_end(bytes,start,frame.header_bytes);
+            when last < start || !response_header(frame,bytes,start,last) { term false; };
+            start = last+2;
+        };
+    };
+    when frame.status == 204 || frame.status == 304 {
+        when frame.body_bytes > 0 { term false; };
+        frame.body_bytes = 0;
+    };
+    term frame.body_bytes >= 0;
+};
+
+// Return 0 for incomplete, 1 for exactly one complete response, -1 for invalid.
+// The caller appends to the same buffer; EOF before completion is an error.
+defn http_response_progress(frame: HttpResponseFrame, bytes: ByteBuf, eof: Bool) -> Int {
+    when frame.failed { term -1; };
+    when bytes.len < frame.previous || bytes.len > bytes.cap { frame.failed = true; term -1; };
+    frame.previous = bytes.len;
+    when frame.header_bytes == 0 {
+        let limit: Int = bytes.len;
+        when limit > frame.header_limit { limit = frame.header_limit; };
+        foreach index in frame.scanned..limit {
+            when index+3 < limit && get_u8(bytes,index) == 13 && get_u8(bytes,index+1) == 10 &&
+                get_u8(bytes,index+2) == 13 && get_u8(bytes,index+3) == 10 {
+                frame.header_bytes = index+4; break;
+            };
+        };
+        frame.scanned = 0;
+        when limit > 3 { frame.scanned = limit-3; };
+        when frame.header_bytes == 0 {
+            when eof || bytes.len >= frame.header_limit { frame.failed = true; term -1; };
+            term 0;
+        };
+        when !response_headers(frame,bytes) { frame.failed = true; term -1; };
+    };
+    let expected: Int = frame.header_bytes+frame.body_bytes;
+    when bytes.len > expected || (eof && bytes.len != expected) { frame.failed = true; term -1; };
+    when bytes.len == expected { term 1; };
+    term 0;
+};
