@@ -420,6 +420,16 @@ impl LlvmBackend {
                 .ok();
                 TypedRegister { name: v.clone(), ty: pointee_ty }
             }
+            HirExprKind::StructLiteral { type_name, fields, .. } => {
+                // Dispatch-only: every field reconstructs BEFORE the call —
+                // emit_struct_literal allocates the image first, so a
+                // mid-loop None would double-emit the allocation.
+                let ast_fields: Vec<(String, Expr)> = fields
+                    .iter()
+                    .map(|(n, e)| Some((n.clone(), crate::hir::to_ast::expr(e)?)))
+                    .collect::<Option<Vec<_>>>()?;
+                self.emit_struct_literal(out, &v, type_name, &ast_fields, indent)
+            }
             HirExprKind::Tuple(items) => {
                 // Reconstruct-check every element BEFORE materialization:
                 // the malloc precedes element emission, so a mid-loop

@@ -361,6 +361,13 @@ compiler bug (typed lists construct through collection ops at let/call
 sites), and a Range value is a hard error (iterables only) — the legacy
 arms' panics are the correct semantics for both.
 
+## Native StructLiteral expression arm (2026-11-05)
+
+Dispatch-only into `emit_struct_literal`: all fields reconstruct BEFORE
+the call (the image malloc precedes field emission). Spawn stays
+conversion-based by design (task/pool/storage dispatch inspects args via
+helpers that take AST); List/Range stay legacy-panic arms.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
