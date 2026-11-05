@@ -1,0 +1,31 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+enum Choice { Number(Int), Empty };
+defn guarded(value: Choice) -> Int {
+    match value { Number(number) => { when number < 0 { term 10; }; }, _ => { term 20; } }
+    term 42;
+};
+defn partial(value: Int) -> Int {
+    match value { 1 => { term 11; }, _ => {} }
+    term 43;
+};
+defn reversed(value: Choice) -> Int {
+    match value { Empty() => { term 20; }, Number(number) => { when number < 0 { term 10; }; } }
+    term 44;
+};
+defn exhaustive(value: Choice) -> Int {
+    match value { Empty() => { term 20; }, Number(number) => { term number; } }
+    term 45;
+};
+let done: Bool = false;
+node main [!done][done] {
+    when guarded(Number(1)) != 42 { endprogram 1; };
+    when guarded(Number(-1)) != 10 { endprogram 2; };
+    when guarded(Empty()) != 20 { endprogram 3; };
+    when partial(2) != 43 || partial(1) != 11 { endprogram 4; };
+    when reversed(Number(1)) != 44 || reversed(Number(-1)) != 10 || reversed(Empty()) != 20 { endprogram 5; };
+    when exhaustive(Number(17)) != 17 || exhaustive(Empty()) != 20 { endprogram 6; };
+    println!("statement_match_fallthrough_ok"); done = true; endprogram;
+};
+

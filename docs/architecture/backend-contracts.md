@@ -420,3 +420,7 @@ There is no TS emitter.
 3. **Vulkan smoke test** — needs an installed runner.
 4. **LLVM diagnostics sweep** — eprintln warnings (AddressOf#, main.rs
    unused) remain an opportunistic house-style pass.
+
+### Statement matches discard continuing arms — 2026-11-05
+
+Statement matches retain a continuing merge for their no-match edge and any continuing arm. A final returning arm does not prove other arms terminate.

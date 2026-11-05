@@ -2947,18 +2947,15 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     writeln!(out, "  br label %{}", merge).ok();
                 }
             }
-            // 2026-08-23: when EVERY arm terminated (`term`), the merge has
-            // no live predecessors — an EMPTY label pair is invalid LLVM
-            // ('expected instruction opcode'). The condition chain still
-            // branches here, so print the label with an explicit
-            // `unreachable` terminator (dead code, removed by opt); a live
-            // merge stays a normal open block.
+            // 2026-11-05: the 2026-08-23 empty-label repair consulted only
+            // the LAST arm, discarding earlier continuing arms. The emitted
+            // no-match edge always reaches this merge, as do continuing arms.
+            // Keep it open; LLVM removes impossible condition-chain edges.
+            // Replace only with explicit predecessor/exhaustiveness tracking,
+            // never a single arm's termination flag.
             writeln!(out, "{}:", merge).ok();
-            if backend.fun.terminated {
-                writeln!(out, "  unreachable").ok();
-            } else {
-                backend.fun.cur_block = Some(merge);
-            }
+            backend.fun.terminated = false;
+            backend.fun.cur_block = Some(merge);
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         _ => {

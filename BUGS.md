@@ -11899,3 +11899,7 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## FIXED 2026-11-05 — Statement matches discard continuing arms
+
+Statement match used the last arm termination flag for the whole merge. Earlier continuing arms and unmatched values entered unreachable code. Reproducer: tests/fixtures/load/statement_match_fallthrough.bv. Fix preserves the emitted merge predecessors.
