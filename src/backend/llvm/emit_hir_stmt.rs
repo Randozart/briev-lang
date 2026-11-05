@@ -184,6 +184,57 @@ pub(crate) fn emit_hir_statement(
             writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
             Some(TypedRegister { name: noop, ty: crate::ast::Type::void() })
         }
+        HirStmtKind::Gate(cond) => {
+            // 2026-07-26: convergence gate — mirror of the AST arm.
+            let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
+                return None;
+            };
+            let label_n = backend.fun.txn_counter;
+            backend.fun.txn_counter += 1;
+            let pass_lbl = format!("gate.pass{}", label_n);
+            let has_convergence = backend.fun.convergence_target.is_some();
+            let fail_target = if has_convergence {
+                backend.fun.convergence_target.as_ref().unwrap().clone()
+            } else {
+                format!("gate.fail{}", label_n)
+            };
+            let cond_i1 = if cond_reg.ty == crate::ast::Type::bool_() {
+                let b = backend.fun.gen_reg();
+                writeln!(out, "{}{} = trunc i8 {} to i1", indent, b, cond_reg.name).ok();
+                b
+            } else {
+                let i1_name = format!("%gi1_{}", label_n);
+                writeln!(out, "{}{} = icmp ne i64 {}, 0", indent, i1_name, cond_reg.name).ok();
+                i1_name
+            };
+            writeln!(out, "{0}br i1 {1}, label %{2}, label %{3}",
+                indent, cond_i1, pass_lbl, fail_target).ok();
+            if !has_convergence {
+                writeln!(out, "{}{}:", indent, fail_target).ok();
+                writeln!(out, "{}  unreachable", indent).ok();
+            }
+            writeln!(out, "{}{}:", indent, pass_lbl).ok();
+            backend.fun.terminated = false;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::Rollback(_) => {
+            // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
+            backend.flush_defer_cleanup(out, indent);
+            if backend.fun.fn_ret_ty == "void" {
+                writeln!(out, "{}ret void", indent).ok();
+            } else {
+                let zero = if backend.fun.fn_ret_ty == "float" || backend.fun.fn_ret_ty == "double" {
+                    "0.0".to_string()
+                } else if backend.fun.fn_ret_ty == "ptr" {
+                    "null".to_string()
+                } else {
+                    "0".to_string()
+                };
+                writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, zero).ok();
+            }
+            backend.fun.terminated = true;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
         _ => None,
     }
     .or_else(|| {

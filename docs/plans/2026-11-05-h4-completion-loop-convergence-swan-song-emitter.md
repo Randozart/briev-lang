@@ -253,6 +253,16 @@ emission ordering). Break-without-foreach falls to the AST arm's same
 panic. The big four (Let/Assign/Term/Foreach/Match) remain conversion-
 based pending their register-taking refactors.
 
+## Native Gate + Rollback statements (2026-11-05)
+
+Gate (convergence branch with defn-trap fallback) and Rollback (deferred
+cleanup + ret-ty-matched return) emit natively, mirrored verbatim from the
+AST arms. Statement seam native set: Expression, Guarded, Block, Break,
+Trap, Halt, Yield, Check, Gate, Rollback — the remaining conversion-based
+kinds are the data-flow big four (Let/Assign/Term) plus Foreach/Match and
+the cleanup/wire kinds (FreeHint/KeepHint/Defer/SyncBlock/Mutex/
+ArrowAssign/EndProgram/Open/TrgBinding/MetadataAssignment/InlineAsm).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
