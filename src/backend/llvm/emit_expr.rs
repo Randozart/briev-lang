@@ -141,6 +141,16 @@ use crate::backend::llvm::{LlvmBackend, TypedRegister};
 
 use std::fmt::Write;
 
+/// 2026-11-05 (H4 slice D): dual-fueled tuple elements — `Ast` keeps the
+/// legacy path; `Hir` emits covered leaves natively through
+/// `emit_hir_operand` (uncovered leaves convert per-element). The caller
+/// must reconstruct-check ALL elements BEFORE calling: materialization
+/// allocates first, so a mid-loop fallback would double-emit.
+pub(crate) enum TupleElems<'a> {
+    Ast(&'a [Expr]),
+    Hir(&'a [crate::hir::expr::HirExpr], &'a [Expr]),
+}
+
 impl LlvmBackend {
     /// Emit LLVM IR for an expression. Returns the result register and type.
     /// This is the entry point for all expression codegen.
@@ -409,6 +419,16 @@ impl LlvmBackend {
                 )
                 .ok();
                 TypedRegister { name: v.clone(), ty: pointee_ty }
+            }
+            HirExprKind::Tuple(items) => {
+                // Reconstruct-check every element BEFORE materialization:
+                // the malloc precedes element emission, so a mid-loop
+                // fallback would double-emit the allocation.
+                let ast_items: Vec<Expr> = items
+                    .iter()
+                    .map(crate::hir::to_ast::expr)
+                    .collect::<Option<Vec<_>>>()?;
+                self.emit_tuple(out, &v, &TupleElems::Hir(items, &ast_items), indent)
             }
             HirExprKind::Cast { inner, to, .. } => {
                 let Some(src) = self.emit_hir_operand(out, inner, indent) else {
@@ -1524,7 +1544,7 @@ impl LlvmBackend {
             }
 
             // ── Tuple ────────────────────────────────────────────────
-            Expr::Tuple(exprs) => self.emit_tuple(out, v, exprs, indent),
+            Expr::Tuple(exprs) => self.emit_tuple(out, v, &TupleElems::Ast(exprs), indent),
 
             // ── List literal ─────────────────────────────────────────
             Expr::List(exprs) => {
@@ -2873,7 +2893,7 @@ impl LlvmBackend {
         &mut self,
         out: &mut String,
         v: &str,
-        exprs: &[Expr],
+        elems: &TupleElems<'_>,
         indent: &str,
     ) -> TypedRegister {
         // 2026-08-17 (Phase B reactor fix): a CONSTANT-element tuple literal
@@ -2884,16 +2904,19 @@ impl LlvmBackend {
         // only the mallocs and still failed; stores must leave the loop too.
         // Dynamic elements (vars, fields, calls) stay inline: their registers
         // are body-defined and cannot dominate a preheader definition.
-        let const_elements = exprs.iter().all(is_compile_time_const);
+        let const_elements = match elems {
+            TupleElems::Ast(exprs) => exprs.iter().all(is_compile_time_const),
+            TupleElems::Hir(..) => false,
+        };
         if self.fun.defer_struct_allocas && const_elements {
             let mut tmp = String::new();
-            let value = self.emit_tuple_materialize(&mut tmp, v, exprs, indent);
+            let value = self.emit_tuple_materialize(&mut tmp, v, elems, indent);
             for line in tmp.lines() {
                 self.fun.pending_struct_allocas.push(line.to_string());
             }
             return value;
         }
-        self.emit_tuple_materialize(out, v, exprs, indent)
+        self.emit_tuple_materialize(out, v, elems, indent)
     }
 
     /// The shared tuple materialization: malloc a `(2 + count) * 8` image,
@@ -2903,9 +2926,13 @@ impl LlvmBackend {
         &mut self,
         out: &mut String,
         v: &str,
-        exprs: &[Expr],
+        elems: &TupleElems<'_>,
         indent: &str,
     ) -> TypedRegister {
+        let exprs: &[Expr] = match elems {
+            TupleElems::Ast(exprs) => exprs,
+            TupleElems::Hir(_, ast) => ast,
+        };
         let count = exprs.len();
         let mut element_types = Vec::with_capacity(count);
         if count == 0 {
@@ -2924,7 +2951,17 @@ impl LlvmBackend {
             writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, hdr, raw).ok();
             writeln!(out, "{}store i64 {}, ptr {}", indent, count as i64, hdr).ok();
             for (i, elem) in exprs.iter().enumerate() {
-                let e = self.emit_expr(out, elem, indent);
+                let e = match elems {
+                    TupleElems::Ast(_) => self.emit_expr(out, elem, indent),
+                    TupleElems::Hir(hir, _) => {
+                        match self.emit_hir_operand(out, &hir[i], indent) {
+                            Some(r) => r,
+                            // The caller reconstruct-checked every element,
+                            // so this arm is unreachable; kept total.
+                            None => self.emit_expr(out, elem, indent),
+                        }
+                    }
+                };
                 // 2026-11-03 (Proof 3 condition 2): a tuple element stored as a
                 // handle must not point at the producing callable's stack image,
                 // which dies before the (heap) tuple image is read. Own enum
@@ -6494,7 +6531,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             self.emit_expr(out, &payload.args[0], indent)
         } else {
             let tuple = self.fun.gen_reg();
-            self.emit_tuple(out, &tuple, payload.args, indent)
+            self.emit_tuple(out, &tuple, &TupleElems::Ast(payload.args), indent)
         };
         let handle_llvm = self.llvm_type(&value.ty);
         let word = if matches!(handle_llvm.as_str(), "i8" | "i16" | "i32") {
@@ -9788,6 +9825,7 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
         K::Literal(_) | K::Identifier(_) | K::IsType { .. } => true,
+        K::Tuple(items) => items.iter().all(hir_expr_family_covered),
         K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. }
         | K::AddrOf(inner) => hir_expr_family_covered(inner),
         K::Unary { inner, .. } => hir_expr_family_covered(inner),

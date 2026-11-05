@@ -349,6 +349,18 @@ through the seam; conversion remains only for `Defer` (semantically
 identical: it queues AST bodies for later flush) and `ArrowAssign` (by
 design: every path inspects value AST shapes).
 
+## Native Tuple expression family (2026-11-05, post-integration)
+
+`emit_tuple`/`emit_tuple_materialize` dual-fueled (`TupleElems::Ast` legacy
+/ `Hir` operand recursion): covered leaves native, uncovered convert
+per-element. HIR Tuple arm reconstruct-checks ALL elements BEFORE the
+malloc (materialization allocates first — a mid-loop fallback would
+double-emit the allocation). Deep coverage extended to Tuple.
+List/Range are intentionally NOT arms: a bare List reaching codegen is a
+compiler bug (typed lists construct through collection ops at let/call
+sites), and a Range value is a hard error (iterables only) — the legacy
+arms' panics are the correct semantics for both.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
