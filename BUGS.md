@@ -11899,3 +11899,16 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## read_file descriptor ownership — 2026-11-05
+
+FIXED: every successful open in read_file now closes after read_whole returns,
+including EOF and read errors. Previously the whole-file result escaped without
+a close, exhausting file descriptors in repeated observations. The wrapper owns
+the descriptor; the recursive helper owns buffer growth. Preserve the original
+open/read error contract rather than replacing it with a close result.
+
+Controlled regression: file_descriptor_lifetime.bv compares the next available
+Linux descriptor after 640 normal, empty, growing, read-error and open-error
+calls. Unchanged main fails; the fixed program prints file_descriptors_stable.
+Valgrind reports zero errors and zero definite/indirect loss.

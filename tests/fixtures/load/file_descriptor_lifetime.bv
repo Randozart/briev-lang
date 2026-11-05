@@ -1,0 +1,42 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/os/fs.bv";
+
+// Linux returns the lowest unused descriptor. Every probe closes its own fd.
+defn available_descriptor() -> Int {
+    let path: Int = to_c_string("/dev/null");
+    let descriptor: Int = fs_open(path,0,0);
+    Free#(path as Ptr<Bit<8>>);
+    when descriptor < 0 { trap; };
+    when fs_close(descriptor) != 0 { trap; };
+    term descriptor;
+};
+
+defn check_read(mode: Int) -> Bool {
+    let path: String = "/proc/self/stat";
+    when mode == 1 { path = "/dev/null"; };
+    when mode == 2 { path = "growth"; };
+    when mode == 3 { path = "/proc/self"; };
+    when mode == 4 { path = "/dev/null/missing"; };
+    let result: Result<String,Int> = read_file(path);
+    when mode == 3 { term is_err(result) && unwrap_err(result) == -21; };
+    when mode == 4 { term is_err(result) && unwrap_err(result) == -20; };
+    when is_err(result) { term false; };
+    let length: Int = unwrap(result) .^Length;
+    when mode == 1 { term length == 0; };
+    when mode == 2 { term length == 20000; };
+    term length > 0;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let first: Int = available_descriptor();
+    foreach iteration in 0..640 {
+        when !check_read(iteration % 5) { endprogram 10; };
+        when available_descriptor() != first { endprogram 11; };
+    };
+    println!("file_descriptors_stable");
+    done = true;
+    endprogram;
+};
