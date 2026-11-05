@@ -1,0 +1,61 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/nonblocking.bv";
+import "std/os/poll.bv";
+
+defn bound_socket(listening: Bool) -> Socket {
+    let socket: Socket = sock_tcp_nonblocking();
+    when socket.fd < 0 { trap; };
+    let address: ByteBuf = make_sockaddr_in(ip_v4(127,0,0,1),0);
+    when SysCall#(49,socket.fd,address.ptr,16) != 0 { trap; };
+    sockaddr_free(address);
+    when listening && SysCall#(50,socket.fd,1) != 0 { trap; };
+    term socket;
+};
+
+defn bound_port(socket: Socket) -> Int {
+    let address: ByteBuf = buf_new(16);
+    let size: Int = Malloc#(4) as Int;
+    when size == 0 { trap; };
+    Store#(size,16,4);
+    when SysCall#(51,socket.fd,address.ptr,size) != 0 || Load#(size,4) != 16 { trap; };
+    address.len = 16;
+    let port: Int = get_u16_be(address,2);
+    buf_free(address);
+    Free#(size as Ptr);
+    term port;
+};
+
+defn connection_gate(listening: Bool) -> Void {
+    // A bound but non-listening socket reserves the refusal port, avoiding
+    // dependence on any fixed port or a race with another local service.
+    let server: Socket = bound_socket(listening);
+    let client: Socket = sock_tcp_nonblocking();
+    when client.fd < 0 { trap; };
+    let result: Int = sock_connect(client,ip_v4(127,0,0,1),bound_port(server));
+    when result != 0 && result != -115 && result != -111 { trap; };
+    let polls: PollSet = unwrap(poll_new(1));
+    poll_set(polls,0,client.fd,POLL_OUT);
+    when poll_wait(polls,1000) != 1 { trap; };
+    let error: Int = sock_pending_error(client);
+    when listening {
+        when result == -111 || error != 0 { trap; };
+        poll_set(polls,0,server.fd,POLL_IN);
+        when poll_wait(polls,1000) != 1 { trap; };
+        let accepted: Socket = sock_accept(server);
+        when accepted.fd < 0 || sock_close(accepted) != 0 { trap; };
+    };
+    when !listening && result != -111 && error != -111 { trap; };
+    when sock_close(client) != 0 || sock_close(server) != 0 { trap; };
+    poll_free(polls);
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    connection_gate(true);
+    connection_gate(false);
+    println!("nonblocking_connect_success_and_refusal_ok");
+    done = true;
+    endprogram;
+};

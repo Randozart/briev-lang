@@ -1,0 +1,29 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/nonblocking.bv";
+import "std/os/poll.bv";
+
+let done: Bool = false;
+node main [!done][done] {
+    let selected: Int = get_env_int!("CASE");
+    let polls: PollSet = unwrap(poll_new(1));
+    let bytes: ByteBuf = buf_new(8);
+    let socket: Socket = Socket { fd: -1 };
+    when selected == 1 { poll_set(polls,-1,-1,0); };
+    when selected == 2 { poll_events(polls,1); };
+    when selected == 3 { poll_wait(polls,-1); };
+    when selected == 4 { poll_wait(polls,2147483648); };
+    when selected == 5 { sock_recv_once(socket,bytes,0); };
+    when selected == 6 { sock_recv_once(socket,bytes,9); };
+    when selected == 7 { sock_send_once(socket,bytes,0,1); };
+    when selected == 8 { sock_send_once(socket,bytes,-1,0); };
+    when selected == 9 { poll_set(polls,0,2147483648,0); };
+    when selected == 10 { poll_set(polls,0,-1,32768); };
+    poll_free(polls);
+    when selected == 11 { poll_wait(polls,0); };
+    buf_free(bytes);
+    println!("nonblocking_valid_lifetime_ok");
+    done = true;
+    endprogram;
+};
