@@ -158,8 +158,21 @@ burns its result register up front — one extra register per argument
 (rating_population_gate). Fixed by deep-coverage check first; corpus pins
 it. IR parity test covers literal/unary/binary/cast families.
 
-Remaining: Field/Index (helpers take AST receivers — need register-taking
-versions), MethodCall/Reflect (receiver typing / frontend typer).
+Landed this increment: **Field / Reflect / MethodCall / IsType** HIR arms —
+dispatch-only into the existing helpers (receiver/args reconstructed before
+any emission, so None falls back cleanly; MethodCall/Reflect dispatch on the
+reconstructed receiver's shape, not a register, so no register-taking
+refactor is needed for them). IsType is the constant-true leaf and joins the
+deep coverage set. **Expression-statement seam coverage is now complete for
+every reconstructible HIR expression**; what remains outside it is
+`Other`-node statements and the big structural emitters (Match/If/Block/
+Foreach as EXPRESSIONS inside non-statement positions), which still convert
+whole-node.
+
+Remaining: Index/Tuple/List/Range/Slice/Lambda/Spawn/StructLiteral
+expression families (structural; same reconstruct-then-dispatch pattern
+where the helpers take AST), MethodCall/Reflect receiver TYPING (HIR
+`Cast.via`) remains the only typer-blocked item.
 
 ## Slice D (original plan, kept for the record)
 

@@ -431,6 +431,38 @@ impl LlvmBackend {
                 };
                 reg
             }
+            HirExprKind::Field { receiver, name } => {
+                // Dispatch-only: the helper inspects the (reconstructed)
+                // receiver syntactically — nothing emits before this point,
+                // so a None here falls back cleanly.
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                self.emit_field_access(out, &v, &ast_recv, name, indent)
+            }
+            HirExprKind::Reflect { receiver, name, kind } => {
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                self.emit_reflection(out, &v, &ast_recv, name, *kind, indent)
+            }
+            HirExprKind::MethodCall { receiver, name, args, chain_refs, .. } => {
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                let Some(ast_args) = args
+                    .iter()
+                    .map(crate::hir::to_ast::expr)
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return None;
+                };
+                self.emit_method_call(out, &v, &ast_recv, name, &ast_args, chain_refs, indent)
+            }
+            HirExprKind::IsType { .. } => {
+                writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
+                TypedRegister { name: v.clone(), ty: Type::bool_() }
+            }
             HirExprKind::Unary { op, inner } => {
                 let Some(operand) = self.emit_hir_operand(out, inner, indent) else {
                     return None;
@@ -9779,7 +9811,7 @@ impl crate::backend::llvm::LlvmBackend {
 pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool {
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
-        K::Literal(_) | K::Identifier(_) => true,
+        K::Literal(_) | K::Identifier(_) | K::IsType { .. } => true,
         K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. }
         | K::AddrOf(inner) => hir_expr_family_covered(inner),
         K::Unary { inner, .. } => hir_expr_family_covered(inner),
