@@ -368,6 +368,20 @@ the call (the image malloc precedes field emission). Spawn stays
 conversion-based by design (task/pool/storage dispatch inspects args via
 helpers that take AST); List/Range stay legacy-panic arms.
 
+## Note: Briev has no `if` — the internal `Expr::If` is metaprogramming surface (2026-11-05)
+
+User syntax uses `when` only (parser note, 2026-08-06: "Briev has no `if`;
+SPEC §10.2/§11"; lexer carries `Token::When`, no `if` token). The
+`Expr::If` / `HirExprKind::If` variants are compiler-internal:
+`derive/engine.rs:877` synthesizes `Expr::If` nodes when expanding derived
+code, and the plugin layers match on them. Consequence for this plan: NO
+native If family — derive-generated nodes are covered by the lossless
+conversion path (HIR carries the node, `to_ast` reconstructs it, the AST
+emitter handles it). An If arm would only serve synthesized nodes; the
+correct next structural arms are Match/Block (expression forms) and Index.
+H5-audit note: inventory the internal `if` expression form as
+metaprogramming-carried knowledge.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
