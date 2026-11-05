@@ -416,6 +416,53 @@ impl LlvmBackend {
                 };
                 self.emit_cast_operand(out, &v, src, to, indent)
             }
+            HirExprKind::Call { callee, args, analysis_id } => {
+                // Reconstructibility guard BEFORE any emission: the shared
+                // user-call loop emits one argument at a time, so a mid-loop
+                // `Other` would double-emit on fallback.
+                let ast_args: Vec<crate::ast::Expr> = args
+                    .iter()
+                    .map(crate::hir::to_ast::expr)
+                    .collect::<Option<Vec<_>>>()?;
+                let Some(reg) = self.emit_call_hir(
+                    out, &v, callee, args, &ast_args, *analysis_id, indent,
+                ) else {
+                    return None;
+                };
+                reg
+            }
+            HirExprKind::Field { receiver, name } => {
+                // Dispatch-only: the helper inspects the (reconstructed)
+                // receiver syntactically — nothing emits before this point,
+                // so a None here falls back cleanly.
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                self.emit_field_access(out, &v, &ast_recv, name, indent)
+            }
+            HirExprKind::Reflect { receiver, name, kind } => {
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                self.emit_reflection(out, &v, &ast_recv, name, *kind, indent)
+            }
+            HirExprKind::MethodCall { receiver, name, args, chain_refs, .. } => {
+                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                    return None;
+                };
+                let Some(ast_args) = args
+                    .iter()
+                    .map(crate::hir::to_ast::expr)
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return None;
+                };
+                self.emit_method_call(out, &v, &ast_recv, name, &ast_args, chain_refs, indent)
+            }
+            HirExprKind::IsType { .. } => {
+                writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
+                TypedRegister { name: v.clone(), ty: Type::bool_() }
+            }
             HirExprKind::Unary { op, inner } => {
                 let Some(operand) = self.emit_hir_operand(out, inner, indent) else {
                     return None;
@@ -497,13 +544,17 @@ impl LlvmBackend {
         expr: &crate::hir::expr::HirExpr,
         indent: &str,
     ) -> Option<TypedRegister> {
-        match self.emit_hir_expr(out, expr, indent) {
-            Some(reg) => Some(reg),
-            None => {
-                let ast = crate::hir::to_ast::expr(expr)?;
-                Some(self.emit_expr(out, &ast, indent))
+        // 2026-11-05 (rating_population_gate): check coverage FIRST —
+        // `emit_hir_expr` allocates its result register up front, so routing
+        // an uncovered leaf through it burned one register per argument and
+        // drifted every downstream register number versus the AST path.
+        if hir_expr_family_covered(expr) {
+            if let Some(reg) = self.emit_hir_expr(out, expr, indent) {
+                return Some(reg);
             }
         }
+        let ast = crate::hir::to_ast::expr(expr)?;
+        Some(self.emit_expr(out, &ast, indent))
     }
 
     /// 2026-11-05 (H4 slice D): the AST Cast arm tail (everything after
@@ -6745,14 +6796,19 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         ))
     }
 
-    pub(super) fn emit_user_call(
+    /// 2026-11-05 (H4 slice D): the user-call path, dual-fueled. `hir_args`
+    /// (with the same-length `args` reconstruction) lets argument leaves emit
+    /// natively via `emit_hir_operand`; `None` is the pure-AST path. Returns
+    /// `None` only for `None`-hir callers — the AST path is infallible.
+    pub(crate) fn emit_user_call_args(
         &mut self,
         out: &mut String,
         v: &str,
         name: &str,
+        hir_args: Option<&[crate::hir::expr::HirExpr]>,
         args: &[Expr],
         indent: &str,
-    ) -> TypedRegister {
+    ) -> Option<TypedRegister> {
         // 2026-08-06 (fix): a closure-let call goes INDIRECT through its env
         // block — load the value (env address), then the fn_ptr, then call it
         // with the env as the first (hidden) parameter. This makes the closure
@@ -6764,7 +6820,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // `call @f(...)` referenced an undefined symbol (broken IR) and
         // flattened the result to Int.
         if self.fun.closure_lets.contains_key(name) {
-            return self.emit_closure_indirect_call(out, name, args, indent);
+            return Some(self.emit_closure_indirect_call(out, name, args, indent));
         }
         let is_fn_param = self
             .fun
@@ -6774,13 +6830,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .map(|t| matches!(t, Type::Function(_, _)))
             .unwrap_or(false);
         if is_fn_param {
-            return self.emit_closure_indirect_call(out, name, args, indent);
+            return Some(self.emit_closure_indirect_call(out, name, args, indent));
         }
         // 2026-07-16: P5 — Check if this is a foreign function; if so, use emit_frgn_call
         // Clone the sig to avoid borrowing self.ctx while self.emit_expr needs &mut self.
         let frgn_sig = self.ctx.frgn_map.get(name).cloned();
         if let Some(sig) = frgn_sig {
-            return self.emit_frgn_call(out, v, &sig, args, indent);
+            return Some(self.emit_frgn_call(out, v, &sig, args, indent));
         }
         // 2026-07-14: collect typed registers so call includes argument types
         // 2026-08-14 (Iterable protocol, slice-6 literal args): a List-literal
@@ -6795,7 +6851,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             let fn_params = self.ctx.defn_params.get(name).cloned();
             args.iter()
                 .enumerate()
-                .map(|(i, a)| {
+                .map(|(i, a)| -> Option<TypedRegister> {
                     if let Some(param_tys) = &fn_params {
                         if let Some(pt) = param_tys.get(i) {
                             let has_collection_parameter_type = self.tier2_collection_type(pt)
@@ -6806,7 +6862,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                                 if let Some((reg, _)) = self.construct_local_collection(
                                     out, indent, pt, a,
                                 ) {
-                                    return reg;
+                                    return Some(reg);
                                 }
                             }
                         }
@@ -6827,7 +6883,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                             && self.unpacked_instance_prefix(arg_name).is_some()
                         {
                             if let Some(reg) = self.box_pooled_instance_value(out, indent, arg_name) {
-                                return reg;
+                                return Some(reg);
                             }
                         }
                     }
@@ -6841,19 +6897,22 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                             self.fun.expected_enum_type = Some(pt.clone());
                         }
                     }
-                    let emitted = self.emit_expr(out, a, indent);
+                    let emitted = match hir_args {
+                        Some(h) => self.emit_hir_operand(out, &h[i], indent)?,
+                        None => self.emit_expr(out, a, indent),
+                    };
                     self.fun.expected_enum_type = saved_expected;
                     // 2026-08-22 (Phase 3b): a member flowing into a
                     // structural-sum parameter is boxed into the tagged
                     // union representation at the boundary.
                     if let Some(pt) = fn_params.as_ref().and_then(|p| p.get(i)) {
                         if matches!(pt, Type::Union(_)) && *pt != emitted.ty {
-                            return self.wrap_union_value(out, indent, &emitted, pt);
+                            return Some(self.wrap_union_value(out, indent, &emitted, pt));
                         }
                     }
-                    emitted
+                    Some(emitted)
                 })
-                .collect()
+                .collect::<Option<Vec<_>>>()?
         };
         // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M2):
         // a trait-bounded generic defn (`bump_twice<T: Counter>`) is emitted
@@ -6864,7 +6923,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // types, and call that specialization. Inside the specialization `this`
         // is the concrete type, so M1 (below) resolves the trait method.
         if let Some(reg) = self.try_emit_monomorphized_generic_call(out, v, name, &arg_regs, indent) {
-            return reg;
+            return Some(reg);
         }
         // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S6-M1):
         // free-call UFCS. A bare call `name(a, …)` that is NOT a top-level
@@ -6874,9 +6933,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // the typechecker applies. This is what resolves `bump(this, amount)`
         // inside a monomorphized trait-generic body (`this: Tally`).
         if let Some(reg) = self.try_emit_free_call_as_member(out, v, name, &arg_regs, indent) {
-            return reg;
+            return Some(reg);
         }
-        self.finish_user_call(out, v, name, &arg_regs, indent)
+        Some(self.finish_user_call(out, v, name, &arg_regs, indent))
     }
 
     /// 2026-10-23 (tail-loop lowering): turn a direct self-call in a lowered
@@ -6959,6 +7018,63 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     /// symbol). Builds the argument list with %state threading and
     /// ptr/i64 marshalling from the callee's registered `defn_params`, then
     /// emits `call @callee`.
+    /// 2026-11-05 (H4 slice D): HIR call dispatch — mirrors the AST Call arm
+    /// (intrinsic / enum variant / struct constructor / user call). User
+    /// calls emit their arguments through the dual-fueled loop, so covered
+    /// leaves emit natively. `ast_args` must be the lossless reconstruction
+    /// of `hir_args` (the caller guards reconstructibility BEFORE emission —
+    /// the shared loop emits one argument at a time, and a mid-loop fallback
+    /// would double-emit).
+    pub(crate) fn emit_call_hir(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        name: &str,
+        hir_args: &[crate::hir::expr::HirExpr],
+        ast_args: &[Expr],
+        analysis_id: Option<usize>,
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        if name.ends_with('#') {
+            return Some(
+                self.emit_intrinsic_call_dispatch(out, v, name, ast_args, analysis_id, indent),
+            );
+        }
+        if let Some((_enum_name, tag_idx)) = self.enum_variant_ctor(name) {
+            return Some(self.emit_enum_construct(out, name, tag_idx, ast_args, indent));
+        }
+        if self.ctx.struct_types.contains_key(name) {
+            let fields: Vec<(String, Expr)> = self
+                .ctx
+                .struct_types
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .enumerate()
+                .map(|(i, (fname, _))| {
+                    let value = ast_args.get(i).cloned().unwrap_or_else(|| Expr::Decimal(0));
+                    (fname.clone(), value)
+                })
+                .collect();
+            return Some(self.emit_struct_literal(out, v, name, &fields, indent));
+        }
+        self.emit_user_call_args(out, v, name, Some(hir_args), ast_args, indent)
+    }
+
+    /// Pure-AST wrapper (infallible): every existing caller.
+    pub(super) fn emit_user_call(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        name: &str,
+        args: &[Expr],
+        indent: &str,
+    ) -> TypedRegister {
+        self.emit_user_call_args(out, v, name, None, args, indent)
+            .expect("AST argument emission is infallible")
+    }
+
     fn finish_user_call(
         &mut self,
         out: &mut String,
@@ -9700,7 +9816,7 @@ impl crate::backend::llvm::LlvmBackend {
 pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool {
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
-        K::Literal(_) | K::Identifier(_) => true,
+        K::Literal(_) | K::Identifier(_) | K::IsType { .. } => true,
         K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. }
         | K::AddrOf(inner) => hir_expr_family_covered(inner),
         K::Unary { inner, .. } => hir_expr_family_covered(inner),

@@ -11,6 +11,7 @@
 
 use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
 use crate::ast::Statement;
+use crate::hir::expr::HirExprKind;
 use crate::hir::stmt::{HirStmt, HirStmtKind};
 
 /// Reconstruct one HIR statement for emission. `None` = unsupported node;
@@ -66,10 +67,15 @@ pub(crate) fn emit_hir_statement(
     // emitted without any AST conversion; the plain fallthrough mirrors the
     // AST arm (the AddrOf/Match special cases cannot fire on these leaves).
     if let HirStmtKind::Expression(e) = &stmt.kind {
-        if super::emit_expr::hir_expr_family_covered(e) {
-            let reg = backend.emit_hir_expr(out, e, indent)?;
-            backend.fun.last_expr_reg = Some(reg.name.clone());
-            return Some(reg);
+        // Family-covered expressions AND calls: the Call arm guards its own
+        // argument reconstructibility before emitting anything, so a None
+        // here falls through to conversion with no partial IR.
+        let call_native = matches!(&e.kind, HirExprKind::Call { .. });
+        if call_native || super::emit_expr::hir_expr_family_covered(e) {
+            if let Some(reg) = backend.emit_hir_expr(out, e, indent) {
+                backend.fun.last_expr_reg = Some(reg.name.clone());
+                return Some(reg);
+            }
         }
     }
     match convert_hir_statement(stmt) {

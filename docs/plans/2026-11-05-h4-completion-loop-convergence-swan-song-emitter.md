@@ -145,9 +145,34 @@ verbatim into `emit_addr_of_identifier`; the HIR side dispatches on
 `HirExprKind::Identifier` natively and emits non-identifier operands via
 `emit_hir_operand` (the AST add-i64 tail mirrored). Deep coverage extended.
 
-Remaining: Call (register-level operand prep — the focused refactor),
-Field/Index (helpers take AST receivers — need register-taking versions),
-MethodCall/Reflect (receiver typing / frontend typer).
+Landed this increment: the **Call family** — `emit_user_call` refactored
+onto the dual-fueled `emit_user_call_args` (HIR args emit through
+`emit_hir_operand`: covered leaves native, uncovered leaves convert
+per-leaf; AST args keep the exact legacy path via the infallible
+`emit_user_call` wrapper), `emit_call_hir` mirrors the AST dispatch
+(intrinsic / enum variant / struct constructor / user), and the seam's
+`Expression` fast path admits Call statements (reconstructibility guarded
+before any emission). The sweep's first run caught a real register drift:
+`emit_hir_operand` routed uncovered leaves through `emit_hir_expr`, which
+burns its result register up front — one extra register per argument
+(rating_population_gate). Fixed by deep-coverage check first; corpus pins
+it. IR parity test covers literal/unary/binary/cast families.
+
+Landed this increment: **Field / Reflect / MethodCall / IsType** HIR arms —
+dispatch-only into the existing helpers (receiver/args reconstructed before
+any emission, so None falls back cleanly; MethodCall/Reflect dispatch on the
+reconstructed receiver's shape, not a register, so no register-taking
+refactor is needed for them). IsType is the constant-true leaf and joins the
+deep coverage set. **Expression-statement seam coverage is now complete for
+every reconstructible HIR expression**; what remains outside it is
+`Other`-node statements and the big structural emitters (Match/If/Block/
+Foreach as EXPRESSIONS inside non-statement positions), which still convert
+whole-node.
+
+Remaining: Index/Tuple/List/Range/Slice/Lambda/Spawn/StructLiteral
+expression families (structural; same reconstruct-then-dispatch pattern
+where the helpers take AST), MethodCall/Reflect receiver TYPING (HIR
+`Cast.via`) remains the only typer-blocked item.
 
 ## Slice D (original plan, kept for the record)
 
