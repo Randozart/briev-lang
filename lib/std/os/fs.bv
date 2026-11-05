@@ -116,7 +116,13 @@ export defn read_file(path: String) [true][is_ok(term) || is_err(term)] -> Resul
     };
     let cap: Int = 4096;
     let s: Int = Alloc#(8 + cap) as Int;
-    term read_whole(fd, s, cap, 0);
+    // 2026-11-05: this wrapper owns the descriptor; read_whole owns buffer
+    // growth. Close after EOF and read failure without replacing the read
+    // result with a close error. Retire when scoped descriptor ownership
+    // supplies the same cleanup on every return path.
+    let result: Result<String, Int> = read_whole(fd, s, cap, 0);
+    fs_close(fd);
+    term result;
 };
 
 // read_whole — reads into the String-shaped buffer (header at s, data at
