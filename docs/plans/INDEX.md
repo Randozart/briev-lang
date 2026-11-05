@@ -97,6 +97,15 @@ statement arms (Let/Assign/Term/Guarded/Foreach/Match), structural expression
 composites (register-taking refactors), H3.6 backend wiring (specialization),
 MethodCall/Reflect receiver typing (HIR `Cast.via`), H5 retirement.
 
+**Collaborator integration (2026-11-05, DONE):**
+`docs/plans/2026-11-05-collaborator-integration-and-h4-resumption.md` — all
+nine of Otto's PRs merged (#63–#71): stdlib measurement/network modules,
+reclamation lifetime facts + socket/method effects, field-receiver
+single-eval, statement-match fallthrough (HIR mirror landed), tuple value
+types (ported into emit_let_statement). Full battery green at `364f42eb`
+(lib 3512, 101 test binaries ok, sweep 131/0, A/B byte-identical,
+determinism, daily_use_smoke 37/37).
+
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
 becomes the semantic source for analyses and lowering.
