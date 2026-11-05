@@ -1998,19 +1998,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 backend.flush_defer_cleanup(out, indent);
             }
             if let Some(val) = val {
-                let saved_enum_ret = backend.fun.enum_return_context;
-                let saved_expected_enum = backend.fun.expected_enum_type.clone();
-                let saved_object_ret = backend.fun.object_return_context;
-                backend.fun.object_return_context = backend.fun.object_out_slot.is_some();
-                let returns_enum = backend.fun.item_return_type.as_ref()
-                    .map(|t| backend.is_enum_type_name(type_bare_name(t)))
-                    .unwrap_or(false);
-                backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some() || returns_enum;
-                if let Some(t) = backend.fun.item_return_type.clone() {
-                    if backend.is_enum_type_name(type_bare_name(&t)) {
-                        backend.fun.expected_enum_type = Some(t);
-                    }
-                }
+                let saved = begin_term_return_context(backend);
                 // 2026-10-25: a list literal in return position has no
                 // inferred collection witness at codegen. Construct it from
                 // the declared return type instead of hitting the generic
@@ -2027,179 +2015,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 // 2026-10-23 (tail-loop lowering): a lowered recursive tail
                 // has already emitted the loop backedge; it must not receive
                 // a second `ret` terminator.
-                if backend.fun.tail_loop_backedge {
-                    backend.fun.enum_return_context = saved_enum_ret;
-                    backend.fun.expected_enum_type = saved_expected_enum;
-                    backend.fun.object_return_context = saved_object_ret;
-                    return TypedRegister { name: reg.name, ty: reg.ty };
-                }
-                backend.fun.enum_return_context = saved_enum_ret;
-                backend.fun.expected_enum_type = saved_expected_enum;
-                backend.fun.object_return_context = saved_object_ret;
-                // 2026-08-01 (C3): a boxed Float param returned from a defn
-                // (`term v`) is an i64 handle — unbox through the float cache so
-                // `ret float` receives the actual float, not the handle.
-                if let Some(cached) = backend.fun.reg_float_cache.get(&reg.name).cloned() {
-                    reg = TypedRegister { name: cached, ty: reg.ty.clone() };
-                }
-                // 2026-08-01 (D3): a defn MEMBER's `term <expr>` records its
-                // value register so emit_member_body can return it (callable
-                // txns use callable_txn_result; standalone defns use `ret`).
-                // 2026-08-07 (object instance pools): an UNPACKED member body
-                // has self_binding = None (the self is the prefix) — the
-                // self_prefix path must record member_result too.
-                if (backend.fun.self_binding.is_some() || backend.fun.self_prefix.is_some())
-                    && backend.fun.callable_txn_result.is_none()
-                {
-                    backend.fun.member_result = Some((reg.name.clone(), reg.ty.clone()));
-                }
-                if backend.fun.callable_txn_result.is_some() {
-                    // 2026-07-18: In a callable txn, term stores to %result and
-                    // branches to post (convergence loop). The 'ret' is at done:.
-                    let val_ty = backend.llvm_type(&reg.ty);
-                    let store_name = if val_ty != backend.fun.fn_ret_ty {
-                        if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
-                            let c = backend.fun.gen_reg();
-                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                            c
-                        } else if val_ty == "ptr" && backend.fun.fn_ret_ty == "i64" {
-                            let c = backend.fun.gen_reg();
-                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, c, reg.name).ok();
-                            c
-                        } else {
-                            reg.name
-                        }
-                    } else {
-                        reg.name
-                    };
-                    if let Some(ref result_slot) = backend.fun.callable_txn_result {
-                        writeln!(out, "{}store {} {}, ptr {}", indent, backend.fun.fn_ret_ty, store_name, result_slot).ok();
-                    }
-                    if let Some(ref post_label) = backend.fun.callable_txn_post_label {
-                        writeln!(out, "{}br label %{}", indent, post_label).ok();
-                    }
-                    backend.fun.terminated = true;
-                } else if backend.fun.member_result.is_some() {
-                    // 2026-08-04 (term-termination-diagnostics): INLINED member
-                    // body (emit_member_body -> emit_statement_sequence): this
-                    // `term <val>` is the member's return value, captured above
-                    // in member_result and taken by emit_member_body. It is NOT
-                    // a control-flow exit of the enclosing function — emitting
-                    // `ret void` here broke the countdown loop (queue_drain's
-                    // `<- queue` pop): the loop emitter keeps emitting after the
-                    // ret, producing invalid IR ("value doesn't match function
-                    // result type 'i32'"). 2026-08-12 (slice 4): check BEFORE
-                    // `fn_ret_ty != "void"` — an inlined member inside a
-                    // NON-VOID function (a `__view_items_<field>` materializer
-                    // returns i32) previously hit the standalone-ret branch and
-                    // terminated the enclosing function after the member's term.
-                    // Emit no terminator and leave `terminated` unchanged so the
-                    // enclosing body continues.
-                } else if backend.fun.fn_ret_ty != "void" {
-                    // 2026-10-29: retain every enum image at the ABI edge.
-                    // Narrowing the copy to identifier terms restored a real
-                    // server regression: call/match results can also expose
-                    // frame-owned storage. The retain helper still skips an
-                    // exact caller-slot alias, but unknown ownership is copied.
-                    // PERF(ws_frame): known 2.48x baseline regression; the
-                    // by-value/ownership-proved enum ABI is the durable fix.
-                    let reg = backend.retain_enum_return(out, indent, &reg);
-                    // 2026-07-26: Use actual expression LLVM type, not hardcoded "i64".
-                    // Frgn calls may return ptr (for String/Data in C ABI).
-                    let val_ty = backend.llvm_type(&reg.ty);
-                    let final_name = if val_ty != backend.fun.fn_ret_ty {
-                        // 2026-07-20: Insert type conversion when the expression type doesn't
-                        // match the function's declared return type (e.g., SysCall# returns i64
-                        // but function returns ptr → need inttoptr).
-                        if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
-                            let c = backend.fun.gen_reg();
-                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                            c
-                        } else if val_ty == "ptr" && backend.fun.fn_ret_ty == "ptr"
-                                  && matches!(reg.ty, Type::Ptr(_)) {
-                            // 2026-07-30: Ptr values stored as i64 internally — register
-                            // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
-                            let c = backend.fun.gen_reg();
-                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                            c
-                        } else {
-                            reg.name
-                        }
-                    } else if val_ty == "ptr" && matches!(reg.ty, Type::Ptr(_)) {
-                        // 2026-07-30: Ptr values stored as i64 internally — register
-                        // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
-                        let c = backend.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
-                        c
-                    } else {
-                        reg.name
-                    };
-                    writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, final_name).ok();
-                    backend.fun.terminated = true;
-                } else if backend.fun.member_result.is_some() {
-                    // 2026-08-04 (term-termination-diagnostics): INLINED member
-                    // body (emit_member_body -> emit_statement_sequence): this
-                    // `term <val>` is the member's return value, captured above
-                    // in member_result and taken by emit_member_body. It is NOT
-                    // a control-flow exit of the enclosing function — emitting
-                    // `ret void` here broke the countdown loop (queue_drain's
-                    // `<- queue` pop): the loop emitter keeps emitting after the
-                    // ret, producing invalid IR ("value doesn't match function
-                    // result type 'i32'"). Emit no terminator and leave
-                    // `terminated` unchanged so the enclosing body continues,
-                    // matching the interpreter's member-call frame semantics.
-                } else {
-                    // 2026-08-04 (term-termination-diagnostics): a value-form
-                    // `term <val>`/`term! <val>` in a void function unwinds the
-                    // transaction body (interpreter TermReturn in
-                    // src/interpreter/eval.rs:646-657). Emit a REAL terminator:
-                    // in the SSA main loop, branch to the current txn's
-                    // next-txn label (skipping the rest of THIS txn's body); in
-                    // per-txn void functions, return. Without a real terminator
-                    // the guard.thenN / body block was left dangling whenever
-                    // the Guarded handler skipped its convergence branch.
-                    if let Some(ref abort) = backend.fun.void_txn_abort_label {
-                        writeln!(out, "{}br label %{}", indent, abort).ok();
-                    } else {
-                        writeln!(out, "{}ret void", indent).ok();
-                    }
-                    backend.fun.terminated = true;
-                }
+                emit_term_value_tail(backend, out, indent, reg, saved);
             } else {
-                // 2026-10-16 (term-semantics plan §1): bare `term;` is
-                // P-gated — evaluate the enclosing item's post AT the term
-                // site: met → stop (emit_bare_term_stop), unmet → continue
-                // (no branch; the body keeps emitting). No post → trivially
-                // met → unconditional stop. Mirrors the interpreter's
-                // lower_bare_terms + TermReturn (Rule 5). (The 2026-08-04
-                // "bare term is a no-op" behaviour is superseded — it
-                // livelocked txns whose post only the skipped tail could
-                // satisfy, and the backend/interpreter disagreed on defn
-                // guards; BUGS.md divergence entry.)
-                let post_trivial = match &backend.fun.item_post {
-                    None | Some(Expr::Bool(true)) => true,
-                    Some(_) => false,
-                };
-                if post_trivial {
-                    emit_bare_term_stop(backend, out, indent);
-                } else {
-                    let post = backend.fun.item_post.clone().expect("post");
-                    let reg = backend.emit_expr(out, &post, indent);
-                    let pi1 = guard_cond_i1(backend, out, indent, &reg);
-                    let n = backend.fun.txn_counter;
-                    backend.fun.txn_counter += 1;
-                    let met = format!("term.met{}", n);
-                    let cont = format!("term.cont{}", n);
-                    writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, pi1, met, cont).ok();
-                    writeln!(out, "{}{}:", indent, met).ok();
-                    backend.fun.terminated = false;
-                    emit_bare_term_stop(backend, out, indent);
-                    writeln!(out, "{}{}:", indent, cont).ok();
-                    backend.fun.terminated = false;
-                }
+                emit_bare_term_gate(backend, out, indent);
             }
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
+
         Statement::EndProgram(val) => {
             // 2026-08-06 (endprogram plan): `endprogram` genuinely exits the
             // process (SPEC §11.5) — unlike `term`, which ends the transaction.
@@ -3354,6 +3176,222 @@ fn emit_arrow_store_local(
 /// value is emitted once (its register is the collection's handle) and freed
 /// via the allocation-strategy-aware `emit_destroy_register`. A value whose
 /// identifier is not resolvable is a no-op — no backing to free anyway.
+
+/// 2026-11-05 (H4 slice D): shared Term return-context setup — both the AST
+/// arm and the HIR native arm enter the enum/object return context before
+/// emitting the term value. Undo: inline back into the `Term` arm.
+pub(crate) fn begin_term_return_context(
+    backend: &mut LlvmBackend,
+) -> (bool, Option<Type>, bool) {
+    let saved_enum_ret = backend.fun.enum_return_context;
+    let saved_expected_enum = backend.fun.expected_enum_type.clone();
+    let saved_object_ret = backend.fun.object_return_context;
+    backend.fun.object_return_context = backend.fun.object_out_slot.is_some();
+    let returns_enum = backend.fun.item_return_type.as_ref()
+        .map(|t| backend.is_enum_type_name(type_bare_name(t)))
+        .unwrap_or(false);
+    backend.fun.enum_return_context = backend.fun.enum_out_slot.is_some() || returns_enum;
+    if let Some(t) = backend.fun.item_return_type.clone() {
+        if backend.is_enum_type_name(type_bare_name(&t)) {
+            backend.fun.expected_enum_type = Some(t);
+        }
+    }
+    (saved_enum_ret, saved_expected_enum, saved_object_ret)
+}
+
+/// 2026-11-05 (H4 slice D): the AST Term tail (everything after the value
+/// register exists), extracted verbatim so the HIR native arm shares ONE
+/// implementation. Undo: inline back into emit_statement's `Term` arm.
+pub(crate) fn emit_term_value_tail(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    mut reg: TypedRegister,
+    saved: (bool, Option<Type>, bool),
+) {
+    let saved_enum_ret = saved.0;
+    let saved_expected_enum = saved.1;
+    let saved_object_ret = saved.2;
+                if backend.fun.tail_loop_backedge {
+                    backend.fun.enum_return_context = saved_enum_ret;
+                    backend.fun.expected_enum_type = saved_expected_enum;
+                    backend.fun.object_return_context = saved_object_ret;
+                    return;
+                }
+                backend.fun.enum_return_context = saved_enum_ret;
+                backend.fun.expected_enum_type = saved_expected_enum;
+                backend.fun.object_return_context = saved_object_ret;
+                // 2026-08-01 (C3): a boxed Float param returned from a defn
+                // (`term v`) is an i64 handle — unbox through the float cache so
+                // `ret float` receives the actual float, not the handle.
+                if let Some(cached) = backend.fun.reg_float_cache.get(&reg.name).cloned() {
+                    reg = TypedRegister { name: cached, ty: reg.ty.clone() };
+                }
+                // 2026-08-01 (D3): a defn MEMBER's `term <expr>` records its
+                // value register so emit_member_body can return it (callable
+                // txns use callable_txn_result; standalone defns use `ret`).
+                // 2026-08-07 (object instance pools): an UNPACKED member body
+                // has self_binding = None (the self is the prefix) — the
+                // self_prefix path must record member_result too.
+                if (backend.fun.self_binding.is_some() || backend.fun.self_prefix.is_some())
+                    && backend.fun.callable_txn_result.is_none()
+                {
+                    backend.fun.member_result = Some((reg.name.clone(), reg.ty.clone()));
+                }
+                if backend.fun.callable_txn_result.is_some() {
+                    // 2026-07-18: In a callable txn, term stores to %result and
+                    // branches to post (convergence loop). The 'ret' is at done:.
+                    let val_ty = backend.llvm_type(&reg.ty);
+                    let store_name = if val_ty != backend.fun.fn_ret_ty {
+                        if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
+                            let c = backend.fun.gen_reg();
+                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                            c
+                        } else if val_ty == "ptr" && backend.fun.fn_ret_ty == "i64" {
+                            let c = backend.fun.gen_reg();
+                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, c, reg.name).ok();
+                            c
+                        } else {
+                            reg.name
+                        }
+                    } else {
+                        reg.name
+                    };
+                    if let Some(ref result_slot) = backend.fun.callable_txn_result {
+                        writeln!(out, "{}store {} {}, ptr {}", indent, backend.fun.fn_ret_ty, store_name, result_slot).ok();
+                    }
+                    if let Some(ref post_label) = backend.fun.callable_txn_post_label {
+                        writeln!(out, "{}br label %{}", indent, post_label).ok();
+                    }
+                    backend.fun.terminated = true;
+                } else if backend.fun.member_result.is_some() {
+                    // 2026-08-04 (term-termination-diagnostics): INLINED member
+                    // body (emit_member_body -> emit_statement_sequence): this
+                    // `term <val>` is the member's return value, captured above
+                    // in member_result and taken by emit_member_body. It is NOT
+                    // a control-flow exit of the enclosing function — emitting
+                    // `ret void` here broke the countdown loop (queue_drain's
+                    // `<- queue` pop): the loop emitter keeps emitting after the
+                    // ret, producing invalid IR ("value doesn't match function
+                    // result type 'i32'"). 2026-08-12 (slice 4): check BEFORE
+                    // `fn_ret_ty != "void"` — an inlined member inside a
+                    // NON-VOID function (a `__view_items_<field>` materializer
+                    // returns i32) previously hit the standalone-ret branch and
+                    // terminated the enclosing function after the member's term.
+                    // Emit no terminator and leave `terminated` unchanged so the
+                    // enclosing body continues.
+                } else if backend.fun.fn_ret_ty != "void" {
+                    // 2026-10-29: retain every enum image at the ABI edge.
+                    // Narrowing the copy to identifier terms restored a real
+                    // server regression: call/match results can also expose
+                    // frame-owned storage. The retain helper still skips an
+                    // exact caller-slot alias, but unknown ownership is copied.
+                    // PERF(ws_frame): known 2.48x baseline regression; the
+                    // by-value/ownership-proved enum ABI is the durable fix.
+                    let reg = backend.retain_enum_return(out, indent, &reg);
+                    // 2026-07-26: Use actual expression LLVM type, not hardcoded "i64".
+                    // Frgn calls may return ptr (for String/Data in C ABI).
+                    let val_ty = backend.llvm_type(&reg.ty);
+                    let final_name = if val_ty != backend.fun.fn_ret_ty {
+                        // 2026-07-20: Insert type conversion when the expression type doesn't
+                        // match the function's declared return type (e.g., SysCall# returns i64
+                        // but function returns ptr → need inttoptr).
+                        if val_ty == "i64" && backend.fun.fn_ret_ty == "ptr" {
+                            let c = backend.fun.gen_reg();
+                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                            c
+                        } else if val_ty == "ptr" && backend.fun.fn_ret_ty == "ptr"
+                                  && matches!(reg.ty, Type::Ptr(_)) {
+                            // 2026-07-30: Ptr values stored as i64 internally — register
+                            // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
+                            let c = backend.fun.gen_reg();
+                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                            c
+                        } else {
+                            reg.name
+                        }
+                    } else if val_ty == "ptr" && matches!(reg.ty, Type::Ptr(_)) {
+                        // 2026-07-30: Ptr values stored as i64 internally — register
+                        // is i64 but llvm_type(Ptr) returns "ptr". Need inttoptr.
+                        let c = backend.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, reg.name).ok();
+                        c
+                    } else {
+                        reg.name
+                    };
+                    writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, final_name).ok();
+                    backend.fun.terminated = true;
+                } else if backend.fun.member_result.is_some() {
+                    // 2026-08-04 (term-termination-diagnostics): INLINED member
+                    // body (emit_member_body -> emit_statement_sequence): this
+                    // `term <val>` is the member's return value, captured above
+                    // in member_result and taken by emit_member_body. It is NOT
+                    // a control-flow exit of the enclosing function — emitting
+                    // `ret void` here broke the countdown loop (queue_drain's
+                    // `<- queue` pop): the loop emitter keeps emitting after the
+                    // ret, producing invalid IR ("value doesn't match function
+                    // result type 'i32'"). Emit no terminator and leave
+                    // `terminated` unchanged so the enclosing body continues,
+                    // matching the interpreter's member-call frame semantics.
+                } else {
+                    // 2026-08-04 (term-termination-diagnostics): a value-form
+                    // `term <val>`/`term! <val>` in a void function unwinds the
+                    // transaction body (interpreter TermReturn in
+                    // src/interpreter/eval.rs:646-657). Emit a REAL terminator:
+                    // in the SSA main loop, branch to the current txn's
+                    // next-txn label (skipping the rest of THIS txn's body); in
+                    // per-txn void functions, return. Without a real terminator
+                    // the guard.thenN / body block was left dangling whenever
+                    // the Guarded handler skipped its convergence branch.
+                    if let Some(ref abort) = backend.fun.void_txn_abort_label {
+                        writeln!(out, "{}br label %{}", indent, abort).ok();
+                    } else {
+                        writeln!(out, "{}ret void", indent).ok();
+                    }
+                    backend.fun.terminated = true;
+                }
+}
+
+/// 2026-11-05 (H4 slice D): the P-gated bare-term path, extracted verbatim.
+/// Undo: inline back into emit_statement's `Term` arm.
+pub(crate) fn emit_bare_term_gate(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+) {
+                // 2026-10-16 (term-semantics plan §1): bare `term;` is
+                // P-gated — evaluate the enclosing item's post AT the term
+                // site: met → stop (emit_bare_term_stop), unmet → continue
+                // (no branch; the body keeps emitting). No post → trivially
+                // met → unconditional stop. Mirrors the interpreter's
+                // lower_bare_terms + TermReturn (Rule 5). (The 2026-08-04
+                // "bare term is a no-op" behaviour is superseded — it
+                // livelocked txns whose post only the skipped tail could
+                // satisfy, and the backend/interpreter disagreed on defn
+                // guards; BUGS.md divergence entry.)
+                let post_trivial = match &backend.fun.item_post {
+                    None | Some(Expr::Bool(true)) => true,
+                    Some(_) => false,
+                };
+                if post_trivial {
+                    emit_bare_term_stop(backend, out, indent);
+                } else {
+                    let post = backend.fun.item_post.clone().expect("post");
+                    let reg = backend.emit_expr(out, &post, indent);
+                    let pi1 = guard_cond_i1(backend, out, indent, &reg);
+                    let n = backend.fun.txn_counter;
+                    backend.fun.txn_counter += 1;
+                    let met = format!("term.met{}", n);
+                    let cont = format!("term.cont{}", n);
+                    writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, pi1, met, cont).ok();
+                    writeln!(out, "{}{}:", indent, met).ok();
+                    backend.fun.terminated = false;
+                    emit_bare_term_stop(backend, out, indent);
+                    writeln!(out, "{}{}:", indent, cont).ok();
+                    backend.fun.terminated = false;
+                }
+}
+
 pub(crate) fn emit_destroy_consumed(
     backend: &mut LlvmBackend,
     out: &mut String,

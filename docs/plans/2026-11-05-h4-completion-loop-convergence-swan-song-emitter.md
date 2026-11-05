@@ -279,6 +279,18 @@ program-end marker, unreachable) mirrored verbatim from the AST arm. The
 remaining conversion-based statement kinds are exactly the data-flow big
 four (Let/Assign/Term), Foreach/Match, and ArrowAssign.
 
+## Native Term statement (2026-11-05)
+
+The P-gated transaction exit emits natively: reconstructibility checked
+before the web-flush/defer prefix (no partial emission on fallback); value
+emission through operand recursion (list-literal returns construct from
+the declared return type like the AST arm); the entire tail — backedge
+guard, context restores, float-cache unbox, member capture, callable-txn
+store+post-branch, enum retain + ret adaptation, void unwinding, and the
+bare-term P-gate — extracted verbatim into `emit_term_value_tail` +
+`emit_bare_term_gate` + `begin_term_return_context`, shared by both arms.
+The reactor's most semantically loaded statement now emits from HIR.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

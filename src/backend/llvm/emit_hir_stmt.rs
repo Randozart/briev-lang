@@ -135,6 +135,52 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    // 2026-11-05 (H4 slice D): native Term — the P-gated transaction exit.
+    // Reconstructibility is checked BEFORE the web-flush/defer prefix (which
+    // emits IR), so an unsupported value falls back with no partial emission.
+    // Value emission goes through operand recursion (covered leaves native);
+    // the return-context setup, list-literal construction, and the whole
+    // tail (backedge, float unbox, member capture, callable store, ret
+    // paths) share the AST arm's extracted helpers verbatim.
+    if let HirStmtKind::Term(val) = &stmt.kind {
+        if let Some(v) = val {
+            if crate::hir::to_ast::expr(v).is_none() {
+                return None;
+            }
+        }
+        if val.is_some() && backend.fun.inline_member_exit.is_none() {
+            super::emit_stmt::emit_web_flush_batch(backend, out, indent);
+            backend.flush_defer_cleanup(out, indent);
+        }
+        if let Some(v) = val {
+            let saved = super::emit_stmt::begin_term_return_context(backend);
+            let ast_v = crate::hir::to_ast::expr(v).expect("guarded above");
+            let returned_collection = if matches!(v.kind, HirExprKind::List(_)) {
+                backend.fun.item_return_type.clone().and_then(|ty| {
+                    backend
+                        .construct_local_collection(out, indent, &ty, &ast_v)
+                        .map(|(value, _)| value)
+                })
+            } else {
+                None
+            };
+            let reg = returned_collection.unwrap_or_else(|| {
+                match backend.emit_hir_operand(out, v, indent) {
+                    Some(r) => r,
+                    // Unreachable under the reconstructibility guard; kept
+                    // total so no path can double-emit.
+                    None => backend.emit_expr(out, &ast_v, indent),
+                }
+            });
+            super::emit_stmt::emit_term_value_tail(backend, out, indent, reg, saved);
+        } else {
+            super::emit_stmt::emit_bare_term_gate(backend, out, indent);
+        }
+        return Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        });
+    }
     // 2026-11-05 (H4 slice D): the small control/terminal statements,
     // mirrored verbatim from the AST arms (no emission before the match, so
     // no double-emit risk; each is total over its HIR kind).
