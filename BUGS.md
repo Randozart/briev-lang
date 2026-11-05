@@ -11899,3 +11899,17 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## 2026-11-05 — inferred tuple element representation
+
+Unannotated destructuring of returned object tuples panicked on field access;
+local tuple materialization erased metadata to Int as well. Numeric projection
+also decoded only pointer elements, while destructuring decoded only floats.
+The fix retains Type::Tuple separately from the target-width integer handle and
+shares fixed-i64-slot decoding. Raw Ptr handles retain their integer ABI.
+Lifetime analysis now retains product return/local/projection types, allowing
+closed tuple scopes to reclaim allocations without treating returned aliases as
+local. Native mixed-value execution and wasm32 nested execution are regression
+gates; final results are in the checkpoint record.
+
+Status: FIXED 2026-11-05; 3,501 library tests and native/wasm tuple regressions pass.

@@ -450,6 +450,27 @@ mod tests {
     }
 
     #[test]
+    fn tuple_types_preserve_closed_regions_and_returned_aliases() {
+        let plan = derive(r#"
+            defn pair(value: Int) -> (Int,Bool) { term (value,true); };
+            defn inspect(value: Int) -> Bool {
+                let (number,flag) = pair(value);
+                let local = (number,flag);
+                let nested = (local,false);
+                let (inner,other) = nested;
+                term inner.0 == value && inner.1 && !other;
+            };
+            defn escape() -> Ptr {
+                let values = (Malloc#(32),true);
+                let (pointer,flag) = values;
+                term pointer;
+            };
+        "#);
+        assert!(plan.regions.contains("inspect"), "{plan:?}");
+        assert!(!plan.regions.contains("escape"), "returned tuple payload must survive: {plan:?}");
+    }
+
+    #[test]
     fn all_local_aliases_fit_one_region() {
         let plan = derive(r#"
             defn inspect() -> Bool {

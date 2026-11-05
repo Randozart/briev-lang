@@ -1541,41 +1541,8 @@ impl LlvmBackend {
                 // resolves numeric names; this emits the read.
                 if let Ok(n) = field.parse::<usize>() {
                     if let crate::ast::Type::Tuple(ts) = &obj_reg.ty {
-                        let handle_p = self.fun.gen_reg();
-                        let hw = format!("i{}", self.ctx.int_bits);
-                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, handle_p, hw, obj_reg.name).ok();
-                        let slot = self.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr i64, ptr {}, i64 {}",
-                            indent, slot, handle_p, n + 1
-                        )
-                        .ok();
                         let elem_ty = ts.get(n).cloned().unwrap_or_else(Type::int);
-                        let elem = self.fun.gen_reg();
-                        let elem_llvm = self.llvm_type(&elem_ty);
-                        let load_ty = if matches!(elem_llvm.as_str(), "i8" | "i16" | "i32") {
-                            elem_llvm.clone()
-                        } else {
-                            "i64".to_string()
-                        };
-                        writeln!(out, "{}{} = load {}, ptr {}", indent, elem, load_ty, slot).ok();
-                        // 2026-10-05 (json.bv): a String/Data tuple element is
-                        // stored as a boxed i64 handle — inttoptr it back to a
-                        // ptr so consumers (briev_str_eq, length, slice) see a
-                        // pointer, matching the Index String-element path.
-                        // Without this `pairs[i].0 == key` passed an i64 where
-                        // briev_str_eq expects a ptr.
-                        let name = if self.is_string_operand(&elem_ty)
-                            || self.is_blob_operand(&elem_ty)
-                        {
-                            let c = self.fun.gen_reg();
-                            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, c, elem).ok();
-                            c
-                        } else {
-                            elem
-                        };
-                        return TypedRegister { name, ty: elem_ty };
+                        return self.emit_tuple_element(out, indent, &obj_reg, (n, &elem_ty));
                     }
                 }
                 // 2026-07-14: Layout field access — #fieldname triggers bit-shift/mask
@@ -2866,14 +2833,11 @@ impl LlvmBackend {
         let const_elements = exprs.iter().all(is_compile_time_const);
         if self.fun.defer_struct_allocas && const_elements {
             let mut tmp = String::new();
-            self.emit_tuple_materialize(&mut tmp, v, exprs, indent);
+            let value = self.emit_tuple_materialize(&mut tmp, v, exprs, indent);
             for line in tmp.lines() {
                 self.fun.pending_struct_allocas.push(line.to_string());
             }
-            return TypedRegister {
-                name: v.to_string(),
-                ty: Type::int(),
-            };
+            return value;
         }
         self.emit_tuple_materialize(out, v, exprs, indent)
     }
@@ -2889,6 +2853,7 @@ impl LlvmBackend {
         indent: &str,
     ) -> TypedRegister {
         let count = exprs.len();
+        let mut element_types = Vec::with_capacity(count);
         if count == 0 {
             let raw = self.fun.gen_reg();
             writeln!(out, "{}{} = call ptr @malloc(i64 16)", indent, raw).ok();
@@ -2912,6 +2877,7 @@ impl LlvmBackend {
                 // elements (no-op for non-enum types). Nested aggregates are
                 // owned recursively by their own materializers.
                 let e = self.own_enum_value(out, indent, &e);
+                element_types.push(e.ty.clone());
                 let slot = self.fun.gen_reg();
                 writeln!(
                     out,
@@ -2932,13 +2898,15 @@ impl LlvmBackend {
             writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, v, hdr, hw).ok();
         }
         // 2026-08-13 (obj value ABI): the seq value is a BOXED i64 handle
-        // (ptrtoint'd above), so its register type is Int — NOT Ptr. A Ptr
+        // (ptrtoint'd above), so its physical register is integer, NOT Ptr. A Ptr
         // type made the defn-call arg coercion (`param i64, reg ptr`) re-ptrtoint
         // the boxed handle, double-boxing the empty-list sentinel passed to a
-        // List param.
+        // List param. 2026-11-05: retain the semantic tuple element types;
+        // llvm_type(Tuple) already derives the target-width integer handle.
+        // Retire this distinction only with explicitly typed aggregate handles.
         TypedRegister {
             name: v.to_string(),
-            ty: Type::int(),
+            ty: Type::Tuple(element_types),
         }
     }
 
