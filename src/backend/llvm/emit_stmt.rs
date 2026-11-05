@@ -3354,7 +3354,7 @@ fn emit_arrow_store_local(
 /// value is emitted once (its register is the collection's handle) and freed
 /// via the allocation-strategy-aware `emit_destroy_register`. A value whose
 /// identifier is not resolvable is a no-op — no backing to free anyway.
-fn emit_destroy_consumed(
+pub(crate) fn emit_destroy_consumed(
     backend: &mut LlvmBackend,
     out: &mut String,
     indent: &str,

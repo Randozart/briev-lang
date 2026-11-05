@@ -235,6 +235,59 @@ pub(crate) fn emit_hir_statement(
             backend.fun.terminated = true;
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
         }
+        HirStmtKind::KeepHint(_) => {
+            // 2026-08-01 (Phase 5): keep; is a scheduler directive — no
+            // runtime emission.
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::FreeHint(name) => {
+            // 2026-08-26 (async Phase C): a freed TASK HANDLE cancels its
+            // scheduler entry. Ordinary frees keep the Phase 5 path.
+            if backend.fun.task_handle_names.contains(name) {
+                if let Some(h) = backend.fun.let_bindings.get(name).cloned() {
+                    let st = if backend
+                        .ctx
+                        .defn_takes_state("briev_task_cancel_impl")
+                    {
+                        "ptr %state, "
+                    } else {
+                        ""
+                    };
+                    writeln!(out, "{indent}call i64 @briev_task_cancel_impl({st}i64 {h})").ok();
+                    let _ = backend.fun.gen_reg();
+                    return Some(TypedRegister {
+                        name: backend.fun.gen_reg(),
+                        ty: crate::ast::Type::void(),
+                    });
+                }
+            }
+            super::emit_stmt::emit_destroy_consumed(
+                backend,
+                out,
+                indent,
+                &crate::ast::Expr::Identifier(name.clone()),
+            );
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::SyncBlock(children) | HirStmtKind::Mutex(children) => {
+            // 2026-09-08 / 2026-08-09: serial sections emit inline (a modifier
+            // must never be a speedup); recursion through the seam.
+            let mut last = TypedRegister {
+                name: backend.fun.gen_reg(),
+                ty: crate::ast::Type::void(),
+            };
+            for child in children {
+                if let Some(reg) = emit_hir_statement(backend, out, child, indent) {
+                    last = reg;
+                } else {
+                    let Some(ast) = convert_hir_statement(child) else {
+                        return None;
+                    };
+                    last = emit_statement(backend, out, &ast, indent);
+                }
+            }
+            Some(last)
+        }
         _ => None,
     }
     .or_else(|| {

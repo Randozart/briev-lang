@@ -263,6 +263,14 @@ kinds are the data-flow big four (Let/Assign/Term) plus Foreach/Match and
 the cleanup/wire kinds (FreeHint/KeepHint/Defer/SyncBlock/Mutex/
 ArrowAssign/EndProgram/Open/TrgBinding/MetadataAssignment/InlineAsm).
 
+## Native FreeHint/KeepHint/SyncBlock/Mutex statements (2026-11-05)
+
+FreeHint (task-cancel branch + strategy-aware destroy), KeepHint (scheduler
+directive, no emission), and SyncBlock/Mutex (serial sections, inline
+recursion through the seam) emit natively. The seam's native statement set
+now covers every control/terminal/cleanup kind except the data-flow big
+four (Let/Assign/Term), Foreach/Match, EndProgram, and ArrowAssign.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
