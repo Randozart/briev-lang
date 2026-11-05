@@ -334,6 +334,21 @@ typed-list collection construction, provenance copy — which is what drives
 assignment semantics; both cross the boundary, reconstructed before any
 emission.
 
+## Native Let statement (2026-11-05) — the last monolith
+
+The AST Let arm extracted verbatim into `emit_let_statement` with a
+dual-fueled initializer (`LetValue::Hir` emits covered initializer leaves
+natively through `emit_hir_operand`; `Ast` keeps the legacy path). The
+binding dispatch reads the reconstructed expression's shape — spawn-handle
+registration, bare-let slot binding, collection scaffolds (list
+construction, op-Init seeding), closure aliasing, dyn coercion, enum
+inline slots, sret slots, growable scaffolds — identical either way.
+Name-only modifiers are lossless for emission (the arm reads `vol` by
+name only). With this, EVERY reconstructible statement kind emits natively
+through the seam; conversion remains only for `Defer` (semantically
+identical: it queues AST bodies for later flush) and `ArrowAssign` (by
+design: every path inspects value AST shapes).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

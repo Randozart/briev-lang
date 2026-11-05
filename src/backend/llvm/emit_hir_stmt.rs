@@ -135,6 +135,44 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    // 2026-11-05 (H4 slice D): native Let — the binding dispatch reads the
+    // reconstructed shapes (spawn handles, bare-let slots, collection
+    // scaffolds); covered initializer leaves emit natively through the
+    // dual-fueled value path. Reconstructibility checked BEFORE any
+    // emission (task-handle registration and slot binding come first).
+    if let HirStmtKind::Let { name, names, ty, expr, modifiers, .. } = &stmt.kind {
+        // HIR keeps modifier NAMES; the AST arm reads names only (`vol`),
+        // so name-only Annotations are lossless for emission.
+        let ast_modifiers: Vec<crate::ast::top::Annotation> = modifiers
+            .iter()
+            .map(|m| crate::ast::top::Annotation { name: m.clone(), value: None })
+            .collect();
+        let Some(ast_expr) = expr.as_ref().and_then(crate::hir::to_ast::expr) else {
+            if expr.is_some() {
+                return None;
+            }
+            return Some(super::emit_stmt::emit_let_statement(
+                backend,
+                out,
+                indent,
+                name,
+                names,
+                ty.as_ref(),
+                &ast_modifiers,
+                &super::emit_stmt::LetValue::Ast(None),
+            ));
+        };
+        return Some(super::emit_stmt::emit_let_statement(
+            backend,
+            out,
+            indent,
+            name,
+            names,
+            ty.as_ref(),
+            &ast_modifiers,
+            &super::emit_stmt::LetValue::Hir(Some(expr.as_ref().unwrap()), &ast_expr),
+        ));
+    }
     // 2026-11-05 (H4 slice D): native Assign — the dispatch reads the
     // reconstructed LHS/RHS shapes (provenance/collection assignment), so
     // both cross the boundary; covered RHS leaves emit natively through the

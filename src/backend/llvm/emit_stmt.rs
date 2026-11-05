@@ -404,544 +404,16 @@ fn unbox_tuple_float_element(
 pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statement, indent: &str) -> TypedRegister {
     match stmt {
         Statement::Let { name, names, ty, expr, modifiers, .. } => {
-            let is_vol = modifiers.iter().any(|m| m.name == "vol");
-            // 2026-08-26 (async Phase C): a let bound to a defn spawn (or to
-            // another task handle) carries the handle — `free` cancels it.
-            match expr.as_ref() {
-                Some(crate::ast::Expr::Spawn { type_name, .. })
-                    if backend.ctx.defn_params.contains_key(type_name.as_str()) =>
-                {
-                    backend.fun.task_handle_names.insert(name.clone());
-                }
-                Some(crate::ast::Expr::Identifier(src))
-                    if backend.fun.task_handle_names.contains(src) =>
-                {
-                    backend.fun.task_handle_names.insert(name.clone());
-                }
-                _ => {}
-            }
-            // 2026-10-14 (tier2 phase 2): a PRE-DECLARED bare let (the
-            // SSA main's reassigned-let entry allocas, BUGS.md 9303) binds
-            // the slot DIRECTLY — falling through created a SECOND alloca
-            // and the reassigned branch then stored the fresh alloca
-            // pointer into the slot (`type 'ptr' but expected 'i64'`).
-            // A CONSTRUCTABLE collection bare-let must NOT take this path —
-            // it needs the construction below (the pre-declared i64 slot is
-            // not a list). Only scalar bare-lets bind the slot directly.
-            let bare_coll = expr.is_none()
-                && ty.as_ref().map(|t| match t {
-                    crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
-                        backend.is_coll_type(t) || backend.is_op_surface_coll(n)
-                    }
-                    _ => false,
-                }).unwrap_or(false);
-            if expr.is_none() && !bare_coll && backend.fun.reassigned_lets.contains_key(name) {
-                if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
-                    return TypedRegister {
-                        name: slot,
-                        ty: ty.clone().unwrap_or(Type::int()),
-                    };
-                }
-            }
-            let mut via_scaffolded_construction = false;
-            let inline_enum_slot = backend.fun.enum_inline_slots.get(name).cloned();
-            if let Some(slot) = &inline_enum_slot {
-                backend.fun.enum_construct_slot = Some(slot.clone());
-            }
-            let sret_slot = backend.fun.sret_call_slots.get(name).cloned();
-            if let Some(slot) = &sret_slot {
-                backend.fun.sret_call_slot = Some(slot.clone());
-            }
-            if backend.ctx.defn_object_sret.contains(name) {
-                backend.fun.object_sret_call_slot = Some(backend.fun.next_reg_with_prefix("osrt"));
-            }
-            let saved_expected_enum = backend.fun.expected_enum_type.clone();
-            if let Some(t) = ty {
-                if backend.is_enum_type_name(type_bare_name(t)) {
-                    backend.fun.expected_enum_type = Some(t.clone());
-                }
-            }
-            let mut val = match expr {
-                Some(crate::ast::Expr::Identifier(alias))
-                    if backend.fun.closure_lets.contains_key(alias) =>
-                {
-                    // 2026-08-06 (fix): `let g = f;` where f is a closure —
-                    // g aliases the same env block; calls to g go indirect too.
-                    let def = backend.fun.closure_lets.get(alias).cloned().unwrap();
-                    backend.fun.closure_lets.insert(name.clone(), def);
-                    backend.emit_expr(out, &crate::ast::Expr::Identifier(alias.clone()), indent)
-                }
-                Some(crate::ast::Expr::Lambda(params, body)) => {
-                    // 2026-08-06 (fix): escaping closures. The binding value is
-                    // a heap env block `[fn_ptr, cap1..capN]`; calls go indirect
-                    // through the stored fn_ptr, and the value can be passed
-                    // around (a closure is a real first-class value now).
-                    let free_vars =
-                        crate::backend::llvm::context::collect_free_vars(body, &params);
-                    let symbol =
-                        format!("briev_closure_{}", backend.ctx.pending_closures.len());
-                    backend
-                        .fun
-                        .closure_lets
-                        .insert(name.clone(), crate::backend::llvm::context::ClosureDef {
-                            params: params.clone(),
-                            body: body.clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    backend
-                        .ctx
-                        .pending_closures
-                        .push(crate::backend::llvm::context::PendingClosure {
-                            symbol: symbol.clone(),
-                            params: params.clone(),
-                            body: (**body).clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    // Env block: [fn_ptr][cap1..capN], 8 bytes per slot.
-                    let env_size = 8 * (1 + free_vars.len());
-                    let alloc = backend.fun.gen_reg();
-                    writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
-                    writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
-                    let env_p = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
-                    let fn_reg = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
-                    for (j, var) in free_vars.iter().enumerate() {
-                        let cap = backend
-                            .emit_expr(out, &crate::ast::Expr::Identifier(var.clone()), indent);
-                        // 2026-11-03 (Proof 3 condition 2): a captured enum must
-                        // own its image; the closure (heap env) can outlive the
-                        // frame that produced the captured image. The `let g =
-                        // x => …` path constructs its own env here, separate
-                        // from the Expr::Lambda arm — both must own. No-op for
-                        // non-enum captures.
-                        let cap = backend.own_enum_value(out, indent, &cap);
-                        let slot = backend.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr i64, ptr {}, i64 {}",
-                            indent, slot, env_p, 1 + j
-                        )
-                        .ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
-                    }
-                    TypedRegister { name: alloc, ty: Type::int() }
-                }
-                Some(e) => {
-                    // 2026-08-01 (E): `vol let x = <rhs>` — loads inside the
-                    // RHS are emitted `load volatile` (MMIO semantics: the
-                    // value may change externally, so it must never be cached
-                    // or eliminated). Reset after the let.
-                    if is_vol {
-                        backend.fun.volatile_read = true;
-                    }
-                    // 2026-08-12 (Iterable protocol): a LOCAL collection
-                    // (`let xs: List<Int> = [2,4,6]`) constructs through the
-                    // collection's own ops (op Init/op InsertAt) — never the
-                    // hardcoded [len][elem] heap-seq layout the members can't
-                    // read. The binding below resolves the value.
-                    // 2026-08-15 (coll plan): a `coll obj` let has a Custom
-                    // type (`MyQueue`), so a coll-typed binding is a collection
-                    // too — construct it through the scaffolded ops.
-                    let constructed = {
-                        // 2026-08-17 (storage correctness): a LOCAL collection
-                        // is a `coll` keyword type OR an op-surface obj
-                        // (declares op Init/InsertAt/Count). is_coll_type
-                        // covers `coll` storage; is_op_surface_coll covers a
-                        // hand-written obj (HashMap). A local collection can
-                        // never be an unpacked column, so it constructs
-                        // through the ops (List literal → construct_local_collection;
-                        // seed → construct_local_collection_seed).
-                        let is_coll = ty.as_ref().map(|t| match t {
-                            crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
-                                backend.is_coll_type(t) || backend.is_op_surface_coll(n)
-                            }
-                            _ => false,
-                        }).unwrap_or(false);
-                        if is_coll && matches!(e, crate::ast::Expr::List(_)) {
-                            let briev = ty.clone().unwrap_or(crate::ast::Type::int());
-                            // 2026-10-12 (SPEC §8.6.1 Option B): a boxed dyn
-                            // literal records the binding in
-                            // `fun.dyn_boxed_bindings` — the element read path's
-                            // box check consults it (per-function, keyed by the
-                            // binding name the caller owns).
-                            match backend.construct_local_collection(out, indent, &briev, e) {
-                                Some((reg, Some(boxed))) => {
-                                    backend.fun.dyn_boxed_bindings.insert(
-                                        name.clone(),
-                                        boxed.info,
-                                    );
-                                    Some(reg)
-                                }
-                                other => other.map(|(reg, _)| reg),
-                            }
-                        } else if is_coll {
-                            // 2026-08-16 (hashmap redesign): a LOCAL collection
-                            // with a SEED init (`let m: HashMap<K,V> = 0`)
-                            // constructs through `op Init(seed)` — the same op
-                            // the state-field path uses. Previously a scalar
-                            // seed bound the raw value (NULL handle → member
-                            // calls segfaulted) for ANY non-coll obj (RingBuffer,
-                            // Stack, HashMap). This is the general fix.
-                            // 2026-08-18 (Phase C, BUGS.md arrow-push
-                            // double-construct): the previous rule routed EVERY
-                            // non-list RHS through `op Init` — `let ks: List<Int>
-                            // = b.keys()` became `List.init(<the returned List>)`
-                            // = `[<list>]`, a 1-element wrapper (a keys() scan
-                            // returned 1 of N). Only a PRIMITIVE RHS is a genuine
-                            // seed. Emit the RHS ONCE, then decide by its result
-                            // type: a collection value binds directly; a scalar
-                            // constructs through `op Init` with the emitted
-                            // register.
-                            let briev = ty.clone().unwrap_or(crate::ast::Type::int());
-                            let rhs = backend.emit_expr(out, e, indent);
-                            let rhs_is_coll = {
-                                let base = match &rhs.ty {
-                                    crate::ast::Type::Vector(inner, _) => match inner.as_ref() {
-                                        crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.as_str(),
-                                        _ => "",
-                                    },
-                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => {
-                                        n.as_str()
-                                    }
-                                    _ => "",
-                                };
-                                backend.is_coll_type(&rhs.ty)
-                                    || (!base.is_empty() && backend.is_op_surface_coll(base))
-                            };
-                            if rhs_is_coll {
-                                Some(rhs)
-                            } else {
-                                backend.construct_local_collection_seed(out, indent, &briev, rhs)
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    via_scaffolded_construction = constructed.is_some();
-                    let v = match constructed {
-                        Some(v) => v,
-                        None => backend.emit_expr(out, e, indent),
-                    };
-                    backend.fun.volatile_read = false;
-                    // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`
-                    // let coerces its concrete RHS into the FAT POINTER
-                    // `{ i64 data, i64 table }` — `data` is the concrete heap
-                    // handle, `table` is `@__dyn_<Trait>_<Concrete>`. The
-                    // binding is re-typed to `dyn <Trait>` (the A5 rule below
-                    // records the declared type as the binding type).
-                    match ty {
-                        Some(crate::ast::Type::Dyn(trait_ty)) => {
-                            // 2026-10-09 (dyn identity-in-value): if the RHS is
-                            // ALREADY a `dyn` of the same trait (a flowed value —
-                            // e.g. the return of `defn make(k) -> dyn Trait`),
-                            // pass it through unchanged. The tag (the concrete's
-                            // identity) is already in the value's tag slot, so
-                            // no re-coercion — re-wrapping would double-box the
-                            // fat pointer. The binding is re-typed to `dyn Trait`
-                            // by the A5 rule below (which runs after this match).
-                            let already_dyn = matches!(&v.ty, crate::ast::Type::Dyn(rhs)
-                                if matches!((trait_ty.as_ref(), rhs.as_ref()),
-                                    (crate::ast::Type::Custom(a), crate::ast::Type::Custom(b)) if a == b));
-                            if already_dyn {
-                                v
-                            } else {
-                                // The RHS must be a concrete value whose type is a
-                                // struct/obj (the struct literal's type). Recover the
-                                // concrete name from the emitted register's type.
-                                let concrete = match &v.ty {
-                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
-                                    other => panic!(
-                                        "dyn coercion: RHS type {:?} is not a concrete struct/obj (expected a struct literal or an already-dyn value of the same trait)",
-                                        other
-                                    ),
-                                };
-                                let trait_name = match trait_ty.as_ref() {
-                                    crate::ast::Type::Custom(n) => n.clone(),
-                                    other => panic!(
-                                        "dyn <...>: inner trait type {:?} is not a named trait",
-                                        other
-                                    ),
-                                };
-                                // Record the concrete type of this binding so a later
-                                // `g.member()` member call can recover which thunk
-                                // table to load (the A5 rule below re-types the
-                                // binding to `dyn Trait`, erasing the concrete).
-                                backend.ctx.dyn_concrete_of.insert(name.clone(), concrete.clone());
-                                let tag = backend.ctx.dyn_concrete_tag_of
-                                    .get(&format!("{trait_name}::{concrete}"))
-                                    .copied()
-                                    .unwrap_or(0);
-                                backend.ctx.dyn_concrete_tag_of.insert(name.clone(), tag);
-                                backend.coerce_to_dyn(out, indent, &v.name, &trait_name, &concrete, tag, indent)
-                            }
-                        }
-                        Some(declared) => backend.coerce_register_value(out, indent, &v, &declared),
-                        None => v,
-                    }
-                }
-                None => {
-                    // 2026-10-14 (tier2 phase 1, docs/plans/
-                    // 2026-10-14-daily-driver-tier2.md): a BARE declaration of
-                    // a collection type (`let xs: List<Int>;`) must CONSTRUCT.
-                    // The naked alloca left the handle slot uninitialized and
-                    // the first `<-` insert dereferenced stack garbage
-                    // (segfault; the working `~<-`-extract idiom constructs
-                    // through its own path, masking this). Same construction
-                    // contract as the initializer paths above: a constructable
-                    // coll constructs via its empty literal (op InitEmpty) or,
-                    // when only the seeded Init exists (hand-written
-                    // HashMap), via op Init(0) — the `= 0` idiom. To undo:
-                    // restore the naked alloca; BUGS.md carries the entry.
-                    let is_coll = ty.as_ref().map(|t| match t {
-                        crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
-                            backend.is_coll_type(t) || backend.is_op_surface_coll(n)
-                        }
-                        _ => false,
-                    }).unwrap_or(false);
-                    let made = if is_coll {
-                        let briev = ty.clone().unwrap_or(crate::ast::Type::int());
-                        let base = match &briev {
-                            crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
-                            _ => String::new(),
-                        };
-                        let has_init_empty = backend
-                            .ctx
-                            .operator_defs
-                            .get(&base)
-                            .map(|defs| defs.iter().any(|d| d.op == "InitEmpty"))
-                            .unwrap_or(false);
-                        if has_init_empty {
-                            let empty = crate::ast::Expr::List(vec![]);
-                            // Same result shape as the initializer path above:
-                            // a dyn-boxed literal records the binding; the
-                            // normal (reg, None) case binds the register
-                            // directly. (The first draft pattern-matched
-                            // Some((reg, Some(boxed))) and rejected the normal
-                            // case — the alloca fallback returned.)
-                            match backend.construct_local_collection(out, indent, &briev, &empty)
-                            {
-                                Some((reg, Some(boxed))) => {
-                                    backend
-                                        .fun
-                                        .dyn_boxed_bindings
-                                        .insert(name.clone(), boxed.info);
-                                    Some(reg)
-                                }
-                                other => other.map(|(reg, _)| reg),
-                            }
-                        } else {
-                            let zero = backend.fun.gen_reg();
-                            let hw = format!("i{}", backend.ctx.int_bits);
-                            writeln!(out, "{}{} = add {} 0, 0", indent, zero, hw).ok();
-                            backend.construct_local_collection_seed(
-                                out,
-                                indent,
-                                &briev,
-                                TypedRegister { name: zero, ty: crate::ast::Type::int() },
-                            )
-                        }
-                    } else {
-                        None
-                    };
-                    // The flag gates the alloca-binding marker below (the
-                    // constructed handle is a REGISTER, not a slot) and the
-                    // growable-read path — both must see a scaffolded
-                    // construction, exactly like the initializer arm sets it.
-                    via_scaffolded_construction = made.is_some();
-                    made
-                        .map(|reg| TypedRegister { name: reg.name, ty: reg.ty })
-                        .unwrap_or_else(|| {
-                        let v = backend.fun.gen_reg();
-                        let llvm_ty =
-                            ty.as_ref().map(|t| backend.llvm_type(t)).unwrap_or("i64".into());
-                        writeln!(out, "{}{} = alloca {}", indent, v, llvm_ty).ok();
-                        TypedRegister { name: v, ty: ty.clone().unwrap_or(Type::int()) }
-                    })
-                }
-            };
-            backend.fun.enum_construct_slot = None;
-            backend.fun.sret_call_slot = None;
-            backend.fun.object_sret_call_slot = None;
-            backend.fun.expected_enum_type = saved_expected_enum;
-            // 2026-08-17 (tuple correctness, plan
-            // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
-            // DESTRUCTURE `let (a, b) = t`. The parser + typechecker already
-            // support it (check_let_destructure binds each name to the element
-            // type); codegen DROPPED the `names` list (only `name` = names[0]
-            // bound, to the WHOLE boxed handle). The value is a boxed i64
-            // handle to the emit_tuple `[len, e0, e1, …]` heap block; each
-            // name binds to `GEP i64 slot (i+1)` + load. The typechecker bound
-            // the element types; recover them from the declared tuple type
-            // (fallback Int for unannotated — most tuple elements are scalars).
-            if names.len() > 1 {
-                let elem_tys: Vec<Type> = match ty {
-                    Some(crate::ast::Type::Tuple(ts)) => ts.clone(),
-                    _ => vec![Type::int(); names.len()],
-                };
-                let handle_p = backend.fun.gen_reg();
-                let hw = format!("i{}", backend.ctx.int_bits);
-                writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, handle_p, hw, val.name).ok();
-                for (i, n) in names.iter().enumerate() {
-                    let slot = backend.fun.gen_reg();
-                    writeln!(
-                        out,
-                        "{}{} = getelementptr i64, ptr {}, i64 {}",
-                        indent, slot, handle_p, i + 1
-                    )
-                    .ok();
-                    let elem = backend.fun.gen_reg();
-                    let elem_ty = elem_tys.get(i).cloned().unwrap_or_else(Type::int);
-                    // 2026-10-23 (wasm tuple ABI): tuple slots are i64, but
-                    // scalar elements (Int/Bool/Char and enum/obj handles) are
-                    // consumed at their target width.
-                    let elem_llvm = backend.llvm_type(&elem_ty);
-                    let load_ty = if matches!(elem_llvm.as_str(), "i8" | "i16" | "i32") {
-                        elem_llvm.clone()
-                    } else {
-                        "i64".to_string()
-                    };
-                    writeln!(out, "{}{} = load {}, ptr {}", indent, elem, load_ty, slot).ok();
-                    let bound = unbox_tuple_float_element(backend, out, indent, &elem, &elem_ty);
-                    backend.fun.let_bindings.insert(n.clone(), bound.clone());
-                    backend.fun.let_binding_types.insert(n.clone(), elem_ty.clone());
-                    backend.fun.let_original_types.insert(n.clone(), elem_ty);
-                }
-                return TypedRegister { name: val.name, ty: Type::void() };
-            }
-            // 2026-08-04 (compiler-in-Briev): a top-level let that is reassigned
-            // later was PRE-BOUND to an entry-block alloca (emit_definition's
-            // pre-declaration). Store the value into that alloca and keep the
-            // binding — reassignments then store into the same entry alloca,
-            // never demoting at the assignment site (dominance violation).
-            if backend.fun.reassigned_lets.contains_key(name) {
-                if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
-                    // 2026-10-14 (tier2 phase 2): a BARE let's `val` IS the
-                    // pre-declared slot itself (the naked alloca — no
-                    // initializer to store). Storing it into itself stored a
-                    // pointer as i64 (`%t defined with type 'ptr' but
-                    // expected 'i64'`). Skip the self-store; the slot is
-                    // already the binding.
-                    let is_self_slot = expr.is_none() && slot == val.name;
-                    if !is_self_slot {
-                        let store_ty = backend.llvm_type(&val.ty);
-                        let store_val = backend.ensure_typed_value(out, indent, &store_ty, &val.name, Some(val.ty.clone()), backend.ctx.type_universe.clone().as_ref());
-                        writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, store_val, slot).ok();
-                    }
-                    backend.fun.let_binding_allocas.insert(slot.clone());
-                    // 2026-08-28 (String ABI fix): the pre-declaration
-                    // (emit_definition) registered a PROVISIONAL Int type —
-                    // the real let knows the declared/inferred type. Update
-                    // both type maps so later reads (and field access on
-                    // boxed obj handles) resolve the true type; the Int
-                    // provisional made `let sb: SB = ...; sb = f(sb);`
-                    // reads lose the obj type permanently.
-                    let bind_ty = ty.clone().unwrap_or_else(|| val.ty.clone());
-                    backend.fun.let_binding_types.insert(name.clone(), bind_ty.clone());
-                    backend.fun.let_original_types.insert(name.clone(), bind_ty);
-                    return TypedRegister { name: val.name, ty: val.ty.clone() };
-                }
-            }
-            // 2026-07-18: Track alloca bindings so identifier codegen loads values.
-            // 2026-10-14 (tier2 phase 1): ONLY the naked alloca is an alloca
-            // binding — a bare-let collection CONSTRUCTION binds a heap handle
-            // register; marking it an alloca made is_persistent_slot treat the
-            // handle as a memory slot and the first insert dereferenced it.
-            if expr.is_none() && !via_scaffolded_construction {
-                backend.fun.let_binding_allocas.insert(val.name.clone());
-            }
-            // 2026-09-07 (swan-song dominance fix): a let-local READ by the
-            // pending post-hoist binds through an alloca (deferred to the loop
-            // preheader with the other struct allocas) instead of its body SSA
-            // register — the exit-block hoisted print loads the slot, which
-            // dominates the exit and holds the last-iteration value. A body
-            // register referenced from the exit block is a dominance violation
-            // (async-ready-gate: `produced` from briev_await). Mirrors the
-            // reassigned-lets entry-alloca path above.
-            let is_struct_ty = match &val.ty {
-                Type::Custom(n) | Type::Applied(n, _) => backend.ctx.struct_types.contains_key(n.as_str()),
-                _ => false,
-            };
-            if backend.fun.swan_song_locals.contains(name)
-                && !backend.fun.let_binding_allocas.contains(&val.name)
-                && !is_struct_ty
-            {
-                let slot_ty = backend.llvm_type(&val.ty);
-                let slot = backend.fun.next_reg_with_prefix("sslv");
-                if backend.fun.defer_struct_allocas {
-                    backend.fun.pending_struct_allocas.push(
-                        format!("  {} = alloca {}, align 8", slot, slot_ty),
-                    );
-                } else {
-                    writeln!(out, "{}{} = alloca {}, align 8", indent, slot, slot_ty).ok();
-                }
-                let store_val = backend.ensure_typed_value(
-                    out, indent, &slot_ty, &val.name,
-                    Some(val.ty.clone()), None,
-                );
-                writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, store_val, slot).ok();
-                backend.fun.let_binding_allocas.insert(slot.clone());
-                val = crate::backend::llvm::TypedRegister { name: slot, ty: val.ty.clone() };
-            }
-            // 2026-07-24: Transfer struct literal alloca tracking from result
-            // register to variable name, so &let_var retrieves the stack address.
-            if let Some(alloca) = backend.fun.struct_literal_allocas.remove(&val.name) {
-                backend.fun.struct_literal_allocas.insert(name.clone(), alloca);
-            }
-            backend.fun.let_bindings.insert(name.clone(), val.name.clone());
-            // 2026-08-01 (E): a `vol let` binds a volatile local — stores
-            // THROUGH it (`x[i] = v`, `*x = v`) emit `store volatile`.
-            if is_vol {
-                backend.fun.volatile_locals.insert(name.clone());
-            }
-            // 2026-07-31 (A5): a declared type wins over the emitted register's
-            // type — a `let st: Stack = Stack()` local must bind as `Stack`
-            // (the emitted struct address is i64/Int), so method calls and
-            // field access on it resolve the struct.
-            let bind_ty = ty.clone().unwrap_or_else(|| val.ty.clone());
-            backend.fun.let_binding_types.insert(name.clone(), bind_ty.clone());
-            backend.fun.let_original_types.insert(name.clone(), bind_ty);
-            // 2026-10-05 (json.bv): a `let` REBINDING a name must invalidate
-            // the "just written" cache for it — a prior match arm / statement
-            // set `last_val_temps[name]` (bind_pattern writes it) and the
-            // identifier read prefers it over the fresh let binding. In
-            // parse_exponent_apply arm 0 binds `f`, arm 1's `let f = n as
-            // Float` did NOT override it, so arm 1 read arm 0's register
-            // (dominance violation: a register from a sibling match block).
-            backend.fun.last_val_temps.remove(name);
-            backend.fun.last_val_types.remove(name);
-            // 2026-08-16 (three-track Phase 2, D2 pre-grow): a LOCAL coll whose
-            // intra-firing peak exceeds the default cap gets ONE `EnsureCap#(q,
-            // peak)` here — at construction, before ANY push. Emitted at the
-            // LET site (not the foreach arm) because the coll may be pushed
-            // BEFORE the loop too. Only for the scaffolded op construction
-            // path (the returned `val.name` is the coll handle then, not a
-            // generic heap-seq value) AND a HEAP-GROWABLE coll — a fixed
-            // `T[N]` coll has a fixed buffer, EnsureCap# would corrupt it.
-            // The grow guard strip elsewhere keys on this same (txn, coll_name)
-            // fact.
-            let growable_base = ty.as_ref().and_then(|t| match t {
-                crate::ast::Type::Custom(n) => Some(n.split('<').next().unwrap_or(n)),
-                crate::ast::Type::Applied(n, _) => Some(n.as_str()),
-                _ => None,
-            }).is_some_and(|b| backend.ctx.coll_storage.get(b)
-                == Some(&crate::backend::llvm::coll_scaffold::CollStorage::HeapGrowable));
-            if via_scaffolded_construction && growable_base {
-                let txn_name = backend.fun.txn_name.clone();
-                if let Some(peak) = backend.ctx.coll_pregrow.get(&(txn_name, name.clone())).copied() {
-                    let call = crate::ast::Expr::Call(
-                        "EnsureCap#".to_string(),
-                        vec![
-                            crate::ast::Expr::Identifier(name.clone()),
-                            crate::ast::Expr::Decimal(peak),
-                        ],
-                        None,
-                    );
-                    backend.emit_expr(out, &call, indent);
-                }
-            }
-            TypedRegister { name: val.name, ty: Type::void() }
+            emit_let_statement(
+                backend,
+                out,
+                indent,
+                name,
+                names,
+                ty.as_ref(),
+                modifiers,
+                &LetValue::Ast(expr.as_ref()),
+            )
         }
         Statement::Assign(lhs, rhs) => {
             emit_assign_statement(backend, out, indent, lhs, &AssignValue::Ast(rhs))
@@ -3473,6 +2945,591 @@ pub(crate) fn emit_assign_statement(
                     }
                 }
                 _ => {}
+            }
+            TypedRegister { name: val.name, ty: Type::void() }
+}
+
+
+/// 2026-11-05 (H4 slice D): the AST Let arm, extracted verbatim with a
+/// dual-fueled initializer — `Ast` keeps the legacy path; `Hir` emits covered
+/// initializer leaves natively through `emit_hir_operand` (the caller
+/// guarantees reconstructibility before any emission). The dispatch still
+/// reads the reconstructed AST expression's shape (spawn handles, bare-let
+/// slots, collection scaffolds), which drives binding semantics. Undo: inline
+/// back into emit_statement's `Let` arm.
+pub(crate) enum LetValue<'a> {
+    Ast(Option<&'a Expr>),
+    Hir(Option<&'a crate::hir::expr::HirExpr>, &'a Expr),
+}
+
+fn emit_let_value(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    e: &Expr,
+    value: &LetValue<'_>,
+) -> TypedRegister {
+    if let LetValue::Hir(Some(h), _) = value {
+        if crate::backend::hir_emit_enabled() {
+            if let Some(reg) = backend.emit_hir_operand(out, h, indent) {
+                return reg;
+            }
+        }
+    }
+    backend.emit_expr(out, e, indent)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_let_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    name: &str,
+    names: &[String],
+    ty: Option<&Type>,
+    modifiers: &[crate::ast::Annotation],
+    value: &LetValue<'_>,
+) -> TypedRegister {
+    let expr: Option<&Expr> = match value {
+        LetValue::Ast(e) => *e,
+        LetValue::Hir(_, a) => Some(a),
+    };
+            let is_vol = modifiers.iter().any(|m| m.name == "vol");
+            // 2026-08-26 (async Phase C): a let bound to a defn spawn (or to
+            // another task handle) carries the handle — `free` cancels it.
+            match expr.as_ref() {
+                Some(crate::ast::Expr::Spawn { type_name, .. })
+                    if backend.ctx.defn_params.contains_key(type_name.as_str()) =>
+                {
+                    backend.fun.task_handle_names.insert(name.to_string());
+                }
+                Some(crate::ast::Expr::Identifier(src))
+                    if backend.fun.task_handle_names.contains(src) =>
+                {
+                    backend.fun.task_handle_names.insert(name.to_string());
+                }
+                _ => {}
+            }
+            // 2026-10-14 (tier2 phase 2): a PRE-DECLARED bare let (the
+            // SSA main's reassigned-let entry allocas, BUGS.md 9303) binds
+            // the slot DIRECTLY — falling through created a SECOND alloca
+            // and the reassigned branch then stored the fresh alloca
+            // pointer into the slot (`type 'ptr' but expected 'i64'`).
+            // A CONSTRUCTABLE collection bare-let must NOT take this path —
+            // it needs the construction below (the pre-declared i64 slot is
+            // not a list). Only scalar bare-lets bind the slot directly.
+            let bare_coll = expr.is_none()
+                && ty.map(|t| match t {
+                    crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
+                        backend.is_coll_type(t) || backend.is_op_surface_coll(n)
+                    }
+                    _ => false,
+                }).unwrap_or(false);
+            if expr.is_none() && !bare_coll && backend.fun.reassigned_lets.contains_key(name) {
+                if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
+                    return TypedRegister {
+                        name: slot,
+                        ty: ty.cloned().unwrap_or(Type::int()),
+                    };
+                }
+            }
+            let mut via_scaffolded_construction = false;
+            let inline_enum_slot = backend.fun.enum_inline_slots.get(name).cloned();
+            if let Some(slot) = &inline_enum_slot {
+                backend.fun.enum_construct_slot = Some(slot.clone());
+            }
+            let sret_slot = backend.fun.sret_call_slots.get(name).cloned();
+            if let Some(slot) = &sret_slot {
+                backend.fun.sret_call_slot = Some(slot.clone());
+            }
+            if backend.ctx.defn_object_sret.contains(name) {
+                backend.fun.object_sret_call_slot = Some(backend.fun.next_reg_with_prefix("osrt"));
+            }
+            let saved_expected_enum = backend.fun.expected_enum_type.clone();
+            if let Some(t) = ty {
+                if backend.is_enum_type_name(type_bare_name(t)) {
+                    backend.fun.expected_enum_type = Some(t.clone());
+                }
+            }
+            let mut val = match expr {
+                Some(crate::ast::Expr::Identifier(alias))
+                    if backend.fun.closure_lets.contains_key(alias) =>
+                {
+                    // 2026-08-06 (fix): `let g = f;` where f is a closure —
+                    // g aliases the same env block; calls to g go indirect too.
+                    let def = backend.fun.closure_lets.get(alias).cloned().unwrap();
+                    backend.fun.closure_lets.insert(name.to_string(), def);
+                    backend.emit_expr(out, &crate::ast::Expr::Identifier(alias.clone()), indent)
+                }
+                Some(crate::ast::Expr::Lambda(params, body)) => {
+                    // 2026-08-06 (fix): escaping closures. The binding value is
+                    // a heap env block `[fn_ptr, cap1..capN]`; calls go indirect
+                    // through the stored fn_ptr, and the value can be passed
+                    // around (a closure is a real first-class value now).
+                    let free_vars =
+                        crate::backend::llvm::context::collect_free_vars(body, &params);
+                    let symbol =
+                        format!("briev_closure_{}", backend.ctx.pending_closures.len());
+                    backend
+                        .fun
+                        .closure_lets
+                        .insert(name.to_string(), crate::backend::llvm::context::ClosureDef {
+                            params: params.clone(),
+                            body: body.clone(),
+                            free_vars: free_vars.clone(),
+                        });
+                    backend
+                        .ctx
+                        .pending_closures
+                        .push(crate::backend::llvm::context::PendingClosure {
+                            symbol: symbol.clone(),
+                            params: params.clone(),
+                            body: (**body).clone(),
+                            free_vars: free_vars.clone(),
+                        });
+                    // Env block: [fn_ptr][cap1..capN], 8 bytes per slot.
+                    let env_size = 8 * (1 + free_vars.len());
+                    let alloc = backend.fun.gen_reg();
+                    writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
+                    writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
+                    let env_p = backend.fun.gen_reg();
+                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
+                    let fn_reg = backend.fun.gen_reg();
+                    writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
+                    writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
+                    for (j, var) in free_vars.iter().enumerate() {
+                        let cap = backend
+                            .emit_expr(out, &crate::ast::Expr::Identifier(var.clone()), indent);
+                        // 2026-11-03 (Proof 3 condition 2): a captured enum must
+                        // own its image; the closure (heap env) can outlive the
+                        // frame that produced the captured image. The `let g =
+                        // x => …` path constructs its own env here, separate
+                        // from the Expr::Lambda arm — both must own. No-op for
+                        // non-enum captures.
+                        let cap = backend.own_enum_value(out, indent, &cap);
+                        let slot = backend.fun.gen_reg();
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr i64, ptr {}, i64 {}",
+                            indent, slot, env_p, 1 + j
+                        )
+                        .ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
+                    }
+                    TypedRegister { name: alloc, ty: Type::int() }
+                }
+                Some(e) => {
+                    // 2026-08-01 (E): `vol let x = <rhs>` — loads inside the
+                    // RHS are emitted `load volatile` (MMIO semantics: the
+                    // value may change externally, so it must never be cached
+                    // or eliminated). Reset after the let.
+                    if is_vol {
+                        backend.fun.volatile_read = true;
+                    }
+                    // 2026-08-12 (Iterable protocol): a LOCAL collection
+                    // (`let xs: List<Int> = [2,4,6]`) constructs through the
+                    // collection's own ops (op Init/op InsertAt) — never the
+                    // hardcoded [len][elem] heap-seq layout the members can't
+                    // read. The binding below resolves the value.
+                    // 2026-08-15 (coll plan): a `coll obj` let has a Custom
+                    // type (`MyQueue`), so a coll-typed binding is a collection
+                    // too — construct it through the scaffolded ops.
+                    let constructed = {
+                        // 2026-08-17 (storage correctness): a LOCAL collection
+                        // is a `coll` keyword type OR an op-surface obj
+                        // (declares op Init/InsertAt/Count). is_coll_type
+                        // covers `coll` storage; is_op_surface_coll covers a
+                        // hand-written obj (HashMap). A local collection can
+                        // never be an unpacked column, so it constructs
+                        // through the ops (List literal → construct_local_collection;
+                        // seed → construct_local_collection_seed).
+                        let is_coll = ty.map(|t| match t {
+                            crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
+                                backend.is_coll_type(t) || backend.is_op_surface_coll(n)
+                            }
+                            _ => false,
+                        }).unwrap_or(false);
+                        if is_coll && matches!(e, crate::ast::Expr::List(_)) {
+                            let briev = ty.cloned().unwrap_or(crate::ast::Type::int());
+                            // 2026-10-12 (SPEC §8.6.1 Option B): a boxed dyn
+                            // literal records the binding in
+                            // `fun.dyn_boxed_bindings` — the element read path's
+                            // box check consults it (per-function, keyed by the
+                            // binding name the caller owns).
+                            match backend.construct_local_collection(out, indent, &briev, e) {
+                                Some((reg, Some(boxed))) => {
+                                    backend.fun.dyn_boxed_bindings.insert(
+                                        name.to_string(),
+                                        boxed.info,
+                                    );
+                                    Some(reg)
+                                }
+                                other => other.map(|(reg, _)| reg),
+                            }
+                        } else if is_coll {
+                            // 2026-08-16 (hashmap redesign): a LOCAL collection
+                            // with a SEED init (`let m: HashMap<K,V> = 0`)
+                            // constructs through `op Init(seed)` — the same op
+                            // the state-field path uses. Previously a scalar
+                            // seed bound the raw value (NULL handle → member
+                            // calls segfaulted) for ANY non-coll obj (RingBuffer,
+                            // Stack, HashMap). This is the general fix.
+                            // 2026-08-18 (Phase C, BUGS.md arrow-push
+                            // double-construct): the previous rule routed EVERY
+                            // non-list RHS through `op Init` — `let ks: List<Int>
+                            // = b.keys()` became `List.init(<the returned List>)`
+                            // = `[<list>]`, a 1-element wrapper (a keys() scan
+                            // returned 1 of N). Only a PRIMITIVE RHS is a genuine
+                            // seed. Emit the RHS ONCE, then decide by its result
+                            // type: a collection value binds directly; a scalar
+                            // constructs through `op Init` with the emitted
+                            // register.
+                            let briev = ty.cloned().unwrap_or(crate::ast::Type::int());
+                            let rhs = emit_let_value(backend, out, indent, e, value);
+                            let rhs_is_coll = {
+                                let base = match &rhs.ty {
+                                    crate::ast::Type::Vector(inner, _) => match inner.as_ref() {
+                                        crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.as_str(),
+                                        _ => "",
+                                    },
+                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => {
+                                        n.as_str()
+                                    }
+                                    _ => "",
+                                };
+                                backend.is_coll_type(&rhs.ty)
+                                    || (!base.is_empty() && backend.is_op_surface_coll(base))
+                            };
+                            if rhs_is_coll {
+                                Some(rhs)
+                            } else {
+                                backend.construct_local_collection_seed(out, indent, &briev, rhs)
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    via_scaffolded_construction = constructed.is_some();
+                    let v = match constructed {
+                        Some(v) => v,
+                        None => emit_let_value(backend, out, indent, e, value),
+                    };
+                    backend.fun.volatile_read = false;
+                    // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`
+                    // let coerces its concrete RHS into the FAT POINTER
+                    // `{ i64 data, i64 table }` — `data` is the concrete heap
+                    // handle, `table` is `@__dyn_<Trait>_<Concrete>`. The
+                    // binding is re-typed to `dyn <Trait>` (the A5 rule below
+                    // records the declared type as the binding type).
+                    match ty {
+                        Some(crate::ast::Type::Dyn(trait_ty)) => {
+                            // 2026-10-09 (dyn identity-in-value): if the RHS is
+                            // ALREADY a `dyn` of the same trait (a flowed value —
+                            // e.g. the return of `defn make(k) -> dyn Trait`),
+                            // pass it through unchanged. The tag (the concrete's
+                            // identity) is already in the value's tag slot, so
+                            // no re-coercion — re-wrapping would double-box the
+                            // fat pointer. The binding is re-typed to `dyn Trait`
+                            // by the A5 rule below (which runs after this match).
+                            let already_dyn = matches!(&v.ty, crate::ast::Type::Dyn(rhs)
+                                if matches!((trait_ty.as_ref(), rhs.as_ref()),
+                                    (crate::ast::Type::Custom(a), crate::ast::Type::Custom(b)) if a == b));
+                            if already_dyn {
+                                v
+                            } else {
+                                // The RHS must be a concrete value whose type is a
+                                // struct/obj (the struct literal's type). Recover the
+                                // concrete name from the emitted register's type.
+                                let concrete = match &v.ty {
+                                    crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                                    other => panic!(
+                                        "dyn coercion: RHS type {:?} is not a concrete struct/obj (expected a struct literal or an already-dyn value of the same trait)",
+                                        other
+                                    ),
+                                };
+                                let trait_name = match trait_ty.as_ref() {
+                                    crate::ast::Type::Custom(n) => n.clone(),
+                                    other => panic!(
+                                        "dyn <...>: inner trait type {:?} is not a named trait",
+                                        other
+                                    ),
+                                };
+                                // Record the concrete type of this binding so a later
+                                // `g.member()` member call can recover which thunk
+                                // table to load (the A5 rule below re-types the
+                                // binding to `dyn Trait`, erasing the concrete).
+                                backend.ctx.dyn_concrete_of.insert(name.to_string(), concrete.clone());
+                                let tag = backend.ctx.dyn_concrete_tag_of
+                                    .get(&format!("{trait_name}::{concrete}"))
+                                    .copied()
+                                    .unwrap_or(0);
+                                backend.ctx.dyn_concrete_tag_of.insert(name.to_string(), tag);
+                                backend.coerce_to_dyn(out, indent, &v.name, &trait_name, &concrete, tag, indent)
+                            }
+                        }
+                        Some(declared) => backend.coerce_register_value(out, indent, &v, &declared),
+                        None => v,
+                    }
+                }
+                None => {
+                    // 2026-10-14 (tier2 phase 1, docs/plans/
+                    // 2026-10-14-daily-driver-tier2.md): a BARE declaration of
+                    // a collection type (`let xs: List<Int>;`) must CONSTRUCT.
+                    // The naked alloca left the handle slot uninitialized and
+                    // the first `<-` insert dereferenced stack garbage
+                    // (segfault; the working `~<-`-extract idiom constructs
+                    // through its own path, masking this). Same construction
+                    // contract as the initializer paths above: a constructable
+                    // coll constructs via its empty literal (op InitEmpty) or,
+                    // when only the seeded Init exists (hand-written
+                    // HashMap), via op Init(0) — the `= 0` idiom. To undo:
+                    // restore the naked alloca; BUGS.md carries the entry.
+                    let is_coll = ty.map(|t| match t {
+                        crate::ast::Type::Applied(n, _) | crate::ast::Type::Custom(n) => {
+                            backend.is_coll_type(t) || backend.is_op_surface_coll(n)
+                        }
+                        _ => false,
+                    }).unwrap_or(false);
+                    let made = if is_coll {
+                        let briev = ty.cloned().unwrap_or(crate::ast::Type::int());
+                        let base = match &briev {
+                            crate::ast::Type::Custom(n) | crate::ast::Type::Applied(n, _) => n.clone(),
+                            _ => String::new(),
+                        };
+                        let has_init_empty = backend
+                            .ctx
+                            .operator_defs
+                            .get(&base)
+                            .map(|defs| defs.iter().any(|d| d.op == "InitEmpty"))
+                            .unwrap_or(false);
+                        if has_init_empty {
+                            let empty = crate::ast::Expr::List(vec![]);
+                            // Same result shape as the initializer path above:
+                            // a dyn-boxed literal records the binding; the
+                            // normal (reg, None) case binds the register
+                            // directly. (The first draft pattern-matched
+                            // Some((reg, Some(boxed))) and rejected the normal
+                            // case — the alloca fallback returned.)
+                            match backend.construct_local_collection(out, indent, &briev, &empty)
+                            {
+                                Some((reg, Some(boxed))) => {
+                                    backend
+                                        .fun
+                                        .dyn_boxed_bindings
+                                        .insert(name.to_string(), boxed.info);
+                                    Some(reg)
+                                }
+                                other => other.map(|(reg, _)| reg),
+                            }
+                        } else {
+                            let zero = backend.fun.gen_reg();
+                            let hw = format!("i{}", backend.ctx.int_bits);
+                            writeln!(out, "{}{} = add {} 0, 0", indent, zero, hw).ok();
+                            backend.construct_local_collection_seed(
+                                out,
+                                indent,
+                                &briev,
+                                TypedRegister { name: zero, ty: crate::ast::Type::int() },
+                            )
+                        }
+                    } else {
+                        None
+                    };
+                    // The flag gates the alloca-binding marker below (the
+                    // constructed handle is a REGISTER, not a slot) and the
+                    // growable-read path — both must see a scaffolded
+                    // construction, exactly like the initializer arm sets it.
+                    via_scaffolded_construction = made.is_some();
+                    made
+                        .map(|reg| TypedRegister { name: reg.name, ty: reg.ty })
+                        .unwrap_or_else(|| {
+                        let v = backend.fun.gen_reg();
+                        let llvm_ty =
+                            ty.map(|t| backend.llvm_type(t)).unwrap_or("i64".into());
+                        writeln!(out, "{}{} = alloca {}", indent, v, llvm_ty).ok();
+                        TypedRegister { name: v, ty: ty.cloned().unwrap_or(Type::int()) }
+                    })
+                }
+            };
+            backend.fun.enum_construct_slot = None;
+            backend.fun.sret_call_slot = None;
+            backend.fun.object_sret_call_slot = None;
+            backend.fun.expected_enum_type = saved_expected_enum;
+            // 2026-08-17 (tuple correctness, plan
+            // 2026-08-17-hashmap-storage-tuple-correctness.md): TUPLE
+            // DESTRUCTURE `let (a, b) = t`. The parser + typechecker already
+            // support it (check_let_destructure binds each name to the element
+            // type); codegen DROPPED the `names` list (only `name` = names[0]
+            // bound, to the WHOLE boxed handle). The value is a boxed i64
+            // handle to the emit_tuple `[len, e0, e1, …]` heap block; each
+            // name binds to `GEP i64 slot (i+1)` + load. The typechecker bound
+            // the element types; recover them from the declared tuple type
+            // (fallback Int for unannotated — most tuple elements are scalars).
+            if names.len() > 1 {
+                let elem_tys: Vec<Type> = match ty {
+                    Some(crate::ast::Type::Tuple(ts)) => ts.clone(),
+                    _ => vec![Type::int(); names.len()],
+                };
+                let handle_p = backend.fun.gen_reg();
+                let hw = format!("i{}", backend.ctx.int_bits);
+                writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, handle_p, hw, val.name).ok();
+                for (i, n) in names.iter().enumerate() {
+                    let slot = backend.fun.gen_reg();
+                    writeln!(
+                        out,
+                        "{}{} = getelementptr i64, ptr {}, i64 {}",
+                        indent, slot, handle_p, i + 1
+                    )
+                    .ok();
+                    let elem = backend.fun.gen_reg();
+                    let elem_ty = elem_tys.get(i).cloned().unwrap_or_else(Type::int);
+                    // 2026-10-23 (wasm tuple ABI): tuple slots are i64, but
+                    // scalar elements (Int/Bool/Char and enum/obj handles) are
+                    // consumed at their target width.
+                    let elem_llvm = backend.llvm_type(&elem_ty);
+                    let load_ty = if matches!(elem_llvm.as_str(), "i8" | "i16" | "i32") {
+                        elem_llvm.clone()
+                    } else {
+                        "i64".to_string()
+                    };
+                    writeln!(out, "{}{} = load {}, ptr {}", indent, elem, load_ty, slot).ok();
+                    let bound = unbox_tuple_float_element(backend, out, indent, &elem, &elem_ty);
+                    backend.fun.let_bindings.insert(n.clone(), bound.clone());
+                    backend.fun.let_binding_types.insert(n.clone(), elem_ty.clone());
+                    backend.fun.let_original_types.insert(n.clone(), elem_ty);
+                }
+                return TypedRegister { name: val.name, ty: Type::void() };
+            }
+            // 2026-08-04 (compiler-in-Briev): a top-level let that is reassigned
+            // later was PRE-BOUND to an entry-block alloca (emit_definition's
+            // pre-declaration). Store the value into that alloca and keep the
+            // binding — reassignments then store into the same entry alloca,
+            // never demoting at the assignment site (dominance violation).
+            if backend.fun.reassigned_lets.contains_key(name) {
+                if let Some(slot) = backend.fun.let_bindings.get(name).cloned() {
+                    // 2026-10-14 (tier2 phase 2): a BARE let's `val` IS the
+                    // pre-declared slot itself (the naked alloca — no
+                    // initializer to store). Storing it into itself stored a
+                    // pointer as i64 (`%t defined with type 'ptr' but
+                    // expected 'i64'`). Skip the self-store; the slot is
+                    // already the binding.
+                    let is_self_slot = expr.is_none() && slot == val.name;
+                    if !is_self_slot {
+                        let store_ty = backend.llvm_type(&val.ty);
+                        let store_val = backend.ensure_typed_value(out, indent, &store_ty, &val.name, Some(val.ty.clone()), backend.ctx.type_universe.clone().as_ref());
+                        writeln!(out, "{}store {} {}, ptr {}", indent, store_ty, store_val, slot).ok();
+                    }
+                    backend.fun.let_binding_allocas.insert(slot.clone());
+                    // 2026-08-28 (String ABI fix): the pre-declaration
+                    // (emit_definition) registered a PROVISIONAL Int type —
+                    // the real let knows the declared/inferred type. Update
+                    // both type maps so later reads (and field access on
+                    // boxed obj handles) resolve the true type; the Int
+                    // provisional made `let sb: SB = ...; sb = f(sb);`
+                    // reads lose the obj type permanently.
+                    let bind_ty = ty.cloned().unwrap_or_else(|| val.ty.clone());
+                    backend.fun.let_binding_types.insert(name.to_string(), bind_ty.clone());
+                    backend.fun.let_original_types.insert(name.to_string(), bind_ty);
+                    return TypedRegister { name: val.name, ty: val.ty.clone() };
+                }
+            }
+            // 2026-07-18: Track alloca bindings so identifier codegen loads values.
+            // 2026-10-14 (tier2 phase 1): ONLY the naked alloca is an alloca
+            // binding — a bare-let collection CONSTRUCTION binds a heap handle
+            // register; marking it an alloca made is_persistent_slot treat the
+            // handle as a memory slot and the first insert dereferenced it.
+            if expr.is_none() && !via_scaffolded_construction {
+                backend.fun.let_binding_allocas.insert(val.name.clone());
+            }
+            // 2026-09-07 (swan-song dominance fix): a let-local READ by the
+            // pending post-hoist binds through an alloca (deferred to the loop
+            // preheader with the other struct allocas) instead of its body SSA
+            // register — the exit-block hoisted print loads the slot, which
+            // dominates the exit and holds the last-iteration value. A body
+            // register referenced from the exit block is a dominance violation
+            // (async-ready-gate: `produced` from briev_await). Mirrors the
+            // reassigned-lets entry-alloca path above.
+            let is_struct_ty = match &val.ty {
+                Type::Custom(n) | Type::Applied(n, _) => backend.ctx.struct_types.contains_key(n.as_str()),
+                _ => false,
+            };
+            if backend.fun.swan_song_locals.contains(name)
+                && !backend.fun.let_binding_allocas.contains(&val.name)
+                && !is_struct_ty
+            {
+                let slot_ty = backend.llvm_type(&val.ty);
+                let slot = backend.fun.next_reg_with_prefix("sslv");
+                if backend.fun.defer_struct_allocas {
+                    backend.fun.pending_struct_allocas.push(
+                        format!("  {} = alloca {}, align 8", slot, slot_ty),
+                    );
+                } else {
+                    writeln!(out, "{}{} = alloca {}, align 8", indent, slot, slot_ty).ok();
+                }
+                let store_val = backend.ensure_typed_value(
+                    out, indent, &slot_ty, &val.name,
+                    Some(val.ty.clone()), None,
+                );
+                writeln!(out, "{}store {} {}, ptr {}", indent, slot_ty, store_val, slot).ok();
+                backend.fun.let_binding_allocas.insert(slot.clone());
+                val = crate::backend::llvm::TypedRegister { name: slot, ty: val.ty.clone() };
+            }
+            // 2026-07-24: Transfer struct literal alloca tracking from result
+            // register to variable name, so &let_var retrieves the stack address.
+            if let Some(alloca) = backend.fun.struct_literal_allocas.remove(&val.name) {
+                backend.fun.struct_literal_allocas.insert(name.to_string(), alloca);
+            }
+            backend.fun.let_bindings.insert(name.to_string(), val.name.clone());
+            // 2026-08-01 (E): a `vol let` binds a volatile local — stores
+            // THROUGH it (`x[i] = v`, `*x = v`) emit `store volatile`.
+            if is_vol {
+                backend.fun.volatile_locals.insert(name.to_string());
+            }
+            // 2026-07-31 (A5): a declared type wins over the emitted register's
+            // type — a `let st: Stack = Stack()` local must bind as `Stack`
+            // (the emitted struct address is i64/Int), so method calls and
+            // field access on it resolve the struct.
+            let bind_ty = ty.cloned().unwrap_or_else(|| val.ty.clone());
+            backend.fun.let_binding_types.insert(name.to_string(), bind_ty.clone());
+            backend.fun.let_original_types.insert(name.to_string(), bind_ty);
+            // 2026-10-05 (json.bv): a `let` REBINDING a name must invalidate
+            // the "just written" cache for it — a prior match arm / statement
+            // set `last_val_temps[name]` (bind_pattern writes it) and the
+            // identifier read prefers it over the fresh let binding. In
+            // parse_exponent_apply arm 0 binds `f`, arm 1's `let f = n as
+            // Float` did NOT override it, so arm 1 read arm 0's register
+            // (dominance violation: a register from a sibling match block).
+            backend.fun.last_val_temps.remove(name);
+            backend.fun.last_val_types.remove(name);
+            // 2026-08-16 (three-track Phase 2, D2 pre-grow): a LOCAL coll whose
+            // intra-firing peak exceeds the default cap gets ONE `EnsureCap#(q,
+            // peak)` here — at construction, before ANY push. Emitted at the
+            // LET site (not the foreach arm) because the coll may be pushed
+            // BEFORE the loop too. Only for the scaffolded op construction
+            // path (the returned `val.name` is the coll handle then, not a
+            // generic heap-seq value) AND a HEAP-GROWABLE coll — a fixed
+            // `T[N]` coll has a fixed buffer, EnsureCap# would corrupt it.
+            // The grow guard strip elsewhere keys on this same (txn, coll_name)
+            // fact.
+            let growable_base = ty.and_then(|t| match t {
+                crate::ast::Type::Custom(n) => Some(n.split('<').next().unwrap_or(n)),
+                crate::ast::Type::Applied(n, _) => Some(n.as_str()),
+                _ => None,
+            }).is_some_and(|b| backend.ctx.coll_storage.get(b)
+                == Some(&crate::backend::llvm::coll_scaffold::CollStorage::HeapGrowable));
+            if via_scaffolded_construction && growable_base {
+                let txn_name = backend.fun.txn_name.clone();
+                if let Some(peak) = backend.ctx.coll_pregrow.get(&(txn_name, name.to_string())).copied() {
+                    let call = crate::ast::Expr::Call(
+                        "EnsureCap#".to_string(),
+                        vec![
+                            crate::ast::Expr::Identifier(name.to_string()),
+                            crate::ast::Expr::Decimal(peak),
+                        ],
+                        None,
+                    );
+                    backend.emit_expr(out, &call, indent);
+                }
             }
             TypedRegister { name: val.name, ty: Type::void() }
 }
