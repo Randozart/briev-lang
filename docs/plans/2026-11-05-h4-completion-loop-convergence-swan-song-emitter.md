@@ -271,6 +271,14 @@ recursion through the seam) emit natively. The seam's native statement set
 now covers every control/terminal/cleanup kind except the data-flow big
 four (Let/Assign/Term), Foreach/Match, EndProgram, and ArrowAssign.
 
+## Native EndProgram statement (2026-11-05)
+
+Process-exit emission (web flush batch, value side effects via operand
+recursion, exit-provider dispatch with the `defn_takes_state` gate,
+program-end marker, unreachable) mirrored verbatim from the AST arm. The
+remaining conversion-based statement kinds are exactly the data-flow big
+four (Let/Assign/Term), Foreach/Match, and ArrowAssign.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

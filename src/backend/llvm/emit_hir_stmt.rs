@@ -288,6 +288,35 @@ pub(crate) fn emit_hir_statement(
             }
             Some(last)
         }
+        HirStmtKind::EndProgram(val) => {
+            // 2026-08-06 (endprogram plan): genuine process exit; the value's
+            // side effects emit first, then the runtime exit provider.
+            if backend.ctx.webstack_enabled {
+                super::emit_stmt::emit_web_flush_batch(backend, out, indent);
+            }
+            let code = if let Some(v) = val {
+                let Some(reg) = backend.emit_hir_operand(out, v, indent) else {
+                    return None;
+                };
+                backend.adapt_to_i64(out, indent, &reg)
+            } else {
+                "0".to_string()
+            };
+            writeln!(out, "{}; briev.program_end", indent).ok();
+            if backend.ctx.defn_params.contains_key("exit_prog") {
+                let st = if backend.ctx.defn_takes_state("exit_prog") {
+                    "ptr %state, "
+                } else {
+                    ""
+                };
+                writeln!(out, "{}call i64 @exit_prog({}i64 {})", indent, st, code).ok();
+            } else {
+                writeln!(out, "{}call void @__exit(i64 {})", indent, code).ok();
+            }
+            writeln!(out, "{}unreachable", indent).ok();
+            backend.fun.terminated = true;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
         _ => None,
     }
     .or_else(|| {
