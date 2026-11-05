@@ -448,3 +448,11 @@ elements. Literal numeric constants carry value facts without aliasing global
 storage. Unknown and custom-operation indexing still captures its inputs and
 blocks reclamation until the operation's effects can be proved. Registering
 available bodies is conservative but can increase analysis cost on large inputs.
+### Field receivers evaluated twice — 2026-11-05
+
+A field receiver is evaluated exactly once. Tuple/layout dispatch and the general loader share that typed value; nested projections preserve source evaluation counts.
+
+The loader accepts `Some(receiver)` only after a dispatcher has emitted that
+receiver. Dispatch-only HIR reconstruction passes `None`, leaving evaluation to
+the shared loader. Every new entry point must choose according to whether it
+has already emitted the receiver, independently of the expression's syntax.
