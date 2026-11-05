@@ -181,6 +181,18 @@ pub(crate) fn emit_hir_statement(
             ty: crate::ast::Type::void(),
         });
     }
+    // 2026-11-05 (H4 slice D): `tail expr;` IS `term expr;` (the AST arm
+    // delegates verbatim) — route through the native Term path; the Term
+    // arm's reconstructibility guard keeps the legacy convert path for
+    // unsupported values.
+    if let HirStmtKind::Tail(e) = &stmt.kind {
+        let term = HirStmt {
+            id: stmt.id,
+            span: stmt.span,
+            kind: HirStmtKind::Term(Some(e.clone())),
+        };
+        return emit_hir_statement(backend, out, &term, indent);
+    }
     // 2026-11-05 (H4 slice D): the small control/terminal statements,
     // mirrored verbatim from the AST arms (no emission before the match, so
     // no double-emit risk; each is total over its HIR kind).

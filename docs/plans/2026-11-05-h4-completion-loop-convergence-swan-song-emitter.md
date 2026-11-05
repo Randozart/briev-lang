@@ -291,6 +291,19 @@ bare-term P-gate — extracted verbatim into `emit_term_value_tail` +
 `emit_bare_term_gate` + `begin_term_return_context`, shared by both arms.
 The reactor's most semantically loaded statement now emits from HIR.
 
+## Native Tail statement (2026-11-05)
+
+`tail expr;` IS `term expr;` (the AST arm delegates verbatim) — the seam
+routes it through the native Term path; the Term arm's reconstructibility
+guard keeps the legacy convert path for unsupported values.
+
+ArrowAssign stays conversion-based for now: its ~200-line dispatch (wire
+fire with native parameter slots, stream writes, member insert/extract
+with consume, provenance copy) inspects target/value AST shapes across
+every path — nativizing it needs the same operand-split treatment but is
+the largest remaining arm; queued for a focused session with Foreach/
+Match/Assign/Let.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
