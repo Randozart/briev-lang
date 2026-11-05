@@ -326,6 +326,14 @@ fn subst_expr(
                 subst_expr(e, subst, renames, ids);
             }
         }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            for a in args {
+                subst_expr(a, subst, renames, ids);
+            }
+            if let Some(r) = receiver {
+                subst_expr(r, subst, renames, ids);
+            }
+        }
         HirExprKind::Match { scrutinee, arms } => {
             subst_expr(scrutinee, subst, renames, ids);
             for arm in arms {

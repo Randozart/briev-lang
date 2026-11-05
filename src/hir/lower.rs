@@ -776,6 +776,18 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
             value: *value,
             unit: unit.clone(),
         }),
+        Expr::PluginIntercept { name, args, type_args, receiver, chain_refs } => {
+            (
+                None,
+                HirExprKind::PluginIntercept {
+                    name: name.clone(),
+                    args: args.iter().map(|a| lower_expr(a, ids)).collect(),
+                    type_args: type_args.clone(),
+                    receiver: receiver.as_ref().map(|r| Box::new(lower_expr(r, ids))),
+                    chain_refs: chain_refs.clone(),
+                },
+            )
+        }
         other => (None, HirExprKind::Other(expr_tag(other))),
     };
     HirExpr {
@@ -841,7 +853,6 @@ fn stmt_tag(statement: &Statement) -> &'static str {
 
 fn expr_tag(expr: &Expr) -> &'static str {
     match expr {
-        Expr::PluginIntercept { .. } => "plugin-intercept",
         Expr::Within(..) => "within",
         Expr::DerivationBlock(..) => "derivation",
         Expr::Capture { .. } => "capture",
@@ -873,10 +884,48 @@ pub fn lower_program_checked(items: &[TopLevel]) -> Result<HirProgram, Vec<HirLo
                 .map(|(tag, count)| HirLowerIssue { tag, count }),
         )
         .collect();
+    // 2026-11-05 (H4): PluginIntercept is a fully-represented HIR node now
+    // (no longer an `Other` gap), but it is still FRONTEND-ONLY syntax —
+    // plugin stages must expand it before any checked consumer (the backend
+    // panics on an intercept reaching codegen). Checked lowering therefore
+    // rejects it explicitly; unchecked lowering carries the full surface.
+    let intercepts = count_plugin_intercepts(&program);
+    if intercepts > 0 {
+        issues.push(HirLowerIssue { tag: "plugin-intercept", count: intercepts });
+    }
     issues.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(b.tag)));
     if issues.is_empty() {
         Ok(program)
     } else {
         Err(issues)
     }
+}
+
+fn count_plugin_intercepts(program: &HirProgram) -> usize {
+    use crate::hir::expr::HirExprKind;
+    use crate::hir::expr_walk::walk_stmts;
+    let mut count = 0usize;
+    for c in &program.callables {
+        walk_stmts(&c.body.statements, &mut |e| {
+            if matches!(e.kind, HirExprKind::PluginIntercept { .. }) {
+                count += 1;
+            }
+        });
+        if let Some(ct) = &c.contract {
+            if matches!(ct.pre.kind, HirExprKind::PluginIntercept { .. }) {
+                count += 1;
+            }
+            if matches!(ct.post.kind, HirExprKind::PluginIntercept { .. }) {
+                count += 1;
+            }
+        }
+    }
+    for g in &program.globals {
+        if let Some(e) = &g.expr {
+            if matches!(e.kind, HirExprKind::PluginIntercept { .. }) {
+                count += 1;
+            }
+        }
+    }
+    count
 }

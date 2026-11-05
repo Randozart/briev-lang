@@ -129,6 +129,18 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
                 .map(|(n, e)| Some((n.clone(), expr(e)?)))
                 .collect::<Option<Vec<_>>>()?,
         },
+        HirExprKind::PluginIntercept { name, args, type_args, receiver, chain_refs } => {
+            Expr::PluginIntercept {
+                name: name.clone(),
+                args: args.iter().map(expr).collect::<Option<Vec<_>>>()?,
+                type_args: type_args.clone(),
+                receiver: match receiver {
+                    None => None,
+                    Some(r) => Some(Box::new(expr(r)?)),
+                },
+                chain_refs: chain_refs.clone(),
+            }
+        }
         HirExprKind::Block(stmts) => Expr::Block(stmt_body(stmts)?),
         HirExprKind::Other(_) => return None,
     })

@@ -174,6 +174,12 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
             count_expr(scrutinee, counts);
             count_expr_arms(arms, counts);
         }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            count_exprs(args, counts);
+            if let Some(r) = receiver {
+                count_expr(r, counts);
+            }
+        }
         HirExprKind::Block(body) => count_body(body, counts),
         HirExprKind::Other(tag) => {
             counts.expressions += 1;

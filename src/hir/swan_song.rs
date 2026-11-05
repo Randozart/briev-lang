@@ -161,6 +161,11 @@ fn remap_expr_into(e: &mut HirExpr, map: &HashMap<String, String>) {
                 remap_expr_into(item, map);
             }
         }
+        HirExprKind::PluginIntercept { args, .. } => {
+            for arg in args.iter_mut() {
+                remap_expr_into(arg, map);
+            }
+        }
         _ => {}
     }
 }

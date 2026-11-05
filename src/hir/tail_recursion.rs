@@ -256,6 +256,10 @@ fn count_self_calls_expr(expr: &HirExpr, name: &str) -> usize {
         }
         HirExprKind::Tuple(items) | HirExprKind::List(items) => items.iter().map(rec).sum(),
         HirExprKind::StructLiteral { fields, .. } => fields.iter().map(|(_, e)| rec(e)).sum(),
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            args.iter().map(rec).sum::<usize>()
+                + receiver.as_ref().map(|r| rec(r)).unwrap_or(0)
+        }
         _ => 0,
     }
 }

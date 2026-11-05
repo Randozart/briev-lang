@@ -147,6 +147,13 @@ fn verify_exprs<'a>(
 fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), String> {
     verify_node(nodes, expr.id, "expression")?;
     match &expr.kind {
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            verify_exprs(args, nodes)?;
+            if let Some(r) = receiver {
+                verify_expr(r, nodes)?;
+            }
+            Ok(())
+        }
         HirExprKind::Call { args, .. } => verify_exprs(args, nodes),
         HirExprKind::Binary { left, right, .. } => verify_exprs([left.as_ref(), right.as_ref()], nodes),
         HirExprKind::Unary { inner, .. }

@@ -12,11 +12,11 @@ const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 // VolatileStore#/VolatileLoad#/Free#/Ptr casts, which surface as
 // `plugin-intercept` unsupported nodes when lower_program runs on raw source
 // (no plugin expansion). H3/H4 lower these; the baseline stays downward.
-// 2026-11-05: 60 -> 62 (H3.4b). Match guards and top-level const/init
-// initializers are now lowered, so plugin-intercept nodes inside those
-// surfaces are visible to the audit for the first time. H3/H4 lower them;
-// the baseline stays a downward ratchet.
-const BASELINE_EXPRESSIONS: usize = 62;
+// 2026-11-05 (H4): the last unsupported surface — PluginIntercept — is a
+// proper HIR node (args/receiver/type_args/chain_refs), so the whole corpus
+// lowers with zero `Other` nodes. The ratchet is now absolute: any new
+// unsupported expression fails this test.
+const BASELINE_EXPRESSIONS: usize = 0;
 const BASELINE_STATEMENTS: usize = 0;
 
 fn bv_files(root: &Path, out: &mut Vec<PathBuf>) {

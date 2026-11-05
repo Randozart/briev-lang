@@ -114,6 +114,15 @@ pub enum HirExprKind {
     },
     Tuple(Vec<HirExpr>),
     List(Vec<HirExpr>),
+    /// Plugin-intercepted chained macro (`println!(...)`, `get_env_int!(...)`):
+    /// the plugin system owns expansion; the compiler carries the surface.
+    PluginIntercept {
+        name: String,
+        args: Vec<HirExpr>,
+        type_args: Vec<crate::ast::Type>,
+        receiver: Option<Box<HirExpr>>,
+        chain_refs: Vec<crate::ast::ChainRef>,
+    },
     StructLiteral {
         type_name: String,
         fields: Vec<(String, HirExpr)>,

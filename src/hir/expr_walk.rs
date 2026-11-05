@@ -132,6 +132,14 @@ pub(crate) fn walk_expr(expr: &HirExpr, f: &mut dyn FnMut(&HirExpr)) {
                 walk_expr(e, f);
             }
         }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            for a in args {
+                walk_expr(a, f);
+            }
+            if let Some(r) = receiver {
+                walk_expr(r, f);
+            }
+        }
         _ => {}
     }
 }

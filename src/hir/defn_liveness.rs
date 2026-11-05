@@ -321,6 +321,11 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
+            HirExprKind::PluginIntercept { args, .. } => {
+                for a in args {
+                    self.walk_expr(a, queue);
+                }
+            }
             HirExprKind::Spawn { type_name, args, .. } => {
                 self.mark(type_name, queue);
                 self.mark("briev_task_spawn_impl", queue);
@@ -440,6 +445,11 @@ impl<'a> Builder<'a> {
 /// top-level statement callees; `mark` filters to known callables).
 fn collect_call_names_expr(expr: &HirExpr, out: &mut Vec<String>) {
     match &expr.kind {
+        HirExprKind::PluginIntercept { args, .. } => {
+            for a in args {
+                collect_call_names_expr(a, out);
+            }
+        }
         HirExprKind::Call { callee, args, .. } => {
             out.push(callee.clone());
             for a in args {

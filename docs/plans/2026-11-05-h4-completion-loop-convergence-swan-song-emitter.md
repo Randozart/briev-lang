@@ -200,6 +200,23 @@ arm share one implementation rather than duplicating 600 lines.
 4. `Cast`/`MethodCall`/`Reflect` families land last (they need HIR `Cast.via`
    typing — the frontend typer work called out in the 2026-11-04 plan).
 
+## H3.0 closed: the unsupported surface is ZERO (2026-11-05)
+
+The H4.1 census showed every `Other` node in the corpus (339 across 104
+files) was `plugin-intercept`. PluginIntercept is now a fully-represented
+HIR node (name/args/type_args/receiver/chain_refs) with exact AST-mirrored
+handling in every analysis (visit walks args+receiver; defn-liveness roots
+args; storage class collects nothing; swan-song remaps args; graph
+treats it opaque — each matching its AST counterpart). The audit ratchet
+tightened 62 → **0**: the whole corpus lowers with no `Other` nodes, so
+every HIR parity suite now covers all 132–135 files (skipped_unsupported=0
+everywhere). Checked lowering still rejects intercepts explicitly
+(plugin stages must expand them; the backend panics on one reaching
+codegen). The expanded coverage immediately caught and fixed a real HIR
+gap: the storage-class proof surface included sync-wrapped transactions
+(the AST iterates bare `TopLevel::Transaction` only) —
+`mixed_effect_shape` pinned it.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

@@ -53,6 +53,14 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
                 walk_expr_mut(value, f);
             }
         }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            for a in args.iter_mut() {
+                walk_expr_mut(a, f);
+            }
+            if let Some(r) = receiver {
+                walk_expr_mut(r, f);
+            }
+        }
         HirExprKind::Match { scrutinee, arms } => {
             walk_expr_mut(scrutinee, f);
             for arm in arms {
@@ -223,6 +231,14 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
         HirExprKind::StructLiteral { fields, .. } => {
             for (_, value) in fields {
                 walk_expr(value, f);
+            }
+        }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            for a in args {
+                walk_expr(a, f);
+            }
+            if let Some(r) = receiver {
+                walk_expr(r, f);
             }
         }
         HirExprKind::Match { scrutinee, arms } => {

@@ -40,8 +40,16 @@ pub fn classify_plain_lets(
     plain
 }
 
+/// 2026-11-05 (H4 intercept coverage): the AST proof surface iterates raw
+/// `TopLevel::Transaction` items — BARE top-level transactions only.
+/// Sync-wrapped and export-wrapped copies are not raw Transaction items, so
+/// their bodies are outside the surface (mixed_effect_shape's all-sync nodes
+/// depend on this).
 fn is_txn(c: &super::program::HirCallable) -> bool {
-    matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none()
+    matches!(c.kind, HirCallableKind::Transaction)
+        && c.owner.is_none()
+        && !c.exported
+        && c.sync_domains.is_empty()
 }
 
 fn proof_surface(

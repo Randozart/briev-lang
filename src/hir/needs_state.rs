@@ -231,6 +231,9 @@ fn expr_needs_state(
         HirExprKind::Identifier(name) => {
             state_fields.contains(name) && !locals.contains(name)
         }
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            receiver.as_ref().map_or(false, |r| rec(r)) || args.iter().any(|a| rec(a))
+        }
         HirExprKind::Call { callee, args, .. } => {
             let leaf = STATE_INTRINSICS.contains(&callee.as_str())
                 || txns.contains(callee)
@@ -346,6 +349,14 @@ fn collect_stmt_locals(stmts: &[HirStmt], out: &mut HashSet<String>) {
 
 fn collect_expr_locals(expr: &HirExpr, out: &mut HashSet<String>) {
     match &expr.kind {
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            if let Some(r) = receiver {
+                collect_expr_locals(r, out);
+            }
+            for a in args {
+                collect_expr_locals(a, out);
+            }
+        }
         HirExprKind::Block(stmts) => collect_stmt_locals(stmts, out),
         HirExprKind::Call { args, .. }
         | HirExprKind::Tuple(args)
