@@ -135,10 +135,63 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
-    match convert_hir_statement(stmt) {
-        Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
-        None => None,
+    // 2026-11-05 (H4 slice D): the small control/terminal statements,
+    // mirrored verbatim from the AST arms (no emission before the match, so
+    // no double-emit risk; each is total over its HIR kind).
+    match &stmt.kind {
+        HirStmtKind::Break => match backend.fun.foreach_break_labels.last() {
+            Some(label) => {
+                writeln!(out, "{}br label %{}", indent, label).ok();
+                backend.fun.terminated = true;
+                Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+            }
+            None => None,
+        },
+        HirStmtKind::Trap => {
+            writeln!(out, "{}call void @llvm.trap()", indent).ok();
+            writeln!(out, "{}unreachable", indent).ok();
+            backend.fun.terminated = true;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::Halt => {
+            let t = &backend.ctx.target_triple;
+            let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
+                .iter()
+                .any(|fam| t.contains(fam));
+            if wait_family {
+                let uid = backend.fun.txn_counter;
+                backend.fun.txn_counter += 1;
+                writeln!(out, "{}br label %halt_wait_{}", indent, uid).ok();
+                writeln!(out, "halt_wait_{}:", uid).ok();
+                writeln!(out, "  call void asm sideeffect \"wfi\", \"\"()").ok();
+                writeln!(out, "  br label %halt_wait_{}", uid).ok();
+            } else {
+                writeln!(out, "{}call void @llvm.trap()", indent).ok();
+            }
+            writeln!(out, "{}unreachable", indent).ok();
+            backend.fun.terminated = true;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::Yield => {
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        }
+        HirStmtKind::Check(cond) => {
+            let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
+                return None;
+            };
+            let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
+            let noop = backend.fun.gen_reg();
+            writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
+            Some(TypedRegister { name: noop, ty: crate::ast::Type::void() })
+        }
+        _ => None,
     }
+    .or_else(|| {
+        match convert_hir_statement(stmt) {
+            Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
+            None => None,
+        }
+    })
 }
 
 #[cfg(test)]

@@ -243,6 +243,16 @@ Guarded/Block are reconstructible by construction (the parent converted in
 it exists so no path can double-emit. `guard_cond_i1` shared. Every
 `when` in the corpus now emits from HIR control flow.
 
+## Native terminal/control statements: Break/Trap/Halt/Yield/Check (2026-11-05)
+
+The seam also emits the small terminal statements natively, mirrored
+verbatim from the AST arms (Break branches at the innermost foreach label,
+Trap/Halt with the target-family wfi spin, Yield's void register, Check's
+static-only no-op with the condition flowing through operand recursion for
+emission ordering). Break-without-foreach falls to the AST arm's same
+panic. The big four (Let/Assign/Term/Foreach/Match) remain conversion-
+based pending their register-taking refactors.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
