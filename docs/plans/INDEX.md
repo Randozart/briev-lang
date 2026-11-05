@@ -83,12 +83,19 @@ shared `%State` safe for fields via the gate's XOR-disjoint proof; async output
 interleaving contract-unspecified. This is the durable plan the enum gate-removal
 workstream executes; the two share Phase 0.
 
-**Typed HIR H3–H5 execution (2026-11-04, ACTIVE):**
-`docs/plans/2026-11-04-typed-hir-h3-h5-execution.md` — port every analysis to
-HIR (needs_state/needs_plain → defn_liveness → storage_class/boundary_ownership
-→ loop_shape/tail_recursion → task/collection → generic txn), each with corpus
-parity; then backend consumes HIR family-by-family behind byte-identical IR
-A/B; finally retire AST paths. No behavior change per slice.
+**Typed HIR H3–H5 execution (2026-11-04, ACTIVE) + H4 completion (2026-11-05):**
+`docs/plans/2026-11-04-typed-hir-h3-h5-execution.md` and
+`docs/plans/2026-11-05-h4-completion-loop-convergence-swan-song-emitter.md` —
+H3 COMPLETE (every analysis over HIR at parity; unsupported surface ZERO —
+PluginIntercept is a represented node, audit ratchet at 0, all parity suites
+cover the full corpus). H4 in progress: 7 consumers flipped (coll proofs,
+defn liveness, boundary ownership, tail plans, spawn pools, task segments,
+loop shapes + program convergence) and the statement seam emits 14 native
+expression families (defn + txn loops), all behind `BRIEV_HIR_EMIT=1` with
+byte-identical A/B + full-corpus debug sweep. Remaining: native control-flow
+statement arms (Let/Assign/Term/Guarded/Foreach/Match), structural expression
+composites (register-taking refactors), H3.6 backend wiring (specialization),
+MethodCall/Reflect receiver typing (HIR `Cast.via`), H5 retirement.
 
 **Typed HIR (2026-11-02, active):**
 `docs/plans/2026-11-02-typed-hir.md` — parser AST remains; typed normalized HIR
