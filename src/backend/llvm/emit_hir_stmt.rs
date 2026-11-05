@@ -135,6 +135,29 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    // 2026-11-05 (H4 slice D): native Foreach — the iteration-source dispatch
+    // reads the reconstructed list's shape (identical), the loop engine is
+    // the shared extracted helper, and body children route through the seam
+    // (native or per-child conversion). The list converts BEFORE any
+    // emission (carrier allocas come first in the helper), so None falls
+    // back cleanly.
+    if let HirStmtKind::Foreach { item, list, body } = &stmt.kind {
+        let Some(ast_list) = crate::hir::to_ast::expr(list) else {
+            return None;
+        };
+        super::emit_stmt::emit_foreach_statement(
+            backend,
+            out,
+            indent,
+            item,
+            &ast_list,
+            super::emit_stmt::ForeachBody::Hir(body),
+        );
+        return Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        });
+    }
     // 2026-11-05 (H4 slice D): native Term — the P-gated transaction exit.
     // Reconstructibility is checked BEFORE the web-flush/defer prefix (which
     // emits IR), so an unsupported value falls back with no partial emission.

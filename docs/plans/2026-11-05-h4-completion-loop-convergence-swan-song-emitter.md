@@ -313,6 +313,17 @@ BEFORE the scrutinee emits — no partial IR on fallback. The BUGS.md
 "callable-txn bodies silently drop match" fix (per-arm terminated reset,
 all-terminated merge with unreachable) mirrored verbatim.
 
+## Native Foreach statement (2026-11-05)
+
+The AST Foreach arm extracted verbatim into `emit_foreach_statement` with a
+dual-fueled body (`ForeachBody::Ast` keeps the legacy path; `Hir` routes
+children through the seam). The iteration-source dispatch (ranges, vector
+fields, tier iteration, collection kinds) reads the reconstructed list's
+shape — identical — and the loop engine (carrier slots, phis, break
+labels, string-lane early exit) is shared verbatim. The list reconstructs
+before any emission. Every `foreach` in the corpus now emits from HIR
+control flow.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
