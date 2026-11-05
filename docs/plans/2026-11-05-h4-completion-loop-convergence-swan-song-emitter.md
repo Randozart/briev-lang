@@ -139,10 +139,15 @@ NOT blocked on `Cast.via` typing (the graph path is recomputed from
 `(src.ty, target)` at emission, identical either way). IR parity test
 extended with a Cast case.
 
-Remaining families: Call (intrinsic/enum/user — needs register-level operand
-helpers, the deeper refactor), Field/Index (large arms, same operand-split
-pattern where possible), MethodCall/Reflect (need receiver typing /
-frontend typer).
+Landed this increment: **AddrOf** — the identifier path (state-field GEP /
+struct-literal alloca / let-slot spill / function pointer) extracted
+verbatim into `emit_addr_of_identifier`; the HIR side dispatches on
+`HirExprKind::Identifier` natively and emits non-identifier operands via
+`emit_hir_operand` (the AST add-i64 tail mirrored). Deep coverage extended.
+
+Remaining: Call (register-level operand prep — the focused refactor),
+Field/Index (helpers take AST receivers — need register-taking versions),
+MethodCall/Reflect (receiver typing / frontend typer).
 
 ## Slice D (original plan, kept for the record)
 

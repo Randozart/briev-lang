@@ -233,6 +233,76 @@ impl LlvmBackend {
                 }
     }
 
+    /// 2026-11-05 (H4 slice D): the AST AddrOf identifier path (state-field
+    /// GEP / struct-literal alloca / let-slot spill / function pointer),
+    /// extracted verbatim so the HIR native family shares ONE implementation.
+    /// Undo: inline back into emit_expr_inner's `Expr::AddrOf` arm.
+    pub(crate) fn emit_addr_of_identifier(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        name: &String,
+    ) -> TypedRegister {
+                        if let Some(&idx) = self.ctx.field_index_map.get(name) {
+                            // 2026-07-31 (A7): a struct-typed state field's
+                            // slot holds the INSTANCE address — `&b` is that
+                            // address, not the %State slot pointer.
+                            let is_struct_field = self.ctx.field_briev_types.get(idx)
+                                .map_or(false, |t| matches!(t, Type::Custom(n)
+                                    if self.ctx.struct_types.contains_key(n)));
+                            if is_struct_field {
+                                let (loaded, _) = self.emit_state_load_i64_by_idx(out, indent, idx);
+                                return TypedRegister { name: loaded, ty: Type::int() };
+                            }
+                            let gep = self.emit_state_gep(out, indent, "aof", "%state", idx);
+                            let ptr = self.fun.gen_reg();
+                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, gep).ok();
+                            TypedRegister {
+                                name: ptr,
+                                ty: Type::int(),
+                            }
+                        } else if let Some(alloca) = self.fun.struct_literal_allocas.get(name).cloned() {
+                            // 2026-07-24: &struct_literal emits the alloca pointer.
+                            // Used by PyModule_Create2(&moduledef, ...) in bridge code.
+                            let ptr = self.fun.gen_reg();
+                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, alloca).ok();
+                            TypedRegister {
+                                name: ptr,
+                                ty: Type::int(),
+                            }
+                        } else if let Some(reg) = self.get_local(name) {
+                            // 2026-07-24: &let_var — take address of let-bound variable.
+                            let slot = if self.fun.let_binding_allocas.contains(&reg)
+                                || self.fun.param_slots.values().any(|s| s == &reg)
+                            {
+                                reg
+                            } else {
+                                // SSA register — spill to alloca first.
+                                let slot = self.fun.gen_reg();
+                                writeln!(out, "{}{} = alloca i64, align 8", indent, slot).ok();
+                                writeln!(out, "{}store i64 {}, ptr {}", indent, reg, slot).ok();
+                                self.fun.let_bindings.insert(name.clone(), slot.clone());
+                                self.fun.let_binding_allocas.insert(slot.clone());
+                                slot
+                            };
+                            let ptr = self.fun.gen_reg();
+                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, slot).ok();
+                            TypedRegister {
+                                name: ptr,
+                                ty: Type::int(),
+                            }
+                        } else {
+                            // 2026-07-24: &function_name emits function pointer.
+                            // Used by struct literals for method table entries.
+                            let ptr = self.fun.gen_reg();
+                            writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, ptr, name).ok();
+                            TypedRegister {
+                                name: ptr,
+                                ty: Type::int(),
+                            }
+                        }
+    }
+
     /// 2026-11-05 (H4 slice D): native HIR expression emission for the first
     /// families — literals and identifiers. The arms mirror the AST arms
     /// exactly (same helpers, same IR shapes); `None` means the family is not
@@ -283,6 +353,18 @@ impl LlvmBackend {
                 }
             },
             HirExprKind::Identifier(name) => self.emit_identifier_load(out, &v, name, indent),
+            HirExprKind::AddrOf(inner) => match &inner.kind {
+                HirExprKind::Identifier(name) => {
+                    self.emit_addr_of_identifier(out, indent, name)
+                }
+                _ => {
+                    let Some(inner_reg) = self.emit_hir_operand(out, inner, indent) else {
+                        return None;
+                    };
+                    writeln!(out, "{}{} = add i64 0, {}", indent, v, inner_reg.name).ok();
+                    TypedRegister { name: v.clone(), ty: Type::int() }
+                }
+            },
             HirExprKind::Consume(inner) => {
                 let Some(reg) = self.emit_hir_operand(out, inner, indent) else {
                     return None;
@@ -2145,80 +2227,17 @@ impl LlvmBackend {
             }
 
             // ── Address-of ────────────────────────────────────────────
-            Expr::AddrOf(inner) => {
-                // &expr provides the address of a state field or value.
-                // For state fields, emit GEP into %State and ptrtoint to i64.
-                match inner.as_ref() {
-                    Expr::Identifier(name) => {
-                        if let Some(&idx) = self.ctx.field_index_map.get(name) {
-                            // 2026-07-31 (A7): a struct-typed state field's
-                            // slot holds the INSTANCE address — `&b` is that
-                            // address, not the %State slot pointer.
-                            let is_struct_field = self.ctx.field_briev_types.get(idx)
-                                .map_or(false, |t| matches!(t, Type::Custom(n)
-                                    if self.ctx.struct_types.contains_key(n)));
-                            if is_struct_field {
-                                let (loaded, _) = self.emit_state_load_i64_by_idx(out, indent, idx);
-                                return TypedRegister { name: loaded, ty: Type::int() };
-                            }
-                            let gep = self.emit_state_gep(out, indent, "aof", "%state", idx);
-                            let ptr = self.fun.gen_reg();
-                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, gep).ok();
-                            TypedRegister {
-                                name: ptr,
-                                ty: Type::int(),
-                            }
-                        } else if let Some(alloca) = self.fun.struct_literal_allocas.get(name).cloned() {
-                            // 2026-07-24: &struct_literal emits the alloca pointer.
-                            // Used by PyModule_Create2(&moduledef, ...) in bridge code.
-                            let ptr = self.fun.gen_reg();
-                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, alloca).ok();
-                            TypedRegister {
-                                name: ptr,
-                                ty: Type::int(),
-                            }
-                        } else if let Some(reg) = self.get_local(name) {
-                            // 2026-07-24: &let_var — take address of let-bound variable.
-                            let slot = if self.fun.let_binding_allocas.contains(&reg)
-                                || self.fun.param_slots.values().any(|s| s == &reg)
-                            {
-                                reg
-                            } else {
-                                // SSA register — spill to alloca first.
-                                let slot = self.fun.gen_reg();
-                                writeln!(out, "{}{} = alloca i64, align 8", indent, slot).ok();
-                                writeln!(out, "{}store i64 {}, ptr {}", indent, reg, slot).ok();
-                                self.fun.let_bindings.insert(name.clone(), slot.clone());
-                                self.fun.let_binding_allocas.insert(slot.clone());
-                                slot
-                            };
-                            let ptr = self.fun.gen_reg();
-                            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, slot).ok();
-                            TypedRegister {
-                                name: ptr,
-                                ty: Type::int(),
-                            }
-                        } else {
-                            // 2026-07-24: &function_name emits function pointer.
-                            // Used by struct literals for method table entries.
-                            let ptr = self.fun.gen_reg();
-                            writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, ptr, name).ok();
-                            TypedRegister {
-                                name: ptr,
-                                ty: Type::int(),
-                            }
-                        }
-                    }
-                    _ => {
-                        let inner_reg = self.emit_expr(out, inner, indent);
-                        writeln!(out, "{}{} = add i64 0, {}", indent, v, inner_reg.name).ok();
-                        TypedRegister {
-                            name: v.to_string(),
-                            ty: Type::int(),
-                        }
+            Expr::AddrOf(inner) => match inner.as_ref() {
+                Expr::Identifier(name) => self.emit_addr_of_identifier(out, indent, name),
+                inner => {
+                    let inner_reg = self.emit_expr(out, inner, indent);
+                    writeln!(out, "{}{} = add i64 0, {}", indent, v, inner_reg.name).ok();
+                    TypedRegister {
+                        name: v.to_string(),
+                        ty: Type::int(),
                     }
                 }
-            }
+            },
 
             // ── Dereference ───────────────────────────────────────────
             Expr::Deref(inner) => self.emit_deref_load(out, v, inner, indent),
@@ -9677,9 +9696,8 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
         K::Literal(_) | K::Identifier(_) => true,
-        K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. } => {
-            hir_expr_family_covered(inner)
-        }
+        K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. }
+        | K::AddrOf(inner) => hir_expr_family_covered(inner),
         K::Unary { inner, .. } => hir_expr_family_covered(inner),
         K::Binary { op, left, right }
             if !matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>
