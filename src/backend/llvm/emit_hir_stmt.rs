@@ -193,6 +193,102 @@ pub(crate) fn emit_hir_statement(
         };
         return emit_hir_statement(backend, out, &term, indent);
     }
+    // 2026-11-05 (H4 slice D): native statement match — scrutinee through
+    // operand recursion, patterns reconstructed (lossless) for the shared
+    // condition/binding helpers, arm children through the seam. Patterns and
+    // scrutinee are reconstructed BEFORE the scrutinee emits, so a None here
+    // falls back with no partial IR.
+    if let HirStmtKind::Match { expr: scrutinee, arms } = &stmt.kind {
+        let Some(ast_scrut) = crate::hir::to_ast::expr(scrutinee) else {
+            return None;
+        };
+        let mut ast_arms = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let mut pats = Vec::with_capacity(arm.patterns.len());
+            for p in &arm.patterns {
+                match crate::hir::to_ast::pattern(p) {
+                    Some(p) => pats.push(p),
+                    None => return None,
+                }
+            }
+            let Some(body) = crate::hir::to_ast::stmt_body(&arm.body) else {
+                return None;
+            };
+            ast_arms.push((pats, body));
+        }
+        let Some(scrut) = backend.emit_hir_operand(out, scrutinee, indent) else {
+            return None;
+        };
+        let counter = backend.fun.txn_counter;
+        backend.fun.txn_counter += 1;
+        let merge = format!(".smt_end_{}", counter);
+        for (i, arm) in arms.iter().enumerate() {
+            let next = format!(".smt_next_{}_{}", counter, i);
+            let mut cond: Option<String> = None;
+            for pat in &ast_arms[i].0 {
+                if matches!(
+                    pat,
+                    crate::ast::Pattern::Wildcard | crate::ast::Pattern::Binding(_)
+                ) {
+                    cond = Some(format!("{}", backend.fun.gen_reg()));
+                    writeln!(out, "  {} = icmp eq i64 0, 0", cond.as_deref().unwrap_or("")).ok();
+                    break;
+                }
+                let c =
+                    backend.emit_pattern_condition(pat, &scrut.name, &scrut.ty, out, indent);
+                cond = Some(match cond {
+                    None => c,
+                    Some(prev) => {
+                        let r = backend.fun.gen_reg();
+                        writeln!(out, "  {} = or i1 {}, {}", r, prev, c).ok();
+                        format!("{}", r)
+                    }
+                });
+            }
+            let body_label = format!(".smt_body_{}_{}", counter, i);
+            let cond = cond.unwrap_or_else(|| {
+                let r = backend.fun.gen_reg();
+                writeln!(out, "  {} = icmp eq i64 0, 0", r).ok();
+                r
+            });
+            writeln!(out, "  br i1 {}, label %{}, label %{}", cond, body_label, next).ok();
+            writeln!(out, "{}:", next).ok();
+            backend.fun.cur_block = Some(next.clone());
+        }
+        writeln!(out, "  br label %{}", merge).ok();
+        for (i, arm) in arms.iter().enumerate() {
+            let body_label = format!(".smt_body_{}_{}", counter, i);
+            writeln!(out, "{}:", body_label).ok();
+            backend.fun.cur_block = Some(body_label.clone());
+            backend.fun.terminated = false;
+            for p in &ast_arms[i].0 {
+                backend.bind_pattern(p, &scrut.name, &scrut.ty, out, indent);
+            }
+            let hir_children = &arm.body;
+            let ast_children = &ast_arms[i].1;
+            for (j, child) in hir_children.iter().enumerate() {
+                if backend.fun.terminated {
+                    break;
+                }
+                if emit_hir_statement(backend, out, child, indent).is_none() {
+                    emit_statement(backend, out, &ast_children[j], indent);
+                }
+            }
+            if !backend.fun.terminated {
+                writeln!(out, "  br label %{}", merge).ok();
+            }
+        }
+        writeln!(out, "{}:", merge).ok();
+        if backend.fun.terminated {
+            writeln!(out, "  unreachable").ok();
+        } else {
+            backend.fun.cur_block = Some(merge);
+        }
+        return Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        });
+    }
     // 2026-11-05 (H4 slice D): the small control/terminal statements,
     // mirrored verbatim from the AST arms (no emission before the match, so
     // no double-emit risk; each is total over its HIR kind).

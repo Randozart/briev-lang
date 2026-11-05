@@ -304,6 +304,15 @@ every path — nativizing it needs the same operand-split treatment but is
 the largest remaining arm; queued for a focused session with Foreach/
 Match/Assign/Let.
 
+## Native statement Match (2026-11-05)
+
+Scrutinee through operand recursion; patterns reconstructed (lossless)
+for the shared condition-chain/binding helpers; arm children through the
+seam (native or per-child conversion). Patterns/scrutinee reconstruct
+BEFORE the scrutinee emits — no partial IR on fallback. The BUGS.md
+"callable-txn bodies silently drop match" fix (per-arm terminated reset,
+all-terminated merge with unreachable) mirrored verbatim.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
