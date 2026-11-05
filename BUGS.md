@@ -11912,3 +11912,11 @@ Controlled regression: file_descriptor_lifetime.bv compares the next available
 Linux descriptor after 640 normal, empty, growing, read-error and open-error
 calls. Unchanged main fails; the fixed program prints file_descriptors_stable.
 Valgrind reports zero errors and zero definite/indirect loss.
+## 2026-11-05 — checked native time contract
+
+The new clock_ns_res API checks syscall failure before reading timespec and
+rejects negative or overflowing timestamps. now_ns now preserves its existing
+nonnegative contract by trapping on failure instead of returning -1. Native
+regressions cover an invalid clock ID and elapsed monotonic sleep. The collector
+prerequisite branch also carries process-stat, auxiliary-vector and histogram
+APIs; their contracts are documented under docs/architecture.

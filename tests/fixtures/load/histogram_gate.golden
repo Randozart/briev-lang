@@ -1,0 +1,13 @@
+count=100 overflow=0 bins=10
+bin 0=10
+bin 1=10
+bin 2=10
+bin 3=10
+bin 4=10
+bin 5=10
+bin 6=10
+bin 7=10
+bin 8=10
+bin 9=10
+p50=49 p99=99
+histogram_distribution_and_merge_ok

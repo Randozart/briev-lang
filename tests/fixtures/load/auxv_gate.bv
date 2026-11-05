@@ -1,0 +1,40 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/os/auxv.bv";
+
+// 2026-11-05: construct the native binary image directly so parser tests do
+// not depend on HTTP slicing contracts. Keep header bytes separate from tags.
+defn auxv_image(storage: Int, length: Int) -> String {
+    Store#(storage,length,8);
+    term (storage as Data) as String;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let storage: Int = Malloc#(73) as Int;
+    when storage == 0 { endprogram 9; };
+    foreach index in 0..73 { Store#(storage+index,0,1); };
+    let raw: Int = storage + 8;
+    Store#(raw,6,8);
+    Store#(raw+8,16384,8);
+    Store#(raw+16,17,8);
+    Store#(raw+24,250,8);
+    let data: String = auxv_image(storage,64);
+    when unwrap(auxv_value(data,6)) != 16384 || unwrap(auxv_value(data,17)) != 250 { endprogram 1; };
+    when unwrap_err(auxv_value(data,99)) != -2 { endprogram 2; };
+    when unwrap_err(auxv_value(data,0)) != -22 { endprogram 3; };
+    when unwrap_err(auxv_value(auxv_image(storage,17),6)) != -22 { endprogram 4; };
+    when unwrap_err(auxv_value(auxv_image(storage,32),6)) != -22 { endprogram 5; };
+    Store#(raw+32,6,8);
+    when unwrap_err(auxv_value(auxv_image(storage,64),6)) != -22 { endprogram 6; };
+    Store#(raw+32,0,8);
+    Store#(raw+8,-1,8);
+    when unwrap_err(auxv_value(auxv_image(storage,64),6)) != -34 { endprogram 7; };
+    let live: ProcessUnits = unwrap(process_units());
+    when live.page_bytes <= 0 || live.ticks_per_second <= 0 { endprogram 8; };
+    Free#(storage as Ptr);
+    println!("auxv_units_malformed_missing_range_and_live_ok");
+    done = true;
+    endprogram;
+};

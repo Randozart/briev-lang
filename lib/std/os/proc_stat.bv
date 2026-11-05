@@ -1,0 +1,105 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-03: Linux process samples retain raw clock ticks and page counts.
+// PID plus start_ticks identifies a process across samples; a recycled PID
+// must not produce a CPU delta. Format: docs.kernel.org/filesystems/proc.html.
+// Keep the pure parser independently testable when adding other OS providers.
+import { Ok, Err, is_err, unwrap, unwrap_err } from "std/result.bv";
+import { read_file } from "std/os/fs.bv";
+
+obj ProcStat {
+    pid: Int;
+    minor_faults: Int;
+    major_faults: Int;
+    user_ticks: Int;
+    system_ticks: Int;
+    threads: Int;
+    start_ticks: Int;
+    virtual_bytes: Int;
+    resident_pages: Int;
+};
+
+defn proc_stat_space(byte: Int) -> Bool {
+    term byte == 32 || byte == 9 || byte == 10 || byte == 13;
+};
+
+defn proc_stat_token_end(text: String, start: Int) -> Int {
+    foreach index in start..text .^Length {
+        when proc_stat_space(byte_at(text,index)) { term index; };
+    };
+    term text .^Length;
+};
+
+defn proc_stat_token_start(text: String, start: Int) -> Int {
+    foreach index in start..text .^Length {
+        when !proc_stat_space(byte_at(text,index)) { term index; };
+    };
+    term text .^Length;
+};
+
+// Err(-22) is malformed input; Err(-34) is a counter outside Int range.
+defn proc_stat_unsigned(text: String, start: Int, end: Int) -> Result<Int,Int> {
+    when start < 0 || end > text .^Length || start >= end { term Err(0 - 22); };
+    let value: Int = 0;
+    foreach index in start..end {
+        let digit: Int = byte_at(text,index) - 48;
+        when digit < 0 || digit > 9 { term Err(0 - 22); };
+        when value > (9223372036854775807 - digit) / 10 { term Err(0 - 34); };
+        value = value * 10 + digit;
+    };
+    term Ok(value);
+};
+
+defn proc_stat_wanted(field: Int) -> Bool {
+    term field == 10 || field == 12 || field == 14 || field == 15 ||
+         field == 20 || field == 22 || field == 23 || field == 24;
+};
+
+defn proc_stat_value(field: Int, text: String, start: Int, end: Int) -> Result<Int,Int> {
+    when !proc_stat_wanted(field) { term Ok(0); };
+    term proc_stat_unsigned(text,start,end);
+};
+
+defn proc_stat_parse(text: String) -> Result<ProcStat,Int> {
+    let pid_end: Int = proc_stat_token_end(text,0);
+    let pid: Result<Int,Int> = proc_stat_unsigned(text,0,pid_end);
+    when is_err(pid) { term Err(unwrap_err(pid)); };
+    when pid_end + 1 >= text .^Length { term Err(0 - 22); };
+    when byte_at(text,pid_end) != 32 || byte_at(text,pid_end+1) != 40 { term Err(0 - 22); };
+    // The command can contain spaces and parentheses. Numeric fields follow
+    // its final closing parenthesis; splitting the whole line on spaces is wrong.
+    let closing: Int = 0 - 1;
+    foreach index in (pid_end+2)..text .^Length {
+        when byte_at(text,index) == 41 { closing = index; };
+    };
+    when closing < 0 || closing + 4 >= text .^Length { term Err(0 - 22); };
+    when byte_at(text,closing+1) != 32 || byte_at(text,closing+3) != 32 { term Err(0 - 22); };
+    let position: Int = closing + 4;
+    let values: List<Int> = [];
+    foreach field in 4..25 {
+        let start: Int = proc_stat_token_start(text,position);
+        let end: Int = proc_stat_token_end(text,start);
+        when start == end { term Err(0 - 22); };
+        let parsed: Result<Int,Int> = proc_stat_value(field,text,start,end);
+        when is_err(parsed) { term Err(unwrap_err(parsed)); };
+        when proc_stat_wanted(field) { values <- unwrap(parsed); };
+        position = end;
+    };
+    term Ok(ProcStat {
+        pid: unwrap(pid), minor_faults: values[0], major_faults: values[1],
+        user_ticks: values[2], system_ticks: values[3], threads: values[4],
+        start_ticks: values[5], virtual_bytes: values[6], resident_pages: values[7]
+    });
+};
+
+defn proc_stat_read(pid: Int) -> Result<ProcStat,Int> {
+    when pid < 1 { term Err(0 - 22); };
+    let path: String = "/proc/" + (pid as String) + "/stat";
+    let text: Result<String,Int> = read_file(path);
+    when is_err(text) { term Err(unwrap_err(text)); };
+    let sample: Result<ProcStat,Int> = proc_stat_parse(unwrap(text));
+    when is_err(sample) { term sample; };
+    when unwrap(sample).pid != pid { term Err(0 - 22); };
+    term sample;
+};
