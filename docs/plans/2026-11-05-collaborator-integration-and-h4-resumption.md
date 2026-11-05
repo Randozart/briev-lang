@@ -48,6 +48,10 @@ AST behavior fix needs an HIR mirror — #69 is the live example); the
   `tuple_values::emit_tuple_element`; `unbox_tuple_float_element`
   retired); reclamation walk union (#68 lifetime facts + #65 tuple
   shapes); `tests/tuple_values.rs` green.
+- #65 flag: GitHub API refuses reopen with "These commits are already
+  merged" (422) — the content is in base and GitHub's validation
+  acknowledges it; the boolean `merged` flag cannot flip programmatically
+  (needs base-push detection while open). Closed state, content verified.
 - Final battery at `364f42eb`: lib 3512, all HIR suites, sweep 131/0,
   release A/B byte-identical, determinism, daily_use_smoke 37/37.
 
