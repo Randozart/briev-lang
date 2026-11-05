@@ -6,18 +6,21 @@
 use std::{path::Path, process::Command};
 
 fn checked(command: &mut Command) -> std::process::Output {
-    let output = command.output().expect("start tuple test command");
+    let output = command.output().expect("start field receiver test command");
     assert!(output.status.success(), "{command:?}: {}\n{}",
         String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     output
 }
 
-#[test]
-fn native_regression_executes_at_both_optimization_levels() {
+fn verify_emission_mode(hir: bool) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let directory = tempfile::tempdir().unwrap();
-    checked(Command::new(env!("CARGO_BIN_EXE_brievc")).current_dir(root)
-        .env("BRIEV_HOME", root).arg("build").arg("tests/fixtures/load/field_receiver_once.bv")
+    let mut compiler = Command::new(env!("CARGO_BIN_EXE_brievc"));
+    compiler.env_remove("BRIEV_HIR_EMIT");
+    if hir { compiler.env("BRIEV_HIR_EMIT", "1"); }
+    checked(compiler.current_dir(root)
+        .env("BRIEV_HOME", root)
+        .arg("build").arg("tests/fixtures/load/field_receiver_once.bv")
         .args(["--stdlib-path", "lib", "--config-dir", "config", "--out"])
         .arg(directory.path()));
     for level in ["-O0", "-O3"] {
@@ -27,4 +30,9 @@ fn native_regression_executes_at_both_optimization_levels() {
         let output = checked(Command::new("timeout").arg("20").arg(&binary));
         assert_eq!(output.stdout, b"field_receiver_once_ok\n");
     }
+}
+
+#[test]
+fn native_regression_executes_at_both_optimization_levels() {
+    for hir in [false, true] { verify_emission_mode(hir); }
 }

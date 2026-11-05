@@ -11903,3 +11903,9 @@ payload ABI fixtures exercise the generated thunks at O0.
 ## FIXED 2026-11-05 — Field receivers evaluated twice
 
 Field projection on a call result evaluated the receiver twice. sock_tcp_nonblocking().fd opened and leaked an extra descriptor. Reproducer: tests/fixtures/load/field_receiver_once.bv. The general loader now consumes the already evaluated typed register.
+
+PR #70's merge CI exposed the HIR Field caller added on upstream main after the
+original branch base: it still passed the old string argument. The HIR arm has
+not emitted its receiver and must pass `None`; the AST dispatcher retains
+`Some`. The native counter regression now runs with HIR emission unset and
+enabled at both O0 and O3. See the field-receiver CI integration plan.

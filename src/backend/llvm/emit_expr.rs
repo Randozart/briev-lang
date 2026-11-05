@@ -438,7 +438,10 @@ impl LlvmBackend {
                 let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
                     return None;
                 };
-                self.emit_field_access(out, &v, &ast_recv, name, indent)
+                // 2026-11-05: HIR dispatch has not evaluated this receiver.
+                // Let the shared loader evaluate it once; pass Some only if
+                // this route later starts emitting the receiver itself.
+                self.emit_field_access(out, None, &ast_recv, name, indent)
             }
             HirExprKind::Reflect { receiver, name, kind } => {
                 let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
