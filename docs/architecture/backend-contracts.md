@@ -456,3 +456,6 @@ The loader accepts `Some(receiver)` only after a dispatcher has emitted that
 receiver. Dispatch-only HIR reconstruction passes `None`, leaving evaluation to
 the shared loader. Every new entry point must choose according to whether it
 has already emitted the receiver, independently of the expression's syntax.
+### Statement matches discard continuing arms — 2026-11-05
+
+Statement matches retain a continuing merge for their no-match edge and any continuing arm. A final returning arm does not prove other arms terminate.

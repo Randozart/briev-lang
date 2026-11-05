@@ -11958,3 +11958,6 @@ original branch base: it still passed the old string argument. The HIR arm has
 not emitted its receiver and must pass `None`; the AST dispatcher retains
 `Some`. The native counter regression now runs with HIR emission unset and
 enabled at both O0 and O3. See the field-receiver CI integration plan.
+## FIXED 2026-11-05 — Statement matches discard continuing arms
+
+Statement match used the last arm termination flag for the whole merge. Earlier continuing arms and unmatched values entered unreachable code. Reproducer: tests/fixtures/load/statement_match_fallthrough.bv. Fix preserves the emitted merge predecessors.

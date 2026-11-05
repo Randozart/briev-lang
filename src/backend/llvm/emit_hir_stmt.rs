@@ -360,12 +360,12 @@ pub(crate) fn emit_hir_statement(
                 writeln!(out, "  br label %{}", merge).ok();
             }
         }
+        // 2026-11-05 (#69 mirror): the merge stays open — the no-match edge
+        // and continuing arms always reach it; only explicit
+        // predecessor/exhaustiveness tracking may close it.
         writeln!(out, "{}:", merge).ok();
-        if backend.fun.terminated {
-            writeln!(out, "  unreachable").ok();
-        } else {
-            backend.fun.cur_block = Some(merge);
-        }
+        backend.fun.terminated = false;
+        backend.fun.cur_block = Some(merge);
         return Some(TypedRegister {
             name: backend.fun.gen_reg(),
             ty: crate::ast::Type::void(),

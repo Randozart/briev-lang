@@ -1186,12 +1186,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // branches here, so print the label with an explicit
             // `unreachable` terminator (dead code, removed by opt); a live
             // merge stays a normal open block.
+            // 2026-11-05 (#69): the 2026-08-23 empty-label repair consulted
+            // only the LAST arm, discarding earlier continuing arms. The
+            // no-match edge always reaches this merge, as do continuing arms.
+            // Keep it open; LLVM removes impossible condition-chain edges.
             writeln!(out, "{}:", merge).ok();
-            if backend.fun.terminated {
-                writeln!(out, "  unreachable").ok();
-            } else {
-                backend.fun.cur_block = Some(merge);
-            }
+            backend.fun.terminated = false;
+            backend.fun.cur_block = Some(merge);
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         _ => {
