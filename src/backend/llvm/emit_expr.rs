@@ -538,7 +538,7 @@ impl LlvmBackend {
     /// just this leaf to AST and emit it. Callers guard whole expressions with
     /// `hir_expr_family_covered` (deep), so a `None` here means an
     /// unreconstructable node — never partial emission.
-    fn emit_hir_operand(
+    pub(crate) fn emit_hir_operand(
         &mut self,
         out: &mut String,
         expr: &crate::hir::expr::HirExpr,
