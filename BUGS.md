@@ -11899,3 +11899,12 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## 2026-11-05 — checked native time contract
+
+The new clock_ns_res API checks syscall failure before reading timespec and
+rejects negative or overflowing timestamps. now_ns now preserves its existing
+nonnegative contract by trapping on failure instead of returning -1. Native
+regressions cover an invalid clock ID and elapsed monotonic sleep. The collector
+prerequisite branch also carries process-stat, auxiliary-vector and histogram
+APIs; their contracts are documented under docs/architecture.

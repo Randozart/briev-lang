@@ -1,0 +1,18 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/os/time.bv";
+import { is_err, unwrap_err } from "std/result.bv";
+let done: Bool = false;
+node main [!done][done] {
+    let invalid: Result<Int,Int> = clock_ns_res(2147483647);
+    when !is_err(invalid) { endprogram 1; };
+    when unwrap_err(invalid) >= 0 { endprogram 2; };
+    let before: Int = now_ns();
+    when sleep_ms(20) != 0 { endprogram 3; };
+    let after: Int = now_ns();
+    when after < before || after - before < 20000000 { endprogram 4; };
+    println!("clock_error_and_elapsed_ok");
+    done = true;
+    endprogram;
+};

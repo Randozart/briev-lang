@@ -1,0 +1,28 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/os/proc_stat.bv";
+let done: Bool = false;
+node main [!done][done] {
+    let parsed: Result<ProcStat,Int> = proc_stat_parse(
+        "123 (worker ) (load)) R 4 5 6 7 8 9 10 11 12 13 14 15 -16 -17 18 -19 20 21 22 23 24\n");
+    when is_err(parsed) { endprogram 1; };
+    let sample: ProcStat = unwrap(parsed);
+    when sample.pid != 123 || sample.minor_faults != 10 || sample.major_faults != 12 { endprogram 2; };
+    when sample.user_ticks != 14 || sample.system_ticks != 15 || sample.threads != 20 { endprogram 3; };
+    when sample.start_ticks != 22 || sample.virtual_bytes != 23 || sample.resident_pages != 24 { endprogram 4; };
+    when !is_err(proc_stat_parse("123 (truncated) R 4")) { endprogram 5; };
+    when !is_err(proc_stat_parse("bad (name) R 4")) { endprogram 6; };
+    when !is_err(proc_stat_unsigned("9223372036854775808",0,19)) { endprogram 7; };
+    when unwrap(proc_stat_unsigned("9223372036854775807",0,19)) != 9223372036854775807 { endprogram 8; };
+    when !is_err(proc_stat_unsigned("-1",0,2)) { endprogram 9; };
+    let pid: Int = SysCall#(39);
+    let live: Result<ProcStat,Int> = proc_stat_read(pid);
+    when is_err(live) { endprogram 10; };
+    let current: ProcStat = unwrap(live);
+    when current.pid != pid || current.threads < 1 || current.resident_pages < 0 { endprogram 11; };
+    when !is_err(proc_stat_read(0)) { endprogram 12; };
+    println!("process_stat_fields_and_live_sample_ok");
+    done = true;
+    endprogram;
+};

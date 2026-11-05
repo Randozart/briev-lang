@@ -1,0 +1,26 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/stats/histogram.bv";
+let done: Bool = false;
+node main [!done][done] {
+    let first: Histogram = histogram_new(10,10);
+    foreach value in 0..100 { first = histogram_record(first,value); };
+    println!("count={} overflow={} bins={}",first.count,first.overflow,first.bins .^Length);
+    when first.count != 100 || first.overflow != 0 { endprogram 1; };
+    foreach index in 0..10 { println!("bin {}={}",index,first.bins[index]); };
+    println!("p50={} p99={}",histogram_quantile(first,500),histogram_quantile(first,990));
+    when histogram_quantile(first,500) != 49 { endprogram 2; };
+    when histogram_quantile(first,990) != 99 { endprogram 3; };
+    let second: Histogram = histogram_new(10,10);
+    second = histogram_record(second,150);
+    let merged: Histogram = histogram_merge(first,second);
+    when merged.count != 101 || merged.overflow != 1 || merged.maximum != 150 { endprogram 4; };
+    when histogram_quantile(merged,1000) != 150 { endprogram 5; };
+    when first.count != 101 || second.count != 1 { endprogram 6; };
+    let doubled: Histogram = histogram_merge(second,second);
+    when doubled.count != 2 || doubled.overflow != 2 || doubled.maximum != 150 { endprogram 7; };
+    println!("histogram_distribution_and_merge_ok");
+    done = true;
+    endprogram;
+};
