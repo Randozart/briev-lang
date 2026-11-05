@@ -459,3 +459,14 @@ has already emitted the receiver, independently of the expression's syntax.
 ### Statement matches discard continuing arms — 2026-11-05
 
 Statement matches retain a continuing merge for their no-match edge and any continuing arm. A final returning arm does not prove other arms terminate.
+## 2026-11-05 — inferred tuple element representation
+
+Unannotated destructuring of returned object tuples panicked on field access;
+local tuple materialization erased metadata to Int as well. Numeric projection
+also decoded only pointer elements, while destructuring decoded only floats.
+The fix retains Type::Tuple separately from the target-width integer handle and
+shares fixed-i64-slot decoding. Raw Ptr handles retain their integer ABI.
+Lifetime analysis now retains product return/local/projection types, allowing
+closed tuple scopes to reclaim allocations without treating returned aliases as
+local. Native mixed-value execution and wasm32 nested execution are regression
+gates; final results are in the checkpoint record.

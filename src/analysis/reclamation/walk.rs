@@ -64,7 +64,7 @@ fn register_definition(graph: &mut Graph, definition: &crate::ast::Definition) {
 }
 
 fn register_result(graph: &mut Graph, name: &str, output: Option<&crate::ast::OutputType>, void_default: bool) {
-    let ty = output.and_then(|output| output.all_types().into_iter().next());
+    let ty = output.and_then(output_value_type);
     let scalar = match output {
         Some(crate::ast::OutputType::Single(ty)) => scalar_result(graph, ty),
         None => void_default,
@@ -80,6 +80,18 @@ fn register_result(graph: &mut Graph, name: &str, output: Option<&crate::ast::Ou
     let image = graph.allocation(name);
     let result = graph.callables[name].result;
     graph.copy(image, result);
+}
+
+// 2026-11-05: product results retain their shape for inferred bindings and
+// projections. Flattening to the first leaf blocks otherwise closed regions.
+// Retire with a shared semantic output-type resolver.
+fn output_value_type(output: &crate::ast::OutputType) -> Option<crate::ast::Type> {
+    use crate::ast::{OutputType, Type};
+    match output {
+        OutputType::Tuple(items) => items.iter().map(output_value_type).collect::<Option<Vec<_>>>().map(Type::Tuple),
+        OutputType::Named(_, inner) => output_value_type(inner),
+        _ => output.all_types().into_iter().next(),
+    }
 }
 
 fn scalar_result(graph: &Graph, ty: &crate::ast::Type) -> bool {
@@ -211,7 +223,7 @@ impl Builder<'_> {
     fn statement(&mut self, statement: &Statement) {
         match statement {
             Statement::Let { name, names, expr, ty, .. } => {
-                if let Some(ty) = ty.clone().or_else(|| expr.as_ref().and_then(|expr| self.expression_type(expr))) { self.types.insert(name.clone(), ty); }
+                self.bind_types(name, names, ty.as_ref(), expr.as_ref());
                 let target = self.local(name);
                 if let Some(expr) = expr {
                     let value = self.expression(expr);
@@ -264,6 +276,15 @@ impl Builder<'_> {
     fn statement_pattern_types(&mut self, arm: &crate::ast::StmtMatchArm, ty: Option<&crate::ast::Type>) {
         for pattern in &arm.patterns { self.pattern_types(pattern, ty); }
     }
+    fn bind_types(&mut self, name: &str, names: &[String], declared: Option<&crate::ast::Type>, expr: Option<&Expr>) {
+        let Some(ty) = declared.cloned().or_else(|| expr.and_then(|expr| self.expression_type(expr))) else { return };
+        self.types.insert(name.into(), ty.clone());
+        if names.len() <= 1 { return; }
+        if let crate::ast::Type::Tuple(elements) = ty {
+            self.types.extend(names.iter().cloned().zip(elements));
+        }
+    }
+
     fn statement_arm(&mut self, value: Node, arm: &crate::ast::StmtMatchArm) {
         for pattern in &arm.patterns { self.pattern(pattern, value); }
         self.statements(&arm.body);
@@ -505,6 +526,8 @@ impl Builder<'_> {
             Expr::Char(_) => Some(crate::ast::Type::char_()),
             Expr::Float(_) => Some(crate::ast::Type::float()),
             Expr::Bool(_) => Some(crate::ast::Type::bool_()),
+            Expr::Tuple(values) => values.iter().map(|value| self.expression_type(value))
+                .collect::<Option<Vec<_>>>().map(crate::ast::Type::Tuple),
             Expr::Cast(_, target) => Some(target.clone()),
             Expr::MethodCall(receiver, name, args, None, refs) if refs.is_empty() => {
                 // 2026-11-05 union (#66 + #68): intrinsic return kinds win;
@@ -548,6 +571,9 @@ impl Builder<'_> {
             Expr::BinaryOp(_, lhs, _) => self.expression_type(lhs),
             Expr::Field(base, field) => {
                 let ty = self.expression_type(base)?;
+                if let crate::ast::Type::Tuple(elements) = &ty {
+                    return field.parse::<usize>().ok().and_then(|index| elements.get(index)).cloned();
+                }
                 let resolved = self.graph.universe.get(ty.universe_key()?)?;
                 let field_type = &resolved.fields.iter().find(|(name, _)| name == field)?.1;
                 let args = match &ty { crate::ast::Type::Applied(_, args) | crate::ast::Type::Generic(_, args) => args.as_slice(), _ => &[] };
@@ -567,7 +593,7 @@ impl Builder<'_> {
                 crate::analysis::generic_specialization::unify_generic_binding(declared, &concrete, &params, &mut substitution);
             }
         }
-        let output = generic.output_type.as_ref()?.all_types().into_iter().next()?;
+        let output = output_value_type(generic.output_type.as_ref()?)?;
         Some(crate::typechecker::substitute_type(&output, &substitution))
     }
 
