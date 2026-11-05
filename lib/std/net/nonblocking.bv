@@ -1,0 +1,45 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/socket.bv";
+
+// 2026-11-03: event-loop clients must retain each partial transfer themselves.
+// MSG_DONTWAIT makes these calls bounded even on an inherited blocking socket.
+// Replace these Linux constants only with a declared target ABI projection.
+const MSG_DONTWAIT: Int = 64;
+defn sock_tcp_nonblocking() -> Socket {
+    // SOCK_NONBLOCK | SOCK_CLOEXEC set atomically at descriptor creation.
+    term Socket { fd: SysCall#(41, 2, 1 | 2048 | 524288, 0) };
+};
+
+// Send a slice of initialized bytes. No mutation, retry, or hidden cursor.
+defn sock_send_once(socket: Socket, buffer: ByteBuf, offset: Int, count: Int) -> Int {
+    when buffer.len < 0 || buffer.len > buffer.cap { trap; };
+    when offset < 0 || offset > buffer.len || count < 0 || count > buffer.len - offset { trap; };
+    term SysCall#(44, socket.fd, buffer.ptr + offset, count, MSG_DONTWAIT | MSG_NOSIGNAL);
+};
+
+// Append one read into free capacity. A positive capacity is required so zero
+// means peer EOF, never a zero-length read. Errors leave logical length intact.
+defn sock_recv_once(socket: Socket, buffer: ByteBuf, capacity: Int) -> Int {
+    when buffer.len < 0 || buffer.len > buffer.cap || capacity < 1 || capacity > buffer.cap - buffer.len { trap; };
+    let received: Int = SysCall#(45, socket.fd, buffer.ptr + buffer.len, capacity, MSG_DONTWAIT);
+    when received > 0 { buffer.len += received; };
+    term received;
+};
+
+// Call after readiness for an EINPROGRESS connect, not as a readiness probe:
+// SO_ERROR is read-and-clear. Return 0 for success or negative socket/syscall errno.
+defn sock_pending_error(socket: Socket) -> Int {
+    let scratch: Int = Malloc#(8) as Int;
+    when scratch == 0 { term -12; };
+    Store#(scratch, 0, 4);
+    Store#(scratch + 4, 4, 4);
+    let result: Int = SysCall#(55, socket.fd, 1, 4, scratch, scratch + 4);
+    let error: Int = Load#(scratch, 4);
+    let size: Int = Load#(scratch + 4, 4);
+    Free#(scratch as Ptr);
+    when result < 0 { term result; };
+    when size != 4 || error > 4095 { term -5; };
+    term -error;
+};

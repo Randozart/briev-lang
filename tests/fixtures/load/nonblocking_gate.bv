@@ -1,0 +1,76 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/net/nonblocking.bv";
+import "std/os/poll.bv";
+
+defn check_pair() -> Void {
+    let descriptors: Int = Malloc#(8) as Int;
+    when descriptors == 0 { trap; };
+    when SysCall#(53, 1, 1 | 2048 | 524288, 0, descriptors) != 0 { trap; };
+    let sender: Socket = Socket { fd: Load#(descriptors,4) };
+    let receiver: Socket = Socket { fd: Load#(descriptors+4,4) };
+    Store#(descriptors,4096,4);
+    when SysCall#(54,sender.fd,1,7,descriptors,4) != 0 { trap; };
+    Free#(descriptors as Ptr);
+    let polls: PollSet = unwrap(poll_new(2));
+    when poll_wait(polls,0) != 0 { trap; };
+    poll_set(polls,0,sender.fd,POLL_OUT);
+    poll_set(polls,1,receiver.fd,POLL_IN);
+    when poll_wait(polls,0) != 1 || (poll_events(polls,0) & POLL_OUT) == 0 { trap; };
+    when poll_events(polls,1) != 0 { trap; };
+    let input: ByteBuf = buf_new(4096);
+    when sock_recv_once(receiver,input,4096) != -11 || input.len != 0 { trap; };
+    when sock_pending_error(sender) != 0 { trap; };
+    when sock_pending_error(Socket { fd: -1 }) != -9 { trap; };
+    let output: ByteBuf = buf_new(1048576);
+    foreach index in 0..output.cap { Store#(output.ptr+index,index % 251,1); };
+    output.len = output.cap;
+    let sent: Int = 0;
+    let blocked: Bool = false;
+    foreach attempt in 0..128 {
+        when !blocked && sent < output.len {
+            let moved: Int = sock_send_once(sender,output,sent,output.len-sent);
+            when moved == -11 { blocked = true; };
+            when moved != -11 && moved <= 0 { trap; };
+            when moved > 0 { sent += moved; };
+        };
+    };
+    when !blocked || sent < 1 || sent >= output.len { trap; };
+    when poll_wait(polls,1000) < 1 || (poll_events(polls,1) & POLL_IN) == 0 { trap; };
+    when sock_shutdown(sender) != 0 { trap; };
+    let received: Int = 0;
+    let eof: Bool = false;
+    foreach attempt in 0..128 {
+        when !eof {
+            input.len = 0;
+            let moved: Int = sock_recv_once(receiver,input,4096);
+            when moved < 0 || input.len != moved { trap; };
+            when moved == 0 { eof = true; };
+            foreach index in 0..input.len {
+                when get_u8(input,index) != (received+index) % 251 { trap; };
+            };
+            received += moved;
+        };
+    };
+    when !eof || received != sent { trap; };
+    when sock_close(sender) != 0 || sock_close(receiver) != 0 { trap; };
+    when poll_wait(polls,0) != 2 { trap; };
+    when (poll_events(polls,0) & POLL_INVALID) == 0 { trap; };
+    poll_set(polls,0,-1,0);
+    poll_set(polls,1,-1,0);
+    when poll_wait(polls,0) != 0 || poll_events(polls,0) != 0 { trap; };
+    poll_free(polls);
+    poll_free(polls);
+    buf_free(input);
+    buf_free(output);
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    when !is_err(poll_new(0)) || !is_err(poll_new(1048577)) { endprogram 1; };
+    check_pair();
+    println!("nonblocking_partial_progress_backpressure_eof_ok");
+    done = true;
+    endprogram;
+};
