@@ -328,6 +328,12 @@ impl LlvmBackend {
                 .ok();
                 TypedRegister { name: v.clone(), ty: pointee_ty }
             }
+            HirExprKind::Cast { inner, to, .. } => {
+                let Some(src) = self.emit_hir_operand(out, inner, indent) else {
+                    return None;
+                };
+                self.emit_cast_operand(out, &v, src, to, indent)
+            }
             HirExprKind::Unary { op, inner } => {
                 let Some(operand) = self.emit_hir_operand(out, inner, indent) else {
                     return None;
@@ -415,6 +421,106 @@ impl LlvmBackend {
                 let ast = crate::hir::to_ast::expr(expr)?;
                 Some(self.emit_expr(out, &ast, indent))
             }
+        }
+    }
+
+    /// 2026-11-05 (H4 slice D): the AST Cast arm tail (everything after
+    /// operand emission), extracted verbatim so the HIR native family
+    /// shares ONE implementation. Takes the operand REGISTER — the HIR
+    /// side emits its operand natively, no AST needed. Undo: inline back
+    /// into emit_expr_inner's `Expr::Cast` arm.
+    pub(crate) fn emit_cast_operand(
+        &mut self,
+        out: &mut String,
+        v: &str,
+        src: TypedRegister,
+        target: &Type,
+        indent: &str,
+    ) -> TypedRegister {
+        // 2026-11-03: propagate the allocation strategy through an
+        // address cast. `Alloc#` records its strategy under the
+        // allocation register; `Free#(a as Ptr<T>)` evaluates the cast
+        // to a NEW register, so without this the strategy lookup missed
+        // and `@free` ran on a brk-backed arena pointer (invalid free).
+        let src_strategy = self.fun.alloc_strategies.get(&src.name).cloned();
+        let address_cast = matches!(target, Type::Ptr(_)) || matches!(src.ty, Type::Ptr(_));
+        // Try casting graph path first
+        if let Some(result) = self.emit_cast_path(out, v, &src, target, indent) {
+            if address_cast {
+                if let Some(st) = &src_strategy {
+                    if result.name != src.name {
+                        self.fun.alloc_strategies.insert(result.name.clone(), st.clone());
+                    }
+                }
+            }
+            return result;
+        }
+        let target_ll = self.llvm_type(target);
+        let src_ll = self.llvm_type(&src.ty);
+        // 2026-07-17: Priorities for cast dispatch (LLVM coercion fallback):
+        // 1. Ptr<T> target → inttoptr (never String — String/Data have Custom type)
+        // 2. String/Data target → runtime helper
+        // 3. i64 target + Ptr<T> source → ptrtoint
+        // 4. i64 target + string-producing expr → __str_to_int
+        // 5. double/i64 float conversions
+        // 6. Generic bitcast
+        if matches!(target, Type::Ptr(_)) {
+            // 2026-07-26: Only inttoptr when the source is an integer.
+            // If source is already a pointer, ptr→i64→ptr to assign v.
+            if src_ll != "ptr" {
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
+            } else {
+                writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
+                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, v).ok();
+            }
+        } else if target_ll == "i64" && matches!(src.ty, Type::Ptr(_)) {
+            // 2026-07-30: Ptr values stored as i64 internally (ptrtoint
+            // at function entry). Register is already i64 — identity.
+            return TypedRegister { name: src.name.clone(), ty: target.clone() };
+        } else if target_ll == "double" {
+            writeln!(out, "{}{} = sitofp i64 {} to double", indent, v, src.name).ok();
+        } else if target_ll == "i64" && src_ll == "double" {
+            writeln!(out, "{}{} = fptosi double {} to i64", indent, v, src.name).ok();
+        } else if target_ll == "i64" && src_ll == "ptr" {
+            // 2026-07-18: Custom types (String, etc.) are stored as i64 in
+            // state fields — the value is already ptrtoint. Skip conversion.
+            if matches!(src.ty, Type::Custom(_)) {
+                return TypedRegister {
+                    name: src.name.clone(),
+                    ty: target.clone(),
+                };
+            }
+            // 2026-07-30: Ptr values stored as i64 internally — identity.
+            if matches!(src.ty, Type::Ptr(_)) {
+                return TypedRegister { name: src.name.clone(), ty: target.clone() };
+            }
+            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
+        } else if target_ll == "ptr" && src_ll == "i64" {
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
+        } else if let Some(n) = crate::type_universe::bits_width(target) {
+            // 2026-08-13 (pack): no-graph fallback for `as Bits<N>` —
+            // same truncation contract as the casting-graph path.
+            let tgt = format!("i{}", n);
+            if src_ll == tgt {
+                return TypedRegister { name: src.name.clone(), ty: target.clone() };
+            }
+            writeln!(out, "{}{} = trunc {} {} to {}", indent, v, src_ll, src.name, tgt).ok();
+        } else {
+            writeln!(
+                out,
+                "{}{} = bitcast {} {} to {}",
+                indent, v, src_ll, src.name, target_ll
+            )
+            .ok();
+        }
+        if address_cast {
+            if let Some(st) = &src_strategy {
+                self.fun.alloc_strategies.insert(v.to_string(), st.clone());
+            }
+        }
+        TypedRegister {
+            name: v.to_string(),
+            ty: target.clone(),
         }
     }
 
@@ -1968,94 +2074,9 @@ impl LlvmBackend {
             // Falls through to LLVM coercion when no graph path exists.
             Expr::Cast(expr, target) => {
                 let src = self.emit_expr(out, expr, indent);
-                // 2026-11-03: propagate the allocation strategy through an
-                // address cast. `Alloc#` records its strategy under the
-                // allocation register; `Free#(a as Ptr<T>)` evaluates the cast
-                // to a NEW register, so without this the strategy lookup missed
-                // and `@free` ran on a brk-backed arena pointer (invalid free).
-                let src_strategy = self.fun.alloc_strategies.get(&src.name).cloned();
-                let address_cast = matches!(target, Type::Ptr(_)) || matches!(src.ty, Type::Ptr(_));
-                // Try casting graph path first
-                if let Some(result) = self.emit_cast_path(out, v, &src, target, indent) {
-                    if address_cast {
-                        if let Some(st) = &src_strategy {
-                            if result.name != src.name {
-                                self.fun.alloc_strategies.insert(result.name.clone(), st.clone());
-                            }
-                        }
-                    }
-                    return result;
-                }
-                let target_ll = self.llvm_type(target);
-                let src_ll = self.llvm_type(&src.ty);
-                // 2026-07-17: Priorities for cast dispatch (LLVM coercion fallback):
-                // 1. Ptr<T> target → inttoptr (never String — String/Data have Custom type)
-                // 2. String/Data target → runtime helper
-                // 3. i64 target + Ptr<T> source → ptrtoint
-                // 4. i64 target + string-producing expr → __str_to_int
-                // 5. double/i64 float conversions
-                // 6. Generic bitcast
-                if matches!(target, Type::Ptr(_)) {
-                    // 2026-07-26: Only inttoptr when the source is an integer.
-                    // If source is already a pointer, ptr→i64→ptr to assign v.
-                    if src_ll != "ptr" {
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
-                    } else {
-                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, v).ok();
-                    }
-                } else if target_ll == "i64" && matches!(src.ty, Type::Ptr(_)) {
-                    // 2026-07-30: Ptr values stored as i64 internally (ptrtoint
-                    // at function entry). Register is already i64 — identity.
-                    return TypedRegister { name: src.name.clone(), ty: target.clone() };
-                } else if target_ll == "double" {
-                    writeln!(out, "{}{} = sitofp i64 {} to double", indent, v, src.name).ok();
-                } else if target_ll == "i64" && src_ll == "double" {
-                    writeln!(out, "{}{} = fptosi double {} to i64", indent, v, src.name).ok();
-                } else if target_ll == "i64" && src_ll == "ptr" {
-                    // 2026-07-18: Custom types (String, etc.) are stored as i64 in
-                    // state fields — the value is already ptrtoint. Skip conversion.
-                    if matches!(src.ty, Type::Custom(_)) {
-                        return TypedRegister {
-                            name: src.name.clone(),
-                            ty: target.clone(),
-                        };
-                    }
-                    // 2026-07-30: Ptr values stored as i64 internally — identity.
-                    if matches!(src.ty, Type::Ptr(_)) {
-                        return TypedRegister { name: src.name.clone(), ty: target.clone() };
-                    }
-                    writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, src.name).ok();
-                } else if target_ll == "ptr" && src_ll == "i64" {
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, src.name).ok();
-                } else if let Some(n) = crate::type_universe::bits_width(target) {
-                    // 2026-08-13 (pack): no-graph fallback for `as Bits<N>` —
-                    // same truncation contract as the casting-graph path.
-                    let tgt = format!("i{}", n);
-                    if src_ll == tgt {
-                        return TypedRegister { name: src.name.clone(), ty: target.clone() };
-                    }
-                    writeln!(out, "{}{} = trunc {} {} to {}", indent, v, src_ll, src.name, tgt).ok();
-                } else {
-                    writeln!(
-                        out,
-                        "{}{} = bitcast {} {} to {}",
-                        indent, v, src_ll, src.name, target_ll
-                    )
-                    .ok();
-                }
-                if address_cast {
-                    if let Some(st) = &src_strategy {
-                        self.fun.alloc_strategies.insert(v.to_string(), st.clone());
-                    }
-                }
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: target.clone(),
-                }
+                self.emit_cast_operand(out, v, src, target, indent)
             }
 
-            // ── IsType ───────────────────────────────────────────────
             Expr::IsType(_, _) => {
                 writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
                 TypedRegister {
@@ -9656,7 +9677,9 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
         K::Literal(_) | K::Identifier(_) => true,
-        K::Consume(inner) | K::Await(inner) | K::Deref(inner) => hir_expr_family_covered(inner),
+        K::Consume(inner) | K::Await(inner) | K::Deref(inner) | K::Cast { inner, .. } => {
+            hir_expr_family_covered(inner)
+        }
         K::Unary { inner, .. } => hir_expr_family_covered(inner),
         K::Binary { op, left, right }
             if !matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>

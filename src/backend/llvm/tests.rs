@@ -12841,6 +12841,10 @@ fn hir_native_literal_family_matches_ast_emission() {
             Expr::Quoted(b"hi".to_vec()),
         ),
         (
+            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Cast { inner: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(5)) }), to: crate::ast::Type::float(), via: None } },
+            Expr::Cast(Box::new(Expr::Decimal(5)), crate::ast::Type::float()),
+        ),
+        (
             HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Unary { op: crate::ast::UnaryOpKind::Neg, inner: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(7)) }) } },
             Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, Box::new(Expr::Decimal(7))),
         ),

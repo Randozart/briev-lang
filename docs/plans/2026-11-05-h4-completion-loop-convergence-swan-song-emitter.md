@@ -131,10 +131,18 @@ arms extracted verbatim into shared helpers (`emit_consume_operand`,
 `emit_hir_operand`, deep coverage extended. Txn-loop routing also landed
 earlier in this slice.
 
+Landed this increment: **Cast** — the arm splits cleanly at operand
+emission; the tail (graph path + LLVM coercion fallback + strategy
+propagation) extracted verbatim into `emit_cast_operand(out, v, src_reg,
+target, indent)`. The HIR side emits its operand natively — no AST, and
+NOT blocked on `Cast.via` typing (the graph path is recomputed from
+`(src.ty, target)` at emission, identical either way). IR parity test
+extended with a Cast case.
+
 Remaining families: Call (intrinsic/enum/user — needs register-level operand
-helpers, the deeper refactor), Field/Index (large arms, same extraction
-pattern), then `Cast`/`MethodCall`/`Reflect` need HIR `Cast.via` typing
-(frontend typer).
+helpers, the deeper refactor), Field/Index (large arms, same operand-split
+pattern where possible), MethodCall/Reflect (need receiver typing /
+frontend typer).
 
 ## Slice D (original plan, kept for the record)
 
