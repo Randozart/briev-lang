@@ -311,7 +311,7 @@ impl LlvmBackend {
 // i8 (native Bool), i1 (comparison result), or an i64-boxed Bool (a Bool
 // parameter widened by emit_box_param). Reduce any integer condition to i1 for
 // `br` — truncating a 0/1 value of any width is exact.
-fn guard_cond_i1(backend: &mut LlvmBackend, out: &mut String, indent: &str, cond: &TypedRegister) -> String {
+pub(crate) fn guard_cond_i1(backend: &mut LlvmBackend, out: &mut String, indent: &str, cond: &TypedRegister) -> String {
     if cond.ty == Type::bool_() {
         let b = backend.fun.gen_reg();
         writeln!(out, "{}{} = trunc i8 {} to i1", indent, b, cond.name).ok();

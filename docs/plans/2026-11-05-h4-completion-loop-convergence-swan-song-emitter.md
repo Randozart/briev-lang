@@ -231,6 +231,18 @@ corpus). Golden: `iter_chain_multi_struct_golden_output` green (runtime);
 full daily_use_smoke 37/37. Base HIR callables ride on
 `CompilerContext.generic_hir` (populated once per round).
 
+## Native control-flow statements: Guarded + Block (2026-11-05)
+
+The seam now emits `when` guards and blocks natively: the condition goes
+through operand recursion, children recurse through the seam (native or
+per-child conversion), and the bookkeeping mirrors the AST arms verbatim
+(guard temp scoping, label counters, termination/backedge/cur_block
+updates, Block's trailing void register). Children of a seam-reachable
+Guarded/Block are reconstructible by construction (the parent converted in
+`hir_sourced_body`), so the per-child convert fallback is unreachable —
+it exists so no path can double-emit. `guard_cond_i1` shared. Every
+`when` in the corpus now emits from HIR control flow.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

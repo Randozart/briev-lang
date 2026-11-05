@@ -10,6 +10,7 @@
 //! families (slice D) replace them.
 
 use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
+use std::fmt::Write;
 use crate::ast::Statement;
 use crate::hir::expr::HirExprKind;
 use crate::hir::stmt::{HirStmt, HirStmtKind};
@@ -77,6 +78,62 @@ pub(crate) fn emit_hir_statement(
                 return Some(reg);
             }
         }
+    }
+    // 2026-11-05 (H4 slice D, control flow): native Guarded and Block arms —
+    // the condition/children emit through the seam (native or per-node
+    // conversion), the bookkeeping mirrors the AST arms verbatim. Children of
+    // a seam-reachable Guarded/Block are reconstructible (the parent converted
+    // in hir_sourced_body), so the per-child convert fallback never fires in
+    // practice; it exists so no path can double-emit.
+    if let HirStmtKind::Guarded(cond, body) = &stmt.kind {
+        let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
+            return None;
+        };
+        let saved_lvt = backend.fun.last_val_temps.clone();
+        let saved_lvt_types = backend.fun.last_val_types.clone();
+        let label_n = backend.fun.txn_counter;
+        backend.fun.txn_counter += 1;
+        let then_lbl = format!("guard.then{}", label_n);
+        let end_lbl = format!("guard.end{}", label_n);
+        let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
+        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond_i1, then_lbl, end_lbl).ok();
+        writeln!(out, "{}{}:", indent, then_lbl).ok();
+        backend.fun.terminated = false;
+        for child in body {
+            if emit_hir_statement(backend, out, child, indent).is_none() {
+                let Some(ast) = convert_hir_statement(child) else {
+                    return None;
+                };
+                emit_statement(backend, out, &ast, indent);
+            }
+        }
+        backend.fun.last_val_temps = saved_lvt;
+        backend.fun.last_val_types = saved_lvt_types;
+        if !backend.fun.terminated {
+            writeln!(out, "{}br label %{}", indent, end_lbl).ok();
+        }
+        writeln!(out, "{}{}:", indent, end_lbl).ok();
+        backend.fun.terminated = false;
+        backend.fun.tail_loop_backedge = false;
+        backend.fun.cur_block = Some(end_lbl.clone());
+        return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+    }
+    if let HirStmtKind::Block(children) = &stmt.kind {
+        let mut last = TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        };
+        for child in children {
+            if let Some(reg) = emit_hir_statement(backend, out, child, indent) {
+                last = reg;
+            } else {
+                let Some(ast) = convert_hir_statement(child) else {
+                    return None;
+                };
+                last = emit_statement(backend, out, &ast, indent);
+            }
+        }
+        return Some(last);
     }
     match convert_hir_statement(stmt) {
         Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
