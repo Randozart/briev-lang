@@ -12,6 +12,7 @@ use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
+mod socket_effects;
 
 type Node = usize;
 
@@ -35,6 +36,7 @@ struct Callable {
 
 #[derive(Clone)]
 enum Constraint {
+    Bitwise(crate::ast::BinaryOpKind, Node, Node, Node),
     Copy(Node, Node),
     Load(Node, Node),
     Store(Node, Node),
@@ -57,6 +59,7 @@ struct Graph {
     default_encoding_targets: BTreeSet<String>,
     entry_nodes: BTreeSet<String>,
     user_operators: BTreeSet<String>,
+    methods: BTreeMap<(String, String), Option<String>>,
     points: Vec<BTreeSet<Node>>,
     constants: Vec<BTreeSet<i64>>,
     inexact_constants: BTreeSet<Node>,
@@ -77,7 +80,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new() }
     }
 }
 
@@ -144,6 +147,7 @@ impl Graph {
 
     fn apply(&mut self, constraint: Constraint) -> bool {
         match constraint {
+            Constraint::Bitwise(operator, left, right, result) => self.bitwise_facts(operator, left, right, result),
             Constraint::Copy(source, target) => {
                 let refs = self.points[source].clone();
                 let constants = self.constants[source].clone();
@@ -203,7 +207,7 @@ impl Graph {
         // unknown number remains capturing; this is never a helper-name rule.
         let numbers = &self.constants[number];
         let borrowed = !self.inexact_constants.contains(&number) && !numbers.is_empty() && numbers.iter().all(|number| {
-            syscall_borrows().contains(number)
+            self.syscall_borrows(*number, args)
         });
         let refs = args.iter().flat_map(|arg| {
             if borrowed { self.contents(*arg) } else { self.points[*arg].clone() }
@@ -283,16 +287,6 @@ fn extend<T: Ord>(target: &mut BTreeSet<T>, values: impl IntoIterator<Item = T>)
     let before = target.len();
     target.extend(values);
     target.len() != before
-}
-
-fn syscall_borrows() -> &'static BTreeSet<i64> {
-    static NUMBERS: std::sync::OnceLock<BTreeSet<i64>> = std::sync::OnceLock::new();
-    NUMBERS.get_or_init(|| {
-        let config: toml::Value = toml::from_str(include_str!("../../config/memory-effects.toml"))
-            .expect("bundled memory-effect table");
-        config["linux_x86_64"]["synchronous_borrowing"].as_array().expect("syscall list")
-            .iter().map(|number| number.as_integer().expect("syscall number")).collect()
-    })
 }
 
 pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, universe: Option<&crate::type_universe::TypeUniverse>) -> ReclamationPlan {

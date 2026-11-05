@@ -11899,3 +11899,24 @@ the first line put an instruction inside the parameter list. Consume the full
 signature before instrumenting its body, and attach inlining attributes at the
 body brace so aggregate return types keep their layout. The two tier-2 dynamic
 payload ABI fixtures exercise the generated thunks at O0.
+
+## 2026-11-05 — conditional socket borrowing
+
+Controlled socket clients retained temporary wrapper allocations because the
+memory-effect table did not classify the synchronous socket ABI. Platform
+configuration now declares copying calls and a conditional sendto rule:
+MSG_ZEROCOPY must be absent from every possible flags value. Unknown, missing,
+zero-copy and mixed flags remain capturing. A bounded bitwise constant lattice
+preserves pointer provenance and becomes unknown on saturation. The kernel
+contract is documented at https://docs.kernel.org/networking/msg_zerocopy.html.
+Regression tests cover copying, retained and dynamic sends, provenance and
+saturation; controlled native peers check memory and descriptor cleanup.
+
+The connect fixture also exposed unclassified concrete method calls in address
+construction. Register explicit-receiver methods in the call graph and dispatch
+those calls using the receiver type. Preserve member shadowing even for methods
+whose effects cannot be modeled; implicit receiver fields, generic members,
+chain back-references and dynamic dispatch remain conservative. Tests retain
+returned pointer aliases and reject a same-named free-function fallback.
+
+Status: FIXED 2026-11-05; 3,503 library tests pass, including all socket-effect and method-escape regressions.
