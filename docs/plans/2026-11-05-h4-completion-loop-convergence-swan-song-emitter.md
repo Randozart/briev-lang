@@ -217,6 +217,20 @@ gap: the storage-class proof surface included sync-wrapped transactions
 (the AST iterates bare `TopLevel::Transaction` only) —
 `mixed_effect_shape` pinned it.
 
+## H3.6 backend wiring ✅ DONE (2026-11-05)
+
+The specialization site (`emit_specialized_definition`) now derives
+specializations by HIR substitution under `BRIEV_HIR_EMIT=1`:
+`hir::specialize::specialize_with_substitution` (explicit subst-map form,
+added for the queue's shape) produces the specialized HIR callable, whose
+body feeds the statement seam; the AST-substituted body stays as the
+fallback/splice source, and the seam's per-statement debug asserts pin
+HIR substitution == AST substitution statement-for-statement (the sweep's
+131/0 run IS that proof on every trait-generic specialization in the
+corpus). Golden: `iter_chain_multi_struct_golden_output` green (runtime);
+full daily_use_smoke 37/37. Base HIR callables ride on
+`CompilerContext.generic_hir` (populated once per round).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

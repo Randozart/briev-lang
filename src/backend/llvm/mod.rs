@@ -2837,6 +2837,19 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         self.hir_stmts_fallback = 0;
         if crate::backend::hir_emit_enabled() {
             self.hir_stmt_bodies = build_hir_stmt_bodies(&analysis.hir);
+            // 2026-11-05 (H3.6): base HIR callables for the specialization
+            // site — unique top-level defns with declared type params.
+            self.ctx.generic_hir = analysis
+                .hir
+                .callables
+                .iter()
+                .filter(|c| {
+                    c.owner.is_none()
+                        && matches!(c.kind, crate::hir::HirCallableKind::Defn)
+                        && !c.type_params.is_empty()
+                })
+                .map(|c| (c.name.clone(), c.clone()))
+                .collect();
         }
         // 2026-09-11 (buffered stdout): gate the epilogue flush on the
         // stdlib lane actually being present — bare programs get no call.

@@ -85,6 +85,25 @@ pub fn specialize_callable_with_renames(
     ids: &mut IdSupply,
 ) -> Option<HirCallable> {
     let subst = substitution_for(c, type_args)?;
+    specialize_with_substitution(c, &subst, name, renames, ids)
+}
+
+/// 2026-11-05 (H3.6 backend wiring): specialize from an explicit
+/// `{type-param → concrete}` map — the form the backend's specialization
+/// queue carries. Arity-independent; a param absent from the map keeps its
+/// declared (generic) type.
+pub fn specialize_with_substitution(
+    c: &HirCallable,
+    subst: &HashMap<String, Type>,
+    name: &str,
+    renames: &HashMap<String, String>,
+    ids: &mut IdSupply,
+) -> Option<HirCallable> {
+    if c.type_params.is_empty() && !subst.is_empty() {
+        // A monomorphic callable has nothing to substitute; the caller
+        // constructing a subst for it is a dispatch bug.
+        return None;
+    }
     let mut out = c.clone();
     out.id = ids.def();
     out.item = ids.item();

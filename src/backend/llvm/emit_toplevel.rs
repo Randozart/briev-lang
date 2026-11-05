@@ -4323,6 +4323,28 @@ impl LlvmBackend {
         for stmt in specialized.body.iter_mut() {
             crate::typechecker::substitute_stmt_types(stmt, subst);
         }
+        // 2026-11-05 (H3.6): under the flag the specialization is derived by
+        // HIR substitution (hir::specialize) and its body feeds the statement
+        // seam; the AST-substituted body above stays as the fallback/splice
+        // source, and debug builds pin HIR substitution == AST substitution
+        // statement-for-statement (the golden: iter_chain_multi's trait
+        // generics). A base without HIR (duplicates, non-top-level) keeps the
+        // pure-AST path.
+        if crate::backend::hir_emit_enabled() {
+            if let Some(base_hir) = self.ctx.generic_hir.get(base).cloned() {
+                let mut ids = crate::hir::ids::IdSupply::default();
+                if let Some(spec_hir) = crate::hir::specialize::specialize_with_substitution(
+                    &base_hir,
+                    subst,
+                    mangled,
+                    &std::collections::HashMap::new(),
+                    &mut ids,
+                ) {
+                    self.hir_stmt_bodies
+                        .insert(mangled.to_string(), spec_hir.body.statements.clone());
+                }
+            }
+        }
         let needs_state = self.ctx.defn_needs_state.get(mangled).copied().unwrap_or(true);
         self.emit_definition(out, &specialized, needs_state);
     }

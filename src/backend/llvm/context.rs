@@ -254,6 +254,10 @@ pub struct CompilerContext {
     /// concrete instantiation at the call site, reading the body/params from
     /// here, substituting the type params, and emitting a specialized symbol.
     pub generic_defns: HashMap<String, crate::ast::top::Definition>,
+    /// 2026-11-05 (H3.6): base HIR callables for generic defns, keyed by base
+    /// name. Present only under `BRIEV_HIR_EMIT=1`; the specialization site
+    /// substitutes via `hir::specialize` and feeds the statement seam.
+    pub generic_hir: HashMap<String, crate::hir::HirCallable>,
     /// 2026-10-13 (S6): type-param names per generic defn (`bump_twice` →
     /// ["T"]), the substitution key order for mangling + param substitution.
     pub generic_defn_type_params: HashMap<String, Vec<String>>,
@@ -690,6 +694,7 @@ impl CompilerContext {
             defn_params: HashMap::new(),
             defn_return_types: HashMap::new(),
             generic_defns: HashMap::new(),
+            generic_hir: HashMap::new(),
             generic_defn_type_params: HashMap::new(),
             pending_defn_specializations: Vec::new(),
             emitted_defn_specializations: std::collections::HashSet::new(),
