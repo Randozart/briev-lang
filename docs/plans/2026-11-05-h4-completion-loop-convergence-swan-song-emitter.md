@@ -382,6 +382,15 @@ correct next structural arms are Match/Block (expression forms) and Index.
 H5-audit note: inventory the internal `if` expression form as
 metaprogramming-carried knowledge.
 
+## Native Block expression form (2026-11-05)
+
+Children recurse through the statement seam (native or per-child
+conversion); the trailing Expression(Match) value special-case mirrors the
+AST arm (json.bv fix); all children reconstruct before the first emits.
+With this, every reconstructible EXPRESSION kind is seam-covered except
+Index/Slice/Lambda/Spawn/If-synthesized/MethodCall/Reflect (Index is the
+last big operand-split; MethodCall/Reflect need the Cast.via typer).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

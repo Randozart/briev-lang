@@ -420,6 +420,41 @@ impl LlvmBackend {
                 .ok();
                 TypedRegister { name: v.clone(), ty: pointee_ty }
             }
+            HirExprKind::Block(children) => {
+                // 2026-11-05 (H4 slice D): children recurse through the
+                // statement seam (native or per-child conversion); the
+                // trailing Expression(Match) value special-case mirrors the
+                // AST arm (json.bv fix). All children reconstruct BEFORE the
+                // first emits — no partial IR on fallback.
+                let ast_children: Vec<crate::ast::Statement> =
+                    match children.iter().map(crate::hir::to_ast::stmt).collect::<Option<Vec<_>>>() {
+                        Some(c) => c,
+                        None => return None,
+                    };
+                let mut last = TypedRegister { name: v.clone(), ty: Type::void() };
+                let n = children.len();
+                for (i, child) in children.iter().enumerate() {
+                    if i + 1 == n {
+                        if let crate::hir::stmt::HirStmtKind::Expression(e @ crate::hir::expr::HirExpr {
+                            kind: crate::hir::expr::HirExprKind::Match { .. },
+                            ..
+                        }) = &child.kind
+                        {
+                            let Some(ast_match) = crate::hir::to_ast::expr(e) else {
+                                return None;
+                            };
+                            last = self.emit_expr(out, &ast_match, indent);
+                            continue;
+                        }
+                    }
+                    last = match super::emit_hir_stmt::emit_hir_statement(self, out, child, indent) {
+                        Some(reg) => reg,
+                        // Unreachable (children pre-converted); kept total.
+                        None => self.emit_statement(out, &ast_children[i], indent),
+                    };
+                }
+                last
+            }
             HirExprKind::StructLiteral { type_name, fields, .. } => {
                 // Dispatch-only: every field reconstructs BEFORE the call —
                 // emit_struct_literal allocates the image first, so a
