@@ -6,4 +6,16 @@
 # read, write, open, close, fstat, poll, lseek, access, nanosleep, getpid,
 # readlink, gettimeofday, getrlimit, getuid, getgid, geteuid, getegid,
 # getppid, clock_gettime, clock_getres, exit, exit_group.
-synchronous_borrowing = [0, 1, 2, 3, 5, 7, 8, 21, 35, 39, 89, 96, 97, 102, 104, 107, 108, 110, 228, 229, 60, 231]
+# 2026-11-05: socket, connect, accept, recvfrom, shutdown, bind, listen,
+# getsockname, getpeername, socketpair, setsockopt and getsockopt copy their
+# user buffers synchronously. sendto is conditional below; message/vector
+# interfaces remain unclassified until their nested buffers are modeled.
+synchronous_borrowing = [0, 1, 2, 3, 5, 7, 8, 21, 35, 39, 41, 42, 43, 45, 48, 49, 50, 51, 52, 53, 54, 55, 89, 96, 97, 102, 104, 107, 108, 110, 228, 229, 60, 231]
+
+# 2026-11-05: sendto borrows only when MSG_ZEROCOPY (0x04000000) is
+# proved absent. Zero-copy buffers survive syscall return until notification.
+# argument indexes exclude the syscall number. Unknown flags remain capturing.
+[[linux_x86_64.conditional_borrowing]]
+number = 44
+argument = 3
+absent_mask = 67108864
