@@ -1,0 +1,18 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+import "std/json.bv";
+defn inspect(text: String) -> Bool {
+    match json_parse(text) {
+        Ok(value) => { match value { Array(items) => items.Count#() == 2, _ => false } },
+        Err(_) => false,
+    }
+};
+let done: Bool = false;
+node main [!done][done] {
+    foreach index in 0..100 {
+        when !inspect("[{\"key\":\"value\"},0.25]") { endprogram 1; };
+        when inspect("[1,2]trailing") { endprogram 2; };
+    };
+    println!("structured_lifetimes_ok"); done = true; endprogram;
+};

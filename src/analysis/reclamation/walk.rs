@@ -5,6 +5,7 @@
 //! their inputs instead of being interpreted as evidence for reclamation.
 use super::*;
 use crate::ast::{BinaryOpKind, Pattern, UnaryOpKind};
+mod structured;
 
 pub(super) fn register(graph: &mut Graph, items: &[TopLevel], live: &std::collections::HashSet<String>) {
     for item in items { register_item(graph, item, live); }
@@ -30,7 +31,9 @@ fn closed_initializer(item: &TopLevel) -> bool {
 
 fn register_item(graph: &mut Graph, item: &TopLevel, live: &std::collections::HashSet<String>) {
     match item {
-        TopLevel::Definition(definition) if live.contains(&definition.name) => register_definition(graph, definition),
+        // Implicit casts can call source definitions absent from direct-call liveness.
+        // Register available bodies; build_owner still expands only reached callees.
+        TopLevel::Definition(definition) => register_definition(graph, definition),
         TopLevel::Transaction(transaction) => register_transaction(graph, transaction),
         TopLevel::Export(export) => register_item(graph, &export.inner, live),
         TopLevel::SyncGroup { item, .. } | TopLevel::Fuzzed { item, .. } => register_item(graph, item, live),
@@ -39,7 +42,11 @@ fn register_item(graph: &mut Graph, item: &TopLevel, live: &std::collections::Ha
         TopLevel::Constant(constant) => {
             let node = graph.global(&constant.name);
             graph.global_types.insert(constant.name.clone(), constant.ty.clone());
-            if let Expr::Decimal(value) = &constant.expr { graph.constants[node].insert(*value); graph.inexact_constants.remove(&node); }
+            if let Expr::Decimal(value) = &constant.expr {
+                // A literal constant is a value, not the address of its global storage.
+                graph.points[node].clear();
+                graph.constants[node].insert(*value); graph.inexact_constants.remove(&node);
+            }
         }
         TopLevel::StateDecl(state) => { graph.global(&state.name); graph.global_types.insert(state.name.clone(), state.ty.clone()); }
         TopLevel::Statement(statement) => register_global(graph, statement),
@@ -101,6 +108,7 @@ fn register_enum(graph: &mut Graph, definition: &crate::ast::EnumDefinition) {
             crate::ast::EnumVariant::Unit(name) | crate::ast::EnumVariant::Tuple(name, _) | crate::ast::EnumVariant::Struct(name, _) => name,
         };
         graph.constructors.insert(name.clone());
+        structured::register_variant(graph, definition, variant);
     }
 }
 
@@ -110,7 +118,10 @@ fn register_typedef(graph: &mut Graph, definition: &crate::ast::TypeDef) {
         graph.user_operators.insert(definition.name.clone());
     }
     for slot in &definition.body.slots {
-        if let Some(name) = slot.name.strip_prefix("__variant_") { graph.constructors.insert(name.into()); }
+        if let Some(name) = slot.name.strip_prefix("__variant_") {
+            graph.constructors.insert(name.into());
+            structured::register_slot(graph, definition, name, &slot.ty);
+        }
     }
 }
 fn register_callable(graph: &mut Graph, name: &str, count: usize) {
@@ -171,8 +182,8 @@ impl Builder<'_> {
                 let target = self.local(name);
                 if let Some(expr) = expr {
                     let value = self.expression(expr);
-                    self.graph.copy(value, target);
-                    for name in names { let target = self.local(name); self.load(value, target); }
+                    if names.len() <= 1 { self.graph.copy(value, target); }
+                    else { for name in names { let target = self.local(name); self.load(value, target); } }
                 }
             }
             Statement::Assign(target, value) => {
@@ -193,10 +204,7 @@ impl Builder<'_> {
                 self.load(source, target);
                 self.statements(body);
             }
-            Statement::Match { expr, arms } => {
-                let value = self.expression(expr);
-                for arm in arms { self.statement_arm(value, arm); }
-            }
+            Statement::Match { expr, arms } => self.statement_match(expr, arms),
             Statement::ArrowAssign { target, value, .. } => {
                 let value = self.expression(value);
                 if let Some(target) = target {
@@ -212,6 +220,17 @@ impl Builder<'_> {
         }
     }
 
+    fn statement_match(&mut self, expression: &Expr, arms: &[crate::ast::StmtMatchArm]) {
+        let value = self.expression(expression);
+        let ty = self.expression_type(expression);
+        for arm in arms {
+            self.statement_pattern_types(arm, ty.as_ref());
+            self.statement_arm(value, arm);
+        }
+    }
+    fn statement_pattern_types(&mut self, arm: &crate::ast::StmtMatchArm, ty: Option<&crate::ast::Type>) {
+        for pattern in &arm.patterns { self.pattern_types(pattern, ty); }
+    }
     fn statement_arm(&mut self, value: Node, arm: &crate::ast::StmtMatchArm) {
         for pattern in &arm.patterns { self.pattern(pattern, value); }
         self.statements(&arm.body);
@@ -281,9 +300,20 @@ impl Builder<'_> {
                 for value in values { self.store_expression(root, value); }
                 root
             }
+            // 2026-11-05: slices may allocate a copy or retain a view. Track
+            // both identities; a scalar consumer can reclaim local copies,
+            // while an escaping slice keeps its backing storage reachable.
+            Expr::Slice { array, start, end, stride } => {
+                let base = self.indexed_base(array);
+                for bound in [start, end, stride].into_iter().flatten() { self.expression(bound); }
+                let result = self.graph.allocation(self.owner);
+                self.graph.copy(base, result);
+                self.graph.constraints.push(Constraint::CopyMemory(base, result));
+                result
+            }
             Expr::Index(base, index) => {
                 self.expression(index);
-                let base = self.expression(base); let result = self.graph.node(); self.load(base, result); result
+                let base = self.indexed_base(base); let result = self.graph.node(); self.load(base, result); result
             }
             Expr::Field(base, field) => {
                 let base = self.expression(base);
@@ -294,6 +324,12 @@ impl Builder<'_> {
                 let base = self.expression(base); let result = self.graph.node(); self.load(base, result); result
             }
             Expr::Cast(value, target) => self.cast(value, target),
+            Expr::MethodCall(receiver, name, arguments, None, refs) if refs.is_empty()
+                && crate::intrinsic_signatures::get_intrinsic_signature(name).is_some_and(|signature| !signature.observable) => {
+                let mut values = vec![self.expression(receiver)];
+                values.extend(arguments.iter().map(|argument| self.expression(argument)));
+                self.intrinsic_or_unknown(name, &values)
+            }
             Expr::Consume(value) | Expr::Capture { expr: value, .. } => self.expression(value),
             Expr::AddrOf(value) => {
                 let value = self.expression(value); let result = self.graph.allocation(self.owner);
@@ -315,8 +351,9 @@ impl Builder<'_> {
                 result
             }
             Expr::Match(value, arms) => {
+                let ty = self.expression_type(value);
                 let value = self.expression(value); let result = self.graph.node();
-                for arm in arms { self.expression_arm(value, result, arm); }
+                for arm in arms { self.pattern_types(&arm.pattern, ty.as_ref()); self.expression_arm(value, result, arm); }
                 result
             }
             Expr::Block(statements) => self.block(statements),
@@ -330,6 +367,15 @@ impl Builder<'_> {
         }
     }
 
+    // 2026-11-05: richer index types must not license unclassified user-op
+    // effects. Keep the barrier until those operation bodies join the graph.
+    fn indexed_base(&mut self, expression: &Expr) -> Node {
+        let value = self.expression(expression);
+        if self.expression_type(expression).is_none_or(|ty| self.has_user_operators(&ty)) {
+            self.unsupported(); self.capture(&[value]);
+        }
+        value
+    }
     fn store_expression(&mut self, target: Node, value: &Expr) {
         let value = self.expression(value);
         self.graph.constraints.push(Constraint::Store(target, value));
@@ -406,6 +452,13 @@ impl Builder<'_> {
             Expr::Float(_) => Some(crate::ast::Type::float()),
             Expr::Bool(_) => Some(crate::ast::Type::bool_()),
             Expr::Cast(_, target) => Some(target.clone()),
+            Expr::MethodCall(_, name, _, None, refs) if refs.is_empty() => {
+                match crate::intrinsic_signatures::get_intrinsic_signature(name)?.return_kind {
+                    crate::intrinsic_signatures::ReturnKind::Native(category) => Some(crate::ast::Type::Custom(category.into())),
+                    crate::intrinsic_signatures::ReturnKind::Exact(ty) => Some(ty),
+                    _ => None,
+                }
+            }
             Expr::Call(name, arguments, _) => self.graph.return_types.get(name).cloned().or_else(|| self.generic_result(name, arguments)).or_else(|| {
                 use crate::intrinsic_signatures::ReturnKind;
                 match crate::intrinsic_signatures::get_intrinsic_signature(name)?.return_kind {
@@ -419,8 +472,13 @@ impl Builder<'_> {
                 if let (Expr::Tuple(values), Expr::Decimal(index)) = (base.as_ref(), index.as_ref()) {
                     return usize::try_from(*index).ok().and_then(|index| values.get(index)).and_then(|value| self.expression_type(value));
                 }
-                match self.expression_type(base)? { crate::ast::Type::Vector(inner, _) => Some(*inner), _ => None }
+                let mut context = crate::typechecker::TypecheckContext::new(&self.graph.universe);
+                context.bindings.insert("base".into(), self.expression_type(base)?);
+                context.bindings.insert("index".into(), self.expression_type(index)?);
+                let expression = Expr::Index(Box::new(Expr::Identifier("base".into())), Box::new(Expr::Identifier("index".into())));
+                crate::typechecker::infer_type_only(&expression, &mut context).ok()
             }
+            Expr::Slice { array, .. } => self.expression_type(array),
             Expr::BinaryOp(_, lhs, _) => self.expression_type(lhs),
             Expr::Field(base, field) => {
                 let ty = self.expression_type(base)?;

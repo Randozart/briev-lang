@@ -11949,7 +11949,7 @@ node run [done == false][done == true] {
     let ir = backend.generate(&items, None);
     // The view builds a 24-byte header block ({ base, len, len }).
     assert!(
-        ir.contains("call ptr @malloc(i64 24)"),
+        ir.contains("call ptr @malloc(i64 24)") || ir.contains("call ptr @__briev_region_malloc(i64 24)"),
         "the contiguous slice view must allocate the header block:\n{ir}"
     );
     // The view's base pointer GEPs the state column (no copy).

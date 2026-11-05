@@ -12,6 +12,8 @@ use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
+#[cfg(test)]
+mod structured_tests;
 
 type Node = usize;
 
@@ -68,6 +70,7 @@ struct Graph {
     globals: BTreeMap<String, Node>,
     global_types: BTreeMap<String, crate::ast::Type>,
     constructors: BTreeSet<String>,
+    variant_types: BTreeMap<String, (Vec<String>, Vec<crate::ast::Type>)>,
     escaped: BTreeSet<Node>,
     unsupported: BTreeSet<String>,
 }
@@ -77,7 +80,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new() }
     }
 }
 

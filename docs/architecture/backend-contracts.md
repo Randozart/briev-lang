@@ -420,3 +420,13 @@ There is no TS emitter.
 3. **Vulkan smoke test** — needs an installed runner.
 4. **LLVM diagnostics sweep** — eprintln warnings (AddressOf#, main.rs
    unused) remain an opportunistic house-style pass.
+
+### Structured-value reclamation barriers — 2026-11-05
+
+Region analysis registers available source definitions independently of direct-call liveness: implicit casting edges may reach them. Destructured payload types retain generic substitutions. Slices conservatively carry both fresh storage and backing aliases. Indexed casts use type-checker inference; pure intrinsic methods use the declared effect registry.
+
+Plain bindings copy their initializer's provenance; only destructuring loads
+elements. Literal numeric constants carry value facts without aliasing global
+storage. Unknown and custom-operation indexing still captures its inputs and
+blocks reclamation until the operation's effects can be proved. Registering
+available bodies is conservative but can increase analysis cost on large inputs.
