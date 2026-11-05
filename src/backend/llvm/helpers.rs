@@ -2496,6 +2496,7 @@ impl LlvmBackend {
         // an already-boxed value emits an i32 register into an i64 store on
         // wasm32.
         let is_narrow_handle = match &reg.ty {
+            Type::Tuple(_) => true,
             Type::Custom(name) | Type::Applied(name, _) => {
                 self.ctx.obj_types.contains(name)
                     || self.ctx.coll_storage.contains_key(name)

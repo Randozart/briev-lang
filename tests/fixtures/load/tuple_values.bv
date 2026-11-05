@@ -1,0 +1,49 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj Endpoint { descriptor: Int; };
+
+defn endpoints(seed: Int) -> (Endpoint,Endpoint) {
+    term (Endpoint { descriptor: seed }, Endpoint { descriptor: seed+1 });
+};
+
+defn returned_values(seed: Int) -> (String,Float,Float64,Bool,Char) {
+    term ("tuple text", seed as Float, seed as Float64, true, 'Q');
+};
+
+defn verify(seed: Int) -> Bool {
+    let (left,right) = endpoints(seed);
+    when left.descriptor != seed || right.descriptor != seed+1 { term false; };
+    let local = (left,right);
+    let (first,second) = local;
+    when first.descriptor != seed || second.descriptor != seed+1 { term false; };
+    when local.0.descriptor != seed || local.1.descriptor != seed+1 { term false; };
+    let values = returned_values(seed);
+    let (text,small,large,flag,letter) = values;
+    when text != "tuple text" || small != seed as Float || large != seed as Float64 { term false; };
+    when !flag || letter != 'Q' || values.0 != text || values.1 != small || values.2 != large { term false; };
+    let nested = (local,values);
+    let (nested_pair,nested_values) = nested;
+    when nested_pair.0.descriptor != seed || nested_values.0 != "tuple text" { term false; };
+    let pointer: Ptr = Malloc#(8);
+    Store#(pointer as Int,seed,8);
+    let pointers = (pointer,seed as Int32);
+    let (borrowed,narrow) = pointers;
+    let loaded: Int = Load#(borrowed as Int,8);
+    Free#(pointer);
+    when loaded != seed || narrow as Int != seed { term false; };
+    term true;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let seed: Int = get_env_int!("TUPLE_SEED");
+    when seed < 1 || seed > 1000 { endprogram 2; };
+    when !verify(seed) { endprogram 3; };
+    let constant = ("hoisted",1.5,true);
+    let (label,number,flag) = constant;
+    when label != "hoisted" || number != 1.5 || !flag { endprogram 4; };
+    println!("tuple_values_ok");
+    done = true;
+    endprogram;
+};

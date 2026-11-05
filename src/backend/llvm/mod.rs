@@ -2,6 +2,7 @@ pub mod abi;
 pub mod builder;
 pub(crate) mod coll_scaffold;
 mod collection_assignment;
+mod tuple_values;
 pub mod context;
 mod reclamation;
 pub mod directive;
