@@ -488,6 +488,17 @@ Plan:
 3. Behavior-preserving: lib + sweep + A/B after each.
 4. Legacy baseline in untouched files stays documented (house rule); the
    full `src/backend/llvm` cleanup is a future session.
+Progress (2026-11-05): `emit_hir_statement` split landed (68/154 →
+all cognitive/cyclomatic under 15); follow-up split landed for
+`emit_scoped_statement` (Guarded/Block helpers), `emit_rollback_statement`
+(zero-literal helper), `emit_term_value`, and the statement Match
+(reconstruct / conditions / bodies phases). Remaining in-file: three
+lexical O(n²) loop-depth-2 warnings (per-arm × patterns/children — genuine
+structure, not quadratic data; flatten with per-arm helper fns + a
+MatchCtx to satisfy the warning). Remaining repo-wide: src/hir offenders
+(transition_graph 23, needs_state 12, watchdog 10, defn_liveness 10,
+spawn_pool 6, enum_repr 5, …).
+
 5. **Fold Praetor into the per-commit checklist** — changed dirs before
    every push, from now on.
 

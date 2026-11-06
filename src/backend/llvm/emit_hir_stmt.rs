@@ -78,64 +78,78 @@ fn emit_expr_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirSt
 }
 
 /// H4 slice D dispatch group: scoped control flow (Guarded, Block).
+/// H4 slice D dispatch group: scoped control flow (Guarded, Block).
 fn emit_scoped_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
-    // 2026-11-05 (H4 slice D, control flow): native Guarded and Block arms —
-    // the condition/children emit through the seam (native or per-node
-    // conversion), the bookkeeping mirrors the AST arms verbatim. Children of
-    // a seam-reachable Guarded/Block are reconstructible (the parent converted
-    // in hir_sourced_body), so the per-child convert fallback never fires in
-    // practice; it exists so no path can double-emit.
-    if let HirStmtKind::Guarded(cond, body) = &stmt.kind {
-        let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
-            return None;
-        };
-        let saved_lvt = backend.fun.last_val_temps.clone();
-        let saved_lvt_types = backend.fun.last_val_types.clone();
-        let label_n = backend.fun.txn_counter;
-        backend.fun.txn_counter += 1;
-        let then_lbl = format!("guard.then{}", label_n);
-        let end_lbl = format!("guard.end{}", label_n);
-        let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
-        writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond_i1, then_lbl, end_lbl).ok();
-        writeln!(out, "{}{}:", indent, then_lbl).ok();
-        backend.fun.terminated = false;
-        for child in body {
-            if emit_hir_statement(backend, out, child, indent).is_none() {
-                let Some(ast) = convert_hir_statement(child) else {
-                    return None;
-                };
-                emit_statement(backend, out, &ast, indent);
-            }
+    match &stmt.kind {
+        HirStmtKind::Guarded(cond, body) => {
+            emit_guarded_statement(backend, out, cond, body, indent)
         }
-        backend.fun.last_val_temps = saved_lvt;
-        backend.fun.last_val_types = saved_lvt_types;
-        if !backend.fun.terminated {
-            writeln!(out, "{}br label %{}", indent, end_lbl).ok();
-        }
-        writeln!(out, "{}{}:", indent, end_lbl).ok();
-        backend.fun.terminated = false;
-        backend.fun.tail_loop_backedge = false;
-        backend.fun.cur_block = Some(end_lbl.clone());
-        return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+        HirStmtKind::Block(children) => emit_block_children(backend, out, children, indent),
+        _ => None,
     }
-    if let HirStmtKind::Block(children) = &stmt.kind {
-        let mut last = TypedRegister {
-            name: backend.fun.gen_reg(),
-            ty: crate::ast::Type::void(),
-        };
-        for child in children {
-            if let Some(reg) = emit_hir_statement(backend, out, child, indent) {
-                last = reg;
-            } else {
-                let Some(ast) = convert_hir_statement(child) else {
-                    return None;
-                };
-                last = emit_statement(backend, out, &ast, indent);
-            }
+}
+
+/// Guarded (when) emission: condition through operand recursion, children
+/// through the seam; bookkeeping verbatim from the AST arm.
+fn emit_guarded_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    cond: &crate::hir::expr::HirExpr,
+    body: &[HirStmt],
+    indent: &str,
+) -> Option<TypedRegister> {
+    let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
+        return None;
+    };
+    let saved_lvt = backend.fun.last_val_temps.clone();
+    let saved_lvt_types = backend.fun.last_val_types.clone();
+    let label_n = backend.fun.txn_counter;
+    backend.fun.txn_counter += 1;
+    let then_lbl = format!("guard.then{}", label_n);
+    let end_lbl = format!("guard.end{}", label_n);
+    let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
+    writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond_i1, then_lbl, end_lbl).ok();
+    writeln!(out, "{}{}:", indent, then_lbl).ok();
+    backend.fun.terminated = false;
+    for child in body {
+        if emit_hir_statement(backend, out, child, indent).is_none() {
+            let Some(ast) = convert_hir_statement(child) else {
+                return None;
+            };
+            emit_statement(backend, out, &ast, indent);
         }
-        return Some(last);
     }
-    None
+    backend.fun.last_val_temps = saved_lvt;
+    backend.fun.last_val_types = saved_lvt_types;
+    if !backend.fun.terminated {
+        writeln!(out, "{}br label %{}", indent, end_lbl).ok();
+    }
+    writeln!(out, "{}{}:", indent, end_lbl).ok();
+    backend.fun.terminated = false;
+    backend.fun.tail_loop_backedge = false;
+    backend.fun.cur_block = Some(end_lbl.clone());
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+}
+
+/// Block/serial-child emission: children through the seam, last register wins.
+fn emit_block_children(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    children: &[HirStmt],
+    indent: &str,
+) -> Option<TypedRegister> {
+    let mut last = TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() };
+    for child in children {
+        if let Some(reg) = emit_hir_statement(backend, out, child, indent) {
+            last = reg;
+        } else {
+            let Some(ast) = convert_hir_statement(child) else {
+                return None;
+            };
+            last = emit_statement(backend, out, &ast, indent);
+        }
+    }
+    Some(last)
 }
 
 /// H4 slice D dispatch group: value-binding statements (ArrowAssign, Let, Assign).
@@ -255,14 +269,27 @@ fn emit_foreach_statement_hir(backend: &mut LlvmBackend, out: &mut String, stmt:
 
 /// H4 slice D dispatch group: Term + Tail (the P-gated transaction exit).
 fn emit_term_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
-    // 2026-11-05 (H4 slice D): native Term — the P-gated transaction exit.
-    // Reconstructibility is checked BEFORE the web-flush/defer prefix (which
-    // emits IR), so an unsupported value falls back with no partial emission.
-    // Value emission goes through operand recursion (covered leaves native);
-    // the return-context setup, list-literal construction, and the whole
-    // tail (backedge, float unbox, member capture, callable store, ret
-    // paths) share the AST arm's extracted helpers verbatim.
-    if let HirStmtKind::Term(val) = &stmt.kind {
+    match &stmt.kind {
+        HirStmtKind::Term(val) => emit_term_value(backend, out, val, indent),
+        HirStmtKind::Tail(e) => {
+            let term = HirStmt {
+                id: stmt.id,
+                span: stmt.span,
+                kind: HirStmtKind::Term(Some(e.clone())),
+            };
+            emit_hir_statement(backend, out, &term, indent)
+        }
+        _ => None,
+    }
+}
+
+/// Term value emission + the P-gated exit (body verbatim from the arm).
+fn emit_term_value(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    val: &Option<crate::hir::expr::HirExpr>,
+    indent: &str,
+) -> Option<TypedRegister> {
         if let Some(v) = val {
             if crate::hir::to_ast::expr(v).is_none() {
                 return None;
@@ -300,33 +327,40 @@ fn emit_term_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirSt
             name: backend.fun.gen_reg(),
             ty: crate::ast::Type::void(),
         });
-    }
-    // 2026-11-05 (H4 slice D): `tail expr;` IS `term expr;` (the AST arm
-    // delegates verbatim) — route through the native Term path; the Term
-    // arm's reconstructibility guard keeps the legacy convert path for
-    // unsupported values.
-    if let HirStmtKind::Tail(e) = &stmt.kind {
-        let term = HirStmt {
-            id: stmt.id,
-            span: stmt.span,
-            kind: HirStmtKind::Term(Some(e.clone())),
-        };
-        return emit_hir_statement(backend, out, &term, indent);
-    }
-    None
+    
 }
 
 /// H4 slice D dispatch group: statement Match (phi chain).
 fn emit_match_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
-    // 2026-11-05 (H4 slice D): native statement match — scrutinee through
-    // operand recursion, patterns reconstructed (lossless) for the shared
-    // condition/binding helpers, arm children through the seam. Patterns and
-    // scrutinee are reconstructed BEFORE the scrutinee emits, so a None here
-    // falls back with no partial IR.
-    if let HirStmtKind::Match { expr: scrutinee, arms } = &stmt.kind {
-        let Some(ast_scrut) = crate::hir::to_ast::expr(scrutinee) else {
-            return None;
-        };
+    let HirStmtKind::Match { expr: scrutinee, arms } = &stmt.kind else {
+        return None;
+    };
+    // Reconstructibility gate BEFORE any emission (scrutinee included).
+    crate::hir::to_ast::expr(scrutinee)?;
+    let ast_arms = reconstruct_match_arms(arms)?;
+    let scrut = backend.emit_hir_operand(out, scrutinee, indent)?;
+    let counter = backend.fun.txn_counter;
+    backend.fun.txn_counter += 1;
+    let merge = format!(".smt_end_{}", counter);
+    emit_match_conditions(backend, out, arms, &ast_arms, &scrut, &merge, counter, indent);
+    emit_match_bodies(backend, out, arms, &ast_arms, &scrut, &merge, counter, indent);
+        // 2026-11-05 (#69 mirror): the merge stays open — the no-match edge
+        // and continuing arms always reach it; only explicit
+        // predecessor/exhaustiveness tracking may close it.
+        writeln!(out, "{}:", merge).ok();
+        backend.fun.terminated = false;
+        backend.fun.cur_block = Some(merge);
+        return Some(TypedRegister {
+            name: backend.fun.gen_reg(),
+            ty: crate::ast::Type::void(),
+        });
+}
+
+/// Reconstruct patterns and arm bodies (all-or-nothing, before any emission).
+fn reconstruct_match_arms(
+    arms: &[crate::hir::stmt::HirStmtMatchArm],
+) -> Option<Vec<(Vec<crate::ast::Pattern>, Vec<Statement>)>> {
+
         let mut ast_arms = Vec::with_capacity(arms.len());
         for arm in arms {
             let mut pats = Vec::with_capacity(arm.patterns.len());
@@ -341,12 +375,20 @@ fn emit_match_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
             };
             ast_arms.push((pats, body));
         }
-        let Some(scrut) = backend.emit_hir_operand(out, scrutinee, indent) else {
-            return None;
-        };
-        let counter = backend.fun.txn_counter;
-        backend.fun.txn_counter += 1;
-        let merge = format!(".smt_end_{}", counter);
+    Some(ast_arms)
+}
+
+/// Phase 1: per-arm pattern-condition chain and body/next labels.
+fn emit_match_conditions(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    arms: &[crate::hir::stmt::HirStmtMatchArm],
+    ast_arms: &[(Vec<crate::ast::Pattern>, Vec<Statement>)],
+    scrut: &TypedRegister,
+    merge: &str,
+    counter: usize,
+    indent: &str,
+) {
         for (i, arm) in arms.iter().enumerate() {
             let next = format!(".smt_next_{}_{}", counter, i);
             let mut cond: Option<String> = None;
@@ -381,6 +423,19 @@ fn emit_match_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
             backend.fun.cur_block = Some(next.clone());
         }
         writeln!(out, "  br label %{}", merge).ok();
+}
+
+/// Phase 2: per-arm bodies (children through the seam) and merge edge.
+fn emit_match_bodies(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    arms: &[crate::hir::stmt::HirStmtMatchArm],
+    ast_arms: &[(Vec<crate::ast::Pattern>, Vec<Statement>)],
+    scrut: &TypedRegister,
+    merge: &str,
+    counter: usize,
+    indent: &str,
+) {
         for (i, arm) in arms.iter().enumerate() {
             let body_label = format!(".smt_body_{}_{}", counter, i);
             writeln!(out, "{}:", body_label).ok();
@@ -403,18 +458,6 @@ fn emit_match_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
                 writeln!(out, "  br label %{}", merge).ok();
             }
         }
-        // 2026-11-05 (#69 mirror): the merge stays open — the no-match edge
-        // and continuing arms always reach it; only explicit
-        // predecessor/exhaustiveness tracking may close it.
-        writeln!(out, "{}:", merge).ok();
-        backend.fun.terminated = false;
-        backend.fun.cur_block = Some(merge);
-        return Some(TypedRegister {
-            name: backend.fun.gen_reg(),
-            ty: crate::ast::Type::void(),
-        });
-    }
-    None
 }
 
 /// Terminal helper: Halt.
@@ -476,24 +519,27 @@ fn emit_gate_statement(backend: &mut LlvmBackend, out: &mut String, cond: &crate
 }
 
 /// Terminal helper: Rollback.
+/// Zero literal for a return type (rollback's fabricated return).
+fn ret_zero_literal(ret_ty: &str) -> &'static str {
+    match ret_ty {
+        "float" | "double" => "0.0",
+        "ptr" => "null",
+        _ => "0",
+    }
+}
+
+/// Terminal helper: Rollback (deferred cleanup + ret-ty return).
 fn emit_rollback_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
-            // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
-            backend.flush_defer_cleanup(out, indent);
-            if backend.fun.fn_ret_ty == "void" {
-                writeln!(out, "{}ret void", indent).ok();
-            } else {
-                let zero = if backend.fun.fn_ret_ty == "float" || backend.fun.fn_ret_ty == "double" {
-                    "0.0".to_string()
-                } else if backend.fun.fn_ret_ty == "ptr" {
-                    "null".to_string()
-                } else {
-                    "0".to_string()
-                };
-                writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, zero).ok();
-            }
-            backend.fun.terminated = true;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        
+    // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
+    backend.flush_defer_cleanup(out, indent);
+    if backend.fun.fn_ret_ty == "void" {
+        writeln!(out, "{}ret void", indent).ok();
+    } else {
+        let zero = ret_zero_literal(&backend.fun.fn_ret_ty);
+        writeln!(out, "{}ret {} {}", indent, backend.fun.fn_ret_ty, zero).ok();
+    }
+    backend.fun.terminated = true;
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
 }
 
 /// Terminal helper: FreeHint.
