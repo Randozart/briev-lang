@@ -113,6 +113,16 @@ surfaces still walk the AST:
    comes from `build_swan_songs`, which is HIR-derived under the flag
    (H4 slice B). No port needed; add it to the flip-batch verification
    list only.
+   **Ported + consumer flipped (2026-11-05):** `global_lifetime` —
+   `src/hir/global_lifetime.rs`, consumer flipped with a debug equality
+   assert. The field-initializer map is dual-built (HIR: state decls get
+   an Int-0 image mirroring the AST builder's Decimal(0); top-level lets
+   keep their declared initializer); node_order/foldable stay
+   transition-graph-derived. Touch sets via the ported
+   `collect_statement_identifiers`/`collect_state_identifiers` mirrors
+   (incl. the 2026-07-21 addr/deref/consume fix and the 2026-08-01
+   arrow fix); manual-free walk mirrors Free#-through-cast and
+   free/keep hints. `GlobalLifetime` gains PartialEq for the assert.
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 

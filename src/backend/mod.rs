@@ -324,7 +324,37 @@ pub fn analyze_program(
         .filter(|n| n.bounded_pre.is_some())
         .map(|n| n.name.clone())
         .collect();
-    let global_lifetime = crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
+    // 2026-11-05 (H5 inventory port 6): garbage scheduling from typed HIR
+    // under the flag; debug builds assert exact AST equality. The field
+    // initializer map is dual-built: Int-0 default image for state decls,
+    // the declared initializer for top-level lets (mirroring the AST
+    // builder exactly). node_order/foldable stay transition-graph-derived
+    // (already proven equal).
+    let global_lifetime = if hir_emit_enabled() {
+        let mut field_inits_hir: HashMap<String, crate::hir::expr::HirExpr> = HashMap::new();
+        for g in &hir.globals {
+            if g.is_state_decl {
+                field_inits_hir
+                    .entry(g.name.clone())
+                    .or_insert_with(|| crate::hir::expr::HirExpr {
+                        id: crate::hir::ids::NodeId(0),
+                        span: None,
+                        ty: None,
+                        kind: crate::hir::expr::HirExprKind::Literal(
+                            crate::hir::expr::HirLiteral::Int(0),
+                        ),
+                    });
+            } else if let Some(e) = &g.expr {
+                field_inits_hir.entry(g.name.clone()).or_insert_with(|| e.clone());
+            }
+        }
+        let ast = crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable);
+        let hir_lt = crate::hir::global_lifetime::analyze(&hir, &field_inits_hir, &node_order, &foldable);
+        debug_assert_eq!(hir_lt, ast, "HIR/AST global-lifetime drift");
+        hir_lt
+    } else {
+        crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable)
+    };
     let observable_names = collect_observable_names(items);
     // 2026-11-05 (H4.1): first consumer flip. With BRIEV_HIR_EMIT=1 the coll
     // grow-guard / pre-grow proofs come from typed HIR; the AST proofs are

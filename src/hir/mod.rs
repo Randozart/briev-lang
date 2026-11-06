@@ -15,6 +15,7 @@ pub mod density;
 pub mod dyn_concrete_sets;
 pub mod enum_repr;
 pub mod expr;
+pub mod global_lifetime;
 pub mod facts;
 pub mod frontend;
 pub mod ids;

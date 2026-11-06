@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 /// The scheduler's result: for each transaction name, the heap-backed state
 /// fields to free after that transaction's body.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GlobalLifetime {
     pub free_after: HashMap<String, Vec<String>>,
     /// 2026-08-01 (Phase 5): fields with a `keep x;` hint that the scheduler
