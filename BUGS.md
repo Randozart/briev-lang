@@ -11974,3 +11974,7 @@ local. Native mixed-value execution and wasm32 nested execution are regression
 gates; final results are in the checkpoint record.
 
 Status: FIXED 2026-11-05; 3,501 library tests and native/wasm tuple regressions pass.
+
+## FIXED 2026-11-06: Synchronous entropy buffer lifetime
+
+Linux x86-64 getrandom (318) writes its caller buffer synchronously and never retains it, including partial/error returns and dynamic flags. Missing configuration classified a local entropy buffer as externally retained. Add 318 to synchronous_borrowing; unknown syscalls stay conservative. Regression: dynamic flags remain borrowed while syscall 999999 remains an escape.

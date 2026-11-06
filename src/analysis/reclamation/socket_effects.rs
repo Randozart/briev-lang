@@ -93,6 +93,30 @@ mod proofs {
 mod tests {
     use super::*;
 
+    #[test]
+    fn entropy_output_is_borrowed_even_with_dynamic_flags() {
+        let mut graph = Graph::default();
+        let unknown = graph.unknown_value();
+        assert!(graph.syscall_borrows(318, &[unknown; 3]));
+        assert!(!graph.syscall_borrows(999999, &[unknown; 3]));
+        let source = r#"
+            defn entropy(flags: Int) -> Int {
+                let buffer: Ptr = Malloc#(16);
+                term SysCall#(318, buffer, 16, flags);
+            };
+            defn unclassified(flags: Int) -> Int {
+                let buffer: Ptr = Malloc#(16);
+                term SysCall#(999999, buffer, 16, flags);
+            };
+        "#;
+        let tokens = crate::lexer::tokenize(source).unwrap();
+        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
+        let live = ["entropy", "unclassified"].map(String::from).into_iter().collect();
+        let plan = super::super::analyze(&items, &live, None);
+        assert!(plan.regions.contains("entropy"), "{plan:?}");
+        assert!(plan.barriers.contains("unclassified"), "{plan:?}");
+    }
+
     fn constant(graph: &mut Graph, value: i64) -> Node {
         let node = graph.node(); graph.constants[node].insert(value); node
     }
