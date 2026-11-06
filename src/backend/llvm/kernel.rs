@@ -65,8 +65,27 @@ impl super::LlvmBackend {
             // texel arrays as plain SSBO fields (image realization is the
             // .abv lane; a .bv accel kernel with a spec-Format array simply
             // stays buffer-backed until the lane catches up).
+            // 2026-11-06 (§12 W3): the Sum idiom lane — structure + geometry
+            // + numeric license (sum_reduce_lane), disclosed per §12.2(4).
+            // The dispatch wrapper multiplies work by the subgroup width
+            // (sum_lane_kernels) — one decision, two consumers.
+            let sum_lane = shape.sum_lane;
+            if sum_lane {
+                self.warnings.push(format!(
+                    "info: reduce-idiom (assoc add, int) → reduction synthesis (warp-slice) for accel '{}'",
+                    name
+                ));
+            } else if matches!(
+                shape.reduction.as_ref().map(|r| &r.kind),
+                Some(crate::analysis::accel::ReductionKind::Sum)
+            ) {
+                self.warnings.push(format!(
+                    "info: reduce-idiom not applied for accel '{}' — float reassociation is not licensed (gate 3), or the fold length is not a const multiple of 32",
+                    name
+                ));
+            }
             let emitted = crate::backend::spirv::kernel::emit_kernel(
-                &mut sb, "main", &shape, items, false,
+                &mut sb, "main", &shape, items, sum_lane,
                 &crate::backend::spirv::kernel::KernelSurface::default(),
             )
             .and_then(|_| sb.build());

@@ -54,6 +54,106 @@ pub enum GemmBody {
     Tensor,
 }
 
+/// 2026-11-06 (§12 W3): synthesize the cooperative row-SUM body — strided
+/// (lane + t·32) reads of the folded buffer, one partial per lane, one
+/// `SubgroupIAdd#` cross-lane reduce (uniform across the subgroup), one
+/// same-value store per row. Flat-1D: row = gid>>5, lane = gid&31 — each
+/// 32-lane subgroup is exactly one row when LocalSize is 32 (the
+/// `cooperative` tail sets it). Requires inner % 32 == 0 (caller-checked)
+/// so strided accesses are exactly in-bounds.
+pub(crate) fn synthesize_reduce_stmts(
+    shape: &KernelShape,
+    red: &crate::analysis::accel::ReductionInfo,
+    inner_len: u64,
+) -> KernelShape {
+    use crate::ast::BinaryOpKind::{Add, BitAnd, Mul, Shr};
+    let mut out = shape.clone();
+    let tiles = (inner_len / 32) as i64;
+    let gid0 = || Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None);
+    let row = Expr::BinaryOp(Shr, Box::new(gid0()), Box::new(Expr::Decimal(5)));
+    let lane = Expr::BinaryOp(BitAnd, Box::new(gid0()), Box::new(Expr::Decimal(31)));
+    let base = Expr::BinaryOp(
+        Mul,
+        Box::new(row.clone()),
+        Box::new(Expr::Decimal(inner_len as i64)),
+    );
+    let elem = |t: Expr| -> Expr {
+        Expr::BinaryOp(
+            Add,
+            Box::new(base.clone()),
+            Box::new(Expr::BinaryOp(
+                Add,
+                Box::new(lane.clone()),
+                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+            )),
+        )
+    };
+    let read = |t: Expr| -> Expr {
+        Expr::Index(
+            Box::new(Expr::Identifier(red.row_buf.clone())),
+            Box::new(elem(t)),
+        )
+    };
+    let ity = Some(crate::ast::Type::int());
+    let range = |a: i64, b: i64| Expr::Range {
+        start: Box::new(Expr::Decimal(a)),
+        end: Box::new(Expr::Decimal(b)),
+        inclusive: false,
+    };
+    let acc = "briev_red_acc";
+    let t = "briev_red_t";
+    let r = "briev_red_r";
+    let mut stmts: Vec<Statement> = Vec::new();
+    // Lane partial: init from this lane's first element, fold the rest.
+    stmts.push(Statement::Let {
+        name: acc.into(),
+        names: vec![],
+        ty: ity.clone(),
+        expr: Some(read(Expr::Decimal(0))),
+        modifiers: vec![],
+    });
+    if tiles > 1 {
+        stmts.push(Statement::Foreach {
+            item: t.into(),
+            list: Box::new(range(0, tiles - 1)),
+            body: vec![Statement::Assign(
+                Expr::Identifier(acc.into()),
+                Expr::BinaryOp(
+                    Add,
+                    Box::new(Expr::Identifier(acc.into())),
+                    Box::new(read(Expr::BinaryOp(
+                        Add,
+                        Box::new(Expr::Identifier(t.into())),
+                        Box::new(Expr::Decimal(1)),
+                    ))),
+                ),
+            )],
+        });
+    }
+    // Cross-lane reduce — uniform across the subgroup, so every lane stores
+    // the same value to out[row] (benign same-value write, one per row).
+    stmts.push(Statement::Let {
+        name: r.into(),
+        names: vec![],
+        ty: ity.clone(),
+        expr: Some(Expr::Call(
+            "SubgroupIAdd#".into(),
+            vec![Expr::Identifier(acc.into())],
+            None,
+        )),
+        modifiers: vec![],
+    });
+    stmts.push(Statement::Assign(
+        Expr::Index(
+            Box::new(Expr::Identifier(red.out_buf.clone())),
+            Box::new(row),
+        ),
+        Expr::Identifier(r.into()),
+    ));
+    out.kernel_stmts = stmts;
+    out
+}
+
 /// Emit one GPU kernel from an analyzed shape. Returns the function id.
 pub fn emit_kernel(
     builder: &mut SpirvBuilder,
@@ -347,6 +447,44 @@ pub fn emit_kernel(
     // block's OpVariables; by the emission branch it is too late.
     let shape_owned;
     let shape = if cooperative
+        && matches!(
+            shape.reduction.as_ref().map(|r| &r.kind),
+            Some(crate::analysis::accel::ReductionKind::Sum)
+        ) {
+        // 2026-11-06 (§12 W3): the Sum idiom lane — same synthesis shape as
+        // the row softmax, but flat-1D: each 32-lane subgroup owns one row
+        // (row = gid>>5, lane = gid&31), so the existing flat dispatch works
+        // on every driver (work_n = rows*32; the wrapper multiplies). Int
+        // only — gate 3 (sum_reduce_lane) licenses exactly the wrapping-add.
+        let red = shape.reduction.as_ref().unwrap();
+        let consts = crate::backend::ptx::module_expr_consts(items);
+        let inner_len = match &red.inner {
+            Expr::Identifier(name) => match consts.get(name) {
+                Some(Expr::Decimal(n)) => *n,
+                _ => {
+                    return Err(format!(
+                        "sum fold length '{}' is not a literal const",
+                        name
+                    ))
+                }
+            },
+            Expr::Decimal(n) => *n,
+            other => {
+                return Err(format!(
+                    "sum fold length {:?} must be a literal const",
+                    other
+                ))
+            }
+        };
+        if inner_len <= 0 || inner_len % 32 != 0 {
+            return Err(format!(
+                "cooperative sum needs a fold length divisible by 32 (got {})",
+                inner_len
+            ));
+        }
+        shape_owned = synthesize_reduce_stmts(shape, red, inner_len as u64);
+        &shape_owned
+    } else if cooperative
         && matches!(
             shape.reduction.as_ref().map(|r| &r.kind),
             Some(crate::analysis::accel::ReductionKind::Softmax)
@@ -1657,6 +1795,7 @@ mod decomposition_gate_tests {
             work_cols: None,
             reduction: Some(ReductionInfo::dot(Expr::Decimal(64))),
             deferred_normalize: None,
+            sum_lane: false,
         }
     }
 

@@ -319,6 +319,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
         let entry = AccelEntry {
             mode: crate::analysis::accel::AccelMode::TryKeyword,

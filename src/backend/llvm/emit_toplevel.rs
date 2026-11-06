@@ -5628,9 +5628,21 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // 2026-09-01 (Track B): kernel-pinned programs use the RESIDENT path
         // (push dirty scalars, dispatch, pull written fields back) instead of
         // the full-copy launch (pack ALL fields, push, pull, unpack ALL).
-        if self.ctx.accel_resident_ok {
+        // 2026-11-06 (§12 W3): the Sum idiom lane dispatches rows*32
+        // invocations (one 32-lane subgroup per row, LocalSize 32) — the
+        // launch work is the row count times the subgroup width; the
+        // counter fast-forward below still stores the ROW count. The
+        // resident path is skipped: its flat fallback would under-dispatch
+        // a row-form kernel 32×.
+        let sum_lane = self.accel_entries[name].shape.sum_lane;
+        if sum_lane {
+            writeln!(out, "  %wn = mul i64 {}, 32", work).ok();
+        }
+        if self.ctx.accel_resident_ok && !sum_lane {
             writeln!(out, "  %r = call i32 @briev_accel_launch_resident(i32 {}, ptr %state, i64 {})", idx, work).ok();
             writeln!(out, "  %dl = call i32 @briev_accel_download_written(i32 {}, ptr %state)", idx).ok();
+        } else if sum_lane {
+            writeln!(out, "  %r = call i32 @briev_accel_launch(i32 {}, ptr %state, i64 %wn)", idx).ok();
         } else {
             writeln!(out, "  %r = call i32 @briev_accel_launch(i32 {}, ptr %state, i64 {})", idx, work).ok();
         }

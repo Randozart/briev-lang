@@ -169,6 +169,7 @@ proof class) → exploiting pass → test**, e.g.:
 | `accel [i<N]` map body | disjoint counter | vectorisation, barrier elision | … |
 | GEMM affine 2-D flat form | no-alias SSBO, static M/N/K | tile/stage/mma synthesis + cost model | … |
 | single-reader intermediate | no aliasing | chain fusion / store fusion | … |
+| hand-written `acc = acc + buf[k]` foreach (§12 W3, 2026-11-06) | exact associativity (Int wrapping add; gate 3) | reduction synthesis (warp-slice, `SubgroupIAdd#`) — `sum_reduce_lane` | `sum_idiom_tests`, `from_shape_sum_idiom_plans_cooperative_reduce`, `test_sum_idiom_lowers_subgroup_iadd`, PTL `g0_sum` gate |
 | … | … | … | … |
 
 A construct with no row, or a row with no exploiting pass, or a pass with

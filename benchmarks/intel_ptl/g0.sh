@@ -68,6 +68,8 @@ echo "== g0: elementwise =="
 run_gate g0_elem vulkan
 echo "== g0: gemm 512^3 =="
 run_gate g0_gemm vulkan
+echo "== g0: sum idiom (§12 W3) =="
+run_gate g0_sum vulkan
 
 echo "== g0: opencl + levelzero (reported, not required) =="
 report_lane() {

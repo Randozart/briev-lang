@@ -2880,6 +2880,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         }
     }
 
@@ -3251,6 +3252,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
         let mut layout2 = layout;
         layout2.fields.insert(1, RunnerField {
@@ -3458,6 +3460,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
         let consts = std::collections::HashMap::new();
         let universe = crate::type_universe::TypeUniverse::new();
@@ -3555,6 +3558,7 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
+                sum_lane: false,
             };
             let consts = std::collections::HashMap::new();
             let universe = crate::type_universe::TypeUniverse::new();
@@ -3770,6 +3774,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         }
     }
 
@@ -3874,7 +3879,7 @@ mod probe_tmp {
         for item in &items {
             if let crate::ast::TopLevel::Transaction(t) = item {
                 let shape = crate::analysis::accel::prove_kernel_pub(
-                    &t.name, &t.body, &t.contract, &info, &universe,
+                    &t.name, &t.body, &t.contract, &info, &universe, &items,
                 );
                 println!("=== {} eligible={} deferred={} ===", t.name, shape.eligible, detect_deferred_region(&shape.kernel_stmts, &shape.index_var).is_some());
                 for r in &shape.reasons { println!("reason: {}", r); }
@@ -6295,7 +6300,7 @@ mod probe_gemm_tmp {
             for item in &items {
                 if let crate::ast::TopLevel::Transaction(t) = item {
                     let shape = crate::analysis::accel::prove_kernel_pub(
-                        &t.name, &t.body, &t.contract, &info, &universe,
+                        &t.name, &t.body, &t.contract, &info, &universe, &items,
                     );
                     let g = crate::analysis::gemm_shape::detect_gemm_shape(&shape, &items);
                     let dm = crate::analysis::gemm_shape::declared_matmul(&shape);

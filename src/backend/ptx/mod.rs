@@ -948,6 +948,17 @@ pub(crate) fn emit_general_node(
                 general::synthesize_row_softmax(shape, red, inner)
             }
             ReductionKind::Dot => general::synthesize_row_dot(shape, red, inner),
+            // 2026-11-06 (§12 W3): the Sum idiom lane is SPIR-V-owned (the
+            // flat-1D `row = gid>>5` synthesis needs no PTX row form), and
+            // the PTX cooperative router (is_cooperative_shape) never
+            // claims Sum — this arm is exhaustiveness only; the shape goes
+            // through the general lowering.
+            // 2026-11-06 (§12 W3): the Sum idiom lane is SPIR-V-owned (the
+            // flat-1D `row = gid>>5` synthesis needs no PTX row form), and
+            // the PTX cooperative router (is_cooperative_shape) never
+            // claims Sum — this arm is exhaustiveness only; the shape goes
+            // through the general lowering unchanged.
+            ReductionKind::Sum => (*shape).clone(),
         };
         &shape_owned
     } else {

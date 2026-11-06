@@ -12143,3 +12143,35 @@ links the accel runtime from that path at program build time, so a stale
 archive silently downgrades every lane.
 **Status:** OPEN as a recurring environment hazard; keep the verification
 habit on any multi-machine/multi-tree session.
+
+## Dead-field liveness diagnostic misses `endprogram println!` reads — OPEN 2026-11-06
+
+**Symptom:** a field written by one node and printed only by the swan song
+(`endprogram println!("Q={}", q);`) triggers
+`info: field(s) 'q' written by txn 'sumn' are never read — wasted work`
+— but the value prints correctly (the stores execute; only the diagnostic's
+liveness set is wrong). The same set drives the "folded to O(1)" dead-store
+elimination, so a folded txn whose only reader is the swan song loses the
+stores.
+
+**Scope:** the A002/A003 dead-field pass (`src/backend/llvm/mod.rs`,
+`graph.live_fields`) counts precondition/exit-condition references but not
+`endprogram println!` argument reads.
+
+**Evidence/workaround:** `benchmarks/intel_ptl/g0_sum.bv` anchors its
+accumulators in the report precondition with a value-unconditional bound.
+**Status:** OPEN — extend the liveness scan to swan-song reads; the warning
+currently teaches authors to add semantic (and potentially blocking)
+preconditions.
+
+## §12 W3 gate notes (2026-11-06)
+
+- A report precondition used as a *liveness anchor* must be
+  value-unconditional: `gpu_sum >= 0` on signed accumulators is false
+  forever once the sum goes negative, and the reactor then runs until
+  killed (correct semantics, no diagnostic). Self-equality (`x == x`) is
+  folded away and does not keep the field live. Use a wide bound
+  (`>= -1e12`).
+- The G001 cross-thread-stride warning reports the PRE-synthesis body's
+  access pattern; for the sum lane the emitted reads are coalesced within
+  each row. W4 disclosure item.

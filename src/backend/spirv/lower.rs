@@ -969,6 +969,9 @@ impl<'a> FnLowerer<'a> {
             "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" => {
                 self.emit_subgroup_reduce(name, args)
             }
+            // 2026-11-06 (§12 W3): the Int sum lane's cross-lane reduce —
+            // GroupNonUniformIAdd, the integer twin of the FAdd form.
+            "SubgroupIAdd#" => self.emit_subgroup_iadd(args),
             "ShuffleDown#" | "ShuffleXor#" => self.emit_subgroup_shuffle(name, args),
             "SubgroupBallot#" => self.emit_subgroup_ballot(args),
             _ => self.emit_subgroup_broadcast(args),
@@ -1000,6 +1003,36 @@ impl<'a> FnLowerer<'a> {
         let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
         self.builder.emit(Instruction::new(
             op,
+            Some(ty_id),
+            Some(res),
+            vec![
+                Operand::IdRef(scope),
+                Operand::LiteralBit32(spirv::GroupOperation::Reduce as u32),
+                Operand::IdRef(v),
+            ],
+        ));
+        Ok((res, vty))
+    }
+
+    /// SubgroupIAdd# — GroupNonUniformIAdd (the §12 W3 Int sum lane). The
+    /// integer twin of `emit_subgroup_reduce`; Int is the licensed element
+    /// type (wrapping add is exactly associative — gate 3), so the type
+    /// check rejects floats loudly rather than mis-lowering.
+    fn emit_subgroup_iadd(&mut self, args: &[Expr]) -> Result<(Word, Type), String> {
+        let (v, vty) = match args.first() {
+            Some(e) => self.emit_expr(e)?,
+            None => return self.err(format!("SubgroupIAdd# needs an operand")),
+        };
+        if self.builder.is_float_type(&vty)? {
+            return self.err(format!(
+                "SubgroupIAdd# is an integer reduction — float folds are not licensed (§12 gate 3)"
+            ));
+        }
+        let ty_id = self.type_id(&vty)?;
+        let res = self.builder.gen_id();
+        let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
+        self.builder.emit(Instruction::new(
+            spirv::Op::GroupNonUniformIAdd,
             Some(ty_id),
             Some(res),
             vec![
@@ -1105,8 +1138,8 @@ impl<'a> FnLowerer<'a> {
         match name {
             // Subgroup family (reduces, shuffles, ballot, broadcast) — split
             // out to keep this dispatcher readable; see emit_subgroup_intrinsic.
-            "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" | "ShuffleDown#"
-            | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
+            "SubgroupFAdd#" | "SubgroupIAdd#" | "SubgroupFMax#" | "SubgroupFMin#"
+            | "ShuffleDown#" | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
                 self.emit_subgroup_intrinsic(name, args)
             }
             "Exp#" => {

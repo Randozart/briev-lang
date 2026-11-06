@@ -369,6 +369,8 @@ impl KernelPlan {
         let op = match red.kind {
             ReductionKind::Dot => ReduceOp::Add,
             ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
+            // 2026-11-06 (§12 W3): the Int sum fold — same reduce op as Dot.
+            ReductionKind::Sum => ReduceOp::Add,
         };
         vec![
             PlanOp::Reduce {
@@ -512,7 +514,10 @@ impl KernelPlan {
             // COOPERATIVE channel's intent — which follows the declaration
             // (is_cooperative_shape). An undeclared body's plan records no
             // cooperative reduce op; the general family lowers it.
-            if crate::analysis::accel::is_cooperative_shape(shape) {
+            // 2026-11-06 (§12 W3): the Sum idiom lane joins — structure +
+            // geometry + numeric license (sum_reduce_lane), no declaration
+            // gate (the amendment's whole point), same plan ops as Dot.
+            if crate::analysis::accel::is_cooperative_shape(shape) || shape.sum_lane {
                 ops.extend(Self::cooperative_reduce_ops(
                     red,
                     resolve(&red.inner).unwrap_or(0),
@@ -853,6 +858,7 @@ mod tests {
                 normalize_end: Expr::Identifier("D".into()),
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
+            sum_lane: false,
         };
         let d = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86).dump();
         assert!(d.contains("node fattn"), "{d}");
@@ -897,6 +903,7 @@ mod tests {
                 normalize_end: Expr::Identifier("D".into()),
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
+            sum_lane: false,
         };
         let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
         assert_eq!(p.split_tree_factor(), None, "D=100 is not warp-multiple");
@@ -997,6 +1004,73 @@ mod tests {
     }
 
     #[test]
+    fn from_shape_sum_idiom_plans_cooperative_reduce() {
+        // §12 W3 (2026-11-06): NO declaration gate for the sum idiom —
+        // structure + geometry + the Int exactness license fire the lane.
+        use crate::analysis::accel::{KernelShape, ReductionInfo, ReductionKind};
+        let mut consts = std::collections::HashMap::new();
+        consts.insert("K".to_string(), Expr::Decimal(1024));
+        let items = vec![TopLevel::Statement(Box::new(crate::ast::Statement::Let {
+            name: "a".into(),
+            names: vec![],
+            ty: Some(crate::ast::Type::Vector(
+                Box::new(crate::ast::Type::int()),
+                vec![crate::ast::Dimension::Anonymous(4096)],
+            )),
+            expr: None,
+            modifiers: vec![],
+        }))];
+        let make = |inner: Expr, buf_ty: crate::ast::Type| -> KernelShape {
+            KernelShape {
+                index_var: "i".into(),
+                count_expr: Some(Expr::Decimal(64)),
+                kernel_stmts: vec![],
+                host_stmts: vec![],
+                read_buffers: vec!["a".into()],
+                write_buffers: vec!["y".into()],
+                scalar_ins: vec![],
+                eligible: true,
+                reasons: vec![],
+                work_cols: None,
+                reduction: Some(ReductionInfo {
+                    inner,
+                    kind: ReductionKind::Sum,
+                    row_buf: "a".into(),
+                    col_buf: String::new(),
+                    out_buf: "y".into(),
+                }),
+                deferred_normalize: None,
+                sum_lane: buf_ty == crate::ast::Type::int() && buf_ty != crate::ast::Type::float(),
+            }
+        };
+        let int_shape = make(Expr::Decimal(1024), crate::ast::Type::int());
+        let p = KernelPlan::from_shape("sum", &int_shape, &items, &consts, &GpuHardware::SM86);
+        assert!(
+            p.dump().contains("op reduce"),
+            "licensed int sum plans the cooperative reduce: {}",
+            p.dump()
+        );
+        // Gate 3: a float fold stays on the general lowering.
+        let float_items = vec![TopLevel::Statement(Box::new(crate::ast::Statement::Let {
+            name: "a".into(),
+            names: vec![],
+            ty: Some(crate::ast::Type::Vector(
+                Box::new(crate::ast::Type::float()),
+                vec![crate::ast::Dimension::Anonymous(4096)],
+            )),
+            expr: None,
+            modifiers: vec![],
+        }))];
+        let float_shape = make(Expr::Decimal(1024), crate::ast::Type::float());
+        let pf = KernelPlan::from_shape("sum", &float_shape, &float_items, &consts, &GpuHardware::SM86);
+        assert!(
+            !pf.dump().contains("op reduce"),
+            "unlicensed float sum must not plan a cooperative reduce: {}",
+            pf.dump()
+        );
+    }
+
+    #[test]
     fn from_shape_builds_reduction_plan() {
         use crate::analysis::accel::{KernelShape, ReductionInfo, ReductionKind};
         let mut consts = std::collections::HashMap::new();
@@ -1032,6 +1106,7 @@ mod tests {
                     out_buf: "y".into(),
                 }),
                 deferred_normalize: None,
+                sum_lane: false,
             }
         };
         let undeclared = {

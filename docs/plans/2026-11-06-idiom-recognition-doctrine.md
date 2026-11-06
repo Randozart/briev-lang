@@ -125,6 +125,28 @@ amendment is real: the matcher feeds existing machinery and retires on
 parity). W2/W4 land with W3 (a matcher without its ledger row or
 why-not path must not ship). W5 strictly on demand.
 
+## Status (2026-11-06)
+
+- **W1 landed** (`0c0db10f` + `05fbdee2`): §12 + §12.6 Model B.
+- **W3 analysis + emit landed** (this branch): `detect_sum_fold`
+  (structure-not-name; near-misses fall through), `sum_reduce_lane`
+  (gate 3: Int exactness only — Float folds keep the general lowering
+  with a why-not info line), the flat-1D row synthesis
+  (`row = gid>>5`, `lane = gid&31`, `SubgroupIAdd#`, LocalSize 32),
+  dispatch work = rows×32 (counter still stores rows; resident path
+  skipped — its flat fallback would under-dispatch a row-form kernel),
+  disclosure info lines at the blob site. Tests: detector + near-misses,
+  license gate, plan ops, IR (GroupNonUniformIAdd + LocalSize 32),
+  PTL `g0_sum` GPU gate.
+- **W2/W4 partially landed**: the ledger row is in §8; the why-not is
+  the license-fail info line (named facts: license/geometry). Deeper
+  why-not (which structural fact failed at detection) remains open.
+- **Open**: W3 parity measurement (idiom vs general lowering numbers —
+  the retirement evidence), Product/Min/Max kinds (W3.1), float folds
+  behind a numeric contract, W5 candidates. The matcher retires when
+  the general lowering reaches parity — the ledger row carries that
+  condition.
+
 ## Non-goals
 
 No backend recognition arms. No matcher may fire without disclosure. No

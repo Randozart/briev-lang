@@ -197,6 +197,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         }
     }
 
@@ -281,9 +282,153 @@ mod tests {
         let entry = analysis
             .accel
             .get(name)
-            .unwrap_or_else(|| panic!("fixture txn '{name}' must be accel-analyzed"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture txn '{name}' must be accel-analyzed; entries: {:?}",
+                    analysis.accel.keys().collect::<Vec<_>>()
+                )
+            });
         assert!(entry.shape.eligible, "fixture must be eligible: {:?}", entry.shape.reasons);
         &entry.shape
+    }
+
+    /// §12 W3 (2026-11-06): the Sum idiom lowers to the subgroup reduce —
+    /// GroupNonUniformIAdd, LocalSize 32 (one row per subgroup), and the
+    /// detector finds the fold in a real analyzed program.
+    #[test]
+    fn test_sum_idiom_lowers_subgroup_iadd() {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "accel".into(),
+            crate::ast::PropertyValue::String("try_all".into()),
+        );
+        let program = vec![
+            TopLevel::ModuleMetadata(meta),
+            TopLevel::StateDecl(StateDecl {
+                name: "i".into(),
+                ty: Type::int(),
+                span: None,
+            }),
+            state_decl("a", 4096),
+            state_decl("y", 64),
+            TopLevel::Transaction(Transaction {
+                variadic_param: None,
+                name: "sum".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(64)),
+                    ),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    explicit: false,
+                    span: None,
+                    post_authority: false,
+                },
+                body: vec![
+                    Statement::Let {
+                        name: "acc".into(),
+                        names: vec![],
+                        ty: Some(Type::int()),
+                        expr: Some(Expr::Decimal(0)),
+                        modifiers: vec![],
+                    },
+                    Statement::Foreach {
+                        item: "k".into(),
+                        list: Box::new(Expr::Range {
+                            start: Box::new(Expr::Decimal(0)),
+                            end: Box::new(Expr::Decimal(1024)),
+                            inclusive: false,
+                        }),
+                        body: vec![Statement::Assign(
+                            Expr::Identifier("acc".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Add,
+                                Box::new(Expr::Identifier("acc".into())),
+                                Box::new(Expr::Index(
+                                    Box::new(Expr::Identifier("a".into())),
+                                    Box::new(Expr::BinaryOp(
+                                        BinaryOpKind::Add,
+                                        Box::new(Expr::BinaryOp(
+                                            BinaryOpKind::Mul,
+                                            Box::new(Expr::Identifier("i".into())),
+                                            Box::new(Expr::Decimal(1024)),
+                                        )),
+                                        Box::new(Expr::Identifier("k".into())),
+                                    )),
+                                )),
+                            ),
+                        )],
+                    },
+                    Statement::Assign(
+                        Expr::Index(
+                            Box::new(Expr::Identifier("y".into())),
+                            Box::new(Expr::Identifier("i".into())),
+                        ),
+                        Expr::Identifier("acc".into()),
+                    ),
+                    Statement::Assign(
+                        Expr::Identifier("i".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }),
+        ];
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "sum").clone();
+        assert!(
+            matches!(
+                shape.reduction.as_ref().map(|r| &r.kind),
+                Some(crate::analysis::accel::ReductionKind::Sum)
+            ),
+            "the detector must find the sum idiom: {:?}",
+            shape.reduction
+        );
+        assert!(
+            crate::analysis::accel::sum_reduce_lane(&shape, &program),
+            "int fold + const 32-multiple length must license the lane"
+        );
+        let mut builder = SpirvBuilder::new();
+        emit_kernel(&mut builder, "main", &shape, &program, true, &crate::backend::spirv::kernel::KernelSurface::default())
+            .expect("sum lane emit must compile");
+        let m = builder.module_ref();
+        let mut ops: Vec<rspirv::spirv::Op> = Vec::new();
+        for g in &m.types_global_values { ops.push(g.class.opcode); }
+        for f in &m.functions {
+            for b in &f.blocks {
+                for i in &b.instructions { ops.push(i.class.opcode); }
+            }
+        }
+        assert!(
+            ops.contains(&rspirv::spirv::Op::GroupNonUniformIAdd),
+            "the sum lane must lower to GroupNonUniformIAdd; ops={:?}",
+            ops
+        );
+        // LocalSize 32 — one row per 32-lane subgroup (the flat-1D
+        // geometry the wrapper's rows*32 dispatch relies on). Execution
+        // modes live in their own module section.
+        let local_size_32 = m.execution_modes.iter().any(|i| {
+            matches!(i.operands.get(1),
+                Some(rspirv::dr::Operand::ExecutionMode(rspirv::spirv::ExecutionMode::LocalSize)))
+                && matches!(i.operands.get(2), Some(rspirv::dr::Operand::LiteralBit32(32)))
+        });
+        assert!(local_size_32, "sum lane must declare LocalSize 32");
     }
 
     /// §2.1/§2.2: the lowered kernel contains real work-item compute.
@@ -756,6 +901,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
 
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
@@ -904,6 +1050,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
 
         let mut builder = SpirvBuilder::new();
@@ -1532,6 +1679,7 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
+                sum_lane: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "axpy", &shape, program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -1639,6 +1787,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
+            sum_lane: false,
         };
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
         emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -2023,6 +2172,7 @@ async node fill [i < N][i == N] {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
+                sum_lane: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
