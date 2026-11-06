@@ -11974,3 +11974,37 @@ local. Native mixed-value execution and wasm32 nested execution are regression
 gates; final results are in the checkpoint record.
 
 Status: FIXED 2026-11-05; 3,501 library tests and native/wasm tuple regressions pass.
+
+## frgn `String` parameter passes the Briev header, not a C string — OPEN 2026-11-06
+
+**Symptom:** `frgn strlen(s: String) -> Int from #System;` called with
+`"hello"` returns **1**, not 5. A C function declared with a plain `String`
+parameter receives the pointer to the Briev string's `[len][bytes][NUL]`
+header, so it reads the 8-byte length prefix as the C bytes (length 5 is
+`05 00 …`, and `strlen` stops at the second byte).
+
+**Repro:**
+```briev
+frgn strlen(s: String) -> Int from #System;
+let done: Int = 0;
+node main [done == 0][done == 1] {
+    println!(strlen("hello"));   // prints 1
+    done = 1;
+    endprogram;
+};
+```
+Verified 2026-11-06 with the current compiler; the emitted call passes the
+string handle pointer.
+
+**Scope:** any `frgn` whose C side expects `const char*` and whose parameter is
+declared `String`. `lib/std/ai/openvino.bv` therefore declares all C string
+parameters as `Int` and passes `to_c_string(s)` addresses (freed after the
+call). `String<C_String>`/`CStr` remains the GLUE boundary route.
+
+**Doc drift:** `docs/architecture/glue-ffi.md` §4.1 and
+`tests/fixtures/phase4/ffi_declare.bv` present `frgn …(path: String)` as if it
+were a C string; either the marshalling should convert or the examples should
+use `CStr`/`to_c_string`.
+
+**Status:** OPEN — semantics/documentation clarification (not a Workstream C
+blocker; the OpenVINO lane avoids the footgun).

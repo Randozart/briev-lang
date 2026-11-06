@@ -138,15 +138,18 @@ fn no_dunder_llvm_symbol_in_shipped_bv() {
 // ── The frgn allowlist gate (Phase 2, same plan) ─────────────────────────
 //
 // `frgn` survives ONLY where interop IS the feature (operator decision):
-// lib/std/web/ (JS), lib/tamer/ (host), lib/glue/ (product). Core logic
-// must not lean on another language. After the Phase-2 pure-.bv xxhash
-// rewrite, lib/std/ffi/ is frgn-free. This gate pins that: any live
+// lib/std/web/ (JS), lib/tamer/ (host), lib/glue/ (product), lib/std/ai/
+// (external AI runtimes — the OpenVINO C API lane,
+// docs/plans/2026-11-05-intel-xpu-openvino-harvest.md §Workstream C). Core
+// logic must not lean on another language. After the Phase-2 pure-.bv
+// xxhash rewrite, lib/std/ffi/ is frgn-free. This gate pins that: any live
 // `frgn` / `export frgn` declaration in lib/**/*.bv OUTSIDE the allowlist
 // fails the suite. Undo: delete this test if the interop-lane policy
 // changes.
 
 /// The only directories in `lib/` allowed to carry a live `frgn`.
-const FRGN_ALLOWLIST: &[&str] = &["lib/std/web/", "lib/tamer/", "lib/glue/"];
+const FRGN_ALLOWLIST: &[&str] =
+    &["lib/std/web/", "lib/tamer/", "lib/glue/", "lib/std/ai/"];
 
 /// One file's live `frgn` declaration hits (comments stripped). Returns
 /// `path:line: text` for every declaration outside the allowlist.
@@ -173,9 +176,9 @@ fn frgn_only_in_interop_lanes() {
     assert!(
         hits.is_empty(),
         "frgn allowlist gate: `frgn` is permitted only in the interop lanes \
-         (lib/std/web/, lib/tamer/, lib/glue/). Core .bv must be pure Briev \
-         (plan 2026-10-15-core-usable-purge §Phase 2). Move the binding into \
-         an allowlisted lane or rewrite it in Briev. Hits:\n{}",
+         (lib/std/web/, lib/tamer/, lib/glue/, lib/std/ai/). Core .bv must be \
+         pure Briev (plan 2026-10-15-core-usable-purge §Phase 2). Move the \
+         binding into an allowlisted lane or rewrite it in Briev. Hits:\n{}",
         hits.join("\n")
     );
 }

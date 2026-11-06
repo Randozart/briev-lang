@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<net name="mm" version="11">
+	<layers>
+		<layer id="0" name="a" type="Parameter" version="opset1">
+			<data shape="2,2" element_type="f32" />
+			<output>
+				<port id="0" precision="FP32" names="a">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="1" name="b" type="Parameter" version="opset1">
+			<data shape="2,2" element_type="f32" />
+			<output>
+				<port id="0" precision="FP32" names="b">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="2" name="MatMul_3" type="MatMul" version="opset1">
+			<data transpose_a="false" transpose_b="false" />
+			<input>
+				<port id="0" precision="FP32">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+				<port id="1" precision="FP32">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+			</input>
+			<output>
+				<port id="2" precision="FP32" names="Result_4">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="3" name="Result_4" type="Result" version="opset1" output_names="Result_4">
+			<input>
+				<port id="0" precision="FP32">
+					<dim>2</dim>
+					<dim>2</dim>
+				</port>
+			</input>
+		</layer>
+	</layers>
+	<edges>
+		<edge from-layer="0" from-port="0" to-layer="2" to-port="0" />
+		<edge from-layer="1" from-port="0" to-layer="2" to-port="1" />
+		<edge from-layer="2" from-port="2" to-layer="3" to-port="0" />
+	</edges>
+	<rt_info>
+		<info name="OpenVINO Runtime" value="2026.3.1-22476-759c5a6ab8c-makepkg" />
+	</rt_info>
+</net>

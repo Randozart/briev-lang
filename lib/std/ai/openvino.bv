@@ -1,0 +1,370 @@
+// openvino — Intel OpenVINO C API (libopenvino_c) interop lane.
+//
+// 2026-11-06 (plan 2026-11-05-intel-xpu-openvino-harvest.md §Workstream C):
+// minimal binding surface for the OpenVINO C API. OpenVINO is an FFI
+// capability escape hatch and a benchmark competitor — never a Briev codegen
+// path (plan §1 guardrail 1). Zero compiler knowledge: the linker flag comes
+// from `#Link<openvino_c>` (parser -> protocol_lib -> -lopenvino_c).
+//
+// Handles are opaque C pointer addresses carried in Int — the module-wide
+// address convention (Malloc#/Load#/Store# speak Int addresses; cstr_to_briev
+// in glue/c.bv carried a C pointer the same way). Every create/read/compile
+// returns 0 on failure. Every successful handle has a matching release; the
+// OpenVINO C API accepts NULL on the release path, so a 0 handle is safe.
+//
+// Ownership: the caller closes, in reverse order,
+//   tensor -> infer_request -> compiled_model -> model -> core.
+// The gate test (tests/openvino_gate.rs) pins both content and that ordering.
+//
+// C-string arguments: a plain `String` in a `frgn` call marshals as the Briev
+// [len][bytes][NUL] handle, NOT the C bytes (`frgn strlen(String)` returns 1
+// for "hello" — BUGS.md, 2026-11-06). Every C `const char*` parameter below is
+// therefore declared `Int`, and the wrapper converts with `to_c_string` and
+// frees the copy after the call.
+
+import "std/cast_lanes.bv";
+import "std/string_c.bv";
+
+// ov_status_e OK (the only success code).
+const OV_OK: Int = 0;
+
+// ── Version ──────────────────────────────────────────────────────────────
+// ov_version_t = { const char* buildNumber; const char* description; }
+// (16 bytes: two pointer-sized fields).
+frgn ov_get_openvino_version(version_out: Int) -> Int from #Link<openvino_c>;
+frgn ov_version_free(version: Int) from #Link<openvino_c>;
+
+// ── Core lifecycle ───────────────────────────────────────────────────────
+frgn ov_core_create(core_out: Int) -> Int from #Link<openvino_c>;
+frgn ov_core_free(core: Int) from #Link<openvino_c>;
+
+// ov_available_devices_t = { char** devices; size_t size; } (16 bytes).
+frgn ov_core_get_available_devices(core: Int, devices_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_available_devices_free(devices: Int) from #Link<openvino_c>;
+
+// ── Model read (file IR/ONNX, and in-memory text) ────────────────────────
+frgn ov_core_read_model(core: Int, model_path: Int, bin_path: Int,
+                        model_out: Int) -> Int from #Link<openvino_c>;
+frgn ov_core_read_model_from_memory_buffer(core: Int, model_str: Int,
+                                           str_len: Int, weights: Int,
+                                           model_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_model_free(model: Int) from #Link<openvino_c>;
+
+// ── Compile + infer request ──────────────────────────────────────────────
+// Variadic in C; pass property_args_size = 0 and no property pairs.
+frgn ov_core_compile_model(core: Int, model: Int, device: Int,
+                           property_args_size: Int, compiled_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_compiled_model_free(compiled: Int) from #Link<openvino_c>;
+frgn ov_compiled_model_create_infer_request(compiled: Int, request_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_infer_request_free(request: Int) from #Link<openvino_c>;
+frgn ov_infer_request_infer(request: Int) -> Int from #Link<openvino_c>;
+
+// ── Tensors ──────────────────────────────────────────────────────────────
+// Returned tensor handles are owned by the caller (ov_tensor_free).
+frgn ov_infer_request_get_input_tensor_by_index(request: Int, idx: Int,
+                                                tensor_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_infer_request_get_input_tensor(request: Int, tensor_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_infer_request_get_output_tensor_by_index(request: Int, idx: Int,
+                                                 tensor_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_infer_request_get_output_tensor(request: Int, tensor_out: Int) -> Int
+    from #Link<openvino_c>;
+frgn ov_tensor_free(tensor: Int) from #Link<openvino_c>;
+frgn ov_tensor_data(tensor: Int, data_out: Int) -> Int from #Link<openvino_c>;
+frgn ov_tensor_get_size(tensor: Int, size_out: Int) -> Int from #Link<openvino_c>;
+frgn ov_tensor_get_element_type(tensor: Int, type_out: Int) -> Int
+    from #Link<openvino_c>;
+
+// ── Briev-side helpers ───────────────────────────────────────────────────
+
+// cstr_to_string — copy a NUL-terminated C string into a Briev String.
+// Same [len][bytes][NUL] construction as glue/c.bv's cstr_to_briev; kept
+// local so the stdlib AI lane does not import the GLUE product lane.
+defn cstr_to_string(p: Int) -> String [true][term .^Length >= 0] {
+    when p <= 0 {
+        term "";
+    };
+    let len: Int = cstr_len(p);
+    let buf: Int = Alloc#(8 + len + 1) as Int;
+    Store#(buf, len, 8);
+    Copy#(buf + 8, p, len);
+    Store#(buf + 8 + len, 0, 1);
+    term (buf as Data) as String;
+};
+
+// cell_new — 8-byte out-parameter cell (a C `T**` target).
+defn cell_new() -> Int [true][term > 0] {
+    let c: Int = Malloc#(8) as Int;
+    Store#(c, 0, 8);
+    term c;
+};
+
+// cell_read — read the handle a C call stored in the cell.
+defn cell_read(cell: Int) -> Int [cell > 0][term >= 0] {
+    term Load#(cell, 8);
+};
+
+// cell_free — release an out-parameter cell.
+defn cell_free(cell: Int) -> Void {
+    Free#(cell as Ptr<Bit<8>>);
+    term;
+};
+
+// openvino_core_create — a new ov_core_t handle, or 0 on failure.
+defn openvino_core_create() -> Int [true][term >= 0] {
+    let cell: Int = cell_new();
+    let st: Int = ov_core_create(cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let core: Int = cell_read(cell);
+    cell_free(cell);
+    term core;
+};
+
+// openvino_core_free — release a core (NULL-safe).
+defn openvino_core_free(core: Int) -> Void {
+    ov_core_free(core);
+    term;
+};
+
+// openvino_version — the runtime build string ("2026.3.1-...").
+defn openvino_version() -> String [true][term .^Length >= 0] {
+    let cell: Int = Malloc#(16) as Int;
+    let st: Int = ov_get_openvino_version(cell);
+    when st != OV_OK {
+        Free#(cell as Ptr<Bit<8>>);
+        term "";
+    };
+    let p: Int = Load#(cell, 8);
+    let s: String = cstr_to_string(p);
+    ov_version_free(cell);
+    Free#(cell as Ptr<Bit<8>>);
+    term s;
+};
+
+// openvino_device_count — number of devices the core enumerates.
+defn openvino_device_count(core: Int) -> Int [core >= 0][term >= 0] {
+    let cell: Int = Malloc#(16) as Int;
+    let st: Int = ov_core_get_available_devices(core, cell);
+    when st != OV_OK {
+        Free#(cell as Ptr<Bit<8>>);
+        term 0;
+    };
+    let n: Int = Load#(cell + 8, 8);
+    ov_available_devices_free(cell);
+    Free#(cell as Ptr<Bit<8>>);
+    term n;
+};
+
+// openvino_device_name — device name at idx ("GPU", "CPU", "NPU", ...),
+// or "" when idx is out of range. The devices struct is freed before return,
+// so the name is copied into a Briev String first.
+defn openvino_device_name(core: Int, idx: Int) -> String
+    [core >= 0 && idx >= 0][term .^Length >= 0]
+{
+    let cell: Int = Malloc#(16) as Int;
+    let st: Int = ov_core_get_available_devices(core, cell);
+    when st != OV_OK {
+        Free#(cell as Ptr<Bit<8>>);
+        term "";
+    };
+    let n: Int = Load#(cell + 8, 8);
+    when idx >= n {
+        ov_available_devices_free(cell);
+        Free#(cell as Ptr<Bit<8>>);
+        term "";
+    };
+    let arr: Int = Load#(cell, 8);
+    let p: Int = Load#(arr + idx * 8, 8);
+    let s: String = cstr_to_string(p);
+    ov_available_devices_free(cell);
+    Free#(cell as Ptr<Bit<8>>);
+    term s;
+};
+
+// openvino_read_model — read an IR/ONNX/PDPD model from file. bin_path may
+// be "" for models without weights. Returns a model handle, or 0.
+defn openvino_read_model(core: Int, model_path: String, bin_path: String) -> Int
+    [core >= 0][term >= 0]
+{
+    let mp: Int = to_c_string(model_path);
+    let bp: Int = to_c_string(bin_path);
+    let cell: Int = cell_new();
+    let st: Int = ov_core_read_model(core, mp, bp, cell);
+    Free#(mp as Ptr<Bit<8>>);
+    Free#(bp as Ptr<Bit<8>>);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let model: Int = cell_read(cell);
+    cell_free(cell);
+    term model;
+};
+
+// openvino_read_model_from_string — read a model held in memory (IR/ONNX
+// text). The length is the String's BYTE length (header at offset 0), not
+// the codepoint count. Returns a model handle, or 0.
+defn openvino_read_model_from_string(core: Int, model_text: String) -> Int
+    [core >= 0][term >= 0]
+{
+    let nbytes: Int = Load#((model_text as Data) as Int, 8);
+    let ms: Int = to_c_string(model_text);
+    let cell: Int = cell_new();
+    let st: Int = ov_core_read_model_from_memory_buffer(core, ms, nbytes, 0, cell);
+    Free#(ms as Ptr<Bit<8>>);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let model: Int = cell_read(cell);
+    cell_free(cell);
+    term model;
+};
+
+// openvino_model_free — release a model (NULL-safe).
+defn openvino_model_free(model: Int) -> Void {
+    ov_model_free(model);
+    term;
+};
+
+// openvino_compile_model — compile for "GPU"/"CPU"/"NPU" (no properties).
+// Returns a compiled-model handle, or 0.
+defn openvino_compile_model(core: Int, model: Int, device: String) -> Int
+    [core >= 0 && model >= 0][term >= 0]
+{
+    let dev: Int = to_c_string(device);
+    let cell: Int = cell_new();
+    let st: Int = ov_core_compile_model(core, model, dev, 0, cell);
+    Free#(dev as Ptr<Bit<8>>);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let compiled: Int = cell_read(cell);
+    cell_free(cell);
+    term compiled;
+};
+
+// openvino_compiled_model_free — release a compiled model (NULL-safe).
+defn openvino_compiled_model_free(compiled: Int) -> Void {
+    ov_compiled_model_free(compiled);
+    term;
+};
+
+// openvino_infer_request_create — an infer request for the compiled model,
+// or 0.
+defn openvino_infer_request_create(compiled: Int) -> Int
+    [compiled >= 0][term >= 0]
+{
+    let cell: Int = cell_new();
+    let st: Int = ov_compiled_model_create_infer_request(compiled, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let request: Int = cell_read(cell);
+    cell_free(cell);
+    term request;
+};
+
+// openvino_infer_request_free — release an infer request (NULL-safe).
+defn openvino_infer_request_free(request: Int) -> Void {
+    ov_infer_request_free(request);
+    term;
+};
+
+// openvino_infer — synchronous infer; 0 on success, -1 on any failure.
+// (C ov_status_e comes back zero-extended through the i64 declaration; the
+// wrapper normalizes failure so callers can use the usual `< 0` test.)
+defn openvino_infer(request: Int) -> Int [request >= 0][term >= -1] {
+    let st: Int = ov_infer_request_infer(request);
+    when st != OV_OK {
+        term -1;
+    };
+    term 0;
+};
+
+// openvino_input_tensor — input tensor handle at idx, or 0. Caller frees.
+defn openvino_input_tensor(request: Int, idx: Int) -> Int
+    [request >= 0 && idx >= 0][term >= 0]
+{
+    let cell: Int = cell_new();
+    let st: Int = ov_infer_request_get_input_tensor_by_index(request, idx, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let t: Int = cell_read(cell);
+    cell_free(cell);
+    term t;
+};
+
+// openvino_output_tensor — output tensor handle at idx, or 0. Caller frees.
+defn openvino_output_tensor(request: Int, idx: Int) -> Int
+    [request >= 0 && idx >= 0][term >= 0]
+{
+    let cell: Int = cell_new();
+    let st: Int = ov_infer_request_get_output_tensor_by_index(request, idx, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let t: Int = cell_read(cell);
+    cell_free(cell);
+    term t;
+};
+
+// openvino_tensor_free — release a tensor handle (NULL-safe).
+defn openvino_tensor_free(tensor: Int) -> Void {
+    ov_tensor_free(tensor);
+    term;
+};
+
+// openvino_tensor_data — host data pointer for a tensor, or 0.
+defn openvino_tensor_data(tensor: Int) -> Int [tensor >= 0][term >= 0] {
+    let cell: Int = cell_new();
+    let st: Int = ov_tensor_data(tensor, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let p: Int = cell_read(cell);
+    cell_free(cell);
+    term p;
+};
+
+// openvino_tensor_size — element count for a tensor, or 0.
+defn openvino_tensor_size(tensor: Int) -> Int [tensor >= 0][term >= 0] {
+    let cell: Int = cell_new();
+    let st: Int = ov_tensor_get_size(tensor, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term 0;
+    };
+    let n: Int = cell_read(cell);
+    cell_free(cell);
+    term n;
+};
+
+// openvino_tensor_element_type — ov_element_type_e code (F32 = 4), or -1.
+defn openvino_tensor_element_type(tensor: Int) -> Int [tensor >= 0][true] {
+    let cell: Int = cell_new();
+    let st: Int = ov_tensor_get_element_type(tensor, cell);
+    when st != OV_OK {
+        cell_free(cell);
+        term -1;
+    };
+    // ov_element_type_e is a 4-byte enum; read only its width.
+    let t: Int = Load#(cell, 4);
+    cell_free(cell);
+    term t;
+};
