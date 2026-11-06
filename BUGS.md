@@ -11974,3 +11974,7 @@ local. Native mixed-value execution and wasm32 nested execution are regression
 gates; final results are in the checkpoint record.
 
 Status: FIXED 2026-11-05; 3,501 library tests and native/wasm tuple regressions pass.
+
+## FIXED 2026-11-06: Tuple field ownership provenance
+
+Tuple construction and destructuring merged unrelated fields. A scalar/string key inherited pointer contents from its paired value, making a synchronous send appear to publish the entire graph. Preserve index-labelled tuple fields through construction, let destructuring, and tuple patterns; raw memory loads remain conservative. Regressions exercise safe unselected fields and genuinely escaping selected/raw fields.

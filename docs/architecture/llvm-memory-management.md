@@ -1269,3 +1269,7 @@ marks the owning result. Region lowering registers that actual pointer before
 its first use, with the same bookkeeping and allocation-failure behavior as
 malloc. A registered encoding override invalidates a default-provider proof.
 Raw address casts retain the original allocation identity.
+
+## Tuple field ownership provenance (2026-11-06)
+
+Tuple construction and destructuring merged unrelated fields. A scalar/string key inherited pointer contents from its paired value, making a synchronous send appear to publish the entire graph. Preserve index-labelled tuple fields through construction, let destructuring, and tuple patterns; raw memory loads remain conservative. Regressions exercise safe unselected fields and genuinely escaping selected/raw fields.
