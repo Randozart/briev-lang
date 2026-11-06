@@ -26,6 +26,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut foreign = Vec::new();
     let mut constants = Vec::new();
     let mut const_exprs = Vec::new();
+    let mut const_types = Vec::new();
     let mut inits = Vec::new();
     let mut protocol_binding_fns = Vec::new();
     let has_triggers;
@@ -37,6 +38,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             foreign: &mut foreign,
             constants: &mut constants,
             const_exprs: &mut const_exprs,
+            const_types: &mut const_types,
             inits: &mut inits,
             protocol_binding_fns: &mut protocol_binding_fns,
             always_stateful: &mut always_stateful,
@@ -54,6 +56,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         foreign,
         constants,
         const_exprs,
+        const_types,
         inits,
         protocol_binding_fns,
         always_stateful,
@@ -68,6 +71,7 @@ struct LowerOutputs<'a> {
     foreign: &'a mut Vec<HirForeign>,
     constants: &'a mut Vec<String>,
     const_exprs: &'a mut Vec<(String, HirExpr)>,
+    const_types: &'a mut Vec<(String, Type)>,
     inits: &'a mut Vec<HirInit>,
     protocol_binding_fns: &'a mut Vec<String>,
     always_stateful: &'a mut Vec<String>,
@@ -257,6 +261,7 @@ fn lower_item(
             out.constants.push(c.name.clone());
             out.const_exprs
                 .push((c.name.clone(), lower_expr(&c.expr, ids)));
+            out.const_types.push((c.name.clone(), c.ty.clone()));
         }
         TopLevel::Init(i) => out.inits.push(HirInit {
             name: i.name.clone(),

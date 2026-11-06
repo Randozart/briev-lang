@@ -90,6 +90,12 @@ surfaces still walk the AST:
    HIR == AST including the negative cases. Coverage mirrors the AST's
    BARE-reactive-txn filter (`node` is the reactive keyword; `txn` is not
    reactive — the test sources use `node`).
+   **Ported + consumer flipped (2026-11-05):** `density` —
+   `src/hir/density.rs`, consumer flipped under the flag with a debug
+   equality assert; 2 parity tests (float-vs-int txns, const-typed
+   propagation). New HIR fidelity field required by the port:
+   `HirProgram::const_types` (the AST keeps `TopLevel::Constant.ty`, which
+   seeds the float fixpoint).
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 

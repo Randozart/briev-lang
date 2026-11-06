@@ -11,6 +11,7 @@ pub mod cast_paths;
 pub mod constructors;
 pub mod coll_length;
 pub mod defn_liveness;
+pub mod density;
 pub mod enum_repr;
 pub mod expr;
 pub mod facts;

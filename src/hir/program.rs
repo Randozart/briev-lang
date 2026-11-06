@@ -204,6 +204,9 @@ pub struct HirProgram {
     pub constants: Vec<String>,
     /// Top-level `const` initializers (name, value) for surface walks.
     pub const_exprs: Vec<(String, HirExpr)>,
+    /// Top-level `const` declared types (name, type) — density's float
+    /// seeding needs the annotation the AST keeps on `TopLevel::Constant`.
+    pub const_types: Vec<(String, Type)>,
     /// Top-level `init` declarations (runtime-seeded invariants).
     pub inits: Vec<HirInit>,
     /// At least one top-level `trigger` declaration exists.

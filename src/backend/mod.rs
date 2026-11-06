@@ -272,7 +272,16 @@ pub fn analyze_program(
     // 2026-07-31: Phase 2 measurement passes (plan §7). Computed once here so
     // every backend consumer reads frontend analysis instead of re-walking
     // bodies. See docs/plans/2026-07-31-frontend-driven-dispatch.md §7.
-    let density = crate::analysis::density::compute_densities(items);
+    // 2026-11-05 (H5 inventory port 3): density from typed HIR under the
+    // flag; debug builds assert exact AST equality.
+    let density = if hir_emit_enabled() {
+        let ast = crate::analysis::density::compute_densities(items);
+        let hir = crate::hir::density::compute_densities(&hir);
+        debug_assert_eq!(hir, ast, "HIR/AST density drift");
+        hir
+    } else {
+        crate::analysis::density::compute_densities(items)
+    };
     // 2026-11-05 (H5 inventory port 2): modulo partition from typed HIR under
     // the flag; debug builds assert exact AST equality.
     let modulo_partition = if hir_emit_enabled() {
