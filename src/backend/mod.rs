@@ -349,7 +349,16 @@ pub fn analyze_program(
     // concrete sets + the dispatch form each use-site may use. Computed once
     // in the frontend; the backend reads it at element read-sites (never
     // re-derives — the frontend-driven-dispatch pillar).
-    let dyn_collection_info = crate::analysis::dyn_concrete_sets::analyze(items);
+    // 2026-11-05 (H5 inventory port 4): dyn concrete sets from typed HIR
+    // under the flag; debug builds assert exact AST equality.
+    let dyn_collection_info = if hir_emit_enabled() {
+        let ast = crate::analysis::dyn_concrete_sets::analyze(items);
+        let hir = crate::hir::dyn_concrete_sets::analyze(&hir);
+        debug_assert_eq!(hir, ast, "HIR/AST dyn-concrete-set drift");
+        hir
+    } else {
+        crate::analysis::dyn_concrete_sets::analyze(items)
+    };
     // 2026-11-05 (H4.1): spawn pools now return backend-neutral `PoolBound`
     // terms, so the HIR analysis is directly consumable. Debug builds assert
     // exact AST equality; emission rebuilds the bound expression from the

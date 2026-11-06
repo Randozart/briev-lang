@@ -96,6 +96,13 @@ surfaces still walk the AST:
    propagation). New HIR fidelity field required by the port:
    `HirProgram::const_types` (the AST keeps `TopLevel::Constant.ty`, which
    seeds the float fixpoint).
+   **Ported + consumer flipped (2026-11-05):** `dyn_concrete_sets` —
+   `src/hir/dyn_concrete_sets.rs`, consumer flipped with a debug equality
+   assert; 3 parity tests mirror the AST fixtures (Switch/Inline/Vtable/
+   ignored). New HIR fidelity fields required: `HirTypeDef.traits`
+   (declared parent links) and `HirProgram.trait_functions` (ALL trait
+   function names — callable lowering skips body-less requirement slots,
+   so conformance reads this table).
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 

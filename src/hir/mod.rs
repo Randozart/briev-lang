@@ -12,6 +12,7 @@ pub mod constructors;
 pub mod coll_length;
 pub mod defn_liveness;
 pub mod density;
+pub mod dyn_concrete_sets;
 pub mod enum_repr;
 pub mod expr;
 pub mod facts;

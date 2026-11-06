@@ -156,6 +156,8 @@ pub struct HirTypeDef {
     pub protocol: Option<String>,
     /// `coll obj` type (collection proof + grow-guard elimination).
     pub is_coll: bool,
+    /// Declared parent/trait links (`type X: Trait`).
+    pub traits: Vec<String>,
     /// Declared op-binding names (`op Grow: ...`).
     pub op_bindings: Vec<String>,
     /// Op-binding implementation fn names (`op Add: cstring_concat`).
@@ -211,6 +213,11 @@ pub struct HirProgram {
     pub inits: Vec<HirInit>,
     /// At least one top-level `trigger` declaration exists.
     pub has_triggers: bool,
+    /// Top-level `trait` declarations: name + ALL declared function names
+    /// (requirements included — callable lowering skips body-less slots, so
+    /// the conformance analysis reads this table instead). First declaration
+    /// of a name wins, matching the AST walker.
+    pub trait_functions: Vec<(String, Vec<String>)>,
     /// Binding fns named by `proto` cast edges / cross-ops. The casting graph
     /// calls them at emission, so liveness must root them.
     pub protocol_binding_fns: Vec<String>,

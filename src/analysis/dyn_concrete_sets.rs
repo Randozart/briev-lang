@@ -41,7 +41,7 @@ pub enum DynDispatchForm {
 /// One `Collection<dyn Trait>` binding: the trait it carries, the closed
 /// concrete set its construction provably holds (empty = open), and the
 /// dispatch form the use-sites of this binding are licensed to use.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynCollectionInfo {
     pub trait_name: String,
     /// Closed set of concrete type names provably in the collection at

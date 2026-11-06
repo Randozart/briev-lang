@@ -29,6 +29,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut const_types = Vec::new();
     let mut inits = Vec::new();
     let mut protocol_binding_fns = Vec::new();
+    let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -41,6 +42,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             const_types: &mut const_types,
             inits: &mut inits,
             protocol_binding_fns: &mut protocol_binding_fns,
+            trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
             has_triggers: false,
         };
@@ -59,6 +61,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         const_types,
         inits,
         protocol_binding_fns,
+        trait_functions,
         always_stateful,
         has_triggers,
     }
@@ -74,6 +77,7 @@ struct LowerOutputs<'a> {
     const_types: &'a mut Vec<(String, Type)>,
     inits: &'a mut Vec<HirInit>,
     protocol_binding_fns: &'a mut Vec<String>,
+    trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
 }
@@ -199,6 +203,12 @@ fn lower_item(
         // Trait defaults are indexed by BARE name (no type qualification), so a
         // default shared by stateful and stateless conformers stays one node.
         TopLevel::Trait(tr) => {
+            if !out.trait_functions.iter().any(|(n, _)| n == &tr.name) {
+                out.trait_functions.push((
+                    tr.name.clone(),
+                    tr.functions.iter().map(|d| d.name.clone()).collect(),
+                ));
+            }
             for f in &tr.functions {
                 if f.body.is_empty() {
                     continue;
@@ -301,6 +311,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             kind: HirTypeDefKind::Struct { fields: Vec::new() },
             protocol: Some(protocol),
             is_coll: def.coll,
+            traits: def.traits.clone(),
             op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
             binding_fns: binding_fns(def),
             span: def.span,
@@ -327,6 +338,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         },
         protocol: def.protocol.clone(),
         is_coll: def.coll,
+        traits: def.traits.clone(),
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
         binding_fns: binding_fns(def),
         span: def.span,
@@ -355,6 +367,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         kind: HirTypeDefKind::Enum { variants },
         protocol: def.protocol.clone(),
         is_coll: def.coll,
+        traits: def.traits.clone(),
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
         binding_fns: binding_fns(def),
         span: def.span,
@@ -390,6 +403,7 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         kind: HirTypeDefKind::Enum { variants },
         protocol: None,
         is_coll: false,
+        traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
         span: def.span,
@@ -414,6 +428,7 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         },
         protocol: None,
         is_coll: false,
+        traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
         span: def.span,
@@ -438,6 +453,7 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         },
         protocol: None,
         is_coll: false,
+        traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
         span: def.span,
