@@ -420,6 +420,35 @@ impl LlvmBackend {
                 .ok();
                 TypedRegister { name: v.clone(), ty: pointee_ty }
             }
+            HirExprKind::Match { scrutinee, arms } => {
+                // Dispatch-only: the scrutinee, patterns, guards and bodies
+                // all reconstruct BEFORE the scrutinee emits (emit_match
+                // evaluates the scrutinee first; the phi machinery has no
+                // mid-loop fallback). Covered-body nativeness lands with the
+                // emit_match bodies split (queued with the Cast.via arc).
+                let Some(ast_scrutinee) = crate::hir::to_ast::expr(scrutinee) else {
+                    return None;
+                };
+                let mut ast_arms = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let Some(pat) = crate::hir::to_ast::pattern(&arm.pattern) else {
+                        return None;
+                    };
+                    let guard = match arm.guard.as_ref().map(crate::hir::to_ast::expr) {
+                        Some(Some(g)) => Some(g),
+                        _ => return None,
+                    };
+                    let Some(body) = crate::hir::to_ast::expr(&arm.body) else {
+                        return None;
+                    };
+                    ast_arms.push(crate::ast::MatchArm {
+                        pattern: pat,
+                        guard,
+                        body: Box::new(body),
+                    });
+                }
+                self.emit_match(out, &v, &ast_scrutinee, &ast_arms, indent)
+            }
             HirExprKind::Block(children) => {
                 // 2026-11-05 (H4 slice D): children recurse through the
                 // statement seam (native or per-child conversion); the

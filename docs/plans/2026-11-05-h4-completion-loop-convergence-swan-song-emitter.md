@@ -408,6 +408,17 @@ strided vector gathers, narrowing-path notes) extracted verbatim into
 `emit_slice_with_array`. Bounds and array reconstruct BEFORE the array
 emits; the array register is operand-split (covered arrays native).
 
+## Match expression seam coverage (2026-11-05)
+
+Dispatch-only HIR Match arm: scrutinee/patterns/guards/bodies all
+reconstruct BEFORE the scrutinee emits (the phi machinery has no mid-loop
+fallback). Full bodies-via-seam dual-fuel of `emit_match` (covered arm
+bodies native through operand recursion) is queued with the Cast.via arc
+— the phi structure makes it a careful session of its own. With this,
+EVERY reconstructible HIR expression kind is seam-covered; remaining
+conversion-only: Lambda, Spawn, If (synthesized-only), Slice-Stride nuance
+none — by design.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
