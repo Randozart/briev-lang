@@ -17,6 +17,7 @@ pub mod helpers;
 pub mod intrinsics;
 pub mod loop_engine;
 mod logical;
+mod integer_operands;
 pub mod normalizer;
 pub mod types;
 pub mod strategy;
