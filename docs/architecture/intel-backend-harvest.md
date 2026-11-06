@@ -248,7 +248,7 @@ Memory reuse is a host-side pool keyed by byte size / padded layout
 | Two production dispatch backends (OCL, ZE); ZE preferred on Xe2+ with LEO | Workstream D `docs/architecture/intel-dispatch.md` | Design Briev's dispatch to select L0 vs OCL by the same probe facts; record LEO as an interop dependency |
 | ZE: immediate command lists, in-order flag, `num_ccs` queue round-robin | `intel-dispatch.md` | Briev's Intel dispatch shape: one immediate list per stream, CCS-count streams |
 | Sync model: events / barrier stamps / none by queue type | `intel-dispatch.md` | Reuse the proven event-chain + queue-stamp design; do not invent a parallel sync scheme |
-| No SPIR-V import in OCL/ZE; SPIR-V only via SYCL+ocloc | `intel-dispatch.md`; `config/targets.toml` | Briev's own tier would call `zeModuleCreate(ZE_MODULE_FORMAT_IL, spirv)` — a capability OpenVINO does not exercise; must be verified on PTL in Workstream B |
+| No SPIR-V import in OCL/ZE; SPIR-V only via SYCL+ocloc | `intel-dispatch.md`; `config/targets.toml` | **Verified on PTL (2026-11-06):** `zeModuleCreate(ZE_MODULE_FORMAT_IL_SPIRV)` + `zeKernelCreate` succeed for a clang-emitted SPIR-V module (§3.1a). Briev's Intel IL path is viable |
 | Kernel cache key includes driver version + device + runtime tag | Workstream B benchmark doc; `intel-dispatch.md` | Mirror the keying so Briev kernel caches are not stale across driver upgrades |
 | Counter-based events broken on Xe3/Xe3P (GSD-13050) | §7 pitfalls; `intel-dispatch.md` | Do not depend on counter-based events on Panther Lake |
 | Device info: EUs, threads/EU, num_ccs, arch enum | `src/analysis/gpu_strategy.rs`; `config/targets.toml` | Inputs to the shape-driven cost model; no type-name matching (Rule 19) |
@@ -327,12 +327,58 @@ Gemmstone microkernel support: fast driver-version thresholds then a raw-vISA
 compile probe (`impls/ocl/kernel_selector_helper.cpp:147-214`); CM support:
 JIT a kernel with `static_assert(CM_HAS_DPAS)` (`71-101`).
 
+### 3.1a Panther Lake / Xe3 — verified on the node (2026-11-06)
+
+Measured on `Overlord-x8664` (Arc B390, PCI `8086:b082` rev 04, OpenVINO
+`arch=v30.0.4`, 96 EUs). Full environment in §10.
+
+**Vulkan cooperative matrix is present and usable:**
+
+- `VK_KHR_cooperative_matrix` extension revision **2**; feature
+  `cooperativeMatrix = true`; supported stage = **`SHADER_STAGE_COMPUTE_BIT`**;
+  `shaderBFloat16CooperativeMatrix = true`.
+- The device reports **6 `VkCooperativeMatrixPropertiesKHR` configurations**,
+  all `scope = SUBGROUP` (3):
+
+  | M | N | K | A | B | C | Result |
+  |---|---|---|---|---|---|---|
+  | 8 | 16 | 16 | FLOAT16 | FLOAT16 | FLOAT16 | FLOAT16 |
+  | 8 | 16 | 16 | FLOAT16 | FLOAT16 | FLOAT32 | FLOAT32 |
+  | 8 | 16 | 16 | SFLOAT16 | SFLOAT16 | SFLOAT16 | SFLOAT16 |
+  | 8 | 16 | 16 | SFLOAT16 | SFLOAT16 | FLOAT32 | FLOAT32 |
+  | 8 | 16 | 32 | SINT8 | SINT8 | SINT32 | SINT32 |
+  | 8 | 16 | 32 | UINT8 | UINT8 | UINT32 | UINT32 |
+
+  (enumerated with `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`
+  resolved through `vkGetInstanceProcAddr`; the loader does not export the
+  symbol directly.)
+
+**Level Zero SPIR-V IL module creation works.** A trivial OpenCL-C kernel
+compiled with `clang --target=spirv64 -x cl -cl-std=CL3.0 -c` (validated by
+`spirv-val`) was accepted by `zeModuleCreate` with
+`ZE_MODULE_FORMAT_IL_SPIRV` (`ZE_RESULT_SUCCESS`), and
+`zeKernelCreate("k")` succeeded. This is the capability OpenVINO never
+exercises (it uses NATIVE binaries, §2.1) — it is available to Briev's own
+Intel dispatch.
+
+**OpenCL device facts:** NEO driver 26.31.39395, OpenCL 3.0, max compute
+units 96, sub-group sizes **16, 32**, max sub-groups/WG 64.
+`cl_khr_il_program`, `cl_intel_device_attribute_query`,
+`cl_intel_subgroup_matrix_multiply_accumulate` (+`_tf32`),
+`cl_intel_split_work_group_barrier`, `cl_intel_unified_shared_memory` are
+advertised; `cl_intel_subgroup_split_matrix_multiply_accumulate` is **not**
+in the extension list (OpenVINO emits its define regardless — do not rely on
+that define being load-bearing).
+**OpenVINO default GPU inference precision is f16:** a 256×256 f32 matmul
+showed max abs error `6.28e-3` by default vs `6.87e-5` with
+`INFERENCE_PRECISION_HINT=f32`.
+
 ### 3.2 Briev consumers
 
 | Fact | Consumer | How |
 |---|---|---|
 | Xe2/Xe3 subgroup = 16, GRF = 64 B, Xe3 register-file option | `config/targets.toml` Intel entries; `src/analysis/gpu_strategy.rs` | Cost-model inputs per arch; never a source keyword (Rule 2) |
-| DPAS reachable only through CL Intel extensions in this codebase; no SPIR-V matrix types used | `docs/plans/2026-09-04-beyond-coopmat.md`; `intel-dispatch.md` | Open question for Workstream B/D: **does PTL/Xe3 expose `VK_KHR_cooperative_matrix` / `SPV_INTEL_joint_matrix` to our SPIR-V tier?** OpenVINO's extension choice is not evidence either way |
+| DPAS reachable only through CL Intel extensions **in OpenVINO**; no SPIR-V matrix types used there | `docs/plans/2026-09-04-beyond-coopmat.md`; `intel-dispatch.md` | **Answered on PTL:** `VK_KHR_cooperative_matrix` rev 2 is present with 6 M8×N16×K16/K32 subgroup configs (§3.1a); Briev's portable SPIR-V tier can use it. OpenVINO's CL choice was not a hardware limit |
 | Arch from ngen family, `unknown` clears immad; XeHPC unsupported on OCL/ZE | `intel-dispatch.md`; `config/targets.toml` | Capability probe must be explicit; unknown arch ⇒ conservative portable tier |
 | Microkernel support is versioned/compile-probed, can regress per driver | Workstream B results file; `intel-dispatch.md` | Re-probe per driver era; never bake a driver-version assumption into codegen |
 | Extension inventory + subgroup block IO | `intel-dispatch.md` | Candidate primitives for Briev's Intel SPIR-V tier; verify each on the actual driver |
@@ -575,19 +621,67 @@ frontend converters, NPU plugin, and non-GPU plugin code — no Briev consumer.
 
 ---
 
-## 9. Open questions left for Workstreams B/D
+## 9. Open questions — status (updated 2026-11-06)
 
-1. **Does PTL/Xe3 expose `VK_KHR_cooperative_matrix` and/or
-   `SPV_INTEL_joint_matrix` to a Briev-authored SPIR-V module?** OpenVINO's
-   CL-extension-only matrix path is not evidence either way. Gate: a Vulkan/L0
-   extension dump on the node.
-2. **Level Zero SPIR-V module creation** (`zeModuleCreate` with
-   `ZE_MODULE_FORMAT_IL`) on the installed L0 driver — OpenVINO never
-   exercises it (they use NATIVE binaries). Verify before `intel-dispatch.md`
-   commits to an IL path.
-3. Which OpenVINO runtime is actually installed on `overlordx86-64`
-   (OCL vs ZE build), and whether the GPU plugin enumerates Xe3.
-4. Whether the PTL driver exposes `cl_intel_device_attribute_query`
-   (GMDID-based arch detection) — needed for the arch/config table lookup.
-5. PagedAttention block size and dtype support on Xe3 (the stock 2026.4.1
-   wheel's `pa_block_size` set) — for the Workstream B attention lane.
+1. **PTL/Xe3 SPIR-V matrix support — ANSWERED YES.**
+   `VK_KHR_cooperative_matrix` rev 2, `cooperativeMatrix = true`, compute
+   stage, six M8×N16×K16/K32 subgroup configs (§3.1a). `SPV_INTEL_joint_matrix`
+   was not separately dumped; the portable Vulkan path is sufficient evidence
+   for the portable tier.
+2. **Level Zero SPIR-V IL module creation — ANSWERED YES.**
+   `zeModuleCreate(ZE_MODULE_FORMAT_IL_SPIRV)` and `zeKernelCreate` both
+   returned `ZE_RESULT_SUCCESS` on the node (§3.1a).
+3. **Installed runtime — ANSWERED.** OpenVINO **2026.3.1** (makepkg;
+   `openvino-intel-gpu-plugin 2026.3.1-1.1`), devices `['CPU','GPU','NPU']`;
+   GPU = `Intel(R) Arc(TM) B390 GPU (iGPU)`, `arch=v30.0.4`, 96 EUs. Live
+   64×64 and 256×256 GPU matmuls executed correctly (§10).
+4. **`cl_intel_device_attribute_query` — ANSWERED YES.**
+   Advertised by the NEO device; GMDID-based arch detection is available.
+5. **PagedAttention block size + dtype support on Xe3 — OPEN.** The node
+   has the 2026.3.1 wheel (not 2026.4.1 as the plan assumed); query the
+   plugin's supported ops + `pa_block_size` set before the attention lane.
+6. **Workstream B harness remote pattern — OPEN.** Decide harness-SSH-in vs
+   harness-runs-on-node using existing `benchmarks/` conventions (plan §5.2).
+
+---
+
+## 10. PTL node environment record — `Overlord-x8664` (2026-11-06)
+
+Verified SSH target: `prestopoverlord@100.92.76.67` (password auth; hostname
+`Overlord-x8664`). Credentials are not recorded in this repository.
+
+| Item | Value |
+|---|---|
+| OS / kernel | CachyOS, Linux `7.2.2-1-cachyos` |
+| CPU | Intel Core Ultra X7 358H |
+| iGPU | Panther Lake **[Arc B390]**, PCI `8086:b082` rev 04 (Xe3) |
+| OpenVINO | `2026.3.1-22476-759c5a6ab8c-makepkg`; plugin `openvino-intel-gpu-plugin 2026.3.1-1.1` |
+| OV devices | `CPU`, `GPU` (`Arc B390 iGPU`), `NPU` (`AI Boost`) |
+| GPU arch / EUs | `arch=v30.0.4`, 96 EUs, integrated |
+| OpenCL | NEO `26.31.39395` (`intel-compute-runtime 26.31.39395.13-1.1`), OpenCL 3.0; sub-group sizes 16, 32 |
+| Vulkan | Mesa `26.2.1`, API `1.4.354`; `vulkan-intel 26.2.1` |
+| Level Zero | loader/headers `1.32.0` |
+| SPIR-V tooling | clang `22.1.8` (`spirv64` target), `spirv-val`, `spirv-dis`, `spirv-as`, `ocloc` |
+| OpenCL ICDs | Intel NEO (GPU) + Mesa (CPU); `ocl-icd 2.3.5` |
+
+**Functional gates run (all passed):**
+
+1. `python3 -c "import openvino"` → 2026.3.1, `['CPU','GPU','NPU']`.
+2. 64×64 f32 `MatMul` compiled to `GPU` (`GPU.0`) and executed; result shape
+   `(64,64)`, max abs error `3.03e-3` (default f16 precision).
+3. 256×256 f32 `MatMul`: default `6.28e-3`, `INFERENCE_PRECISION_HINT=f32`
+   `6.87e-5` — confirms the default f16 inference precision.
+4. `clang --target=spirv64 -x cl … -c` → `spirv-val` OK → `zeModuleCreate`
+   `ZE_MODULE_FORMAT_IL_SPIRV` OK → `zeKernelCreate("k")` OK.
+5. `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` → 6 configs (§3.1a).
+
+**Environment deltas vs the plan (§2):** runtime is **2026.3.1**, not the
+2026.4.1 wheel the plan assumed; the GPU plugin *does* enumerate the Xe3
+iGPU, so the benchmark lane does not need the CPU-plugin degradation. Driver
+version for `GPU_DRIVER_VERSION` was not exposed by this Python build
+(property lookup error); use `clinfo` (NEO 26.31.39395) as the recorded
+driver version.
+
+**Briev consumers:** Workstream B results-file header (geometry, commit,
+driver, gate evidence); Workstream D `intel-dispatch.md` (L0 IL + coopmat
+viability); Workstream C gate test (runtime version + GPU enumeration).
