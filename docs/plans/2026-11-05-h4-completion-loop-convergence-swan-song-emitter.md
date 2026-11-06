@@ -445,6 +445,17 @@ witness special); patterns/guards/probe stay AST (probe may run on either
 first step). The HIR Match arm's full reconstruction (already landed) IS
 the pre-check — no mid-loop fallback exists.
 
+## emit_match dual-fuel landed (2026-11-05)
+
+The queued scoping notes became the implementation: `MatchArms` enum
+(Ast legacy / Hir bodies via operand recursion), scrutinee through operand
+recursion, patterns/guards/probe on the reconstructed AST arms
+(conservative first step per the notes), List bodies keeping the AST
+collection-witness path. The HIR Match arm's full reconstruction IS the
+pre-check. The probe stays AST (conservative; a Hir probe is possible
+since it snapshots, but adds no nativeness). Determinism gate explicitly
+run — the phi path is the most order-sensitive emission.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

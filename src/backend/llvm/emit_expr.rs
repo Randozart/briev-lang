@@ -151,6 +151,19 @@ pub(crate) enum TupleElems<'a> {
     Hir(&'a [crate::hir::expr::HirExpr], &'a [Expr]),
 }
 
+/// 2026-11-05 (H4 slice D): dual-fueled match arms — `Ast` keeps the legacy
+/// path; `Hir` emits covered guard/body leaves natively through
+/// `emit_hir_operand` (uncovered leaves convert per-element; List bodies keep
+/// the AST collection-witness path). Patterns/guards dispatch and the probe
+/// stay on the reconstructed AST arms. The caller reconstruct-checks
+/// EVERYTHING before the scrutinee emits (the phi machinery has no mid-loop
+/// fallback).
+pub(crate) enum MatchArms<'a> {
+    Ast(&'a [crate::ast::MatchArm]),
+    Hir(&'a [crate::hir::expr::HirMatchArm], &'a [crate::ast::MatchArm]),
+}
+
+
 impl LlvmBackend {
     /// Emit LLVM IR for an expression. Returns the result register and type.
     /// This is the entry point for all expression codegen.
@@ -447,7 +460,14 @@ impl LlvmBackend {
                         body: Box::new(body),
                     });
                 }
-                self.emit_match(out, &v, &ast_scrutinee, &ast_arms, indent)
+                self.emit_match(
+                    out,
+                    &v,
+                    Some(scrutinee),
+                    &ast_scrutinee,
+                    &MatchArms::Hir(arms, &ast_arms),
+                    indent,
+                )
             }
             HirExprKind::Block(children) => {
                 // 2026-11-05 (H4 slice D): children recurse through the
@@ -1844,7 +1864,7 @@ impl LlvmBackend {
                 if arms.is_empty() {
                     return TypedRegister { name: v.to_string(), ty: Type::void() };
                 }
-                self.emit_match(out, v, scrutinee, arms, indent)
+                self.emit_match(out, v, None, scrutinee, &MatchArms::Ast(arms), indent)
             }
 
             // ── Lambda ───────────────────────────────────────────────
@@ -7771,6 +7791,33 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         tys
     }
 
+    /// 2026-11-05 (H4 slice D): dual-fueled arm body. List bodies keep the
+    /// AST path (the collection-witness special needs the declared result
+    /// type); other bodies emit covered leaves natively through operand
+    /// recursion, converting per-element otherwise.
+    fn emit_match_arm_dual(
+        &mut self,
+        out: &mut String,
+        arms: &MatchArms<'_>,
+        i: usize,
+        ast_body: &Expr,
+        expected_result: Option<&Type>,
+        indent: &str,
+    ) -> TypedRegister {
+        let hir_body: Option<&crate::hir::expr::HirExpr> = match arms {
+            MatchArms::Ast(_) => None,
+            MatchArms::Hir(h, _) => Some(&h[i].body),
+        };
+        if let Some(h) = hir_body {
+            if !matches!(h.kind, crate::hir::expr::HirExprKind::List(_)) {
+                if let Some(reg) = self.emit_hir_operand(out, h, indent) {
+                    return reg;
+                }
+            }
+        }
+        self.emit_match_arm_value(out, ast_body, expected_result, indent)
+    }
+
     fn emit_match_arm_value(
         &mut self,
         out: &mut String,
@@ -7797,16 +7844,29 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         &mut self,
         out: &mut String,
         v: &str,
+        scrutinee_hir: Option<&crate::hir::expr::HirExpr>,
         scrutinee: &Expr,
-        arms: &[crate::ast::MatchArm],
+        arms: &MatchArms<'_>,
         indent: &str,
     ) -> TypedRegister {
-        let scrut = self.emit_expr(out, scrutinee, indent);
+        let arms_ast: &[crate::ast::MatchArm] = match arms {
+            MatchArms::Ast(a) => a,
+            MatchArms::Hir(_, a) => a,
+        };
+        let scrut = match scrutinee_hir {
+            // The caller reconstruct-checked the scrutinee; operand recursion
+            // emits covered leaves natively, others convert per-element.
+            Some(h) => match self.emit_hir_operand(out, h, indent) {
+                Some(reg) => reg,
+                None => self.emit_expr(out, scrutinee, indent),
+            },
+            None => self.emit_expr(out, scrutinee, indent),
+        };
         // 2026-08-22 (Phase 3b): typed sum bindings dispatch through the
         // tagged-union ABI — the scrutinee handle's tag selects the arm and
         // the payload unboxes into the binding. If the scrutinee ISN'T
         // already a union (a bare member value), box it so tags exist.
-        let scrut = if arms.iter().any(|a| matches!(a.pattern, crate::ast::Pattern::TypedBinding(_, _)))
+        let scrut = if arms_ast.iter().any(|a| matches!(a.pattern, crate::ast::Pattern::TypedBinding(_, _)))
             && !matches!(scrut.ty, Type::Union(_))
         {
             // Infer the union shape from the first TypedBinding arm is
@@ -7821,12 +7881,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let counter = self.fun.txn_counter;
         self.fun.txn_counter += 1;
         let end_label = format!(".match_end_{}", counter);
-        let n = arms.len();
+        let n = arms_ast.len();
         let mut arm_labels: Vec<String> = Vec::with_capacity(n);
         let mut next_labels: Vec<String> = Vec::with_capacity(n);
         // Phase 1: the condition chain — each arm's condition branches to the
         // arm block or the next arm's condition.
-        for (i, arm) in arms.iter().enumerate() {
+        for (i, arm) in arms_ast.iter().enumerate() {
             let arm_label = format!(".match_arm_{}_{}", counter, i);
             let next_label = format!(".match_next_{}_{}", counter, i);
             let cond = self.emit_pattern_condition(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
@@ -7858,9 +7918,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             _ => false,
         });
         let probe_types = if let Some(expected) = expected_enum_result {
-            vec![expected.clone(); arms.len()]
+            vec![expected.clone(); arms_ast.len()]
         } else {
-            self.probe_match_result_types(arms, &scrut, indent, match_result_hint.as_ref())
+            self.probe_match_result_types(arms_ast, &scrut, indent, match_result_hint.as_ref())
         };
         // 2026-10-05 (json.bv): canonicalize enum-handle probe types. An enum
         // CONSTRUCTOR (`Err(e)`) reports `Type::int()` (the i64 handle) while
@@ -7901,7 +7961,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // its value into `synth_ty` ahead of the branch so the phi merges
         // uniform i64 tagged handles.
         let mut phi_incoming: Vec<(String, String, crate::ast::Type)> = Vec::with_capacity(n);
-        for (i, arm) in arms.iter().enumerate() {
+        for (i, arm) in arms_ast.iter().enumerate() {
             writeln!(out, "{}:", arm_labels[i]).ok();
             self.fun.cur_block = Some(arm_labels[i].clone());
             // 2026-10-05 (json.bv): reset per arm — an arm that `term`s sets
@@ -7923,12 +7983,12 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 writeln!(out, "  br i1 {}, label %{}, label %{}", g1, body_label, next_labels[i]).ok();
                 writeln!(out, "{}:", body_label).ok();
                 self.fun.cur_block = Some(body_label.clone());
-                body_reg = self.emit_match_arm_value(
-                    out, &arm.body, match_result_hint.as_ref(), indent,
+                body_reg = self.emit_match_arm_dual(
+                    out, arms, i, &arm.body, match_result_hint.as_ref(), indent,
                 );
             } else {
-                body_reg = self.emit_match_arm_value(
-                    out, &arm.body, match_result_hint.as_ref(), indent,
+                body_reg = self.emit_match_arm_dual(
+                    out, arms, i, &arm.body, match_result_hint.as_ref(), indent,
                 );
             }
             // 2026-10-05 (json.bv): an arm that TERMINATED (its body ran a
