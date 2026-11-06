@@ -419,6 +419,32 @@ EVERY reconstructible HIR expression kind is seam-covered; remaining
 conversion-only: Lambda, Spawn, If (synthesized-only), Slice-Stride nuance
 none — by design.
 
+## emit_match dual-fuel scoping notes (2026-11-05 — for the next session)
+
+`emit_match` (emit_expr.rs ~7767) consumes its arms at FIVE points:
+1. scrutinee emission (`let scrut = self.emit_expr(out, scrutinee, indent)`);
+2. the condition chain (`emit_pattern_condition(&arm.pattern, ...)` — AST
+   patterns);
+3. `probe_match_result_types(arms, &scrut, ...)` — a THROWAWAY re-emission
+   of every arm body to predict phi types (side-effect snapshot: the
+   deferred-alloca queue truncates back and `cur_block` restores);
+4. per-arm body emission via `emit_match_arm_value` (List special + 
+   `emit_expr`) — the operand-split point;
+5. phi assembly + the terminated-arm discipline (json.bv double-terminator
+   fix; all-terminated merge).
+
+Notable: the EXPRESSION match has NO guard handling (guards exist only in
+the statement form and match-arm `when` in parse — the HIR MatchArm guard
+field is reconstructed but never read by emit_match).
+
+Dual-fuel shape: `MatchArms` enum { Ast, Hir(&[HirMatchArm], &[MatchArm]) }
+(HIR bodies + reconstructed AST arms); scrutinee and bodies dual through
+`emit_hir_operand` (List bodies keep the AST path — the collection
+witness special); patterns/guards/probe stay AST (probe may run on either
+— it snapshots, so Hir probe is safe too, but AST probe is the conservative
+first step). The HIR Match arm's full reconstruction (already landed) IS
+the pre-check — no mid-loop fallback exists.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
