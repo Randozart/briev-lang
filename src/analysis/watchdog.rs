@@ -1,7 +1,7 @@
 use crate::ast::{BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind, WatchdogSpec};
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WatchdogError {
     UnknownTrigger(String, String),
     NoHandler(String, String),

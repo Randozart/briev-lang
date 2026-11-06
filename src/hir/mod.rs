@@ -46,6 +46,7 @@ pub mod termination;
 pub mod to_ast;
 pub mod transition_graph;
 pub mod verify;
+pub mod watchdog;
 pub mod walk;
 pub mod web_commits;
 

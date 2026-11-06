@@ -68,6 +68,9 @@ pub struct HirWatchdog {
     pub condition: HirExpr,
     pub fallback: Option<HirExpr>,
     pub on_fire: Option<HirWatchdogOnFire>,
+    /// Whether a handler conflict is REQUIRED — the AST WatchdogSpec flag,
+    /// read by the watchdog diagnostics pass.
+    pub is_required: bool,
 }
 
 /// Contract expressions are emitted code — liveness walks them.
@@ -97,6 +100,9 @@ pub struct HirCallable {
     pub owner: Option<String>,
     /// Trait DEFAULT function (indexed by bare name, not type-qualified).
     pub trait_default: bool,
+    /// True when this callable came from an `impl` block (distinguishes the
+    /// on-fire callable set from type-member declarations).
+    pub is_impl_fn: bool,
     pub params: Vec<HirParam>,
     /// Generic type-parameter names.
     pub type_params: Vec<String>,
@@ -213,6 +219,8 @@ pub struct HirProgram {
     pub inits: Vec<HirInit>,
     /// At least one top-level `trigger` declaration exists.
     pub has_triggers: bool,
+    /// Top-level `trigger` names (watchdog validity + §3.2 surface).
+    pub trigger_names: Vec<String>,
     /// Top-level `trait` declarations: name + ALL declared function names
     /// (requirements included — callable lowering skips body-less slots, so
     /// the conformance analysis reads this table instead). First declaration

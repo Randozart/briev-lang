@@ -29,6 +29,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut const_types = Vec::new();
     let mut inits = Vec::new();
     let mut protocol_binding_fns = Vec::new();
+    let mut trigger_names = Vec::new();
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
     let has_triggers;
     {
@@ -42,6 +43,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             const_types: &mut const_types,
             inits: &mut inits,
             protocol_binding_fns: &mut protocol_binding_fns,
+            trigger_names: &mut trigger_names,
             trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
             has_triggers: false,
@@ -61,6 +63,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         const_types,
         inits,
         protocol_binding_fns,
+        trigger_names,
         trait_functions,
         always_stateful,
         has_triggers,
@@ -77,6 +80,7 @@ struct LowerOutputs<'a> {
     const_types: &'a mut Vec<(String, Type)>,
     inits: &'a mut Vec<HirInit>,
     protocol_binding_fns: &'a mut Vec<String>,
+    trigger_names: &'a mut Vec<String>,
     trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
@@ -118,7 +122,12 @@ fn lower_item(
             export_symbol,
             ids,
         )),
-        TopLevel::Trigger(_) => out.has_triggers = true,
+        TopLevel::Trigger(trg) => {
+            out.has_triggers = true;
+            if !out.trigger_names.contains(&trg.name) {
+                out.trigger_names.push(trg.name.clone());
+            }
+        }
         TopLevel::ProtocolDef(pd) => {
             // 2026-11-05: cast-edge / cross-op bindings are called by the
             // casting graph at emission — root them like the AST index does.
@@ -197,6 +206,7 @@ fn lower_item(
                     ids,
                 );
                 c.owner = Some(imp.target.clone());
+                c.is_impl_fn = true;
                 out.callables.push(c);
             }
         }
@@ -561,6 +571,7 @@ fn lower_contract(c: &Contract, ids: &mut IdSupply) -> HirContract {
                 handler: f.handler.clone(),
                 arg: f.arg.clone(),
             }),
+            is_required: w.is_required,
         }
     });
     HirContract { pre, post, watchdog }
@@ -590,6 +601,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
             .collect(),
         type_params: spec.type_params,
         variadic: spec.variadic,
+        is_impl_fn: false,
         sync_domains: Vec::new(),
         result: spec.result,
         output_list: spec.output_list,

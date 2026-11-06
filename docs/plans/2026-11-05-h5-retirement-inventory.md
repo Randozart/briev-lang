@@ -113,6 +113,19 @@ surfaces still walk the AST:
    comes from `build_swan_songs`, which is HIR-derived under the flag
    (H4 slice B). No port needed; add it to the flip-batch verification
    list only.
+   **Ported, PORT-ONLY (2026-11-05):** `watchdog` —
+   `src/hir/watchdog.rs`, 7 parity tests mirroring the AST fixtures
+   (unknown-trigger, no-handler, no-conflict, does-not-falsify,
+   falsifies-ok, on-fire validation, empty). Fidelity fields required:
+   `HirWatchdog.is_required` (the `![..]` vs `?[..]` flag — the AST reads
+   it for the required-handler-conflict path), `HirProgram.trigger_names`
+   (HIR had only a `has_triggers` bool), and `HirCallable.is_impl_fn`
+   (the on-fire callable set = bare txns/defns + type members; impl
+   functions excluded — the AST walker never unwraps impl blocks).
+   PORT-ONLY: consumers run in the pipeline before HIR exists (same
+   pipeline-HIR batch as termination). Parser note for fixtures: watchdog
+   syntax is `?[cond]` / `![cond] -> handler(val)` after the postcondition
+   brackets — no `@`; trigger references in guards are bare identifiers.
    **Ported + consumer flipped (2026-11-05):** `global_lifetime` —
    `src/hir/global_lifetime.rs`, consumer flipped with a debug equality
    assert. The field-initializer map is dual-built (HIR: state decls get
