@@ -11974,3 +11974,7 @@ local. Native mixed-value execution and wasm32 nested execution are regression
 gates; final results are in the checkpoint record.
 
 Status: FIXED 2026-11-05; 3,501 library tests and native/wasm tuple regressions pass.
+
+## FIXED 2026-11-06: Trait-default ownership effects
+
+Ownership analysis omitted trait default bodies and concrete free-call member resolution. Calls through Self-specialized defaults were treated as unsupported even when every concrete callee only borrowed its input. Register defaults after ordinary definitions, specialize return shapes, and resolve concrete free calls with top-level precedence. Regressions cover chained and free defaults plus capturing concrete overrides.
