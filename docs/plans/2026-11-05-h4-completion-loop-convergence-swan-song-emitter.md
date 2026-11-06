@@ -469,6 +469,28 @@ target AND value reconstructibility before any emission (wire-fire emits
 immediately). With this, the statement seam is complete except Defer
 (queues AST bodies — semantically identical).
 
+## Praetor remediation session (2026-11-05 — owner-directed, full)
+
+Owner call: full remediation before any new ports. Audit (2026-11-05,
+`praetor validate --warn`): src/hir 105 diagnostics (all new files),
+src/backend/llvm 485 (mostly legacy baseline; new `emit_hir_stmt.rs` is
+the worst offender in the tree — cyclomatic 68 / cognitive 154 vs max 15),
+src/analysis 317 (pre-existing; ~44 in just the three AST files the HIR
+ports mirror — the debt shape is inherited from bug-for-bug parity,
+src/typechecker 60 untouched baseline confirms codebase-wide debt).
+
+Plan:
+1. **Split `emit_hir_statement`** into per-kind functions — this IS the
+   seam architecture, so the refactor doubles as H5 preparation.
+2. **HIR diagnostics-pass refactors**: watchdog (analyze → per-check
+   sub-functions), global_lifetime (scan/schedule split),
+   transition_graph/needs_state/defn_liveness (statement-walk helpers).
+3. Behavior-preserving: lib + sweep + A/B after each.
+4. Legacy baseline in untouched files stays documented (house rule); the
+   full `src/backend/llvm` cleanup is a future session.
+5. **Fold Praetor into the per-commit checklist** — changed dirs before
+   every push, from now on.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a
