@@ -1397,19 +1397,75 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
     false
 }
 
-/// The full W3 lane predicate: structure + geometry + numeric license.
-pub fn sum_reduce_lane(shape: &KernelShape, items: &[TopLevel]) -> bool {
-    if !is_sum_reduce_shape(shape) {
-        return false;
+/// Why the §12 Sum idiom lane did not fire (W4: named facts, not a
+/// catch-all message). One variant per blocked gate, in the order the
+/// author should inspect them: structure, geometry, then the numeric
+/// license.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SumLaneBlock {
+    /// No Sum fold was detected in the shape at all.
+    NoFold,
+    /// The body decomposes the counter (`i / N`, `i % N`), so the row form
+    /// cannot bind (one row per subgroup needs an affine row stride).
+    CounterDecomposed,
+    /// The fold length is not a resolvable literal const.
+    LengthNotConst,
+    /// The fold length is not a positive multiple of the 32-lane subgroup.
+    LengthNotMultiple32,
+    /// Gate 3: only Int (wrapping add) is exactly associative; Float
+    /// reassociation changes rounding versus the CPU lane and needs a
+    /// numeric contract before it can be licensed.
+    FloatUnlicensed,
+}
+
+impl SumLaneBlock {
+    /// Author-facing why-not text (house diagnostic style: what failed and
+    /// the concrete fix).
+    pub fn describe(self) -> &'static str {
+        match self {
+            SumLaneBlock::NoFold => "no single-accumulator additive fold was recognized",
+            SumLaneBlock::CounterDecomposed => {
+                "the body decomposes the counter (i / N or i % N); the row form needs an affine row stride"
+            }
+            SumLaneBlock::LengthNotConst => "the fold length is not a literal const",
+            SumLaneBlock::LengthNotMultiple32 => {
+                "the fold length is not a positive multiple of 32 (one subgroup reduces one row)"
+            }
+            SumLaneBlock::FloatUnlicensed => {
+                "float reassociation is not licensed (gate 3: needs a numeric contract); Int folds are exact"
+            }
+        }
     }
+}
+
+/// The §12 W3 lane decision with the blocked gate named (W4). `Ok(())` =
+/// the lane fires; `Err(block)` = why it does not.
+pub fn sum_lane_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(), SumLaneBlock> {
     let Some(red) = &shape.reduction else {
-        return false;
+        return Err(SumLaneBlock::NoFold);
     };
+    if !matches!(red.kind, ReductionKind::Sum) {
+        return Err(SumLaneBlock::NoFold);
+    }
+    if kernel_stmts_decompose_counter(shape) {
+        return Err(SumLaneBlock::CounterDecomposed);
+    }
     let consts = crate::analysis::gemm_shape::folded_const_map(items);
     let Some(k) = crate::analysis::gemm_shape::lit(&red.inner, &consts) else {
-        return false;
+        return Err(SumLaneBlock::LengthNotConst);
     };
-    k > 0 && k % 32 == 0 && fold_buffer_is_int(items, &red.row_buf)
+    if k <= 0 || k % 32 != 0 {
+        return Err(SumLaneBlock::LengthNotMultiple32);
+    }
+    if !fold_buffer_is_int(items, &red.row_buf) {
+        return Err(SumLaneBlock::FloatUnlicensed);
+    }
+    Ok(())
+}
+
+/// The full W3 lane predicate: structure + geometry + numeric license.
+pub fn sum_reduce_lane(shape: &KernelShape, items: &[TopLevel]) -> bool {
+    sum_lane_outcome(shape, items).is_ok()
 }
 
 /// Derive the 2D dispatch width from the kernel body's shift/mask uses of
@@ -3051,6 +3107,28 @@ mod sum_idiom_tests {
         assert!(detect_sum_fold(&fold_stmts(false, false, true, false), "i").is_none());
         // The index reads the accumulator — a scan shape, not a fold.
         assert!(detect_sum_fold(&fold_stmts(false, false, false, true), "i").is_none());
+    }
+
+    #[test]
+    fn sum_lane_why_not_names_the_blocking_gate() {
+        use super::{sum_lane_outcome, SumLaneBlock};
+        let items = int_buffer_items(Type::int());
+        let ok = sum_shape(Expr::Decimal(1024));
+        assert_eq!(sum_lane_outcome(&ok, &items), Ok(()));
+        let non_const = sum_shape(Expr::Identifier("N".into()));
+        assert_eq!(sum_lane_outcome(&non_const, &items), Err(SumLaneBlock::LengthNotConst));
+        let not32 = sum_shape(Expr::Decimal(1000));
+        assert_eq!(sum_lane_outcome(&not32, &items), Err(SumLaneBlock::LengthNotMultiple32));
+        let float_items = int_buffer_items(Type::float());
+        assert_eq!(sum_lane_outcome(&ok, &float_items), Err(SumLaneBlock::FloatUnlicensed));
+        assert_eq!(sum_lane_outcome(&KernelShape { reduction: None, ..ok.clone() }, &items),
+                   Err(SumLaneBlock::NoFold));
+        // Every blocking fact has a non-empty, actionable message.
+        for b in [SumLaneBlock::NoFold, SumLaneBlock::CounterDecomposed,
+                  SumLaneBlock::LengthNotConst, SumLaneBlock::LengthNotMultiple32,
+                  SumLaneBlock::FloatUnlicensed] {
+            assert!(!b.describe().is_empty());
+        }
     }
 
     #[test]

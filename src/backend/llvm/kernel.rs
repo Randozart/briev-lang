@@ -79,10 +79,16 @@ impl super::LlvmBackend {
                 shape.reduction.as_ref().map(|r| &r.kind),
                 Some(crate::analysis::accel::ReductionKind::Sum)
             ) {
-                self.warnings.push(format!(
-                    "info: reduce-idiom not applied for accel '{}' — float reassociation is not licensed (gate 3), or the fold length is not a const multiple of 32",
-                    name
-                ));
+                // 2026-11-06 (W4): name the blocked gate — a catch-all
+                // "not applied" forces the author to guess which fact
+                // failed (the honest-compiler rule, §12.2 gate 4).
+                if let Err(block) = crate::analysis::accel::sum_lane_outcome(&shape, items) {
+                    self.warnings.push(format!(
+                        "info: reduce-idiom not applied for accel '{}' — {} (general lowering)",
+                        name,
+                        block.describe()
+                    ));
+                }
             }
             let emitted = crate::backend::spirv::kernel::emit_kernel(
                 &mut sb, "main", &shape, items, sum_lane,

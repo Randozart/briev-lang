@@ -138,9 +138,14 @@ why-not path must not ship). W5 strictly on demand.
   disclosure info lines at the blob site. Tests: detector + near-misses,
   license gate, plan ops, IR (GroupNonUniformIAdd + LocalSize 32),
   PTL `g0_sum` GPU gate.
-- **W2/W4 partially landed**: the ledger row is in §8; the why-not is
-  the license-fail info line (named facts: license/geometry). Deeper
-  why-not (which structural fact failed at detection) remains open.
+- **W2/W4 landed** (2026-11-06): the ledger row names the matcher, the
+  why-not path (`sum_lane_outcome`), and the retirement condition;
+  `tests/idiom_ledger_gate.rs` makes a matcher without such a row a test
+  failure. W4 names the blocking gate per variant (`SumLaneBlock`:
+  structure / counter decomposition / const length / %32 / gate-3
+  license) with actionable text. Deeper why-not for *detection*
+  near-misses inside the body (multi-statement fold, accumulator read in
+  the operand) remains a follow-up.
 - **Open**: W3 parity measurement (idiom vs general lowering numbers —
   the retirement evidence), Product/Min/Max kinds (W3.1), float folds
   behind a numeric contract, W5 candidates. The matcher retires when
