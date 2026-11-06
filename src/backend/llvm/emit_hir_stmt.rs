@@ -57,16 +57,8 @@ pub(crate) fn hir_sourced_body(
 /// Entry point for future native statement arms (slice C/D). Today every
 /// supported kind converts and delegates; native arms replace the conversion
 /// for their kind only, keeping the AST emitter for everything else.
-pub(crate) fn emit_hir_statement(
-    backend: &mut LlvmBackend,
-    out: &mut String,
-    stmt: &HirStmt,
-    indent: &str,
-) -> Option<TypedRegister> {
-    // 2026-11-05 (H4 slice D): native families first. An `Expression`
-    // statement whose expression is family-covered (literal/identifier) is
-    // emitted without any AST conversion; the plain fallthrough mirrors the
-    // AST arm (the AddrOf/Match special cases cannot fire on these leaves).
+/// H4 slice D dispatch group: Expression statements (native family fast path).
+fn emit_expr_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     if let HirStmtKind::Expression(e) = &stmt.kind {
         // Family-covered expressions AND calls: the Call arm guards its own
         // argument reconstructibility before emitting anything, so a None
@@ -82,6 +74,11 @@ pub(crate) fn emit_hir_statement(
             }
         }
     }
+    None
+}
+
+/// H4 slice D dispatch group: scoped control flow (Guarded, Block).
+fn emit_scoped_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     // 2026-11-05 (H4 slice D, control flow): native Guarded and Block arms —
     // the condition/children emit through the seam (native or per-node
     // conversion), the bookkeeping mirrors the AST arms verbatim. Children of
@@ -138,6 +135,11 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    None
+}
+
+/// H4 slice D dispatch group: value-binding statements (ArrowAssign, Let, Assign).
+fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     // 2026-11-05 (H4 slice D): native ArrowAssign — the dispatch reads the
     // reconstructed target/value shapes (wire-fire, streams, insert/extract
     // strategies, provenance); covered value leaves emit natively through
@@ -220,6 +222,11 @@ pub(crate) fn emit_hir_statement(
             &super::emit_stmt::AssignValue::Hir(rhs, &ast_rhs),
         ));
     }
+    None
+}
+
+/// H4 slice D dispatch group: Foreach (shared loop-engine helper).
+fn emit_foreach_statement_hir(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     // 2026-11-05 (H4 slice D): native Foreach — the iteration-source dispatch
     // reads the reconstructed list's shape (identical), the loop engine is
     // the shared extracted helper, and body children route through the seam
@@ -243,6 +250,11 @@ pub(crate) fn emit_hir_statement(
             ty: crate::ast::Type::void(),
         });
     }
+    None
+}
+
+/// H4 slice D dispatch group: Term + Tail (the P-gated transaction exit).
+fn emit_term_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     // 2026-11-05 (H4 slice D): native Term — the P-gated transaction exit.
     // Reconstructibility is checked BEFORE the web-flush/defer prefix (which
     // emits IR), so an unsupported value falls back with no partial emission.
@@ -301,6 +313,11 @@ pub(crate) fn emit_hir_statement(
         };
         return emit_hir_statement(backend, out, &term, indent);
     }
+    None
+}
+
+/// H4 slice D dispatch group: statement Match (phi chain).
+fn emit_match_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
     // 2026-11-05 (H4 slice D): native statement match — scrutinee through
     // operand recursion, patterns reconstructed (lossless) for the shared
     // condition/binding helpers, arm children through the seam. Patterns and
@@ -397,25 +414,11 @@ pub(crate) fn emit_hir_statement(
             ty: crate::ast::Type::void(),
         });
     }
-    // 2026-11-05 (H4 slice D): the small control/terminal statements,
-    // mirrored verbatim from the AST arms (no emission before the match, so
-    // no double-emit risk; each is total over its HIR kind).
-    match &stmt.kind {
-        HirStmtKind::Break => match backend.fun.foreach_break_labels.last() {
-            Some(label) => {
-                writeln!(out, "{}br label %{}", indent, label).ok();
-                backend.fun.terminated = true;
-                Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-            }
-            None => None,
-        },
-        HirStmtKind::Trap => {
-            writeln!(out, "{}call void @llvm.trap()", indent).ok();
-            writeln!(out, "{}unreachable", indent).ok();
-            backend.fun.terminated = true;
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::Halt => {
+    None
+}
+
+/// Terminal helper: Halt.
+fn emit_halt_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
             let t = &backend.ctx.target_triple;
             let wait_family = ["arm", "thumb", "aarch64", "cortex", "riscv"]
                 .iter()
@@ -433,20 +436,11 @@ pub(crate) fn emit_hir_statement(
             writeln!(out, "{}unreachable", indent).ok();
             backend.fun.terminated = true;
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::Yield => {
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::Check(cond) => {
-            let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
-                return None;
-            };
-            let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
-            let noop = backend.fun.gen_reg();
-            writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
-            Some(TypedRegister { name: noop, ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::Gate(cond) => {
+        
+}
+
+/// Terminal helper: Gate.
+fn emit_gate_statement(backend: &mut LlvmBackend, out: &mut String, cond: &crate::hir::expr::HirExpr, indent: &str) -> Option<TypedRegister> {
             // 2026-07-26: convergence gate — mirror of the AST arm.
             let Some(cond_reg) = backend.emit_hir_operand(out, cond, indent) else {
                 return None;
@@ -478,8 +472,11 @@ pub(crate) fn emit_hir_statement(
             writeln!(out, "{}{}:", indent, pass_lbl).ok();
             backend.fun.terminated = false;
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::Rollback(_) => {
+        
+}
+
+/// Terminal helper: Rollback.
+fn emit_rollback_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
             // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
             backend.flush_defer_cleanup(out, indent);
             if backend.fun.fn_ret_ty == "void" {
@@ -496,13 +493,11 @@ pub(crate) fn emit_hir_statement(
             }
             backend.fun.terminated = true;
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::KeepHint(_) => {
-            // 2026-08-01 (Phase 5): keep; is a scheduler directive — no
-            // runtime emission.
-            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::FreeHint(name) => {
+        
+}
+
+/// Terminal helper: FreeHint.
+fn emit_free_hint_statement(backend: &mut LlvmBackend, out: &mut String, name: &String, indent: &str) -> Option<TypedRegister> {
             // 2026-08-26 (async Phase C): a freed TASK HANDLE cancels its
             // scheduler entry. Ordinary frees keep the Phase 5 path.
             if backend.fun.task_handle_names.contains(name) {
@@ -530,8 +525,11 @@ pub(crate) fn emit_hir_statement(
                 &crate::ast::Expr::Identifier(name.clone()),
             );
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
-        }
-        HirStmtKind::SyncBlock(children) | HirStmtKind::Mutex(children) => {
+        
+}
+
+/// Terminal helper: SyncBlock/Mutex.
+fn emit_serial_statement(backend: &mut LlvmBackend, out: &mut String, children: &Vec<HirStmt>, indent: &str) -> Option<TypedRegister> {
             // 2026-09-08 / 2026-08-09: serial sections emit inline (a modifier
             // must never be a speedup); recursion through the seam.
             let mut last = TypedRegister {
@@ -549,8 +547,11 @@ pub(crate) fn emit_hir_statement(
                 }
             }
             Some(last)
-        }
-        HirStmtKind::EndProgram(val) => {
+        
+}
+
+/// Terminal helper: EndProgram.
+fn emit_end_program_statement(backend: &mut LlvmBackend, out: &mut String, val: &Option<crate::hir::expr::HirExpr>, indent: &str) -> Option<TypedRegister> {
             // 2026-08-06 (endprogram plan): genuine process exit; the value's
             // side effects emit first, then the runtime exit provider.
             if backend.ctx.webstack_enabled {
@@ -578,15 +579,92 @@ pub(crate) fn emit_hir_statement(
             writeln!(out, "{}unreachable", indent).ok();
             backend.fun.terminated = true;
             Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+        
+}
+
+/// H4 slice D dispatch group: small terminal/directive statements.
+fn emit_terminal_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
+    match &stmt.kind {
+        HirStmtKind::Break => match backend.fun.foreach_break_labels.last() {
+            Some(label) => {
+                writeln!(out, "{}br label %{}", indent, label).ok();
+                backend.fun.terminated = true;
+                Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+            }
+            None => None,
+        },
+        HirStmtKind::Trap => {
+            writeln!(out, "{}call void @llvm.trap()", indent).ok();
+            writeln!(out, "{}unreachable", indent).ok();
+            backend.fun.terminated = true;
+            Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
         }
+        HirStmtKind::Halt => emit_halt_statement(backend, out, indent),
+        HirStmtKind::Yield => Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() }),
+        HirStmtKind::Check(cond) => match backend.emit_hir_operand(out, cond, indent) {
+            Some(cond_reg) => {
+                let cond_i1 = super::emit_stmt::guard_cond_i1(backend, out, indent, &cond_reg);
+                let noop = backend.fun.gen_reg();
+                writeln!(out, "{}{} = add i64 0, 0", indent, noop).ok();
+                Some(TypedRegister { name: noop, ty: crate::ast::Type::void() })
+            }
+            None => None,
+        },
+        HirStmtKind::Gate(cond) => emit_gate_statement(backend, out, cond, indent),
+        HirStmtKind::Rollback(_) => emit_rollback_statement(backend, out, indent),
+        HirStmtKind::KeepHint(_) => Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() }),
+        HirStmtKind::FreeHint(name) => emit_free_hint_statement(backend, out, name, indent),
+        HirStmtKind::SyncBlock(children) | HirStmtKind::Mutex(children) => emit_serial_statement(backend, out, children, indent),
+        HirStmtKind::EndProgram(val) => emit_end_program_statement(backend, out, val, indent),
         _ => None,
     }
-    .or_else(|| {
-        match convert_hir_statement(stmt) {
-            Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
-            None => None,
+}
+
+/// H4 slice D: statement seam entry. Native group dispatch (kinds are
+/// disjoint, so a `None` from the owning group means "fall back to the
+/// lossless AST conversion" exactly as the original grouped `if let` chain
+/// did). Per-kind bodies live in the group functions above (Praetor split;
+/// behavior verbatim).
+pub(crate) fn emit_hir_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    indent: &str,
+) -> Option<TypedRegister> {
+    let native = match &stmt.kind {
+        HirStmtKind::Expression(_) => emit_expr_statement(backend, out, stmt, indent),
+        HirStmtKind::Guarded(..) | HirStmtKind::Block(_) => {
+            emit_scoped_statement(backend, out, stmt, indent)
         }
-    })
+        HirStmtKind::ArrowAssign { .. } | HirStmtKind::Let { .. } | HirStmtKind::Assign(..) => {
+            emit_value_statement(backend, out, stmt, indent)
+        }
+        HirStmtKind::Foreach { .. } => emit_foreach_statement_hir(backend, out, stmt, indent),
+        HirStmtKind::Term(_) | HirStmtKind::Tail(_) => {
+            emit_term_statement(backend, out, stmt, indent)
+        }
+        HirStmtKind::Match { .. } => emit_match_statement(backend, out, stmt, indent),
+        HirStmtKind::Break
+        | HirStmtKind::Trap
+        | HirStmtKind::Halt
+        | HirStmtKind::Yield
+        | HirStmtKind::Check(_)
+        | HirStmtKind::Gate(_)
+        | HirStmtKind::Rollback(_)
+        | HirStmtKind::KeepHint(_)
+        | HirStmtKind::FreeHint(_)
+        | HirStmtKind::SyncBlock(_)
+        | HirStmtKind::Mutex(_)
+        | HirStmtKind::EndProgram(_) => emit_terminal_statement(backend, out, stmt, indent),
+        _ => None,
+    };
+    if native.is_some() {
+        return native;
+    }
+    match convert_hir_statement(stmt) {
+        Some(ast) => Some(emit_statement(backend, out, &ast, indent)),
+        None => None,
+    }
 }
 
 #[cfg(test)]
