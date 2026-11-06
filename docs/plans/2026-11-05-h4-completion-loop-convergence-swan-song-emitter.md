@@ -401,6 +401,13 @@ shapes; only the receiver register is operand-split (HIR covered leaves
 native). Reconstructibility of obj AND index checked BEFORE the receiver
 emits. The seam's Expression fast path admits Index alongside Call.
 
+## Native Slice expression family (2026-11-05)
+
+The AST Slice arm tail (String runtime slice via `briev_str_substr`,
+strided vector gathers, narrowing-path notes) extracted verbatim into
+`emit_slice_with_array`. Bounds and array reconstruct BEFORE the array
+emits; the array register is operand-split (covered arrays native).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

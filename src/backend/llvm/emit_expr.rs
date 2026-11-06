@@ -455,6 +455,51 @@ impl LlvmBackend {
                 }
                 last
             }
+            HirExprKind::Slice { array, start, end, stride } => {
+                // Reconstruct-check array AND bounds BEFORE the array emits
+                // (the dispatch reads their AST shapes; only the array
+                // register is operand-split — covered arrays emit native).
+                let Some(ast_array) = crate::hir::to_ast::expr(array) else {
+                    return None;
+                };
+                let ast_start = match start {
+                    Some(s) => match crate::hir::to_ast::expr(s) {
+                        Some(e) => Some(e),
+                        None => return None,
+                    },
+                    None => None,
+                };
+                let ast_end = match end {
+                    Some(e) => match crate::hir::to_ast::expr(e) {
+                        Some(x) => Some(x),
+                        None => return None,
+                    },
+                    None => None,
+                };
+                let ast_stride = match stride {
+                    Some(x) => match crate::hir::to_ast::expr(x) {
+                        Some(v) => Some(v),
+                        None => return None,
+                    },
+                    None => None,
+                };
+                let Some(array_reg) = self.emit_hir_operand(out, array, indent) else {
+                    return None;
+                };
+                let boxed_start = ast_start.map(Box::new);
+                let boxed_end = ast_end.map(Box::new);
+                let boxed_stride = ast_stride.map(Box::new);
+                self.emit_slice_with_array(
+                    out,
+                    &v,
+                    &ast_array,
+                    &boxed_start,
+                    &boxed_end,
+                    &boxed_stride,
+                    array_reg,
+                    indent,
+                )
+            }
             HirExprKind::Index(obj, index) => {
                 // Reconstruct-check obj AND index BEFORE the receiver emits:
                 // the whole dispatch (masks, tier-2 At inlining, state fields,
@@ -1871,141 +1916,9 @@ impl LlvmBackend {
                 // The narrowing pass converts constant-bounds slices to Vector<T,N>
                 // before codegen; this arm handles dynamic slices.
                 let array_reg = self.emit_expr(out, array, indent);
-                // 2026-08-13 (dynamic String slice): `s[a:b]` on a String was a
-                // STUB that returned the whole array — every string.bv function
-                // using a dynamic slice (replace, trim, substr, split, ...)
-                // silently produced the full string (documented in BUGS.md).
-                // The runtime half (briev_str_substr) has always existed; wire
-                // it here. Vector slices stay on the narrowing-pass path.
-                let arr_is_str = self.is_semantic_string(array, &array_reg);
-                if arr_is_str {
-                    let sp = self.string_ptr(out, indent, &array_reg);
-                    let hw = format!("i{}", self.ctx.int_bits);
-                    let lo = match start {
-                        Some(s) => self.emit_expr(out, s, indent),
-                        None => {
-                            let z = self.fun.gen_reg();
-                            writeln!(out, "{}{} = add {} 0, 0", indent, z, hw).ok();
-                            TypedRegister { name: z, ty: Type::int() }
-                        }
-                    };
-                    let hi = match end {
-                        Some(e) => self.emit_expr(out, e, indent),
-                        None => {
-                            let n = self.fun.gen_reg();
-                            writeln!(out, "{}{} = add {} 0, 0", indent, n, hw).ok();
-                            TypedRegister { name: n, ty: Type::int() }
-                        }
-                    };
-                    let _ = stride;
-                    let sub = self.fun.gen_reg();
-                    let lo_name = self.ensure_typed_value(
-                        out, indent, &hw, &lo.name, Some(lo.ty), self.ctx.type_universe.clone().as_ref());
-                    let hi_name = self.ensure_typed_value(
-                        out, indent, &hw, &hi.name, Some(hi.ty), self.ctx.type_universe.clone().as_ref());
-                    // 2026-09-09 (Family C): state prefix when the symbol is
-                    // a pure-Briev defn (all defns carry %state).
-                    let st_sub = if self.ctx.defn_takes_state("briev_str_substr") { "ptr %state, " } else { "" };
-                    writeln!(out, "{}{} = call ptr @briev_str_substr({}ptr {}, {} {}, {} {})",
-                        indent, sub, st_sub, sp, hw, lo_name, hw, hi_name).ok();
-                    return TypedRegister { name: sub, ty: crate::ast::Type::Custom("String".to_string()) };
-                }
-                // 2026-08-22 (spec-conformance plan Phase 6b): VECTOR slices
-                // over 1-D state columns lower to a real range gather — the
-                // old fallthrough returned the base array, so `data[0:2]`
-                // was invalid IR or silently the WHOLE column (offset lost).
-                // `data[:]` / `data[...]` are the full-copy case lo=0,hi=N.
-                let vec_field: Option<(usize, Type)> = match array.as_ref() {
-                    Expr::Identifier(nm) => self.ctx.field_index_map.get(nm).and_then(|&fidx| {
-                        self.ctx.field_briev_types.get(fidx).and_then(|t| {
-                            if matches!(t, Type::Vector(_, dims) if dims.len() == 1) {
-                                Some((fidx, t.clone()))
-                            } else {
-                                None
-                            }
-                        })
-                    }),
-                    _ => None,
-                };
-                if let Some((fidx, vec_ty)) = vec_field {
-                    let n = self.vector_element_count(&vec_ty) as i64;
-                    let data_ptr = self.emit_state_gep(out, indent, "f", "%state", fidx);
-                    let is_f32 = matches!(&vec_ty, Type::Vector(inner, _)
-                        if self.is_protocol_member(inner, "Float")
-                            && self.ctx.type_universe.as_ref()
-                                .and_then(|u| inner.universe_key().and_then(|k| u.get(k)))
-                                .map(|rt| rt.max_bits <= 32)
-                                .unwrap_or(true));
-                    if matches!(&vec_ty, Type::Vector(inner, _)
-                        if self.is_protocol_member(inner, "Float") && !is_f32)
-                    {
-                        panic!("slicing on Float64 (double) vectors is not yet supported");
-                    }
-                    let lo = match start {
-                        Some(sx) => self.emit_expr(out, sx, indent),
-                        None => TypedRegister {
-                            name: {
-                                let z = self.fun.gen_reg();
-                                writeln!(out, "{}{} = add i64 0, 0", indent, z).ok();
-                                z
-                            },
-                            ty: Type::int(),
-                        },
-                    };
-                    let hi = match end {
-                        Some(ex) => self.emit_expr(out, ex, indent),
-                        None => TypedRegister {
-                            name: {
-                                let nn = self.fun.gen_reg();
-                                writeln!(out, "{}{} = add i64 {}, 0", indent, nn, n).ok();
-                                nn
-                            },
-                            ty: Type::int(),
-                        },
-                    };
-                    // 2026-10-09 (T2a, slice): STRIDED slice `data[a:b:c]` —
-                    // unblock the old `panic!` with a strided GATHER. A strided
-                    // view cannot use the contiguous tier-list layout (element i
-                    // is NOT at base + i*elem_bytes), so a gather that builds a
-                    // contiguous `[len][elems]` block with the stride baked in
-                    // is the correct, additive lowering. The contiguous
-                    // zero-copy VIEW is T2b (separate).
-                    if let Some(stride_expr) = stride {
-                        let helper = if is_f32 {
-                            "@briev_slice_strided_f32"
-                        } else {
-                            "@briev_slice_strided64"
-                        };
-                        let st = self.emit_expr(out, stride_expr, indent);
-                        // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
-                        let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
-                        let buf = self.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {}, i64 {})",
-                            indent, buf, helper, gp, data_ptr, n, lo.name, hi.name, st.name
-                        )
-                        .ok();
-                        let elem_ty = match &vec_ty {
-                            Type::Vector(inner, _) => (**inner).clone(),
-                            _ => Type::int(),
-                        };
-                        return self.box_gather_as_tier_list(out, indent, &buf, elem_ty);
-                    }
-                    // 2026-10-09 (T2b, slice/view): the CONTIGUOUS slice is a
-                    // ZERO-COPY VIEW into the source column (no `Alloc# +
-                    // Copy#`). `data[a:b]` yields a `{ base, len, len }` header
-                    // whose `base` points at source element `a`, so `sub[i]` =
-                    // `data[a+i]` with no per-iteration copy. (The copy path
-                    // `briev_slice_range64` is retired for the contiguous case;
-                    // the strided gather stays for `data[a:b:c]`.)
-                    return self.emit_contiguous_slice_view(out, indent, fidx, &data_ptr, &vec_ty, &lo, &hi, n);
-                }
-                if let Some(s) = start { self.emit_expr(out, s, indent); }
-                if let Some(e) = end { self.emit_expr(out, e, indent); }
-                if let Some(s) = stride { self.emit_expr(out, s, indent); }
-                array_reg
+                self.emit_slice_with_array(out, v, array, start, end, stride, array_reg, indent)
             }
+
             // 2026-08-07 (Phase 7): a range is an ITERABLE, consumed only by
             // `foreach` (SPEC §11.4) — the foreach arm lowers the counted
             // loop directly from the Expr::Range node, so this arm is only
@@ -2450,6 +2363,160 @@ impl LlvmBackend {
 /// (mask sources, tier-2 At inlining, state fields, list layouts); only the
 /// receiver register is operand-split. Undo: inline back into
 /// emit_expr_inner's `Expr::Index` arm.
+
+/// 2026-11-05 (H4 slice D): the AST Slice arm tail (everything after the
+/// array register exists), extracted verbatim so the HIR native family
+/// shares ONE implementation. The dispatch reads array/bounds AST shapes
+/// (String runtime slice, vector narrowing-path notes, dynamic bounds
+/// emission); only the array register is operand-split. Undo: inline back
+/// into emit_expr_inner's `Expr::Slice` arm.
+pub(crate) fn emit_slice_with_array(
+    &mut self,
+    out: &mut String,
+    v: &str,
+    array: &Expr,
+    start: &Option<Box<Expr>>,
+    end: &Option<Box<Expr>>,
+    stride: &Option<Box<Expr>>,
+    array_reg: TypedRegister,
+    indent: &str,
+) -> TypedRegister {
+                // 2026-08-13 (dynamic String slice): `s[a:b]` on a String was a
+                // STUB that returned the whole array — every string.bv function
+                // using a dynamic slice (replace, trim, substr, split, ...)
+                // silently produced the full string (documented in BUGS.md).
+                // The runtime half (briev_str_substr) has always existed; wire
+                // it here. Vector slices stay on the narrowing-pass path.
+                let arr_is_str = self.is_semantic_string(array, &array_reg);
+                if arr_is_str {
+                    let sp = self.string_ptr(out, indent, &array_reg);
+                    let hw = format!("i{}", self.ctx.int_bits);
+                    let lo = match start {
+                        Some(s) => self.emit_expr(out, s, indent),
+                        None => {
+                            let z = self.fun.gen_reg();
+                            writeln!(out, "{}{} = add {} 0, 0", indent, z, hw).ok();
+                            TypedRegister { name: z, ty: Type::int() }
+                        }
+                    };
+                    let hi = match end {
+                        Some(e) => self.emit_expr(out, e, indent),
+                        None => {
+                            let n = self.fun.gen_reg();
+                            writeln!(out, "{}{} = add {} 0, 0", indent, n, hw).ok();
+                            TypedRegister { name: n, ty: Type::int() }
+                        }
+                    };
+                    let _ = stride;
+                    let sub = self.fun.gen_reg();
+                    let lo_name = self.ensure_typed_value(
+                        out, indent, &hw, &lo.name, Some(lo.ty), self.ctx.type_universe.clone().as_ref());
+                    let hi_name = self.ensure_typed_value(
+                        out, indent, &hw, &hi.name, Some(hi.ty), self.ctx.type_universe.clone().as_ref());
+                    // 2026-09-09 (Family C): state prefix when the symbol is
+                    // a pure-Briev defn (all defns carry %state).
+                    let st_sub = if self.ctx.defn_takes_state("briev_str_substr") { "ptr %state, " } else { "" };
+                    writeln!(out, "{}{} = call ptr @briev_str_substr({}ptr {}, {} {}, {} {})",
+                        indent, sub, st_sub, sp, hw, lo_name, hw, hi_name).ok();
+                    return TypedRegister { name: sub, ty: crate::ast::Type::Custom("String".to_string()) };
+                }
+                // 2026-08-22 (spec-conformance plan Phase 6b): VECTOR slices
+                // over 1-D state columns lower to a real range gather — the
+                // old fallthrough returned the base array, so `data[0:2]`
+                // was invalid IR or silently the WHOLE column (offset lost).
+                // `data[:]` / `data[...]` are the full-copy case lo=0,hi=N.
+                let vec_field: Option<(usize, Type)> = match array {
+                    Expr::Identifier(nm) => self.ctx.field_index_map.get(nm).and_then(|&fidx| {
+                        self.ctx.field_briev_types.get(fidx).and_then(|t| {
+                            if matches!(t, Type::Vector(_, dims) if dims.len() == 1) {
+                                Some((fidx, t.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    }),
+                    _ => None,
+                };
+                if let Some((fidx, vec_ty)) = vec_field {
+                    let n = self.vector_element_count(&vec_ty) as i64;
+                    let data_ptr = self.emit_state_gep(out, indent, "f", "%state", fidx);
+                    let is_f32 = matches!(&vec_ty, Type::Vector(inner, _)
+                        if self.is_protocol_member(inner, "Float")
+                            && self.ctx.type_universe.as_ref()
+                                .and_then(|u| inner.universe_key().and_then(|k| u.get(k)))
+                                .map(|rt| rt.max_bits <= 32)
+                                .unwrap_or(true));
+                    if matches!(&vec_ty, Type::Vector(inner, _)
+                        if self.is_protocol_member(inner, "Float") && !is_f32)
+                    {
+                        panic!("slicing on Float64 (double) vectors is not yet supported");
+                    }
+                    let lo = match start {
+                        Some(sx) => self.emit_expr(out, sx, indent),
+                        None => TypedRegister {
+                            name: {
+                                let z = self.fun.gen_reg();
+                                writeln!(out, "{}{} = add i64 0, 0", indent, z).ok();
+                                z
+                            },
+                            ty: Type::int(),
+                        },
+                    };
+                    let hi = match end {
+                        Some(ex) => self.emit_expr(out, ex, indent),
+                        None => TypedRegister {
+                            name: {
+                                let nn = self.fun.gen_reg();
+                                writeln!(out, "{}{} = add i64 {}, 0", indent, nn, n).ok();
+                                nn
+                            },
+                            ty: Type::int(),
+                        },
+                    };
+                    // 2026-10-09 (T2a, slice): STRIDED slice `data[a:b:c]` —
+                    // unblock the old `panic!` with a strided GATHER. A strided
+                    // view cannot use the contiguous tier-list layout (element i
+                    // is NOT at base + i*elem_bytes), so a gather that builds a
+                    // contiguous `[len][elems]` block with the stride baked in
+                    // is the correct, additive lowering. The contiguous
+                    // zero-copy VIEW is T2b (separate).
+                    if let Some(stride_expr) = stride {
+                        let helper = if is_f32 {
+                            "@briev_slice_strided_f32"
+                        } else {
+                            "@briev_slice_strided64"
+                        };
+                        let st = self.emit_expr(out, stride_expr, indent);
+                        // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
+                        let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
+                        let buf = self.fun.gen_reg();
+                        writeln!(
+                            out,
+                            "{}{} = call ptr {}({}ptr {}, i64 {}, i64 {}, i64 {}, i64 {})",
+                            indent, buf, helper, gp, data_ptr, n, lo.name, hi.name, st.name
+                        )
+                        .ok();
+                        let elem_ty = match &vec_ty {
+                            Type::Vector(inner, _) => (**inner).clone(),
+                            _ => Type::int(),
+                        };
+                        return self.box_gather_as_tier_list(out, indent, &buf, elem_ty);
+                    }
+                    // 2026-10-09 (T2b, slice/view): the CONTIGUOUS slice is a
+                    // ZERO-COPY VIEW into the source column (no `Alloc# +
+                    // Copy#`). `data[a:b]` yields a `{ base, len, len }` header
+                    // whose `base` points at source element `a`, so `sub[i]` =
+                    // `data[a+i]` with no per-iteration copy. (The copy path
+                    // `briev_slice_range64` is retired for the contiguous case;
+                    // the strided gather stays for `data[a:b:c]`.)
+                    return self.emit_contiguous_slice_view(out, indent, fidx, &data_ptr, &vec_ty, &lo, &hi, n);
+                }
+                if let Some(s) = start { self.emit_expr(out, s, indent); }
+                if let Some(e) = end { self.emit_expr(out, e, indent); }
+                if let Some(s) = stride { self.emit_expr(out, s, indent); }
+                array_reg
+}
+
 pub(crate) fn emit_index_with_obj(
     &mut self,
     out: &mut String,
