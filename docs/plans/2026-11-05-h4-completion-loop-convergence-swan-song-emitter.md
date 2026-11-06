@@ -496,9 +496,27 @@ all cognitive/cyclomatic under 15); follow-up split landed for
 warnings flattened via per-arm helpers (`reconstruct_match_arm`,
 `emit_match_condition_arm`, `emit_match_body_arm` + `MatchCtx`/
 `MatchArmView`). `emit_hir_stmt.rs` is now **Praetor-clean** (0
-diagnostics). Remaining repo-wide: src/hir offenders
-(transition_graph 23, needs_state 12, watchdog 10, defn_liveness 10,
-spawn_pool 6, enum_repr 5, …).
+diagnostics). Remaining repo-wide Praetor checklist (src/hir; exact function sites
+from `praetor validate --warn --target src/hir`, 2026-11-05):
+- transition_graph.rs: `build` (cognitive 72 — split the per-txn node
+  builder into `build_node` + `detect_*` helpers), `simplify_expr` (49),
+  `compute_live_fields` (28), `is_pure_body` (21), `detect_lexicographic_
+  ranking`/`collect_or_vars` (20/28 — nested-or recursion helper),
+  `detect_all_increments` (20), `detect_popcount_decay` (21),
+  `detect_increments` (21 + cyclomatic 16), `extract_bounded_pre` (17).
+- watchdog.rs: `analyze` (47 — extract per-txn check + no-conflict/var
+  reporters), `check_falsifies_in_body` (33), `check_restores_in_body`
+  (30), `check_on_fire_handlers` (17).
+- needs_state.rs: sites at 118/214 (line-length + complexity).
+- defn_liveness.rs: sites at 29/283.
+- global_lifetime.rs: `analyze` (24), `collect_state_identifiers` (102
+  lines > 100 — split into per-variant helpers or walker delegation).
+- spawn_pool/task_linear/slp_isomorphism/swan_song/specialize/enum_repr/
+  density/web_commits: 1–2 diagnostics each (mostly line-length/complexity
+  nits; fix opportunistically).
+Remediation order: transition_graph → watchdog → needs_state →
+defn_liveness → the nits. Each refactor: bodies verbatim, then lib +
+sweep + A/B (the sweep's AST/HIR .ll equality is the behavioral net).
 
 5. **Fold Praetor into the per-commit checklist** — changed dirs before
    every push, from now on.
