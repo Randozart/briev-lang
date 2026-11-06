@@ -391,6 +391,16 @@ With this, every reconstructible EXPRESSION kind is seam-covered except
 Index/Slice/Lambda/Spawn/If-synthesized/MethodCall/Reflect (Index is the
 last big operand-split; MethodCall/Reflect need the Cast.via typer).
 
+## Native Index expression family (2026-11-05)
+
+The AST Index arm tail (everything after the receiver register exists —
+mask sources, tier-2 At inlining with dyn-collection re-entry, state
+fields, list layouts, self-slot stores, packed fields, provenance) extracted
+verbatim into `emit_index_with_obj`. The dispatch reads obj/index AST
+shapes; only the receiver register is operand-split (HIR covered leaves
+native). Reconstructibility of obj AND index checked BEFORE the receiver
+emits. The seam's Expression fast path admits Index alongside Call.
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

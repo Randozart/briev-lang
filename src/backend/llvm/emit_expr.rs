@@ -455,6 +455,22 @@ impl LlvmBackend {
                 }
                 last
             }
+            HirExprKind::Index(obj, index) => {
+                // Reconstruct-check obj AND index BEFORE the receiver emits:
+                // the whole dispatch (masks, tier-2 At inlining, state fields,
+                // list layouts) reads their AST shapes; only the receiver
+                // register is operand-split (covered leaves native).
+                let Some(ast_obj) = crate::hir::to_ast::expr(obj) else {
+                    return None;
+                };
+                let Some(ast_index) = crate::hir::to_ast::expr(index) else {
+                    return None;
+                };
+                let Some(obj_reg) = self.emit_hir_operand(out, obj, indent) else {
+                    return None;
+                };
+                self.emit_index_with_obj(out, &v, &ast_obj, &ast_index, obj_reg, indent)
+            }
             HirExprKind::StructLiteral { type_name, fields, .. } => {
                 // Dispatch-only: every field reconstructs BEFORE the call —
                 // emit_struct_literal allocates the image first, so a
@@ -1727,514 +1743,7 @@ impl LlvmBackend {
             // Check the original AST expression to decide.
             Expr::Index(obj, index) => {
                 let obj_reg = self.emit_expr(out, obj, indent);
-                // 2026-08-07 (Phase 7): a Boolean-vector index is a MASK —
-                // `data[mask]` selects the bytes at the true positions
-                // (SPEC §16.5). Supported sources: a compile-time Boolean
-                // list literal or a Bool[N] state field. Checked FIRST — a
-                // mask must never dispatch to `op At` (a tier2 List receiver
-                // with a mask literal index would otherwise inline At with the
-                // mask as a scalar index). A mask list literal (`[true, false]`)
-                // is a Bool vector VALUE, not a List collection, and must
-                // never reach the list-literal construction path.
-                let mask_source = {
-                    let const_bits = Self::constant_bool_mask(index);
-                    let field_idx = match index.as_ref() {
-                        Expr::Identifier(name) => self.ctx.field_index_map.get(name).copied().filter(
-                            |fidx| matches!(
-                                self.ctx.field_briev_types.get(*fidx),
-                                Some(t) if matches!(t, Type::Vector(inner, _)
-                                    if self.is_protocol_member(inner, "Bool"))
-                            ),
-                        ),
-                        _ => None,
-                    };
-                    match const_bits {
-                        Some(bits) => Some(MaskSource::Constant(bits)),
-                        None => field_idx.map(MaskSource::StateField),
-                    }
-                };
-                if let Some(source) = mask_source {
-                    return self.emit_masked_index(
-                        out,
-                        MaskIndexOperands {
-                            obj,
-                            obj_reg: &obj_reg,
-                            source,
-                        },
-                        indent,
-                    );
-                }
-                // 2026-08-13 (c[i] dispatches op At): a Tier-2 collection
-                // (`op Count` + `op At`) index must inline the At member body —
-                // the legacy struct/heap-seq paths below read a List value's
-                // fields directly (`b[0]` read the `inner` slot, then fed the
-                // buffer pointer to briev_char_len → garbage/crash). Same
-                // dispatch foreach uses. tier2_op_collection handles identifier
-                // receivers; a call-result receiver (`bytes("abc")[0]`) is
-                // dispatched by its register's type.
-                let recv_is_tier2 = self.tier2_op_collection(obj).is_some()
-                    || {
-                        let base = match &obj_reg.ty {
-                            Type::Custom(n) | Type::Applied(n, _) => Some(n.clone()),
-                            _ => None,
-                        };
-                        base.map_or(false, |b| {
-                            self.ctx.obj_members.get(&b).map_or(false, |members| {
-                                members.iter().any(|m| matches!(m, TopLevel::TypeDefOperator(d) if d.name == "At"))
-                            })
-                        })
-                    };
-                if recv_is_tier2 {
-                    // 2026-08-13: inline the At member body. The member's
-                    // `term inner.data[i]` already unboxes String/Data elements
-                    // (the Index arm's String-element path inttoprts), so no
-                    // extra conversion here.
-                    // 2026-10-12 (SPEC §8.6.1 Option B): record the collection
-                    // binding so the inner `data[i]` load (a re-entry into this
-                    // Index arm with `obj = Identifier("data")`) can reconstruct
-                    // the fat pointer for a tagged `dyn` element — the frontend
-                    // decision is keyed by the binding, not the buffer field.
-                    let saved_dyn_coll = self.fun.current_dyn_collection.clone();
-                    if let crate::ast::Expr::Identifier(name) = obj.as_ref() {
-                        self.fun.current_dyn_collection = Some(name.clone());
-                    }
-                    let out_tmp = self.fun.gen_reg();
-                    let r = self.emit_method_call(out, &out_tmp, obj, "At", &[(**index).clone()], &[], indent);
-                    self.fun.current_dyn_collection = saved_dyn_coll;
-                    return r;
-                }
-                let idx_reg = self.emit_expr(out, index, indent);
-                // 2026-08-10: clone so gep_index can take &mut self while the
-                // struct_types borrow for self-array slots is live below.
-                let idx_clone = idx_reg.clone();
-                // 2026-08-01 (D3): a Ptr-index read returns the POINTEE type
-                // (`buckets[h]` on a Ptr<List<...>> → List<...>); a heap List
-                // index returns its ELEMENT type (`List<String>[i]` → String).
-                // Computed early so the load path can inttoptr string elements.
-                let index_elem_ty = match &obj_reg.ty {
-                    Type::Ptr(inner) => (**inner).clone(),
-                    Type::Applied(_, args) if !args.is_empty() => args[0].clone(),
-                    Type::Vector(inner, _) => (**inner).clone(),
-                    _ => Type::int(),
-                };
-                // 2026-07-18: SVO List indexing — removed (2026-08-15, coll
-                // plan §3.5: feature_svo never enabled; coll indexes via
-                // `op At`).
-                // 2026-07-31 (A5): obj member `self` ARRAY slot indexing —
-                // `data[i]` in a member body. GEP self + slot offset + elem.
-                if let Some((self_type, self_ptr)) = self.fun.self_binding.clone() {
-                     if let Expr::Identifier(sname) = obj.as_ref() {
-                         // 2026-08-10: clone inner/dims so the struct_types
-                         // borrow is released before gep_index (which takes
-                         // &mut self) — the old code held s_ty across the call.
-                         let slot_ty: Option<(crate::ast::Type, Vec<crate::ast::Dimension>)> =
-                             self.ctx.struct_types.get(&self_type)
-                                 .and_then(|f| f.iter().find(|(n, _)| n == sname))
-                                 .and_then(|(_, ty)| match ty {
-                                     Type::Vector(inner, dims) => Some(((**inner).clone(), dims.clone())),
-                                     _ => None,
-                                 });
-                         if let Some((inner, dims)) = slot_ty {
-                             if dims.len() >= 1 {
-                                     let offset = self.lookup_field_offset(&self_type, sname);
-                                     // 2026-08-07: indexing selects a whole row.
-                                     // 2026-11-03: derive its stride from the same
-                                     // storage array used by construction; an obj
-                                     // element occupies a handle, not its full image.
-                                     // Retire with unified destination addressing.
-                                     let array_ty = self.vector_array_llvm_type(&Type::Vector(Box::new(inner.clone()), dims.clone()))
-                                         .unwrap_or_else(|| "i64".into());
-                                      let gep_idx = self.gep_index(out, indent, &idx_clone);
-                                     let base = self.fun.gen_reg();
-                                     writeln!(out, "{indent}{base} = getelementptr i8, ptr {self_ptr}, i64 {offset}").ok();
-                                     let gep = self.fun.gen_reg();
-                                     writeln!(out, "{indent}{gep} = getelementptr {array_ty}, ptr {base}, i64 0, i64 {gep_idx}").ok();
-                                     if dims.len() == 1 {
-                                         return self.emit_array_element_load(out, indent, &gep, &inner);
-                                     }
-                                      // A row view — the enclosing index GEPs
-                                      // into it (the row-view path below).
-                                      let _ = v;
-                                       return TypedRegister {
-                                           name: gep,
-                                           ty: Type::Vector(Box::new(inner.clone()), dims[1..].to_vec()),
-                                       };
-                                   }
-                               }
-                           }
-                      }
-                 // 2026-07-31 (A4): Array state-field indexing — GEP into
-                 // %State + scalar load. A runtime index cannot extractvalue
-                 // from a loaded aggregate; the whole-array load + extract
-                 // path below is only valid for scalar fields.
-                 if let Expr::Identifier(name) = obj.as_ref() {
-                    // 2026-10-01 (A1 name-capture fix): the same member-scope
-                    // discipline as the Identifier arm — inside a member body,
-                    // a bare name that is NOT a caller binding must resolve
-                    // through the RECEIVER (the pooled/self arms above already
-                    // did), never through the GLOBAL state columns. Without
-                    // this guard, a caller local named `data` (a global column)
-                    // mixed the receiver's array TYPE with the caller's slot
-                    // ADDRESS: `data[len - 1]` in the Stack peek gep'd the
-                    // caller's scalar slot as an array ("invalid getelementptr
-                    // indices").
-                    let member_scoped = self.fun.self_prefix.is_some()
-                        || self.fun.self_binding.is_some();
-                    let caller_scoped = self.fun.let_bindings.contains_key(name);
-                    let global_field_ok = !member_scoped || caller_scoped;
-                    if global_field_ok && let Some(&fidx) = self.ctx.field_index_map.get(name) {
-                         if let Type::Vector(inner, dims) = &obj_reg.ty {
-                             let base = self.emit_state_gep(out, indent, "f", "%state", fidx);
-                             // 2026-07-31: The GEP source type must be the
-                             // %State field's real aggregate type
-                             // (field_types[fidx] = "[16 x float]"), not
-                             // llvm_type(Vector), which resolves to the
-                             // scalar fallback.
-                             let agg_ty = self
-                                 .ctx
-                                 .field_types
-                                 .get(fidx)
-                                 .cloned()
-                                 .unwrap_or_else(|| "i64".into());
-                              if dims.len() == 1 {
-                                  // 1-dim field → the element.
-                                  let elem = self.fun.gen_reg();
-                                  let gep_idx = self.gep_index(out, indent, &idx_clone);
-                                  writeln!(
-                                      out,
-                                      "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
-                                      indent, elem, agg_ty, base, gep_idx
-                                  )
-                                  .ok();
-                                 return self.emit_array_element_load(out, indent, &elem, inner);
-                             }
-                             // 2026-08-07 (Phase 7): multi-dim field
-                             // (`[M x [N x T]]`) — the index selects a ROW: a
-                             // ptr into the aggregate typed with the remaining
-                             // dims. The enclosing index (or a whole-row use)
-                             // GEPs into it.
-                              let row = self.fun.gen_reg();
-                              let gep_idx = self.gep_index(out, indent, &idx_clone);
-                              writeln!(
-                                  out,
-                                  "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
-                                  indent, row, agg_ty, base, gep_idx
-                              )
-                              .ok();
-                              let _ = v;
-                             return TypedRegister {
-                                 name: row,
-                                 ty: Type::Vector(Box::new((**inner).clone()), dims[1..].to_vec()),
-                             };
-                         }
-                     }
-                 }
-                // 2026-08-07 (Phase 7): a ROW VIEW — the register is a ptr into
-                // a multi-dim aggregate (produced by indexing a multi-dim
-                // field, typed Vector with the REMAINING dims). GEP into it;
-                // the final dim yields the element, further dims yield a
-                // sub-row. The field-identifier paths above already handled
-                // whole fields; this handles a Vector-typed ROW register.
-                if let Type::Vector(inner, dims) = &obj_reg.ty {
-                    if !dims.is_empty() {
-                        // 2026-08-23: struct elements require their image address,
-                        // not the callable pointer ABI. 2026-11-03: array storage
-                        // and loads now share that rule for every registered
-                        // inline type; scalar and object handles retain values.
-                        // Retire this seam with unified destination layouts.
-                        let agg_ty = self.vector_array_llvm_type(&obj_reg.ty)
-                            .unwrap_or_else(|| "i64".to_string());
-                        let elem = self.fun.gen_reg();
-                        let gep_idx = self.gep_index(out, indent, &idx_clone);
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
-                            indent, elem, agg_ty, obj_reg.name, gep_idx
-                        )
-                        .ok();
-                        if dims.len() == 1 {
-                            return self.emit_array_element_load(out, indent, &elem, inner);
-                        }
-                        let _ = v;
-                        return TypedRegister {
-                            name: elem,
-                            ty: Type::Vector(Box::new((**inner).clone()), dims[1..].to_vec()),
-                        };
-                    }
-                }
-                // 2026-08-16 (slice-6 deletion): a bare `(1,2)` TUPLE literal
-                // receiver still carries the boxed i64 handle type (Type::int)
-                // — recognize it by its AST form so the 2-slot heap path still
-                // applies (tuples are heap seqs with a length header). A bare
-                // `Expr::List` receiver is DEAD: list literals construct
-                // through the collection ops, and a bare list reaching codegen
-                // is a hard error.
-                let is_seq_literal = matches!(obj.as_ref(), Expr::Tuple(_));
-                if matches!(obj_reg.ty, Type::Ptr(_))
-                    || matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
-                    || is_seq_literal
-                {
-                    // 2026-10-20 (pointer provenance): raw `Ptr<T>` reads
-                    // reuse one canonical `ptr` per address SSA value. The
-                    // fresh-inttoptr-per-access form gave the read and the
-                    // matching store independent provenance, so LTO could
-                    // hoist the read across the store. Collection handles keep
-                    // their own carrier conversion below.
-                    let ptr = if matches!(obj_reg.ty, Type::Ptr(_)) {
-                        self.canonical_ptr(out, indent, &obj_reg.name)
-                    } else {
-                        let p = self.fun.gen_reg();
-                        // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
-                        // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
-                        // width, not hardcoded i64. 2026-08-12 (slice 4): a
-                        // COLLECTION data pointer (`inner.data`, a struct Ptr field)
-                        // loads/stores at i64 (the boxed-handle ABI), so inttoptr
-                        // at i64 when the receiver value is i64; a local Ptr handle
-                        // is i{int_bits}. Match the receiver register's LLVM type.
-                        let recv_llvm = self.llvm_type(&obj_reg.ty);
-                        let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
-                            "i64".to_string()
-                        } else {
-                            format!("i{}", self.ctx.int_bits)
-                        };
-                        writeln!(
-                            out,
-                            "{}{} = inttoptr {} {} to ptr",
-                            indent, p, hw, obj_reg.name
-                        )
-                        .ok();
-                        p
-                    };
-                    let offset = self.fun.gen_reg();
-                    // 2026-07-17: List/tuple types have a length header at
-                    // slot 0 — elements start at index 1. Raw Ptr buffers
-                    // (from Malloc#) have no header.
-                    // 2026-07-18: Check by TYPE, not expression form — non-literal
-                    // list identifiers also need the +1 offset.
-                    // 2026-07-21: Only List types have a length header at slot 0.
-                    // Raw Ptr<T> from Malloc# has no header — offset is the index.
-                    let is_list_type = matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
-                        || is_seq_literal;
-                    // 2026-10-27: list slots are target-width handles, not
-                    // always 64-bit words. On wasm32 append writes i32 slots;
-                    // reading with an i64 stride skipped every second entry
-                    // (HTTP request queue corruption).
-                    let slot_ty = if is_list_type || matches!(obj_reg.ty, Type::Ptr(_)) {
-                        format!("i{}", self.ctx.int_bits)
-                    } else {
-                        "i64".to_string()
-                    };
-                    let gep_idx = self.gep_index(out, indent, &idx_clone);
-                    if is_list_type {
-                        writeln!(out, "{}{} = add i64 {}, 1", indent, offset, gep_idx).ok();
-                    } else {
-                        writeln!(out, "{}{} = add i64 {}, 0", indent, offset, gep_idx).ok();
-                    }
-                    let gep = self.fun.gen_reg();
-                    // 2026-10-18 (fixture campaign): pointee-aware read —
-                    // mirrors the write side's scalar-pointee rule
-                    // (BUGS.md 2026-10-18). A RAW Ptr<T> buffer stores scalar
-                    // elements at T's native width and stride (the write side
-                    // GEPs <elem>); the read must GEP the same element type or
-                    // the strides disagree (Ptr<Float> wrote 4-byte, read
-                    // 8-byte — the recommender regression). List/seq slots
-                    // and non-scalar pointees keep the i64-carrier paths
-                    // below (boxed handles, fat pointers, string boxes).
-                    let (elem_llvm, scalar_pointee) = match &obj_reg.ty {
-                        Type::Ptr(inner) => {
-                            // 2026-10-25: a boxed tuple handle lowers to i32 on
-                            // wasm32, but the canonical Collection slot is an
-                            // 8-byte word. Classifying it as a scalar pointee
-                            // made List<(...)> index with a 4-byte stride and
-                            // read the padding at index 1 (strict JSON object
-                            // lookup). Scalar here means a flat protocol value,
-                            // never an aggregate/boxed handle.
-                            let scalar = matches!(inner.as_ref(), Type::Bits(_))
-                                || (self.ctx.type_universe.as_ref().map_or(false, |u| {
-                                    crate::type_universe::protocol_category(u, inner).map_or(false, |cat| {
-                                        matches!(cat.as_str(), "Int" | "UInt" | "Float" | "Bool" | "Char")
-                                    })
-                                }) && !matches!(inner.as_ref(), Type::Tuple(_)));
-                            (self.llvm_type(inner), scalar)
-                        }
-                        _ => ("i64".to_string(), false),
-                    };
-                    let raw_ptr_scalar = matches!(obj_reg.ty, Type::Ptr(_))
-                        && !is_list_type
-                        && scalar_pointee;
-                    if raw_ptr_scalar {
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr {}, ptr {}, i64 {}",
-                            indent, gep, elem_llvm, ptr, offset
-                        )
-                        .ok();
-                        let vol_prefix = if self.fun.volatile_read
-                            || self.fun.volatile_raw_ptr_params
-                        {
-                            "volatile "
-                        } else {
-                            ""
-                        };
-                        writeln!(
-                            out,
-                            "{}{} = load {}{}, ptr {}",
-                            indent, v, vol_prefix, elem_llvm, gep
-                        )
-                        .ok();
-                        return TypedRegister {
-                            name: v.to_string(),
-                            ty: index_elem_ty.clone(),
-                        };
-                    }
-                    writeln!(
-                        out,
-                        "{}{} = getelementptr {}, ptr {}, i64 {}",
-                        indent, gep, slot_ty, ptr, offset
-                    )
-                    .ok();
-                    // 2026-08-01 (E): `vol let` — Ptr-Index reads emit
-                    // `load volatile` (MMIO register arrays).
-                    // 2026-08-04 (compiler-in-Briev): a String element is
-                    // boxed in the i64 list slot — inttoptr it back to a real
-                    // ptr so consumers (briev_str_eq) see a pointer, matching
-                    // how string literals are represented.
-                    if self.is_string_operand(&index_elem_ty) {
-                        let raw = self.fun.gen_reg();
-                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
-                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
-                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, v, slot_ty, raw).ok();
-                    } else if self.is_protocol_member(&index_elem_ty, "Float") {
-                        // 2026-08-07 (Phase 7): a Float (f32) element is
-                        // stored in the i64 list slot as
-                        // `zext(bitcast float to i32)` — invert it.
-                        let raw = self.fun.gen_reg();
-                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
-                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
-                        let tr = self.fun.gen_reg();
-                        if slot_ty == "i64" {
-                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, raw).ok();
-                        } else {
-                            writeln!(out, "{}{} = trunc i32 {} to i32", indent, tr, raw).ok();
-                        }
-                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, tr).ok();
-                    } else if self.is_protocol_member(&index_elem_ty, "Int") {
-                        // 2026-08-12 (slice 4, wasm32 maze): an Int element is
-                        // stored as a boxed i64 handle; on wasm32 the value is
-                        // in the low i32 — load at the ELEMENT's native width
-                        // (`llvm_type(Int)` = i32 on wasm32, i64 on x86_64) so
-                        // the member's term return + consumers match. Loading
-                        // the full i64 then returning it as i32 produced
-                        // `%t117 defined with type 'i64' but expected 'i32'`.
-                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
-                            if self.fun.volatile_read { "volatile " } else { "" },
-                            self.llvm_type(&index_elem_ty), gep).ok();
-                    } else if self.is_tagged_dyn_element(&index_elem_ty) {
-                        // 2026-10-12 (SPEC §8.6.1 Option B): the element is a `dyn
-                        // Trait` and the enclosing collection (recorded at the
-                        // tier2 `op At` dispatch) is tagged (Switch form). The
-                        // loaded i64 is a 16-byte TAGGED BOX address `[tag,
-                        // payload]`; reconstruct the 24-byte fat pointer `[data,
-                        // tag, table]` the dispatch machinery consumes. An
-                        // Inline collection (no box) never reaches here — the
-                        // frontend decision gates it.
-                        let raw = self.fun.gen_reg();
-                        writeln!(out, "{}{} = load i64, ptr {}", indent, raw, gep).ok();
-                        let box_p = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, box_p, raw).ok();
-                        let fat_p = self.fun.gen_reg();
-                        writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, fat_p).ok();
-                        // payload = box slot 1 → fat slot 0 (the concrete handle).
-                        let box_pay = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, box_pay, box_p).ok();
-                        let payload_v = self.fun.gen_reg();
-                        writeln!(out, "{}{} = load i64, ptr {}", indent, payload_v, box_pay).ok();
-                        let fat_data = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, fat_data, fat_p).ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, payload_v, fat_data).ok();
-                        // tag = box slot 0 → fat slot 1 (the switch discriminant).
-                        let box_tag = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, box_tag, box_p).ok();
-                        let tag_v = self.fun.gen_reg();
-                        writeln!(out, "{}{} = load i64, ptr {}", indent, tag_v, box_tag).ok();
-                        let fat_tag = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 1", indent, fat_tag, fat_p).ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, tag_v, fat_tag).ok();
-                        // table slot 2: the per-trait thunk table for the tag's
-                        // concrete (the Vtable form loads it by tag; the Switch
-                        // form inlines the bodies and never reads this slot).
-                        let trait_name = match &index_elem_ty {
-                            Type::Dyn(inner) => match inner.as_ref() {
-                                Type::Custom(n) => n.clone(),
-                                _ => String::new(),
-                            },
-                            _ => String::new(),
-                        };
-                        let concrete = self.tag_concrete_for_read(&trait_name, &tag_v);
-                        let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
-                        let fat_table = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 2", indent, fat_table, fat_p).ok();
-                        let table_addr = self.fun.gen_reg();
-                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, table_addr, thunk_table).ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, table_addr, fat_table).ok();
-                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, fat_p).ok();
-                    } else {
-                        // List slots carry target-width handles; native i64,
-                        // wasm32 i32.
-                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
-                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
-                    }
-                } else if self.is_string_operand(&obj_reg.ty) {
-                    // 2026-10-05 (json.bv): String indexing `s[i]` — the
-                    // [len: i64][bytes…] layout (B0), byte i at offset 8+i,
-                    // zero-extended to Int (a String index yields the byte
-                    // code, matching std/cast_lanes byte_at). Without this a
-                    // String receiver fell through to `extractelement` on a
-                    // scalar ptr — invalid IR (`char_at` was unusable).
-                    let recv_llvm = self.llvm_type(&obj_reg.ty);
-                    let base = if recv_llvm == "ptr" {
-                        obj_reg.name.clone()
-                    } else {
-                        let p = self.fun.gen_reg();
-                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, recv_llvm, obj_reg.name).ok();
-                        p
-                    };
-                    let idx_llvm = self.llvm_type(&idx_reg.ty);
-                    let idx64 = if idx_llvm == "i64" {
-                        idx_reg.name.clone()
-                    } else {
-                        let w = self.fun.gen_reg();
-                        writeln!(out, "{}{} = sext {} {} to i64", indent, w, idx_llvm, idx_reg.name).ok();
-                        w
-                    };
-                    let off = self.fun.gen_reg();
-                    writeln!(out, "{}{} = add i64 {}, 8", indent, off, idx64).ok();
-                    let gep = self.fun.gen_reg();
-                    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, base, off).ok();
-                    let byte = self.fun.gen_reg();
-                    writeln!(out, "{}{} = load i8, ptr {}", indent, byte, gep).ok();
-                    let hw = format!("i{}", self.ctx.int_bits);
-                    writeln!(out, "{}{} = zext i8 {} to {}", indent, v, byte, hw).ok();
-                } else {
-                    writeln!(
-                        out,
-                        "{}{} = extractelement {} {}, {}",
-                        indent,
-                        v,
-                        self.llvm_type(&obj_reg.ty),
-                        obj_reg.name,
-                        idx_reg.name
-                    )
-                    .ok();
-                }
-                // 2026-08-04 (compiler-in-Briev): the element type was computed
-                // early (index_elem_ty) so the load path could inttoptr string
-                // elements.
-                let elem_ty = index_elem_ty.clone();
-                TypedRegister {
-                    name: v.to_string(),
-                    ty: elem_ty,
-                }
+                self.emit_index_with_obj(out, v, obj, index, obj_reg, indent)
             }
 
             // ── Cast ─────────────────────────────────────────────────
@@ -2934,6 +2443,532 @@ impl LlvmBackend {
     /// `[len][elems]` heap layout. The former emit_heap_seq LIST path is
     /// DELETED: typed list literals construct through the collection's ops,
     /// and uncontextualized literals are a typechecker error.
+
+/// 2026-11-05 (H4 slice D): the AST Index arm tail (everything after the
+/// receiver register exists), extracted verbatim so the HIR native family
+/// shares ONE implementation. The dispatch reads obj/index AST shapes
+/// (mask sources, tier-2 At inlining, state fields, list layouts); only the
+/// receiver register is operand-split. Undo: inline back into
+/// emit_expr_inner's `Expr::Index` arm.
+pub(crate) fn emit_index_with_obj(
+    &mut self,
+    out: &mut String,
+    v: &str,
+    obj: &Expr,
+    index: &Expr,
+    obj_reg: TypedRegister,
+    indent: &str,
+) -> TypedRegister {
+                // 2026-08-07 (Phase 7): a Boolean-vector index is a MASK —
+                // `data[mask]` selects the bytes at the true positions
+                // (SPEC §16.5). Supported sources: a compile-time Boolean
+                // list literal or a Bool[N] state field. Checked FIRST — a
+                // mask must never dispatch to `op At` (a tier2 List receiver
+                // with a mask literal index would otherwise inline At with the
+                // mask as a scalar index). A mask list literal (`[true, false]`)
+                // is a Bool vector VALUE, not a List collection, and must
+                // never reach the list-literal construction path.
+                let mask_source = {
+                    let const_bits = Self::constant_bool_mask(index);
+                    let field_idx = match index {
+                        Expr::Identifier(name) => self.ctx.field_index_map.get(name).copied().filter(
+                            |fidx| matches!(
+                                self.ctx.field_briev_types.get(*fidx),
+                                Some(t) if matches!(t, Type::Vector(inner, _)
+                                    if self.is_protocol_member(inner, "Bool"))
+                            ),
+                        ),
+                        _ => None,
+                    };
+                    match const_bits {
+                        Some(bits) => Some(MaskSource::Constant(bits)),
+                        None => field_idx.map(MaskSource::StateField),
+                    }
+                };
+                if let Some(source) = mask_source {
+                    return self.emit_masked_index(
+                        out,
+                        MaskIndexOperands {
+                            obj,
+                            obj_reg: &obj_reg,
+                            source,
+                        },
+                        indent,
+                    );
+                }
+                // 2026-08-13 (c[i] dispatches op At): a Tier-2 collection
+                // (`op Count` + `op At`) index must inline the At member body —
+                // the legacy struct/heap-seq paths below read a List value's
+                // fields directly (`b[0]` read the `inner` slot, then fed the
+                // buffer pointer to briev_char_len → garbage/crash). Same
+                // dispatch foreach uses. tier2_op_collection handles identifier
+                // receivers; a call-result receiver (`bytes("abc")[0]`) is
+                // dispatched by its register's type.
+                let recv_is_tier2 = self.tier2_op_collection(obj).is_some()
+                    || {
+                        let base = match &obj_reg.ty {
+                            Type::Custom(n) | Type::Applied(n, _) => Some(n.clone()),
+                            _ => None,
+                        };
+                        base.map_or(false, |b| {
+                            self.ctx.obj_members.get(&b).map_or(false, |members| {
+                                members.iter().any(|m| matches!(m, TopLevel::TypeDefOperator(d) if d.name == "At"))
+                            })
+                        })
+                    };
+                if recv_is_tier2 {
+                    // 2026-08-13: inline the At member body. The member's
+                    // `term inner.data[i]` already unboxes String/Data elements
+                    // (the Index arm's String-element path inttoprts), so no
+                    // extra conversion here.
+                    // 2026-10-12 (SPEC §8.6.1 Option B): record the collection
+                    // binding so the inner `data[i]` load (a re-entry into this
+                    // Index arm with `obj = Identifier("data")`) can reconstruct
+                    // the fat pointer for a tagged `dyn` element — the frontend
+                    // decision is keyed by the binding, not the buffer field.
+                    let saved_dyn_coll = self.fun.current_dyn_collection.clone();
+                    if let crate::ast::Expr::Identifier(name) = obj {
+                        self.fun.current_dyn_collection = Some(name.clone());
+                    }
+                    let out_tmp = self.fun.gen_reg();
+                    let r = self.emit_method_call(out, &out_tmp, obj, "At", &[index.clone()], &[], indent);
+                    self.fun.current_dyn_collection = saved_dyn_coll;
+                    return r;
+                }
+                let idx_reg = self.emit_expr(out, index, indent);
+                // 2026-08-10: clone so gep_index can take &mut self while the
+                // struct_types borrow for self-array slots is live below.
+                let idx_clone = idx_reg.clone();
+                // 2026-08-01 (D3): a Ptr-index read returns the POINTEE type
+                // (`buckets[h]` on a Ptr<List<...>> → List<...>); a heap List
+                // index returns its ELEMENT type (`List<String>[i]` → String).
+                // Computed early so the load path can inttoptr string elements.
+                let index_elem_ty = match &obj_reg.ty {
+                    Type::Ptr(inner) => (**inner).clone(),
+                    Type::Applied(_, args) if !args.is_empty() => args[0].clone(),
+                    Type::Vector(inner, _) => (**inner).clone(),
+                    _ => Type::int(),
+                };
+                // 2026-07-18: SVO List indexing — removed (2026-08-15, coll
+                // plan §3.5: feature_svo never enabled; coll indexes via
+                // `op At`).
+                // 2026-07-31 (A5): obj member `self` ARRAY slot indexing —
+                // `data[i]` in a member body. GEP self + slot offset + elem.
+                if let Some((self_type, self_ptr)) = self.fun.self_binding.clone() {
+                     if let Expr::Identifier(sname) = obj {
+                         // 2026-08-10: clone inner/dims so the struct_types
+                         // borrow is released before gep_index (which takes
+                         // &mut self) — the old code held s_ty across the call.
+                         let slot_ty: Option<(crate::ast::Type, Vec<crate::ast::Dimension>)> =
+                             self.ctx.struct_types.get(&self_type)
+                                 .and_then(|f| f.iter().find(|(n, _)| n == sname))
+                                 .and_then(|(_, ty)| match ty {
+                                     Type::Vector(inner, dims) => Some(((**inner).clone(), dims.clone())),
+                                     _ => None,
+                                 });
+                         if let Some((inner, dims)) = slot_ty {
+                             if dims.len() >= 1 {
+                                     let offset = self.lookup_field_offset(&self_type, sname);
+                                     // 2026-08-07: indexing selects a whole row.
+                                     // 2026-11-03: derive its stride from the same
+                                     // storage array used by construction; an obj
+                                     // element occupies a handle, not its full image.
+                                     // Retire with unified destination addressing.
+                                     let array_ty = self.vector_array_llvm_type(&Type::Vector(Box::new(inner.clone()), dims.clone()))
+                                         .unwrap_or_else(|| "i64".into());
+                                      let gep_idx = self.gep_index(out, indent, &idx_clone);
+                                     let base = self.fun.gen_reg();
+                                     writeln!(out, "{indent}{base} = getelementptr i8, ptr {self_ptr}, i64 {offset}").ok();
+                                     let gep = self.fun.gen_reg();
+                                     writeln!(out, "{indent}{gep} = getelementptr {array_ty}, ptr {base}, i64 0, i64 {gep_idx}").ok();
+                                     if dims.len() == 1 {
+                                         return self.emit_array_element_load(out, indent, &gep, &inner);
+                                     }
+                                      // A row view — the enclosing index GEPs
+                                      // into it (the row-view path below).
+                                      let _ = v;
+                                       return TypedRegister {
+                                           name: gep,
+                                           ty: Type::Vector(Box::new(inner.clone()), dims[1..].to_vec()),
+                                       };
+                                   }
+                               }
+                           }
+                      }
+                 // 2026-07-31 (A4): Array state-field indexing — GEP into
+                 // %State + scalar load. A runtime index cannot extractvalue
+                 // from a loaded aggregate; the whole-array load + extract
+                 // path below is only valid for scalar fields.
+                 if let Expr::Identifier(name) = obj {
+                    // 2026-10-01 (A1 name-capture fix): the same member-scope
+                    // discipline as the Identifier arm — inside a member body,
+                    // a bare name that is NOT a caller binding must resolve
+                    // through the RECEIVER (the pooled/self arms above already
+                    // did), never through the GLOBAL state columns. Without
+                    // this guard, a caller local named `data` (a global column)
+                    // mixed the receiver's array TYPE with the caller's slot
+                    // ADDRESS: `data[len - 1]` in the Stack peek gep'd the
+                    // caller's scalar slot as an array ("invalid getelementptr
+                    // indices").
+                    let member_scoped = self.fun.self_prefix.is_some()
+                        || self.fun.self_binding.is_some();
+                    let caller_scoped = self.fun.let_bindings.contains_key(name);
+                    let global_field_ok = !member_scoped || caller_scoped;
+                    if global_field_ok && let Some(&fidx) = self.ctx.field_index_map.get(name) {
+                         if let Type::Vector(inner, dims) = &obj_reg.ty {
+                             let base = self.emit_state_gep(out, indent, "f", "%state", fidx);
+                             // 2026-07-31: The GEP source type must be the
+                             // %State field's real aggregate type
+                             // (field_types[fidx] = "[16 x float]"), not
+                             // llvm_type(Vector), which resolves to the
+                             // scalar fallback.
+                             let agg_ty = self
+                                 .ctx
+                                 .field_types
+                                 .get(fidx)
+                                 .cloned()
+                                 .unwrap_or_else(|| "i64".into());
+                              if dims.len() == 1 {
+                                  // 1-dim field → the element.
+                                  let elem = self.fun.gen_reg();
+                                  let gep_idx = self.gep_index(out, indent, &idx_clone);
+                                  writeln!(
+                                      out,
+                                      "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
+                                      indent, elem, agg_ty, base, gep_idx
+                                  )
+                                  .ok();
+                                 return self.emit_array_element_load(out, indent, &elem, inner);
+                             }
+                             // 2026-08-07 (Phase 7): multi-dim field
+                             // (`[M x [N x T]]`) — the index selects a ROW: a
+                             // ptr into the aggregate typed with the remaining
+                             // dims. The enclosing index (or a whole-row use)
+                             // GEPs into it.
+                              let row = self.fun.gen_reg();
+                              let gep_idx = self.gep_index(out, indent, &idx_clone);
+                              writeln!(
+                                  out,
+                                  "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
+                                  indent, row, agg_ty, base, gep_idx
+                              )
+                              .ok();
+                              let _ = v;
+                             return TypedRegister {
+                                 name: row,
+                                 ty: Type::Vector(Box::new((**inner).clone()), dims[1..].to_vec()),
+                             };
+                         }
+                     }
+                 }
+                // 2026-08-07 (Phase 7): a ROW VIEW — the register is a ptr into
+                // a multi-dim aggregate (produced by indexing a multi-dim
+                // field, typed Vector with the REMAINING dims). GEP into it;
+                // the final dim yields the element, further dims yield a
+                // sub-row. The field-identifier paths above already handled
+                // whole fields; this handles a Vector-typed ROW register.
+                if let Type::Vector(inner, dims) = &obj_reg.ty {
+                    if !dims.is_empty() {
+                        // 2026-08-23: struct elements require their image address,
+                        // not the callable pointer ABI. 2026-11-03: array storage
+                        // and loads now share that rule for every registered
+                        // inline type; scalar and object handles retain values.
+                        // Retire this seam with unified destination layouts.
+                        let agg_ty = self.vector_array_llvm_type(&obj_reg.ty)
+                            .unwrap_or_else(|| "i64".to_string());
+                        let elem = self.fun.gen_reg();
+                        let gep_idx = self.gep_index(out, indent, &idx_clone);
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr {}, ptr {}, i64 0, i64 {}",
+                            indent, elem, agg_ty, obj_reg.name, gep_idx
+                        )
+                        .ok();
+                        if dims.len() == 1 {
+                            return self.emit_array_element_load(out, indent, &elem, inner);
+                        }
+                        let _ = v;
+                        return TypedRegister {
+                            name: elem,
+                            ty: Type::Vector(Box::new((**inner).clone()), dims[1..].to_vec()),
+                        };
+                    }
+                }
+                // 2026-08-16 (slice-6 deletion): a bare `(1,2)` TUPLE literal
+                // receiver still carries the boxed i64 handle type (Type::int)
+                // — recognize it by its AST form so the 2-slot heap path still
+                // applies (tuples are heap seqs with a length header). A bare
+                // `Expr::List` receiver is DEAD: list literals construct
+                // through the collection ops, and a bare list reaching codegen
+                // is a hard error.
+                let is_seq_literal = matches!(obj, Expr::Tuple(_));
+                if matches!(obj_reg.ty, Type::Ptr(_))
+                    || matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
+                    || is_seq_literal
+                {
+                    // 2026-10-20 (pointer provenance): raw `Ptr<T>` reads
+                    // reuse one canonical `ptr` per address SSA value. The
+                    // fresh-inttoptr-per-access form gave the read and the
+                    // matching store independent provenance, so LTO could
+                    // hoist the read across the store. Collection handles keep
+                    // their own carrier conversion below.
+                    let ptr = if matches!(obj_reg.ty, Type::Ptr(_)) {
+                        self.canonical_ptr(out, indent, &obj_reg.name)
+                    } else {
+                        let p = self.fun.gen_reg();
+                        // 2026-08-11 (wasm32 obj-member fix): the Ptr/List receiver
+                        // handle is i{int_bits} (i32 on wasm32) — inttoptr at that
+                        // width, not hardcoded i64. 2026-08-12 (slice 4): a
+                        // COLLECTION data pointer (`inner.data`, a struct Ptr field)
+                        // loads/stores at i64 (the boxed-handle ABI), so inttoptr
+                        // at i64 when the receiver value is i64; a local Ptr handle
+                        // is i{int_bits}. Match the receiver register's LLVM type.
+                        let recv_llvm = self.llvm_type(&obj_reg.ty);
+                        let hw = if matches!(recv_llvm.as_str(), "i64" | "ptr") {
+                            "i64".to_string()
+                        } else {
+                            format!("i{}", self.ctx.int_bits)
+                        };
+                        writeln!(
+                            out,
+                            "{}{} = inttoptr {} {} to ptr",
+                            indent, p, hw, obj_reg.name
+                        )
+                        .ok();
+                        p
+                    };
+                    let offset = self.fun.gen_reg();
+                    // 2026-07-17: List/tuple types have a length header at
+                    // slot 0 — elements start at index 1. Raw Ptr buffers
+                    // (from Malloc#) have no header.
+                    // 2026-07-18: Check by TYPE, not expression form — non-literal
+                    // list identifiers also need the +1 offset.
+                    // 2026-07-21: Only List types have a length header at slot 0.
+                    // Raw Ptr<T> from Malloc# has no header — offset is the index.
+                    let is_list_type = matches!(&obj_reg.ty, Type::Applied(n, _) if n == "List")
+                        || is_seq_literal;
+                    // 2026-10-27: list slots are target-width handles, not
+                    // always 64-bit words. On wasm32 append writes i32 slots;
+                    // reading with an i64 stride skipped every second entry
+                    // (HTTP request queue corruption).
+                    let slot_ty = if is_list_type || matches!(obj_reg.ty, Type::Ptr(_)) {
+                        format!("i{}", self.ctx.int_bits)
+                    } else {
+                        "i64".to_string()
+                    };
+                    let gep_idx = self.gep_index(out, indent, &idx_clone);
+                    if is_list_type {
+                        writeln!(out, "{}{} = add i64 {}, 1", indent, offset, gep_idx).ok();
+                    } else {
+                        writeln!(out, "{}{} = add i64 {}, 0", indent, offset, gep_idx).ok();
+                    }
+                    let gep = self.fun.gen_reg();
+                    // 2026-10-18 (fixture campaign): pointee-aware read —
+                    // mirrors the write side's scalar-pointee rule
+                    // (BUGS.md 2026-10-18). A RAW Ptr<T> buffer stores scalar
+                    // elements at T's native width and stride (the write side
+                    // GEPs <elem>); the read must GEP the same element type or
+                    // the strides disagree (Ptr<Float> wrote 4-byte, read
+                    // 8-byte — the recommender regression). List/seq slots
+                    // and non-scalar pointees keep the i64-carrier paths
+                    // below (boxed handles, fat pointers, string boxes).
+                    let (elem_llvm, scalar_pointee) = match &obj_reg.ty {
+                        Type::Ptr(inner) => {
+                            // 2026-10-25: a boxed tuple handle lowers to i32 on
+                            // wasm32, but the canonical Collection slot is an
+                            // 8-byte word. Classifying it as a scalar pointee
+                            // made List<(...)> index with a 4-byte stride and
+                            // read the padding at index 1 (strict JSON object
+                            // lookup). Scalar here means a flat protocol value,
+                            // never an aggregate/boxed handle.
+                            let scalar = matches!(inner.as_ref(), Type::Bits(_))
+                                || (self.ctx.type_universe.as_ref().map_or(false, |u| {
+                                    crate::type_universe::protocol_category(u, inner).map_or(false, |cat| {
+                                        matches!(cat.as_str(), "Int" | "UInt" | "Float" | "Bool" | "Char")
+                                    })
+                                }) && !matches!(inner.as_ref(), Type::Tuple(_)));
+                            (self.llvm_type(inner), scalar)
+                        }
+                        _ => ("i64".to_string(), false),
+                    };
+                    let raw_ptr_scalar = matches!(obj_reg.ty, Type::Ptr(_))
+                        && !is_list_type
+                        && scalar_pointee;
+                    if raw_ptr_scalar {
+                        writeln!(
+                            out,
+                            "{}{} = getelementptr {}, ptr {}, i64 {}",
+                            indent, gep, elem_llvm, ptr, offset
+                        )
+                        .ok();
+                        let vol_prefix = if self.fun.volatile_read
+                            || self.fun.volatile_raw_ptr_params
+                        {
+                            "volatile "
+                        } else {
+                            ""
+                        };
+                        writeln!(
+                            out,
+                            "{}{} = load {}{}, ptr {}",
+                            indent, v, vol_prefix, elem_llvm, gep
+                        )
+                        .ok();
+                        return TypedRegister {
+                            name: v.to_string(),
+                            ty: index_elem_ty.clone(),
+                        };
+                    }
+                    writeln!(
+                        out,
+                        "{}{} = getelementptr {}, ptr {}, i64 {}",
+                        indent, gep, slot_ty, ptr, offset
+                    )
+                    .ok();
+                    // 2026-08-01 (E): `vol let` — Ptr-Index reads emit
+                    // `load volatile` (MMIO register arrays).
+                    // 2026-08-04 (compiler-in-Briev): a String element is
+                    // boxed in the i64 list slot — inttoptr it back to a real
+                    // ptr so consumers (briev_str_eq) see a pointer, matching
+                    // how string literals are represented.
+                    if self.is_string_operand(&index_elem_ty) {
+                        let raw = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, v, slot_ty, raw).ok();
+                    } else if self.is_protocol_member(&index_elem_ty, "Float") {
+                        // 2026-08-07 (Phase 7): a Float (f32) element is
+                        // stored in the i64 list slot as
+                        // `zext(bitcast float to i32)` — invert it.
+                        let raw = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, raw,
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
+                        let tr = self.fun.gen_reg();
+                        if slot_ty == "i64" {
+                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, tr, raw).ok();
+                        } else {
+                            writeln!(out, "{}{} = trunc i32 {} to i32", indent, tr, raw).ok();
+                        }
+                        writeln!(out, "{}{} = bitcast i32 {} to float", indent, v, tr).ok();
+                    } else if self.is_protocol_member(&index_elem_ty, "Int") {
+                        // 2026-08-12 (slice 4, wasm32 maze): an Int element is
+                        // stored as a boxed i64 handle; on wasm32 the value is
+                        // in the low i32 — load at the ELEMENT's native width
+                        // (`llvm_type(Int)` = i32 on wasm32, i64 on x86_64) so
+                        // the member's term return + consumers match. Loading
+                        // the full i64 then returning it as i32 produced
+                        // `%t117 defined with type 'i64' but expected 'i32'`.
+                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
+                            if self.fun.volatile_read { "volatile " } else { "" },
+                            self.llvm_type(&index_elem_ty), gep).ok();
+                    } else if self.is_tagged_dyn_element(&index_elem_ty) {
+                        // 2026-10-12 (SPEC §8.6.1 Option B): the element is a `dyn
+                        // Trait` and the enclosing collection (recorded at the
+                        // tier2 `op At` dispatch) is tagged (Switch form). The
+                        // loaded i64 is a 16-byte TAGGED BOX address `[tag,
+                        // payload]`; reconstruct the 24-byte fat pointer `[data,
+                        // tag, table]` the dispatch machinery consumes. An
+                        // Inline collection (no box) never reaches here — the
+                        // frontend decision gates it.
+                        let raw = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, raw, gep).ok();
+                        let box_p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, box_p, raw).ok();
+                        let fat_p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = call ptr @malloc(i64 24)", indent, fat_p).ok();
+                        // payload = box slot 1 → fat slot 0 (the concrete handle).
+                        let box_pay = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 1", indent, box_pay, box_p).ok();
+                        let payload_v = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, payload_v, box_pay).ok();
+                        let fat_data = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 0", indent, fat_data, fat_p).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, payload_v, fat_data).ok();
+                        // tag = box slot 0 → fat slot 1 (the switch discriminant).
+                        let box_tag = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [2 x i64], ptr {}, i32 0, i32 0", indent, box_tag, box_p).ok();
+                        let tag_v = self.fun.gen_reg();
+                        writeln!(out, "{}{} = load i64, ptr {}", indent, tag_v, box_tag).ok();
+                        let fat_tag = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 1", indent, fat_tag, fat_p).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, tag_v, fat_tag).ok();
+                        // table slot 2: the per-trait thunk table for the tag's
+                        // concrete (the Vtable form loads it by tag; the Switch
+                        // form inlines the bodies and never reads this slot).
+                        let trait_name = match &index_elem_ty {
+                            Type::Dyn(inner) => match inner.as_ref() {
+                                Type::Custom(n) => n.clone(),
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        };
+                        let concrete = self.tag_concrete_for_read(&trait_name, &tag_v);
+                        let thunk_table = format!("@__dyn_{}_{concrete}", trait_name);
+                        let fat_table = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr inbounds [3 x i64], ptr {}, i32 0, i32 2", indent, fat_table, fat_p).ok();
+                        let table_addr = self.fun.gen_reg();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, table_addr, thunk_table).ok();
+                        writeln!(out, "{}store i64 {}, ptr {}", indent, table_addr, fat_table).ok();
+                        writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, fat_p).ok();
+                    } else {
+                        // List slots carry target-width handles; native i64,
+                        // wasm32 i32.
+                        writeln!(out, "{}{} = load {}{}, ptr {}", indent, v,
+                            if self.fun.volatile_read { "volatile " } else { "" }, slot_ty, gep).ok();
+                    }
+                } else if self.is_string_operand(&obj_reg.ty) {
+                    // 2026-10-05 (json.bv): String indexing `s[i]` — the
+                    // [len: i64][bytes…] layout (B0), byte i at offset 8+i,
+                    // zero-extended to Int (a String index yields the byte
+                    // code, matching std/cast_lanes byte_at). Without this a
+                    // String receiver fell through to `extractelement` on a
+                    // scalar ptr — invalid IR (`char_at` was unusable).
+                    let recv_llvm = self.llvm_type(&obj_reg.ty);
+                    let base = if recv_llvm == "ptr" {
+                        obj_reg.name.clone()
+                    } else {
+                        let p = self.fun.gen_reg();
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, recv_llvm, obj_reg.name).ok();
+                        p
+                    };
+                    let idx_llvm = self.llvm_type(&idx_reg.ty);
+                    let idx64 = if idx_llvm == "i64" {
+                        idx_reg.name.clone()
+                    } else {
+                        let w = self.fun.gen_reg();
+                        writeln!(out, "{}{} = sext {} {} to i64", indent, w, idx_llvm, idx_reg.name).ok();
+                        w
+                    };
+                    let off = self.fun.gen_reg();
+                    writeln!(out, "{}{} = add i64 {}, 8", indent, off, idx64).ok();
+                    let gep = self.fun.gen_reg();
+                    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, base, off).ok();
+                    let byte = self.fun.gen_reg();
+                    writeln!(out, "{}{} = load i8, ptr {}", indent, byte, gep).ok();
+                    let hw = format!("i{}", self.ctx.int_bits);
+                    writeln!(out, "{}{} = zext i8 {} to {}", indent, v, byte, hw).ok();
+                } else {
+                    writeln!(
+                        out,
+                        "{}{} = extractelement {} {}, {}",
+                        indent,
+                        v,
+                        self.llvm_type(&obj_reg.ty),
+                        obj_reg.name,
+                        idx_reg.name
+                    )
+                    .ok();
+                }
+                // 2026-08-04 (compiler-in-Briev): the element type was computed
+                // early (index_elem_ty) so the load path could inttoptr string
+                // elements.
+                let elem_ty = index_elem_ty.clone();
+                TypedRegister {
+                    name: v.to_string(),
+                    ty: elem_ty,
+                }
+}
+
     fn emit_tuple(
         &mut self,
         out: &mut String,

@@ -71,7 +71,10 @@ pub(crate) fn emit_hir_statement(
         // Family-covered expressions AND calls: the Call arm guards its own
         // argument reconstructibility before emitting anything, so a None
         // here falls through to conversion with no partial IR.
-        let call_native = matches!(&e.kind, HirExprKind::Call { .. });
+        let call_native = matches!(
+            &e.kind,
+            HirExprKind::Call { .. } | HirExprKind::Index { .. }
+        );
         if call_native || super::emit_expr::hir_expr_family_covered(e) {
             if let Some(reg) = backend.emit_hir_expr(out, e, indent) {
                 backend.fun.last_expr_reg = Some(reg.name.clone());
