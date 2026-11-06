@@ -43,95 +43,19 @@ impl HirReactorTransitionGraph {
         out_pragmas: &[String],
     ) -> Self {
         let state_fields: HashSet<String> = program.globals.iter().map(|g| g.name.clone()).collect();
-        let mut nodes = Vec::new();
-
-        for txn in program
+        let mut nodes: Vec<HirReactorNode> = program
             .callables
             .iter()
             .filter(|c| matches!(c.kind, HirCallableKind::Transaction) && c.owner.is_none())
-        {
-            let precondition = txn
-                .contract
-                .as_ref()
-                .map(|c| c.pre.clone())
-                .unwrap_or_else(truth);
-            let body_no_term: Vec<HirStmt> = txn
-                .body
-                .statements
-                .iter()
-                .filter(|s| {
-                    !matches!(
-                        s.kind,
-                        HirStmtKind::Term(None)
-                            | HirStmtKind::EndProgram(None)
-                            | HirStmtKind::Tail(_)
-                    )
-                })
-                .cloned()
-                .collect();
-            let simplified_body = simplify_body(&body_no_term);
-            let increments = detect_increments(&simplified_body)
-                .or_else(|| detect_popcount_decay(&simplified_body));
-            let (bounded_pre, increments) = {
-                let bp = extract_valid_bounded_pre(&precondition, &increments);
-                if let Some(bp) = bp {
-                    (Some(bp), increments)
-                } else {
-                    let all_incs = detect_all_increments(&simplified_body);
-                    let matched = all_incs.iter().find_map(|inc| {
-                        extract_valid_bounded_pre(&precondition, &Some(inc.clone()))
-                            .map(|b| (b, inc.clone()))
-                    });
-                    match matched {
-                        Some((bp, inc)) => (Some(bp), Some(inc)),
-                        None => (None, increments),
-                    }
-                }
-            };
-            let is_pure = is_pure_body(&simplified_body, &state_fields, &increments);
-            let write_set = extract_write_set(&simplified_body, &state_fields);
-            let lexicographic_vars = detect_lexicographic_ranking(&precondition, &simplified_body);
-
-            nodes.push(HirReactorNode {
-                name: txn.name.clone(),
-                is_reactive: txn.is_reactive,
-                precondition,
-                body: simplified_body,
-                bounded_pre,
-                increments,
-                is_pure_body: is_pure,
-                write_set,
-                is_effectively_pure: false,
-                lexicographic_vars,
-            });
-        }
+            .map(|txn| build_node(txn, &state_fields))
+            .collect();
 
         let mut live_fields = compute_live_fields(exit_condition, out_pragmas, &nodes);
-        for g in &program.globals {
-            if g.modifiers.iter().any(|m| m == "out" || m == "vol") {
-                live_fields.insert(g.name.clone());
-            }
-        }
+        pin_live_modifier_fields(program, &mut live_fields);
         for node in &mut nodes {
             compute_effectively_pure(node, &live_fields);
         }
-
-        let mut has_unguarded_ffi = HashSet::new();
-        for txn in program.callables.iter().filter(|c| {
-            matches!(c.kind, HirCallableKind::Transaction)
-                && c.owner.is_none()
-                && !c.exported
-                && c.sync_domains.is_empty()
-        }) {
-            if txn.is_reactive
-                && txn.body.statements.iter().any(|stmt| {
-                    !matches!(stmt.kind, HirStmtKind::Guarded(_, _))
-                        && statement_contains_ffi(stmt)
-                })
-            {
-                has_unguarded_ffi.insert(txn.name.clone());
-            }
-        }
+        let has_unguarded_ffi = collect_unguarded_ffi(program);
 
         Self {
             nodes,
@@ -140,6 +64,99 @@ impl HirReactorTransitionGraph {
             has_unguarded_ffi,
         }
     }
+}
+
+/// One reactor node's facts (precondition, simplified body, bounded-pre /
+/// increment proof, purity, write set, lexicographic ranking).
+fn build_node(txn: &HirCallable, state_fields: &HashSet<String>) -> HirReactorNode {
+    let precondition = txn
+        .contract
+        .as_ref()
+        .map(|c| c.pre.clone())
+        .unwrap_or_else(truth);
+    let body_no_term: Vec<HirStmt> = txn
+        .body
+        .statements
+        .iter()
+        .filter(|s| {
+            !matches!(
+                s.kind,
+                HirStmtKind::Term(None)
+                    | HirStmtKind::EndProgram(None)
+                    | HirStmtKind::Tail(_)
+            )
+        })
+        .cloned()
+        .collect();
+    let simplified_body = simplify_body(&body_no_term);
+    let increments = detect_increments(&simplified_body)
+        .or_else(|| detect_popcount_decay(&simplified_body));
+    let (bounded_pre, increments) = resolve_bounded_pre(&precondition, &simplified_body, increments);
+    let is_pure = is_pure_body(&simplified_body, state_fields, &increments);
+    let write_set = extract_write_set(&simplified_body, state_fields);
+    let lexicographic_vars = detect_lexicographic_ranking(&precondition, &simplified_body);
+    HirReactorNode {
+        name: txn.name.clone(),
+        is_reactive: txn.is_reactive,
+        precondition,
+        body: simplified_body,
+        bounded_pre,
+        increments,
+        is_pure_body: is_pure,
+        is_effectively_pure: false,
+        write_set,
+        lexicographic_vars,
+    }
+}
+
+/// Bounded-pre proof: prefer the detected increment, else scan all increments
+/// for one the precondition pins.
+fn resolve_bounded_pre(
+    precondition: &HirExpr,
+    body: &[HirStmt],
+    increments: Option<IncrementInfo>,
+) -> (Option<BoundedPre>, Option<IncrementInfo>) {
+    if let Some(bp) = extract_valid_bounded_pre(precondition, &increments) {
+        return (Some(bp), increments);
+    }
+    let matched = detect_all_increments(body).into_iter().find_map(|inc| {
+        extract_valid_bounded_pre(precondition, &Some(inc.clone()))
+            .map(|b| (b, inc))
+    });
+    match matched {
+        Some((bp, inc)) => (Some(bp), Some(inc)),
+        None => (None, increments),
+    }
+}
+
+/// `out`/`vol` fields are live by declaration regardless of analysis.
+fn pin_live_modifier_fields(program: &HirProgram, live_fields: &mut HashSet<String>) {
+    for g in &program.globals {
+        if g.modifiers.iter().any(|m| m == "out" || m == "vol") {
+            live_fields.insert(g.name.clone());
+        }
+    }
+}
+
+/// Reactive txns whose RAW body performs an FFI call outside a guard.
+fn collect_unguarded_ffi(program: &HirProgram) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for txn in program.callables.iter().filter(|c| {
+        matches!(c.kind, HirCallableKind::Transaction)
+            && c.owner.is_none()
+            && !c.exported
+            && c.sync_domains.is_empty()
+    }) {
+        if txn.is_reactive
+            && txn.body.statements.iter().any(|stmt| {
+                !matches!(stmt.kind, HirStmtKind::Guarded(_, _))
+                    && statement_contains_ffi(stmt)
+            })
+        {
+            out.insert(txn.name.clone());
+        }
+    }
+    out
 }
 
 fn truth() -> HirExpr {

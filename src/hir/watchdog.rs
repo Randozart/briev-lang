@@ -42,59 +42,94 @@ pub fn analyze(program: &HirProgram) -> Vec<WatchdogError> {
             errors.push(WatchdogError::NoHandler(txn_name, cond_name.clone()));
             continue;
         }
-        let handler_writes = collect_handler_writes(program, &handlers);
         let contract = c.contract.as_ref().unwrap();
+        let handler_writes = collect_handler_writes(program, &handlers);
         let pre_vars = extract_variables(&contract.pre);
         let intersecting: Vec<String> = handler_writes.intersection(&pre_vars).cloned().collect();
+        let names = (txn_name, cond_name.clone());
         if intersecting.is_empty() {
-            if !wd.is_required
-                && !matches!(&contract.pre.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
-            {
-                let has_convergence = check_convergent_loop(contract);
-                if has_convergence {
-                    continue;
-                }
-            }
-            let any_pre_var_written = pre_vars.iter().any(|v| handler_writes.contains(v));
-            if any_pre_var_written {
-                for var in pre_vars.iter() {
-                    if handler_writes.contains(var) {
-                        errors.push(WatchdogError::NoConflict(
-                            txn_name.clone(),
-                            cond_name.clone(),
-                            var.clone(),
-                        ));
-                    }
-                }
-            } else if wd.is_required {
-                let mut vars_list: Vec<String> = pre_vars.iter().cloned().collect();
-                vars_list.sort();
-                let vars_str = vars_list.join(", ");
-                errors.push(WatchdogError::NoConflict(txn_name, cond_name.clone(), vars_str));
-            }
-            continue;
-        }
-        for var in &intersecting {
-            let falsifies = check_falsifies(program, &handlers, contract, var);
-            if !falsifies {
-                errors.push(WatchdogError::HandlerDoesNotFalsify(
-                    txn_name.clone(),
-                    cond_name.clone(),
-                    var.clone(),
-                ));
+            if optional_convergent_skip(contract, wd.is_required) {
                 continue;
             }
-            let restores = check_restores(program, &handlers, contract, var);
-            if restores {
-                errors.push(WatchdogError::HandlerRestoresPrecondition(
-                    txn_name.clone(),
-                    cond_name.clone(),
-                    var.clone(),
-                ));
-            }
+            report_no_conflict(&pre_vars, &handler_writes, wd.is_required, names, &mut errors);
+            continue;
         }
+        let vctx = VarConflictCtx {
+            program,
+            handlers: &handlers,
+            contract,
+            intersecting: &intersecting,
+        };
+        report_var_conflicts(&vctx, names, &mut errors);
     }
     errors
+}
+
+/// Optional watchdogs on convergent loops (bounded pre, equality post) may
+/// legitimately have no conflicting handler.
+fn optional_convergent_skip(contract: &super::program::HirContract, required: bool) -> bool {
+    !required
+        && !matches!(&contract.pre.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
+        && check_convergent_loop(contract)
+}
+
+/// The no-conflict diagnostics (per named pre-variable, or one aggregate for a
+/// required watchdog with no shared variable at all).
+fn report_no_conflict(
+    pre_vars: &HashSet<String>,
+    handler_writes: &HashSet<String>,
+    required: bool,
+    (txn_name, cond_name): (String, String),
+    errors: &mut Vec<WatchdogError>,
+) {
+    let written: Vec<&String> = pre_vars.iter().filter(|v| handler_writes.contains(*v)).collect();
+    if !written.is_empty() {
+        for var in written {
+            errors.push(WatchdogError::NoConflict(
+                txn_name.clone(),
+                cond_name.clone(),
+                var.clone(),
+            ));
+        }
+    } else if required {
+        let mut vars_list: Vec<String> = pre_vars.iter().cloned().collect();
+        vars_list.sort();
+        errors.push(WatchdogError::NoConflict(txn_name, cond_name, vars_list.join(", ")));
+    }
+}
+
+/// Per shared variable: must falsify; a handler chain that restores the
+/// precondition would restart the loop.
+struct VarConflictCtx<'a> {
+    program: &'a HirProgram,
+    handlers: &'a [String],
+    contract: &'a super::program::HirContract,
+    intersecting: &'a [String],
+}
+
+fn report_var_conflicts(
+    ctx: &VarConflictCtx<'_>,
+    (txn_name, cond_name): (String, String),
+    errors: &mut Vec<WatchdogError>,
+) {
+    let VarConflictCtx { program, handlers, contract, intersecting } = *ctx;
+    for var in intersecting {
+        if !check_falsifies(program, handlers, contract, var) {
+            errors.push(WatchdogError::HandlerDoesNotFalsify(
+                txn_name.clone(),
+                cond_name.clone(),
+                var.clone(),
+            ));
+            continue;
+        }
+        if check_restores(program, handlers, contract, var) {
+            errors.push(WatchdogError::HandlerRestoresPrecondition(
+                txn_name.clone(),
+                cond_name.clone(),
+                var.clone(),
+            ));
+        }
+    }
 }
 
 fn bare_reactive_txns<'a>(program: &'a HirProgram) -> Vec<&'a HirCallable> {
@@ -110,11 +145,11 @@ fn bare_reactive_txns<'a>(program: &'a HirProgram) -> Vec<&'a HirCallable> {
         .collect()
 }
 
-pub fn check_on_fire_handlers(program: &HirProgram) -> Result<(), String> {
-    // Exact AST mirror: bare txns/defns + type-member txns/defns. Impl
-    // functions (`is_impl_fn`) and trait defaults are NOT declared
-    // callable names in the AST walker.
-    let mut callables: HashSet<String> = HashSet::new();
+/// Exact AST mirror: bare txns/defns + type-member txns/defns. Impl functions
+/// (`is_impl_fn`) and trait defaults are NOT declared callable names in the
+/// AST walker.
+fn declared_callable_names(program: &HirProgram) -> HashSet<String> {
+    let mut callables = HashSet::new();
     for c in program.callables.iter() {
         let is_declared = match c.kind {
             HirCallableKind::Transaction | HirCallableKind::Defn => {
@@ -127,6 +162,11 @@ pub fn check_on_fire_handlers(program: &HirProgram) -> Result<(), String> {
             callables.insert(c.name.clone());
         }
     }
+    callables
+}
+
+pub fn check_on_fire_handlers(program: &HirProgram) -> Result<(), String> {
+    let callables = declared_callable_names(program);
     for c in bare_reactive_txns(program) {
         let Some(wd) = c.contract.as_ref().and_then(|ct| ct.watchdog.as_ref()) else {
             continue;
@@ -280,34 +320,8 @@ fn check_falsifies_in_body(
         match &stmt.kind {
             HirStmtKind::Assign(lhs, expr) => {
                 if let HirExprKind::Identifier(name) = &lhs.kind {
-                    if name == var {
-                        match &contract.pre.kind {
-                            HirExprKind::Binary {
-                                op: BinaryOpKind::Eq | BinaryOpKind::Neq,
-                                ..
-                            } => {
-                                if evaluate_literal(expr).is_some() {
-                                    return true;
-                                }
-                            }
-                            HirExprKind::Identifier(ident) if ident == var => {
-                                if let HirExprKind::Literal(HirLiteral::Bool(false)) = &expr.kind {
-                                    return true;
-                                }
-                            }
-                            HirExprKind::Unary { op: UnaryOpKind::Not, inner } => {
-                                if let HirExprKind::Identifier(ident) = &inner.kind {
-                                    if ident == var {
-                                        if let HirExprKind::Literal(HirLiteral::Bool(true)) =
-                                            &expr.kind
-                                        {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
-                            _ => return true,
-                        }
+                    if name == var && assign_falsifies(&contract.pre, expr) {
+                        return true;
                     }
                 }
             }
@@ -325,6 +339,25 @@ fn check_falsifies_in_body(
         }
     }
     false
+}
+
+/// Does `var = expr` falsify the precondition shape? Equality/inequality pre on
+/// a literal RHS falsifies; `var` alone falsifies only via `var = false`;
+/// `!var` only via `var = true`; any other shape is treated as falsified.
+fn assign_falsifies(pre: &HirExpr, expr: &HirExpr) -> bool {
+    match &pre.kind {
+        HirExprKind::Binary { op: BinaryOpKind::Eq | BinaryOpKind::Neq, .. } => {
+            evaluate_literal(expr).is_some()
+        }
+        HirExprKind::Identifier(_) => {
+            matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(false)))
+        }
+        HirExprKind::Unary { op: UnaryOpKind::Not, inner } => {
+            matches!(&inner.kind, HirExprKind::Identifier(_))
+                && matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
+        }
+        _ => true,
+    }
 }
 
 fn check_restores(
@@ -354,30 +387,10 @@ fn check_restores_in_body(
         match &stmt.kind {
             HirStmtKind::Assign(lhs, expr) => {
                 if let HirExprKind::Identifier(name) = &lhs.kind {
-                    if name == var {
-                        if !found_falsify {
-                            match &contract.pre.kind {
-                                HirExprKind::Identifier(ident) if ident == var => {
-                                    if let HirExprKind::Literal(HirLiteral::Bool(false)) = &expr.kind {
-                                        found_falsify = true;
-                                        continue;
-                                    }
-                                }
-                                _ => {
-                                    found_falsify = true;
-                                    continue;
-                                }
-                            }
-                        } else {
-                            match &contract.pre.kind {
-                                HirExprKind::Identifier(ident) if ident == var => {
-                                    if let HirExprKind::Literal(HirLiteral::Bool(true)) = &expr.kind {
-                                        return true;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                    if name == var
+                        && assign_restores(&contract.pre, expr, &mut found_falsify)
+                    {
+                        return true;
                     }
                 }
             }
@@ -395,6 +408,24 @@ fn check_restores_in_body(
         }
     }
     false
+}
+
+/// Track the falsify-then-restore sequence across the handler body. Returns
+/// true when a post-falsify assignment restores the precondition.
+fn assign_restores(pre: &HirExpr, expr: &HirExpr, found_falsify: &mut bool) -> bool {
+    if !*found_falsify {
+        match &pre.kind {
+            HirExprKind::Identifier(_) => {
+                if matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(false))) {
+                    *found_falsify = true;
+                }
+            }
+            _ => *found_falsify = true,
+        }
+        return false;
+    }
+    matches!(&pre.kind, HirExprKind::Identifier(_))
+        && matches!(&expr.kind, HirExprKind::Literal(HirLiteral::Bool(true)))
 }
 
 fn evaluate_literal(expr: &HirExpr) -> Option<bool> {
