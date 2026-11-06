@@ -54,3 +54,29 @@ Order is by severity/leverage:
 3. Pipeline-HIR build (unblocks `termination` + `watchdog` consumer
    flips), then the H5 default flip per the retirement inventory's
    preconditions.
+
+## Leg 2 remainder (written 2026-11-05, executed immediately after)
+
+1. **transition_graph.rs** (16 diagnostics):
+   - `detect_increments` (21/16) → per-statement `increment_of(name, expr)`
+     helper + add/sub dual-site helper.
+   - `detect_popcount_decay` (21) → per-statement `popcount_of(name, expr)`
+     helper.
+   - `detect_all_increments` (20) → reuse `increment_of`.
+   - `is_pure_body` (21) → extract the increment-gated Assign arm into
+     `pure_assign_check`; split statement walk from expr walk.
+   - `extract_bounded_pre` (17) → extract the comparison-pair match into
+     `bounded_from_pair`.
+2. **needs_state.rs** (118/214) → line-length/complexity at those sites.
+3. **defn_liveness.rs** (29/283) → same treatment.
+4. **global_lifetime.rs** — `analyze` (24) → extract manual-free/keep scan
+     and touch-set build into sub-functions; split the 102-line
+     `collect_state_identifiers` into per-variant helpers (expr walk +
+     stmt walk already separate; split expr variants into grouped
+     helpers).
+5. **Nits** (1–2 each): spawn_pool, task_linear, slp_isomorphism,
+     swan_song, specialize, enum_repr, density, web_commits.
+
+Method unchanged: bodies verbatim, helper extraction only, params ≤6 via
+ctx structs where needed, gates after each group (lib + sweep + A/B +
+praetor delta), continuous commits.
