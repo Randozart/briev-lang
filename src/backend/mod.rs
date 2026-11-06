@@ -496,7 +496,16 @@ pub fn analyze_program(
         dataflow_errors: Vec::new(),
         optimize_mode: optimize,
         transition_graph,
-        web_commit_writes: crate::analysis::web_commits::analyze(items),
+        // 2026-11-05 (H5 inventory port 1): web commit writes from typed
+        // HIR under the flag; debug builds assert exact AST equality.
+        web_commit_writes: if hir_emit_enabled() {
+            let ast = crate::analysis::web_commits::analyze(items);
+            let hir = crate::hir::web_commits::analyze(&hir);
+            debug_assert_eq!(hir, ast, "HIR/AST web-commit drift");
+            hir
+        } else {
+            crate::analysis::web_commits::analyze(items)
+        },
         region_analyzer: RegionAnalyzer::analyze(items),
         dependency_graph,
         loop_shapes,

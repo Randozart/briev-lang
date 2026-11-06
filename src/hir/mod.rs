@@ -42,6 +42,7 @@ pub mod to_ast;
 pub mod transition_graph;
 pub mod verify;
 pub mod walk;
+pub mod web_commits;
 
 pub use cast_paths::resolve_cast_paths;
 pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};

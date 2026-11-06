@@ -77,6 +77,13 @@ surfaces still walk the AST:
    AnalysisResults fields computed above). Each joins the inventory with
    its consumer named before its HIR port is written — same
    named-consumer rule as the Intel harvest.
+   **Ported + consumer flipped (2026-11-05):** `web_commits` —
+   `src/hir/web_commits.rs`, consumer flipped under
+   `BRIEV_HIR_EMIT` with a debug equality assert; module unit test pins
+   AST/HIR parity on the original discriminator source. (Sweep note: one
+   run showed 130/5 — a transient AST compile flake; the rerun and a
+   second consecutive run are 131/4, 0 mismatches. Watch for recurrence:
+   a genuinely failing AST fixture would be a real bug.)
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 
