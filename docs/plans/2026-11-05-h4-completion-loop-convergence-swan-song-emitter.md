@@ -492,10 +492,11 @@ Progress (2026-11-05): `emit_hir_statement` split landed (68/154 →
 all cognitive/cyclomatic under 15); follow-up split landed for
 `emit_scoped_statement` (Guarded/Block helpers), `emit_rollback_statement`
 (zero-literal helper), `emit_term_value`, and the statement Match
-(reconstruct / conditions / bodies phases). Remaining in-file: three
-lexical O(n²) loop-depth-2 warnings (per-arm × patterns/children — genuine
-structure, not quadratic data; flatten with per-arm helper fns + a
-MatchCtx to satisfy the warning). Remaining repo-wide: src/hir offenders
+(reconstruct / conditions / bodies phases). In-file follow-up landed too: the three lexical O(n²) loop-depth-2
+warnings flattened via per-arm helpers (`reconstruct_match_arm`,
+`emit_match_condition_arm`, `emit_match_body_arm` + `MatchCtx`/
+`MatchArmView`). `emit_hir_stmt.rs` is now **Praetor-clean** (0
+diagnostics). Remaining repo-wide: src/hir offenders
 (transition_graph 23, needs_state 12, watchdog 10, defn_liveness 10,
 spawn_pool 6, enum_repr 5, …).
 
