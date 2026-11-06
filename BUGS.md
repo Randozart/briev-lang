@@ -12175,3 +12175,44 @@ preconditions.
 - The G001 cross-thread-stride warning reports the PRE-synthesis body's
   access pattern; for the sum lane the emitted reads are coalesced within
   each row. W4 disclosure item.
+
+## Multi-node counted-loop array writes invisible mid-run at 33 MB state scale — OPEN 2026-11-06
+
+**Symptom:** a three-fold-node program (init → minrow → maxrow → folds_done →
+verify → report, ALL nodes plain — zero accel involvement) at state scale
+33 MB (`a: Int[4194304]`, `ymin/ymax: Int[4096]`): the `verify` node reads
+`ymin[row]`/`ymax[row]` as mostly ZERO while the `report` node (running
+after) reads the CORRECT values (`Y0=-3`, `YN=-3`, sampled `y[16]=3`,
+`y[4080]=5`). CPU-side recompute inside verify sees `a` fully intact
+(`CPU_MIN=-12288`, `CPU_MAX=12288` over the full sweep). BAD counts ~7606
+mismatches of 8192 comparisons. The same fixture at SMALL scale
+(64-element arrays) passes completely.
+
+**Build log:** `txn 'minrow'/'maxrow' folded to O(1) — 4096 iterations
+replaced by single store; counter retains its store (the only live write)`
+— yet `ymin`/`ymax` ARE written (report reads correct extrema). The fold
+message's "only live write" claim is inconsistent with the observed
+memory state.
+
+**Also observed:** each additional counted node in this shape adds one
+~90 s LTO link stage and the per-node O(1)-fold hoisted loop seems to run
+at a different time than the reactor section order suggests (dispatch
+results from g0_minmax's accel variant landed AFTER verify's reads —
+same visibility signature).
+
+**Repro:** `benchmarks/intel_ptl/g0_minmax.bv`; all-plain variant:
+strip `!> accel: force;` and the two `accel` keywords; run with
+`ulimit -s 65536`. Compare `verify`'s field reads (gpu_min/gpu_max sums)
+against `report`'s direct reads of the same arrays.
+
+**Suspects:** the O(1)-fold hoisted-loop timing vs the SSA section reads
+(the fold hoists 4096 iterations into one firing; if that hoisted body
+runs in a LATER tick than the SSA section order implies, mid-run readers
+see stale/zero arrays); or a transition-graph liveness gap at multi-node
+scale. Small-scale works, so it is scale/node-count dependent, not
+idiom-related (all-plain reproduces it).
+
+**Status:** OPEN — blocks the W3.1 end-to-end gate (`g0_minmax` is
+reported-not-required in g0.sh until fixed). The W3 sum lane is unaffected
+(g0_sum has ONE fold node + verify and passes on GPU and CPU fallback).
+**Status:** OPEN.

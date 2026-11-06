@@ -89,11 +89,11 @@ fn every_idiom_matcher_has_a_qualifying_ledger_row() {
     // The why-not path named by the W3 row must actually exist in the
     // analysis (a ledger row naming a ghost is worse than none).
     assert!(
-        section.contains("sum_lane_outcome"),
-        "the W3 ledger row must name the why-not entry point `sum_lane_outcome`"
+        section.contains("fold_idiom_outcome"),
+        "the W3 ledger row must name the why-not entry point `fold_idiom_outcome`"
     );
     assert!(
-        accel.contains("fn sum_lane_outcome"),
+        accel.contains("fn fold_idiom_outcome"),
         "the why-not entry point `sum_lane_outcome` named in the ledger must exist"
     );
 }

@@ -958,7 +958,15 @@ pub(crate) fn emit_general_node(
             // the PTX cooperative router (is_cooperative_shape) never
             // claims Sum — this arm is exhaustiveness only; the shape goes
             // through the general lowering unchanged.
-            ReductionKind::Sum => (*shape).clone(),
+            // 2026-11-06 (§12 W3/W3.1): Sum/Product/Min/Max idiom lanes are
+            // SPIR-V-owned (the flat-1D synthesis needs no PTX row form),
+            // and the PTX cooperative router (is_cooperative_shape) never
+            // claims them — these arms are exhaustiveness only; the shapes
+            // go through the general lowering unchanged.
+            ReductionKind::Sum
+            | ReductionKind::Product
+            | ReductionKind::Min
+            | ReductionKind::Max => (*shape).clone(),
         };
         &shape_owned
     } else {

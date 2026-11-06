@@ -295,6 +295,27 @@ impl SpirvBuilder {
         id
     }
 
+    /// Emit `GLSL.std.450 SMax(a, b)` / `SMin(a, b)` — the signed-integer
+    /// min/max (2026-11-06, §12 W3.1 fold idiom lane: the SPIR-V core has
+    /// no OpSMin/OpSMax; integer min/max live in the GLSL extended set,
+    /// opcodes 42/39).
+    pub fn glsl_smaxmin(&mut self, result_ty: Word, a: Word, b: Word, max: bool) -> Word {
+        let id = self.gen_id();
+        let set = match self.glsl_set {
+            Some(s) => s,
+            None => {
+                let s = self.builder.ext_inst_import("GLSL.std.450");
+                self.glsl_set = Some(s);
+                s
+            }
+        };
+        let op = if max { spirv::GLOp::SMax } else { spirv::GLOp::SMin };
+        self.builder
+            .ext_inst(result_ty, Some(id), set, op as u32, [Operand::IdRef(a), Operand::IdRef(b)])
+            .expect("SMax/SMin emission inside a function block");
+        id
+    }
+
     // ── Briev type lowering (typed, internally deduped by rspirv) ───────
 
     /// Lower a Briev type to a SPIR-V type id.

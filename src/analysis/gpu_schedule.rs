@@ -794,7 +794,7 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -856,7 +856,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         accel.insert(
             "gemm1".into(),
@@ -894,7 +894,7 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             },
@@ -975,7 +975,7 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -1071,7 +1071,7 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
             }
         };
         let entry = |shape: crate::analysis::accel::KernelShape| AccelEntry {

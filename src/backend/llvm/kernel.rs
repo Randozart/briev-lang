@@ -65,14 +65,24 @@ impl super::LlvmBackend {
             // texel arrays as plain SSBO fields (image realization is the
             // .abv lane; a .bv accel kernel with a spec-Format array simply
             // stays buffer-backed until the lane catches up).
-            // 2026-11-06 (§12 W3): the Sum idiom lane — structure + geometry
-            // + numeric license (sum_reduce_lane), disclosed per §12.2(4).
-            // The dispatch wrapper multiplies work by the subgroup width
-            // (sum_lane_kernels) — one decision, two consumers.
-            let sum_lane = shape.sum_lane;
-            if sum_lane {
+            // 2026-11-06 (§12 W3/W3.1): the fold idiom lane — structure +
+            // geometry + numeric license (fold_idiom_lane), disclosed per
+            // §12.2(4). The dispatch wrapper multiplies work by the subgroup
+            // width — one decision, two consumers.
+            let idiom_lane = shape.idiom_lane;
+            if idiom_lane {
+                let op = match shape
+                    .reduction
+                    .as_ref()
+                    .map(|r| &r.kind)
+                {
+                    Some(crate::analysis::accel::ReductionKind::Product) => "mul",
+                    Some(crate::analysis::accel::ReductionKind::Min) => "min",
+                    Some(crate::analysis::accel::ReductionKind::Max) => "max",
+                    _ => "add",
+                };
                 self.warnings.push(format!(
-                    "info: reduce-idiom (assoc add, int) → reduction synthesis (warp-slice) for accel '{}'",
+                    "info: fold-idiom (assoc {op}, int) → reduction synthesis (warp-slice) for accel '{}'",
                     name
                 ));
             } else if matches!(
@@ -82,7 +92,7 @@ impl super::LlvmBackend {
                 // 2026-11-06 (W4): name the blocked gate — a catch-all
                 // "not applied" forces the author to guess which fact
                 // failed (the honest-compiler rule, §12.2 gate 4).
-                if let Err(block) = crate::analysis::accel::sum_lane_outcome(&shape, items) {
+                if let Err(block) = crate::analysis::accel::fold_idiom_outcome(&shape, items) {
                     self.warnings.push(format!(
                         "info: reduce-idiom not applied for accel '{}' — {} (general lowering)",
                         name,
@@ -91,7 +101,7 @@ impl super::LlvmBackend {
                 }
             }
             let emitted = crate::backend::spirv::kernel::emit_kernel(
-                &mut sb, "main", &shape, items, sum_lane,
+                &mut sb, "main", &shape, items, idiom_lane,
                 &crate::backend::spirv::kernel::KernelSurface::default(),
             )
             .and_then(|_| sb.build());
