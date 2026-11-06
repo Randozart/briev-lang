@@ -61,3 +61,11 @@ intentional alternate baseline requires `ALLOW_BASELINE_MISMATCH=1`.
 | `matmul` | runtime | Matrix multiply, memory-heavy |
 | `sieve` | runtime | Prime sieve, branch-heavy |
 | `xxhash` | runtime | Hash computation, ALU-heavy |
+
+## Foreign-hardware lanes
+
+- **Intel PTL / OpenVINO** (`benchmarks/intel_ptl/`): `run.sh` SSHes into the
+  Panther Lake node, gates correctness first, and times OpenVINO GPU/CPU with
+  the Briev collector (`lib/std/os/time.bv` + `lib/std/stats/histogram.bv`).
+  Pattern + first-pass numbers:
+  `benchmarks/results/2026-11-06-intel-ptl-first-pass.md`.

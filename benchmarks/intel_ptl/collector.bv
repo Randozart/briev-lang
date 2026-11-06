@@ -1,0 +1,177 @@
+// collector — Briev-instrumented timing driver for the PTL OpenVINO lane.
+//
+// 2026-11-06 (plan 2026-11-05-intel-xpu-openvino-harvest.md §Workstream B):
+// the plan's intended timing source is Briev's own checked instrumentation
+// (lib/std/os/time.bv now_ns + lib/std/stats/histogram.bv bounded
+// histograms). This program drives an OpenVINO model through
+// lib/std/ai/openvino.bv and reports inclusive-bucket quantiles of the
+// infer call, so the collector times the competitor.
+//
+// Environment:
+//   OV_MODEL     IR/ONNX model path (required)
+//   OV_DEVICE    "GPU" (default) / "CPU" / "NPU"
+//   OV_ITERS     timed iterations (default 10)
+//   OV_WIDTH_NS  histogram bucket width in ns (default 1000)
+//   OV_BUCKETS   histogram bucket count (default 100000)
+//   OV_INPUT0..3 raw C-order input blobs, bound by tensor index; absent
+//                paths are skipped (elementwise uses only OV_INPUT0).
+//   OV_WARMUP    warmup infers (default 1)
+//
+// Correctness is gated by the Python harness on the same model/inputs; this
+// driver measures only (and fails loudly if an infer call or a blob/tensor
+// size check fails). Output line:
+//   COLLECTOR device=<d> iters=<n> p50=<ns> p90=<ns> p99=<ns> max=<ns> count=<n>
+
+import { read_file } from "std/os/fs.bv";
+import { is_err, unwrap } from "std/result.bv";
+import { now_ns } from "std/os/time.bv";
+import {
+    Histogram, histogram_new, histogram_record, histogram_quantile
+} from "std/stats/histogram.bv";
+import { get_env, get_env_int } from "std/env.bv";
+import {
+    openvino_core_create, openvino_core_free,
+    openvino_read_model, openvino_model_free,
+    openvino_compile_model, openvino_compiled_model_free,
+    openvino_infer_request_create, openvino_infer_request_free,
+    openvino_infer, openvino_input_tensor, openvino_tensor_free,
+    openvino_tensor_data, openvino_tensor_size,
+    openvino_tensor_element_type
+} from "std/ai/openvino.bv";
+
+// ov_element_type_e -> bytes per element. 0 = unsupported.
+defn elem_bytes(t: Int) -> Int {
+    when t == 1 { term 1; };   // BOOLEAN
+    when t == 2 { term 2; };   // BF16
+    when t == 3 { term 2; };   // F16
+    when t == 4 { term 4; };   // F32
+    when t == 5 { term 8; };   // F64
+    when t == 7 { term 1; };   // I8
+    when t == 8 { term 2; };   // I16
+    when t == 9 { term 4; };   // I32
+    when t == 10 { term 8; };  // I64
+    term 0;
+};
+
+// bind_input — copy a raw blob into the request's input tensor at idx.
+// 0 on success; negative codes identify which check failed.
+defn bind_input(request: Int, idx: Int, path: String) -> Int
+    [request >= 0 && idx >= 0][term <= 0]
+{
+    let loaded: Result<String, Int> = read_file(path);
+    when is_err(loaded) { term -1; };
+    let blob: String = unwrap(loaded);
+    let src: Int = (blob as Data) as Int + 8;
+    let nbytes: Int = Load#((blob as Data) as Int, 8);
+
+    let tensor: Int = openvino_input_tensor(request, idx);
+    when tensor <= 0 { term -2; };
+    let esz: Int = elem_bytes(openvino_tensor_element_type(tensor));
+    when esz <= 0 { term -3; };
+    let want: Int = openvino_tensor_size(tensor) * esz;
+    when nbytes != want { term -4; };
+    let dst: Int = openvino_tensor_data(tensor);
+    when dst <= 0 { term -5; };
+    Copy#(dst, src, nbytes);
+    openvino_tensor_free(tensor);
+    term 0;
+};
+
+let done: Int = 0;
+node main [done == 0][done == 1] {
+    let model_path: String = get_env("OV_MODEL");
+    when model_path .^Length == 0 {
+        println!("collector: OV_MODEL is required");
+        endprogram 2;
+    };
+
+    let device: String = get_env("OV_DEVICE");
+    when device .^Length == 0 { device = "GPU"; };
+
+    let iters: Int = get_env_int("OV_ITERS");
+    when iters <= 0 { iters = 10; };
+    let width: Int = get_env_int("OV_WIDTH_NS");
+    when width <= 0 { width = 1000; };
+    let buckets: Int = get_env_int("OV_BUCKETS");
+    when buckets <= 0 { buckets = 100000; };
+    let warmup: Int = get_env_int("OV_WARMUP");
+    when warmup < 0 { warmup = 0; };
+
+    let core: Int = openvino_core_create();
+    when core <= 0 {
+        println!("collector: core create failed");
+        endprogram 3;
+    };
+    let model: Int = openvino_read_model(core, model_path, "");
+    when model <= 0 {
+        println!("collector: read_model failed ({})", model_path);
+        openvino_core_free(core);
+        endprogram 4;
+    };
+    let compiled: Int = openvino_compile_model(core, model, device);
+    when compiled <= 0 {
+        println!("collector: compile_model failed for {}", device);
+        openvino_model_free(model);
+        openvino_core_free(core);
+        endprogram 5;
+    };
+    let request: Int = openvino_infer_request_create(compiled);
+    when request <= 0 {
+        println!("collector: infer_request_create failed");
+        openvino_compiled_model_free(compiled);
+        openvino_model_free(model);
+        openvino_core_free(core);
+        endprogram 6;
+    };
+
+    let p0: String = get_env("OV_INPUT0");
+    when p0 .^Length > 0 {
+        when bind_input(request, 0, p0) != 0 { endprogram 10; };
+    };
+    let p1: String = get_env("OV_INPUT1");
+    when p1 .^Length > 0 {
+        when bind_input(request, 1, p1) != 0 { endprogram 11; };
+    };
+    let p2: String = get_env("OV_INPUT2");
+    when p2 .^Length > 0 {
+        when bind_input(request, 2, p2) != 0 { endprogram 12; };
+    };
+    let p3: String = get_env("OV_INPUT3");
+    when p3 .^Length > 0 {
+        when bind_input(request, 3, p3) != 0 { endprogram 13; };
+    };
+
+    foreach k in 0..warmup {
+        when openvino_infer(request) != 0 {
+            println!("collector: warmup infer failed");
+            endprogram 14;
+        };
+    };
+
+    let hist: Histogram = histogram_new(width, buckets);
+    foreach k in 0..iters {
+        let t0: Int = now_ns();
+        let st: Int = openvino_infer(request);
+        let t1: Int = now_ns();
+        when st != 0 {
+            println!("collector: timed infer failed");
+            endprogram 15;
+        };
+        hist = histogram_record(hist, t1 - t0);
+    };
+
+    println!("COLLECTOR device={} iters={} p50={} p90={} p99={} max={} count={}",
+             device, iters,
+             histogram_quantile(hist, 500),
+             histogram_quantile(hist, 900),
+             histogram_quantile(hist, 990),
+             hist.maximum, hist.count);
+
+    openvino_infer_request_free(request);
+    openvino_compiled_model_free(compiled);
+    openvino_model_free(model);
+    openvino_core_free(core);
+
+    done = 1;
+    endprogram;
+};

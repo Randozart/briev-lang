@@ -640,8 +640,11 @@ frontend converters, NPU plugin, and non-GPU plugin code — no Briev consumer.
 5. **PagedAttention block size + dtype support on Xe3 — OPEN.** The node
    has the 2026.3.1 wheel (not 2026.4.1 as the plan assumed); query the
    plugin's supported ops + `pa_block_size` set before the attention lane.
-6. **Workstream B harness remote pattern — OPEN.** Decide harness-SSH-in vs
-   harness-runs-on-node using existing `benchmarks/` conventions (plan §5.2).
+6. **Workstream B harness remote pattern — ANSWERED.** The harness SSHes into
+   the node (`benchmarks/intel_ptl/run.sh`): sync stdlib/config/plugins +
+   host-built `brievc`, run gates and the Briev collector remotely, pull
+   `results.json`. First-pass record:
+   `benchmarks/results/2026-11-06-intel-ptl-first-pass.md`.
 
 ---
 
