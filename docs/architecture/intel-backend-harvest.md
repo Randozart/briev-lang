@@ -255,5 +255,339 @@ Memory reuse is a host-side pool keyed by byte size / padded layout
 
 ---
 
-*Sections 3–8 (extension/IGC matrix, per-arch configs, op coverage, LLM
-kernels, pitfalls ledger, consumer ledger) follow in the next commit.*
+## 3. Extension / IGC matrix — what may a portable tier rely on?
+
+### 3.1 Facts
+
+**Architecture taxonomy.** `gpu_arch { unknown, gen9, gen11, xe_lp, xe_hp,
+xe_hpg, xe_hpc, xe2, xe3, xe3p }`
+(`include/intel_gpu/runtime/device_info.hpp:28-39`; duplicated in
+`src/kernel_selector/kernel_selector_params.h:367-378`).
+
+**Detection is not a device-id table.** The plugin maps the architecture from
+OneDNN ngen's `detectHWInfo` (`runtime/ocl/ocl_device.cpp:365-379`,
+`runtime/ze/ze_device.cpp:41-56`, `runtime/sycl/sycl_device.cpp:65-70`).
+If the family is `Unknown`, `supports_immad` is force-cleared
+(`ocl_device.cpp:376-378`, `ze_device.cpp:310-312`). **XeHPC throws**
+"not supported" on the OCL and ZE paths (`ocl_device.cpp:71-72`,
+`ze_device.cpp:48`). Without OneDNN, arch = unknown.
+
+**Finer IP version.** `CL_DEVICE_IP_VERSION_INTEL` (GMDID) via
+`cl_intel_device_attribute_query`, parsed as
+`{architecture, release, revision}` (`ocl_device.cpp:162-184`). Comment:
+"Xe2 (e.g. Battlemage) and newer (e.g. Xe3 Panther Lake) have IP version >= 20"
+(`tests/functional/shared_tests_instances/skip_tests_config.cpp:29`).
+
+**Per-arch constants:**
+
+| Property | gen9..xe_hpg | xe_hpc | xe2 / xe3 / xe3p | Citation |
+|---|---|---|---|---|
+| Subgroup size | 8 | 16 (`default` branch) | **16** | `graph/impls/ocl_v2/sdpa/sdpa_gen_micro.cpp:25-38`; `gathermatmul_batched_gemm_gen.cpp:24-41` |
+| GRF size | 32 B | 64 B | 64 B | `graph/impls/ocl/kernels_cache.cpp:283-300` |
+| CM GRF width | 256 | 256 | 512 (`arch > xe_hpc`) | `graph/impls/cm/vl_sdpa_opt.cpp:173` |
+| Register-file-size option | — | — | Xe3+ `-ze-exp-register-file-size 128` | probe `impls/ocl/kernel_selector_helper.cpp:216-240`; consume `kernel_selector/kernel_base_opencl.cpp:184-186` |
+
+**XMX/DPAS is `supports_immad`.** OCL: `CL_DEVICE_FEATURE_FLAG_DPAS_INTEL`
+(`runtime/ocl/ocl_device.cpp:316`); ZE: `ZE_INTEL_DEVICE_MODULE_EXP_FLAG_DPAS`
+(`runtime/ze/ze_device.cpp:228`). `supports_bf16 = supports_immad`.
+Public `HW_MATMUL` capability iff `supports_immad` (`plugin/plugin.cpp:947-949`).
+DPAS paths: OneDNN default iff immad (`runtime/execution_config.cpp:373-376`),
+CM/XeTLA SDPA + XAttention gated on immad
+(`plugin/transformations_pipeline.cpp:825-832, 1042-1060`), SDPA micro
+requires `arch >= xe_hpg` + microkernels (`impls/ocl_v2/sdpa/sdpa_opt.cpp:243-244`),
+DPAS GQA multi-token requires `supports_immad && arch >= xe_hpc`
+(`impls/ocl_v2/sdpa/paged_attention_opt.cpp:189-211`).
+
+**DPAS access uses OpenCL extensions, never SPIR-V matrix types.**
+Extension defines emitted for micro kernels:
+`cl_intel_dot_accumulate`, `cl_intel_global_float_atomic`,
+`cl_intel_subgroup_matrix_multiply_accumulate`,
+`cl_intel_subgroup_split_matrix_multiply_accumulate`
+(`sdpa_gen_micro.cpp:1028-1033`, `moe_3gemm_gen_micro.cpp:384-387`,
+`gather_matmul_gen_micro.cpp:351-354`). Grep for
+`joint_matrix|cooperative_matrix|coopmat` across the plugin yields **zero
+matches**.
+
+**Other extensions actually probed/used:** `cl_khr_fp16`, `cl_khr_fp64`,
+`cl_khr_subgroups`, `cl_intel_subgroups`, `cl_intel_subgroups_short|_char|_long`,
+`cl_intel_required_subgroup_size`, `cl_intel_unified_shared_memory`,
+`cl_intel_command_queue_families`, `cl_khr_device_uuid`,
+`cl_khr_pci_bus_info`, `cl_intel_device_attribute_query`,
+`cl_intel_planar_yuv` (`runtime/ocl/ocl_device.cpp:251-302`). Subgroup
+block read/write S/L variants and SLM block IO in
+`kernel_selector/cl_kernels/include/batch_headers/sub_group_block_read.cl:153-245`.
+`cl_khr_priority_hints` / `cl_khr_throttle_hints` for queues
+(`ocl_stream.cpp:227-231`). Split barrier
+`intel_work_group_barrier_arrive/wait` in `impls/ocl_v2/sdpa_micro.cl:1331+`
+(the providing extension is not declared in-tree — **unclear**, do not
+assume).
+
+**Microkernel/CM probes are driver-version + compile probes, not arch-only.**
+Gemmstone microkernel support: fast driver-version thresholds then a raw-vISA
+compile probe (`impls/ocl/kernel_selector_helper.cpp:147-214`); CM support:
+JIT a kernel with `static_assert(CM_HAS_DPAS)` (`71-101`).
+
+### 3.2 Briev consumers
+
+| Fact | Consumer | How |
+|---|---|---|
+| Xe2/Xe3 subgroup = 16, GRF = 64 B, Xe3 register-file option | `config/targets.toml` Intel entries; `src/analysis/gpu_strategy.rs` | Cost-model inputs per arch; never a source keyword (Rule 2) |
+| DPAS reachable only through CL Intel extensions in this codebase; no SPIR-V matrix types used | `docs/plans/2026-09-04-beyond-coopmat.md`; `intel-dispatch.md` | Open question for Workstream B/D: **does PTL/Xe3 expose `VK_KHR_cooperative_matrix` / `SPV_INTEL_joint_matrix` to our SPIR-V tier?** OpenVINO's extension choice is not evidence either way |
+| Arch from ngen family, `unknown` clears immad; XeHPC unsupported on OCL/ZE | `intel-dispatch.md`; `config/targets.toml` | Capability probe must be explicit; unknown arch ⇒ conservative portable tier |
+| Microkernel support is versioned/compile-probed, can regress per driver | Workstream B results file; `intel-dispatch.md` | Re-probe per driver era; never bake a driver-version assumption into codegen |
+| Extension inventory + subgroup block IO | `intel-dispatch.md` | Candidate primitives for Briev's Intel SPIR-V tier; verify each on the actual driver |
+
+---
+
+## 4. Per-arch configs — concrete knobs for the cost model
+
+### 4.1 Facts
+
+**SDPA micro configuration catalogs** (`impls/ocl_v2/sdpa/sdpa_gen_micro.cpp`):
+a `sdpa_config_t { unroll_m_kq, unroll_n_kq, unroll_m_vs, unroll_n_vs,
+wg_m_kq, wg_n_kq, wg_m_vs, wg_n_vs }` (`288-293`), with tables per arch and
+head size: xe_hpg (`300-362`), xe2 (`~364-470`), **xe3 (`470-498`, "Native
+Xe3p configurations from oneDNN SDPA's config catalog")**. Example Xe3 rows:
+`xe3_h128 = {32,32,32,32,4,4,4,4}`, `xe3_h128_pa = {16,16,16,16,16,4,16,4}`,
+`xe3_h512 = {32,16,32,16,16,2,16,2}`. Choosers
+`choose_config_xehpg/xe2/xe3` (`~500-1026`); Xe3 falls through to the Xe2
+chooser for h256/h512 leftovers. Debug override knob
+`micro_sdpa_workgroup_config` (`options.inl:141`).
+
+**Other per-arch tuning:**
+- FC `bf_tiled`: "special tuning params for Gen12HP dGPUs"
+  (`kernel_selector/kernels/fully_connected/fully_connected_kernel_bf_tiled.cpp:560-577`);
+  immad compressed → tile `(1,1,1,4)` (`557-558`).
+- Conv: xe_hpg-only LWS branch
+  (`convolution_kernel_b_fs_zyx_fsv16.cpp:123, 265`), xe2+ branches
+  (`convolution_kernel_b_fs_yx_fsv16.cpp:277`), `os_iyx_osv32` accepts
+  `ip_major >= 20` (`convolution_kernel_bfyx_os_iyx_osv32.cpp:248-250`).
+- LWS heuristic: optimal/suboptimal tables, Gen12+ cap-to-256 exceptions
+  (`graph/common_utils/dispatch_utils.cpp:153-179`; duplicate
+  `kernel_selector/kernel_selector_utils.cpp:367`).
+- TernOCL int2 tile tables keyed integrated-vs-discrete
+  (`impls/ocl_v2/ternocl_int2/fully_connected_ternocl_int2.cpp:37-190`;
+  doc `docs/ternocl_int2_architecture.md:238-276`).
+- PagedAttention GQA crossover: `tokens² × context <= 64K` measured on
+  Xe2/Xe3 (`impls/ocl_v2/sdpa/paged_attention_opt.cpp:171-174`).
+- Occupancy inputs: `maxThreadsPerExecutionUnit = num_threads_per_eu`
+  (`impls/ocl/kernel_selector_helper.cpp:1335-1336`).
+
+**Auto-tuning is offline and read-only at runtime.**
+`ENABLE_OFFLINE_TUNING_CACHE 1` (`kernel_selector/kernel_selector.cpp:30`);
+`GetAutoTuneBestKernel` loads `(kernel_name, config_index)` from
+`cache.json` next to the plugin, keyed by params hash × compute-units
+(`111-147`; `kernel_selector/auto_tuner.cpp:154-243`). On a miss it takes
+the first non-empty implementation after priority sort
+(`kernel_selector.cpp:76-106`). No online tuner writes results.
+
+### 4.2 Briev consumers
+
+| Fact | Consumer | How |
+|---|---|---|
+| SDPA tile catalog shape (`unroll_m/n` per GEMM, wg tiles per GEMM) | Briev attention/LLM kernel plans; `gpu_strategy.rs` attention bucket | The tile/stage family the Briev cost model must be able to derive on Intel |
+| Xe3 tables exist and differ from Xe2 | `config/targets.toml` (Xe3 entry) | Seed values, not truth: Briev derives from shape+probe, config carries measured baselines |
+| Offline tuning keyed by params hash + device | `intel-dispatch.md` | Mirror the *idea* (per-shape cached plan) in our frontend plan cache; never hardcode tables |
+| LWS / occupancy / threads-per-EU inputs | `gpu_strategy.rs` | Occupancy targets derived from device info (Rule 19: via universe/config, not type names) |
+| GQA crossover `tokens² × context ≤ 64K` | attention kernel plan | A shape fact for kernel selection; validate at PTL geometry |
+
+---
+
+## 5. Op coverage map — where Briev's stdlib should invest on Intel
+
+### 5.1 Facts
+
+- **138** op/topology `.cpp` files in `graph/`; **77** op-kernel directories
+  in `kernel_selector/kernels/`.
+- Implementation families live in `graph/impls/`:
+  - `ocl_v2/` — hand-written OpenCL for modern/LLM ops: SDPA, PagedAttention,
+    MoE (router/mask/gather/scatter/3gemm/int3), gather-matmul, LoRA, RoPE,
+    selective-SSM, gated-delta-net (+paged), paged-causal-conv1d,
+    group-normalization, col2im, ctc-loss, MSDA, segment-max, slice-scatter,
+    scatter-nd-update, PA-KV-cache, TernOCL int2.
+  - `cm/` — CM/XeTLA: PagedAttention variants, `vl_sdpa_opt`, XAttention,
+    XeTLA LSTM, KV-cache ops.
+  - `onednn/` — convolution, deconvolution, fully-connected, GEMM,
+    grouped-GEMM, MoE-GEMM, pooling, reduce, reorder, concat, GRU/LSTM,
+    SDPA (debug).
+  - `cpu/` — CPU fallbacks for a long list of ops.
+  - `ocl/` — legacy glue (kernels cache, kernel-selector helper).
+- Impl selection is `implementation_map::get(preferred_impl_type, shape_type)`
+  (`graph/registry/implementation_map.hpp:40-56`; chosen at
+  `graph_optimizer/select_preferred_formats.cpp:204-209`,
+  `layout_optimizer.cpp:1503-1522`).
+- Pattern (fact, not stated policy): classic CV/geometry ops stay in
+  `kernel_selector`; transformer/LLM ops and anything needing DPAS
+  microkernels moved to `ocl_v2`/`cm`/`onednn`. **No comment documents the
+  migration policy** — do not infer intent.
+- OneDNN primitive scope: `CONCAT; CONVOLUTION; DECONVOLUTION; MATMUL;
+  REORDER; POOLING; REDUCTION; RNN` (+ SDPA debug)
+  (`src/plugins/intel_gpu/thirdparty/CMakeLists.txt:29-32`).
+
+### 5.2 Briev consumers
+
+| Fact | Consumer | How |
+|---|---|---|
+| LLM ops are the newest, hand-written family; CV ops remain in the legacy selector | Workstream D sequencing; `docs/plans/2026-09-20-gpu-dialect-beyond-cuda.md` | Briev's Intel kernel coverage should land attention/GEMM/MoE first (same priority Intel chose), not start with CV |
+| OneDNN covers GEMM/conv/pool/reduce | Briev benchmark lane (Workstream B) | Defines which OpenVINO path is a fair competitor per benchmark |
+| Impl selection is shape-type + preferred-impl keyed | `gpu_strategy.rs` | Confirms the cost model needs (shape class, dtype, device class) — the same tuple Briev derives |
+
+---
+
+## 6. Modern LLM kernels — derivation references
+
+### 6.1 Facts
+
+Structure: `graph/<op>.cpp` is a **shape-inference/layout shell** (e.g.
+`graph/gated_delta_net.cpp:27-51` asserts input count and returns layouts);
+the kernels live under `graph/impls/{ocl_v2,cm,onednn}/`.
+
+- **SDPA.** `graph/scaled_dot_product_attention.cpp` handles transposed input
+  orders and rank-broadcast shape inference (`28-61`). Impls: micro
+  (`ocl_v2/sdpa_micro.cl`), compiled per config from §4;
+  KV staged in SLM as f16/bf16 (`#define KV_SLM_T`, `sdpa_micro.cl:23-27`);
+  S-tile quantization modes `QUANTIZE_2D`/`QUANTIZE_COMMON` (`31-34`);
+  Q tile `D_MAX/2` columns; both GEMMs tiled by subgroup (`39-65`).
+  **Decomposition is preferred on XMX GPUs when memory allows** —
+  "sdpa_opt has performance issue on GPUs with XMX"
+  (`plugin/transformations_pipeline.cpp:1208`).
+- **PagedAttention.** Constraints: `heads_num % kv_heads_num == 0`,
+  `k/v_head_size % pa_block_size == 0` (`graph/paged_attention.cpp:180-183`);
+  `SUBGROUPS_PER_WG = head_size / SUBGROUP_SIZE`; partition =
+  `SEQ_LEN_PARTITION_SIZE / PAGED_ATTENTION_BLOCK_SIZE`
+  (`ocl_v2/paged_attention_opt.cl:12-16`); query staged to SLM (`19`);
+  unroll disabled for K_HEAD=128/SUBGROUP=16 to bound live registers
+  (`23-26`); subgroup reductions for boundary search (`42-64`).
+- **KV cache update.** Per-block conversion with
+  `sub_group_reduce_min/max` for int4/int8 quantization; shuffle-based
+  transpose; pitch layout (key = block_size per token, value = token-major)
+  (`ocl_v2/pa_kv_cache_update_ref.cl:6-89`).
+- **RoPE.** Vectorized unpack/pack per dtype (f16/bf16/f32), optional
+  slicing, no layout constraint (`ocl_v2/rope_opt.cl:8-189`).
+- **RMS.** `kernel_selector/kernels/rms/rms_kernel_bfyx_opt.cpp`:
+  `subgroup_size = 16`, feature-axis normalization, LWS from local-memory
+  budget; fused DynamicQuantize output (`graph/rms.cpp:31-33`); ref kernel
+  exists.
+- **MoE.** `impls/ocl_v2/moe/`: fused router, mask gen, gather, scatter
+  reduction (opt/ref/row-LUT), 3gemm with SwiGLU fusion, int3 GEMV, expert
+  weight provider with LRU cache.
+- **Gated delta net / paged GDN / paged selective SSM / paged causal conv1d.**
+  ref + opt kernels + JIT precompute, plus "large state" variants
+  (`impls/ocl_v2/{gated_delta_net_ref,paged_gated_delta_net_*,paged_selective_ssm_*,paged_causal_conv1d_ref}.*`).
+- **MSDA.** Optimized + reference (`impls/ocl_v2/msda_opt.cl`); output layout
+  is the default format for the result rank (`graph/msda.cpp:16-19`).
+- **VL SDPA.** CM/XeTLA impl (`impls/cm/vl_sdpa_opt.cpp`); CM GRF width rule
+  from §3.
+
+### 6.2 Briev consumers
+
+| Fact | Consumer | How |
+|---|---|---|
+| Attention tiling = two GEMMs tiled by subgroup + SLM KV staging + quantized S tiles | Attention kernel plan (`docs/plans/2026-09-20-gpu-dialect-beyond-cuda.md`, `2026-09-04-beyond-coopmat.md`) | Derivation reference for `softmax_fused!`-class composites; shapes must drive tiles (Rule 2/23) |
+| Paged KV layout: block_size per token, int4/int8 quantization via subgroup reduce | KV-cache plan (attention lane) | A format fact, not an op name: derive block/quant from declared layout+quant contract |
+| XMX GPUs may prefer decomposition over fused SDPA | `gpu_strategy.rs` | Cost model must be allowed to choose decomposition — a measured Intel-specific fact |
+| MoE routing/scatter/3gemm decomposition | MoE kernel coverage plan | Coverage priorities; each row lands as a stdlib composite |
+| RoPE/RMS are elementwise/normalization primitives with fused-quant variants | stdlib numeric module coverage | Prefer stdlib composites + general passes over named kernels (Rule 23) |
+
+---
+
+## 7. Pitfalls ledger
+
+### 7.1 Recognition receipts
+
+1. **GatherElements rank-1 constant (PR #39432, §0.2).** Hand-curated
+   per-consumer 1-D layout list; a missing row returned element 0 for every
+   rank-1 row (GPU `[7,0,0,0]` vs CPU `[7,42,99,0]`); 12/12 tests failed
+   pre-fix. **Doctrine evidence:** recognition tables have missing-row failure
+   modes; derivation from layout does not.
+
+### 7.2 Layout traps
+
+1. 1-D constant → FEATURE slot `(1,N,1,1)`; 1-D parameter → BATCH slot
+   `(N,1,1,1)` (`constant.cpp:87`; parameters differ). Any FFI round-trip of
+   a 1-D buffer must not rely on a slot convention.
+2. Reshape "from blocked to simple format is not acceptable"
+   (`layout_optimizer.cpp:1587-1595`) and FC/GEMM accept plain formats only
+   under new shape infer (`1650-1671`) — blocked layouts inserted earlier
+   force reorders back.
+3. Rank-3 MVN always requires Reorder+Reshape; layout insertion is vetoed
+   when the reorder would be too large (`layout_optimizer.cpp:751-797`).
+4. `b_fs_yx_fsv16` rejected above 64 input blocks (register pressure,
+   `CL_OUT_OF_RESOURCES` on 128-GRF parts, `layout_optimizer.cpp:717-731`).
+5. fp32→u8→fp32 reorder chains are **not** fused
+   (`remove_redundant_reorders.cpp:187-193`).
+6. `fs_b_yx_fsv32` vs `b_fs_yx_fsv32`: fp16 path uses the former; after a
+   permute the plugin switches to the latter to enable the tiled permute
+   kernel (`layout_optimizer.cpp:1621-1631`).
+
+### 7.3 Driver / runtime quirks
+
+1. **Counter-based events disabled on Xe3/Xe3P/unknown**
+   ("performance issues… GSD-13050", `runtime/ze/ze_stream.cpp:245-250`).
+2. **XeHPC rejected** on the OCL/ZE runtime paths
+   (`ocl_device.cpp:71-72`, `ze_device.cpp:48`).
+3. **No SPIR-V import** on OCL/ZE; SPIR-V only via SYCL + `ocloc -spv_only`.
+4. Out-of-order queues silently demoted to in-order when unsupported
+   (`ocl_command_queues_builder.cpp:106-119`).
+5. Parallel kernel build disabled inside Microsoft Store app packages
+   (driver bug), and `malloc_trim` after build (≥500 MB retained)
+   (`kernels_cache.cpp:444-492, 655-662`).
+6. Serialized model binaries are driver-agnostic only if ELF/SPIR-V magic;
+   otherwise driver-version-matched (`kernels_cache.cpp:556-607`).
+7. Shared USM allocation disabled by policy; host USM zero-copy only iGPU +
+   arch ≥ xe2 (`runtime/engine.cpp:97-110`).
+
+### 7.4 Env / config workarounds
+
+| Knob | Meaning | Citation |
+|---|---|---|
+| `OV_GPU_RUNTIME` | Force `OCL`/`ZE` | `plugin/plugin.cpp:1175` |
+| `OV_GPU_ALLOW_NEW_SHAPE_INFER` | Switch shape-infer flow ("shall be removed soon") | `options.inl:69`; `execution_config.cpp:62-144, 237-240` |
+| `OV_GPU_USE_CM` / `OV_GPU_ENABLE_MLIR` / `OV_GPU_MLIR_PATTERNS` | CM/XeTLA + MLIR patterns | `internal_properties.hpp:143-170` |
+| `OV_GPU_USE_ONEDNN` | Force OneDNN path | `internal_properties.hpp:143` |
+| `OV_GPU_DISABLE_USM` | Disable USM allocations | `runtime/engine.cpp:77-82` |
+| `OV_GPU_RECORD_REPLAY` / `_DYNAMIC` | Runtime record/replay | `options.inl:91,143` |
+| `OV_GPU_MAX_KERNELS_PER_BATCH` | Kernel build batch size (default 8) | `options.inl:73` |
+
+**Briev consumers:** Workstream B environment/records file (driver + knob
+evidence per measurement); `intel-dispatch.md` (what not to depend on);
+Workstream C FFI docs (runtime selection). The recognition receipt feeds
+`derivation-not-recognition.md`.
+
+---
+
+## 8. Consumer ledger (exit criterion)
+
+Every harvested section names a consumer. A row with no consumer is archived.
+
+| Section | Primary Briev consumer | Status |
+|---|---|---|
+| §1 Layout system | `docs/architecture/slicing.md`; `src/analysis/gpu_strategy.rs` + `config/targets.toml`; Workstream C gate | named |
+| §2 Dispatch | Workstream D `docs/architecture/intel-dispatch.md`; Workstream C `lib/std/ai/openvino.bv`; Workstream B results | named |
+| §3 Extensions/IGC | `intel-dispatch.md`; `beyond-coopmat` plan; `config/targets.toml` | named (one open hardware question: SPIR-V matrix ext on PTL) |
+| §4 Per-arch configs | `gpu_strategy.rs`; `config/targets.toml`; attention plan | named |
+| §5 Op coverage | Workstream D sequencing; `gpu-dialect-beyond-cuda` | named |
+| §6 LLM kernels | attention/LLM kernel plans; stdlib numeric coverage | named |
+| §7 Pitfalls | Workstream B environment doc; `derivation-not-recognition.md`; `intel-dispatch.md` | named |
+
+Archived (deliberately not harvested): OpenVINO's test suite internals,
+frontend converters, NPU plugin, and non-GPU plugin code — no Briev consumer.
+
+---
+
+## 9. Open questions left for Workstreams B/D
+
+1. **Does PTL/Xe3 expose `VK_KHR_cooperative_matrix` and/or
+   `SPV_INTEL_joint_matrix` to a Briev-authored SPIR-V module?** OpenVINO's
+   CL-extension-only matrix path is not evidence either way. Gate: a Vulkan/L0
+   extension dump on the node.
+2. **Level Zero SPIR-V module creation** (`zeModuleCreate` with
+   `ZE_MODULE_FORMAT_IL`) on the installed L0 driver — OpenVINO never
+   exercises it (they use NATIVE binaries). Verify before `intel-dispatch.md`
+   commits to an IL path.
+3. Which OpenVINO runtime is actually installed on `overlordx86-64`
+   (OCL vs ZE build), and whether the GPU plugin enumerates Xe3.
+4. Whether the PTL driver exposes `cl_intel_device_attribute_query`
+   (GMDID-based arch detection) — needed for the arch/config table lookup.
+5. PagedAttention block size and dtype support on Xe3 (the stock 2026.4.1
+   wheel's `pa_block_size` set) — for the Workstream B attention lane.
