@@ -57,6 +57,16 @@ Merge-time item (NOT in this branch — AGENTS.md is shared with the main
 line): Rule 23 gains a pointer line to §12. The main session applies it
 when this branch merges.
 
+## W1b — §12.6 intrinsic-anchored routing (2026-11-06, operator Model B)
+
+Silicon-carve-out matches are legal only through registered `#`
+intrinsics; the registry entry is the license record (literal-build test
+becomes a reviewable property), auto-match routes into the intrinsic's
+lowering, author calls pin intent, both disclose identically, Rule 2
+preserved (never a required keyword), capability matrix withholds the
+lane on absent silicon. Scope: §12.6 only — W3's idiom consumers are
+compiler-internal lowering and keep diagnostic disclosure.
+
 ## W2 — Ledger rows + mechanical gate
 
 Extend the coverage ledger (§8) with idiom rows keyed

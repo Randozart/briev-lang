@@ -319,8 +319,10 @@ tables and named kernels fail in the field; derived machinery wins.
 The recognition gate (§7) extends: every idiom matcher carries a ledger
 row (idiom → structural facts → hardware consumer → diagnostic → parity
 test → retirement condition) and a why-not diagnostic path. A matcher
-without the row is a gate failure. First instance: the reduction idiom
-(plan `docs/plans/2026-11-06-idiom-recognition-doctrine.md`, W3).
+without the row is a gate failure; a §12.6 matcher **without a
+registered `#` intrinsic** is a gate failure (§12.6, Model B). First
+instance: the reduction idiom (plan
+`docs/plans/2026-11-06-idiom-recognition-doctrine.md`, W3).
 
 ### 12.6 The silicon carve-out: hardware literally built for the algorithm
 
@@ -349,8 +351,27 @@ The license is narrow, and the other gates still apply:
 - **Consumer identity:** the match targets that silicon's own interface
   (its driver/ABI). The carve-out never licenses a software kernel
   emission "because the algorithm is popular."
+- **Intrinsic-anchored routing (2026-11-06, operator Model B):** a §12.6
+  match is legal only through a **registered `#` intrinsic** naming the
+  silicon unit (`SoftmaxFixed#`-class: consumer, die semantics, and
+  precision in one registry entry — Rule 3's `#` marker is the disclosure
+  surface for hardware special treatment). The registry entry IS the
+  license record: the literal-build test becomes a reviewable registry
+  property. The compiler may auto-select the intrinsic's lowering when
+  the gates pass; the author may also call the intrinsic to pin intent —
+  both paths disclose identically (`attention → SoftmaxFixed# (NPU
+  fixed-function, fp16)`). Rule 2 holds: the intrinsic is disclosure +
+  fallback + ledger anchor, never a required keyword; on absent silicon
+  the capability matrix (capabilities.rs) withholds the lane and general
+  derivation runs, with why-not stating so.
 
 Consequence for in-flight work: the PTL node's NPU (fixed-function AI
 blocks, enumerated by OpenVINO alongside CPU/GPU) is a legal
 algorithm-match target under this carve-out; the programmable iGPU is
 not — its datapaths are the §12.1 category-2 case.
+
+**Scope note:** the intrinsic disclosure requirement attaches to §12.6
+only. §12.2 idiom recognition keeps diagnostic disclosure — its
+consumers (`GroupNonUniform*`-class ops) are compiler-internal lowering
+inside the general machinery, not author-reachable hardware units;
+making idioms intrinsics would break the §12.3 primacy rule.
