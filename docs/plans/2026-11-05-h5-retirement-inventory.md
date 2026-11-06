@@ -103,6 +103,16 @@ surfaces still walk the AST:
    (declared parent links) and `HirProgram.trait_functions` (ALL trait
    function names — callable lowering skips body-less requirement slots,
    so conformance reads this table).
+   **Ported, PORT-ONLY (2026-11-05):** `termination` —
+   `src/hir/termination.rs`, 4 curated parity tests. The flip is deferred:
+   its consumers (`compile.rs`, `pipeline.rs`) run BEFORE the backend
+   builds HIR, so the pipeline must own an HIR build first (candidate for
+   the flip batch). Coverage note: top-level non-let statements cannot be
+   mirrored (HIR carries globals only) — inert for this rule.
+   **Already HIR-sourced transitively:** `batch_shape` — its input map
+   comes from `build_swan_songs`, which is HIR-derived under the flag
+   (H4 slice B). No port needed; add it to the flip-batch verification
+   list only.
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 
