@@ -59,9 +59,24 @@ surfaces still walk the AST:
    `HirProgram` (the analyses already do).
 3. **The `to_ast` bridge** — retires piece by piece as the last
    dispatch-only families go native and the entries above switch.
-4. **AST-only analyses not yet ported** (none known — H3 is complete;
-   verify with `rg "analyze\(items|build\(items" src/analysis` as the
-   first H5 task; anything found joins the inventory).
+4. **AST-only analyses not yet ported** — first H5 task executed
+   (2026-11-05): `analyze_program` still derives these from `items`
+   WITHOUT an HIR mirror (H3 covered the semantic set; these are the
+   remainder, ordered by likely value):
+   `dependency_graph::build`, `density::compute`,
+   `modulo_partition::detect`, `destination_ownership::analyze` (HIR
+   port EXISTS but the flipped consumer is boundary-only — verify),
+   `dyn_concrete_sets::analyze`, `web_commits::analyze`,
+   `electronics::derive_netlist`, `global_lifetime::analyze`,
+   `accel::analyze`, `batch_shape::detect`, `coalescing::analyze`,
+   `image_storage::detect`, `gpu_schedule::build`,
+   `reclamation::analyze` (+ its walk — reference-verified analysis per
+   the #62/#65/#68 lineage; HIR port optional, parity suite first),
+   `termination`, `watchdog`, `casing`, `dataflow`, `range`, `region`,
+   `purity`, `allocation` (verify consumer sites; some may consume only
+   AnalysisResults fields computed above). Each joins the inventory with
+   its consumer named before its HIR port is written — same
+   named-consumer rule as the Intel harvest.
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 
