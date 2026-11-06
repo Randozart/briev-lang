@@ -611,7 +611,7 @@ impl LlvmBackend {
                 } else {
                     (l.clone(), r.clone())
                 };
-                self.emit_binary_op(out, &v, op, &conv_l, &conv_r, indent)
+                self.emit_normalized_binary_op(out, (&v, indent), op, (&conv_l, &conv_r))
             }
             _ => return None,
         };
@@ -1532,9 +1532,9 @@ impl LlvmBackend {
                         } else {
                             (l.clone(), r.clone())
                         };
-                        self.emit_binary_op(out, v, kind, &conv_l, &conv_r, indent)
+                        self.emit_normalized_binary_op(out, (v, indent), kind, (&conv_l, &conv_r))
                     } else {
-                        self.emit_binary_op(out, v, kind, &l, &r, indent)
+                        self.emit_normalized_binary_op(out, (v, indent), kind, (&l, &r))
                     }
                 }
             }
@@ -8004,7 +8004,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 let literal = self.coerce_register_value(out, indent, &literal, scrut_ty);
                 let value = TypedRegister { name: scrut.to_string(), ty: scrut_ty.clone() };
                 let result = self.fun.gen_reg();
-                let compared = self.emit_binary_op(out, &result, &BinaryOpKind::Eq, &value, &literal, indent);
+                let compared = self.emit_normalized_binary_op(out, (&result, indent), &BinaryOpKind::Eq, (&value, &literal));
                 let boolean = self.coerce_to_i8_bool(out, indent, &compared);
                 let condition = self.fun.gen_reg();
                 writeln!(out, "{indent}{condition} = icmp ne i8 {}, 0", boolean.name).ok();
@@ -8458,7 +8458,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         }
     }
 
-    fn emit_binary_op(
+    pub(super) fn emit_binary_op(
         &mut self,
         out: &mut String,
         v: &str,
