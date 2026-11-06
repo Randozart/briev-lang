@@ -105,6 +105,20 @@ mechanics (flip default → family-by-family arm deletion → entries switch
 → bridge delete), preconditions for the flip, and the forever
 invariants. Update as families land; it IS the H5 work list.
 
+**Typed HIR H4/H5 progress (2026-11-05, ACTIVE — updated):**
+Statements: 21/22 kinds native through the seam (only Defer conversion,
+by design). Expressions: every reconstructible kind seam-covered; 21
+families native (incl. match dual-fuel — arm bodies + scrutinee via
+operand recursion; index; slice; block; tuple; struct-literal; arrow
+dual-fuel via `ArrowAssignValue`). H5 ports flipped + assert-gated:
+web_commits, modulo_partition, density, dyn_concrete_sets,
+global_lifetime; termination port-only (pipeline-HIR batch); batch_shape
+transitive. Remaining H5: accel-blocked pair (coalescing, image_storage),
+gpu_schedule, watchdog, electronics, reclamation lineage. Emission arcs:
+Cast.via typer (MethodCall/Reflect receiver typing), H5 flip batch
+(pipeline-HIR for termination flip, then default flip per inventory
+preconditions).
+
 **Collaborator integration (2026-11-05, DONE):**
 `docs/plans/2026-11-05-collaborator-integration-and-h4-resumption.md` — all
 nine of Otto's PRs merged (#63–#71): stdlib measurement/network modules,
