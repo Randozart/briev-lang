@@ -138,6 +138,29 @@ pub(crate) fn emit_hir_statement(
         }
         return Some(last);
     }
+    // 2026-11-05 (H4 slice D): native ArrowAssign — the dispatch reads the
+    // reconstructed target/value shapes (wire-fire, streams, insert/extract
+    // strategies, provenance); covered value leaves emit natively through
+    // the dual-fueled value path. Reconstructibility checked BEFORE any
+    // emission (wire-fire and stream paths emit immediately).
+    if let HirStmtKind::ArrowAssign { target, value, consume } = &stmt.kind {
+        let Some(ast_target) = target.as_ref().and_then(crate::hir::to_ast::expr) else {
+            return None;
+        };
+        let Some(ast_value) = crate::hir::to_ast::expr(value) else {
+            return None;
+        };
+        let boxed_target = Box::new(ast_target);
+        let boxed_value = Box::new(ast_value);
+        return Some(super::emit_stmt::emit_arrow_assign_statement(
+            backend,
+            out,
+            indent,
+            &Some(boxed_target),
+            &super::emit_stmt::ArrowAssignValue::Hir(value, &boxed_value),
+            consume,
+        ));
+    }
     // 2026-11-05 (H4 slice D): native Let — the binding dispatch reads the
     // reconstructed shapes (spawn handles, bare-let slots, collection
     // scaffolds); covered initializer leaves emit natively through the

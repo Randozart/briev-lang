@@ -456,6 +456,19 @@ pre-check. The probe stays AST (conservative; a Hir probe is possible
 since it snapshots, but adds no nativeness). Determinism gate explicitly
 run — the phi path is the most order-sensitive emission.
 
+## Native ArrowAssign statement (2026-11-05) — the last big statement split
+
+The AST ArrowAssign arm (~285 lines: wire-fire, streams, insert/extract
+strategies with heterogeneous-arm buffered splicing, provenance copy,
+consume destroy) extracted verbatim into `emit_arrow_assign_statement`.
+`ArrowAssignValue` dual enum: covered value leaves emit natively through
+operand recursion; the dispatch (which reads target/value AST shapes)
+and the buffered probe re-emission (`out2` block value — the register
+must survive the probe buffer) stay verbatim. HIR routing pre-checks
+target AND value reconstructibility before any emission (wire-fire emits
+immediately). With this, the statement seam is complete except Defer
+(queues AST bodies — semantically identical).
+
 ## Order and cadence
 
 A → B → C → D. Commit per slice; every commit passes the full gate set. If a

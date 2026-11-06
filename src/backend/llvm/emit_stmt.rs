@@ -444,285 +444,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         Statement::ArrowAssign { target, value, consume } => {
-            // 2026-08-26 (async Phase D): FIRING an event wire — `w <- v;`
-            // where w binds an Event<_> (the i64 slot id). The compiled twin
-            // of the interpreter's Phase B fire: payload stored + waiters
-            // woken inside briev_event_fire.
-            if let Some(Expr::Identifier(wname)) = target.as_ref().map(|t| t.as_ref()) {
-                let is_wire = backend
-                    .fun
-                    .let_original_types
-                    .get(wname)
-                    .or_else(|| backend.fun.let_binding_types.get(wname))
-                    .map(is_event_type)
-                    .unwrap_or(false);
-                if is_wire {
-                    if let Some(mut id_reg) = backend.fun.let_bindings.get(wname).cloned() {
-                        // 2026-10-25: a reassigned Event parameter is bound to a
-                        // native parameter slot. The wire id is the loaded i64,
-                        // not the alloca address; passing the slot produced a
-                        // ptr-vs-i64 verifier error in async compiled events.
-                        if backend.fun.native_parameter_slots.contains(&id_reg) {
-                            let loaded = backend.fun.gen_reg();
-                            writeln!(out, "{indent}{loaded} = load i64, ptr {id_reg}").ok();
-                            id_reg = loaded;
-                        }
-                        let val = backend.emit_expr(out, value, indent);
-                        let boxed = backend.adapt_to_i64(out, indent, &val);
-                        let events_i = backend.fun.gen_reg();
-                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        let st = if backend.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
-                        writeln!(out, "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            // 2026-08-01 (Phase 3): the arrow — find the collection by the op
-            // binding on each side:
-            //   - the TARGET is a stream symbol (#StdOut/#StdErr) → a write;
-            //   - the TARGET has an InsertAt binding → INSERT (push): emit the
-            //     member/fn insert call with the value;
-            //   - the VALUE has an ExtractFrom/CopyFrom binding → READ/EXTRACT
-            //     (pop): emit the extract and store the result into the target
-            //     (or discard it when target is None);
-            //   - otherwise → a plain copy store into the target.
-            if let Some(t) = target.as_ref() {
-                if let Expr::Identifier(name) = t.as_ref() {
-                    if name == "#StdOut" || name == "#StdErr" {
-                        // 2026-08-01 (Phase 4): a stream write. `#StdOut` lowers
-                        // to the generic Print# (any type); `#StdErr` writes a
-                        // String via the stderr printer.
-                        if name == "#StdOut" {
-                            let call = Expr::Call("Print#".to_string(), vec![(**value).clone()], None);
-                            backend.emit_expr(out, &call, indent);
-                        } else {
-                            let v = backend.emit_expr(out, value, indent);
-                            let reg = backend.fun.gen_reg();
-                            // 2026-09-08 (anti-pattern audit): stderr printer
-                            // resolves to the pure-Briev `eprint_str` defn
-                            // when present (stateful call below), else the
-                            // frgn_map/C fallback (frgn__eprint_str → C).
-                            // 2026-10-15 (core-usable purge): plain helper name.
-                            let sym = if backend.ctx.defn_params.contains_key("eprint_str") {
-                                "eprint_str".to_string()
-                            } else {
-                                backend.ctx.frgn_map.get("frgn__eprint_str")
-                                    .map(|sig| sig.name.clone())
-                                    .unwrap_or_else(|| "__eprint_str".to_string())
-                            };
-                            let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
-                            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
-                        }
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            if let Some(t) = target.as_ref() {
-                if let Some(op_def) = backend.find_insert_strategy(t).cloned() {
-                    // 2026-08-18 (Phase D, PiggyBank): only PUSH when the value
-                    // actually matches the target's element type (mirrors the
-                    // typechecker's arrow_ok). `all ~<- piggy` — target
-                    // `all: List<Int>`, value a PiggyBank — must fall through to
-                    // the EXTRACT (smash), not push the jar handle as an i64.
-                    // The value is emitted into a scratch buffer and only spliced
-                    // in when the push actually fires (a type-mismatched value
-                    // would otherwise leave dead IR behind).
-                    let mut val_buf = String::new();
-                    let val = {
-                        let out2 = &mut val_buf;
-                        backend.emit_expr(out2, value, indent)
-                    };
-                    let elem_ty = backend.insert_element_type(t);
-                    // 2026-08-18: an identifier VALUE that is a pooled instance
-                    // (`all ~<- piggy`) emits with the scalar Int FALLBACK type —
-                    // resolve its DECLARED type so the insert gate rejects the
-                    // push and falls through to the extract.
-                    // 2026-09-07 (tuple-literal push): a STRUCT LITERAL value
-                    // (`(keys[i], vals[i])`) also emits with the fallback Int
-                    // type — the emitted register carries no tuple info. When
-                    // the value is a Tuple expr, resolve its element types from
-                    // the sub-expressions so the push gate sees the real type.
-                    let val_ty = match value.as_ref() {
-                        crate::ast::Expr::Identifier(n) => {
-                            backend.resolve_id_type(n).unwrap_or_else(|| val.ty.clone())
-                        }
-                        crate::ast::Expr::Tuple(elems) => {
-                            let etys = elems.iter().map(|e| {
-                                match e {
-                                    crate::ast::Expr::Identifier(n) => {
-                                        backend.resolve_id_type(n)
-                                            .unwrap_or_else(|| crate::ast::Type::int())
-                                    }
-                                    _ => crate::ast::Type::int(),
-                                }
-                            }).collect();
-                            crate::ast::Type::Tuple(etys)
-                        }
-                        _ => val.ty.clone(),
-                    };
-                    // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1): a
-                    // CONCRETE value into a dyn-element collection — the
-                    // typechecker admits it (structural conformance); the
-                    // push site boxes it below. Without this admission the
-                    // gate rejects, the push silently falls through, and the
-                    // list stays empty (the read is garbage).
-                    let dyn_push: Option<(String, String)> =
-                        elem_ty.as_ref().and_then(|et| match et {
-                            crate::ast::Type::Dyn(t) => match (t.as_ref(), &val_ty) {
-                                (crate::ast::Type::Custom(tr), crate::ast::Type::Custom(c)) if c != tr => {
-                                    Some((tr.clone(), c.clone()))
-                                }
-                                _ => None,
-                            },
-                            _ => None,
-                        });
-                    let matches = elem_ty.as_ref().map_or(true, |et| {
-                        // 2026-08-18 (Phase D): a BARE generic param (`K` in
-                        // `PiggyBank<K>` — the backend instance type carries no
-                        // concrete args) can't be compared — allow the push (the
-                        // typechecker already validated it; the member body is
-                        // type-agnostic, storing i64 handles). Only a CONCRETE
-                        // mismatch (`List<Int>` target vs a PiggyBank value) must
-                        // fall through to the extract.
-                        let bare_generic = matches!(et, crate::ast::Type::Custom(n)
-                            if n.len() == 1 && n.chars().next().unwrap().is_uppercase());
-                        // 2026-09-07 (tuple-literal push): a Tuple element type
-                        // with generic params (e.g. `(K, V)`) matches a concrete
-                        // tuple of the same arity — the generic params are
-                        // instantiated to the element types at the use site.
-                        let tuple_arity_match = matches!((et, &val_ty),
-                            (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b))
-                                if a.len() == b.len());
-                        // 2026-10-05 (json.bv): an enum CONSTRUCTOR value
-                        // (`IntVal(5)`) reports `Type::int()` (the i64 handle)
-                        // while the declared element type is the enum
-                        // (`JsonValue`). Both are the same handle — a bare
-                        // `*et == val_ty` rejected the push and the arrow fell
-                        // through to a plain rebind (the list never grew).
-                        let enum_handle_ok = is_enum_handle_type(backend, et)
-                            && (is_enum_handle_type(backend, &val_ty)
-                                || matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"));
-                        bare_generic
-                            || *et == val_ty
-                            || enum_handle_ok
-                            || tuple_arity_match
-                            || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
-                                && matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"))
-                            // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1):
-                            // a CONCRETE value into a dyn-element collection —
-                            // the typechecker admits it (structural
-                            // conformance); the push site boxes it below.
-                            || dyn_push.is_some()
-                    });
-                    let matches = matches || dyn_push.is_some();
-                    if matches {
-                        out.push_str(&val_buf);
-                        // 2026-10-14 (tier2 phase 1, coll-element-size
-                        // ADDENDUM 3 hole 1): a CONCRETE value pushed into a
-                        // dyn-element collection is BOXED at the push site
-                        // (tag + fat pointer, the same box the let-coercion
-                        // emits) — the raw concrete handle stored into a dyn
-                        // list reads garbage at dispatch. To undo: delete
-                        // this coercion; the push stores raw again.
-                        // The concrete name comes from val_ty (the RESOLVED
-                        // value type — a struct literal's register carries no
-                        // type info); val.name is the data handle either way.
-                        let push_val = if let Some((trait_name, concrete)) = &dyn_push {
-                            let tag = backend
-                                .ctx
-                                .dyn_concrete_tag_of
-                                .get(&format!("{trait_name}::{concrete}"))
-                                .copied()
-                                .unwrap_or(0);
-                            Some(backend.coerce_to_dyn(
-                                out,
-                                &val.name,
-                                &val.name,
-                                trait_name,
-                                concrete,
-                                tag,
-                                indent,
-                            ))
-                        } else {
-                            None
-                        };
-                        // 2026-11-02 (enum value model): a pushed enum is an
-                        // OWNING collection element. Call results may point at
-                        // a caller-owned `%esrt` stack image; copy it to owned
-                        // storage before publishing the handle into the list.
-                        let owned_enum = if elem_ty
-                            .as_ref()
-                            .is_some_and(|et| is_enum_handle_type(backend, et))
-                        {
-                            let mut enum_val = val.clone();
-                            if let Some(et) = &elem_ty {
-                                enum_val.ty = et.clone();
-                            }
-                            backend.own_enum_value(out, indent, &enum_val)
-                        } else {
-                            val.clone()
-                        };
-                        let pushed = push_val.as_ref().unwrap_or(&owned_enum);
-                        if emit_strategy_member_call(backend, out, indent, t, &op_def, Some(&pushed.name)).is_none() {
-                            emit_strategy_fn_call(backend, out, indent, t, &op_def, Some(&pushed.name));
-                        }
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            if let Some(op_def) = backend.find_extract_strategy_for_arrow(value, *consume).cloned() {
-                // EXTRACT — the value is the collection. Member-bound
-                // ExtractFrom (e.g. the Stack's self-bound `pop`) dispatches to
-                // the member call, which returns the popped value; the
-                // free-function convention is the fallback. The result is
-                // stored into the target (or discarded). 2026-08-18 (Phase D):
-                // the CONSUME flag picks CopyFrom (`<-`) vs ExtractFrom (`~<-`).
-                let result = match emit_strategy_member_call(backend, out, indent, value, &op_def, None) {
-                    Some(r) => r,
-                    None => match emit_strategy_fn_call(backend, out, indent, value, &op_def, None) {
-                        Some(r) => r,
-                        None => return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() },
-                    },
-                };
-                if let Some(t) = target.as_ref() {
-                    emit_arrow_store(backend, out, indent, t, &result);
-                }
-                if *consume {
-                    // 2026-08-01 (Phase 3): a destructive extract also destroys
-                    // the consumed collection's backing (strategy-aware free).
-                    emit_destroy_consumed(backend, out, indent, value);
-                }
-                return TypedRegister { name: result, ty: Type::int() };
-            }
-            // Plain copy — the arrow as a normal assignment, emitted only when
-            // the target is a resolvable local/state field. When nothing
-            // resolves, the statement is a no-op — matching the pre-Phase-3
-            // behavior where the unresolvable `<-` fell through silently.
-            if let Some(t) = target.as_ref() {
-                if let Expr::Identifier(name) = t.as_ref() {
-                    // 2026-08-18 (Phase C): a pooled member-field target
-                    // (`items` → `p.items`) is resolvable too — the bare name
-                    // falls through to the instance column, else the plain
-                    // copy would be a silently-dropped no-op.
-                    let slot = backend
-                        .fun
-                        .self_prefix
-                        .as_ref()
-                        .map(|(prefix, _)| format!("{}.{}", prefix, name))
-                        .filter(|s| backend.ctx.field_index_map.contains_key(s));
-                    let resolvable = backend.fun.let_bindings.contains_key(name)
-                        || backend.ctx.field_index_map.contains_key(name)
-                        || slot.is_some();
-                    if resolvable {
-                        let val = backend.emit_expr(out, value, indent);
-                        emit_arrow_store_local(backend, out, indent, name, &val);
-                    }
-                }
-            }
-            if *consume {
-                emit_destroy_consumed(backend, out, indent, value);
-            }
-            TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
+            emit_arrow_assign_statement(
+                backend,
+                out,
+                indent,
+                target,
+                &ArrowAssignValue::Ast(value),
+                consume,
+            )
         }
         // 2026-10-16 (tails plan §2): a defn-body tail is an
         // UNCONDITIONAL value return — `term <value>` emission (the P-gate
@@ -2212,6 +1941,330 @@ fn emit_assign_value(
             backend.emit_expr(out, ast, indent)
         }
     }
+}
+
+
+/// 2026-11-05 (H4 slice D): dual-fueled ArrowAssign value — `Ast` keeps the
+/// legacy path; `Hir` emits covered leaves natively through
+/// `emit_hir_operand` (uncovered leaves convert per-element). The dispatch
+/// still reads the AST target/value shapes (wire-fire, streams, insert/
+/// extract strategies, provenance), which drive arrow semantics.
+pub(crate) enum ArrowAssignValue<'a> {
+    Ast(&'a Box<Expr>),
+    Hir(&'a crate::hir::expr::HirExpr, &'a Box<Expr>),
+}
+
+fn emit_arrow_value(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    value: &ArrowAssignValue<'_>,
+) -> TypedRegister {
+    match value {
+        ArrowAssignValue::Ast(rhs) => backend.emit_expr(out, rhs, indent),
+        ArrowAssignValue::Hir(hir, ast) => {
+            if crate::backend::hir_emit_enabled() {
+                if let Some(reg) = backend.emit_hir_operand(out, hir, indent) {
+                    return reg;
+                }
+            }
+            backend.emit_expr(out, ast, indent)
+        }
+    }
+}
+
+pub(crate) fn emit_arrow_assign_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    target: &Option<Box<Expr>>,
+    value_enum: &ArrowAssignValue<'_>,
+    consume: &bool,
+) -> TypedRegister {
+    let value_dual = value_enum;
+    let value = match value_enum {
+        ArrowAssignValue::Ast(a) => a,
+        ArrowAssignValue::Hir(_, a) => a,
+    };
+            // 2026-08-26 (async Phase D): FIRING an event wire — `w <- v;`
+            // where w binds an Event<_> (the i64 slot id). The compiled twin
+            // of the interpreter's Phase B fire: payload stored + waiters
+            // woken inside briev_event_fire.
+            if let Some(Expr::Identifier(wname)) = target.as_ref().map(|t| t.as_ref()) {
+                let is_wire = backend
+                    .fun
+                    .let_original_types
+                    .get(wname)
+                    .or_else(|| backend.fun.let_binding_types.get(wname))
+                    .map(is_event_type)
+                    .unwrap_or(false);
+                if is_wire {
+                    if let Some(mut id_reg) = backend.fun.let_bindings.get(wname).cloned() {
+                        // 2026-10-25: a reassigned Event parameter is bound to a
+                        // native parameter slot. The wire id is the loaded i64,
+                        // not the alloca address; passing the slot produced a
+                        // ptr-vs-i64 verifier error in async compiled events.
+                        if backend.fun.native_parameter_slots.contains(&id_reg) {
+                            let loaded = backend.fun.gen_reg();
+                            writeln!(out, "{indent}{loaded} = load i64, ptr {id_reg}").ok();
+                            id_reg = loaded;
+                        }
+                        let val = emit_arrow_value(backend, out, indent, value_dual);
+                        let boxed = backend.adapt_to_i64(out, indent, &val);
+                        let events_i = backend.fun.gen_reg();
+                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                        let st = if backend.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
+                        writeln!(out, "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
+                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
+                    }
+                }
+            }
+            // 2026-08-01 (Phase 3): the arrow — find the collection by the op
+            // binding on each side:
+            //   - the TARGET is a stream symbol (#StdOut/#StdErr) → a write;
+            //   - the TARGET has an InsertAt binding → INSERT (push): emit the
+            //     member/fn insert call with the value;
+            //   - the VALUE has an ExtractFrom/CopyFrom binding → READ/EXTRACT
+            //     (pop): emit the extract and store the result into the target
+            //     (or discard it when target is None);
+            //   - otherwise → a plain copy store into the target.
+            if let Some(t) = target.as_ref() {
+                if let Expr::Identifier(name) = t.as_ref() {
+                    if name == "#StdOut" || name == "#StdErr" {
+                        // 2026-08-01 (Phase 4): a stream write. `#StdOut` lowers
+                        // to the generic Print# (any type); `#StdErr` writes a
+                        // String via the stderr printer.
+                        if name == "#StdOut" {
+                            let call = Expr::Call("Print#".to_string(), vec![value.as_ref().clone()], None);
+                            backend.emit_expr(out, &call, indent);
+                        } else {
+                            let v = emit_arrow_value(backend, out, indent, value_dual);
+                            let reg = backend.fun.gen_reg();
+                            // 2026-09-08 (anti-pattern audit): stderr printer
+                            // resolves to the pure-Briev `eprint_str` defn
+                            // when present (stateful call below), else the
+                            // frgn_map/C fallback (frgn__eprint_str → C).
+                            // 2026-10-15 (core-usable purge): plain helper name.
+                            let sym = if backend.ctx.defn_params.contains_key("eprint_str") {
+                                "eprint_str".to_string()
+                            } else {
+                                backend.ctx.frgn_map.get("frgn__eprint_str")
+                                    .map(|sig| sig.name.clone())
+                                    .unwrap_or_else(|| "__eprint_str".to_string())
+                            };
+                            let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
+                            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
+                        }
+                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
+                    }
+                }
+            }
+            if let Some(t) = target.as_ref() {
+                if let Some(op_def) = backend.find_insert_strategy(t).cloned() {
+                    // 2026-08-18 (Phase D, PiggyBank): only PUSH when the value
+                    // actually matches the target's element type (mirrors the
+                    // typechecker's arrow_ok). `all ~<- piggy` — target
+                    // `all: List<Int>`, value a PiggyBank — must fall through to
+                    // the EXTRACT (smash), not push the jar handle as an i64.
+                    // The value is emitted into a scratch buffer and only spliced
+                    // in when the push actually fires (a type-mismatched value
+                    // would otherwise leave dead IR behind).
+                    let mut val_buf = String::new();
+                    let val = {
+                        let out2 = &mut val_buf;
+                        emit_arrow_value(backend, out2, indent, value_dual)
+                    };
+                    let elem_ty = backend.insert_element_type(t);
+                    // 2026-08-18: an identifier VALUE that is a pooled instance
+                    // (`all ~<- piggy`) emits with the scalar Int FALLBACK type —
+                    // resolve its DECLARED type so the insert gate rejects the
+                    // push and falls through to the extract.
+                    // 2026-09-07 (tuple-literal push): a STRUCT LITERAL value
+                    // (`(keys[i], vals[i])`) also emits with the fallback Int
+                    // type — the emitted register carries no tuple info. When
+                    // the value is a Tuple expr, resolve its element types from
+                    // the sub-expressions so the push gate sees the real type.
+                    let val_ty = match value.as_ref() {
+                        crate::ast::Expr::Identifier(n) => {
+                            backend.resolve_id_type(n).unwrap_or_else(|| val.ty.clone())
+                        }
+                        crate::ast::Expr::Tuple(elems) => {
+                            let etys = elems.iter().map(|e| {
+                                match e {
+                                    crate::ast::Expr::Identifier(n) => {
+                                        backend.resolve_id_type(n)
+                                            .unwrap_or_else(|| crate::ast::Type::int())
+                                    }
+                                    _ => crate::ast::Type::int(),
+                                }
+                            }).collect();
+                            crate::ast::Type::Tuple(etys)
+                        }
+                        _ => val.ty.clone(),
+                    };
+                    // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1): a
+                    // CONCRETE value into a dyn-element collection — the
+                    // typechecker admits it (structural conformance); the
+                    // push site boxes it below. Without this admission the
+                    // gate rejects, the push silently falls through, and the
+                    // list stays empty (the read is garbage).
+                    let dyn_push: Option<(String, String)> =
+                        elem_ty.as_ref().and_then(|et| match et {
+                            crate::ast::Type::Dyn(t) => match (t.as_ref(), &val_ty) {
+                                (crate::ast::Type::Custom(tr), crate::ast::Type::Custom(c)) if c != tr => {
+                                    Some((tr.clone(), c.clone()))
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                    let matches = elem_ty.as_ref().map_or(true, |et| {
+                        // 2026-08-18 (Phase D): a BARE generic param (`K` in
+                        // `PiggyBank<K>` — the backend instance type carries no
+                        // concrete args) can't be compared — allow the push (the
+                        // typechecker already validated it; the member body is
+                        // type-agnostic, storing i64 handles). Only a CONCRETE
+                        // mismatch (`List<Int>` target vs a PiggyBank value) must
+                        // fall through to the extract.
+                        let bare_generic = matches!(et, crate::ast::Type::Custom(n)
+                            if n.len() == 1 && n.chars().next().unwrap().is_uppercase());
+                        // 2026-09-07 (tuple-literal push): a Tuple element type
+                        // with generic params (e.g. `(K, V)`) matches a concrete
+                        // tuple of the same arity — the generic params are
+                        // instantiated to the element types at the use site.
+                        let tuple_arity_match = matches!((et, &val_ty),
+                            (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b))
+                                if a.len() == b.len());
+                        // 2026-10-05 (json.bv): an enum CONSTRUCTOR value
+                        // (`IntVal(5)`) reports `Type::int()` (the i64 handle)
+                        // while the declared element type is the enum
+                        // (`JsonValue`). Both are the same handle — a bare
+                        // `*et == val_ty` rejected the push and the arrow fell
+                        // through to a plain rebind (the list never grew).
+                        let enum_handle_ok = is_enum_handle_type(backend, et)
+                            && (is_enum_handle_type(backend, &val_ty)
+                                || matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"));
+                        bare_generic
+                            || *et == val_ty
+                            || enum_handle_ok
+                            || tuple_arity_match
+                            || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
+                                && matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"))
+                            // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1):
+                            // a CONCRETE value into a dyn-element collection —
+                            // the typechecker admits it (structural
+                            // conformance); the push site boxes it below.
+                            || dyn_push.is_some()
+                    });
+                    let matches = matches || dyn_push.is_some();
+                    if matches {
+                        out.push_str(&val_buf);
+                        // 2026-10-14 (tier2 phase 1, coll-element-size
+                        // ADDENDUM 3 hole 1): a CONCRETE value pushed into a
+                        // dyn-element collection is BOXED at the push site
+                        // (tag + fat pointer, the same box the let-coercion
+                        // emits) — the raw concrete handle stored into a dyn
+                        // list reads garbage at dispatch. To undo: delete
+                        // this coercion; the push stores raw again.
+                        // The concrete name comes from val_ty (the RESOLVED
+                        // value type — a struct literal's register carries no
+                        // type info); val.name is the data handle either way.
+                        let push_val = if let Some((trait_name, concrete)) = &dyn_push {
+                            let tag = backend
+                                .ctx
+                                .dyn_concrete_tag_of
+                                .get(&format!("{trait_name}::{concrete}"))
+                                .copied()
+                                .unwrap_or(0);
+                            Some(backend.coerce_to_dyn(
+                                out,
+                                &val.name,
+                                &val.name,
+                                trait_name,
+                                concrete,
+                                tag,
+                                indent,
+                            ))
+                        } else {
+                            None
+                        };
+                        // 2026-11-02 (enum value model): a pushed enum is an
+                        // OWNING collection element. Call results may point at
+                        // a caller-owned `%esrt` stack image; copy it to owned
+                        // storage before publishing the handle into the list.
+                        let owned_enum = if elem_ty
+                            .as_ref()
+                            .is_some_and(|et| is_enum_handle_type(backend, et))
+                        {
+                            let mut enum_val = val.clone();
+                            if let Some(et) = &elem_ty {
+                                enum_val.ty = et.clone();
+                            }
+                            backend.own_enum_value(out, indent, &enum_val)
+                        } else {
+                            val.clone()
+                        };
+                        let pushed = push_val.as_ref().unwrap_or(&owned_enum);
+                        if emit_strategy_member_call(backend, out, indent, t, &op_def, Some(&pushed.name)).is_none() {
+                            emit_strategy_fn_call(backend, out, indent, t, &op_def, Some(&pushed.name));
+                        }
+                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
+                    }
+                }
+            }
+            if let Some(op_def) = backend.find_extract_strategy_for_arrow(value, *consume).cloned() {
+                // EXTRACT — the value is the collection. Member-bound
+                // ExtractFrom (e.g. the Stack's self-bound `pop`) dispatches to
+                // the member call, which returns the popped value; the
+                // free-function convention is the fallback. The result is
+                // stored into the target (or discarded). 2026-08-18 (Phase D):
+                // the CONSUME flag picks CopyFrom (`<-`) vs ExtractFrom (`~<-`).
+                let result = match emit_strategy_member_call(backend, out, indent, value, &op_def, None) {
+                    Some(r) => r,
+                    None => match emit_strategy_fn_call(backend, out, indent, value, &op_def, None) {
+                        Some(r) => r,
+                        None => return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() },
+                    },
+                };
+                if let Some(t) = target.as_ref() {
+                    emit_arrow_store(backend, out, indent, t, &result);
+                }
+                if *consume {
+                    // 2026-08-01 (Phase 3): a destructive extract also destroys
+                    // the consumed collection's backing (strategy-aware free).
+                    emit_destroy_consumed(backend, out, indent, value);
+                }
+                return TypedRegister { name: result, ty: Type::int() };
+            }
+            // Plain copy — the arrow as a normal assignment, emitted only when
+            // the target is a resolvable local/state field. When nothing
+            // resolves, the statement is a no-op — matching the pre-Phase-3
+            // behavior where the unresolvable `<-` fell through silently.
+            if let Some(t) = target.as_ref() {
+                if let Expr::Identifier(name) = t.as_ref() {
+                    // 2026-08-18 (Phase C): a pooled member-field target
+                    // (`items` → `p.items`) is resolvable too — the bare name
+                    // falls through to the instance column, else the plain
+                    // copy would be a silently-dropped no-op.
+                    let slot = backend
+                        .fun
+                        .self_prefix
+                        .as_ref()
+                        .map(|(prefix, _)| format!("{}.{}", prefix, name))
+                        .filter(|s| backend.ctx.field_index_map.contains_key(s));
+                    let resolvable = backend.fun.let_bindings.contains_key(name)
+                        || backend.ctx.field_index_map.contains_key(name)
+                        || slot.is_some();
+                    if resolvable {
+                        let val = emit_arrow_value(backend, out, indent, value_dual);
+                        emit_arrow_store_local(backend, out, indent, name, &val);
+                    }
+                }
+            }
+            if *consume {
+                emit_destroy_consumed(backend, out, indent, value);
+            }
+            TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
 }
 
 pub(crate) fn emit_assign_statement(
