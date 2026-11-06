@@ -1269,3 +1269,7 @@ marks the owning result. Region lowering registers that actual pointer before
 its first use, with the same bookkeeping and allocation-failure behavior as
 malloc. A registered encoding override invalidates a default-provider proof.
 Raw address casts retain the original allocation identity.
+
+## Trait-default ownership effects (2026-11-06)
+
+Ownership analysis omitted trait default bodies and concrete free-call member resolution. Calls through Self-specialized defaults were treated as unsupported even when every concrete callee only borrowed its input. Register defaults after ordinary definitions, specialize return shapes, and resolve concrete free calls with top-level precedence. Regressions cover chained and free defaults plus capturing concrete overrides.

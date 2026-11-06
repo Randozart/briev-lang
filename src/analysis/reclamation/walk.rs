@@ -6,9 +6,11 @@
 use super::*;
 use crate::ast::{BinaryOpKind, Pattern, UnaryOpKind};
 mod structured;
+mod traits;
 
 pub(super) fn register(graph: &mut Graph, items: &[TopLevel], live: &std::collections::HashSet<String>) {
     for item in items { register_item(graph, item, live); }
+    traits::register_defaults(graph, items);
 }
 
 pub(super) fn closed_initializers(items: &[TopLevel]) -> bool {
@@ -544,11 +546,15 @@ impl Builder<'_> {
                     Some(ty) => ty,
                     None => {
                         let target = self.method_target(receiver, name, args.len())?;
-                        self.graph.return_types.get(&target).cloned()
+                        let mut arguments = vec![(**receiver).clone()]; arguments.extend_from_slice(args);
+                        self.graph.return_types.get(&target).cloned().or_else(|| self.generic_result(&target, &arguments))
                     }
                 }
             }
             Expr::Call(name, arguments, _) => self.graph.return_types.get(name).cloned().or_else(|| self.generic_result(name, arguments)).or_else(|| {
+                let target = self.free_member_target(name, arguments)?;
+                self.graph.return_types.get(&target).cloned()
+            }).or_else(|| {
                 use crate::intrinsic_signatures::ReturnKind;
                 match crate::intrinsic_signatures::get_intrinsic_signature(name)?.return_kind {
                     ReturnKind::Exact(ty) => Some(ty), ReturnKind::Native(category) => Some(crate::ast::Type::Custom(category.into())), _ => None,
@@ -652,7 +658,7 @@ impl Builder<'_> {
             let target = target.as_ref()?;
             return (self.graph.callables[target].params.len() == supplied + 1).then(|| target.clone());
         }
-        self.graph.callables.contains_key(name).then(|| name.to_string())
+        (self.graph.callables.contains_key(name) || self.graph.generics.contains_key(name)).then(|| name.to_string())
     }
 
     fn method_call(&mut self, receiver: &Expr, name: &str, args: &[Expr]) -> Node {
@@ -668,7 +674,15 @@ impl Builder<'_> {
         if let Some(generic) = self.graph.generics.get(name).cloned() {
             return self.specialize(&generic, arguments, &args);
         }
+        if let Some(target) = self.free_member_target(name, arguments) {
+            return self.call_nodes(&target, &args);
+        }
         self.call_nodes(name, &args)
+    }
+
+    fn free_member_target(&self, name: &str, arguments: &[Expr]) -> Option<String> {
+        if self.graph.callables.contains_key(name) { return None; }
+        self.method_target(arguments.first()?, name, arguments.len()-1)
     }
 
     fn specialize(&mut self, generic: &crate::ast::Definition, arguments: &[Expr], args: &[Node]) -> Node {
@@ -687,7 +701,7 @@ impl Builder<'_> {
             let mut definition = generic.clone(); definition.name = name.clone(); definition.type_params.clear();
             for (_, ty) in &mut definition.parameters { *ty = crate::typechecker::substitute_type(ty, &substitution); }
             for statement in &mut definition.body { crate::typechecker::substitute_stmt_types(statement, &substitution); }
-            if let Some(crate::ast::OutputType::Single(ty)) = &mut definition.output_type { *ty = crate::typechecker::substitute_type(ty, &substitution); }
+            if let Some(output) = &mut definition.output_type { traits::substitute_output(output, &substitution); }
             let item = TopLevel::Definition(definition.clone());
             let live = [name.clone()].into_iter().collect();
             register(self.graph, std::slice::from_ref(&item), &live);
