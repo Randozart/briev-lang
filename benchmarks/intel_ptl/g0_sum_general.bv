@@ -1,0 +1,92 @@
+// g0_sum_general.bv — §12 W3 PARITY REFERENCE (not a gate): the hand-written sum fold runs the reduction
+// synthesis lane (warp-slice + SubgroupIAdd#) on the device, verified
+// against an independent host recompute (Int exact — no tolerance).
+//
+// 2026-11-06 (plan 2026-11-06-idiom-recognition-doctrine.md W3): the parity
+// reference for the retirement gate. Identical work to g0_sum.bv, but the
+// fold length is a RUNTIME value (K env) instead of a const 32-multiple, so
+// sum_lane_outcome returns LengthNotConst and the general per-work-item
+// lowering runs. Build logs disclose the why-not. Run both fixtures with
+// K=1024 and compare # gpu_time + BAD (benchmarks/intel_ptl/sum_ab.sh).
+//
+// Runs under `ulimit -s 65536` (state arrays exceed the 8 MB stack frame —
+// BUGS.md 2026-11-06).
+
+!> accel: force;
+import { get_env_int } from "std/env.bv";
+
+const ROWS: Int = 4096;
+let K: Int = get_env_int!("K");
+
+let i: Int = 0;
+let r: Int = 0;
+let phase: Int = 0;
+let bad: Int = 0;
+let gpu_sum: Int = 0;
+let cpu_sum: Int = 0;
+
+let a: Int[4194304];
+let y: Int[4096];
+
+// init (CPU): deterministic values, -3..3.
+async node init [phase == 0 && i < 4194304][i == 4194304] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        a[idx] = (idx % 7) - 3;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == 4194304][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane: the sum idiom — detector fires, synthesis lowers.
+async accel node rowsum [phase == 1 && i < ROWS][i == ROWS] {
+    let acc: Int = 0;
+    foreach k in 0..K {
+        acc = acc + a[i * K + k];
+    };
+    y[i] = acc;
+    i = i + 1;
+    term;
+};
+
+async node sum_done [phase == 1 && i == ROWS][phase == 2] {
+    phase = 2;
+    r = 0;
+    term;
+};
+
+// host reference: recompute 256 spread rows, exactly.
+async node verify [phase == 2 && r < 256][r == 256] {
+    let row: Int = r * 16;
+    let acc: Int = 0;
+    foreach k in 0..K {
+        acc = acc + a[row * K + k];
+    };
+    cpu_sum = cpu_sum + acc;
+    gpu_sum = gpu_sum + y[row];
+    when acc != y[row] { bad = bad + 1; };
+    r = r + 1;
+    term;
+};
+
+async node verify_done [phase == 2 && r == 256][phase == 3] {
+    phase = 3;
+    term;
+};
+
+// Liveness anchor, not a value constraint: the sums are signed (row sums
+// can be negative), so a `>= 0` guard here would be false forever and the
+// reactor would never report (it runs until killed). The ±1e12 bounds stay
+// textually live (a self-equality tautology is folded away, taking the
+// accumulators' liveness with it) and are never violated by this fixture.
+async node report [phase == 3 && bad >= 0 && gpu_sum >= -1000000000000
+                   && cpu_sum >= -1000000000000][true] {
+    endprogram println!("G0_SUM_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={}",
+                        bad, gpu_sum, cpu_sum, y[0], y[ROWS - 1]);
+};

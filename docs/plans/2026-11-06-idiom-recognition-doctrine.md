@@ -146,11 +146,15 @@ why-not path must not ship). W5 strictly on demand.
   license) with actionable text. Deeper why-not for *detection*
   near-misses inside the body (multi-statement fold, accumulator read in
   the operand) remains a follow-up.
-- **Open**: W3 parity measurement (idiom vs general lowering numbers —
-  the retirement evidence), Product/Min/Max kinds (W3.1), float folds
-  behind a numeric contract, W5 candidates. The matcher retires when
-  the general lowering reaches parity — the ledger row carries that
-  condition.
+- **W3 parity measured** (2026-11-06, PTL Vulkan): lane 0.0025 ms vs
+  general 0.007 ms median dispatch time (~2.8×), 10/10 correctness-gated
+  samples each — `benchmarks/intel_ptl/sum_ab.sh` +
+  `benchmarks/results/2026-11-06-intel-ptl-g0.md`. The general lowering has
+  NOT reached parity, so the matcher stays (retirement condition recorded
+  in the §8 ledger row).
+- **Open**: Product/Min/Max kinds (W3.1), float folds behind a numeric
+  contract, W5 candidates, deeper detection-level why-nots (multi-statement
+  folds / accumulator-read operands).
 
 ## Non-goals
 
