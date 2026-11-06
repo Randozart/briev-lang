@@ -97,6 +97,14 @@ statement arms (Let/Assign/Term/Guarded/Foreach/Match), structural expression
 composites (register-taking refactors), H3.6 backend wiring (specialization),
 MethodCall/Reflect receiver typing (HIR `Cast.via`), H5 retirement.
 
+**H5 retirement inventory (2026-11-05, PLANNING):**
+`docs/plans/2026-11-05-h5-retirement-inventory.md` — the H5 work list:
+what still reads the AST (emitter entries, declaration/ABI surfaces, the
+to_ast bridge, Defer/ArrowAssign/Match-expr conversion), the retirement
+mechanics (flip default → family-by-family arm deletion → entries switch
+→ bridge delete), preconditions for the flip, and the forever
+invariants. Update as families land; it IS the H5 work list.
+
 **Collaborator integration (2026-11-05, DONE):**
 `docs/plans/2026-11-05-collaborator-integration-and-h4-resumption.md` — all
 nine of Otto's PRs merged (#63–#71): stdlib measurement/network modules,
