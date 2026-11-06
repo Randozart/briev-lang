@@ -305,6 +305,22 @@ fallback. Evidence + fixed defects:
 | gate | what | pass condition |
 |---|---|---|
 | **G0** | Existing Vulkan + OpenCL Briev drivers on PTL (no new code) | elementwise + 512³ GEMM output matches the CPU reference; coopmat image runs on Vulkan (extension already advertised) |
+
+**G0 status (2026-11-06): PASS on Vulkan.** Elementwise (1 Mi f32) and 512³
+GEMM match independent host references exactly; the OpenCL/IL lane initialises
+but NEO rejects the entry point (`CL_INVALID_KERNEL_NAME`) and stays the last
+fallback. Evidence + fixed defects:
+`benchmarks/results/2026-11-06-intel-ptl-g0.md`.
+
+**G1 status (2026-11-06): driver skeleton DONE; IL lane blocked on module
+flavor.** The Level Zero driver (chain slot 2, `BRIEV_ACCEL_DEVICE=levelzero`)
+initialises, consumes the SPIR-V IL, allocates host-USM staging and dispatches
+— but IGC compiles Briev's **Vulkan-flavored** module to an empty kernel set
+(zero kernel names), the same IGC behavior behind the OpenCL rejection.
+Unblocking work is a bounded **OpenCL-flavored SPIR-V projection** (G1.5):
+`OpCapability Kernel` / `OpEntryPoint Kernel` from the same frontend plan.
+Evidence: `benchmarks/results/2026-11-06-intel-ptl-g1.md`; finding in
+BUGS.md (2026-11-06, IGC empty kernel set).
 | **G1** | Level Zero driver skeleton | `available/init/create_kernel` succeed; a trivial kernel dispatches and writes the expected sentinel |
 | **G2** | L0 projection launch | packed projection round-trips exactly (seed + dirty + download), single and multi-kernel |
 | **G3** | L0 coopmat | same GEMM module accepted by IGC and numerically equal to the Vulkan tiled path within the tier gate; if rejected, record the verdict and keep Vulkan as the XMX lane |
@@ -337,7 +353,11 @@ timing needs same-commit, same-geometry correctness).
 1. **Does IGC (Level Zero `ZE_MODULE_FORMAT_IL_SPIRV`) accept
    `SPV_KHR_cooperative_matrix`?** Vulkan (ANV) does; L0 is unverified.
    Gate G3.
-2. **Does L0 IL execute correctly beyond module creation?** G1/G2.
+2. **Does L0 IL execute correctly beyond module creation?** — ANSWERED with
+   a caveat (2026-11-06, G1): `zeModuleCreate(IL_SPIRV)` succeeds, but IGC
+   exposes NO kernels for Vulkan-flavored modules (empty kernel set; BUGS.md
+   2026-11-06). The IL lane needs the OpenCL-flavored projection (G1.5)
+   before it can execute Briev kernels.
 3. **Measured Intel hardware parameters** — DRAM bandwidth, L2, shared
    memory, workgroup limits, EU throughput — required before any
    `GpuHardware` row is committed (D9). The first-pass numbers are competitor
