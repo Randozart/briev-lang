@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <stdio.h>
 
 typedef void* cl_platform_id;
 typedef void* cl_device_id;
@@ -37,6 +38,8 @@ static cl_context (*p_clCreateContext)(void*, uint32_t, cl_device_id*, void*, vo
 static cl_command_queue (*p_clCreateCommandQueue)(cl_context, cl_device_id, uint64_t, int*) = NULL;
 static cl_program (*p_clCreateProgramWithIL)(cl_context, const void*, size_t, int*) = NULL;
 static int (*p_clBuildProgram)(cl_program, uint32_t, const cl_device_id*, const char*, void*, void*) = NULL;
+static int (*p_clGetProgramBuildInfo)(cl_program, cl_device_id, uint32_t, size_t, void*, size_t*) = NULL;
+static int (*p_clGetProgramInfo)(cl_program, uint32_t, size_t, void*, size_t*) = NULL;
 static cl_kernel (*p_clCreateKernel)(cl_program, const char*, int*) = NULL;
 static int (*p_clSetKernelArg)(cl_kernel, uint32_t, size_t, const void*) = NULL;
 static int (*p_clEnqueueNDRangeKernel)(cl_command_queue, cl_kernel, uint32_t, const size_t*, const size_t*, const size_t*, uint32_t, const cl_event*, cl_event*) = NULL;
@@ -65,6 +68,8 @@ static int load_opencl_symbols(void) {
     LOAD(clCreateCommandQueue);
     LOAD(clCreateProgramWithIL);
     LOAD(clBuildProgram);
+    LOAD(clGetProgramBuildInfo);
+    LOAD(clGetProgramInfo);
     LOAD(clCreateKernel);
     LOAD(clSetKernelArg);
     LOAD(clEnqueueNDRangeKernel);
@@ -93,11 +98,18 @@ static int briev_dev_opencl_available(void) {
         return 0;
     }
     p_clGetPlatformIDs(1, &cl_platform, &np);
+    // 2026-11-06 (Intel G0): the old code COUNTED GPU devices but only
+    // fetched a handle in the fallback branch. When the platform had a GPU
+    // (NEO does), cl_device stayed NULL and clCreateContext failed with
+    // CL_INVALID_DEVICE (-33). Always fetch the handle for the chosen type.
     uint32_t nd = 0;
-    if (p_clGetDeviceIDs(cl_platform, 0x1 /* CL_DEVICE_TYPE_GPU */, 0, NULL, &nd) != 0 || nd == 0) {
-        p_clGetDeviceIDs(cl_platform, 0xFFFFFFFF /* all */, 1, &cl_device, &nd);
+    int dev_err = p_clGetDeviceIDs(cl_platform, 0x1 /* CL_DEVICE_TYPE_GPU */, 0, NULL, &nd);
+    if (dev_err != 0 || nd == 0) {
+        dev_err = p_clGetDeviceIDs(cl_platform, 0xFFFFFFFF /* all */, 1, &cl_device, &nd);
+    } else {
+        dev_err = p_clGetDeviceIDs(cl_platform, 0x1 /* CL_DEVICE_TYPE_GPU */, 1, &cl_device, &nd);
     }
-    if (nd == 0) {
+    if (dev_err != 0 || nd == 0 || !cl_device) {
         return 0;
     }
     cl_ready = 1;
@@ -106,15 +118,18 @@ static int briev_dev_opencl_available(void) {
 
 static int briev_dev_opencl_init(void) {
     if (!briev_dev_opencl_available()) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] no platform/device\n");
         return 0;
     }
     int err = 0;
     cl_ctx = p_clCreateContext(NULL, 1, &cl_device, NULL, NULL, &err);
     if (!cl_ctx || err != 0) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateContext failed err=%d\n", err);
         return 0;
     }
     cl_queue = p_clCreateCommandQueue(cl_ctx, cl_device, 0, &err);
     if (!cl_queue || err != 0) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateCommandQueue failed err=%d\n", err);
         return 0;
     }
     return 1;
@@ -132,16 +147,48 @@ static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, voi
     int err = 0;
     cl_program program = p_clCreateProgramWithIL(cl_ctx, spirv, size, &err);
     if (!program || err != 0) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateProgramWithIL failed err=%d\n", err);
         return 0;
     }
     err = p_clBuildProgram(program, 0, NULL, "", NULL, NULL);
     if (err != 0) {
+        if (g_verbose) {
+            size_t log_size = 0;
+            if (p_clGetProgramBuildInfo &&
+                p_clGetProgramBuildInfo(program, cl_device, 0x1183 /* CL_PROGRAM_BUILD_LOG */,
+                                        sizeof(log_size), &log_size, NULL) == 0 &&
+                log_size > 1) {
+                char* log = (char*)calloc(1, log_size);
+                if (log) {
+                    p_clGetProgramBuildInfo(program, cl_device, 0x1183,
+                                            log_size, log, NULL);
+                    fprintf(stderr, "[briev_accel/opencl] build log: %s\n", log);
+                    free(log);
+                }
+            }
+            fprintf(stderr, "[briev_accel/opencl] clBuildProgram failed err=%d\n", err);
+        }
         p_clReleaseProgram(program);
         return 0;
     }
     // The kernel module entry point is `main` (per-kernel module, kernel.rs).
     cl_kernel kernel = p_clCreateKernel(program, "main", &err);
     if (!kernel || err != 0) {
+        if (g_verbose) {
+            size_t names_size = 0;
+            if (p_clGetProgramInfo &&
+                p_clGetProgramInfo(program, 0x1167 /* CL_PROGRAM_KERNEL_NAMES */,
+                                   sizeof(names_size), &names_size, NULL) == 0 &&
+                names_size > 1) {
+                char* names = (char*)calloc(1, names_size);
+                if (names) {
+                    p_clGetProgramInfo(program, 0x1167, names_size, names, NULL);
+                    fprintf(stderr, "[briev_accel/opencl] kernel names: %s\n", names);
+                    free(names);
+                }
+            }
+            fprintf(stderr, "[briev_accel/opencl] clCreateKernel(\"main\") failed err=%d\n", err);
+        }
         p_clReleaseProgram(program);
         return 0;
     }

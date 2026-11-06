@@ -3306,6 +3306,60 @@ fn test_accel_descriptors_emit() {
 }
 
 #[test]
+fn test_accel_descriptors_skip_foreign_state_fields() {
+    // 2026-11-06 (Intel G0): the import resolver splices prelude/imported
+    // StateDecls into `items`; only the PROGRAM's fields are in
+    // field_index_map. The old early-return emitted an EMPTY field table
+    // for every .bv accel kernel (launch proj_bytes=0, Vulkan map failed)
+    // while .abv modules kept working. Foreign fields must be skipped with
+    // their full-list position still driving proj_offsets.
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    backend.ctx.field_index_map.insert("a".to_string(), 0);
+    backend.ctx.field_types.push("[16 x float]".to_string());
+    backend.ctx.field_briev_types.push(Type::Vector(
+        Box::new(Type::Custom("Float".to_string())),
+        vec![crate::ast::Dimension::Anonymous(16)],
+    ));
+    backend
+        .accel_entries
+        .insert("force".to_string(), accel_test_entry("a", true));
+    let a_item = crate::ast::TopLevel::StateDecl(crate::ast::top::StateDecl {
+        name: "a".into(),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(16)],
+        ),
+        span: None,
+    });
+    let prelude_item = crate::ast::TopLevel::StateDecl(crate::ast::top::StateDecl {
+        name: "stdout_buf".into(),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(64)],
+        ),
+        span: None,
+    });
+    let blob = crate::backend::llvm::kernel::AccelKernelBlob {
+        txn_name: "force".to_string(),
+        bytes: vec![0x03, 0x02, 0x23, 0x07],
+    };
+    let (ir, _) = crate::backend::llvm::kernel::emit_accel_descriptors(
+        &backend,
+        &[blob],
+        &[prelude_item, a_item],
+    );
+    assert!(
+        !ir.contains("[0 x %briev.field]"),
+        "program fields must survive a foreign prelude field: {ir}"
+    );
+    assert!(
+        ir.contains("i32 1, i64 0, i64 4, i64 16, i32 1"),
+        "the program field entry is still emitted: {ir}"
+    );
+}
+
+#[test]
 fn test_kernel_desc_abi_layout() {
     // 2026-09-24 (BUGS.md descriptor-ABI drift): pins the emitted
     // %briev.kernel against the C BrievKernelDesc ABI. The runtime

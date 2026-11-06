@@ -92,7 +92,11 @@ typedef enum {
 #define VK_SUCCESS 0
 #define VK_NULL_HANDLE 0
 // VkShaderStageFlagBits VALUE for compute (used in VkPipelineShaderStageCreateInfo.stage).
-#define VK_SHADER_STAGE_COMPUTE 6u
+// 2026-11-06 (Intel G0): was 6 — not a valid VkShaderStageFlagBits (0x6 is
+// the tess-control|tess-eval combination). Mesa rejects vkCreateComputePipelines
+// for every kernel (workid included); NVIDIA had been lenient or the lane was
+// never exercised. Compute is 0x20, the same bit used in stageFlags below.
+#define VK_SHADER_STAGE_COMPUTE 0x20u
 // VkShaderStageFlagBits BIT mask (used in descriptor layout stageFlags).
 #define VK_SHADER_STAGE_COMPUTE_BIT 0x20u
 #define VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 0x80u
@@ -539,6 +543,8 @@ static int briev_dev_vulkan_init(void) {
     if (verbose) fprintf(stderr, "[briev_accel/vulkan] timestampValidBits=%u\n", vk_timestamp_valid_bits);
     vk_host_visible_type = pick_host_visible_type(vk_physical_device);
     vk_device_local_type = pick_device_local_type(vk_physical_device);
+    if (verbose) fprintf(stderr, "[briev_accel/vulkan] memtypes host=%u local=%u\n",
+                         vk_host_visible_type, vk_device_local_type);
     if (vk_host_visible_type == 0xFFFFFFFFu) {
         if (verbose) fprintf(stderr, "[briev_accel/vulkan] no host-visible memory type\n");
         goto fail;
@@ -986,8 +992,12 @@ static int briev_dev_vulkan_launch(void* handle, const void* proj, size_t proj_b
         // the out-parameter (the old 5-arg/return-value signature made the
         // driver write through an uninitialized register).
         void* host_ptr = NULL;
-        if (vkMapMemory(vk_device, k->memory, 0, proj_bytes, 0, &host_ptr) != VK_SUCCESS || !host_ptr) {
-            if (verbose) fprintf(stderr, "[briev_accel/vulkan] map failed\n");
+        int map_res = vkMapMemory(vk_device, k->memory, 0, proj_bytes, 0, &host_ptr);
+        if (map_res != VK_SUCCESS || !host_ptr) {
+            if (verbose) fprintf(stderr,
+                "[briev_accel/vulkan] map failed res=%d bytes=%llu alloc=%llu type=%u ptr=%p\n",
+                (int)map_res, (unsigned long long)proj_bytes,
+                (unsigned long long)mem_reqs.size, vk_host_visible_type, host_ptr);
             vkFreeMemory(vk_device, k->memory, NULL);
             vkDestroyBuffer(vk_device, k->buffer, NULL);
             k->buffer = VK_NULL_HANDLE;

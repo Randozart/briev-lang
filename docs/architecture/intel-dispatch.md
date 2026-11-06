@@ -296,6 +296,12 @@ hatch.
 Every rung is correctness-first, same-geometry, before any timing; no rung is
 skipped because a lower one passed.
 
+**G0 status (2026-11-06): PASS on Vulkan.** Elementwise (1 Mi f32) and 512³
+GEMM match independent host references exactly; the OpenCL/IL lane initialises
+but NEO rejects the entry point (`CL_INVALID_KERNEL_NAME`) and stays the last
+fallback. Evidence + fixed defects:
+`benchmarks/results/2026-11-06-intel-ptl-g0.md`.
+
 | gate | what | pass condition |
 |---|---|---|
 | **G0** | Existing Vulkan + OpenCL Briev drivers on PTL (no new code) | elementwise + 512³ GEMM output matches the CPU reference; coopmat image runs on Vulkan (extension already advertised) |

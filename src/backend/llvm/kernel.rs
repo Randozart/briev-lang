@@ -329,8 +329,15 @@ fn kernel_field_table(
     };
     let mut fields = Vec::new();
     for (pos, name) in names.iter().enumerate() {
+        // 2026-11-06 (Intel G0): the import resolver splices prelude/imported
+        // state declarations (e.g. stdout_buf) into `items`, but only the
+        // PROGRAM's fields live in field_index_map. The old `else { return
+        // empty }` therefore emitted an EMPTY descriptor field table for
+        // every .bv accel kernel (launch got proj_bytes=0), while .abv
+        // modules kept working. Skip non-program fields; keep the full-list
+        // `pos` so proj_offsets still address the kernel's SSBO layout.
         let Some(&fidx) = backend.ctx.field_index_map.get(name) else {
-            return KernelFieldTable { fields: Vec::new(), names: Vec::new() };
+            continue;
         };
         fields.push(field_entry_ir(
             host_field_offset(field_types, fidx),

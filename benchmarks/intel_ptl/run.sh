@@ -37,6 +37,9 @@ tar -C "$ROOT" -cf - lib config plugins benchmarks/intel_ptl \
     | "${SSH[@]}" "mkdir -p '$WORK' && tar -C '$WORK' -xf -"
 tar -C "$(dirname "$BRIEVC")" -cf - "$(basename "$BRIEVC")" \
     | "${SSH[@]}" "mkdir -p '$WORK/bin' && tar -C '$WORK/bin' -xf -"
+# Accel archives the LLVM host link consumes (plain .bv builds only).
+tar -C "$ROOT" -cf - target/compiler-in-briv \
+    | "${SSH[@]}" "tar -C '$WORK' -xf -"
 
 echo "== correctness gates + perf_counter samples =="
 "${SSH[@]}" "bash -lc 'cd $WORK && python3 benchmarks/intel_ptl/harness.py --work $WORK/run --benches $BENCHES'"

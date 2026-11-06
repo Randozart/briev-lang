@@ -1,0 +1,82 @@
+// g0_elem.bv — G0 Intel gate: accel self-add vs an independent host check.
+//
+// 2026-11-06 (intel-dispatch.md §5 G0): first correctness rung for the
+// existing Vulkan/OpenCL SPIR-V lanes on PTL. `selfadd` runs on the device
+// lane (forced); `verify` recomputes x+x in ordinary CPU code and folds the
+// device and host results into scalar sums the swan song prints.
+//
+// Observability: the report contract references bad/gpu_sum/cpu_sum so the
+// backend cannot dead-store the verification (the first draft's prints did
+// not keep field stores live — the pass only sees contract/exit reads).
+//
+// !> accel: force keeps the decision deterministic (no probe); the runtime
+// still falls back to the CPU body if the device chain dies, which is why
+// the gate script ALSO asserts the verbose "compiled on '<device>'" line.
+
+!> accel: force;
+
+const N: Int = 1048576;   // 1 Mi f32; arrays + projection fit comfortably
+
+let i: Int = 0;
+let k: Int = 0;
+let phase: Int = 0;
+let bad: Int = 0;
+let gpu_sum: Float = 0.0;
+let cpu_sum: Float = 0.0;
+
+let x: Float[1048576];
+let y: Float[1048576];
+
+// init (CPU): deterministic values, exact in f32; 4096 per transaction so
+// the reactor does not pay 1M node firings.
+async node init [phase == 0 && i < N][i == N] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        x[idx] = (idx % 1000) as Float * 0.25;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == N][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane: y = x + x (necessarily exact for f32: one add per element).
+async accel node selfadd [phase == 1 && i < N][i == N] {
+    y[i] = x[i] + x[i];
+    i = i + 1;
+    term;
+};
+
+async node selfadd_done [phase == 1 && i == N][phase == 2] {
+    phase = 2;
+    k = 0;
+    term;
+};
+
+// host reference: same arithmetic, independent code path; accumulate both
+// sums so GPU corruption cannot cancel out in a difference.
+async node verify [phase == 2 && k < N][k == N] {
+    foreach t in 0..4096 {
+        let idx: Int = k + t;
+        let expected: Float = x[idx] + x[idx];
+        cpu_sum = cpu_sum + expected;
+        gpu_sum = gpu_sum + y[idx];
+        when expected != y[idx] { bad = bad + 1; };
+    };
+    k = k + 4096;
+    term;
+};
+
+async node verify_done [phase == 2 && k == N][phase == 3] {
+    phase = 3;
+    term;
+};
+
+async node report [phase == 3 && bad >= 0 && gpu_sum >= 0.0 && cpu_sum >= 0.0][true] {
+    endprogram println!("G0_ELEM_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={}",
+                        bad, gpu_sum, cpu_sum, y[0], y[N - 1]);
+};

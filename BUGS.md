@@ -12008,3 +12008,88 @@ use `CStr`/`to_c_string`.
 
 **Status:** OPEN — semantics/documentation clarification (not a Workstream C
 blocker; the OpenVINO lane avoids the footgun).
+
+## Vulkan driver: VK_SHADER_STAGE_COMPUTE was 6 (invalid) — FIXED 2026-11-06
+
+**Symptom:** every Vulkan compute kernel on Mesa/Intel failed
+`vkCreateComputePipelines`, including a trivial `workid` kernel
+(`[briev_accel/vulkan] compute pipeline failed`), so the accel lane fell back
+to CPU. Shader-module creation succeeded, misleading the search.
+
+**Root cause:** `lib/runtime/briev_dev_vulkan.c` defined
+`VK_SHADER_STAGE_COMPUTE 6u`. The valid `VkShaderStageFlagBits` is **0x20**;
+`0x6` is the tess-control|tess-eval combination, not a single stage. NVIDIA had
+been lenient (or the CUDA/PTX lane masked it); Mesa rejects the pipeline.
+
+**Fix:** `0x20` (the same bit already used in descriptor `stageFlags`).
+**Evidence:** Intel Arc B390 (PTL): pipeline compiled, `workid` produced
+`res[1023]=1023`, elementwise/GEMM G0 gates passed
+(`benchmarks/results/2026-11-06-intel-ptl-g0.md`).
+
+## .bv accel descriptors emitted an EMPTY field table — FIXED 2026-11-06
+
+**Symptom:** every `.bv` accel kernel (pairs, nbody, new G0 fixtures) emitted
+`@briev_kernel_<txn>_fields = private constant [0 x %briev.field] []` and
+`program_bytes=0`. Launch passed `proj_bytes=0`; Vulkan `vkMapMemory` failed
+with `res=-5`, so device output was empty (CPU fallback or all-zero result).
+`.abv` modules were unaffected.
+
+**Root cause:** `kernel_field_table` (src/backend/llvm/kernel.rs) collected
+state names from `items` and **aborted to an empty table** when any name was
+missing from `backend.ctx.field_index_map`. The import resolver splices
+prelude/imported `StateDecl`s (e.g. `stdout_buf`) into `items`; those are not
+program host fields, so the first foreign name emptied the table.
+
+**Fix:** skip names absent from `field_index_map` (foreign fields) while
+keeping the full-list `pos` so `proj_offsets` still address the kernel SSBO.
+Regression test: `test_accel_descriptors_skip_foreign_state_fields`.
+
+## OpenCL driver never fetched a device handle — FIXED 2026-11-06
+
+**Symptom:** `[briev_accel/opencl] clCreateContext failed err=-33`
+(`CL_INVALID_DEVICE`) on NEO, so the OpenCL lane never initialised.
+
+**Root cause:** `briev_dev_opencl_available()` counted GPU devices with
+`clGetDeviceIDs(..., 0, NULL, &nd)` but only fetched a handle in the *fallback*
+branch. When the platform had a GPU (NEO does), `cl_device` stayed NULL.
+
+**Fix:** always fetch the handle for the chosen type (GPU first, then ALL),
+check the returned error and handle.
+
+## OpenCL/IL on Intel NEO: entry point "main" not found — OPEN 2026-11-06
+
+**Symptom:** after the device-handle fix, `clCreateProgramWithIL` + build
+succeed but `clCreateKernel(program, "main")` returns `-46`
+(`CL_INVALID_KERNEL_NAME`); `CL_PROGRAM_KERNEL_NAMES` yields no names. The
+SPIR-V is valid (`spirv-val`), entry point `main`, `LocalSize` present, and
+the same module runs on Vulkan.
+
+**Scope:** Intel NEO's SPIR-V IL path appears not to expose the entry point
+for Briev's module form (possibly an OpenCL-flavored-SPIR-V requirement of
+IGC). Vulkan is the working Intel lane; OpenCL remains the last fallback.
+**Status:** OPEN — needs an IGC/NEO investigation or an OpenCL-specific module
+variant; not a G0 blocker.
+
+## Large `%State` frame exceeds the default 8 MB stack — OPEN 2026-11-06
+
+**Symptom:** a `.bv` with two `Float[1048576]` state arrays (8.4 MB state)
+SIGSEGVs at `main+11` before any work; `main` subtracts `0x8000d0` from `rsp`.
+Default `ulimit -s` is 8192 KB. With `ulimit -s 65536` the same binary runs.
+
+**Root cause:** `%State` is allocated on the stack in `main()` (emitted IR
+comment), so large state arrays are bounded by the process stack, not the
+heap. Repro: `benchmarks/intel_ptl/g0_elem.bv` without the gate's ulimit.
+
+**Status:** OPEN — either lowercase the frame (heap/global state) or document
+and enforce a stack requirement for large-state programs. G0 runs under
+`ulimit -s 65536` meanwhile.
+
+## `let f: Float = 0` emits `store float 0` (invalid IR) — OPEN 2026-11-06
+
+**Symptom:** writing `let gpu_sum: Float = 0;` made `opt` reject the module:
+`error: integer constant must have integer type / store float 0`. `0.0`
+works. Nonzero integer literals presumably have the same form.
+
+**Scope:** frontend literal typing for Float-typed initializers. Repro:
+G0 gate draft (first revision) with `Float = 0` initializers.
+**Status:** OPEN — use `0.0` in Float initializers until narrowed/fixed.

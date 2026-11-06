@@ -1,0 +1,88 @@
+// g0_gemm.bv — G0 Intel gate: 512^3 MatMul on the accel lane vs a CPU dot.
+//
+// 2026-11-06 (intel-dispatch.md §5 G0): GEMM rung for the existing Vulkan /
+// OpenCL SPIR-V lanes on PTL. Inputs are deterministic non-zero f32 values;
+// the verify node recomputes a spread of output elements as ordinary CPU
+// dot products and counts mismatches, so the device path cannot pass by
+// doing nothing. Run with `ulimit -s 65536` (two 512^2 + output f32 arrays
+// exceed the default 8 MB stack frame — BUGS.md 2026-11-06).
+//
+// !> accel: force keeps the tier deterministic; the gate script asserts the
+// verbose "compiled on '<device>'" line so a CPU fallback cannot pass.
+
+!> accel: force;
+import "std/numeric.bv";
+
+const M: Int = 512;
+const N: Int = 512;
+const K: Int = 512;
+const MN: Int = 262144;
+const NS: Int = 4096;  // sampled outputs, spread over the matrix
+
+let i: Int = 0;
+let k: Int = 0;
+let phase: Int = 0;
+let bad: Int = 0;
+let gpu_sum: Float = 0.0;
+let cpu_sum: Float = 0.0;
+
+let a: Float[262144];
+let b: Float[262144];
+let y: Float[262144];
+
+// init (CPU): deterministic values (exact in f32); 4096 per transaction.
+async node init [phase == 0 && i < MN][i == MN] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        a[idx] = ((idx * 7) % 13) as Float * 0.125 - 0.5;
+        b[idx] = ((idx * 3) % 11) as Float * 0.25 - 1.0;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == MN][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane: one work item per output element.
+async accel node gemm [phase == 1 && i < MN][i == MN] {
+    matmul!(a, b, y, M, N, K, i, Float);
+    i = i + 1;
+    term;
+};
+
+async node gemm_done [phase == 1 && i == MN][phase == 2] {
+    phase = 2;
+    k = 0;
+    term;
+};
+
+// host reference: every NS-th output element, recomputed as a CPU dot.
+async node verify [phase == 2 && k < NS][k == NS] {
+    let idx: Int = k * (MN / NS);
+    let row: Int = idx / N;
+    let col: Int = idx % N;
+    let acc: Float = 0;
+    foreach kk in 0..K {
+        acc = acc + a[row * K + kk] * b[kk * N + col];
+    };
+    cpu_sum = cpu_sum + acc;
+    gpu_sum = gpu_sum + y[idx];
+    when acc != y[idx] { bad = bad + 1; };
+    k = k + 1;
+    term;
+};
+
+async node verify_done [phase == 2 && k == NS][phase == 3] {
+    phase = 3;
+    term;
+};
+
+async node report [phase == 3 && bad >= 0 && gpu_sum >= 0.0 - 1000000000000.0
+                   && cpu_sum >= 0.0 - 1000000000000.0][true] {
+    endprogram println!("G0_GEMM_BAD={} GPU_SUM={} CPU_SUM={} Y0={} YN={}",
+                        bad, gpu_sum, cpu_sum, y[0], y[MN - 1]);
+};
