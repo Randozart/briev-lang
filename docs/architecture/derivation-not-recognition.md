@@ -1,6 +1,11 @@
 # Derivation, Not Recognition — the compiler's obligation
 
 **2026-09-30.** Status: foundational doctrine.
+**2026-11-06 amendment:** idiom recognition codified (§12) — derivation
+remains the obligation; recognition of intent-shaped structure with a
+hardware consumer is a licensed accelerant, five gates apply, and
+silicon literally built for an algorithm licenses algorithm-level
+matching to THAT silicon (§12.6).
 **2026-10-30 application:** destination ownership is proof-derived, not
 shape-recognized. Destination/alias/lifetime facts come from semantic value
 graphs and ownership analyses; backend lowering consumes
@@ -229,3 +234,123 @@ the compiler author happened to hand-write; the derivation path
 improved 2.77× in one session without touching a named kernel, because
 every lever acted on the FACTS (j-invariance, pass structure, slice
 geometry) rather than the algorithm name.
+
+---
+
+## 12. Idiom recognition (2026-11-06): derivation-first, with a licensed accelerant
+
+**2026-11-06 amendment (operator decision).** Recognition is the cardinal
+sin (§2) — and the language has always drawn a line inside "recognising":
+the shape recognition in §3 (reduction topology, affine index sets) and
+§7's admissible matchers (the GEMM affine shape) are derivation. This
+amendment names the third category and binds it. **The primacy rule is
+absolute: general derivation is the obligation; idiom recognition is an
+accelerant on the same facts, feeding the same machinery, retiring when
+derivation catches up.**
+
+### 12.1 The three categories
+
+| Category | Recognises | Status | Test |
+|---|---|---|---|
+| **Shape recognition** | structural facts of the declared computation (reduction topology, affine index sets, disjoint counters) | doctrine-clean — this IS derivation (§2) | delete the composite; the pass still fires on structure |
+| **Idiom recognition** | a language-level structural idiom whose semantics a hardware primitive CONTAINS (associative reduce → subgroup reduction; dot-accumulate → DPAS; transpose → register-shuffle path) | permitted under the five gates (§12.2); frontend plan input only | the primitive's semantics ⊇ the idiom's semantics; proof-licensed; disclosed; retired on general parity |
+| **Algorithm recognition** | op names, op sequences, magic constants, identifiers | banned, unchanged (§2, Rule 23) — except §12.6 | none — no license outside the silicon carve-out |
+
+The litmus (operator, 2026-11-06): **idiom recognition matches
+intent-shaped structure that maps to hardware semantics; algorithm
+recognition matches cargo-culted sequences that would live silently in
+the code forever and cause heisenbugs.** The idiom inventory (reduce,
+scan, transpose, map-chain, accumulate) is decades-stable language
+structure; algorithm fashion rotates. An idiom-matched lowering passes
+the year-two test (§6); an algorithm match cannot.
+
+### 12.2 The five gates (all mandatory, every instance)
+
+1. **Structure, not name.** The matcher consumes derived structural facts
+   (single accumulator, associative op, affine reduction axis, op-set
+   closure). Never identifiers, composite names, numeric constants, or
+   op-sequence order.
+2. **Hardware-consumer test.** Fire only when a target primitive's
+   semantics CONTAIN the idiom's semantics. No primitive → no
+   recognition; the shape alone is never a reason, the mapping is.
+3. **Proof license (Rule 25).** Every semantic delta the lowering makes
+   (reassociation, precision) is licensed by the program's
+   contract/proof state. Unlicensed → the general lowering, which stays
+   the default floor.
+4. **Disclosure, both directions.** Firing is a frontend plan decision,
+   disclosed (`reduce-idiom (assoc add, f32) → reduction synthesis
+   (warp-slice)`). Non-firing is diagnosable with the named failed fact.
+   A silent matcher is the violation — Briev is, first and foremost, an
+   honest compiler.
+5. **Retirement gate + ledger.** Every matcher enters the coverage
+   ledger (§8) with its general-path parity check and retires when
+   general derivation reaches parity (Rule 24). A matcher that beats the
+   general path permanently is a failing default (Rule 2) — fix the
+   default.
+
+### 12.3 Primacy of derivation (the operator's constraint)
+
+Idiom recognition is an **accelerant on the same facts the general pass
+consumes** — it routes into the general machinery's plan, never around
+it:
+
+- the matcher's output is a plan input (the frontend decides once,
+  disclosed); the backend never grows a recognition arm (Rule 6,
+  frontend-driven dispatch);
+- the matcher's lifetime is measured parity debt, not privilege —
+  **always try to derive general shape optimization first and most**;
+  every hour spent on a matcher is an hour owed to the general pass, and
+  the ledger's parity check is the invoice;
+- the end state is §6: the matcher fires because the structure is
+  derivable; when derivation catches up, the matcher is deleted and
+  nothing regresses.
+
+### 12.4 What stays banned
+
+Op-sequence matching ("A-then-B-then-C is attention"), magic constants,
+identifier/name matching, backend recognition arms, undisclosed firing,
+ceiling-by-coverage — with exactly one licensed exception, §12.6. The
+GatherElements receipt (intel-backend-harvest §0.2) and the
+fused-attention retirement (§11) are the standing evidence: hand-curated
+tables and named kernels fail in the field; derived machinery wins.
+
+### 12.5 Enforcement
+
+The recognition gate (§7) extends: every idiom matcher carries a ledger
+row (idiom → structural facts → hardware consumer → diagnostic → parity
+test → retirement condition) and a why-not diagnostic path. A matcher
+without the row is a gate failure. First instance: the reduction idiom
+(plan `docs/plans/2026-11-06-idiom-recognition-doctrine.md`, W3).
+
+### 12.6 The silicon carve-out: hardware literally built for the algorithm
+
+Algorithm-level matching has exactly one license: **the consumer is
+silicon literally designed to execute that algorithm.** A fixed-function
+attention unit, a tensor core's MMA datapath, a hardware softmax block,
+an AES/CRC engine — the vendor etched the algorithm into the die; the
+datasheet is public, immutable semantics. Matching the algorithm to its
+designed silicon is therefore not cargo cult: there is nothing silent
+and nothing rot-prone, because the hardware cannot change out from under
+the matcher.
+
+The license is narrow, and the other gates still apply:
+
+- **Literal-build test:** the consumer's public, documented semantics
+  must BE the algorithm (an attention block, not "a block that happens
+  to help attention"). A programmable unit whose current driver library
+  is tuned for an algorithm does NOT qualify — that is catalog
+  recognition (the library ships updates; the die does not).
+- **Proof license:** the numeric contract still licenses precision — a
+  fixed-function fp16-internal softmax fires only when the contract
+  allows.
+- **Disclosure, ledger, retirement:** as §12.2(4,5). Retirement means:
+  when general derivation on programmable silicon reaches the
+  fixed-function unit's numbers, the matcher retires.
+- **Consumer identity:** the match targets that silicon's own interface
+  (its driver/ABI). The carve-out never licenses a software kernel
+  emission "because the algorithm is popular."
+
+Consequence for in-flight work: the PTL node's NPU (fixed-function AI
+blocks, enumerated by OpenVINO alongside CPU/GPU) is a legal
+algorithm-match target under this carve-out; the programmable iGPU is
+not — its datapaths are the §12.1 category-2 case.
