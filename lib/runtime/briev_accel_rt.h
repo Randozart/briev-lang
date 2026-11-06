@@ -236,6 +236,7 @@ typedef struct BrievDeviceDriver {
 extern BrievDeviceDriver briev_dev_cuda;
 extern BrievDeviceDriver briev_dev_vulkan;
 extern BrievDeviceDriver briev_dev_opencl;
+extern BrievDeviceDriver briev_dev_levelzero;
 
 // Shared runtime diagnostics state — defined by the orchestration host
 // (src/accel_rt.rs since Family K), read by the drivers.

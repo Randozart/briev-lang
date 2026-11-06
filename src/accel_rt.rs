@@ -211,6 +211,7 @@ unsafe extern "C" {
     unsafe static briev_dev_cuda: BrievDeviceDriver;
     unsafe static briev_dev_vulkan: BrievDeviceDriver;
     unsafe static briev_dev_opencl: BrievDeviceDriver;
+    unsafe static briev_dev_levelzero: BrievDeviceDriver;
 }
 
 // Shared RT state the C drivers read (declared extern in the header).
@@ -341,17 +342,22 @@ fn select_driver(descs: *const BrievKernelDesc, n: u32) -> *const BrievDeviceDri
     // "most efficient" per the program's actual blobs, not a global
     // "is libcuda loaded" guess.
     let has_ptx = any_kernel_has_ptx(descs, n);
+    // 2026-11-06 (G1, intel-dispatch.md D2): Level Zero slots after Vulkan —
+    // it consumes the same SPIR-V IL (verified on PTL) but its coopmat
+    // acceptance by IGC is still an open gate, so Vulkan stays first.
     let chain = if has_ptx {
         [
             addr_of!(briev_dev_cuda),
             addr_of!(briev_dev_vulkan),
+            addr_of!(briev_dev_levelzero),
             addr_of!(briev_dev_opencl),
         ]
     } else {
         // No PTX: the CUDA driver has nothing to JIT. Vulkan first (the
-        // SPIR-V lane), then OpenCL.
+        // SPIR-V lane), then Level Zero (the IL lane), then OpenCL.
         [
             addr_of!(briev_dev_vulkan),
+            addr_of!(briev_dev_levelzero),
             addr_of!(briev_dev_opencl),
             addr_of!(briev_dev_cuda),
         ]

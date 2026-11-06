@@ -113,7 +113,10 @@ fn build_gpu_rt(out_root: &Path) {
     let arc = out_root.join("libbriev_gpu_rt.a");
     let mut objs = Vec::new();
     let mut all_ok = true;
-    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+    // 2026-11-06 (G1, intel-dispatch.md): Level Zero joins the SPIR-V
+    // consumer set (dlopen libze_loader at runtime — no -lze_loader).
+    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c",
+                "briev_dev_levelzero.c"] {
         let src = rt_dir.join(drv);
         let obj = out_root.join(format!(
             "{}.o",
@@ -185,7 +188,10 @@ fn build_gpu_rt(out_root: &Path) {
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=m");
     println!("cargo:rerun-if-changed={}", rt_dir.join("briev_accel_rt.h").display());
-    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c"] {
+    // 2026-11-06 (G1, intel-dispatch.md): Level Zero joins the SPIR-V
+    // consumer set (dlopen libze_loader at runtime — no -lze_loader).
+    for drv in ["briev_dev_cuda.c", "briev_dev_vulkan.c", "briev_dev_opencl.c",
+                "briev_dev_levelzero.c"] {
         println!("cargo:rerun-if-changed={}", rt_dir.join(drv).display());
     }
     // 2026-09-24 (BUGS.md stale runtime archive): declaring ANY

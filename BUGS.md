@@ -12093,3 +12093,53 @@ works. Nonzero integer literals presumably have the same form.
 **Scope:** frontend literal typing for Float-typed initializers. Repro:
 G0 gate draft (first revision) with `Float = 0` initializers.
 **Status:** OPEN — use `0.0` in Float initializers until narrowed/fixed.
+
+## IGC compiles Briev's Vulkan-flavored SPIR-V IL to an EMPTY kernel set — OPEN 2026-11-06
+
+**Symptom:** feeding Briev's `.bv` offload kernel (Vulkan flavor:
+`OpCapability Shader`, `OpEntryPoint GLCompute`, storage-buffer semantics)
+to Intel IGC produces a module with **zero kernels**:
+- Level Zero: `zeModuleCreate(ZE_MODULE_FORMAT_IL_SPIRV)` returns SUCCESS,
+  `zeModuleGetKernelNames` → count 0, `zeKernelCreate("main")` → `0x78000011`
+  (`benchmarks/results/2026-11-06-intel-ptl-g1.md`).
+- OpenCL: `clCreateProgramWithIL` + build succeed, then
+  `clCreateKernel("main")` → `CL_INVALID_KERNEL_NAME` (-46) with an empty
+  `CL_PROGRAM_KERNEL_NAMES` list.
+The SPIR-V itself is valid (`spirv-val`) and runs on Vulkan (Mesa ANV) —
+G0 gates pass end to end.
+
+**Control:** an OpenCL-flavored module (clang `-x cl`, kernel `k`) exposes its
+kernel through the SAME driver/IGC (`harvest` §3.1a probe; `zeKernelCreate`
+SUCCESS at 2026-11-06 12:07).
+
+**Root cause (working hypothesis):** IGC's IL input path silently accepts
+Vulkan-flavored modules but lowers them to an empty kernel set; it expects
+OpenCL-flavored SPIR-V (`OpCapability Kernel`, `OpEntryPoint Kernel`).
+
+**Briev-side fix direction:** an OpenCL-flavored SPIR-V projection of the
+same kernel image (one emitter change; the kernel module already imports
+`_Z13get_global_idj`, so the builtin linkage is half present).
+Upstream-able: the silent empty-set behavior (vs a clean
+`INVALID_KERNELflavor` error) is an IGC UX bug worth reporting.
+
+**Status:** OPEN — tracked as rung G1.5 in
+`benchmarks/results/2026-11-06-intel-ptl-g1.md`; Vulkan remains the working
+Intel lane.
+
+## Working-tree hazard recurrence (this worktree) — OBSERVED 2026-11-06
+
+The BUGS.md 2026-08-27 hazard class recurred in `briev-intel-xpu` during the
+G1 session: `briev_dev_levelzero.c` transiently vanished (`tar: Cannot stat`)
+and was present again minutes later; a rebuild linked a stale pre-fix
+`briev_dev_vulkan.o` (pipeline failures reappeared with NO source diff) while
+`git status` showed the tree clean. The stale archive masqueraded as a code
+regression for two debug rounds.
+
+**Mitigations that worked:** md5 on every sync, `strings` marker checks on
+archives/binaries (`memtypes`, `levelzero` counts), clean rebuild
+(`rm *.o *.a && touch build.rs`) after confirming source stability, and
+verifying `$BRIEV_HOME/target/compiler-in-briv/` freshness — `brievc run`
+links the accel runtime from that path at program build time, so a stale
+archive silently downgrades every lane.
+**Status:** OPEN as a recurring environment hazard; keep the verification
+habit on any multi-machine/multi-tree session.

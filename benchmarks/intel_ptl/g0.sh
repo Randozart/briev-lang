@@ -69,14 +69,21 @@ run_gate g0_elem vulkan
 echo "== g0: gemm 512^3 =="
 run_gate g0_gemm vulkan
 
-echo "== g0: opencl (reported, not required) =="
-ocl=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=opencl timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g0_elem.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
-if printf '%s\n' "$ocl" | grep -q "compiled on 'opencl'"; then
-    echo "-- opencl: kernel compiled (lane usable)"
-else
-    reason=$(printf '%s\n' "$ocl" | grep -E "clCreateKernel|CL_INVALID_KERNEL_NAME|rejected by driver 'opencl'" | tail -2 | tr '\n' ' ')
-    echo "-- opencl: rejected (${reason:-no route}) — Vulkan remains the working Intel lane"
-fi
+echo "== g0: opencl + levelzero (reported, not required) =="
+report_lane() {
+    local dev="$1"
+    local out
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g0_elem.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    if printf '%s\n' "$out" | grep -q "compiled on '$dev'"; then
+        echo "-- $dev: kernel compiled (lane usable)"
+    else
+        local reason
+        reason=$(printf '%s\n' "$out" | grep -E "$dev" | grep -vE "G0_ELEM|stdout_buf|stdout_fill|folded|counter" | tail -3 | tr '\n' ' ')
+        echo "-- $dev: rejected (${reason:-no route})"
+    fi
+}
+report_lane levelzero
+report_lane opencl
 
 if [ "$fail" -ne 0 ]; then
     echo "G0: FAIL"
