@@ -34,6 +34,7 @@ pub mod stmt;
 pub mod swan_song;
 pub mod loop_carried;
 pub mod loop_shape;
+pub mod modulo_partition;
 pub mod tail_carrier;
 pub mod task_linear;
 pub mod task_segments;

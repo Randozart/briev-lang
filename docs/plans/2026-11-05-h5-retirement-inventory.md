@@ -84,6 +84,12 @@ surfaces still walk the AST:
    run showed 130/5 — a transient AST compile flake; the rerun and a
    second consecutive run are 131/4, 0 mismatches. Watch for recurrence:
    a genuinely failing AST fixture would be a real bug.)
+   **Ported + consumer flipped (2026-11-05):** `modulo_partition` —
+   `src/hir/modulo_partition.rs`, consumer flipped under the flag with a
+   debug equality assert; 2 parity tests (eight-way + negatives) compare
+   HIR == AST including the negative cases. Coverage mirrors the AST's
+   BARE-reactive-txn filter (`node` is the reactive keyword; `txn` is not
+   reactive — the test sources use `node`).
 5. **Interpreter** — deliberately OUT of H5 scope (Rule 5: the
    interpreter is the reference; it stays AST-backed).
 

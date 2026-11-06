@@ -273,7 +273,16 @@ pub fn analyze_program(
     // every backend consumer reads frontend analysis instead of re-walking
     // bodies. See docs/plans/2026-07-31-frontend-driven-dispatch.md §7.
     let density = crate::analysis::density::compute_densities(items);
-    let modulo_partition = crate::analysis::modulo_partition::detect_modulo_partition(items);
+    // 2026-11-05 (H5 inventory port 2): modulo partition from typed HIR under
+    // the flag; debug builds assert exact AST equality.
+    let modulo_partition = if hir_emit_enabled() {
+        let ast = crate::analysis::modulo_partition::detect_modulo_partition(items);
+        let hir = crate::hir::modulo_partition::detect_modulo_partition(&hir);
+        debug_assert_eq!(hir, ast, "HIR/AST modulo-partition drift");
+        hir
+    } else {
+        crate::analysis::modulo_partition::detect_modulo_partition(items)
+    };
     let inline_decisions = build_inline_decisions(items);
     let node_inline_decisions = build_node_inline_decisions(items);
     let has_unguarded_ffi = transition_graph.has_unguarded_ffi.clone();
