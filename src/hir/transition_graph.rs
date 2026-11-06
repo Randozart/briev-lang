@@ -414,42 +414,67 @@ fn simplify_sub(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr
             return (**b).clone();
         }
     }
+    if let Some(r) = simplify_sub_add_pair(expr, lhs, rhs) {
+        return r;
+    }
+    if let Some(r) = simplify_sub_sub_pair(expr, lhs, rhs) {
+        return r;
+    }
+    if int_lit_is(rhs, 0) {
+        return lhs.clone();
+    }
+    fallback.clone()
+}
+
+
+/// `(a + b1) - (a + b2) -> b1 - b2` (shared prefix cancels).
+fn simplify_sub_add_pair(
+    expr: &HirExpr,
+    lhs: &HirExpr,
+    rhs: &HirExpr,
+) -> Option<HirExpr> {
     if let (
         HirExprKind::Binary { op: BinaryOpKind::Add, left: a1, right: b1 },
         HirExprKind::Binary { op: BinaryOpKind::Add, left: a2, right: b2 },
     ) = (&lhs.kind, &rhs.kind)
     {
         if vars_match(a1, a2) && !vars_match(b1, b2) {
-            return rebuild(
+            return Some(rebuild(
                 expr,
                 HirExprKind::Binary {
                     op: BinaryOpKind::Sub,
                     left: Box::new((**b1).clone()),
                     right: Box::new((**b2).clone()),
                 },
-            );
+            ));
         }
     }
+    None
+}
+
+/// `(sa - sb) - (sc - sb) -> sa - sc` (shared subtrahend cancels).
+fn simplify_sub_sub_pair(
+    expr: &HirExpr,
+    lhs: &HirExpr,
+    rhs: &HirExpr,
+) -> Option<HirExpr> {
     if let (
         HirExprKind::Binary { op: BinaryOpKind::Sub, left: sa, right: sb1 },
         HirExprKind::Binary { op: BinaryOpKind::Sub, left: sc, right: sb2 },
     ) = (&lhs.kind, &rhs.kind)
     {
         if vars_match(sb1, sb2) {
-            return rebuild(
+            return Some(rebuild(
                 expr,
                 HirExprKind::Binary {
                     op: BinaryOpKind::Sub,
                     left: Box::new((**sa).clone()),
                     right: Box::new((**sc).clone()),
                 },
-            );
+            ));
         }
     }
-    if int_lit_is(rhs, 0) {
-        return lhs.clone();
-    }
-    fallback.clone()
+    None
 }
 
 fn simplify_add(expr: &HirExpr, lhs: &HirExpr, rhs: &HirExpr, fallback: &HirExpr) -> HirExpr {
@@ -529,45 +554,65 @@ fn detect_increments(body: &[HirStmt]) -> Option<IncrementInfo> {
         let Some(name) = expr_name(lhs) else {
             continue;
         };
-        if let HirExprKind::Binary { op: BinaryOpKind::Add, left: a, right: b } = &expr.kind {
+        if let Some(info) = self_increment_of(&name, expr) {
+            return Some(info);
+        }
+        if let Some(info) = net_increment_of(&name, expr) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+/// `x = x + K` / `x = K + x` / `x = x - K` with K > 0.
+fn self_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
+    let HirExprKind::Binary { op, left: a, right: b } = &expr.kind else {
+        return None;
+    };
+    let (var, delta) = match op {
+        BinaryOpKind::Add => {
             if let (HirExprKind::Identifier(var), Some(delta)) = (&a.kind, lit_int(b)) {
-                if *var == name && delta > 0 {
-                    return Some(IncrementInfo { var: name, delta });
-                }
-            }
-            if let (HirExprKind::Identifier(var), Some(delta)) = (&b.kind, lit_int(a)) {
-                if *var == name && delta > 0 {
-                    return Some(IncrementInfo { var: name, delta });
-                }
+                (var, delta)
+            } else if let (HirExprKind::Identifier(var), Some(delta)) = (&b.kind, lit_int(a)) {
+                (var, delta)
+            } else {
+                return None;
             }
         }
-        if let HirExprKind::Binary { op: BinaryOpKind::Sub, left: a, right: b } = &expr.kind {
+        BinaryOpKind::Sub => {
             if let (HirExprKind::Identifier(var), Some(delta)) = (&a.kind, lit_int(b)) {
-                if *var == name && delta > 0 {
-                    return Some(IncrementInfo { var: name, delta });
-                }
+                (var, delta)
+            } else {
+                return None;
             }
         }
-        if let HirExprKind::Binary { op: BinaryOpKind::Sub, left: inner, right: rhs } = &expr.kind {
-            if let HirExprKind::Binary { op: BinaryOpKind::Add, left: lhs2, right: rhs2 } = &inner.kind
-            {
-                let is_self_add =
-                    matches!(&lhs2.kind, HirExprKind::Identifier(v) if *v == name);
-                if is_self_add {
-                    let r1 = lit_int(rhs2);
-                    let r2 = lit_int(rhs);
-                    if let (Some(r1_val), Some(r2_val)) = (r1, r2) {
-                        let net = r1_val - r2_val;
-                        if net > 0 {
-                            return Some(IncrementInfo { var: name, delta: net });
-                        }
-                    }
-                    if r1.map_or(false, |v| v >= 1) && r2.is_none() {
-                        return Some(IncrementInfo { var: name, delta: 1 });
-                    }
-                }
-            }
+        _ => return None,
+    };
+    (var == name && delta > 0).then(|| IncrementInfo { var: name.to_string(), delta })
+}
+
+/// `x = (x + K1) - K2` (net positive) or `x = (x + K1) - K2` with K2 absent
+/// (single-step). Mirrors the AST detector's nested-shape arm.
+fn net_increment_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
+    let HirExprKind::Binary { op: BinaryOpKind::Sub, left: inner, right: rhs } = &expr.kind else {
+        return None;
+    };
+    let HirExprKind::Binary { op: BinaryOpKind::Add, left: lhs2, right: rhs2 } = &inner.kind else {
+        return None;
+    };
+    if !matches!(&lhs2.kind, HirExprKind::Identifier(v) if *v == name) {
+        return None;
+    }
+    let r1 = lit_int(rhs2);
+    let r2 = lit_int(rhs);
+    if let (Some(r1_val), Some(r2_val)) = (r1, r2) {
+        let net = r1_val - r2_val;
+        if net > 0 {
+            return Some(IncrementInfo { var: name.to_string(), delta: net });
         }
+    }
+    if r1.map_or(false, |v| v >= 1) && r2.is_none() {
+        return Some(IncrementInfo { var: name.to_string(), delta: 1 });
     }
     None
 }
@@ -580,28 +625,33 @@ fn detect_popcount_decay(body: &[HirStmt]) -> Option<IncrementInfo> {
         let HirExprKind::Identifier(name) = &lhs.kind else {
             continue;
         };
-        let name = name.clone();
-        if let HirExprKind::Binary { op: BinaryOpKind::BitAnd, left: a, right: b } = &expr.kind {
-            let self_minus_one = |e: &HirExpr| {
-                matches!(
-                    &e.kind,
-                    HirExprKind::Binary {
-                        op: BinaryOpKind::Sub,
-                        left,
-                        right
-                    } if matches!(&left.kind, HirExprKind::Identifier(v) if *v == name)
-                        && matches!(right.kind, HirExprKind::Literal(HirLiteral::Int(1)))
-                )
-            };
-            let a_is_self = matches!(&a.kind, HirExprKind::Identifier(v) if *v == name);
-            if a_is_self && self_minus_one(b) {
-                return Some(IncrementInfo { var: name, delta: 1 });
-            }
-            let b_is_self = matches!(&b.kind, HirExprKind::Identifier(v) if *v == name);
-            if b_is_self && self_minus_one(a) {
-                return Some(IncrementInfo { var: name, delta: 1 });
-            }
+        if let Some(info) = popcount_of(name, expr) {
+            return Some(info);
         }
+    }
+    None
+}
+
+/// `x = x & (x - 1)` in either operand order.
+fn popcount_of(name: &str, expr: &HirExpr) -> Option<IncrementInfo> {
+    let HirExprKind::Binary { op: BinaryOpKind::BitAnd, left: a, right: b } = &expr.kind else {
+        return None;
+    };
+    let self_minus_one = |e: &HirExpr| {
+        matches!(
+            &e.kind,
+            HirExprKind::Binary {
+                op: BinaryOpKind::Sub,
+                left,
+                right
+            } if matches!(&left.kind, HirExprKind::Identifier(v) if *v == name)
+                && matches!(right.kind, HirExprKind::Literal(HirLiteral::Int(1)))
+        )
+    };
+    let a_is_self = matches!(&a.kind, HirExprKind::Identifier(v) if *v == name);
+    let b_is_self = matches!(&b.kind, HirExprKind::Identifier(v) if *v == name);
+    if (a_is_self && self_minus_one(b)) || (b_is_self && self_minus_one(a)) {
+        return Some(IncrementInfo { var: name.to_string(), delta: 1 });
     }
     None
 }
@@ -615,26 +665,8 @@ fn detect_all_increments(body: &[HirStmt]) -> Vec<IncrementInfo> {
         let Some(name) = expr_name(lhs) else {
             continue;
         };
-        if let HirExprKind::Binary { op: BinaryOpKind::Add, left: a, right: b } = &expr.kind {
-            if let (HirExprKind::Identifier(var), Some(delta)) = (&a.kind, lit_int(b)) {
-                if *var == name && delta > 0 {
-                    results.push(IncrementInfo { var: name, delta });
-                    continue;
-                }
-            }
-            if let (HirExprKind::Identifier(var), Some(delta)) = (&b.kind, lit_int(a)) {
-                if *var == name && delta > 0 {
-                    results.push(IncrementInfo { var: name, delta });
-                    continue;
-                }
-            }
-        }
-        if let HirExprKind::Binary { op: BinaryOpKind::Sub, left: a, right: b } = &expr.kind {
-            if let (HirExprKind::Identifier(var), Some(delta)) = (&a.kind, lit_int(b)) {
-                if *var == name && delta > 0 {
-                    results.push(IncrementInfo { var: name, delta });
-                }
-            }
+        if let Some(info) = self_increment_of(&name, expr) {
+            results.push(info);
         }
     }
     results

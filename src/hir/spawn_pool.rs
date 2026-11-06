@@ -61,7 +61,7 @@ pub fn analyze(
                 names: vec![g.name.clone()],
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
-                modifiers: g.modifiers.clone(),
+                modifiers: g.modifiers.iter().map(|m| crate::ast::Annotation { name: m.clone(), value: None }).collect(),
             },
         };
         let mut live: HashMap<String, i64> = HashMap::new();

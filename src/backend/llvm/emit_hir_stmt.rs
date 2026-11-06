@@ -183,12 +183,6 @@ fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
     // dual-fueled value path. Reconstructibility checked BEFORE any
     // emission (task-handle registration and slot binding come first).
     if let HirStmtKind::Let { name, names, ty, expr, modifiers, .. } = &stmt.kind {
-        // HIR keeps modifier NAMES; the AST arm reads names only (`vol`),
-        // so name-only Annotations are lossless for emission.
-        let ast_modifiers: Vec<crate::ast::top::Annotation> = modifiers
-            .iter()
-            .map(|m| crate::ast::top::Annotation { name: m.clone(), value: None })
-            .collect();
         let Some(ast_expr) = expr.as_ref().and_then(crate::hir::to_ast::expr) else {
             if expr.is_some() {
                 return None;
@@ -200,7 +194,7 @@ fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
                 name,
                 names,
                 ty.as_ref(),
-                &ast_modifiers,
+                modifiers,
                 &super::emit_stmt::LetValue::Ast(None),
             ));
         };
@@ -211,7 +205,7 @@ fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
             name,
             names,
             ty.as_ref(),
-            &ast_modifiers,
+            modifiers,
             &super::emit_stmt::LetValue::Hir(Some(expr.as_ref().unwrap()), &ast_expr),
         ));
     }

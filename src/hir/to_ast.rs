@@ -189,10 +189,7 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
             names: names.clone(),
             ty: ty.clone(),
             expr: opt_expr(e)?,
-            modifiers: modifiers
-                .iter()
-                .map(|m| Annotation { name: m.clone(), value: None })
-                .collect(),
+            modifiers: modifiers.clone(),
         },
         HirStmtKind::Assign(l, r) => Statement::Assign(expr(l)?, expr(r)?),
         HirStmtKind::ArrowAssign { target, value, consume } => Statement::ArrowAssign {

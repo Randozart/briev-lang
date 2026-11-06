@@ -29,7 +29,7 @@ pub enum HirStmtKind {
         ty: Option<Type>,
         expr: Option<HirExpr>,
         /// Declared modifiers (`state`, `plain`, `out`, `vol`, …).
-        modifiers: Vec<String>,
+        modifiers: Vec<crate::ast::Annotation>,
     },
     Assign(HirExpr, HirExpr),
     ArrowAssign {

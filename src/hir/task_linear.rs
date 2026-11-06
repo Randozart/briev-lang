@@ -45,7 +45,7 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
                 names: vec![g.name.clone()],
                 ty: g.ty.clone(),
                 expr: g.expr.clone(),
-                modifiers: g.modifiers.clone(),
+                modifiers: g.modifiers.iter().map(|m| crate::ast::Annotation { name: m.clone(), value: None }).collect(),
             },
         };
         check_list(

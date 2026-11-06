@@ -628,7 +628,7 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
             names: names.clone(),
             ty: ty.clone(),
             expr: expr.as_ref().map(|expr| lower_expr(expr, ids)),
-            modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
+            modifiers: modifiers.clone(),
         },
         Statement::Assign(target, value) => {
             HirStmtKind::Assign(lower_expr(target, ids), lower_expr(value, ids))
