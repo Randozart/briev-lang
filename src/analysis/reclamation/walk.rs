@@ -234,8 +234,9 @@ impl Builder<'_> {
                 }
             }
             Statement::Assign(target, value) => {
+                let allocating = expression_allocates(value);
                 let value = self.expression(value);
-                self.assign(target, value);
+                self.assign(target, value, allocating);
             }
             Statement::Term(Some(value)) | Statement::Tail(value) => {
                 let value = self.expression(value); self.graph.copy(value, self.result);
@@ -292,7 +293,7 @@ impl Builder<'_> {
         self.statements(&arm.body);
     }
 
-    fn assign(&mut self, target: &Expr, value: Node) {
+    fn assign(&mut self, target: &Expr, value: Node, allocating: bool) {
         if let Expr::Identifier(name) = target {
             let target = self.binding(name);
             self.graph.copy(value, target);
@@ -316,7 +317,7 @@ impl Builder<'_> {
                 // leave the caller's region active and reclaim the storage when
                 // the caller exits, dangling the handle the caller keeps.
                 if let Expr::Identifier(root_name) = root {
-                    if self.param_names.contains(root_name.as_str()) {
+                    if allocating && self.param_names.contains(root_name.as_str()) {
                         self.graph.incoming_store_owners.insert(self.owner.into());
                     }
                 }
@@ -804,4 +805,25 @@ fn projection_root_and_path(expr: &Expr) -> Option<(&Expr, String)> {
             _ => return None,
         }
     }
+}
+
+/// 2026-11-07 (nested field store): does evaluating this expression create
+/// storage that can outlive the producing frame? Used to mark a callable that
+/// publishes such storage into an incoming parameter's field as a barrier.
+/// Scalar stores (`schedule.offered = total`) never allocate, so they must not
+/// disable the caller's region (that turned a per-sample temporary into a
+/// leaked heap block in the process collector).
+fn expression_allocates(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call(..)
+            | Expr::StructLiteral { .. }
+            | Expr::List(_)
+            | Expr::Tuple(_)
+            | Expr::Slice { .. }
+            | Expr::AddrOf(_)
+            | Expr::If(..)
+            | Expr::Match(..)
+            | Expr::Block(_)
+    )
 }
