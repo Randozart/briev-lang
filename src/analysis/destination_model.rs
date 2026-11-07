@@ -2748,6 +2748,40 @@ defn make(x: Int) -> Parent {
     }
 
     #[test]
+    fn nested_field_store_aliases_receiver_lifetime() {
+        // 2026-11-07: assigning a constructed object into a field of a
+        // parameter reached through MORE THAN ONE projection (`w.mid.inner`)
+        // must record the same ObjectLifetime escape as the depth-1 form.
+        // Before the fix only `x.field = …` (base = bare identifier) was
+        // recognized, so the nested literal stayed a frame image and its
+        // handle dangled after the defn returned.
+        let (_, plan) = analyze_items(
+            r#"
+obj Inner { fd: Int; };
+obj Mid { a: Int; inner: Inner; b: Int; };
+obj Wrap { marker: Int; mid: Mid; };
+defn assign(w: Wrap) -> Void {
+    w.mid.inner = Inner { fd: 3 };
+};
+"#,
+        );
+        let inner = plan
+            .object_values
+            .values()
+            .find(|value| value.object == "Inner")
+            .expect("nested-store object");
+        assert!(
+            inner.requires_materialization,
+            "a nested field store must own the constructed object"
+        );
+        assert!(inner.escapes.contains(&EscapeKind::ObjectLifetime));
+        assert!(!plan
+            .stack_object_types_by_owner()
+            .get("defn:assign")
+            .is_some_and(|types| types.contains("Inner")));
+    }
+
+    #[test]
     fn stack_object_types_require_all_aliases_non_escaping() {
         let (_, local) = analyze_items(
             r#"

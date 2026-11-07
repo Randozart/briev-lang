@@ -191,7 +191,8 @@ fn body(graph: &mut Graph, owner: &str, params: &[(String, crate::ast::Type)], s
     let Some(callable) = graph.callables.get(owner).cloned() else { return };
     let bindings = params.iter().zip(callable.params).map(|((name, _), node)| (name.clone(), node)).collect();
     let types = params.iter().cloned().collect();
-    let mut builder = Builder { graph, owner, bindings, types, result: callable.result };
+    let param_names = params.iter().map(|(name, _)| name.clone()).collect();
+    let mut builder = Builder { graph, owner, bindings, types, result: callable.result, param_names };
     builder.statements(statements);
 }
 
@@ -201,6 +202,7 @@ struct Builder<'a> {
     bindings: BTreeMap<String, Node>,
     types: BTreeMap<String, crate::ast::Type>,
     result: Node,
+    param_names: BTreeSet<String>,
 }
 
 impl Builder<'_> {
@@ -232,8 +234,9 @@ impl Builder<'_> {
                 }
             }
             Statement::Assign(target, value) => {
+                let allocating = expression_allocates(value);
                 let value = self.expression(value);
-                self.assign(target, value);
+                self.assign(target, value, allocating);
             }
             Statement::Term(Some(value)) | Statement::Tail(value) => {
                 let value = self.expression(value); self.graph.copy(value, self.result);
@@ -290,15 +293,43 @@ impl Builder<'_> {
         self.statements(&arm.body);
     }
 
-    fn assign(&mut self, target: &Expr, value: Node) {
+    fn assign(&mut self, target: &Expr, value: Node, allocating: bool) {
         if let Expr::Identifier(name) = target {
             let target = self.binding(name);
             self.graph.copy(value, target);
             return;
         }
-        if let Expr::Field(base, field) = target {
-            let base = self.expression(base);
-            self.graph.constraints.push(Constraint::FieldStore(base, field.clone(), value)); return;
+        if let Expr::Field(_, _) = target {
+            // 2026-11-07 (nested field store): attribute the store to the ROOT
+            // receiver so a store through more than one projection
+            // (`p.mid.inner = …`) is seen exactly like `p.inner = …`.
+            // Resolving the intermediate `p.mid` through `expression` yields a
+            // field-load node with no contents, so the store landed nowhere and
+            // the allocation was wrongly licensed as a reclaimable
+            // function-region value — its handle then dangled after the region
+            // was freed. Peeling the chain to `p` keeps the allocation
+            // reachable from the incoming parameter, which classifies the
+            // callable as a barrier instead of a region.
+            if let Some((root, path)) = projection_root_and_path(target) {
+                // 2026-11-07: a store into a projection of an INCOMING receiver
+                // publishes storage into caller-owned memory. Record the owner
+                // so the plan marks it a barrier: an INHERIT lowering would
+                // leave the caller's region active and reclaim the storage when
+                // the caller exits, dangling the handle the caller keeps.
+                if let Expr::Identifier(root_name) = root {
+                    if allocating && self.param_names.contains(root_name.as_str()) {
+                        self.graph.incoming_store_owners.insert(self.owner.into());
+                    }
+                }
+                let base = self.expression(root);
+                self.graph.constraints.push(Constraint::FieldStore(base, path, value));
+                return;
+            }
+            if let Expr::Field(base, field) = target {
+                let base = self.expression(base);
+                self.graph.constraints.push(Constraint::FieldStore(base, field.clone(), value));
+                return;
+            }
         }
         let base = match target {
             Expr::Field(base, _) | Expr::Index(base, _) | Expr::Deref(base) => self.expression(base),
@@ -752,4 +783,47 @@ impl Builder<'_> {
         let inputs: Vec<_> = self.bindings.values().copied().collect();
         self.capture(&inputs);
     }
+}
+
+/// 2026-11-07 (nested field store): root receiver and dotted field path of a
+/// pure field-projection chain (`p.mid.inner` → (`p`, `mid.inner`)). Returns
+/// `None` for any chain that is not a plain identifier followed only by field
+/// segments, so index/deref targets keep their existing handling.
+fn projection_root_and_path(expr: &Expr) -> Option<(&Expr, String)> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut current = expr;
+    loop {
+        match current {
+            Expr::Field(base, field) => {
+                names.push(field.as_str());
+                current = base.as_ref();
+            }
+            Expr::Identifier(_) => {
+                names.reverse();
+                return Some((current, names.join(".")));
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// 2026-11-07 (nested field store): does evaluating this expression create
+/// storage that can outlive the producing frame? Used to mark a callable that
+/// publishes such storage into an incoming parameter's field as a barrier.
+/// Scalar stores (`schedule.offered = total`) never allocate, so they must not
+/// disable the caller's region (that turned a per-sample temporary into a
+/// leaked heap block in the process collector).
+fn expression_allocates(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Call(..)
+            | Expr::StructLiteral { .. }
+            | Expr::List(_)
+            | Expr::Tuple(_)
+            | Expr::Slice { .. }
+            | Expr::AddrOf(_)
+            | Expr::If(..)
+            | Expr::Match(..)
+            | Expr::Block(_)
+    )
 }

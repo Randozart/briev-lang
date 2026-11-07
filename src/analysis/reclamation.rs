@@ -76,6 +76,12 @@ struct Graph {
     variant_types: BTreeMap<String, (Vec<String>, Vec<crate::ast::Type>)>,
     escaped: BTreeSet<Node>,
     unsupported: BTreeSet<String>,
+    /// 2026-11-07: callables that store a value into a projection of an
+    /// incoming (parameter) receiver. Such a store publishes storage into
+    /// caller-owned memory, so the callable must be a barrier (suspend the
+    /// caller region) rather than an inert INHERIT whose allocations the
+    /// caller's region would reclaim.
+    incoming_store_owners: BTreeSet<String>,
 }
 
 impl Default for Graph {
@@ -83,7 +89,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new() }
     }
 }
 
@@ -235,6 +241,7 @@ impl Graph {
             if let Some(owner) = self.allocation_owner.get(root) { plan.barriers.insert(owner.clone()); }
         }
         plan.barriers.extend(self.unsupported.iter().cloned());
+        plan.barriers.extend(self.incoming_store_owners.iter().cloned());
         for (name, callable) in &self.callables {
             self.classify(name, callable, &mut plan);
         }
@@ -269,6 +276,21 @@ impl Graph {
         let retained = self.reachable(incoming);
         if !retained.is_disjoint(&allocations) {
             let owners: BTreeSet<_> = retained.intersection(&allocations).filter_map(|root| self.allocation_owner.get(root)).collect();
+            // 2026-11-07: when THIS callable's own allocation survives in
+            // incoming storage it is not reclaimable with this frame. Mark the
+            // owner a BARRIER, not merely "not a region": a non-region,
+            // non-barrier callable lowers as INHERIT, which keeps the caller's
+            // region active, so its region_malloc lands in that region and is
+            // freed when the caller returns — the escaping handle then dangles.
+            // A barrier suspends the caller's region, so the allocation falls
+            // back to plain malloc. Only own allocations count: a caller-owned
+            // allocation reached through an incoming parameter (a callee's
+            // `handle_returns` result) is not this frame's to reclaim, and
+            // flagging it would spuriously barrier a callable that is a safe
+            // region.
+            if owners.iter().any(|owner| owner.as_str() == name) {
+                plan.barriers.insert(name.into());
+            }
             plan.reasons.insert(name.into(), format!("allocation may survive in incoming storage: {owners:?}"));
             return;
         }
@@ -465,6 +487,50 @@ mod tests {
         "#);
         assert!(plan.regions.contains("inspect"), "{plan:?}");
         assert!(!plan.regions.contains("escape"), "returned tuple payload must survive: {plan:?}");
+    }
+
+    #[test]
+    fn nested_field_store_prevents_a_region() {
+        // 2026-11-07: a constructed object stored into a field reached through
+        // more than one projection of a parameter escapes into that parameter's
+        // storage. The callable must be a barrier (heap), never a reclaimable
+        // region whose memory is freed on return. Before the fix the store was
+        // attributed to a content-less intermediate field-load node, so the
+        // allocation looked reclaimable and its handle dangled.
+        let plan = derive(r#"
+            obj Inner { fd: Int; };
+            obj Mid { a: Int; inner: Inner; b: Int; };
+            obj Wrap { marker: Int; mid: Mid; };
+            defn assign(w: Wrap) -> Void {
+                w.mid.inner = Inner { fd: 3 };
+            };
+        "#);
+        assert!(
+            !plan.regions.contains("assign"),
+            "a nested field store must keep the allocation alive: {plan:?}"
+        );
+        assert!(
+            plan.barriers.contains("assign"),
+            "an allocation surviving in incoming storage must suspend the caller region: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn escaping_allocation_is_a_barrier_not_inherit() {
+        // A callable that stores a constructed object into a field of an
+        // incoming parameter must lower as a BARRIER. Lowering it as INHERIT
+        // (neither region nor barrier) keeps the caller's region active, so the
+        // allocation is adopted by that region and freed when the caller
+        // returns.
+        let plan = derive(r#"
+            obj Inner { fd: Int; };
+            obj Mid { a: Int; inner: Inner; b: Int; };
+            defn store(m: Mid) -> Void {
+                m.inner = Inner { fd: 3 };
+            };
+        "#);
+        assert!(!plan.regions.contains("store"), "{plan:?}");
+        assert!(plan.barriers.contains("store"), "{plan:?}");
     }
 
     #[test]
