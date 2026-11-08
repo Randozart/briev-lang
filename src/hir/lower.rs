@@ -86,6 +86,144 @@ struct LowerOutputs<'a> {
     has_triggers: bool,
 }
 
+
+/// Cast-edge / cross-op bindings named by a protocol definition (emission
+/// roots; mirrors the AST index).
+fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOutputs<'_>) {
+    for edge in &pd.cast_edges {
+        if let Some(b) = &edge.binding {
+            out.protocol_binding_fns.push(b.fn_name.clone());
+        }
+    }
+    for op in &pd.cross_ops {
+        if let Some(pv) = &op.impl_args {
+            crate::analysis::defn_liveness::collect_binding_fns(pv, out.protocol_binding_fns);
+        }
+    }
+}
+
+/// TypeDef members (owner-qualified) plus the type declaration itself.
+fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    for member in &td.body.members {
+        match member {
+            TopLevel::Definition(d) => {
+                let mut c = lower_definition(d, HirCallableKind::MemberDefn, false, None, ids);
+                c.owner = Some(td.name.clone());
+                out.callables.push(c);
+            }
+            TopLevel::Transaction(t) => {
+                let mut c =
+                    lower_transaction(t, HirCallableKind::MemberTransaction, false, None, ids);
+                c.owner = Some(td.name.clone());
+                out.callables.push(c);
+            }
+            _ => {}
+        }
+    }
+    if let Some(decl) = lower_type_def(td, ids) {
+        out.types.push(decl);
+    }
+}
+
+/// Impl members: type-qualified (`Type::member`) keys used by needs_state.
+fn lower_impl_item(imp: &crate::ast::top::ImplDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    for f in &imp.functions {
+        if f.body.is_empty() {
+            continue;
+        }
+        let mut c = lower_definition(f, HirCallableKind::MemberDefn, false, None, ids);
+        c.owner = Some(imp.target.clone());
+        c.is_impl_fn = true;
+        out.callables.push(c);
+    }
+}
+
+/// Trait defaults are indexed by BARE name plus the requirement-slot table.
+fn lower_trait_item(tr: &crate::ast::top::TraitDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    if !out.trait_functions.iter().any(|(n, _)| n == &tr.name) {
+        out.trait_functions.push((
+            tr.name.clone(),
+            tr.functions.iter().map(|d| d.name.clone()).collect(),
+        ));
+    }
+    for f in &tr.functions {
+        if f.body.is_empty() {
+            continue;
+        }
+        let mut c = lower_definition(f, HirCallableKind::MemberDefn, false, None, ids);
+        c.owner = Some(tr.name.clone());
+        c.trait_default = true;
+        out.callables.push(c);
+    }
+}
+
+/// `sync<domains>`: lower the inner item and tag its callables with the
+/// domains (effective_txns parity).
+struct SyncGroupCtx<'a> {
+    item: &'a TopLevel,
+    domains: &'a [String],
+    exported: bool,
+    export_symbol: Option<String>,
+}
+
+fn lower_sync_group(ctx: &SyncGroupCtx<'_>, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    let before = out.callables.len();
+    lower_item(ctx.item, ctx.exported, ctx.export_symbol.clone(), ids, out);
+    for c in &mut out.callables[before..] {
+        c.sync_domains = ctx.domains.to_vec();
+    }
+}
+
+
+/// Top-level `let` (non-exported) → state-field leaf global.
+fn lower_global_statement(
+    stmt: &crate::ast::Statement,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
+    let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt else {
+        return;
+    };
+    let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
+        "state" => Some("state".to_string()),
+        "plain" => Some("plain".to_string()),
+        _ => None,
+    });
+    out.globals.push(HirGlobal {
+        node: ids.node(),
+        item: ids.item(),
+        name: name.clone(),
+        ty: ty.clone(),
+        expr: expr.as_ref().map(|e| lower_expr(e, ids)),
+        declared_storage,
+        is_state_decl: false,
+        modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
+        span: None,
+    });
+}
+
+
+/// Top-level `const`: the name set, initializer, and declared type.
+fn lower_constant_item(
+    c: &crate::ast::top::Constant,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
+    out.constants.push(c.name.clone());
+    out.const_exprs.push((c.name.clone(), lower_expr(&c.expr, ids)));
+    out.const_types.push((c.name.clone(), c.ty.clone()));
+}
+
+/// Top-level `init` declaration.
+fn lower_init_item(i: &crate::ast::top::InitDecl, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    out.inits.push(HirInit {
+        name: i.name.clone(),
+        bound: i.bound.clone(),
+        value: i.value.as_ref().map(|e| lower_expr(e, ids)),
+        body: lower_body(&i.body, ids),
+    });
+}
+
 fn lower_item(
     item: &TopLevel,
     exported: bool,
@@ -128,23 +266,7 @@ fn lower_item(
                 out.trigger_names.push(trg.name.clone());
             }
         }
-        TopLevel::ProtocolDef(pd) => {
-            // 2026-11-05: cast-edge / cross-op bindings are called by the
-            // casting graph at emission — root them like the AST index does.
-            for edge in &pd.cast_edges {
-                if let Some(b) = &edge.binding {
-                    out.protocol_binding_fns.push(b.fn_name.clone());
-                }
-            }
-            for op in &pd.cross_ops {
-                if let Some(pv) = &op.impl_args {
-                    crate::analysis::defn_liveness::collect_binding_fns(
-                        pv,
-                        out.protocol_binding_fns,
-                    );
-                }
-            }
-        }
+        TopLevel::ProtocolDef(pd) => lower_protocol_bindings(pd, out),
         TopLevel::Export(export) => {
             let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
             lower_item(&export.inner, true, symbol, ids, out);
@@ -153,111 +275,20 @@ fn lower_item(
         // reactor still dispatches. `analysis::effective_txns` walks these;
         // HIR must contain them or live-field/dispatch analyses lose the node.
         TopLevel::SyncGroup { item, domains } => {
-            let before = out.callables.len();
-            lower_item(item, exported, export_symbol, ids, out);
-            for c in &mut out.callables[before..] {
-                c.sync_domains = domains.clone();
-            }
+            let ctx = SyncGroupCtx { item, domains, exported, export_symbol };
+            lower_sync_group(&ctx, ids, out);
         }
-        TopLevel::TypeDef(td) => {
-            for member in &td.body.members {
-                match member {
-                    TopLevel::Definition(d) => {
-                        let mut c = lower_definition(
-                            d,
-                            HirCallableKind::MemberDefn,
-                            false,
-                            None,
-                            ids,
-                        );
-                        c.owner = Some(td.name.clone());
-                        out.callables.push(c);
-                    }
-                    TopLevel::Transaction(t) => {
-                        let mut c = lower_transaction(
-                            t,
-                            HirCallableKind::MemberTransaction,
-                            false,
-                            None,
-                            ids,
-                        );
-                        c.owner = Some(td.name.clone());
-                        out.callables.push(c);
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(decl) = lower_type_def(td, ids) {
-                out.types.push(decl);
-            }
-        }
+        TopLevel::TypeDef(td) => lower_typedef_item(td, ids, out),
         // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
         // the keys the needs_state fixpoint and type_stateful_members use.
-        TopLevel::Impl(imp) => {
-            for f in &imp.functions {
-                if f.body.is_empty() {
-                    continue;
-                }
-                let mut c = lower_definition(
-                    f,
-                    HirCallableKind::MemberDefn,
-                    false,
-                    None,
-                    ids,
-                );
-                c.owner = Some(imp.target.clone());
-                c.is_impl_fn = true;
-                out.callables.push(c);
-            }
-        }
+        TopLevel::Impl(imp) => lower_impl_item(imp, ids, out),
         // Trait defaults are indexed by BARE name (no type qualification), so a
         // default shared by stateful and stateless conformers stays one node.
-        TopLevel::Trait(tr) => {
-            if !out.trait_functions.iter().any(|(n, _)| n == &tr.name) {
-                out.trait_functions.push((
-                    tr.name.clone(),
-                    tr.functions.iter().map(|d| d.name.clone()).collect(),
-                ));
-            }
-            for f in &tr.functions {
-                if f.body.is_empty() {
-                    continue;
-                }
-                let mut c = lower_definition(
-                    f,
-                    HirCallableKind::MemberDefn,
-                    false,
-                    None,
-                    ids,
-                );
-                c.owner = Some(tr.name.clone());
-                c.trait_default = true;
-                out.callables.push(c);
-            }
-        }
+        TopLevel::Trait(tr) => lower_trait_item(tr, ids, out),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
-        TopLevel::Statement(stmt) if !exported => {
-            if let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt.as_ref() {
-                let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
-                    "state" => Some("state".to_string()),
-                    "plain" => Some("plain".to_string()),
-                    _ => None,
-                });
-                out.globals.push(HirGlobal {
-                    node: ids.node(),
-                    item: ids.item(),
-                    name: name.clone(),
-                    ty: ty.clone(),
-                    expr: expr.as_ref().map(|e| lower_expr(e, ids)),
-                    declared_storage,
-                    is_state_decl: false,
-                    modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
-                    span: None,
-                });
-            }
-        }
+        TopLevel::Statement(stmt) if !exported => lower_global_statement(stmt, ids, out),
         TopLevel::StateDecl(s) if !exported => out.globals.push(HirGlobal {
             node: ids.node(),
             item: ids.item(),
@@ -277,18 +308,8 @@ fn lower_item(
             params: fb.inputs.clone(),
             ret: fb.success_output.first().map(|(_, t)| t.clone()),
         }),
-        TopLevel::Constant(c) => {
-            out.constants.push(c.name.clone());
-            out.const_exprs
-                .push((c.name.clone(), lower_expr(&c.expr, ids)));
-            out.const_types.push((c.name.clone(), c.ty.clone()));
-        }
-        TopLevel::Init(i) => out.inits.push(HirInit {
-            name: i.name.clone(),
-            bound: i.bound.clone(),
-            value: i.value.as_ref().map(|e| lower_expr(e, ids)),
-            body: lower_body(&i.body, ids),
-        }),
+        TopLevel::Constant(c) => lower_constant_item(c, ids, out),
+        TopLevel::Init(i) => lower_init_item(i, ids, out),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
@@ -935,30 +956,38 @@ pub fn lower_program_checked(items: &[TopLevel]) -> Result<HirProgram, Vec<HirLo
 }
 
 fn count_plugin_intercepts(program: &HirProgram) -> usize {
-    use crate::hir::expr::HirExprKind;
-    use crate::hir::expr_walk::walk_stmts;
     let mut count = 0usize;
     for c in &program.callables {
-        walk_stmts(&c.body.statements, &mut |e| {
-            if matches!(e.kind, HirExprKind::PluginIntercept { .. }) {
-                count += 1;
-            }
-        });
-        if let Some(ct) = &c.contract {
-            if matches!(ct.pre.kind, HirExprKind::PluginIntercept { .. }) {
-                count += 1;
-            }
-            if matches!(ct.post.kind, HirExprKind::PluginIntercept { .. }) {
-                count += 1;
-            }
-        }
+        count += callable_intercepts(c);
     }
     for g in &program.globals {
-        if let Some(e) = &g.expr {
-            if matches!(e.kind, HirExprKind::PluginIntercept { .. }) {
-                count += 1;
-            }
+        if g.expr.as_ref().is_some_and(is_intercept) {
+            count += 1;
         }
     }
     count
+}
+
+/// Body + contract intercept count for one callable.
+fn callable_intercepts(c: &HirCallable) -> usize {
+    use crate::hir::expr_walk::walk_stmts;
+    let mut count = 0usize;
+    walk_stmts(&c.body.statements, &mut |e| {
+        if is_intercept(e) {
+            count += 1;
+        }
+    });
+    if let Some(ct) = &c.contract {
+        if is_intercept(&ct.pre) {
+            count += 1;
+        }
+        if is_intercept(&ct.post) {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn is_intercept(e: &crate::hir::expr::HirExpr) -> bool {
+    matches!(e.kind, crate::hir::expr::HirExprKind::PluginIntercept { .. })
 }

@@ -32,7 +32,8 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
             && !c.exported
     }) {
         let mut scope = Scope::default();
-        check_list(&c.name, &c.body.statements, &bodies, &mut scope, &mut errors, true);
+        let ctx = CheckCtx { owner: &c.name, bodies: &bodies };
+        check_list(&ctx, &c.body.statements, &mut scope, &mut errors, true);
     }
 
     let mut top_scope = Scope::default();
@@ -48,98 +49,141 @@ pub fn analyze(program: &HirProgram) -> Vec<String> {
                 modifiers: g.modifiers.iter().map(|m| crate::ast::Annotation { name: m.clone(), value: None }).collect(),
             },
         };
-        check_list(
-            "top-level",
-            std::slice::from_ref(&stmt),
-            &bodies,
-            &mut top_scope,
-            &mut errors,
-            false,
-        );
+        let ctx = CheckCtx { owner: "top-level", bodies: &bodies };
+        check_list(&ctx, std::slice::from_ref(&stmt), &mut top_scope, &mut errors, false);
     }
-    check_list("top-level", &[], &bodies, &mut top_scope, &mut errors, true);
+    let ctx = CheckCtx { owner: "top-level", bodies: &bodies };
+    check_list(&ctx, &[], &mut top_scope, &mut errors, true);
     errors.sort();
     errors.dedup();
     errors
 }
 
+/// Shared context for the handle-linearity walk.
+struct CheckCtx<'a> {
+    owner: &'a str,
+    bodies: &'a HashMap<&'a str, &'a [HirStmt]>,
+}
+
 fn check_list(
-    owner: &str,
+    ctx: &CheckCtx<'_>,
     body: &[HirStmt],
-    bodies: &HashMap<&str, &[HirStmt]>,
     scope: &mut Scope,
     errors: &mut Vec<String>,
     is_top: bool,
 ) {
     for stmt in body {
-        match &stmt.kind {
-            HirStmtKind::Let { name, expr: Some(e), .. } => {
-                if let HirExprKind::Spawn { type_name, .. } = &e.kind {
-                    if bodies.contains_key(type_name.as_str()) {
-                        scope.live.insert(name.clone(), type_name.clone());
-                        continue;
-                    }
-                }
-                if let HirExprKind::Identifier(src) = &e.kind {
-                    if let Some(target) = scope.live.remove(src) {
-                        scope.live.insert(name.clone(), target);
-                        continue;
-                    }
-                }
-                if let HirExprKind::Await(inner) = &e.kind {
-                    consume_await(owner, inner, scope, errors);
-                }
-            }
-            HirStmtKind::Assign(lhs, rhs) => {
-                if let HirExprKind::Identifier(src) = &rhs.kind {
-                    if let HirExprKind::Identifier(name) = &lhs.kind {
-                        if let Some(target) = scope.live.remove(src) {
-                            scope.live.insert(name.clone(), target);
-                            continue;
-                        }
-                    }
-                }
-                if let HirExprKind::Await(inner) = &rhs.kind {
-                    consume_await(owner, inner, scope, errors);
-                }
-            }
-            HirStmtKind::FreeHint(name) | HirStmtKind::KeepHint(name) => {
-                let Some(target) = scope.live.remove(name) else {
-                    continue;
-                };
-                if matches!(stmt.kind, HirStmtKind::FreeHint(_)) && !has_checkpoint(&target, bodies)
-                {
-                    errors.push(format!(
-                        "'{}' frees a task spawned from '{}' but that body has no \
-                         cancellation point — add `yield;` where stopping is safe, \
-                         or keep/await the handle instead",
-                        name, target
-                    ));
-                }
-            }
-            HirStmtKind::Expression(e) => {
-                if let HirExprKind::Await(inner) = &e.kind {
-                    consume_await(owner, inner, scope, errors);
-                }
-            }
-            HirStmtKind::Guarded(_, guarded_body) => {
-                check_list(owner, guarded_body, bodies, scope, errors, false);
-            }
-            HirStmtKind::Block(b) => check_list(owner, b, bodies, scope, errors, false),
-            _ => {}
-        }
+        check_stmt(ctx, stmt, scope, errors);
     }
     if is_top {
-        let mut dropped: Vec<String> = scope.live.keys().cloned().collect();
-        dropped.sort();
-        for name in dropped {
-            errors.push(format!(
-                "'{}' drops a live task handle — await it, or keep/free it before \
-                 the end of {}",
-                name, owner
-            ));
-            scope.live.remove(&name);
+        report_drops(ctx, scope, errors);
+    }
+}
+
+fn check_stmt(
+    ctx: &CheckCtx<'_>,
+    stmt: &HirStmt,
+    scope: &mut Scope,
+    errors: &mut Vec<String>,
+) {
+    match &stmt.kind {
+        HirStmtKind::Let { name, expr: Some(e), .. } => {
+            check_let(ctx, name, e, scope, errors)
         }
+        HirStmtKind::Assign(lhs, rhs) => check_assign(ctx, lhs, rhs, scope, errors),
+        HirStmtKind::FreeHint(name) | HirStmtKind::KeepHint(name) => {
+            check_hint(ctx, name, matches!(stmt.kind, HirStmtKind::FreeHint(_)), scope, errors)
+        }
+        HirStmtKind::Expression(e) => {
+            if let HirExprKind::Await(inner) = &e.kind {
+                consume_await(ctx.owner, inner, scope, errors);
+            }
+        }
+        HirStmtKind::Guarded(_, guarded_body) => {
+            check_list(ctx, guarded_body, scope, errors, false);
+        }
+        HirStmtKind::Block(b) => check_list(ctx, b, scope, errors, false),
+        _ => {}
+    }
+}
+
+/// `let name = …` — spawn creates a handle; moving an identifier transfers it;
+/// await consumes it.
+fn check_let(
+    ctx: &CheckCtx<'_>,
+    name: &str,
+    e: &HirExpr,
+    scope: &mut Scope,
+    errors: &mut Vec<String>,
+) {
+    if let HirExprKind::Spawn { type_name, .. } = &e.kind {
+        if ctx.bodies.contains_key(type_name.as_str()) {
+            scope.live.insert(name.to_string(), type_name.clone());
+            return;
+        }
+    }
+    if let HirExprKind::Identifier(src) = &e.kind {
+        if let Some(target) = scope.live.remove(src) {
+            scope.live.insert(name.to_string(), target);
+            return;
+        }
+    }
+    if let HirExprKind::Await(inner) = &e.kind {
+        consume_await(ctx.owner, inner, scope, errors);
+    }
+}
+
+/// `name = …` — handle transfer or await-consume.
+fn check_assign(
+    ctx: &CheckCtx<'_>,
+    lhs: &HirExpr,
+    rhs: &HirExpr,
+    scope: &mut Scope,
+    errors: &mut Vec<String>,
+) {
+    if let HirExprKind::Identifier(src) = &rhs.kind {
+        if let HirExprKind::Identifier(name) = &lhs.kind {
+            if let Some(target) = scope.live.remove(src) {
+                scope.live.insert(name.clone(), target);
+                return;
+            }
+        }
+    }
+    if let HirExprKind::Await(inner) = &rhs.kind {
+        consume_await(ctx.owner, inner, scope, errors);
+    }
+}
+
+/// `free name;` / `keep name;` — a free of a handle whose target has no
+/// cancellation point is an error.
+fn check_hint(
+    ctx: &CheckCtx<'_>,
+    name: &str,
+    is_free: bool,
+    scope: &mut Scope,
+    errors: &mut Vec<String>,
+) {
+    let Some(target) = scope.live.remove(name) else {
+        return;
+    };
+    if is_free && !has_checkpoint(&target, ctx.bodies) {
+        errors.push(format!(
+            "'{}' frees a task spawned from '{}' but that body has no              cancellation point — add `yield;` where stopping is safe,              or keep/await the handle instead",
+            name, target
+        ));
+    }
+}
+
+/// Top-level scope exit: every still-live handle is dropped.
+fn report_drops(ctx: &CheckCtx<'_>, scope: &mut Scope, errors: &mut Vec<String>) {
+    let mut dropped: Vec<String> = scope.live.keys().cloned().collect();
+    dropped.sort();
+    for name in dropped {
+        errors.push(format!(
+            "'{}' drops a live task handle — await it, or keep/free it before              the end of {}",
+            name, ctx.owner
+        ));
+        scope.live.remove(&name);
     }
 }
 

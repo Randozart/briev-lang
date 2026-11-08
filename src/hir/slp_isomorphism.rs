@@ -381,87 +381,120 @@ fn merge_groups(body: &[HirStmt], groups: Vec<VectorPhiCandidate>) -> Vec<Vector
     if groups.len() < 2 {
         return groups;
     }
-    let mut sig_buckets: HashMap<Vec<u8>, Vec<VectorPhiCandidate>> = HashMap::new();
-    for g in &groups {
-        if let Some(sig) = group_template_signature(body, g) {
-            sig_buckets.entry(sig).or_default().push(g.clone());
-        }
-    }
-
+    let mut sig_buckets = bucket_by_signature(body, &groups);
     let mut merged = Vec::new();
-    // 2026-11-05 (house rule §4): HashMap iteration order varies with the
-    // per-process SipHash seed; unsorted iteration randomized the merged
-    // vector-group order, drifting loop IR run-to-run (nbody_sqrt). Iterate
-    // signature keys in sorted order so the merge output is byte-stable.
-    let mut sig_keys: Vec<Vec<u8>> = sig_buckets.keys().cloned().collect();
-    sig_keys.sort();
-    for sig in sig_keys {
-        let bucket = sig_buckets.remove(&sig).unwrap();
-        if bucket.len() < 2 {
-            merged.extend(bucket);
-            continue;
-        }
-        let mut by_width: HashMap<usize, Vec<VectorPhiCandidate>> = HashMap::new();
-        for g in bucket {
-            by_width.entry(g.width).or_default().push(g);
-        }
-        let mut width_keys: Vec<usize> = by_width.keys().copied().collect();
-        width_keys.sort_unstable();
-        for width_key in width_keys {
-            let same_width_groups = by_width.remove(&width_key).unwrap();
-            if same_width_groups.len() < 2 {
-                merged.extend(same_width_groups);
-                continue;
-            }
-            let mut sorted = same_width_groups;
-            sorted.sort_by_key(|g| g.fields.first().cloned().unwrap_or_default());
-            let template_base = sorted[0].fields.first().cloned().unwrap_or_default();
-            let template_base_idx = body
-                .iter()
-                .position(|s| lhs_name(s) == Some(template_base.as_str()))
-                .unwrap_or(0);
-            sorted.retain(|g| {
-                let first = g.fields.first().cloned().unwrap_or_default();
-                let pos = body
-                    .iter()
-                    .position(|s| lhs_name(s) == Some(first.as_str()))
-                    .unwrap_or(0);
-                pos == template_base_idx || all_deps_available(body, &first, pos)
-            });
-            if sorted.len() < 2 {
-                merged.extend(sorted);
-                continue;
-            }
-            let template_group = sorted[0].clone();
-            let mut merged_fields = template_group.fields.clone();
-            for src in sorted.iter().skip(1) {
-                merged_fields.extend(src.fields.clone());
-            }
-            let merged_width = template_group.width * sorted.len();
-            let group_name = infer_group_name(&merged_fields);
-            merged.push(VectorPhiCandidate {
-                group_name,
-                element_ty: template_group.element_ty.clone(),
-                width: merged_width,
-                fields: merged_fields,
-            });
-        }
+    for sig in sorted_sig_keys(&sig_buckets) {
+        merge_signature_bucket(body, sig_buckets.remove(&sig).unwrap(), &mut merged);
     }
     merged
+}
+
+fn bucket_by_signature(
+    body: &[HirStmt],
+    groups: &[VectorPhiCandidate],
+) -> HashMap<Vec<u8>, Vec<VectorPhiCandidate>> {
+    let mut buckets: HashMap<Vec<u8>, Vec<VectorPhiCandidate>> = HashMap::new();
+    for g in groups {
+        if let Some(sig) = group_template_signature(body, g) {
+            buckets.entry(sig).or_default().push(g.clone());
+        }
+    }
+    buckets
+}
+
+/// 2026-11-05 (house rule §4): HashMap iteration order varies with the
+/// per-process SipHash seed; sorted keys keep the merge byte-stable.
+fn sorted_sig_keys(buckets: &HashMap<Vec<u8>, Vec<VectorPhiCandidate>>) -> Vec<Vec<u8>> {
+    let mut keys: Vec<Vec<u8>> = buckets.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
+/// Merge one signature bucket (all same expression shape) by width.
+fn merge_signature_bucket(
+    body: &[HirStmt],
+    bucket: Vec<VectorPhiCandidate>,
+    merged: &mut Vec<VectorPhiCandidate>,
+) {
+    if bucket.len() < 2 {
+        merged.extend(bucket);
+        return;
+    }
+    let mut by_width: HashMap<usize, Vec<VectorPhiCandidate>> = HashMap::new();
+    for g in bucket {
+        by_width.entry(g.width).or_default().push(g);
+    }
+    let mut width_keys: Vec<usize> = by_width.keys().copied().collect();
+    width_keys.sort_unstable();
+    for width_key in width_keys {
+        merge_width_bucket(body, by_width.remove(&width_key).unwrap(), merged);
+    }
+}
+
+/// Merge same-shape, same-width groups into one candidate when dependency
+/// availability allows.
+fn merge_width_bucket(
+    body: &[HirStmt],
+    same_width_groups: Vec<VectorPhiCandidate>,
+    merged: &mut Vec<VectorPhiCandidate>,
+) {
+    if same_width_groups.len() < 2 {
+        merged.extend(same_width_groups);
+        return;
+    }
+    let mut sorted = same_width_groups;
+    sorted.sort_by_key(|g| g.fields.first().cloned().unwrap_or_default());
+    let template_base = sorted[0].fields.first().cloned().unwrap_or_default();
+    let template_base_idx = body
+        .iter()
+        .position(|s| lhs_name(s) == Some(template_base.as_str()))
+        .unwrap_or(0);
+    sorted.retain(|g| {
+        let first = g.fields.first().cloned().unwrap_or_default();
+        let pos = body
+            .iter()
+            .position(|s| lhs_name(s) == Some(first.as_str()))
+            .unwrap_or(0);
+        pos == template_base_idx || all_deps_available(body, &first, pos)
+    });
+    if sorted.len() < 2 {
+        merged.extend(sorted);
+        return;
+    }
+    let template_group = sorted[0].clone();
+    let mut merged_fields = template_group.fields.clone();
+    for src in sorted.iter().skip(1) {
+        merged_fields.extend(src.fields.clone());
+    }
+    let merged_width = template_group.width * sorted.len();
+    let group_name = infer_group_name(&merged_fields);
+    merged.push(VectorPhiCandidate {
+        group_name,
+        element_ty: template_group.element_ty.clone(),
+        width: merged_width,
+        fields: merged_fields,
+    });
+}
+
+/// Isomorphic groups whose first member is the assignment at `i` (only
+/// identifier-target assignments are candidates).
+fn groups_starting_at(body: &[HirStmt], i: usize) -> Vec<VectorPhiCandidate> {
+    if !matches!(
+        &body[i].kind,
+        HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(_), .. }, _)
+    ) {
+        return Vec::new();
+    }
+    find_isomorphic_groups(body, i)
+        .into_iter()
+        .filter(|g| g.width >= 2)
+        .collect()
 }
 
 pub fn analyze_body(body: &[HirStmt], min_width: usize) -> Vec<VectorPhiCandidate> {
     let mut groups = Vec::new();
     for i in 0..body.len() {
-        if let HirStmtKind::Assign(HirExpr { kind: HirExprKind::Identifier(_), .. }, _) =
-            &body[i].kind
-        {
-            for g in find_isomorphic_groups(body, i) {
-                if g.width >= 2 {
-                    groups.push(g);
-                }
-            }
-        }
+        groups.extend(groups_starting_at(body, i));
     }
 
     if groups.len() >= 10 {
