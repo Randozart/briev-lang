@@ -1,3 +1,33 @@
+## Region reclamation freed storage published through a projection argument — FIXED 2026-11-08
+
+**Symptom:** the scheduled multi-user journey driver use-after-freed the
+WebSocket key. Valgrind: `ws_accept_key` read a 33-byte block allocated by
+`b64_loop` and freed by `journey_load_start_upgrade`; `journey_transport_send`
+read a 24-byte GrowBuf freed by `journey_load_poll`.
+
+**Cause:** reclamation classified `journey_load_start_upgrade` as a reclaimable
+function-region, so its teardown freed storage the callee published into
+`user.transport`. Two gaps: (1) `t.key = key` was not treated as publishing,
+because the `allocating` check was syntactic (`expression_allocates`) and `key`
+is an identifier bound to a call result; (2) a callee's publish-into-incoming-
+parameter effect was not propagated when the caller forwarded a *projection* of
+its own parameter (`upgrade(w.t, …)`), only a bare parameter.
+
+**Fix:** track allocation provenance across `let`/assign binds (`alloc_bindings`)
+so `value_allocates` sees an identifier naming an allocation; and in `call`
+propagate a callee's `incoming_store_owners` membership to the caller whenever an
+argument is rooted at one of the caller's parameters, at any projection depth.
+Over-approximating is safe — a barrier only disables region reclamation. Files:
+`src/analysis/reclamation/walk.rs`. Regression:
+`analysis::reclamation::projection_argument_propagates_incoming_store_barrier`.
+
+**Verification:** rebuilt the journey driver on the integration compiler;
+`journey_load_progress_user` completed the upgrade path with **zero Valgrind
+invalid reads/writes** (previously 6+); reclamation unit tests pass. A separate
+trap remains in `journey_load_progress_user` (see the load-harness record) and is
+not caused by this fix. Prerequisites (`incoming_store_owners`, projection-aware
+nested-field store) are integration-only and must be upstreamed with this change.
+
 ## WORKING-TREE HAZARD: external process reverted in-flight edits — OBSERVED 2026-08-27
 
 **Symptom (three times this session):** freshly edited files (lexer.rs,

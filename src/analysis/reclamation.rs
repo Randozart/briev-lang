@@ -534,6 +534,45 @@ mod tests {
     }
 
     #[test]
+    fn projection_argument_propagates_incoming_store_barrier() {
+        // 2026-11-08: a callable that stores allocating storage into an incoming
+        // parameter's field must be a barrier. When the caller forwards a
+        // PROJECTION of its own parameter (`upgrade(w.t, …)`) the effect was not
+        // propagated, so the caller was misclassified as a reclaimable region and
+        // its teardown freed the WebSocket key the caller still read (Valgrind
+        // UAF in ws_accept_key). The allocation-provenance and projection-argument
+        // propagation must mark the whole chain as barriers.
+        let plan = derive(r#"
+            obj T { key: String; flag: Int; };
+            obj W { t: T; n: Int; };
+            defn enc(n: Int) -> String { term "a" + n as String; };
+            defn begin(t: T, req: String) -> Int {
+                t.key = "";
+                t.flag = 1;
+                term req .^Length;
+            };
+            defn upgrade(t: T, port: Int) -> Int {
+                let key: String = enc(port);
+                let request: String = "GET " + key + " HTTP/1.1";
+                let started: Int = begin(t, request);
+                t.key = key;
+                term started;
+            };
+            defn start_upgrade(w: W, port: Int) -> Void {
+                let ignored: Int = upgrade(w.t, port);
+            };
+            defn poll(w: W, port: Int) -> Int {
+                start_upgrade(w, port);
+                term w.t.key .^Length;
+            };
+        "#);
+        for name in ["upgrade", "start_upgrade", "poll"] {
+            assert!(plan.barriers.contains(name), "{name} must be a barrier: {plan:?}");
+            assert!(!plan.regions.contains(name), "{name} must not be a region: {plan:?}");
+        }
+    }
+
+    #[test]
     fn all_local_aliases_fit_one_region() {
         let plan = derive(r#"
             defn inspect() -> Bool {

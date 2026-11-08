@@ -192,7 +192,7 @@ fn body(graph: &mut Graph, owner: &str, params: &[(String, crate::ast::Type)], s
     let bindings = params.iter().zip(callable.params).map(|((name, _), node)| (name.clone(), node)).collect();
     let types = params.iter().cloned().collect();
     let param_names = params.iter().map(|(name, _)| name.clone()).collect();
-    let mut builder = Builder { graph, owner, bindings, types, result: callable.result, param_names };
+    let mut builder = Builder { graph, owner, bindings, types, result: callable.result, param_names, alloc_bindings: BTreeSet::new() };
     builder.statements(statements);
 }
 
@@ -203,6 +203,12 @@ struct Builder<'a> {
     types: BTreeMap<String, crate::ast::Type>,
     result: Node,
     param_names: BTreeSet<String>,
+    /// 2026-11-08: locals bound to storage-producing values. The syntactic
+    /// `expression_allocates` check missed `t.key = key` where `key` is a local
+    /// holding a call result, so the store was not treated as publishing and
+    /// the callable stayed a reclaimable region (dangling handle). Track
+    /// allocation provenance across binds and copies to close that gap.
+    alloc_bindings: BTreeSet<String>,
 }
 
 impl Builder<'_> {
@@ -228,14 +234,18 @@ impl Builder<'_> {
                 self.bind_types(name, names, ty.as_ref(), expr.as_ref());
                 let target = self.local(name);
                 if let Some(expr) = expr {
+                    if self.value_allocates(expr) { self.alloc_bindings.insert(name.clone()); }
                     let value = self.expression(expr);
                     if names.len() <= 1 { self.graph.copy(value, target); }
                     else { for name in names { let target = self.local(name); self.load(value, target); } }
                 }
             }
             Statement::Assign(target, value) => {
-                let allocating = expression_allocates(value);
+                let allocating = self.value_allocates(value);
                 let value = self.expression(value);
+                if allocating {
+                    if let Expr::Identifier(name) = target { self.alloc_bindings.insert(name.clone()); }
+                }
                 self.assign(target, value, allocating);
             }
             Statement::Term(Some(value)) | Statement::Tail(value) => {
@@ -697,9 +707,46 @@ impl Builder<'_> {
     fn call(&mut self, name: &str, arguments: &[Expr]) -> Node {
         let args: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
         if let Some(generic) = self.graph.generics.get(name).cloned() {
-            return self.specialize(&generic, arguments, &args);
+            let result = self.specialize(&generic, arguments, &args);
+            self.propagate_incoming_store(name, arguments);
+            return result;
         }
-        self.call_nodes(name, &args)
+        let result = self.call_nodes(name, &args);
+        self.propagate_incoming_store(name, arguments);
+        result
+    }
+
+    /// 2026-11-08: does this value expression produce (or name) storage that can
+    /// outlive the producing frame? Combines the syntactic allocation check with
+    /// the tracked set of locals bound to allocation-producing values, so
+    /// `t.key = key` (key from `let key = call(...)`) counts as publishing.
+    fn value_allocates(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Identifier(name) => self.alloc_bindings.contains(name),
+            _ => expression_allocates(expr),
+        }
+    }
+
+    /// 2026-11-08: propagate a callee's publish-into-incoming-parameter effect
+    /// to this callable at any argument projection depth. When the caller passes
+    /// an argument that is (or is rooted at) one of its own parameters — a bare
+    /// parameter, a field projection such as `w.t`, or a longer chain — and the
+    /// callee stores allocating storage into an incoming receiver, then this
+    /// callable likewise publishes into caller-owned memory. Without this the
+    /// caller was misclassified as a reclaimable function-region and its
+    /// teardown freed storage the caller still references (WebSocket key case).
+    /// Over-approximating here is safe: a barrier only disables region reclamation.
+    fn propagate_incoming_store(&mut self, callee: &str, arguments: &[Expr]) {
+        if !self.graph.incoming_store_owners.contains(callee) { return; }
+        let publishes = arguments.iter().any(|argument| {
+            projection_root_and_path(argument)
+                .map(|(root, _)| match root {
+                    Expr::Identifier(root_name) => self.param_names.contains(root_name.as_str()),
+                    _ => false,
+                })
+                .unwrap_or(false)
+        });
+        if publishes { self.graph.incoming_store_owners.insert(self.owner.into()); }
     }
 
     fn specialize(&mut self, generic: &crate::ast::Definition, arguments: &[Expr], args: &[Node]) -> Node {
