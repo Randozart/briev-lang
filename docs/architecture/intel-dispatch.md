@@ -321,6 +321,14 @@ Unblocking work is a bounded **OpenCL-flavored SPIR-V projection** (G1.5):
 `OpCapability Kernel` / `OpEntryPoint Kernel` from the same frontend plan.
 Evidence: `benchmarks/results/2026-11-06-intel-ptl-g1.md`; finding in
 BUGS.md (2026-11-06, IGC empty kernel set).
+
+**G1.5 status (2026-11-08): Stage E PASS.** OpenCL-flavored IL is accepted and
+executes on PTL (elementwise sentinel; `sub_group_reduce_add` = 496), while a
+Vulkan-flavored blob with a legal entry name still exposes zero kernels — the
+flavor projection is the fix, not a rename. `main` is not a legal OpenCL
+kernel name; the projected entry is `briev_kernel`. Plan:
+`docs/plans/2026-11-08-intel-g1.5-opencl-flavored-spirv.md`; verdicts:
+`benchmarks/results/2026-11-08-intel-g1.5-stage-e.md`.
 | **G1** | Level Zero driver skeleton | `available/init/create_kernel` succeed; a trivial kernel dispatches and writes the expected sentinel |
 | **G2** | L0 projection launch | packed projection round-trips exactly (seed + dirty + download), single and multi-kernel |
 | **G3** | L0 coopmat | same GEMM module accepted by IGC and numerically equal to the Vulkan tiled path within the tier gate; if rejected, record the verdict and keep Vulkan as the XMX lane |
