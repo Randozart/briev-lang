@@ -80,3 +80,28 @@ Order is by severity/leverage:
 Method unchanged: bodies verbatim, helper extraction only, params ≤6 via
 ctx structs where needed, gates after each group (lib + sweep + A/B +
 praetor delta), continuous commits.
+
+## Execution record (2026-11-08)
+
+Closed. `praetor validate --warn --target src/hir` → 0 diagnostics
+(initial 105). Commit chain: `a7a6e170` (defn_liveness), `e46453c5`
+(transition_graph), `8bf3968b` (spawn_pool), `a6d9bd00` (enum_repr),
+`ed64c876` (task_linear/slp/lower), `189b24ab` (swan_song/global_lifetime),
+`5d8c1521` (density/specialize/loop_shape/dyn_concrete_sets/storage_class/
+coll_length/web_commits/task_segments/to_ast).
+
+Method notes (add to the standard recipe):
+- Tuple destructuring still counts as 2 params in `datalog-rule-4`; use a
+  named ctx struct (`SyncGroupCtx`, `LetSite`) rather than a tuple.
+- Nested-loop flags (`O(n²)`) are cleared by extracting the per-item
+  dispatch into a sibling fn (`written_of_stmt`, `collect_stmt_surface`,
+  `walk_one_assign_target`) — the recursive call then sits at depth 1.
+- `loop { for … }` fixpoints become `while round(..) {}` with one round fn.
+- A Praetor-reported line number points at the fn's *start* line for
+  loop-depth findings; grep the fn name, not the line.
+
+Every group gated on: `cargo test --lib` (3553), corpus sweep
+(137 ok / 4 skipped / 0 mismatch), `benchmarks/hir_emit_ab.sh --quick`
+(byte-identical), plus the affected parity suites.
+
+Next per the roadmap above: `Cast.via` scoping (#1).
