@@ -6,7 +6,12 @@
 use super::*;
 use crate::ast::{BinaryOpKind, Pattern, UnaryOpKind};
 mod structured;
+<<<<<<< HEAD
 mod traits;
+=======
+#[cfg(test)]
+mod tuple_fields_tests;
+>>>>>>> refs/remotes/otto2/fix/tuple-field-effects
 
 pub(super) fn register(graph: &mut Graph, items: &[TopLevel], live: &std::collections::HashSet<String>) {
     for item in items { register_item(graph, item, live); }
@@ -230,7 +235,7 @@ impl Builder<'_> {
                 if let Some(expr) = expr {
                     let value = self.expression(expr);
                     if names.len() <= 1 { self.graph.copy(value, target); }
-                    else { for name in names { let target = self.local(name); self.load(value, target); } }
+                    else { self.destructure_names(value, names); }
                 }
             }
             Statement::Assign(target, value) => {
@@ -311,6 +316,16 @@ impl Builder<'_> {
 
     fn load(&mut self, base: Node, value: Node) { self.graph.constraints.push(Constraint::Load(base, value)); }
 
+    // 2026-11-06: tuple positions retain independent pointer provenance, as
+    // object fields do. Keep raw-memory fallback in FieldLoad; retire only
+    // when a shared aggregate-layout analysis supplies equivalent identities.
+    fn destructure_names(&mut self, value: Node, names: &[String]) {
+        for (index, name) in names.iter().enumerate() {
+            let target = self.local(name);
+            self.graph.constraints.push(Constraint::FieldLoad(value, index.to_string(), target));
+        }
+    }
+
     fn pattern(&mut self, pattern: &Pattern, value: Node) {
         match pattern {
             Pattern::Binding(name) | Pattern::TypedBinding(name, _) => {
@@ -324,15 +339,26 @@ impl Builder<'_> {
                 for field in fields { self.pattern(field, payload); }
             }
             Pattern::Tuple(fields) => {
-                let payload = self.graph.node();
-                self.load(value, payload);
-                for field in fields { self.pattern(field, payload); }
+                for (index, field) in fields.iter().enumerate() {
+                    let payload = self.graph.node();
+                    self.graph.constraints.push(Constraint::FieldLoad(value, index.to_string(), payload));
+                    self.pattern(field, payload);
+                }
             }
             Pattern::Multi(patterns) => { for pattern in patterns { self.pattern(pattern, value); } }
             Pattern::Literal(expression) => { self.expression(expression); }
             Pattern::Range(start, end) | Pattern::RangeInclusive(start, end) => { self.expression(start); self.expression(end); }
             _ => {}
         }
+    }
+
+    fn tuple(&mut self, values: &[Expr]) -> Node {
+        let root = self.graph.allocation(self.owner);
+        for (index, expression) in values.iter().enumerate() {
+            let value = self.expression(expression);
+            self.graph.constraints.push(Constraint::FieldStore(root, index.to_string(), value));
+        }
+        root
     }
 
     fn expression(&mut self, expression: &Expr) -> Node {
@@ -351,11 +377,12 @@ impl Builder<'_> {
                 }
                 root
             }
-            Expr::List(values) | Expr::Tuple(values) => {
+            Expr::List(values) => {
                 let root = self.graph.allocation(self.owner);
                 for value in values { self.store_expression(root, value); }
                 root
             }
+            Expr::Tuple(values) => self.tuple(values),
             // 2026-11-05: slices may allocate a copy or retain a view. Track
             // both identities; a scalar consumer can reclaim local copies,
             // while an escaping slice keeps its backing storage reachable.

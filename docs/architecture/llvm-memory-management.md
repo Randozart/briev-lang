@@ -1271,6 +1271,7 @@ malloc. A registered encoding override invalidates a default-provider proof.
 Raw address casts retain the original allocation identity.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## Synchronous entropy buffer lifetime (2026-11-06)
 
 Linux x86-64 getrandom (318) writes its caller buffer synchronously and never retains it, including partial/error returns and dynamic flags. Missing configuration classified a local entropy buffer as externally retained. Add 318 to synchronous_borrowing; unknown syscalls stay conservative. Regression: dynamic flags remain borrowed while syscall 999999 remains an escape.
@@ -1279,3 +1280,8 @@ Linux x86-64 getrandom (318) writes its caller buffer synchronously and never re
 
 Ownership analysis omitted trait default bodies and concrete free-call member resolution. Calls through Self-specialized defaults were treated as unsupported even when every concrete callee only borrowed its input. Register defaults after ordinary definitions, specialize return shapes, and resolve concrete free calls with top-level precedence. Regressions cover chained and free defaults plus capturing concrete overrides.
 >>>>>>> refs/remotes/otto2/fix/trait-default-effects
+=======
+## Tuple field ownership provenance (2026-11-06)
+
+Tuple construction and destructuring merged unrelated fields. A scalar/string key inherited pointer contents from its paired value, making a synchronous send appear to publish the entire graph. Preserve index-labelled tuple fields through construction, let destructuring, and tuple patterns; raw memory loads remain conservative. Regressions exercise safe unselected fields and genuinely escaping selected/raw fields.
+>>>>>>> refs/remotes/otto2/fix/tuple-field-effects
