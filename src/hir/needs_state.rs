@@ -115,6 +115,25 @@ pub fn compute_export_needs_state(
         .collect()
 }
 
+/// Shared read context for the needs-state walkers (state/txn sets fixed per
+/// fixpoint, locals+needs per callable).
+struct Ctx<'a> {
+    regular: &'a HashMap<String, &'a HirCallable>,
+    txns: &'a HashSet<String>,
+    state_fields: &'a HashSet<String>,
+    always: &'a HashSet<String>,
+    locals: &'a HashSet<String>,
+    needs: &'a HashMap<String, bool>,
+}
+
+/// Per-run context (locals/needs vary per callable).
+struct FixCtx<'a> {
+    regular: &'a HashMap<String, &'a HirCallable>,
+    txns: &'a HashSet<String>,
+    tracked_fields: &'a HashSet<String>,
+    always: &'a HashSet<String>,
+}
+
 fn fixpoint(
     regular: &HashMap<String, &HirCallable>,
     txns: &HashSet<String>,
@@ -122,60 +141,57 @@ fn fixpoint(
     always: &HashSet<String>,
     with_locals: bool,
 ) -> HashMap<String, bool> {
+    let ctx = FixCtx { regular, txns, tracked_fields, always };
     let mut needs: HashMap<String, bool> =
         regular.keys().map(|k| (k.clone(), false)).collect();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (name, c) in regular {
-            if *needs.get(name).unwrap_or(&false) {
-                continue;
-            }
-            let mut locals = HashSet::new();
-            if with_locals {
-                for p in &c.params {
-                    locals.insert(p.name.clone());
-                }
-                collect_stmt_locals(&c.body.statements, &mut locals);
-            }
-            if body_needs_state(&c.body.statements, regular, txns, tracked_fields, always, &locals, &needs) {
-                needs.insert(name.clone(), true);
-                changed = true;
-            }
-        }
-    }
+    while fixpoint_round(&ctx, with_locals, &mut needs) {}
     needs
 }
 
-fn body_needs_state(
-    stmts: &[HirStmt],
-    regular: &HashMap<String, &HirCallable>,
-    txns: &HashSet<String>,
-    state_fields: &HashSet<String>,
-    always: &HashSet<String>,
-    locals: &HashSet<String>,
-    needs: &HashMap<String, bool>,
-) -> bool {
-    stmts.iter().any(|s| {
-        stmt_needs_state(s, regular, txns, state_fields, always, locals, needs)
-    })
+/// One least-fixpoint round. Returns whether any callable became stateful.
+fn fixpoint_round(ctx: &FixCtx<'_>, with_locals: bool, needs: &mut HashMap<String, bool>) -> bool {
+    let mut changed = false;
+    for (name, c) in ctx.regular {
+        if *needs.get(name).unwrap_or(&false) {
+            continue;
+        }
+        let locals = callable_locals(c, with_locals);
+        let cctx = Ctx {
+            regular: ctx.regular,
+            txns: ctx.txns,
+            state_fields: ctx.tracked_fields,
+            always: ctx.always,
+            locals: &locals,
+            needs,
+        };
+        if body_needs_state(&c.body.statements, &cctx) {
+            needs.insert(name.clone(), true);
+            changed = true;
+        }
+    }
+    changed
 }
 
-fn stmt_needs_state(
-    stmt: &HirStmt,
-    regular: &HashMap<String, &HirCallable>,
-    txns: &HashSet<String>,
-    state_fields: &HashSet<String>,
-    always: &HashSet<String>,
-    locals: &HashSet<String>,
-    needs: &HashMap<String, bool>,
-) -> bool {
-    let rec = |e: &HirExpr| {
-        expr_needs_state(e, regular, txns, state_fields, always, locals, needs)
-    };
-    let rec_stmts = |ss: &[HirStmt]| {
-        body_needs_state(ss, regular, txns, state_fields, always, locals, needs)
-    };
+/// Parameter names plus body let-bindings (when the pass tracks locals).
+fn callable_locals(c: &HirCallable, with_locals: bool) -> HashSet<String> {
+    let mut locals = HashSet::new();
+    if !with_locals {
+        return locals;
+    }
+    for p in &c.params {
+        locals.insert(p.name.clone());
+    }
+    collect_stmt_locals(&c.body.statements, &mut locals);
+    locals
+}
+
+fn body_needs_state(stmts: &[HirStmt], ctx: &Ctx<'_>) -> bool {
+    stmts.iter().any(|s| stmt_needs_state(s, ctx))
+}
+
+fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
+    let rec = |e: &HirExpr| expr_needs_state(e, ctx);
+    let rec_stmts = |ss: &[HirStmt]| body_needs_state(ss, ctx);
     match &stmt.kind {
         HirStmtKind::Let { expr, .. } => expr.as_ref().is_some_and(|e| rec(e)),
         HirStmtKind::Assign(lhs, rhs) => rec(lhs) || rec(rhs),
@@ -211,45 +227,20 @@ fn stmt_needs_state(
     }
 }
 
-fn expr_needs_state(
-    expr: &HirExpr,
-    regular: &HashMap<String, &HirCallable>,
-    txns: &HashSet<String>,
-    state_fields: &HashSet<String>,
-    always: &HashSet<String>,
-    locals: &HashSet<String>,
-    needs: &HashMap<String, bool>,
-) -> bool {
-    let rec = |e: &HirExpr| {
-        expr_needs_state(e, regular, txns, state_fields, always, locals, needs)
-    };
-    let rec_stmts = |ss: &[HirStmt]| {
-        body_needs_state(ss, regular, txns, state_fields, always, locals, needs)
-    };
+fn expr_needs_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
     match &expr.kind {
-        HirExprKind::Literal(_) => false,
+        HirExprKind::Literal(_) | HirExprKind::UnitLiteral { .. } => false,
         HirExprKind::Identifier(name) => {
-            state_fields.contains(name) && !locals.contains(name)
+            ctx.state_fields.contains(name) && !ctx.locals.contains(name)
         }
-        HirExprKind::PluginIntercept { args, receiver, .. } => {
-            receiver.as_ref().map_or(false, |r| rec(r)) || args.iter().any(|a| rec(a))
-        }
-        HirExprKind::Call { callee, args, .. } => {
-            let leaf = STATE_INTRINSICS.contains(&callee.as_str())
-                || txns.contains(callee)
-                || always.contains(callee)
-                || regular
-                    .contains_key(callee)
-                    .then(|| *needs.get(callee).unwrap_or(&true))
-                    .unwrap_or(false);
-            leaf || args.iter().any(|a| rec(a))
-        }
+        HirExprKind::Other(_) | HirExprKind::Spawn { .. } | HirExprKind::Await(_) => true,
+        HirExprKind::Call { callee, args, .. } => call_needs_state(callee, args, ctx),
         HirExprKind::MethodCall { receiver, name, args, .. } => {
-            rec(receiver)
-                || args.iter().any(|a| rec(a))
-                || method_stateful_on_any_type(name, regular, needs)
+            method_needs_state(receiver, name, args, ctx)
         }
-        HirExprKind::Binary { left, right, .. } => rec(left) || rec(right),
+        HirExprKind::Binary { left, right, .. } => {
+            expr_needs_state(left, ctx) || expr_needs_state(right, ctx)
+        }
         HirExprKind::Unary { inner, .. }
         | HirExprKind::Cast { inner, .. }
         | HirExprKind::IsType { inner, .. }
@@ -258,30 +249,85 @@ fn expr_needs_state(
         | HirExprKind::Consume(inner)
         | HirExprKind::Field { receiver: inner, .. }
         | HirExprKind::Reflect { receiver: inner, .. }
-        | HirExprKind::Lambda { body: inner, .. } => rec(inner),
-        HirExprKind::Index(a, b) => rec(a) || rec(b),
-        HirExprKind::Slice { array, start, end, stride } => {
-            rec(array)
-                || start.as_ref().is_some_and(|e| rec(e))
-                || end.as_ref().is_some_and(|e| rec(e))
-                || stride.as_ref().is_some_and(|e| rec(e))
+        | HirExprKind::Lambda { body: inner, .. } => expr_needs_state(inner, ctx),
+        HirExprKind::PluginIntercept { args, receiver, .. } => {
+            receiver.as_ref().map_or(false, |r| expr_needs_state(r, ctx))
+                || args.iter().any(|a| expr_needs_state(a, ctx))
         }
-        HirExprKind::Range { start, end, .. } => rec(start) || rec(end),
-        // spawn/await lower with `%state` directly.
-        HirExprKind::Spawn { .. } | HirExprKind::Await(_) => true,
-        HirExprKind::Block(stmts) => rec_stmts(stmts),
+        HirExprKind::Index(..) | HirExprKind::Slice { .. } | HirExprKind::Range { .. } => {
+            subexprs_need_state(expr, ctx)
+        }
+        HirExprKind::StructLiteral { .. }
+        | HirExprKind::Tuple(_)
+        | HirExprKind::List(_) => elements_need_state(expr, ctx),
+        HirExprKind::Block(stmts) => body_needs_state(stmts, ctx),
         HirExprKind::If { condition, then_branch, else_branch } => {
-            rec(condition)
-                || rec(then_branch)
-                || else_branch.as_ref().is_some_and(|e| rec(e))
+            expr_needs_state(condition, ctx)
+                || expr_needs_state(then_branch, ctx)
+                || else_branch.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
         }
         HirExprKind::Match { scrutinee, arms } => {
-            rec(scrutinee) || arms.iter().any(|a| rec(&a.body))
+            expr_needs_state(scrutinee, ctx)
+                || arms.iter().any(|a| expr_needs_state(&a.body, ctx))
         }
-        HirExprKind::StructLiteral { fields, .. } => fields.iter().any(|(_, e)| rec(e)),
-        HirExprKind::Tuple(items) | HirExprKind::List(items) => items.iter().any(|e| rec(e)),
-        HirExprKind::UnitLiteral { .. } => false,
-        HirExprKind::Other(_) => true,
+    }
+}
+
+/// Call leaf: state intrinsic, txn, always-stateful, or a stateful callee.
+fn call_needs_state(callee: &str, args: &[HirExpr], ctx: &Ctx<'_>) -> bool {
+    let leaf = STATE_INTRINSICS.contains(&callee)
+        || ctx.txns.contains(callee)
+        || ctx.always.contains(callee)
+        || ctx
+            .regular
+            .contains_key(callee)
+            .then(|| *ctx.needs.get(callee).unwrap_or(&true))
+            .unwrap_or(false);
+    leaf || args.iter().any(|a| expr_needs_state(a, ctx))
+}
+
+/// Method call: any stateful same-named member on any owner type makes it
+/// stateful (mirrors the AST's conservative cross-type reach).
+fn method_needs_state(
+    receiver: &HirExpr,
+    name: &str,
+    args: &[HirExpr],
+    ctx: &Ctx<'_>,
+) -> bool {
+    expr_needs_state(receiver, ctx)
+        || args.iter().any(|a| expr_needs_state(a, ctx))
+        || method_stateful_on_any_type(name, ctx.regular, ctx.needs)
+}
+
+/// Index/Slice/Range operand recursion.
+fn subexprs_need_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
+    match &expr.kind {
+        HirExprKind::Index(a, b) => {
+            expr_needs_state(a, ctx) || expr_needs_state(b, ctx)
+        }
+        HirExprKind::Slice { array, start, end, stride } => {
+            expr_needs_state(array, ctx)
+                || start.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
+                || end.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
+                || stride.as_ref().is_some_and(|e| expr_needs_state(e, ctx))
+        }
+        HirExprKind::Range { start, end, .. } => {
+            expr_needs_state(start, ctx) || expr_needs_state(end, ctx)
+        }
+        _ => false,
+    }
+}
+
+/// Struct-literal / tuple / list element recursion.
+fn elements_need_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
+    match &expr.kind {
+        HirExprKind::StructLiteral { fields, .. } => {
+            fields.iter().any(|(_, e)| expr_needs_state(e, ctx))
+        }
+        HirExprKind::Tuple(items) | HirExprKind::List(items) => {
+            items.iter().any(|e| expr_needs_state(e, ctx))
+        }
+        _ => false,
     }
 }
 
@@ -300,50 +346,54 @@ fn method_stateful_on_any_type(
 /// items and lambda params are deliberately not locals there either).
 fn collect_stmt_locals(stmts: &[HirStmt], out: &mut HashSet<String>) {
     for s in stmts {
-        match &s.kind {
-            HirStmtKind::Let { name, expr, .. } => {
-                out.insert(name.clone());
-                if let Some(e) = expr {
-                    collect_expr_locals(e, out);
-                }
+        collect_stmt_local(s, out);
+    }
+}
+
+fn collect_stmt_local(s: &HirStmt, out: &mut HashSet<String>) {
+    match &s.kind {
+        HirStmtKind::Let { name, expr, .. } => {
+            out.insert(name.clone());
+            if let Some(e) = expr {
+                collect_expr_locals(e, out);
             }
-            HirStmtKind::Block(b)
-            | HirStmtKind::SyncBlock(b)
-            | HirStmtKind::Defer(b)
-            | HirStmtKind::Mutex(b) => collect_stmt_locals(b, out),
-            HirStmtKind::Guarded(c, b) => {
-                collect_expr_locals(c, out);
-                collect_stmt_locals(b, out);
-            }
-            HirStmtKind::Foreach { list, body, .. } => {
-                collect_expr_locals(list, out);
-                collect_stmt_locals(body, out);
-            }
-            HirStmtKind::Match { expr, arms } => {
-                collect_expr_locals(expr, out);
-                for a in arms {
-                    collect_stmt_locals(&a.body, out);
-                }
-            }
-            HirStmtKind::Assign(l, r) => {
-                collect_expr_locals(l, out);
-                collect_expr_locals(r, out);
-            }
-            HirStmtKind::ArrowAssign { target, value, .. } => {
-                if let Some(t) = target {
-                    collect_expr_locals(t, out);
-                }
-                collect_expr_locals(value, out);
-            }
-            HirStmtKind::Term(Some(e))
-            | HirStmtKind::EndProgram(Some(e))
-            | HirStmtKind::Rollback(Some(e))
-            | HirStmtKind::Tail(e)
-            | HirStmtKind::Check(e)
-            | HirStmtKind::Gate(e)
-            | HirStmtKind::Expression(e) => collect_expr_locals(e, out),
-            _ => {}
         }
+        HirStmtKind::Block(b)
+        | HirStmtKind::SyncBlock(b)
+        | HirStmtKind::Defer(b)
+        | HirStmtKind::Mutex(b) => collect_stmt_locals(b, out),
+        HirStmtKind::Guarded(c, b) => {
+            collect_expr_locals(c, out);
+            collect_stmt_locals(b, out);
+        }
+        HirStmtKind::Foreach { list, body, .. } => {
+            collect_expr_locals(list, out);
+            collect_stmt_locals(body, out);
+        }
+        HirStmtKind::Match { expr, arms } => {
+            collect_expr_locals(expr, out);
+            for a in arms {
+                collect_stmt_locals(&a.body, out);
+            }
+        }
+        HirStmtKind::Assign(l, r) => {
+            collect_expr_locals(l, out);
+            collect_expr_locals(r, out);
+        }
+        HirStmtKind::ArrowAssign { target, value, .. } => {
+            if let Some(t) = target {
+                collect_expr_locals(t, out);
+            }
+            collect_expr_locals(value, out);
+        }
+        HirStmtKind::Term(Some(e))
+        | HirStmtKind::EndProgram(Some(e))
+        | HirStmtKind::Rollback(Some(e))
+        | HirStmtKind::Tail(e)
+        | HirStmtKind::Check(e)
+        | HirStmtKind::Gate(e)
+        | HirStmtKind::Expression(e) => collect_expr_locals(e, out),
+        _ => {}
     }
 }
 
