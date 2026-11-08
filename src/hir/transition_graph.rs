@@ -197,124 +197,113 @@ fn is_self_identity(a: &HirExpr, b: &HirExpr) -> bool {
 fn extract_bounded_pre(pre: &HirExpr) -> Option<BoundedPre> {
     match &pre.kind {
         HirExprKind::Binary { op: BinaryOpKind::Lt | BinaryOpKind::Le, left, right } => {
-            match (&left.kind, &right.kind) {
-                (HirExprKind::Identifier(var), HirExprKind::Identifier(bound)) => Some(BoundedPre {
-                    var: var.clone(),
-                    bound_var: bound.clone(),
-                    direction: ConvergeDirection::Increasing,
-                    bound_literal: None,
-                }),
-                (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
-                    Some(BoundedPre {
-                        var: var.clone(),
-                        bound_var: format!("__lit__{}", var),
-                        direction: ConvergeDirection::Increasing,
-                        bound_literal: Some(*n),
-                    })
-                }
-                (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
-                    if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
-                {
-                    let n = lit_int(inner).map(|n| -n).unwrap_or(0);
-                    Some(BoundedPre {
-                        var: var.clone(),
-                        bound_var: format!("__lit__{}", var),
-                        direction: ConvergeDirection::Increasing,
-                        bound_literal: Some(n),
-                    })
-                }
-                (HirExprKind::Field { receiver, name }, _) if name == "Size" => {
-                    expr_name(receiver).map(|name| BoundedPre {
-                        var: name,
-                        bound_var: "__len_bound".to_string(),
-                        direction: ConvergeDirection::Increasing,
-                        bound_literal: None,
-                    })
-                }
-                _ => None,
-            }
+            bounded_increasing(left, right)
         }
         HirExprKind::Binary { op: BinaryOpKind::Gt | BinaryOpKind::Ge, left, right } => {
-            match (&left.kind, &right.kind) {
-                (HirExprKind::Identifier(var), HirExprKind::Identifier(bound)) => Some(BoundedPre {
-                    var: var.clone(),
-                    bound_var: bound.clone(),
-                    direction: ConvergeDirection::Decreasing,
-                    bound_literal: None,
-                }),
-                (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
-                    Some(BoundedPre {
-                        var: var.clone(),
-                        bound_var: format!("__lit__{}", var),
-                        direction: ConvergeDirection::Decreasing,
-                        bound_literal: Some(*n),
-                    })
-                }
-                (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
-                    if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
-                {
-                    let n = lit_int(inner).map(|n| -n).unwrap_or(0);
-                    Some(BoundedPre {
-                        var: var.clone(),
-                        bound_var: format!("__lit__{}", var),
-                        direction: ConvergeDirection::Decreasing,
-                        bound_literal: Some(n),
-                    })
-                }
-                (HirExprKind::Field { receiver, name }, HirExprKind::Literal(HirLiteral::Int(0)))
-                    if name == "Size" =>
-                {
-                    expr_name(receiver).map(|name| BoundedPre {
-                        var: name.clone(),
-                        bound_var: format!("__lit__{}", name),
-                        direction: ConvergeDirection::Decreasing,
-                        bound_literal: Some(0),
-                    })
-                }
-                (HirExprKind::Field { receiver, name }, HirExprKind::Literal(HirLiteral::Int(n)))
-                    if name == "Size" && *n > 0 =>
-                {
-                    expr_name(receiver).map(|name| BoundedPre {
-                        var: name.clone(),
-                        bound_var: format!("__lit__{}", name),
-                        direction: ConvergeDirection::Decreasing,
-                        bound_literal: Some(*n),
-                    })
-                }
-                _ => None,
-            }
+            bounded_decreasing(left, right)
         }
-        HirExprKind::Binary { op: BinaryOpKind::Neq, left, right } => {
-            match (&left.kind, &right.kind) {
-                (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
-                    Some(BoundedPre {
-                        var: var.clone(),
-                        bound_var: format!("__lit__{}", var),
-                        direction: ConvergeDirection::Decreasing,
-                        bound_literal: Some(*n),
-                    })
-                }
-                _ => None,
-            }
+        HirExprKind::Binary { op: BinaryOpKind::Neq, left, right } => bounded_neq(left, right),
+        HirExprKind::Binary { op: BinaryOpKind::And, left, right } => bounded_and(left, right),
+        _ => None,
+    }
+}
+
+fn lit_bound(var: &str, n: i64, direction: ConvergeDirection) -> BoundedPre {
+    BoundedPre {
+        var: var.to_string(),
+        bound_var: format!("__lit__{}", var),
+        direction,
+        bound_literal: Some(n),
+    }
+}
+
+/// `x < y` / `x <= y` / `x < N` / `x < -N` / `list.Size < …`.
+fn bounded_increasing(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
+    match (&left.kind, &right.kind) {
+        (HirExprKind::Identifier(var), HirExprKind::Identifier(bound)) => Some(BoundedPre {
+            var: var.clone(),
+            bound_var: bound.clone(),
+            direction: ConvergeDirection::Increasing,
+            bound_literal: None,
+        }),
+        (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
+            Some(lit_bound(var, *n, ConvergeDirection::Increasing))
         }
-        HirExprKind::Binary { op: BinaryOpKind::And, left, right } => {
-            match (extract_bounded_pre(left), extract_bounded_pre(right)) {
-                (Some(lp), Some(rp)) => {
-                    if lp.bound_literal.is_some() {
-                        Some(rp)
-                    } else {
-                        Some(lp)
-                    }
-                }
-                (Some(lp), None) => Some(lp),
-                (None, Some(rp)) => Some(rp),
-                (None, None) => None,
-            }
+        (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
+            if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
+        {
+            let n = lit_int(inner).map(|n| -n).unwrap_or(0);
+            Some(lit_bound(var, n, ConvergeDirection::Increasing))
+        }
+        (HirExprKind::Field { receiver, name }, _) if name == "Size" => {
+            expr_name(receiver).map(|name| BoundedPre {
+                var: name,
+                bound_var: "__len_bound".to_string(),
+                direction: ConvergeDirection::Increasing,
+                bound_literal: None,
+            })
         }
         _ => None,
     }
 }
 
+/// `x > y` / `x >= y` / `x > N` / `list.Size > 0|N`.
+fn bounded_decreasing(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
+    match (&left.kind, &right.kind) {
+        (HirExprKind::Identifier(var), HirExprKind::Identifier(bound)) => Some(BoundedPre {
+            var: var.clone(),
+            bound_var: bound.clone(),
+            direction: ConvergeDirection::Decreasing,
+            bound_literal: None,
+        }),
+        (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) => {
+            Some(lit_bound(var, *n, ConvergeDirection::Decreasing))
+        }
+        (HirExprKind::Identifier(var), HirExprKind::Unary { op: UnaryOpKind::Neg, inner })
+            if matches!(inner.kind, HirExprKind::Literal(HirLiteral::Int(_))) =>
+        {
+            let n = lit_int(inner).map(|n| -n).unwrap_or(0);
+            Some(lit_bound(var, n, ConvergeDirection::Decreasing))
+        }
+        (HirExprKind::Field { receiver, name }, HirExprKind::Literal(HirLiteral::Int(0)))
+            if name == "Size" =>
+        {
+            expr_name(receiver).map(|name| lit_bound(&name, 0, ConvergeDirection::Decreasing))
+        }
+        (HirExprKind::Field { receiver, name }, HirExprKind::Literal(HirLiteral::Int(n)))
+            if name == "Size" && *n > 0 =>
+        {
+            expr_name(receiver).map(|name| lit_bound(&name, *n, ConvergeDirection::Decreasing))
+        }
+        _ => None,
+    }
+}
+
+/// `x != N` — decreasing bound toward the literal.
+fn bounded_neq(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
+    let (HirExprKind::Identifier(var), HirExprKind::Literal(HirLiteral::Int(n))) =
+        (&left.kind, &right.kind)
+    else {
+        return None;
+    };
+    Some(lit_bound(var, *n, ConvergeDirection::Decreasing))
+}
+
+/// Conjunction: prefer a literal-bound side.
+fn bounded_and(left: &HirExpr, right: &HirExpr) -> Option<BoundedPre> {
+    match (extract_bounded_pre(left), extract_bounded_pre(right)) {
+        (Some(lp), Some(rp)) => {
+            if lp.bound_literal.is_some() {
+                Some(rp)
+            } else {
+                Some(lp)
+            }
+        }
+        (Some(lp), None) => Some(lp),
+        (None, Some(rp)) => Some(rp),
+        (None, None) => None,
+    }
+}
 fn extract_valid_bounded_pre(pre: &HirExpr, inc: &Option<IncrementInfo>) -> Option<BoundedPre> {
     let bp = extract_bounded_pre(pre)?;
     if inc.as_ref().map_or(false, |i| i.var == bp.var) {
@@ -793,38 +782,13 @@ fn is_pure_body(
             // when an increment exists, a non-counter assignment is NOT
             // FFI-scanned. Mirror that exactly.
             HirStmtKind::Assign(lhs, expr) if inc_var.is_some() => {
-                let Some(name) = expr_name(lhs) else {
-                    return false;
-                };
-                if Some(&name) == inc_var {
-                    if !matches!(
-                        &expr.kind,
-                        HirExprKind::Binary {
-                            op: BinaryOpKind::Add | BinaryOpKind::BitAnd,
-                            ..
-                        }
-                    ) {
-                        return false;
-                    }
-                    continue;
-                }
-                if state_fields.contains(&name) {
+                if !counter_assign_is_pure(lhs, expr, inc_var.unwrap(), state_fields) {
                     return false;
                 }
             }
-            HirStmtKind::Let { expr, .. } => {
-                if let Some(e) = expr {
-                    if references_triggers_or_ffi_with_decls(e) {
-                        return false;
-                    }
-                }
-            }
-            HirStmtKind::Assign(_, expr) => {
-                if references_triggers_or_ffi_with_decls(expr) {
-                    return false;
-                }
-            }
-            HirStmtKind::Expression(e) => {
+            HirStmtKind::Let { expr: Some(e), .. }
+            | HirStmtKind::Assign(_, e)
+            | HirStmtKind::Expression(e) => {
                 if references_triggers_or_ffi_with_decls(e) {
                     return false;
                 }
@@ -843,6 +807,29 @@ fn is_pure_body(
         }
     }
     true
+}
+
+/// Counter-assignment purity: the counter itself may only add or mask; any
+/// other assignment must not target a state field.
+fn counter_assign_is_pure(
+    lhs: &HirExpr,
+    expr: &HirExpr,
+    inc_var: &str,
+    state_fields: &HashSet<String>,
+) -> bool {
+    let Some(name) = expr_name(lhs) else {
+        return false;
+    };
+    if name == inc_var {
+        return matches!(
+            &expr.kind,
+            HirExprKind::Binary {
+                op: BinaryOpKind::Add | BinaryOpKind::BitAnd,
+                ..
+            }
+        );
+    }
+    !state_fields.contains(&name)
 }
 
 fn compute_live_fields(
@@ -872,11 +859,16 @@ fn seed_live_fields(
         collect_identifiers(&node.precondition, &mut live);
     }
     for node in nodes {
-        for stmt in &node.body {
-            scan_for_ffi_args(stmt, &mut live);
-        }
+        scan_node_ffi_args(node, &mut live);
     }
     live
+}
+
+/// FFI-argument identifiers of one node body.
+fn scan_node_ffi_args(node: &HirReactorNode, live: &mut HashSet<String>) {
+    for stmt in &node.body {
+        scan_for_ffi_args(stmt, live);
+    }
 }
 
 /// One liveness fixpoint round over assign/let reaches. Returns whether the
@@ -884,23 +876,43 @@ fn seed_live_fields(
 fn propagate_live_once(nodes: &[HirReactorNode], live: &mut HashSet<String>) -> bool {
     let mut changed = false;
     for node in nodes {
-        for stmt in reachable_stmts(node) {
-            let (target, expr) = match &stmt.kind {
-                HirStmtKind::Assign(lhs, expr) => (expr_name(lhs), expr),
-                HirStmtKind::Let { name, expr: Some(e), .. } => (Some(name.clone()), e),
-                _ => continue,
-            };
-            if let Some(ref t) = target {
-                if live.contains(t) {
-                    let mut idents = HashSet::new();
-                    collect_identifiers(expr, &mut idents);
-                    for ident in idents {
-                        if live.insert(ident) {
-                            changed = true;
-                        }
-                    }
-                }
-            }
+        if propagate_node(node, live) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Reaches-back propagation across one node's reachable statements.
+fn propagate_node(node: &HirReactorNode, live: &mut HashSet<String>) -> bool {
+    let mut changed = false;
+    for stmt in reachable_stmts(node) {
+        if propagate_stmt(stmt, live) {
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// One reaches-back propagation step for a statement's assigned expression.
+fn propagate_stmt(stmt: &HirStmt, live: &mut HashSet<String>) -> bool {
+    let (target, expr) = match &stmt.kind {
+        HirStmtKind::Assign(lhs, expr) => (expr_name(lhs), expr),
+        HirStmtKind::Let { name, expr: Some(e), .. } => (Some(name.clone()), e),
+        _ => return false,
+    };
+    let Some(t) = target else {
+        return false;
+    };
+    if !live.contains(&t) {
+        return false;
+    }
+    let mut changed = false;
+    let mut idents = HashSet::new();
+    collect_identifiers(expr, &mut idents);
+    for ident in idents {
+        if live.insert(ident) {
+            changed = true;
         }
     }
     changed
