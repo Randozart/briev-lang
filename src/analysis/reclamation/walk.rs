@@ -6,12 +6,9 @@
 use super::*;
 use crate::ast::{BinaryOpKind, Pattern, UnaryOpKind};
 mod structured;
-<<<<<<< HEAD
 mod traits;
-=======
 #[cfg(test)]
 mod tuple_fields_tests;
->>>>>>> refs/remotes/otto2/fix/tuple-field-effects
 
 pub(super) fn register(graph: &mut Graph, items: &[TopLevel], live: &std::collections::HashSet<String>) {
     for item in items { register_item(graph, item, live); }
