@@ -261,6 +261,32 @@ fn subst_pattern(
     }
 }
 
+/// Rename the callee and recurse into call/method arguments.
+fn subst_call_like(
+    e: &mut HirExpr,
+    subst: &HashMap<String, Type>,
+    renames: &HashMap<String, String>,
+    ids: &mut IdSupply,
+) {
+    match &mut e.kind {
+        HirExprKind::Call { callee, args, .. } => {
+            if let Some(new_name) = renames.get(callee) {
+                *callee = new_name.clone();
+            }
+            for a in args {
+                subst_expr(a, subst, renames, ids);
+            }
+        }
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            subst_expr(receiver, subst, renames, ids);
+            for a in args {
+                subst_expr(a, subst, renames, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn subst_expr(
     e: &mut HirExpr,
     subst: &HashMap<String, Type>,
@@ -272,15 +298,7 @@ fn subst_expr(
         *t = substitute_type(t, subst);
     }
     match &mut e.kind {
-        HirExprKind::Call { callee, args, analysis_id } => {
-            if let Some(new_name) = renames.get(callee) {
-                *callee = new_name.clone();
-            }
-            let _ = analysis_id;
-            for a in args {
-                subst_expr(a, subst, renames, ids);
-            }
-        }
+        HirExprKind::Call { .. } => subst_call_like(e, subst, renames, ids),
         HirExprKind::Binary { left, right, .. } => {
             subst_expr(left, subst, renames, ids);
             subst_expr(right, subst, renames, ids);
@@ -299,12 +317,7 @@ fn subst_expr(
             subst_expr(inner, subst, renames, ids);
         }
         HirExprKind::Field { receiver, .. } => subst_expr(receiver, subst, renames, ids),
-        HirExprKind::MethodCall { receiver, args, .. } => {
-            subst_expr(receiver, subst, renames, ids);
-            for a in args {
-                subst_expr(a, subst, renames, ids);
-            }
-        }
+        HirExprKind::MethodCall { .. } => subst_call_like(e, subst, renames, ids),
         HirExprKind::Reflect { receiver, .. } => subst_expr(receiver, subst, renames, ids),
         HirExprKind::Index(a, b) => {
             subst_expr(a, subst, renames, ids);
@@ -312,10 +325,8 @@ fn subst_expr(
         }
         HirExprKind::Slice { array, start, end, stride } => {
             subst_expr(array, subst, renames, ids);
-            for opt in [start, end, stride] {
-                if let Some(x) = opt {
-                    subst_expr(x, subst, renames, ids);
-                }
+            for opt in [start, end, stride].into_iter().flatten() {
+                subst_expr(opt, subst, renames, ids);
             }
         }
         HirExprKind::Range { start, end, .. } => {

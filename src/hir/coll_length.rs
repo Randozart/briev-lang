@@ -3,7 +3,7 @@
 //! Mirror of `analysis::coll_length` (AST, authoritative until parity).
 
 use super::expr::{HirExpr, HirExprKind};
-use super::program::{HirCallableKind, HirProgram};
+use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::analysis::coll_length::{CAPACITY_READS, CAPACITY_WRITES};
 use crate::analysis::coll_length::COLL_DEFAULT_CAP;
@@ -154,15 +154,33 @@ fn collect_state_inits(
     state_inits
 }
 
+fn record_writers(
+    t: &HirCallable,
+    state_inits: &HashMap<String, (String, i64)>,
+    writers: &mut HashMap<String, HashSet<String>>,
+) {
+    for name in colls_written_by_txn(&t.body.statements, state_inits) {
+        writers.entry(name).or_default().insert(t.name.clone());
+    }
+}
+
+fn insert_proven(
+    txn_name: &str,
+    proven: Vec<(String, String)>,
+    safe: &mut HashSet<(String, String)>,
+) {
+    for (_coll, base) in proven {
+        safe.insert((txn_name.to_string(), base));
+    }
+}
+
 fn shared_writers(
     program: &HirProgram,
     state_inits: &HashMap<String, (String, i64)>,
 ) -> HashSet<String> {
     let mut writers: HashMap<String, HashSet<String>> = HashMap::new();
     for t in txns(program) {
-        for name in colls_written_by_txn(&t.body.statements, state_inits) {
-            writers.entry(name.clone()).or_default().insert(t.name.clone());
-        }
+        record_writers(t, state_inits, &mut writers);
     }
     writers
         .iter()
@@ -180,9 +198,7 @@ fn collect_safe_pairs(
     let mut safe = HashSet::new();
     for t in txns(program) {
         let proven = prove_txn(&t.body.statements, state_inits, shared, coll_obj);
-        for (coll, base) in proven {
-            safe.insert((t.name.clone(), base));
-        }
+        insert_proven(t.name.as_str(), proven, &mut safe);
     }
     safe
 }

@@ -23,14 +23,18 @@ pub fn split_task_body(body: &[HirStmt], param_names: &[String]) -> Vec<Vec<HirS
     segments
 }
 
+fn collect_stmt_spawns(stmts: &[super::stmt::HirStmt], out: &mut HashSet<String>) {
+    for s in stmts {
+        stmt_walk(s, out);
+    }
+}
+
 pub fn collect_spawn_targets(program: &HirProgram) -> HashSet<String> {
     let mut out = HashSet::new();
     for c in program.callables.iter().filter(|c| {
         matches!(c.kind, HirCallableKind::Defn | HirCallableKind::Transaction) && c.owner.is_none()
     }) {
-        for s in &c.body.statements {
-            stmt_walk(s, &mut out);
-        }
+        collect_stmt_spawns(&c.body.statements, &mut out);
     }
     for g in &program.globals {
         if let Some(e) = &g.expr {
@@ -44,9 +48,7 @@ pub fn collect_spawn_targets(program: &HirProgram) -> HashSet<String> {
         if let Some(e) = &init.value {
             expr_walk(e, &mut out);
         }
-        for s in &init.body {
-            stmt_walk(s, &mut out);
-        }
+        collect_stmt_spawns(&init.body, &mut out);
     }
     out
 }

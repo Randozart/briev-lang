@@ -81,38 +81,41 @@ fn proof_surface(
 }
 
 fn body_written_names(program: &HirProgram) -> HashSet<String> {
-    fn walk(stmts: &[HirStmt], out: &mut HashSet<String>) {
-        for stmt in stmts {
-            match &stmt.kind {
-                HirStmtKind::Assign(lhs, _) => {
-                    if let HirExprKind::Identifier(name) = &lhs.kind {
-                        out.insert(name.clone());
-                    }
-                }
-                HirStmtKind::ArrowAssign { target: Some(t), .. } => {
-                    if let HirExprKind::Identifier(name) = &t.kind {
-                        out.insert(name.clone());
-                    }
-                }
-                HirStmtKind::Guarded(_, body)
-                | HirStmtKind::Block(body)
-                | HirStmtKind::SyncBlock(body)
-                | HirStmtKind::Mutex(body)
-                | HirStmtKind::Foreach { body, .. } => walk(body, out),
-                HirStmtKind::Match { arms, .. } => {
-                    for arm in arms {
-                        walk(&arm.body, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
     let mut written = HashSet::new();
     for c in program.callables.iter().filter(|c| is_txn(c)) {
-        walk(&c.body.statements, &mut written);
+        walk_written(&c.body.statements, &mut written);
     }
     written
+}
+
+fn walk_written(stmts: &[HirStmt], out: &mut HashSet<String>) {
+    for stmt in stmts {
+        written_of_stmt(stmt, out);
+    }
+}
+
+fn written_of_stmt(stmt: &HirStmt, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        HirStmtKind::Assign(lhs, _) => insert_ident_name(lhs, out),
+        HirStmtKind::ArrowAssign { target: Some(t), .. } => insert_ident_name(t, out),
+        HirStmtKind::Guarded(_, body)
+        | HirStmtKind::Block(body)
+        | HirStmtKind::SyncBlock(body)
+        | HirStmtKind::Mutex(body)
+        | HirStmtKind::Foreach { body, .. } => walk_written(body, out),
+        HirStmtKind::Match { arms, .. } => {
+            for arm in arms {
+                walk_written(&arm.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn insert_ident_name(expr: &HirExpr, out: &mut HashSet<String>) {
+    if let HirExprKind::Identifier(name) = &expr.kind {
+        out.insert(name.clone());
+    }
 }
 
 fn scalar_type(ty: &Option<Type>) -> bool {
@@ -217,21 +220,25 @@ pub(crate) fn collect_raw_idents(expr: &HirExpr, out: &mut HashSet<String>) {
 
 fn collect_stmts_surface(stmts: &[HirStmt], out: &mut HashSet<String>) {
     for stmt in stmts {
-        match &stmt.kind {
-            HirStmtKind::EndProgram(Some(e)) | HirStmtKind::Term(Some(e)) => {
-                collect_raw_idents(e, out)
-            }
-            HirStmtKind::Guarded(_, body)
-            | HirStmtKind::Block(body)
-            | HirStmtKind::SyncBlock(body)
-            | HirStmtKind::Mutex(body)
-            | HirStmtKind::Foreach { body, .. } => collect_stmts_surface(body, out),
-            HirStmtKind::Match { arms, .. } => {
-                for arm in arms {
-                    collect_stmts_surface(&arm.body, out);
-                }
-            }
-            _ => {}
+        collect_stmt_surface(stmt, out);
+    }
+}
+
+fn collect_stmt_surface(stmt: &HirStmt, out: &mut HashSet<String>) {
+    match &stmt.kind {
+        HirStmtKind::EndProgram(Some(e)) | HirStmtKind::Term(Some(e)) => {
+            collect_raw_idents(e, out)
         }
+        HirStmtKind::Guarded(_, body)
+        | HirStmtKind::Block(body)
+        | HirStmtKind::SyncBlock(body)
+        | HirStmtKind::Mutex(body)
+        | HirStmtKind::Foreach { body, .. } => collect_stmts_surface(body, out),
+        HirStmtKind::Match { arms, .. } => {
+            for arm in arms {
+                collect_stmts_surface(&arm.body, out);
+            }
+        }
+        _ => {}
     }
 }

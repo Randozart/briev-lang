@@ -64,32 +64,15 @@ fn density_of_body(body: &[HirStmt], program_float: &HashSet<String>) -> Compute
         .filter(|s| matches!(s.kind, HirStmtKind::Let { .. }))
         .collect();
     let mut float_set: HashSet<String> = program_float.clone();
-    loop {
-        let before = float_set.len();
-        for s in &top_lets {
-            if let HirStmtKind::Let { name, names, expr: Some(e), .. } = &s.kind {
-                if expr_is_float(e, &float_set) {
-                    float_set.insert(name.clone());
-                    for n in names {
-                        float_set.insert(n.clone());
-                    }
-                }
-            }
-        }
-        if float_set.len() == before {
-            break;
-        }
-    }
-    let float_idents = top_lets
+    while float_let_round(&top_lets, &mut float_set) {}
+    let float_idents = count_float_idents(&top_lets, &float_set);
+    let cross_ops: u32 = top_lets
         .iter()
-        .filter(|s| matches!(&s.kind, HirStmtKind::Let { name, .. } if float_set.contains(name)))
-        .count();
-    let mut cross_ops: u32 = 0;
-    for s in &top_lets {
-        if let HirStmtKind::Let { expr: Some(e), .. } = &s.kind {
-            cross_ops += count_cross_float_ops(e, &float_set);
-        }
-    }
+        .filter_map(|s| match &s.kind {
+            HirStmtKind::Let { expr: Some(e), .. } => Some(count_cross_float_ops(e, &float_set)),
+            _ => None,
+        })
+        .sum();
     let per_field = if float_idents == 0 {
         0.0
     } else {
@@ -102,6 +85,35 @@ fn density_of_body(body: &[HirStmt], program_float: &HashSet<String>) -> Compute
     }
 }
 
+/// One float-let fixpoint round. Returns whether the set grew.
+fn float_let_round(top_lets: &[&HirStmt], float_set: &mut HashSet<String>) -> bool {
+    let before = float_set.len();
+    for s in top_lets {
+        let HirStmtKind::Let { name, names, expr: Some(e), .. } = &s.kind else {
+            continue;
+        };
+        if !expr_is_float(e, float_set) {
+            continue;
+        }
+        mark_float_names(name, names, float_set);
+    }
+    float_set.len() != before
+}
+
+fn mark_float_names(name: &str, names: &[String], float_set: &mut HashSet<String>) {
+    float_set.insert(name.to_string());
+    for n in names {
+        float_set.insert(n.clone());
+    }
+}
+
+fn count_float_idents(top_lets: &[&HirStmt], float_set: &HashSet<String>) -> usize {
+    top_lets
+        .iter()
+        .filter(|s| matches!(&s.kind, HirStmtKind::Let { name, .. } if float_set.contains(name)))
+        .count()
+}
+
 fn float_fixpoint(bindings: &[(String, Option<Type>, Option<&HirExpr>)]) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     for (name, ty, e) in bindings {
@@ -111,17 +123,22 @@ fn float_fixpoint(bindings: &[(String, Option<Type>, Option<&HirExpr>)]) -> Hash
             out.insert(name.clone());
         }
     }
-    loop {
-        let before = out.len();
-        for (name, _ty, e) in bindings {
-            if e.map_or(false, |x| expr_is_float(x, &out)) {
-                out.insert(name.clone());
-            }
-        }
-        if out.len() == before {
-            return out;
+    while float_binding_round(bindings, &mut out) {}
+    out
+}
+
+/// One binding fixpoint round. Returns whether the set grew.
+fn float_binding_round(
+    bindings: &[(String, Option<Type>, Option<&HirExpr>)],
+    out: &mut HashSet<String>,
+) -> bool {
+    let before = out.len();
+    for (name, _ty, e) in bindings {
+        if e.map_or(false, |x| expr_is_float(x, out)) {
+            out.insert(name.clone());
         }
     }
+    out.len() != before
 }
 
 fn expr_has_float_literal(expr: &HirExpr) -> bool {

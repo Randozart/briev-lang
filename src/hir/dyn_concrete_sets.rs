@@ -19,26 +19,30 @@ pub fn analyze(program: &HirProgram) -> HashMap<String, DynCollectionInfo> {
         if g.is_state_decl {
             continue;
         }
-        analyze_let(
-            &g.name,
-            g.ty.as_ref(),
-            g.expr.as_ref(),
-            program,
-            &declared,
-            &mut out,
-        );
+        let site = LetSite {
+            name: &g.name,
+            ty: g.ty.as_ref(),
+            expr: g.expr.as_ref(),
+        };
+        analyze_let(&site, program, &declared, &mut out);
     }
     out
 }
 
+/// A top-level `let` site: name, declared type, and initializer.
+struct LetSite<'a> {
+    name: &'a str,
+    ty: Option<&'a Type>,
+    expr: Option<&'a HirExpr>,
+}
+
 fn analyze_let(
-    name: &str,
-    ty: Option<&Type>,
-    expr: Option<&HirExpr>,
+    site: &LetSite<'_>,
     program: &HirProgram,
     declared: &HashMap<String, Type>,
     out: &mut HashMap<String, DynCollectionInfo>,
 ) {
+    let LetSite { name, ty, expr } = *site;
     let Some(ty) = ty else { return };
     let Some(trait_name) = collection_dyn_trait(ty) else {
         return;

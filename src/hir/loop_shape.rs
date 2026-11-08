@@ -12,6 +12,7 @@ use super::ids::NodeId;
 use super::loop_carried::classify_fields;
 use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::slp_isomorphism::analyze_body;
+use crate::analysis::slp_isomorphism::VectorPhiCandidate;
 use super::stmt::{HirStmt, HirStmtKind};
 use super::storage_class::collect_raw_idents;
 use super::swan_song::{has_swan_song, hoist_swan_song};
@@ -199,36 +200,7 @@ fn classify_local_fields(
         collect_raw_idents(&ct.pre, &mut external);
         collect_raw_idents(&ct.post, &mut external);
     }
-    for c in &program.callables {
-        // AST parity: only a BARE top-level transaction with the same name is
-        // skipped (its body is the loop). Sync-wrapped and export-wrapped
-        // copies are `walk_toplevel`-ed as foreign surfaces in the AST, so
-        // their bodies — including a same-named sync-wrapped self — count as
-        // external observation (mixed_effect_shape's temp depends on this).
-        let bare_self = c.name == node.name
-            && matches!(c.kind, HirCallableKind::Transaction)
-            && c.owner.is_none()
-            && !c.exported
-            && c.sync_domains.is_empty();
-        if bare_self {
-            continue;
-        }
-        collect_callable_surface(c, &mut external);
-    }
-    for g in &program.globals {
-        if let Some(e) = &g.expr {
-            collect_raw_idents(e, &mut external);
-        }
-    }
-    for (_, e) in &program.const_exprs {
-        collect_raw_idents(e, &mut external);
-    }
-    for init in &program.inits {
-        if let Some(e) = &init.value {
-            collect_raw_idents(e, &mut external);
-        }
-        walk_stmts(&init.body, &mut |e| collect_raw_idents(e, &mut external));
-    }
+    collect_program_externals(program, &node.name, &mut external);
     let mut local: Vec<String> = node
         .write_set
         .iter()
@@ -237,6 +209,42 @@ fn classify_local_fields(
         .collect();
     local.sort();
     local
+}
+
+/// Identifiers every foreign surface of the program can observe.
+fn collect_program_externals(program: &HirProgram, self_name: &str, external: &mut HashSet<String>) {
+    for c in &program.callables {
+        if !is_bare_self(c, self_name) {
+            collect_callable_surface(c, external);
+        }
+    }
+    for g in &program.globals {
+        if let Some(e) = &g.expr {
+            collect_raw_idents(e, external);
+        }
+    }
+    for (_, e) in &program.const_exprs {
+        collect_raw_idents(e, external);
+    }
+    for init in &program.inits {
+        if let Some(e) = &init.value {
+            collect_raw_idents(e, external);
+        }
+        walk_stmts(&init.body, &mut |e| collect_raw_idents(e, external));
+    }
+}
+
+/// AST parity: only a BARE top-level transaction with the same name is the
+/// loop itself. Sync-wrapped and export-wrapped copies are foreign surfaces
+/// (`walk_toplevel`-ed in the AST), so their bodies — including a same-named
+/// sync-wrapped self — count as external observation (mixed_effect_shape's
+/// temp depends on this).
+fn is_bare_self(c: &HirCallable, self_name: &str) -> bool {
+    c.name == self_name
+        && matches!(c.kind, HirCallableKind::Transaction)
+        && c.owner.is_none()
+        && !c.exported
+        && c.sync_domains.is_empty()
 }
 
 fn collect_callable_surface(c: &HirCallable, out: &mut HashSet<String>) {
@@ -412,29 +420,39 @@ fn detect_vector_groups_structural(
     let mut accepted_fields: HashSet<String> = HashSet::new();
     let mut groups: Vec<VectorGroup> = Vec::new();
     for c in candidates {
-        if !c.fields.iter().all(|f| write_set.contains(f)) {
-            continue;
+        if accept_candidate(&c, &write_set, &mut accepted_fields) {
+            groups.push(VectorGroup {
+                name: c.group_name.clone(),
+                width: c.width,
+                fields: c.fields.clone(),
+            });
         }
-        if c.width.count_ones() != 1 {
-            continue;
-        }
-        let mut seen_fields: HashSet<&str> = HashSet::new();
-        if c.fields.iter().any(|f| !seen_fields.insert(f)) {
-            continue;
-        }
-        if c.fields.iter().any(|f| accepted_fields.contains(f)) {
-            continue;
-        }
-        for f in &c.fields {
-            accepted_fields.insert(f.clone());
-        }
-        groups.push(VectorGroup {
-            name: c.group_name.clone(),
-            width: c.width,
-            fields: c.fields.clone(),
-        });
     }
     groups
+}
+
+/// Accept a candidate iff its fields are all written, distinct, and not yet
+/// claimed; claims them on success.
+fn accept_candidate(
+    c: &VectorPhiCandidate,
+    write_set: &HashSet<String>,
+    accepted: &mut HashSet<String>,
+) -> bool {
+    if !c.fields.iter().all(|f| write_set.contains(f)) {
+        return false;
+    }
+    if c.width.count_ones() != 1 {
+        return false;
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    if c.fields.iter().any(|f| !seen.insert(f)) {
+        return false;
+    }
+    if c.fields.iter().any(|f| accepted.contains(f)) {
+        return false;
+    }
+    accepted.extend(c.fields.iter().cloned());
+    true
 }
 
 fn collect_txns(program: &HirProgram) -> HashMap<String, &HirCallable> {

@@ -35,19 +35,40 @@ fn opt_ref(e: &Option<&HirExpr>) -> Option<Option<crate::ast::Expr>> {
     }
 }
 
+fn method_call(
+    receiver: &HirExpr,
+    name: &str,
+    args: &[HirExpr],
+    analysis_id: Option<usize>,
+    chain_refs: &[crate::ast::ChainRef],
+) -> crate::ast::Expr {
+    crate::ast::Expr::MethodCall(
+        Box::new(expr(receiver).unwrap()),
+        name.to_string(),
+        args.iter().map(expr).collect::<Option<Vec<_>>>().unwrap(),
+        analysis_id,
+        chain_refs.to_vec(),
+    )
+}
+
+fn literal(lit: &HirLiteral) -> crate::ast::Expr {
+    use crate::ast::Expr;
+    match lit {
+        HirLiteral::Bytes(v) => Expr::Quoted(v.clone()),
+        HirLiteral::Int(n) => Expr::Decimal(*n),
+        HirLiteral::Char(c) => Expr::Char(*c),
+        HirLiteral::TaggedInt(n, t) => Expr::TaggedLiteral(*n, t.clone()),
+        HirLiteral::TaggedBytes(v, t) => Expr::TaggedQuotedLiteral(v.clone(), t.clone()),
+        HirLiteral::Bool(b) => Expr::Bool(*b),
+        HirLiteral::Float(f) => Expr::Float(*f),
+        HirLiteral::BeginProgram => Expr::BeginProgram,
+    }
+}
+
 pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
     use crate::ast::Expr;
     Some(match &e.kind {
-        HirExprKind::Literal(lit) => match lit {
-            HirLiteral::Bytes(v) => Expr::Quoted(v.clone()),
-            HirLiteral::Int(n) => Expr::Decimal(*n),
-            HirLiteral::Char(c) => Expr::Char(*c),
-            HirLiteral::TaggedInt(n, t) => Expr::TaggedLiteral(*n, t.clone()),
-            HirLiteral::TaggedBytes(v, t) => Expr::TaggedQuotedLiteral(v.clone(), t.clone()),
-            HirLiteral::Bool(b) => Expr::Bool(*b),
-            HirLiteral::Float(f) => Expr::Float(*f),
-            HirLiteral::BeginProgram => Expr::BeginProgram,
-        },
+        HirExprKind::Literal(lit) => literal(lit),
         HirExprKind::Identifier(n) => Expr::Identifier(n.clone()),
         HirExprKind::Call { callee, args, analysis_id } => Expr::Call(
             callee.clone(),
@@ -63,13 +84,7 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
         }
         HirExprKind::Cast { inner, to, .. } => Expr::Cast(Box::new(expr(inner)?), to.clone()),
         HirExprKind::MethodCall { receiver, name, args, analysis_id, chain_refs } => {
-            Expr::MethodCall(
-                Box::new(expr(receiver)?),
-                name.clone(),
-                args.iter().map(expr).collect::<Option<Vec<_>>>()?,
-                *analysis_id,
-                chain_refs.clone(),
-            )
+            method_call(receiver, name, args, *analysis_id, chain_refs)
         }
         HirExprKind::Reflect { receiver, name, kind } => {
             Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind)

@@ -50,10 +50,18 @@ pub fn analyze(program: &HirProgram) -> HashMap<String, HashSet<String>> {
 fn propagate_round(summaries: &mut Summaries, previous: &BTreeMap<String, HashSet<String>>) {
     for (name, calls) in &summaries.calls {
         let writes = summaries.writes.entry(name.clone()).or_default();
-        for callee in calls {
-            if let Some(callee_writes) = previous.get(callee) {
-                writes.extend(callee_writes.iter().cloned());
-            }
+        extend_from_callees(calls, previous, writes);
+    }
+}
+
+fn extend_from_callees(
+    calls: &HashSet<String>,
+    previous: &BTreeMap<String, HashSet<String>>,
+    writes: &mut HashSet<String>,
+) {
+    for callee in calls {
+        if let Some(callee_writes) = previous.get(callee) {
+            writes.extend(callee_writes.iter().cloned());
         }
     }
 }
@@ -70,15 +78,23 @@ fn record(c: &HirCallable, fields: &HashSet<String>, summaries: &mut Summaries) 
     };
     walk_assign_targets(&c.body.statements, &mut collect);
     super::expr_walk::walk_stmts(&c.body.statements, &mut |expr| {
-        if let HirExprKind::Call { callee, .. } = &expr.kind {
-            calls.insert(callee.clone());
-        }
-        if let HirExprKind::Block(stmts) = &expr.kind {
-            walk_assign_targets(stmts, &mut collect);
-        }
+        record_expr(expr, &mut calls, &mut collect);
     });
     summaries.writes.insert(c.name.to_string(), writes);
     summaries.calls.insert(c.name.to_string(), calls);
+}
+
+fn record_expr(
+    expr: &HirExpr,
+    calls: &mut HashSet<String>,
+    collect: &mut dyn FnMut(&HirExpr),
+) {
+    if let HirExprKind::Call { callee, .. } = &expr.kind {
+        calls.insert(callee.clone());
+    }
+    if let HirExprKind::Block(stmts) = &expr.kind {
+        walk_assign_targets(stmts, collect);
+    }
 }
 
 fn root_name(expr: &HirExpr) -> Option<&str> {
@@ -91,22 +107,26 @@ fn root_name(expr: &HirExpr) -> Option<&str> {
 
 fn walk_assign_targets(body: &[super::stmt::HirStmt], f: &mut dyn FnMut(&HirExpr)) {
     for stmt in body {
-        match &stmt.kind {
-            HirStmtKind::Assign(lhs, _) => f(lhs),
-            HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
-            HirStmtKind::Guarded(_, inner)
-            | HirStmtKind::Block(inner)
-            | HirStmtKind::SyncBlock(inner)
-            | HirStmtKind::Defer(inner)
-            | HirStmtKind::Mutex(inner)
-            | HirStmtKind::Foreach { body: inner, .. } => walk_assign_targets(inner, f),
-            HirStmtKind::Match { arms, .. } => {
-                for arm in arms {
-                    walk_assign_targets(&arm.body, f);
-                }
+        walk_one_assign_target(stmt, f);
+    }
+}
+
+fn walk_one_assign_target(stmt: &super::stmt::HirStmt, f: &mut dyn FnMut(&HirExpr)) {
+    match &stmt.kind {
+        HirStmtKind::Assign(lhs, _) => f(lhs),
+        HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
+        HirStmtKind::Guarded(_, inner)
+        | HirStmtKind::Block(inner)
+        | HirStmtKind::SyncBlock(inner)
+        | HirStmtKind::Defer(inner)
+        | HirStmtKind::Mutex(inner)
+        | HirStmtKind::Foreach { body: inner, .. } => walk_assign_targets(inner, f),
+        HirStmtKind::Match { arms, .. } => {
+            for arm in arms {
+                walk_assign_targets(&arm.body, f);
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 
