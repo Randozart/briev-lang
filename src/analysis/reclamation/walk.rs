@@ -231,23 +231,9 @@ impl Builder<'_> {
     fn statement(&mut self, statement: &Statement) {
         match statement {
             Statement::Let { name, names, expr, ty, .. } => {
-                self.bind_types(name, names, ty.as_ref(), expr.as_ref());
-                let target = self.local(name);
-                if let Some(expr) = expr {
-                    if self.value_allocates(expr) { self.alloc_bindings.insert(name.clone()); }
-                    let value = self.expression(expr);
-                    if names.len() <= 1 { self.graph.copy(value, target); }
-                    else { for name in names { let target = self.local(name); self.load(value, target); } }
-                }
+                self.statement_let(name, names, ty.as_ref(), expr.as_ref())
             }
-            Statement::Assign(target, value) => {
-                let allocating = self.value_allocates(value);
-                let value = self.expression(value);
-                if allocating {
-                    if let Expr::Identifier(name) = target { self.alloc_bindings.insert(name.clone()); }
-                }
-                self.assign(target, value, allocating);
-            }
+            Statement::Assign(target, value) => self.statement_assign(target, value),
             Statement::Term(Some(value)) | Statement::Tail(value) => {
                 let value = self.expression(value); self.graph.copy(value, self.result);
             }
@@ -298,6 +284,25 @@ impl Builder<'_> {
         }
     }
 
+    fn statement_let(&mut self, name: &str, names: &[String], ty: Option<&crate::ast::Type>, expr: Option<&Expr>) {
+        self.bind_types(name, names, ty, expr);
+        let target = self.local(name);
+        let Some(expr) = expr else { return };
+        if self.value_allocates(expr) { self.alloc_bindings.insert(name.into()); }
+        let value = self.expression(expr);
+        if names.len() <= 1 { self.graph.copy(value, target); return; }
+        for name in names { let target = self.local(name); self.load(value, target); }
+    }
+
+    fn statement_assign(&mut self, target: &Expr, value_expr: &Expr) {
+        let allocating = self.value_allocates(value_expr);
+        let value = self.expression(value_expr);
+        if allocating {
+            if let Expr::Identifier(name) = target { self.alloc_bindings.insert(name.clone()); }
+        }
+        self.assign(target, value, allocating);
+    }
+
     fn statement_arm(&mut self, value: Node, arm: &crate::ast::StmtMatchArm) {
         for pattern in &arm.patterns { self.pattern(pattern, value); }
         self.statements(&arm.body);
@@ -309,43 +314,49 @@ impl Builder<'_> {
             self.graph.copy(value, target);
             return;
         }
-        if let Expr::Field(_, _) = target {
-            // 2026-11-07 (nested field store): attribute the store to the ROOT
-            // receiver so a store through more than one projection
-            // (`p.mid.inner = …`) is seen exactly like `p.inner = …`.
-            // Resolving the intermediate `p.mid` through `expression` yields a
-            // field-load node with no contents, so the store landed nowhere and
-            // the allocation was wrongly licensed as a reclaimable
-            // function-region value — its handle then dangled after the region
-            // was freed. Peeling the chain to `p` keeps the allocation
-            // reachable from the incoming parameter, which classifies the
-            // callable as a barrier instead of a region.
-            if let Some((root, path)) = projection_root_and_path(target) {
-                // 2026-11-07: a store into a projection of an INCOMING receiver
-                // publishes storage into caller-owned memory. Record the owner
-                // so the plan marks it a barrier: an INHERIT lowering would
-                // leave the caller's region active and reclaim the storage when
-                // the caller exits, dangling the handle the caller keeps.
-                if let Expr::Identifier(root_name) = root {
-                    if allocating && self.param_names.contains(root_name.as_str()) {
-                        self.graph.incoming_store_owners.insert(self.owner.into());
-                    }
-                }
-                let base = self.expression(root);
-                self.graph.constraints.push(Constraint::FieldStore(base, path, value));
-                return;
-            }
-            if let Expr::Field(base, field) = target {
-                let base = self.expression(base);
-                self.graph.constraints.push(Constraint::FieldStore(base, field.clone(), value));
-                return;
-            }
-        }
+        if self.assign_field(target, value, allocating) { return; }
         let base = match target {
             Expr::Field(base, _) | Expr::Index(base, _) | Expr::Deref(base) => self.expression(base),
             _ => { self.unsupported(); return; }
         };
         self.graph.constraints.push(Constraint::Store(base, value));
+    }
+
+    /// 2026-11-07/08: a field store is attributed to the ROOT receiver so a
+    /// store through more than one projection (`p.mid.inner = …`) is seen
+    /// exactly like `p.inner = …`. Resolving the intermediate `p.mid` through
+    /// `expression` yields a content-less field-load node, so the store landed
+    /// nowhere and the allocation was wrongly licensed as a reclaimable region
+    /// whose handle dangled after teardown. Peeling to the root keeps the
+    /// allocation reachable from the incoming parameter. Returns whether the
+    /// target was a field store (handled here).
+    fn assign_field(&mut self, target: &Expr, value: Node, allocating: bool) -> bool {
+        let Expr::Field(_, _) = target else { return false; };
+        if let Some((root, path)) = projection_root_and_path(target) {
+            self.record_incoming_store(allocating, root);
+            let base = self.expression(root);
+            self.graph.constraints.push(Constraint::FieldStore(base, path, value));
+            return true;
+        }
+        if let Expr::Field(base, field) = target {
+            let base = self.expression(base);
+            self.graph.constraints.push(Constraint::FieldStore(base, field.clone(), value));
+        }
+        true
+    }
+
+    /// 2026-11-07: a store into a projection of an INCOMING receiver publishes
+    /// storage into caller-owned memory. Record the owner so the plan marks it
+    /// a barrier: an INHERIT lowering would leave the caller's region active
+    /// and reclaim the storage on caller exit, dangling a handle the caller
+    /// keeps.
+    fn record_incoming_store(&mut self, allocating: bool, root: &Expr) {
+        if !allocating { return; }
+        if let Expr::Identifier(root_name) = root {
+            if self.param_names.contains(root_name.as_str()) {
+                self.graph.incoming_store_owners.insert(self.owner.into());
+            }
+        }
     }
 
     fn load(&mut self, base: Node, value: Node) { self.graph.constraints.push(Constraint::Load(base, value)); }
