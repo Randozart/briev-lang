@@ -1,0 +1,30 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+enum Toggle { Value(Bool) };
+defn forward(value: Toggle, expected: Bool) -> Bool {
+    match value { Value(flag) => flag == expected, }
+};
+defn reverse(value: Toggle, expected: Bool) -> Bool {
+    match value { Value(flag) => expected == flag, }
+};
+defn different(value: Toggle, expected: Bool) -> Bool {
+    match value { Value(flag) => flag != expected, }
+};
+defn signed_pair(small: Int8) -> Bool {
+    term small == -1 && -1 == small && !(small != -1) &&
+        small <= -1 && -1 >= small && !(small < -1) && !(small > -1);
+};
+defn unsigned_pair(small: UInt8) -> Bool {
+    term small == 255 && 255 == small && small <= 255 && 255 >= small;
+};
+let done: Bool = false;
+node main [!done][done] {
+    when !forward(Value(true),true) || !reverse(Value(true),true) { endprogram 1; };
+    when !forward(Value(false),false) || !reverse(Value(false),false) { endprogram 2; };
+    when forward(Value(true),false) || reverse(Value(false),true) { endprogram 3; };
+    when !different(Value(true),false) || different(Value(true),true) { endprogram 4; };
+    when !signed_pair(-1 as Int8) { endprogram 5; };
+    when !unsigned_pair(255 as UInt8) { endprogram 6; };
+    println!("mixed_integer_operands_ok"); done = true; endprogram;
+};

@@ -470,3 +470,14 @@ Lifetime analysis now retains product return/local/projection types, allowing
 closed tuple scopes to reclaim allocations without treating returned aliases as
 local. Native mixed-value execution and wasm32 nested execution are regression
 gates; final results are in the checkpoint record.
+
+### Scalar binary representation boundary (2026-11-06)
+
+Before config templates or fallback operators consume two integer SSA values,
+`integer_operands::normalize_integer_pair` aligns unequal physical widths.
+The narrower value extends to the wider operand's LLVM width; signedness comes
+from protocol membership, and the result retains the wider operand's type.
+This handles native enum payloads alongside boxed parameters without knowing
+any enum/type names. Equal-width operands and noninteger/vector paths retain
+their existing lowering. The native mixed-integer fixture verifies both operand
+orders, comparisons, signed negative values and unsigned high-bit values.

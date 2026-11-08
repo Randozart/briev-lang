@@ -12175,3 +12175,14 @@ preconditions.
 - The G001 cross-thread-stride warning reports the PRE-synthesis body's
   access pattern; for the sum lane the emitted reads are coalesced within
   each row. W4 disclosure item.
+## 2026-11-06 — mixed native/boxed integer operands (fixed locally)
+
+`enum Toggle { Value(Bool) }; defn agrees(value: Toggle, expected: Bool)
+-> Bool { match value { Value(flag) => flag == expected, } };` emitted an
+`icmp eq i8` whose second operand was the i64 boxed parameter. LLVM rejected
+it before linking. The same representation boundary applies to narrow scalar
+values and target-width literals. Binary dispatch now normalizes unequal
+physical integer widths, extending signed Int protocols with sext and other
+integer protocols with zext, retaining the wider register's actual type.
+Equal-width/noninteger dispatch is unchanged. Regression:
+`tests/fixtures/load/mixed_integer_operands.bv` and native O0/O3 AST/HIR gate.

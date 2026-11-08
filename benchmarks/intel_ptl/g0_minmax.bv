@@ -1,0 +1,103 @@
+// g0_minmax.bv — §12 W3.1 gate: the Min#/Max# fold idioms run the
+// reduction synthesis lane (SubgroupSMin#/SubgroupSMax#) on the device,
+// verified against an independent host recompute (Int exact).
+//
+// 2026-11-06 (plan 2026-11-06-idiom-recognition-doctrine.md W3.1): the
+// detector finds `acc = Min#(acc, a[i*K + k])` / `acc = Max#(...)`, the
+// lane license (Int + const K % 32) fires, and the gate script asserts
+// BAD=0 plus the "compiled on '<device>'" log line.
+//
+// Runs under `ulimit -s 65536` (BUGS.md 2026-11-06).
+
+!> accel: force;
+
+const ROWS: Int = 4096;
+const K: Int = 1024;
+
+let i: Int = 0;
+let r: Int = 0;
+let phase: Int = 0;
+let bad: Int = 0;
+let gpu_min_sum: Int = 0;
+let cpu_min_sum: Int = 0;
+let gpu_max_sum: Int = 0;
+let cpu_max_sum: Int = 0;
+
+let a: Int[4194304];
+let ymin: Int[4096];
+let ymax: Int[4096];
+
+// init (CPU): deterministic values, -3..3.
+async node init [phase == 0 && i < 4194304][i == 4194304] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        a[idx] = (idx % 7) - 3;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == 4194304][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// device lane: the Min# fold idiom.
+async accel node minrow [phase == 1 && i < ROWS][i == ROWS] {
+    let acc: Int = a[i * K];
+    foreach k in 1..K {
+        acc = Min#(acc, a[i * K + k]);
+    };
+    ymin[i] = acc;
+    i = i + 1;
+    term;
+};
+
+// device lane: the Max# fold idiom.
+async accel node maxrow [phase == 1 && i < ROWS][i == ROWS] {
+    let acc: Int = a[i * K];
+    foreach k in 1..K {
+        acc = Max#(acc, a[i * K + k]);
+    };
+    ymax[i] = acc;
+    i = i + 1;
+    term;
+};
+
+// Host reference: recompute 256 spread rows, exactly. NOTE (§12.2 gate-4
+// lesson, BUGS.md 2026-11-06): the liveness anchors use wide bounds — the
+// sampled extrema are signed and a `>= 0` guard here would be false
+// forever (min = -3) and the reactor would never report.
+async node verify [phase == 2 && r < 256][r == 256] {
+    let row: Int = r * 16;
+    let accmn: Int = a[row * K];
+    let accmx: Int = a[row * K];
+    foreach k in 1..K {
+        let v: Int = a[row * K + k];
+        accmn = Min#(accmn, v);
+        accmx = Max#(accmx, v);
+    };
+    cpu_min_sum = cpu_min_sum + accmn;
+    gpu_min_sum = gpu_min_sum + ymin[row];
+    cpu_max_sum = cpu_max_sum + accmx;
+    gpu_max_sum = gpu_max_sum + ymax[row];
+    when accmn != ymin[row] { bad = bad + 1; };
+    when accmx != ymax[row] { bad = bad + 1; };
+    r = r + 1;
+    term;
+};
+
+async node verify_done [phase == 2 && r == 256][phase == 3] {
+    phase = 3;
+    term;
+};
+
+async node report [phase == 3 && bad >= 0 && gpu_min_sum >= -1000000000000
+                   && cpu_min_sum >= -1000000000000
+                   && gpu_max_sum <= 1000000000000
+                   && cpu_max_sum <= 1000000000000][true] {
+    endprogram println!("G0_MINMAX_BAD={} GPU_MIN={} CPU_MIN={} GPU_MAX={} CPU_MAX={} Y0={} YN={}",
+                        bad, gpu_min_sum, cpu_min_sum, gpu_max_sum, cpu_max_sum,
+                        ymin[0], ymax[ROWS - 1]);
+};
