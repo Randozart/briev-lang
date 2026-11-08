@@ -52,3 +52,10 @@ use-after-free findings remain open. Fork push still requires valid credentials.
 
 Authentication was subsequently restored. The fork push succeeded without force:
 local `main`, `origin/main` and `fork/main` now all resolve to `735d1023`.
+
+Praetor was subsequently installed from `Randozart/praetor-lsp` at `81f190ab`.
+The changed-file comparison for `fdceb550` against `735d1023` passes: 271 baseline
+diagnostics in each tree, no new/worsened findings, and reduced complexity/length
+in existing functions. Full invocation and evidence are in
+`docs/architecture/praetor-log.md`. Only Kani remains unavailable from the tooling
+previously recorded as missing.
