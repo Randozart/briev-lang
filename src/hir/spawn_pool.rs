@@ -6,7 +6,7 @@
 //! bound expression.
 
 use super::expr::{HirExpr, HirExprKind};
-use super::program::{HirCallableKind, HirProgram};
+use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::analysis::spawn_pool::{DependentTerm, PoolBound};
 use crate::ast::top::{BoundSpec, BoundTerm};
@@ -46,11 +46,10 @@ pub fn analyze(
         let mut live: HashMap<String, i64> = HashMap::new();
         let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
         let mut ctx = WalkCtx { firing: &firing, bound_terms: &[] };
-        walk_stmts(&c.body.statements, 1, &mut ctx, &mut live, &mut terms, &mut errors);
+        let mut sink = Sink { live: &mut live, terms: &mut terms, errors: &mut errors };
+        walk_stmts(&c.body.statements, 1, &mut ctx, &mut sink);
         merge_total(&mut capacities, &live);
-        for (base, ts) in terms {
-            dependent.entry(base).or_default().extend(ts);
-        }
+        merge_dependent(&mut dependent, terms);
     }
     for g in &program.globals {
         let stmt = HirStmt {
@@ -67,11 +66,10 @@ pub fn analyze(
         let mut live: HashMap<String, i64> = HashMap::new();
         let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
         let mut ctx = WalkCtx { firing: &Firing::Static(1), bound_terms: &[] };
-        walk_stmt(&stmt, 1, &mut ctx, &mut live, &mut terms, &mut errors);
+        let mut sink = Sink { live: &mut live, terms: &mut terms, errors: &mut errors };
+        walk_stmt(&stmt, 1, &mut ctx, &mut sink);
         merge_total(&mut capacities, &live);
-        for (base, ts) in terms {
-            dependent.entry(base).or_default().extend(ts);
-        }
+        merge_dependent(&mut dependent, terms);
     }
 
     let storage_classes = collect_storage_classes(program);
@@ -85,9 +83,7 @@ fn collect_storage_classes(program: &HirProgram) -> HashMap<String, SpawnStorage
             && c.owner.is_none()
             && !c.exported
     }) {
-        for s in &c.body.statements {
-            walk_stmt_for_storage(s, &mut out);
-        }
+        collect_callable_storage(c, &mut out);
     }
     for g in &program.globals {
         if let Some(e) = &g.expr {
@@ -95,6 +91,13 @@ fn collect_storage_classes(program: &HirProgram) -> HashMap<String, SpawnStorage
         }
     }
     out
+}
+
+/// Storage classes declared by one callable body.
+fn collect_callable_storage(c: &HirCallable, out: &mut HashMap<String, SpawnStorage>) {
+    for s in &c.body.statements {
+        walk_stmt_for_storage(s, out);
+    }
 }
 
 fn walk_stmt_for_storage(s: &HirStmt, out: &mut HashMap<String, SpawnStorage>) {
@@ -209,6 +212,13 @@ struct WalkCtx<'a> {
     bound_terms: &'a [PoolBound],
 }
 
+/// Mutable walk accumulator (pool counts, dependent terms, diagnostics).
+struct Sink<'a> {
+    live: &'a mut HashMap<String, i64>,
+    terms: &'a mut HashMap<String, Vec<DependentTerm>>,
+    errors: &'a mut Vec<String>,
+}
+
 fn node_firing(
     c: &super::program::HirCallable,
     init_maxes: &HashMap<String, i64>,
@@ -291,12 +301,10 @@ fn walk_stmts(
     stmts: &[HirStmt],
     multiplier: i64,
     ctx: &mut WalkCtx,
-    live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<DependentTerm>>,
-    errors: &mut Vec<String>,
+    sink: &mut Sink<'_>,
 ) {
     for s in stmts {
-        walk_stmt(s, multiplier, ctx, live, terms, errors);
+        walk_stmt(s, multiplier, ctx, sink);
     }
 }
 
@@ -304,9 +312,7 @@ fn walk_stmt(
     stmt: &HirStmt,
     multiplier: i64,
     ctx: &mut WalkCtx,
-    live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<DependentTerm>>,
-    errors: &mut Vec<String>,
+    sink: &mut Sink<'_>,
 ) {
     match &stmt.kind {
         HirStmtKind::Foreach { list, body, .. } => {
@@ -324,7 +330,7 @@ fn walk_stmt(
                 _ => None,
             };
             match count {
-                Some(c) => walk_stmts(body, multiplier * c, ctx, live, terms, errors),
+                Some(c) => walk_stmts(body, multiplier * c, ctx, sink),
                 None => {
                     if let Some(bound) = foreach_bound(list) {
                         let nested = ctx.bound_terms;
@@ -334,7 +340,7 @@ fn walk_stmt(
                             .chain(std::iter::once(bound))
                             .collect();
                         let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
-                        walk_stmts(body, multiplier, &mut inner_ctx, live, terms, errors);
+                        walk_stmts(body, multiplier, &mut inner_ctx, sink);
                     } else {
                         let mut inner_live: HashMap<String, i64> = HashMap::new();
                         let mut inner_terms: HashMap<String, Vec<DependentTerm>> =
@@ -342,38 +348,36 @@ fn walk_stmt(
                         let mut inner_errors = Vec::new();
                         let extended: Vec<PoolBound> = ctx.bound_terms.to_vec();
                         let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
-                        walk_stmts(
-                            body,
-                            0,
-                            &mut inner_ctx,
-                            &mut inner_live,
-                            &mut inner_terms,
-                            &mut inner_errors,
-                        );
+                        let mut inner_sink = Sink {
+                            live: &mut inner_live,
+                            terms: &mut inner_terms,
+                            errors: &mut inner_errors,
+                        };
+                        walk_stmts(body, 0, &mut inner_ctx, &mut inner_sink);
                         for e in inner_errors {
-                            errors.push(e);
+                            sink.errors.push(e);
                         }
                         for (base, ts) in inner_terms {
-                            terms.entry(base).or_default().extend(ts);
+                            sink.terms.entry(base).or_default().extend(ts);
                         }
                     }
                 }
             }
         }
-        HirStmtKind::Guarded(_, body) => walk_stmts(body, multiplier, ctx, live, terms, errors),
+        HirStmtKind::Guarded(_, body) => walk_stmts(body, multiplier, ctx, sink),
         HirStmtKind::Block(body) | HirStmtKind::SyncBlock(body) => {
-            walk_stmts(body, multiplier, ctx, live, terms, errors)
+            walk_stmts(body, multiplier, ctx, sink)
         }
-        HirStmtKind::Assign(_, rhs) => walk_expr(rhs, multiplier, ctx, live, terms, errors),
+        HirStmtKind::Assign(_, rhs) => walk_expr(rhs, multiplier, ctx, sink),
         HirStmtKind::Term(Some(e)) | HirStmtKind::EndProgram(Some(e)) | HirStmtKind::Tail(e) => {
-            walk_expr(e, multiplier, ctx, live, terms, errors)
+            walk_expr(e, multiplier, ctx, sink)
         }
         HirStmtKind::Expression(e) | HirStmtKind::Gate(e) => {
-            walk_expr(e, multiplier, ctx, live, terms, errors)
+            walk_expr(e, multiplier, ctx, sink)
         }
         HirStmtKind::FreeHint(_) | HirStmtKind::KeepHint(_) => {}
         HirStmtKind::Let { expr: Some(e), .. } => {
-            walk_expr(e, multiplier, ctx, live, terms, errors)
+            walk_expr(e, multiplier, ctx, sink)
         }
         _ => {}
     }
@@ -383,26 +387,100 @@ fn walk_expr(
     expr: &HirExpr,
     multiplier: i64,
     ctx: &mut WalkCtx,
-    live: &mut HashMap<String, i64>,
-    terms: &mut HashMap<String, Vec<DependentTerm>>,
-    errors: &mut Vec<String>,
+    sink: &mut Sink<'_>,
 ) {
     match &expr.kind {
         HirExprKind::Spawn { type_name, args, storage } => {
-            if *storage != SpawnStorage::Pooled {
+            record_spawn(type_name, args, (*storage, multiplier), ctx, sink)
+        }
+
+        HirExprKind::Binary { left, right, .. } => {
+            walk_expr(left, multiplier, ctx, sink);
+            walk_expr(right, multiplier, ctx, sink);
+        }
+        HirExprKind::Call { args, .. } | HirExprKind::List(args) | HirExprKind::Tuple(args) => {
+            for a in args {
+                walk_expr(a, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::Cast { inner, .. }
+        | HirExprKind::IsType { inner, .. }
+        | HirExprKind::Consume(inner)
+        | HirExprKind::Deref(inner)
+        | HirExprKind::AddrOf(inner) => {
+            walk_expr(inner, multiplier, ctx, sink)
+        }
+        HirExprKind::Field { receiver, .. }
+        | HirExprKind::Index(receiver, _)
+        | HirExprKind::Reflect { receiver, .. } => {
+            walk_expr(receiver, multiplier, ctx, sink)
+        }
+        HirExprKind::MethodCall { receiver, args, .. } => {
+            walk_expr(receiver, multiplier, ctx, sink);
+            for a in args {
+                walk_expr(a, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::If { condition, then_branch, else_branch } => {
+            walk_expr(condition, multiplier, ctx, sink);
+            walk_expr(then_branch, multiplier, ctx, sink);
+            if let Some(e) = else_branch {
+                walk_expr(e, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            walk_expr(scrutinee, multiplier, ctx, sink);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    walk_expr(g, multiplier, ctx, sink);
+                }
+                walk_expr(&arm.body, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::Slice { array, start, end, stride } => {
+            walk_expr(array, multiplier, ctx, sink);
+            for b in [start, end, stride].into_iter().flatten() {
+                walk_expr(b, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::StructLiteral { fields, .. } => {
+            for (_, f) in fields {
+                walk_expr(f, multiplier, ctx, sink);
+            }
+        }
+        HirExprKind::Range { start, end, .. } => {
+            walk_expr(start, multiplier, ctx, sink);
+            walk_expr(end, multiplier, ctx, sink);
+        }
+        _ => {}
+    }
+}
+
+
+/// Record one spawn site's pool contribution (storage-kind gate + firing
+/// multiplicity). `(storage, multiplier)` keeps the parameter count sane.
+fn record_spawn(
+    type_name: &str,
+    args: &[HirExpr],
+    (storage, multiplier): (SpawnStorage, i64),
+    ctx: &mut WalkCtx<'_>,
+    sink: &mut Sink<'_>,
+) {
+
+            if storage != SpawnStorage::Pooled {
                 for a in args {
-                    walk_expr(a, multiplier, ctx, live, terms, errors);
+                    walk_expr(a, multiplier, ctx, sink);
                 }
                 return;
             }
             match ctx.firing {
                 Firing::Static(n) if ctx.bound_terms.is_empty() => {
-                    let entry = live.entry(type_name.clone()).or_insert(0);
+                    let entry = sink.live.entry(type_name.to_string()).or_insert(0);
                     *entry += multiplier * (*n).max(1);
                 }
                 Firing::Static(n) => {
                     let bound = product(ctx.bound_terms);
-                    let entry = terms.entry(type_name.clone()).or_default();
+                    let entry = sink.terms.entry(type_name.to_string()).or_default();
                     entry.push(DependentTerm {
                         multiplier: multiplier * (*n).max(1),
                         bound,
@@ -414,11 +492,11 @@ fn walk_expr(
                     bounds.push(countdown_bound.clone());
                     bounds.extend(ctx.bound_terms.iter().cloned());
                     let bound = product(&bounds);
-                    let entry = terms.entry(type_name.clone()).or_default();
+                    let entry = sink.terms.entry(type_name.to_string()).or_default();
                     entry.push(DependentTerm { multiplier, bound });
                 }
                 Firing::Unprovable => {
-                    errors.push(format!(
+                    sink.errors.push(format!(
                         "spawn of '{}' is not statically bounded — the pool must be predictably \
                          inexhaustible; spawn inside a countdown node with a compile-time constant \
                          or runtime-field bound",
@@ -427,69 +505,8 @@ fn walk_expr(
                 }
             }
             for a in args {
-                walk_expr(a, multiplier, ctx, live, terms, errors);
+                walk_expr(a, multiplier, ctx, sink);
             }
-        }
-        HirExprKind::Binary { left, right, .. } => {
-            walk_expr(left, multiplier, ctx, live, terms, errors);
-            walk_expr(right, multiplier, ctx, live, terms, errors);
-        }
-        HirExprKind::Call { args, .. } | HirExprKind::List(args) | HirExprKind::Tuple(args) => {
-            for a in args {
-                walk_expr(a, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::Cast { inner, .. }
-        | HirExprKind::IsType { inner, .. }
-        | HirExprKind::Consume(inner)
-        | HirExprKind::Deref(inner)
-        | HirExprKind::AddrOf(inner) => {
-            walk_expr(inner, multiplier, ctx, live, terms, errors)
-        }
-        HirExprKind::Field { receiver, .. }
-        | HirExprKind::Index(receiver, _)
-        | HirExprKind::Reflect { receiver, .. } => {
-            walk_expr(receiver, multiplier, ctx, live, terms, errors)
-        }
-        HirExprKind::MethodCall { receiver, args, .. } => {
-            walk_expr(receiver, multiplier, ctx, live, terms, errors);
-            for a in args {
-                walk_expr(a, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::If { condition, then_branch, else_branch } => {
-            walk_expr(condition, multiplier, ctx, live, terms, errors);
-            walk_expr(then_branch, multiplier, ctx, live, terms, errors);
-            if let Some(e) = else_branch {
-                walk_expr(e, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            walk_expr(scrutinee, multiplier, ctx, live, terms, errors);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    walk_expr(g, multiplier, ctx, live, terms, errors);
-                }
-                walk_expr(&arm.body, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::Slice { array, start, end, stride } => {
-            walk_expr(array, multiplier, ctx, live, terms, errors);
-            for b in [start, end, stride].into_iter().flatten() {
-                walk_expr(b, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::StructLiteral { fields, .. } => {
-            for (_, f) in fields {
-                walk_expr(f, multiplier, ctx, live, terms, errors);
-            }
-        }
-        HirExprKind::Range { start, end, .. } => {
-            walk_expr(start, multiplier, ctx, live, terms, errors);
-            walk_expr(end, multiplier, ctx, live, terms, errors);
-        }
-        _ => {}
-    }
 }
 
 fn product(bounds: &[PoolBound]) -> PoolBound {
@@ -501,6 +518,16 @@ fn product(bounds: &[PoolBound]) -> PoolBound {
         acc = PoolBound::Mul(Box::new(acc), Box::new(b.clone()));
     }
     acc
+}
+
+/// Fold one callable's dependent terms into the program map.
+fn merge_dependent(
+    out: &mut HashMap<String, Vec<DependentTerm>>,
+    terms: HashMap<String, Vec<DependentTerm>>,
+) {
+    for (base, ts) in terms {
+        out.entry(base).or_default().extend(ts);
+    }
 }
 
 fn merge_total(out: &mut HashMap<String, usize>, live: &HashMap<String, i64>) {
