@@ -29,58 +29,12 @@ impl HirEnumRepresentationPlan {
 }
 
 pub fn build_enum_representation_plan(program: &HirProgram) -> HirEnumRepresentationPlan {
-    let mut variants = Vec::new();
-    let mut enum_names = Vec::new();
-    for td in &program.type_defs {
-        let HirTypeDefKind::Enum { variants: vs } = &td.kind else {
-            continue;
-        };
-        enum_names.push(td.name.clone());
-        for v in vs {
-            let name = match v {
-                super::program::HirEnumVariant::Unit(n)
-                | super::program::HirEnumVariant::Tuple(n, _)
-                | super::program::HirEnumVariant::Struct(n, _) => n,
-            };
-            variants.push(name.clone());
-            variants.push(format!("{}::{}", td.name, name));
-        }
-    }
-    variants.sort();
-    variants.dedup();
-
+    let (enum_names, variants) = collect_enum_variants(program);
     let variant_set: HashMap<&str, ()> = variants.iter().map(|v| (v.as_str(), ())).collect();
     let enum_set: HashMap<&str, ()> = enum_names.iter().map(|n| (n.as_str(), ())).collect();
-    let mut defns = BTreeMap::new();
-    let mut candidates: HashMap<String, ()> = HashMap::new();
 
-    for c in program.callables.iter().filter(|c| is_top_defn(c)) {
-        let return_is_enum = c.result.as_ref().map_or(false, |t| type_is_enum(t, &enum_set));
-        if !return_is_enum {
-            continue;
-        }
-        if all_return_forms_constructor(c, &variant_set, &candidates) {
-            candidates.insert(c.name.clone(), ());
-        }
-        defns.insert(c.name.clone(), EnumRepresentation::Boxed);
-    }
-
-    loop {
-        let mut changed = false;
-        for c in program.callables.iter().filter(|c| is_top_defn(c)) {
-            if candidates.contains_key(&c.name) {
-                continue;
-            }
-            let return_is_enum = c.result.as_ref().map_or(false, |t| type_is_enum(t, &enum_set));
-            if return_is_enum && all_return_forms_constructor(c, &variant_set, &candidates) {
-                candidates.insert(c.name.clone(), ());
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let (mut defns, mut candidates) = seed_candidates(program, &enum_set, &variant_set);
+    while converge_candidates(program, &enum_set, &variant_set, &mut candidates) {}
     for name in candidates.keys() {
         if let Some(class) = defns.get_mut(name) {
             *class = EnumRepresentation::ReturnedSmallCandidate;
@@ -93,6 +47,87 @@ pub fn build_enum_representation_plan(program: &HirProgram) -> HirEnumRepresenta
         variants,
         escaping_return_lets,
     }
+}
+
+/// Enum type names and their fully-qualified variant names (sorted + deduped).
+fn collect_enum_variants(program: &HirProgram) -> (Vec<String>, Vec<String>) {
+    let mut enum_names = Vec::new();
+    let mut variants = Vec::new();
+    for td in &program.type_defs {
+        collect_type_variants(td, &mut enum_names, &mut variants);
+    }
+    variants.sort();
+    variants.dedup();
+    (enum_names, variants)
+}
+
+/// One enum type's names: the type name plus `Type::Variant` for each variant.
+fn collect_type_variants(
+    td: &super::program::HirTypeDef,
+    enum_names: &mut Vec<String>,
+    variants: &mut Vec<String>,
+) {
+    let HirTypeDefKind::Enum { variants: vs } = &td.kind else {
+        return;
+    };
+    enum_names.push(td.name.clone());
+    for v in vs {
+        let name = match v {
+            super::program::HirEnumVariant::Unit(n)
+            | super::program::HirEnumVariant::Tuple(n, _)
+            | super::program::HirEnumVariant::Struct(n, _) => n,
+        };
+        variants.push(name.clone());
+        variants.push(format!("{}::{}", td.name, name));
+    }
+}
+
+/// Seed: every enum-returning defn is Boxed; constructor-only returns join the
+/// candidate set.
+fn seed_candidates(
+    program: &HirProgram,
+    enum_set: &HashMap<&str, ()>,
+    variant_set: &HashMap<&str, ()>,
+) -> (
+    BTreeMap<String, EnumRepresentation>,
+    HashMap<String, ()>,
+) {
+    let mut defns = BTreeMap::new();
+    let mut candidates: HashMap<String, ()> = HashMap::new();
+    for c in program.callables.iter().filter(|c| is_top_defn(c)) {
+        if !returns_enum(c, enum_set) {
+            continue;
+        }
+        if all_return_forms_constructor(c, variant_set, &candidates) {
+            candidates.insert(c.name.clone(), ());
+        }
+        defns.insert(c.name.clone(), EnumRepresentation::Boxed);
+    }
+    (defns, candidates)
+}
+
+/// One constructor-fixpoint round. Returns whether the candidate set grew.
+fn converge_candidates(
+    program: &HirProgram,
+    enum_set: &HashMap<&str, ()>,
+    variant_set: &HashMap<&str, ()>,
+    candidates: &mut HashMap<String, ()>,
+) -> bool {
+    let mut changed = false;
+    for c in program.callables.iter().filter(|c| is_top_defn(c)) {
+        if candidates.contains_key(&c.name) {
+            continue;
+        }
+        if returns_enum(c, enum_set) && all_return_forms_constructor(c, variant_set, candidates) {
+            candidates.insert(c.name.clone(), ());
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn returns_enum(c: &HirCallable, enum_set: &HashMap<&str, ()>) -> bool {
+    c.result.as_ref().map_or(false, |t| type_is_enum(t, enum_set))
 }
 
 fn is_top_defn(c: &HirCallable) -> bool {
@@ -233,26 +268,30 @@ fn return_identifiers(body: &[HirStmt]) -> BTreeSet<String> {
 
 fn collect_return_identifiers(body: &[HirStmt], out: &mut BTreeSet<String>) {
     for stmt in body {
-        match &stmt.kind {
-            HirStmtKind::Term(Some(HirExpr { kind: HirExprKind::Identifier(name), .. }))
-            | HirStmtKind::Tail(HirExpr { kind: HirExprKind::Identifier(name), .. }) => {
-                out.insert(name.clone());
-            }
-            HirStmtKind::Guarded(_, inner)
-            | HirStmtKind::Block(inner)
-            | HirStmtKind::SyncBlock(inner)
-            | HirStmtKind::Defer(inner)
-            | HirStmtKind::Mutex(inner)
-            | HirStmtKind::Foreach { body: inner, .. } => {
-                collect_return_identifiers(inner, out);
-            }
-            HirStmtKind::Match { arms, .. } => {
-                for arm in arms {
-                    collect_return_identifiers(&arm.body, out);
-                }
-            }
-            _ => {}
+        collect_stmt_return_ids(stmt, out);
+    }
+}
+
+fn collect_stmt_return_ids(stmt: &super::stmt::HirStmt, out: &mut BTreeSet<String>) {
+    match &stmt.kind {
+        HirStmtKind::Term(Some(HirExpr { kind: HirExprKind::Identifier(name), .. }))
+        | HirStmtKind::Tail(HirExpr { kind: HirExprKind::Identifier(name), .. }) => {
+            out.insert(name.clone());
         }
+        HirStmtKind::Guarded(_, inner)
+        | HirStmtKind::Block(inner)
+        | HirStmtKind::SyncBlock(inner)
+        | HirStmtKind::Defer(inner)
+        | HirStmtKind::Mutex(inner)
+        | HirStmtKind::Foreach { body: inner, .. } => {
+            collect_return_identifiers(inner, out);
+        }
+        HirStmtKind::Match { arms, .. } => {
+            for arm in arms {
+                collect_return_identifiers(&arm.body, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -268,22 +307,26 @@ fn reassigned_identifiers(body: &[HirStmt]) -> BTreeSet<String> {
 
 fn walk_assign_targets(body: &[HirStmt], f: &mut dyn FnMut(&HirExpr)) {
     for stmt in body {
-        match &stmt.kind {
-            HirStmtKind::Assign(lhs, _) => f(lhs),
-            HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
-            HirStmtKind::Guarded(_, inner)
-            | HirStmtKind::Block(inner)
-            | HirStmtKind::SyncBlock(inner)
-            | HirStmtKind::Defer(inner)
-            | HirStmtKind::Mutex(inner)
-            | HirStmtKind::Foreach { body: inner, .. } => walk_assign_targets(inner, f),
-            HirStmtKind::Match { arms, .. } => {
-                for arm in arms {
-                    walk_assign_targets(&arm.body, f);
-                }
+        walk_stmt_assign_targets(stmt, f);
+    }
+}
+
+fn walk_stmt_assign_targets(stmt: &super::stmt::HirStmt, f: &mut dyn FnMut(&HirExpr)) {
+    match &stmt.kind {
+        HirStmtKind::Assign(lhs, _) => f(lhs),
+        HirStmtKind::ArrowAssign { target: Some(t), .. } => f(t),
+        HirStmtKind::Guarded(_, inner)
+        | HirStmtKind::Block(inner)
+        | HirStmtKind::SyncBlock(inner)
+        | HirStmtKind::Defer(inner)
+        | HirStmtKind::Mutex(inner)
+        | HirStmtKind::Foreach { body: inner, .. } => walk_assign_targets(inner, f),
+        HirStmtKind::Match { arms, .. } => {
+            for arm in arms {
+                walk_assign_targets(&arm.body, f);
             }
-            _ => {}
         }
+        _ => {}
     }
 }
 
