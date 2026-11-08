@@ -33,6 +33,65 @@ docs/2026-08-27-session-report.md).
 
 # Bugs
 
+## Nested field-store object literal kept a frame image, handle dangled — FIXED 2026-11-07
+
+**Symptom:** a constructed object assigned into a field reached through more
+than one projection (`w.mid.inner = Inner { fd: 3 }`, where `w` is a parameter)
+compiled the literal to a stack `alloca` in the callee instead of a heap
+allocation. The callee's `alloca` dies on return, but the handle was stored
+into the caller's object, so the caller then read a dead-frame pointer. In a
+realistic shape (a transport object with a socket descriptor reachable through
+`user.transport`), the caller's descriptor field became garbage and the next
+`poll(2)` on it aborted with `SIGILL`.
+
+**Minimal repro:** `/tmp/opencode/repro/wrap2.bv` (also `subobj.bv`,
+`bisect.bv`). `x_whole` (depth-2 store) printed a garbage handle; `y_field`
+(same depth, field store `p.mid.inner.fd = 3`) printed `3`. Depth-1 whole-object
+store (`h.inner = Inner { … }`) was already correct.
+
+**IR evidence:** `x_whole` emitted
+`%t1 = alloca i8, i64 8; …; %t4 = ptrtoint ptr %t1 to i64; …; store i64 %t4`
+— the constructed object lived in the callee frame and its address escaped.
+The depth-1 `set_whole` emitted `%t1 = call ptr @__briev_region_malloc(i64 8)`.
+
+**Root cause (three cooperating gaps, all depth-sensitive):**
+
+1. `stmt_assignment` in
+   `src/analysis/destination_ownership/destination_walk.rs` recorded the
+   `ObjectFieldStore` escape only for `Expr::Field(base, _)` where `base` is a
+   bare identifier (`base.as_var_name()`). For `p.mid.inner` the base is itself
+   a `Field`, so `as_var_name` returned `None`, no sink was recorded,
+   `requires_materialization` stayed false, `object_literal_can_stack` returned
+   true, and `emit_struct_literal` chose the frame `alloca`.
+2. `assign` in `src/analysis/reclamation/walk.rs` resolved an intermediate
+   `p.mid` through `expression`, producing a content-less field-load node, so
+   the subsequent `FieldStore` landed on a node with no `points` — the store
+   vanished from the escape graph.
+3. `classify` in `src/analysis/reclamation.rs` left a callable that failed the
+   incoming-storage proof as neither a region nor a barrier. `mode_for` then
+   lowered it as `INHERIT`, which does not suspend the caller's region, so its
+   `region_malloc` was adopted by the caller's active region and freed when the
+   caller returned.
+
+**Fixes (general; the analysis already modelled the depth-1 form, so this
+removes depth sensitivity rather than special-casing the program):**
+
+1. Peel the projection chain to its root variable (`projection_root_var`) so
+   field/index projections at any depth resolve to the receiver that outlives
+   the producing frame.
+2. Peel the assignment target to its root receiver (`projection_root_and_path`)
+   and attribute the store as `FieldStore(root, "mid.inner", value)`, so it is
+   seen exactly like `root.inner = value`.
+3. Mark the returned-value and incoming-storage escape bail-outs as `BARRIER`s
+   so the callable suspends the caller's region and its allocation falls back
+   to plain `malloc`.
+
+**Regression tests:** `nested_field_store_aliases_receiver_lifetime`
+(destination_model.rs), `nested_field_object_store_escapes_to_heap`
+(backend/llvm/tests.rs), `nested_field_store_prevents_a_region` and
+`escaping_allocation_is_a_barrier_not_inherit` (analysis/reclamation.rs).
+
+
 ## `Alloc#` never selects the arena (arena subsystem effectively dead) — FIXED 2026-11-03 (selection)
 
 **Symptom:** `benchmarks/arena_churn.bv` (`let a: Int = Alloc#(64) as Int;` in a

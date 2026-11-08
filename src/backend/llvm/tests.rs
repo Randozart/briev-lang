@@ -351,6 +351,44 @@ defn read(x: Int) -> Int {
     );
 }
 
+/// 2026-11-07 (nested-field object escape): the SAME literal assigned into a
+/// field reached through more than one projection must escape to the heap.
+/// `proven_non_escaping_object_literal_uses_frame_image` proves the frame
+/// image is only for objects with no observed escape; a doubly-nested field
+/// store (`w.mid.inner = Inner { … }`) publishes the handle into the caller's
+/// object, so it must allocate, never leave a dangling frame image. Before the
+/// fix the escape walk only recognized `x.field = …` (base = bare identifier),
+/// so this store produced `alloca i8` and the caller read a dead frame.
+#[test]
+fn nested_field_object_store_escapes_to_heap() {
+    let src = r#"
+obj Inner { fd: Int; };
+obj Mid { a: Int; inner: Inner; b: Int; };
+obj Wrap { marker: Int; mid: Mid; };
+defn assign(w: Wrap) -> Void {
+    w.mid.inner = Inner { fd: 3 };
+};
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let mut parser = crate::parser::Parser::new(tokens, src);
+    let items = parser.parse_program().expect("parse");
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let output = backend.generate(&items, None);
+    let start = output.find("define void @assign(").expect("assign emitted");
+    let end = output[start..].find("\ndefine ").map(|n| start + n).unwrap_or(output.len());
+    let function = &output[start..end];
+    assert!(
+        contains_heap_allocation(function, 8),
+        "a nested field object store must heap allocate:\n{function}"
+    );
+    assert!(
+        !function.contains("alloca i8, i64 8"),
+        "a nested field object store must not leave a frame image:\n{function}"
+    );
+}
+
 #[test]
 fn test_llvm_generates_module() {
     let mut backend = LlvmBackend::new();

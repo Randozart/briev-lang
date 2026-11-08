@@ -806,8 +806,18 @@ impl<'a> BodyAnalyzer<'a> {
             return Some(state_id);
         }
 
-        if let Expr::Field(base, _) = target {
-            if let Some(base_name) = base.as_var_name() {
+        // 2026-11-07 (nested-field object escape): a field store publishes the
+        // assigned handle into an object that can outlive this frame. The
+        // recorded sink must be found for the ROOT receiver at ANY projection
+        // depth, not only `x.field = …`. `p.mid.inner = Inner { … }` has a
+        // base of `Field(Field(p, mid), …)`; `as_var_name` sees no identifier
+        // there, so no escape was recorded and the literal stayed a frame
+        // alloca whose handle dangled once the defn returned (reading the
+        // caller's object then yielded a dead-frame pointer). Peel the
+        // projection chain to its root variable so depth-1 and depth-N stores
+        // are treated identically.
+        if let Expr::Field(_, _) = target {
+            if let Some(base_name) = Self::projection_root_var(target) {
                 if let Some(base_id) = scope.lookup(base_name) {
                     self.add_sink(
                         &base_id,
@@ -827,6 +837,18 @@ impl<'a> BodyAnalyzer<'a> {
         }
 
         Some(value_id)
+    }
+
+    /// Root variable of a projection chain (`p.mid.inner` → `p`,
+    /// `a[i].f` → `a`). Descends through field and index projections so an
+    /// assignment target at any depth resolves to the value that actually
+    /// outlives the producing frame.
+    fn projection_root_var(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Identifier(name) => Some(name.as_str()),
+            Expr::Field(base, _) | Expr::Index(base, _) => Self::projection_root_var(base),
+            _ => None,
+        }
     }
 
     fn stmt_return(
