@@ -1,3 +1,38 @@
+## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
+
+With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary
+`[!done][done]` nodes. The backend test parser called `prove_contract`, which
+checks simultaneous protocol invariants, on transaction BEFORE/AFTER states.
+Production `compile.rs` instead invokes `detect_tautology` for transactions and
+definitions; the proof engine explicitly documents this distinction.
+
+The fixture helper now uses that production gate for both callable kinds.
+Positive transition and negative explicit/functional tautology tests preserve
+the legality check. No contracts or production proof rules are weakened.
+Verification: `docs/plans/2026-11-08-upstream-sync-and-contract-fixture-gate.md`.
+
+## Nested obj image size used for handle fields — FIX IMPLEMENTED 2026-11-07
+
+**Symptom:** an object containing a four-Bool object and adjacent integer fields
+overwrites a handle and can segfault. A trailing nested object produces an
+eight-byte write into a four-byte field extent (Valgrind invalid write).
+
+**Cause:** `type_size` describes the nested image, but object field stores carry
+`i{int_bits}` handles. Parent allocation/offset calculations and a separate
+member-read offset walk incorrectly summed the nested image sizes.
+
+**Fix:** the shared LLVM `field_storage_size` distinguishes obj handles from
+images. Structural refresh, allocation fallback, member offsets, boxed instance
+offsets and collection member offsets use it; member/event reads share the
+literal/store offset authority. Scalar, static inline and packed paths retain
+their representation contracts. No application-specific type names are used.
+
+**Regression:** `tests/fixtures/nested_object_storage.bv` checks adjacent and
+trailing small-object handles plus mutation. The native regression exercises
+AST/HIR emission at O0/O3. Backend tests cover small/large images, forward
+declarations and recursive handles at 32/64-bit widths. Verification results
+are recorded in `docs/plans/2026-11-07-nested-object-storage-width.md`.
+
 ## WORKING-TREE HAZARD: external process reverted in-flight edits — OBSERVED 2026-08-27
 
 **Symptom (three times this session):** freshly edited files (lexer.rs,

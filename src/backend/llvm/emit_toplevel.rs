@@ -2477,7 +2477,7 @@ impl LlvmBackend {
                     data_ty = Some(fty.clone());
                     break;
                 }
-                offset += crate::backend::llvm::types::type_size(fty, self.ctx.type_universe.as_ref());
+                offset += self.field_storage_size(fty);
             }
         }
         let data_ty = data_ty?;
