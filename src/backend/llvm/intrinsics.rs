@@ -347,10 +347,24 @@ pub fn emit_intrinsic_call(
         return BTypedRegister { name: v.to_string(), ty: ret_ty };
     }
 
-    // 2026-09-17 (M2a): Max#/Min# — binary float intrinsics (llvm.maxnum/minnum).
+    // 2026-09-17 (M2a): Max#/Min# — binary intrinsics. Float uses
+    // llvm.maxnum/minnum; 2026-11-06 (§12 W3.1): Int operands lower to the
+    // signed compare/select pair (llvm smax/smin intrinsics, LLVM 19+) —
+    // the fold idiom lane folds Int rows with the same source intrinsic.
     let is_float_binary = matches!(op_name, "Max" | "Min");
     if is_float_binary && arg_regs.len() >= 2 {
-        let llvm_name = if op_name == "Max" { "maxnum" } else { "minnum" };
+        let (llvm_name, int_op) = if op_name == "Max" {
+            ("maxnum", "smax")
+        } else {
+            ("minnum", "smin")
+        };
+        if llvm_ty.starts_with('i') {
+            // llvm.smin/smax are declared intrinsics: call form with the
+            // width suffix (i64 here — the Int fundamental).
+            writeln!(out, "{}{} = call i64 @llvm.{}.i64(i64 {}, i64 {})",
+                indent, v, int_op, arg_regs[0].name, arg_regs[1].name).ok();
+            return BTypedRegister { name: v.to_string(), ty: arg_regs[0].ty.clone() };
+        }
         let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
             "double" => ("f64", "double", Type::float64()),
             _ => ("f32", "float", Type::float()),

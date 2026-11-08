@@ -385,7 +385,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
             kernel_stmts: stmts,
             host_stmts: vec![],
             eligible: true,

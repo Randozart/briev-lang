@@ -96,6 +96,8 @@ pub struct PlanProofs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReduceOp {
     Add,
+    Mul,
+    Min,
     Max,
     /// max → exp-sum → normalize (the deferred/online softmax algebra).
     SoftmaxNormalize,
@@ -369,8 +371,12 @@ impl KernelPlan {
         let op = match red.kind {
             ReductionKind::Dot => ReduceOp::Add,
             ReductionKind::Softmax => ReduceOp::SoftmaxNormalize,
-            // 2026-11-06 (§12 W3): the Int sum fold — same reduce op as Dot.
+            // 2026-11-06 (§12 W3/W3.1): the Int fold idioms — Sum/Dot share
+            // the additive reduce; Product/Min/Max map to their own ops.
             ReductionKind::Sum => ReduceOp::Add,
+            ReductionKind::Product => ReduceOp::Mul,
+            ReductionKind::Min => ReduceOp::Min,
+            ReductionKind::Max => ReduceOp::Max,
         };
         vec![
             PlanOp::Reduce {
@@ -517,7 +523,7 @@ impl KernelPlan {
             // 2026-11-06 (§12 W3): the Sum idiom lane joins — structure +
             // geometry + numeric license (sum_reduce_lane), no declaration
             // gate (the amendment's whole point), same plan ops as Dot.
-            if crate::analysis::accel::is_cooperative_shape(shape) || shape.sum_lane {
+            if crate::analysis::accel::is_cooperative_shape(shape) || shape.idiom_lane {
                 ops.extend(Self::cooperative_reduce_ops(
                     red,
                     resolve(&red.inner).unwrap_or(0),
@@ -659,6 +665,8 @@ fn dump_op(op: &PlanOp) -> String {
         } => {
             let o = match op {
                 ReduceOp::Add => "add",
+                ReduceOp::Mul => "mul",
+                ReduceOp::Min => "min",
                 ReduceOp::Max => "max",
                 ReduceOp::SoftmaxNormalize => "softmax",
             };
@@ -858,7 +866,7 @@ mod tests {
                 normalize_end: Expr::Identifier("D".into()),
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
-            sum_lane: false,
+            idiom_lane: false,
         };
         let d = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86).dump();
         assert!(d.contains("node fattn"), "{d}");
@@ -903,7 +911,7 @@ mod tests {
                 normalize_end: Expr::Identifier("D".into()),
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
-            sum_lane: false,
+            idiom_lane: false,
         };
         let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
         assert_eq!(p.split_tree_factor(), None, "D=100 is not warp-multiple");
@@ -1040,7 +1048,7 @@ mod tests {
                     out_buf: "y".into(),
                 }),
                 deferred_normalize: None,
-                sum_lane: buf_ty == crate::ast::Type::int() && buf_ty != crate::ast::Type::float(),
+                idiom_lane: buf_ty == crate::ast::Type::int() && buf_ty != crate::ast::Type::float(),
             }
         };
         let int_shape = make(Expr::Decimal(1024), crate::ast::Type::int());
@@ -1106,7 +1114,7 @@ mod tests {
                     out_buf: "y".into(),
                 }),
                 deferred_normalize: None,
-                sum_lane: false,
+                idiom_lane: false,
             }
         };
         let undeclared = {

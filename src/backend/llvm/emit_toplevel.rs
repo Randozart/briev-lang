@@ -5634,14 +5634,14 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
         // counter fast-forward below still stores the ROW count. The
         // resident path is skipped: its flat fallback would under-dispatch
         // a row-form kernel 32×.
-        let sum_lane = self.accel_entries[name].shape.sum_lane;
-        if sum_lane {
+        let idiom_lane = self.accel_entries[name].shape.idiom_lane;
+        if idiom_lane {
             writeln!(out, "  %wn = mul i64 {}, 32", work).ok();
         }
-        if self.ctx.accel_resident_ok && !sum_lane {
+        if self.ctx.accel_resident_ok && !idiom_lane {
             writeln!(out, "  %r = call i32 @briev_accel_launch_resident(i32 {}, ptr %state, i64 {})", idx, work).ok();
             writeln!(out, "  %dl = call i32 @briev_accel_download_written(i32 {}, ptr %state)", idx).ok();
-        } else if sum_lane {
+        } else if idiom_lane {
             writeln!(out, "  %r = call i32 @briev_accel_launch(i32 {}, ptr %state, i64 %wn)", idx).ok();
         } else {
             writeln!(out, "  %r = call i32 @briev_accel_launch(i32 {}, ptr %state, i64 {})", idx, work).ok();

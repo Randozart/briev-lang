@@ -790,7 +790,7 @@ mod tests {
             work_cols: None,
             reduction: Some(ReductionInfo::dot(idx("K"))),
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         (shape, items)
     }

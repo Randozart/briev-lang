@@ -969,9 +969,11 @@ impl<'a> FnLowerer<'a> {
             "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" => {
                 self.emit_subgroup_reduce(name, args)
             }
-            // 2026-11-06 (§12 W3): the Int sum lane's cross-lane reduce —
-            // GroupNonUniformIAdd, the integer twin of the FAdd form.
-            "SubgroupIAdd#" => self.emit_subgroup_iadd(args),
+            // 2026-11-06 (§12 W3/W3.1): the Int fold lane's cross-lane
+            // reduces — the integer twins of the FAdd/FMinMax forms.
+            "SubgroupIAdd#" | "SubgroupIMul#" | "SubgroupSMin#" | "SubgroupSMax#" => {
+                self.emit_subgroup_int_reduce(name, args)
+            }
             "ShuffleDown#" | "ShuffleXor#" => self.emit_subgroup_shuffle(name, args),
             "SubgroupBallot#" => self.emit_subgroup_ballot(args),
             _ => self.emit_subgroup_broadcast(args),
@@ -1018,21 +1020,31 @@ impl<'a> FnLowerer<'a> {
     /// integer twin of `emit_subgroup_reduce`; Int is the licensed element
     /// type (wrapping add is exactly associative — gate 3), so the type
     /// check rejects floats loudly rather than mis-lowering.
-    fn emit_subgroup_iadd(&mut self, args: &[Expr]) -> Result<(Word, Type), String> {
+    fn emit_subgroup_int_reduce(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(Word, Type), String> {
         let (v, vty) = match args.first() {
             Some(e) => self.emit_expr(e)?,
-            None => return self.err(format!("SubgroupIAdd# needs an operand")),
+            None => return self.err(format!("{name} needs an operand")),
         };
         if self.builder.is_float_type(&vty)? {
             return self.err(format!(
-                "SubgroupIAdd# is an integer reduction — float folds are not licensed (§12 gate 3)"
+                "{name} is an integer reduction — float folds are not licensed (§12 gate 3)"
             ));
         }
+        let op = match name {
+            "SubgroupIMul#" => spirv::Op::GroupNonUniformIMul,
+            "SubgroupSMin#" => spirv::Op::GroupNonUniformSMin,
+            "SubgroupSMax#" => spirv::Op::GroupNonUniformSMax,
+            _ => spirv::Op::GroupNonUniformIAdd,
+        };
         let ty_id = self.type_id(&vty)?;
         let res = self.builder.gen_id();
         let scope = self.builder.u32_const(spirv::Scope::Subgroup as u32);
         self.builder.emit(Instruction::new(
-            spirv::Op::GroupNonUniformIAdd,
+            op,
             Some(ty_id),
             Some(res),
             vec![
@@ -1138,7 +1150,8 @@ impl<'a> FnLowerer<'a> {
         match name {
             // Subgroup family (reduces, shuffles, ballot, broadcast) — split
             // out to keep this dispatcher readable; see emit_subgroup_intrinsic.
-            "SubgroupFAdd#" | "SubgroupIAdd#" | "SubgroupFMax#" | "SubgroupFMin#"
+            "SubgroupFAdd#" | "SubgroupIAdd#" | "SubgroupIMul#" | "SubgroupSMin#"
+            | "SubgroupSMax#" | "SubgroupFMax#" | "SubgroupFMin#"
             | "ShuffleDown#" | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
                 self.emit_subgroup_intrinsic(name, args)
             }
@@ -1184,10 +1197,16 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (a, aty) = self.emit_expr(&args[0])?;
                 let (b, _bty) = self.emit_expr(&args[1])?;
-                if !self.builder.is_float_type(&aty)? {
-                    return self.err(format!("{} is a float intrinsic", name));
-                }
                 let ty_id = self.type_id(&aty)?;
+                // 2026-11-06 (§12 W3.1): Int operands lower to the core
+                // signed-integer ops (OpSMax/OpSMin) — the fold idiom lane
+                // folds Int rows with the same source intrinsic. Float
+                // keeps the GLSL fmax/fmin form.
+                if !self.builder.is_float_type(&aty)? {
+                    let max = name == "Max#";
+                    let res = self.builder.glsl_smaxmin(ty_id, a, b, max);
+                    return Ok((res, aty));
+                }
                 let res = self.builder.glsl_fmaxmin(ty_id, a, b, name == "Max#");
                 Ok((res, aty))
             }

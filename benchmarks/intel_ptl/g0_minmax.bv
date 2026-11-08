@@ -15,6 +15,7 @@ const ROWS: Int = 4096;
 const K: Int = 1024;
 
 let i: Int = 0;
+let j: Int = 0;
 let r: Int = 0;
 let phase: Int = 0;
 let bad: Int = 0;
@@ -55,13 +56,19 @@ async accel node minrow [phase == 1 && i < ROWS][i == ROWS] {
 };
 
 // device lane: the Max# fold idiom.
-async accel node maxrow [phase == 1 && i < ROWS][i == ROWS] {
-    let acc: Int = a[i * K];
+async accel node maxrow [phase == 1 && j < ROWS][j == ROWS] {
+    let acc: Int = a[j * K];
     foreach k in 1..K {
-        acc = Max#(acc, a[i * K + k]);
+        acc = Max#(acc, a[j * K + k]);
     };
-    ymax[i] = acc;
-    i = i + 1;
+    ymax[j] = acc;
+    j = j + 1;
+    term;
+};
+
+async node folds_done [phase == 1 && j == ROWS][phase == 2] {
+    phase = 2;
+    r = 0;
     term;
 };
 

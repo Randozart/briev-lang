@@ -123,12 +123,13 @@ pub struct KernelShape {
     /// chain fusion (M3) by removing the normalization barrier between
     /// softmax and its consumer.
     pub deferred_normalize: Option<DeferredNormalization>,
-    /// 2026-11-06 (§12 W3): the Sum idiom lane — structure (`detect_sum_fold`)
-    /// + geometry (const fold length % 32) + the gate-3 numeric license
-    /// (Int: wrapping add is exactly associative). Computed ONCE by the
-    /// analysis; every backend consumer (blob emitter, dispatch wrapper,
-    /// plan) reads this field — the frontend-decides-once pillar.
-    pub sum_lane: bool,
+    /// 2026-11-06 (§12 W3/W3.1): the fold idiom lane — structure
+    /// (`detect_idiom_fold`) + geometry (const fold length % 32) + the
+    /// gate-3 numeric license (Int: wrapping add/mul and min/max are
+    /// exactly associative). Computed ONCE by the analysis; every backend
+    /// consumer (blob emitter, dispatch wrapper, plan) reads this field —
+    /// the frontend-decides-once pillar.
+    pub idiom_lane: bool,
 }
 
 /// The inner-loop length expression of a recognized dot-product reduction.
@@ -148,7 +149,7 @@ pub struct ReductionInfo {
     pub out_buf: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReductionKind {
     Dot,
     Softmax,
@@ -159,6 +160,18 @@ pub enum ReductionKind {
     /// Int wraps (`add i64`, no nsw), so reassociation is exact. Float
     /// folds stay unlicensed until a numeric contract exists.
     Sum,
+    /// 2026-11-06 (§12 W3.1): the same fold shape with `*` — consumer
+    /// `GroupNonUniformIMul` (`SubgroupIMul#`); Int wrapping mul is
+    /// exactly associative, same license as Sum.
+    Product,
+    /// 2026-11-06 (§12 W3.1): `acc = Min#(acc, buf[k])` — consumer
+    /// `GroupNonUniformSMin` (`SubgroupSMin#`); Int min is exactly
+    /// associative.
+    Min,
+    /// 2026-11-06 (§12 W3.1): `acc = Max#(acc, buf[k])` — consumer
+    /// `GroupNonUniformSMax` (`SubgroupSMax#`); Int max is exactly
+    /// associative.
+    Max,
 }
 
 /// 2026-09-20 (M2 deferred normalizer): the deferrable-normalize structure —
@@ -471,6 +484,9 @@ fn expr_is_pure(expr: &Expr) -> bool {
         Expr::Call(name, args, _)
             if name == "SubgroupFAdd#"
                 || name == "SubgroupIAdd#"
+                || name == "SubgroupIMul#"
+                || name == "SubgroupSMin#"
+                || name == "SubgroupSMax#"
                 || name == "SubgroupFMax#"
                 || name == "SubgroupFMin#"
                 || name == "ShuffleDown#"
@@ -672,7 +688,7 @@ fn prove_kernel(
         work_cols: None,
         reduction: None,
         deferred_normalize: None,
-        sum_lane: false,
+        idiom_lane: false,
     };
 
     // 1. Bound: the contract precondition must CONTAIN an `[i < N]` conjunct
@@ -763,15 +779,23 @@ fn prove_kernel(
     //    conservative structural match — the LAST statement is a foreach
     //    whose body is one mul-add into a local accumulator.
     shape.reduction = detect_reduction(&shape.kernel_stmts, &index_var);
-    // 2026-11-06 (§12 W3): Dot keeps priority; the Sum idiom fills the gap.
+    // 2026-11-06 (§12 W3/W3.1): Dot keeps priority; the idiom folds fill
+    // the gap.
     if shape.reduction.is_none() {
-        shape.reduction = detect_sum_fold(&shape.kernel_stmts, &index_var);
+        shape.reduction = detect_idiom_fold(&shape.kernel_stmts, &index_var);
     }
     // Dot: the OUT buffer is the shape's single write target.
-    // 2026-11-06 (§12 W3): the Sum idiom's store target is the same single
-    // write buffer — fill it for both kinds.
+    // 2026-11-06 (§12 W3/W3.1): the idiom fold's store target is the same
+    // single write buffer — fill it for all kinds.
     if let Some(red) = shape.reduction.as_mut() {
-        if matches!(red.kind, ReductionKind::Dot | ReductionKind::Sum) {
+        if matches!(
+            red.kind,
+            ReductionKind::Dot
+                | ReductionKind::Sum
+                | ReductionKind::Product
+                | ReductionKind::Min
+                | ReductionKind::Max
+        ) {
             red.out_buf = shape.write_buffers.first().cloned().unwrap_or_default();
         }
     }
@@ -790,7 +814,7 @@ fn prove_kernel(
 
     // 2026-11-06 (§12 W3): the Sum idiom lane decision, once (see the field
     // doc). Placed after every reduction detector so the kind is final.
-    shape.sum_lane = sum_reduce_lane(&shape, items);
+    shape.idiom_lane = fold_idiom_lane(&shape, items);
 
     shape.eligible = reasons.is_empty();
     shape.reasons = reasons;
@@ -1300,7 +1324,8 @@ fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInf
 /// keeps priority — a mul-add fold is still Dot. Near-misses (multi-
 /// statement bodies, accumulator read inside the operand, non-Index
 /// operands) fall to the general lowering; W4 gives them named why-nots.
-fn detect_sum_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
+fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
+    use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
         let Statement::Foreach { list, body, .. } = stmt else {
             continue;
@@ -1317,21 +1342,32 @@ fn detect_sum_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInf
         let Expr::Identifier(acc) = lhs else {
             continue;
         };
-        let rhs_ref: &Expr = rhs;
-        let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs_ref else {
+        // Accepted fold forms (W3/W3.1): `acc = acc ⊕ x` with ⊕ ∈ {+, *},
+        // and `acc = Min#/Max#(acc, x)` — commuted forms included.
+        let parsed: Option<(ReductionKind, &Expr, &Expr)> = match rhs {
+            Expr::BinaryOp(Add, a, b) => Some((ReductionKind::Sum, a, b)),
+            Expr::BinaryOp(Mul, a, b) => Some((ReductionKind::Product, a, b)),
+            Expr::Call(name, args, _) if args.len() == 2 => match name.as_str() {
+                "Max#" => Some((ReductionKind::Max, &args[0], &args[1])),
+                "Min#" => Some((ReductionKind::Min, &args[0], &args[1])),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((kind, lhs_e, rhs_e)) = parsed else {
             continue;
         };
         let is_self = |e: &Expr| matches!(e, Expr::Identifier(n) if n == acc);
-        let (acc_side, _other): (&Expr, &Expr) = if is_self(a) && !is_self(b) {
-            (a, b)
-        } else if is_self(b) && !is_self(a) {
-            (b, a)
+        let (acc_side, operand): (&Expr, &Expr) = if is_self(lhs_e) && !is_self(rhs_e) {
+            (lhs_e, rhs_e)
+        } else if is_self(rhs_e) && !is_self(lhs_e) {
+            (rhs_e, lhs_e)
         } else {
             continue;
         };
         // The folded operand must be a plain buffer read; its index must
         // not reference the accumulator (that would be a scan, not a fold).
-        let Expr::Index(buf, idx) = _other else {
+        let Expr::Index(buf, idx) = operand else {
             continue;
         };
         let Expr::Identifier(buf_name) = buf.as_ref() else {
@@ -1359,7 +1395,7 @@ fn detect_sum_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInf
         }
         return Some(ReductionInfo {
             inner: end.as_ref().clone(),
-            kind: ReductionKind::Sum,
+            kind,
             row_buf: buf_name.clone(),
             col_buf: String::new(),
             out_buf: String::new(),
@@ -1374,10 +1410,10 @@ fn detect_sum_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInf
 /// row) AND the numeric license holds (Int: wrapping add is exactly
 /// associative). Float folds fail gate 3 here and stay on the general
 /// lowering — the lane sites surface the why-not.
-pub fn is_sum_reduce_shape(shape: &KernelShape) -> bool {
+pub fn is_fold_idiom_shape(shape: &KernelShape) -> bool {
     matches!(
         shape.reduction.as_ref().map(|r| &r.kind),
-        Some(ReductionKind::Sum)
+        Some(ReductionKind::Sum | ReductionKind::Product | ReductionKind::Min | ReductionKind::Max)
     ) && !kernel_stmts_decompose_counter(shape)
 }
 
@@ -1402,7 +1438,7 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
 /// author should inspect them: structure, geometry, then the numeric
 /// license.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SumLaneBlock {
+pub enum FoldIdiomBlock {
     /// No Sum fold was detected in the shape at all.
     NoFold,
     /// The body decomposes the counter (`i / N`, `i % N`), so the row form
@@ -1418,21 +1454,21 @@ pub enum SumLaneBlock {
     FloatUnlicensed,
 }
 
-impl SumLaneBlock {
+impl FoldIdiomBlock {
     /// Author-facing why-not text (house diagnostic style: what failed and
     /// the concrete fix).
     pub fn describe(self) -> &'static str {
         match self {
-            SumLaneBlock::NoFold => "no single-accumulator additive fold was recognized",
-            SumLaneBlock::CounterDecomposed => {
+            FoldIdiomBlock::NoFold => "no single-accumulator fold was recognized",
+            FoldIdiomBlock::CounterDecomposed => {
                 "the body decomposes the counter (i / N or i % N); the row form needs an affine row stride"
             }
-            SumLaneBlock::LengthNotConst => "the fold length is not a literal const",
-            SumLaneBlock::LengthNotMultiple32 => {
+            FoldIdiomBlock::LengthNotConst => "the fold length is not a literal const",
+            FoldIdiomBlock::LengthNotMultiple32 => {
                 "the fold length is not a positive multiple of 32 (one subgroup reduces one row)"
             }
-            SumLaneBlock::FloatUnlicensed => {
-                "float reassociation is not licensed (gate 3: needs a numeric contract); Int folds are exact"
+            FoldIdiomBlock::FloatUnlicensed => {
+                "float folds are not licensed (gate 3: needs a numeric contract); Int folds are exact"
             }
         }
     }
@@ -1440,32 +1476,35 @@ impl SumLaneBlock {
 
 /// The §12 W3 lane decision with the blocked gate named (W4). `Ok(())` =
 /// the lane fires; `Err(block)` = why it does not.
-pub fn sum_lane_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(), SumLaneBlock> {
+pub fn fold_idiom_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(), FoldIdiomBlock> {
     let Some(red) = &shape.reduction else {
-        return Err(SumLaneBlock::NoFold);
+        return Err(FoldIdiomBlock::NoFold);
     };
-    if !matches!(red.kind, ReductionKind::Sum) {
-        return Err(SumLaneBlock::NoFold);
+    if !matches!(
+        red.kind,
+        ReductionKind::Sum | ReductionKind::Product | ReductionKind::Min | ReductionKind::Max
+    ) {
+        return Err(FoldIdiomBlock::NoFold);
     }
     if kernel_stmts_decompose_counter(shape) {
-        return Err(SumLaneBlock::CounterDecomposed);
+        return Err(FoldIdiomBlock::CounterDecomposed);
     }
     let consts = crate::analysis::gemm_shape::folded_const_map(items);
     let Some(k) = crate::analysis::gemm_shape::lit(&red.inner, &consts) else {
-        return Err(SumLaneBlock::LengthNotConst);
+        return Err(FoldIdiomBlock::LengthNotConst);
     };
     if k <= 0 || k % 32 != 0 {
-        return Err(SumLaneBlock::LengthNotMultiple32);
+        return Err(FoldIdiomBlock::LengthNotMultiple32);
     }
     if !fold_buffer_is_int(items, &red.row_buf) {
-        return Err(SumLaneBlock::FloatUnlicensed);
+        return Err(FoldIdiomBlock::FloatUnlicensed);
     }
     Ok(())
 }
 
-/// The full W3 lane predicate: structure + geometry + numeric license.
-pub fn sum_reduce_lane(shape: &KernelShape, items: &[TopLevel]) -> bool {
-    sum_lane_outcome(shape, items).is_ok()
+/// The full W3/W3.1 lane predicate: structure + geometry + numeric license.
+pub fn fold_idiom_lane(shape: &KernelShape, items: &[TopLevel]) -> bool {
+    fold_idiom_outcome(shape, items).is_ok()
 }
 
 /// Derive the 2D dispatch width from the kernel body's shift/mask uses of
@@ -2834,7 +2873,7 @@ mod resident_gate_tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         shape.eligible = true;
         shape.read_buffers = reads.iter().map(|s| s.to_string()).collect();
@@ -2995,9 +3034,9 @@ pub fn kernel_stmts_decompose_counter(shape: &KernelShape) -> bool {
 
 
 #[cfg(test)]
-mod sum_idiom_tests {
-    //! 2026-11-06 (§12 W3): the hand-written sum fold — detection, the
-    //! near-miss classes, and the gate-3 numeric license.
+mod fold_idiom_tests {
+    //! 2026-11-06 (§12 W3/W3.1): the hand-written fold idioms — detection
+    //! per kind, the near-miss classes, and the gate-3 numeric license.
 
     use super::*;
     use crate::ast::{BinaryOpKind, Dimension, TopLevel, Type};
@@ -3014,12 +3053,59 @@ mod sum_idiom_tests {
         Expr::Index(Box::new(Expr::Identifier(buf.into())), Box::new(e))
     }
 
-    fn fold_stmts(
-        commuted: bool,
-        two_stmts: bool,
-        operand_non_index: bool,
-        idx_reads_acc: bool,
-    ) -> Vec<Statement> {
+    /// The fold rhs per kind (non-commuted): `acc ⊕ a[k]` / `Max#(acc, a[k])`.
+    fn fold_rhs(kind: ReductionKind) -> Expr {
+        let operand = idx("a", Expr::Identifier("k".into()));
+        let acc = Expr::Identifier("acc".into());
+        match kind {
+            ReductionKind::Sum => Expr::BinaryOp(
+                BinaryOpKind::Add, Box::new(acc), Box::new(operand)),
+            ReductionKind::Product => Expr::BinaryOp(
+                BinaryOpKind::Mul, Box::new(acc), Box::new(operand)),
+            ReductionKind::Min => Expr::Call(
+                "Min#".into(), vec![acc, operand], None),
+            ReductionKind::Max => Expr::Call(
+                "Max#".into(), vec![acc, operand], None),
+            _ => unreachable!("test kinds only"),
+        }
+    }
+
+    fn fold_stmts(kind: ReductionKind, commuted: bool) -> Vec<Statement> {
+        let operand = idx("a", Expr::Identifier("k".into()));
+        let acc = Expr::Identifier("acc".into());
+        let rhs = match kind {
+            ReductionKind::Sum => Expr::BinaryOp(BinaryOpKind::Add, Box::new(acc.clone()), Box::new(operand.clone())),
+            ReductionKind::Product => Expr::BinaryOp(BinaryOpKind::Mul, Box::new(acc.clone()), Box::new(operand.clone())),
+            ReductionKind::Min => Expr::Call("Min#".into(), vec![acc.clone(), operand], None),
+            ReductionKind::Max => Expr::Call("Max#".into(), vec![acc.clone(), operand], None),
+            _ => unreachable!("test kinds only"),
+        };
+        let rhs = if commuted {
+            match kind {
+                ReductionKind::Sum | ReductionKind::Product => match &rhs {
+                    // x ⊕ acc — the operand and acc swap sides.
+                    Expr::BinaryOp(op, l, rr) => Expr::BinaryOp(*op, rr.clone(), l.clone()),
+                    _ => rhs,
+                },
+                ReductionKind::Min | ReductionKind::Max => match &rhs {
+                    Expr::Call(name, args, ext) => {
+                        Expr::Call(name.clone(), vec![args[1].clone(), args[0].clone()], ext.clone())
+                    }
+                    _ => rhs,
+                },
+                _ => rhs,
+            }
+        } else {
+            rhs
+        };
+        vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(range(1024)),
+            body: vec![Statement::Assign(Expr::Identifier("acc".into()), rhs)],
+        }]
+    }
+
+    fn near_miss_stmts(two_stmts: bool, operand_non_index: bool, idx_reads_acc: bool) -> Vec<Statement> {
         let operand = if operand_non_index {
             Expr::BinaryOp(
                 BinaryOpKind::Add,
@@ -3031,19 +3117,11 @@ mod sum_idiom_tests {
         } else {
             idx("a", Expr::Identifier("k".into()))
         };
-        let rhs = if commuted {
-            Expr::BinaryOp(
-                BinaryOpKind::Add,
-                Box::new(operand),
-                Box::new(Expr::Identifier("acc".into())),
-            )
-        } else {
-            Expr::BinaryOp(
-                BinaryOpKind::Add,
-                Box::new(Expr::Identifier("acc".into())),
-                Box::new(operand),
-            )
-        };
+        let rhs = Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(Expr::Identifier("acc".into())),
+            Box::new(operand),
+        );
         let mut body = vec![Statement::Assign(Expr::Identifier("acc".into()), rhs)];
         if two_stmts {
             body.push(Statement::Assign(Expr::Identifier("acc".into()), Expr::Decimal(0)));
@@ -3065,7 +3143,7 @@ mod sum_idiom_tests {
         }))]
     }
 
-    fn sum_shape(inner: Expr) -> KernelShape {
+    fn fold_shape(kind: ReductionKind, inner: Expr) -> KernelShape {
         KernelShape {
             index_var: "i".into(),
             count_expr: Some(Expr::Decimal(64)),
@@ -3079,72 +3157,85 @@ mod sum_idiom_tests {
             work_cols: None,
             reduction: Some(ReductionInfo {
                 inner,
-                kind: ReductionKind::Sum,
+                kind,
                 row_buf: "a".into(),
                 col_buf: String::new(),
                 out_buf: "y".into(),
             }),
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
+        }
+    }
+
+    const FOLD_KINDS: [ReductionKind; 4] = [
+        ReductionKind::Sum,
+        ReductionKind::Product,
+        ReductionKind::Min,
+        ReductionKind::Max,
+    ];
+
+    #[test]
+    fn idiom_detected_per_kind_both_orders() {
+        for kind in FOLD_KINDS {
+            for commuted in [false, true] {
+                let red = detect_idiom_fold(&fold_stmts(kind, commuted), "i")
+                    .unwrap_or_else(|| panic!("{kind:?} commuted={commuted} must detect"));
+                assert_eq!(red.kind, kind);
+                assert_eq!(red.row_buf, "a");
+            }
         }
     }
 
     #[test]
-    fn sum_idiom_detected_both_orders() {
-        for commuted in [false, true] {
-            let red = detect_sum_fold(&fold_stmts(commuted, false, false, false), "i")
-                .unwrap_or_else(|| panic!("commuted={commuted} must detect"));
-            assert!(matches!(red.kind, ReductionKind::Sum));
-            assert_eq!(red.row_buf, "a");
-        }
-    }
-
-    #[test]
-    fn sum_idiom_near_misses_fall_through() {
+    fn idiom_near_misses_fall_through() {
         // Multi-statement body: not a single fold (W4 names this).
-        assert!(detect_sum_fold(&fold_stmts(false, true, false, false), "i").is_none());
+        assert!(detect_idiom_fold(&near_miss_stmts(true, false, false), "i").is_none());
         // Operand is not a plain buffer read.
-        assert!(detect_sum_fold(&fold_stmts(false, false, true, false), "i").is_none());
+        assert!(detect_idiom_fold(&near_miss_stmts(false, true, false), "i").is_none());
         // The index reads the accumulator — a scan shape, not a fold.
-        assert!(detect_sum_fold(&fold_stmts(false, false, false, true), "i").is_none());
+        assert!(detect_idiom_fold(&near_miss_stmts(false, false, true), "i").is_none());
     }
 
     #[test]
-    fn sum_lane_why_not_names_the_blocking_gate() {
-        use super::{sum_lane_outcome, SumLaneBlock};
+    fn idiom_lane_license_gate3() {
         let items = int_buffer_items(Type::int());
-        let ok = sum_shape(Expr::Decimal(1024));
-        assert_eq!(sum_lane_outcome(&ok, &items), Ok(()));
-        let non_const = sum_shape(Expr::Identifier("N".into()));
-        assert_eq!(sum_lane_outcome(&non_const, &items), Err(SumLaneBlock::LengthNotConst));
-        let not32 = sum_shape(Expr::Decimal(1000));
-        assert_eq!(sum_lane_outcome(&not32, &items), Err(SumLaneBlock::LengthNotMultiple32));
+        for kind in FOLD_KINDS {
+            let shape = fold_shape(kind, Expr::Decimal(1024));
+            assert!(fold_idiom_lane(&shape, &items), "{kind:?} int fold must license");
+            let items_f = int_buffer_items(Type::float());
+            assert!(!fold_idiom_lane(&shape, &items_f), "{kind:?} float fold must not license");
+            let shape_k = fold_shape(kind, Expr::Decimal(1000));
+            assert!(!fold_idiom_lane(&shape_k, &items), "{kind:?} non-32-multiple must refuse");
+            let shape_n = fold_shape(kind, Expr::Identifier("N".into()));
+            assert!(!fold_idiom_lane(&shape_n, &items), "{kind:?} non-const must refuse");
+        }
+    }
+
+    #[test]
+    fn idiom_why_not_names_the_blocking_gate() {
+        let items = int_buffer_items(Type::int());
+        let ok = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        assert_eq!(fold_idiom_outcome(&ok, &items), Ok(()));
+        let non_const = fold_shape(ReductionKind::Sum, Expr::Identifier("N".into()));
+        assert_eq!(fold_idiom_outcome(&non_const, &items), Err(FoldIdiomBlock::LengthNotConst));
+        let not32 = fold_shape(ReductionKind::Sum, Expr::Decimal(1000));
+        assert_eq!(fold_idiom_outcome(&not32, &items), Err(FoldIdiomBlock::LengthNotMultiple32));
         let float_items = int_buffer_items(Type::float());
-        assert_eq!(sum_lane_outcome(&ok, &float_items), Err(SumLaneBlock::FloatUnlicensed));
-        assert_eq!(sum_lane_outcome(&KernelShape { reduction: None, ..ok.clone() }, &items),
-                   Err(SumLaneBlock::NoFold));
+        assert_eq!(fold_idiom_outcome(&ok, &float_items), Err(FoldIdiomBlock::FloatUnlicensed));
+        let no_fold = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        assert_eq!(
+            fold_idiom_outcome(&KernelShape { reduction: None, ..no_fold.clone() }, &items),
+            Err(FoldIdiomBlock::NoFold)
+        );
         // Every blocking fact has a non-empty, actionable message.
-        for b in [SumLaneBlock::NoFold, SumLaneBlock::CounterDecomposed,
-                  SumLaneBlock::LengthNotConst, SumLaneBlock::LengthNotMultiple32,
-                  SumLaneBlock::FloatUnlicensed] {
+        for b in [
+            FoldIdiomBlock::NoFold,
+            FoldIdiomBlock::CounterDecomposed,
+            FoldIdiomBlock::LengthNotConst,
+            FoldIdiomBlock::LengthNotMultiple32,
+            FoldIdiomBlock::FloatUnlicensed,
+        ] {
             assert!(!b.describe().is_empty());
         }
-    }
-
-    #[test]
-    fn sum_lane_license_gate3() {
-        // Int buffer: wrapping add is exactly associative — licensed.
-        let items = int_buffer_items(Type::int());
-        let shape = sum_shape(Expr::Decimal(1024));
-        assert!(sum_reduce_lane(&shape, &items), "int fold must license");
-        // Float buffer: reassociation changes rounding — gate 3 refuses.
-        let items_f = int_buffer_items(Type::float());
-        assert!(!sum_reduce_lane(&shape, &items_f), "float fold must not license");
-        // Fold length not a multiple of 32: geometry refuses.
-        let shape_k = sum_shape(Expr::Decimal(1000));
-        assert!(!sum_reduce_lane(&shape_k, &items), "non-32-multiple must refuse");
-        // Non-const fold length: geometry refuses.
-        let shape_n = sum_shape(Expr::Identifier("N".into()));
-        assert!(!sum_reduce_lane(&shape_n, &items), "non-const must refuse");
     }
 }

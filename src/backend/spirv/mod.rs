@@ -197,7 +197,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         }
     }
 
@@ -401,7 +401,7 @@ mod tests {
             shape.reduction
         );
         assert!(
-            crate::analysis::accel::sum_reduce_lane(&shape, &program),
+            crate::analysis::accel::fold_idiom_lane(&shape, &program),
             "int fold + const 32-multiple length must license the lane"
         );
         let mut builder = SpirvBuilder::new();
@@ -429,6 +429,37 @@ mod tests {
                 && matches!(i.operands.get(2), Some(rspirv::dr::Operand::LiteralBit32(32)))
         });
         assert!(local_size_32, "sum lane must declare LocalSize 32");
+
+        // §12 W3.1: the same lane for Min/Max/Product — kind-matched
+        // int reduce ops, same LocalSize geometry.
+        for (kind_name, kind, want_op) in [
+            ("min", crate::analysis::accel::ReductionKind::Min,
+             rspirv::spirv::Op::GroupNonUniformSMin),
+            ("max", crate::analysis::accel::ReductionKind::Max,
+             rspirv::spirv::Op::GroupNonUniformSMax),
+            ("product", crate::analysis::accel::ReductionKind::Product,
+             rspirv::spirv::Op::GroupNonUniformIMul),
+        ] {
+            let mut kind_shape = shape.clone();
+            if let Some(red) = kind_shape.reduction.as_mut() {
+                red.kind = kind;
+            }
+            let mut b2 = SpirvBuilder::new();
+            emit_kernel(&mut b2, "main", &kind_shape, &program, true, &crate::backend::spirv::kernel::KernelSurface::default())
+                .unwrap_or_else(|e| panic!("{kind_name} lane emit must compile: {e}"));
+            let m2 = b2.module_ref();
+            let mut ops2: Vec<rspirv::spirv::Op> = Vec::new();
+            for f in &m2.functions {
+                for b in &f.blocks {
+                    for i in &b.instructions { ops2.push(i.class.opcode); }
+                }
+            }
+            assert!(
+                ops2.contains(&want_op),
+                "{kind_name} lane must lower to {want_op:?}; ops={:?}",
+                ops2
+            );
+        }
     }
 
     /// §2.1/§2.2: the lowered kernel contains real work-item compute.
@@ -901,7 +932,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
 
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
@@ -1050,7 +1081,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
 
         let mut builder = SpirvBuilder::new();
@@ -1679,7 +1710,7 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
-                sum_lane: false,
+                idiom_lane: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "axpy", &shape, program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -1787,7 +1818,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
         emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -2172,7 +2203,7 @@ async node fill [i < N][i == N] {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
-                sum_lane: false,
+                idiom_lane: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();

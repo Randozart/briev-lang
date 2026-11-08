@@ -152,9 +152,17 @@ why-not path must not ship). W5 strictly on demand.
   `benchmarks/results/2026-11-06-intel-ptl-g0.md`. The general lowering has
   NOT reached parity, so the matcher stays (retirement condition recorded
   in the §8 ledger row).
-- **Open**: Product/Min/Max kinds (W3.1), float folds behind a numeric
-  contract, W5 candidates, deeper detection-level why-nots (multi-statement
-  folds / accumulator-read operands).
+- **W3.1 landed** (2026-11-06): Product/Min/Max kinds — detection
+  (`detect_idiom_fold` accepts `*`, `Min#`, `Max#` forms), license (Int
+  exact for all four), synthesis (kind-matched combine + `SubgroupIMul#`/
+  `SMin#`/`SMax#`), `Min#`/`Max#` Int lowering (`GLSL.std.450 SMin/SMax`
+  on SPIR-V, `llvm.smin/smax` on the host lane), plan ops (`ReduceOp::
+  Mul/Min`). Unit + IR tests green; the `g0_minmax` end-to-end gate is
+  BLOCKED by the multi-node mid-run visibility issue (BUGS.md 2026-11-06)
+  — reported-not-required in g0.sh.
+- **Open**: float folds behind a numeric contract, W5 candidates, deeper
+  detection-level why-nots (multi-statement folds / accumulator-read
+  operands), the multi-node visibility bug above.
 
 ## Non-goals
 

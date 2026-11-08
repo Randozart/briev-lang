@@ -61,11 +61,69 @@ pub enum GemmBody {
 /// 32-lane subgroup is exactly one row when LocalSize is 32 (the
 /// `cooperative` tail sets it). Requires inner % 32 == 0 (caller-checked)
 /// so strided accesses are exactly in-bounds.
+/// Per-kind fold for the §12 W3/W3.1 idiom lane: the loop-body combine and
+/// the cross-lane reduce intrinsic (Int lane: IAdd/IMul/SMin/SMax — gate 3
+/// licenses Int only).
+#[derive(Clone, Copy)]
+enum FoldCombine {
+    BinaryAdd,
+    BinaryMul,
+    CallMin,
+    CallMax,
+}
+
+impl FoldCombine {
+    fn combine(self, acc: &str, term: Expr) -> Expr {
+        let a = Expr::Identifier(acc.into());
+        match self {
+            FoldCombine::BinaryAdd => Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Add,
+                Box::new(a),
+                Box::new(term),
+            ),
+            FoldCombine::BinaryMul => Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Mul,
+                Box::new(a),
+                Box::new(term),
+            ),
+            FoldCombine::CallMin => Expr::Call("Min#".into(), vec![a, term], None),
+            FoldCombine::CallMax => Expr::Call("Max#".into(), vec![a, term], None),
+        }
+    }
+
+    fn reduce_intrinsic(self) -> &'static str {
+        match self {
+            FoldCombine::BinaryAdd => "SubgroupIAdd#",
+            FoldCombine::BinaryMul => "SubgroupIMul#",
+            FoldCombine::CallMin => "SubgroupSMin#",
+            FoldCombine::CallMax => "SubgroupSMax#",
+        }
+    }
+
+    fn from_kind(kind: &crate::analysis::accel::ReductionKind) -> Self {
+        match kind {
+            crate::analysis::accel::ReductionKind::Product => FoldCombine::BinaryMul,
+            crate::analysis::accel::ReductionKind::Min => FoldCombine::CallMin,
+            crate::analysis::accel::ReductionKind::Max => FoldCombine::CallMax,
+            _ => FoldCombine::BinaryAdd,
+        }
+    }
+}
+
+/// 2026-11-06 (§12 W3/W3.1): synthesize the cooperative row-fold body —
+/// strided (lane + t·32) reads of the folded buffer, one partial per lane,
+/// one kind-matched cross-lane reduce (uniform across the subgroup), one
+/// same-value store per row. Flat-1D: row = gid>>5, lane = gid&31 — each
+/// 32-lane subgroup is exactly one row when LocalSize is 32 (the
+/// `cooperative` tail sets it). Requires inner % 32 == 0 (caller-checked)
+/// so strided accesses are exactly in-bounds.
 pub(crate) fn synthesize_reduce_stmts(
     shape: &KernelShape,
     red: &crate::analysis::accel::ReductionInfo,
     inner_len: u64,
 ) -> KernelShape {
+    let combine = FoldCombine::from_kind(&red.kind);
+    let reduce_intrinsic = combine.reduce_intrinsic();
     use crate::ast::BinaryOpKind::{Add, BitAnd, Mul, Shr};
     let mut out = shape.clone();
     let tiles = (inner_len / 32) as i64;
@@ -118,14 +176,13 @@ pub(crate) fn synthesize_reduce_stmts(
             list: Box::new(range(0, tiles - 1)),
             body: vec![Statement::Assign(
                 Expr::Identifier(acc.into()),
-                Expr::BinaryOp(
-                    Add,
-                    Box::new(Expr::Identifier(acc.into())),
-                    Box::new(read(Expr::BinaryOp(
+                combine.combine(
+                    acc,
+                    read(Expr::BinaryOp(
                         Add,
                         Box::new(Expr::Identifier(t.into())),
                         Box::new(Expr::Decimal(1)),
-                    ))),
+                    )),
                 ),
             )],
         });
@@ -137,7 +194,7 @@ pub(crate) fn synthesize_reduce_stmts(
         names: vec![],
         ty: ity.clone(),
         expr: Some(Expr::Call(
-            "SubgroupIAdd#".into(),
+            reduce_intrinsic.into(),
             vec![Expr::Identifier(acc.into())],
             None,
         )),
@@ -449,13 +506,18 @@ pub fn emit_kernel(
     let shape = if cooperative
         && matches!(
             shape.reduction.as_ref().map(|r| &r.kind),
-            Some(crate::analysis::accel::ReductionKind::Sum)
+            Some(
+                crate::analysis::accel::ReductionKind::Sum
+                    | crate::analysis::accel::ReductionKind::Product
+                    | crate::analysis::accel::ReductionKind::Min
+                    | crate::analysis::accel::ReductionKind::Max,
+            )
         ) {
         // 2026-11-06 (§12 W3): the Sum idiom lane — same synthesis shape as
         // the row softmax, but flat-1D: each 32-lane subgroup owns one row
         // (row = gid>>5, lane = gid&31), so the existing flat dispatch works
         // on every driver (work_n = rows*32; the wrapper multiplies). Int
-        // only — gate 3 (sum_reduce_lane) licenses exactly the wrapping-add.
+        // only — gate 3 (fold_idiom_lane) licenses exactly the wrapping-add.
         let red = shape.reduction.as_ref().unwrap();
         let consts = crate::backend::ptx::module_expr_consts(items);
         let inner_len = match &red.inner {
@@ -1795,7 +1857,7 @@ mod decomposition_gate_tests {
             work_cols: None,
             reduction: Some(ReductionInfo::dot(Expr::Decimal(64))),
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         }
     }
 

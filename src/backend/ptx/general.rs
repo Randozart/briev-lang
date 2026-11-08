@@ -2880,7 +2880,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         }
     }
 
@@ -3252,7 +3252,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         let mut layout2 = layout;
         layout2.fields.insert(1, RunnerField {
@@ -3460,7 +3460,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         };
         let consts = std::collections::HashMap::new();
         let universe = crate::type_universe::TypeUniverse::new();
@@ -3558,7 +3558,7 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
-                sum_lane: false,
+                idiom_lane: false,
             };
             let consts = std::collections::HashMap::new();
             let universe = crate::type_universe::TypeUniverse::new();
@@ -3774,7 +3774,7 @@ mod tests {
             work_cols: None,
             reduction: None,
             deferred_normalize: None,
-            sum_lane: false,
+            idiom_lane: false,
         }
     }
 
