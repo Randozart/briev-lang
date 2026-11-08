@@ -12355,7 +12355,22 @@ see stale/zero arrays); or a transition-graph liveness gap at multi-node
 scale. Small-scale works, so it is scale/node-count dependent, not
 idiom-related (all-plain reproduces it).
 
-**Status:** OPEN — blocks the W3.1 end-to-end gate (`g0_minmax` is
-reported-not-required in g0.sh until fixed). The W3 sum lane is unaffected
-(g0_sum has ONE fold node + verify and passes on GPU and CPU fallback).
-**Status:** OPEN.
+**ROOT CAUSE (2026-11-08):** `src/backend/llvm/loop_engine/counter.rs`
+`emit_countable_body` — the hand-rolled walker used when a counted node's
+pass is folded into `@txn_<name>` — had no `Statement::Foreach` arm and its
+`_ => {}` catch-all **silently dropped nested loops**. The folded max node
+emitted `ymax[j] = a[j*K]` (init only); the sibling min node survived only
+because it took the alwaysinline/standard-emitter path. The same catch-all
+was also dropping `Break`/`Trap`/`Halt`/`Check`/`Gate`/`Rollback`/
+`SyncBlock`/`Open` forms (documented audit in the fix).
+
+**FIX:** every executable statement form delegates to
+`super::emit_stmt::emit_statement`; the match is now exhaustive (no
+wildcard), so future variants are a compile error. Compile-time-only forms
+(`MetadataAssignment`, `InlineDefn`, bare typed `let`) are explicit no-ops.
+Regression: `tests/countable_body_foreach.rs` (builds a fixture whose only
+`Max#` is inside a folded node's nested loop and asserts `llvm.smax.i64`
+survives). `g0_minmax` is a required PTL rung again and PASSES
+(`bad=0 MIN=ok MAX=ok`, 2026-11-08). Plan:
+`docs/plans/2026-11-08-general-workstream-countable-body-and-folds.md`.
+**Status:** FIXED 2026-11-08.

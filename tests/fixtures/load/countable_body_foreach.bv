@@ -1,0 +1,46 @@
+// countable_body_foreach.bv — P0 regression fixture (plan
+// 2026-11-08-general-workstream-countable-body-and-folds).
+//
+// A folded counted node containing a nested foreach. Before the fix,
+// `emit_countable_body`'s `_ => {}` silently dropped the nested loop
+// (`ymax[j] = a[j*K]` instead of the row max). The integration test builds
+// this to .ll and asserts the `llvm.smax.i64` call survives — it can only
+// exist if the nested loop was emitted.
+
+const ROWS: Int = 4096;
+const K: Int = 1024;
+
+let i: Int = 0;
+let phase: Int = 0;
+let a: Int[4194304];
+let y: Int[4096];
+
+async node init [phase == 0 && i < 4194304][i == 4194304] {
+    foreach t in 0..4096 {
+        let idx: Int = i + t;
+        a[idx] = (idx % 7) - 3;
+    };
+    i = i + 4096;
+    term;
+};
+
+async node init_done [phase == 0 && i == 4194304][phase == 1] {
+    phase = 1;
+    i = 0;
+    term;
+};
+
+// The folded node under test: a nested foreach computing the row max.
+async node fold [phase == 1 && i < ROWS][i == ROWS] {
+    let acc: Int = a[i * K];
+    foreach k in 1..K {
+        acc = Max#(acc, a[i * K + k]);
+    };
+    y[i] = acc;
+    i = i + 1;
+    term;
+};
+
+async node report [phase == 1 && i == ROWS][true] {
+    endprogram println!("{}", y[0]);
+};

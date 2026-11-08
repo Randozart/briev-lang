@@ -146,7 +146,12 @@ Patches are unacceptable. There is no "go fast and break things."
     is the algorithmic equivalent of type name matching (Rule 15) — it
     creates invisible knowledge the compiler must carry forever and makes the
     language's performance ceiling depend on which patterns the compiler
-    author happened to recognize.
+    author happened to recognize. **Structure-level idiom recognition is
+    codified and gated separately** — see
+    `docs/architecture/derivation-not-recognition.md` §12 (three
+    categories, five gates, derivation-first primacy, silicon carve-out
+    with intrinsic-anchored routing; ledger enforced by
+    `tests/idiom_ledger_gate.rs`).
 24. **PROOFS, NOT SHAPES (2026-09-20)**: The compiler keeps the eternal —
     proofs (aliasing, linearity, single-writer, independence, lifetime),
     rewrite rules licensed by proofs, general lowering machinery,

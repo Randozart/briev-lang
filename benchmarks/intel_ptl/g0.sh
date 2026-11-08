@@ -49,18 +49,29 @@ run_gate() {
     local bench="$1" dev="$2"
     local out
     out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
-    local bad gpu cpu compiled
+    local bad compiled
     bad=$(printf '%s\n' "$out" | sed -n "s/.*$(echo "$bench" | tr '[:lower:]' '[:upper:]')_BAD=\([-0-9]*\).*/\1/p" | tail -1)
-    gpu=$(printf '%s\n' "$out" | sed -n 's/.*GPU_SUM=\([-0-9.eE+]*\).*/\1/p' | tail -1)
-    cpu=$(printf '%s\n' "$out" | sed -n 's/.*CPU_SUM=\([-0-9.eE+]*\).*/\1/p' | tail -1)
     compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'")
     local t; t=$(printf '%s\n' "$out" | grep -o '# gpu_time: .*' | tail -1)
 
-    echo "-- $bench on $dev: bad=${bad:-?} gpu_sum=${gpu:-?} cpu_sum=${cpu:-?} ${t:-}"
+    # Every GPU_<KIND> / CPU_<KIND> pair the fixture prints (SUM, MIN, MAX)
+    # must agree; the fixture defines which kinds it reports.
+    local mismatch=0 kinds="" k gpu cpu
+    for k in SUM MIN MAX; do
+        gpu=$(printf '%s\n' "$out" | sed -n "s/.*GPU_${k}=\([-0-9.eE+]*\).*/\1/p" | tail -1)
+        cpu=$(printf '%s\n' "$out" | sed -n "s/.*CPU_${k}=\([-0-9.eE+]*\).*/\1/p" | tail -1)
+        [ -z "$gpu" ] && [ -z "$cpu" ] && continue
+        if [ "$gpu" = "$cpu" ]; then kinds="$kinds $k=ok"; else kinds="$kinds $k=DIFF"; fi
+    done
+    for pair in $kinds; do
+        case "$pair" in *=DIFF) mismatch=1 ;; esac
+    done
+
+    echo "-- $bench on $dev: bad=${bad:-?}${kinds} ${t:-}"
     if [ "$compiled" -lt 1 ]; then
         echo "   FAIL: device did not compile the kernel (CPU fallback)"
         fail=1
-    elif [ "${bad:-x}" != "0" ] || [ "${gpu:-x}" != "${cpu:-y}" ]; then
+    elif [ "${bad:-x}" != "0" ] || [ "$mismatch" -ne 0 ]; then
         echo "   FAIL: device output != host reference"
         fail=1
     else
@@ -76,12 +87,6 @@ echo "== g0: sum idiom (§12 W3) =="
 run_gate g0_sum vulkan
 echo "== g0: min/max idioms (§12 W3.1) =="
 run_gate g0_minmax vulkan
-
-echo "== g0: min/max idioms (§12 W3.1) =="
-# Reported, not required: the end-to-end gate hits the multi-node mid-run
-# visibility issue (BUGS.md 2026-11-06) — the lane code is unit/IR-verified.
-mm=$(sample_report g0_minmax vulkan)
-echo "-- g0_minmax on vulkan: ${mm:-no output} (reported — BUGS.md multi-node visibility)"
 
 echo "== g0: opencl + levelzero (reported, not required) =="
 report_lane() {

@@ -2395,7 +2395,37 @@ impl LlvmBackend {
                     // the loop engine's hand-rolled body walker must not drop it.
                     super::emit_stmt::emit_statement(self, out, stmt, "  ");
                 }
-                _ => {}
+                // 2026-11-08 (P0, plan 2026-11-08-general-workstream): the
+                // old `_ => {}` here SILENTLY DROPPED nested loops — a folded
+                // max/min node emitted `ymax[j] = a[j*K]` and lost its
+                // `foreach`. Every remaining executable form now delegates to
+                // the standard statement emitter (the reference path), matching
+                // the established fix pattern for FreeHint/KeepHint, statement-
+                // match, and ArrowAssign. To undo: restore `_ => {}` (restores
+                // the silent drop).
+                Statement::Foreach { .. }
+                | Statement::Break
+                | Statement::Trap
+                | Statement::Halt
+                | Statement::Check(_)
+                | Statement::Gate(_)
+                | Statement::Rollback(_)
+                | Statement::SyncBlock(_)
+                | Statement::Open(..)
+                | Statement::TrgBinding { .. }
+                | Statement::InlineAsm { .. } => {
+                    super::emit_stmt::emit_statement(self, out, stmt, "  ");
+                }
+                // Bare term/endprogram (no value) keep the reference path's
+                // control-flow semantics (the valued forms are handled above).
+                Statement::Term(None) | Statement::EndProgram(None) => {
+                    super::emit_stmt::emit_statement(self, out, stmt, "  ");
+                }
+                // Compile-time-only forms: no runtime effect in a kernel body.
+                // (A bare typed `let` without an initializer is a declaration.)
+                Statement::MetadataAssignment(..)
+                | Statement::InlineDefn(_)
+                | Statement::Let { expr: None, .. } => {}
             }
             i += 1;
         }
