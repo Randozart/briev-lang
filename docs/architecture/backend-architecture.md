@@ -4,6 +4,22 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-08: backend source-fixture validation mirrors the production callable
+contract gate: `detect_tautology` applies to transactions and definitions.
+Protocol invariant checks must not be substituted for this gate; a node's
+precondition and postcondition describe different execution states. This helper
+checks fixture legality, not body correctness or protocol round-trip proofs.
+
+2026-11-07: ordinary field layout distinguishes an object's allocated image
+from its stored handle. `field_storage_size` uses the target integer carrier
+width for registered obj values (including generic obj bases), retaining the
+existing image-size query for other representations. Structural size refresh,
+field offsets, boxed/spawn offsets and collection member offsets use this query.
+Member reads and event projections share `lookup_field_offset` with writes.
+Thus a four-Bool object still allocates four bytes for its own image, but its
+parent reserves one complete handle slot; adjacent fields cannot overwrite it.
+Recursive obj references occupy handles rather than recursively expanding images.
+
 2026-10-21: ordinary object allocations cover the finalized field layout used
 by member accesses, while preserving any larger declared trailing allocation.
 An early aggregate byte count can precede nested type registration; it cannot

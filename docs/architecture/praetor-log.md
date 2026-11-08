@@ -6,6 +6,31 @@ Format: `YYYY-MM-DD | file:line | rule | root cause | resolution`
 
 ---
 
+## 2026-11-08 — Installed CLI and verified nested-object layout changes
+
+Installed Praetor 0.1.0 from `https://github.com/Randozart/praetor-lsp`, revision
+`81f190ab79496b373980f2f938438098540d26d7`, using
+`cargo install --path . --locked --jobs 2`. Checkout:
+`/home/otto/code/praetor-lsp`; executable: `/home/otto/.cargo/bin/praetor`.
+
+Compared all five changed Rust files at base `735d1023` and fix `fdceb550` in
+separate directory targets, running from the compiler root to use its existing
+`.praetor.toml`:
+
+```bash
+praetor validate --warn --json --target /tmp/opencode/praetor-layout-review/base
+praetor validate --warn --json --target /tmp/opencode/praetor-layout-review/head
+```
+
+Both report 271 warning/error diagnostics and exit 1 because of baseline debt.
+Comparison by relative path, severity, source and message, ignoring moved line
+numbers, finds **no new or worsened diagnostics**. Six message changes are
+improvements: `emit_field_access` cyclomatic complexity 27→22, cognitive
+complexity 54→44 and length 172→162; `emit_event_payload_read` length 136→127;
+`build_field_index` 280→278; `apply_field_modes` 204→202. New code adds none.
+The changed-file gate passes; an absolute clean-tree Praetor pass is not claimed.
+Raw JSON remains in the two target directories' sibling `base.json`/`head.json`.
+
 ## 2026-08-01 — Corrected Praetor Invocation (was silently no-op)
 
 **Root cause:** `praetor validate --target <file>` was the documented per-change
@@ -325,4 +350,3 @@ Added `root_path: PathBuf` to `ImportResolver`, set on first call from the compi
 2. **Typechecker**: Added auto-declare logic: on `&N = expr`, if `N` doesn't exist, declare it with the RHS type and skip the error. This allows implicit state variables to be created via `&name = value` without requiring `let name: Type = value`.
 
 **Files changed**: `src/desugarer.rs` (1 line), `src/typechecker.rs` (auto-declare in assignment handler)
-

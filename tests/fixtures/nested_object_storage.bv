@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// 2026-11-07: object fields store handles even when their images are smaller.
+obj Holder { prefix: Int; flags: Flags; tail: Int; last: Flags; };
+obj Flags { first: Bool; second: Bool; third: Bool; fourth: Bool; };
+
+defn make_holder(value: Int) -> Holder {
+    term Holder { prefix: value,
+        flags: Flags { first: true, second: false, third: true, fourth: false },
+        tail: value+1,
+        last: Flags { first: false, second: true, third: false, fourth: true } };
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let holder: Holder = make_holder(42);
+    when holder.prefix != 42 || holder.tail != 43 ||
+        !holder.flags.first || holder.flags.second || !holder.flags.third || holder.flags.fourth ||
+        holder.last.first || !holder.last.second || holder.last.third || !holder.last.fourth { trap; };
+    holder.flags.second = true;
+    when !holder.flags.second || holder.tail != 43 || !holder.last.fourth { trap; };
+    done = true;
+    endprogram;
+};

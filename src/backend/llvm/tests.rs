@@ -4208,14 +4208,50 @@ fn nested_obj_size_uses_final_field_layout() {
     );
     assert_eq!(
         universe.types.get("Outer").map(|t| t.bytes),
-        Some(32),
-        "Outer is Inner (24) + Int (8), not a provisional pointer-sized Inner"
+        Some(16),
+        "Outer stores an Inner handle (8) plus Int (8), not the nested image"
     );
     assert_eq!(
         backend.lookup_field_offset("Outer", "tail"),
-        24,
-        "offset walk must agree with the recomputed size"
+        8,
+        "offset walk must agree with the stored handle width"
     );
+}
+
+#[test]
+fn nested_object_fields_reserve_handle_storage() {
+    let src = r#"
+obj Holder { prefix: Int; flags: Flags; tail: Int; last: Flags; };
+obj Flags { first: Bool; second: Bool; third: Bool; fourth: Bool; };
+"#;
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let items = crate::parser::Parser::new(tokens, src).parse_program().expect("parse");
+    let mut backend = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let _ = backend.generate(&items, None);
+    assert_eq!(backend.struct_type_size("Flags"), 4);
+    assert_eq!(backend.lookup_field_offset("Holder", "flags"), 8);
+    assert_eq!(backend.lookup_field_offset("Holder", "tail"), 16);
+    assert_eq!(backend.lookup_field_offset("Holder", "last"), 24);
+    assert_eq!(backend.struct_type_size("Holder"), 32);
+    assert_eq!(backend.struct_byte_size("Holder"), 32);
+}
+
+#[test]
+fn nested_object_layout_uses_target_handles_for_recursive_fields() {
+    let src = "obj Link { next: Link; flag: Bool; };";
+    let tokens = crate::lexer::tokenize(src).expect("tokenize");
+    let items = crate::parser::Parser::new(tokens, src).parse_program().expect("parse");
+    for bits in [32, 64] {
+        let mut backend = LlvmBackend::new()
+            .with_type_universe(crate::type_universe::TypeUniverse::new());
+        backend.ctx.int_bits = bits;
+        let _ = backend.generate(&items, None);
+        let bytes = u64::from(bits / 8);
+        assert_eq!(backend.lookup_field_offset("Link", "flag"), bytes);
+        assert_eq!(backend.struct_type_size("Link"), bytes + 1);
+        assert_eq!(backend.llvm_type(&Type::Custom("Link".into())), format!("i{bits}"));
+    }
 }
 
 #[test]
@@ -7336,27 +7372,43 @@ fn parse_bv_source(src: &str) -> Vec<TopLevel> {
     // Scope = contract legality (tautologies); the other pipeline gates
     // (purity, concurrency classification) stay compile-side until a
     // fixture needs them. Undo: delete this block.
+    // 2026-11-08: mirror compile.rs's transaction/definition tautology gate.
+    // prove_contract is for simultaneous protocol invariants, not BEFORE/AFTER
+    // node states; using it here rejected valid transitions whenever Z3 ran.
     for item in &items {
-        if let TopLevel::Transaction(t) = item {
-            if t.contract.explicit {
-                crate::proof_engine::prove_contract(
-                    &t.contract.pre_condition,
-                    &t.contract.post_condition,
-                    &t.parameters,
-                    true,
-                )
-                .unwrap_or_else(|errs| {
-                    panic!(
-                        "fixture contract rejected by the proof engine (this source \
-                         would not compile via `brievc build`): {} — {}",
-                        t.name,
-                        errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ")
-                    );
-                });
-            }
+        let (name, contract) = match item {
+            TopLevel::Transaction(t) => (&t.name, &t.contract),
+            TopLevel::Definition(d) => (&d.name, &d.contract),
+            _ => continue,
+        };
+        if let Some(error) = crate::proof_engine::detect_tautology(
+            &contract.pre_condition, &contract.post_condition, contract.explicit,
+        ) {
+            panic!("fixture contract rejected by the proof engine (this source \
+                would not compile via `brievc build`): {name} — {error}");
         }
     }
     items
+}
+
+#[test]
+fn fixture_gate_accepts_before_after_transition() {
+    let items = parse_bv_source(
+        "let done: Bool = false; node run [!done][done] { done = true; };",
+    );
+    assert!(items.iter().any(|item| matches!(item, TopLevel::Transaction(_))));
+}
+
+#[test]
+#[should_panic(expected = "fixture contract rejected by the proof engine")]
+fn fixture_gate_rejects_definition_tautology() {
+    parse_bv_source("defn identity(value: Int) -> Int [true][true] { term value; };");
+}
+
+#[test]
+#[should_panic(expected = "fixture contract rejected by the proof engine")]
+fn fixture_gate_rejects_functional_tautology() {
+    parse_bv_source("let value: Int = 0; node run [value == value][value == value] { value = 1; };");
 }
 
 /// 2026-10-16 (stability): the fixture-legality gate in `parse_bv_source`

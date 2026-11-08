@@ -7833,9 +7833,7 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                             let mut off = 0u64;
                             for (mname, mty) in &slots {
                                 offsets.insert(mname.clone(), (off, mty.clone()));
-                                off += crate::backend::llvm::types::type_size(
-                                    mty, self.ctx.type_universe.as_ref(),
-                                );
+                                off += self.field_storage_size(mty);
                             }
                             self.ctx.boxed_offsets.insert(base.clone(), offsets);
                         }
@@ -7992,10 +7990,7 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                 }
                 let bytes: u64 = fields
                     .iter()
-                    .map(|(_, ty)| crate::backend::llvm::types::type_size(
-                        ty,
-                        self.ctx.type_universe.as_ref(),
-                    ))
+                    .map(|(_, ty)| self.field_storage_size(ty))
                     .sum();
                 updates.push((name.clone(), bytes));
             }
@@ -8035,10 +8030,7 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
             };
             let end = fields.iter().map(|(field, ty)| {
                 self.lookup_field_offset(name, field)
-                    + crate::backend::llvm::types::type_size(
-                        ty,
-                        self.ctx.type_universe.as_ref(),
-                    )
+                    + self.field_storage_size(ty)
             }).max().unwrap_or(0);
             debug_assert!(
                 bytes >= end,
@@ -8233,9 +8225,7 @@ machine instance columns — plain storage is for scalar plumbing. Remove the \
                     let mut off = 0u64;
                     for (mname, mty) in &slots {
                         offsets.insert(mname.clone(), (off, mty.clone()));
-                        off += crate::backend::llvm::types::type_size(
-                            mty, self.ctx.type_universe.as_ref(),
-                        );
+                        off += self.field_storage_size(mty);
                     }
                     self.ctx.boxed_offsets.insert(base.clone(), offsets);
                 }

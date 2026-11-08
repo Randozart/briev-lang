@@ -3696,25 +3696,15 @@ pub(crate) fn emit_index_with_obj(
         let Some(fields) = self.get_struct_fields(&type_name) else {
             panic!("field access '.{}': no struct layout for '{}'", name, type_name);
         };
-        // 2026-08-13 (pack): packed structs take their byte offset from the
-        // packed authority; otherwise the type_size walk stands.
-        let packed = self.ctx.packed_structs.contains(&type_name);
-        // 2026-08-13 (Phase 6): a union's fields all overlay at offset 0 — no
-        // type_size accumulation.
-        let is_union = self.ctx.unions.contains(&type_name);
-        let mut offset = if packed || is_union {
-            self.lookup_field_offset(&type_name, name)
-        } else {
-            0u64
-        };
+        // 2026-11-07: share literal/store layout, including object handles.
+        // The authority also preserves 2026-08-13 packed slices and union
+        // overlays; a second image-size walk made reads disagree with stores.
+        let offset = self.lookup_field_offset(&type_name, name);
         let mut field_ty: Option<Type> = None;
         for (fname, fty) in fields {
             if fname == name {
                 field_ty = Some(fty.clone());
                 break;
-            }
-            if !packed && !is_union {
-                offset += types::type_size(fty, self.ctx.type_universe.as_ref());
             }
         }
         let field_ty = field_ty.unwrap_or_else(|| {
@@ -5488,6 +5478,21 @@ pub(crate) fn emit_index_with_obj(
         self.ctx.struct_types.get(type_name).map(|v| v.as_slice())
     }
 
+    /// 2026-11-07: obj fields contain handles, not nested object images. Derive
+    /// their width from the same target carrier as field loads/stores; using
+    /// image bytes overlaps following fields when a nested image is smaller.
+    /// Retire this distinction only when destination layouts own field storage.
+    pub(crate) fn field_storage_size(&self, ty: &Type) -> u64 {
+        let base = match ty {
+            Type::Custom(name) | Type::Applied(name, _) => Some(name),
+            _ => None,
+        };
+        if base.is_some_and(|name| self.ctx.obj_types.contains(name)) {
+            return u64::from(self.ctx.int_bits).div_ceil(8);
+        }
+        types::type_size(ty, self.ctx.type_universe.as_ref())
+    }
+
     /// Compute total byte size of a struct type from its fields.
     /// 2026-07-24: Falls back to struct_types when universe unavailable.
     /// 2026-08-13 (pack): a packed struct is bit-granular even in the fallback
@@ -5515,18 +5520,20 @@ pub(crate) fn emit_index_with_obj(
         if self.ctx.unions.contains(type_name) {
             if let Some(fields) = self.ctx.struct_types.get(type_name) {
                 return fields.iter().map(|(_, ty)| {
-                    types::type_size(ty, self.ctx.type_universe.as_ref())
+                    self.field_storage_size(ty)
                 }).max().unwrap_or(0);
             }
         }
         self.ctx.struct_types.get(type_name)
             .map(|fields| {
-                fields.iter().map(|(_, ty)| types::type_size(ty, self.ctx.type_universe.as_ref())).sum()
+                fields.iter().map(|(_, ty)| self.field_storage_size(ty)).sum()
             })
             .unwrap_or(8)
     }
 
-    /// 2026-07-24: Computes offsets from field types using type_size (pack=1).
+    /// 2026-07-24: Computes offsets from field types (pack=1).
+    /// 2026-11-07: field_storage_size replaces image-size summation for obj
+    /// handles; scalar fields retain the original type_size calculation.
     /// Previously used simplified i*8 which was wrong for mixed-size fields.
     /// 2026-08-13 (pack): a packed struct's byte offset comes from the shared
     /// packed-layout authority (`src/type_universe/packed.rs`) — Σ type_size
@@ -5550,7 +5557,7 @@ pub(crate) fn emit_index_with_obj(
                 if fname == field_name {
                     return offset;
                 }
-                offset += types::type_size(ftype, self.ctx.type_universe.as_ref());
+                offset += self.field_storage_size(ftype);
             }
         }
         0
@@ -9869,19 +9876,14 @@ pub(crate) fn ordering_to_llvm(ordering: &str) -> &'static str {
 }
 
 impl LlvmBackend {
-    /// 2026-08-23: byte size of a struct = sum of field sizes (same walk
+    /// 2026-08-23: byte size of a struct = sum of field storage sizes (same walk
     /// lookup_field_offset uses to accumulate offsets). Falls back to one
     /// word for unknown structs.
     pub(crate) fn struct_byte_size(&self, type_name: &str) -> u64 {
         if let Some(fields) = self.get_struct_fields(type_name) {
             return fields
                 .iter()
-                .map(|(_, fty)| {
-                    crate::backend::llvm::types::type_size(
-                        fty,
-                        self.ctx.type_universe.as_ref(),
-                    )
-                })
+                .map(|(_, fty)| self.field_storage_size(fty))
                 .sum();
         }
         8
@@ -10007,21 +10009,12 @@ impl crate::backend::llvm::LlvmBackend {
             _ => None,
         });
         match product {
-            Some((pty, _, fields)) => {
+            Some((pty, type_name, fields)) => {
                 // Product payload: boxed struct handle → GEP the member at
                 // its byte offset (the layout emit_struct_literal wrote).
                 let fp = self.fun.gen_reg();
                 writeln!(out, "  {fp} = inttoptr i64 {raw} to ptr").ok();
-                let mut off: u64 = 0;
-                for (fname, fty) in &fields {
-                    if fname == field {
-                        break;
-                    }
-                    off += crate::backend::llvm::types::type_size(
-                        fty,
-                        self.ctx.type_universe.as_ref(),
-                    );
-                }
+                let off = self.lookup_field_offset(&type_name, field);
                 let gp = self.fun.gen_reg();
                 writeln!(out, "  {gp} = getelementptr i8, ptr {fp}, i64 {off}").ok();
                 let field_ty = fields
