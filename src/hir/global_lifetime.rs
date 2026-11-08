@@ -8,7 +8,7 @@
 //! the AST builder's `Decimal(0)`).
 
 use super::expr::{HirExpr, HirExprKind};
-use super::program::{HirCallableKind, HirProgram};
+use super::program::{HirCallable, HirCallableKind, HirProgram};
 use super::stmt::{HirStmt, HirStmtKind};
 use crate::analysis::global_lifetime::GlobalLifetime;
 use std::collections::{HashMap, HashSet};
@@ -20,33 +20,7 @@ pub fn analyze(
     foldable: &HashSet<String>,
 ) -> GlobalLifetime {
     let state_fields: HashSet<String> = field_initializers.keys().cloned().collect();
-    let mut manually_freed: HashSet<String> = HashSet::new();
-    let mut kept: HashSet<String> = HashSet::new();
-    let mut txn_touches: HashMap<String, HashSet<String>> = HashMap::new();
-    // Mirror the AST: raw `TopLevel::Transaction` items only — bare,
-    // non-exported, non-sync-wrapped; defns are not scanned here.
-    for c in program.callables.iter().filter(|c| {
-        matches!(c.kind, HirCallableKind::Transaction)
-            && c.owner.is_none()
-            && !c.exported
-            && c.sync_domains.is_empty()
-    }) {
-        for stmt in &c.body.statements {
-            if let Some(target) = manual_free_target(stmt, &state_fields) {
-                manually_freed.insert(target);
-            }
-            if let HirStmtKind::KeepHint(name) = &stmt.kind {
-                kept.insert(name.clone());
-            }
-        }
-        let mut touches = HashSet::new();
-        for stmt in &c.body.statements {
-            collect_statement_identifiers(stmt, &state_fields, &mut touches);
-        }
-        if !touches.is_empty() {
-            txn_touches.insert(c.name.clone(), touches);
-        }
-    }
+    let (manually_freed, kept, txn_touches) = scan_txns(program, &state_fields);
     let heap_backed: Vec<String> = field_initializers
         .iter()
         .filter(|(_, init)| contains_heap_alloc(init))
@@ -60,9 +34,78 @@ pub fn analyze(
             lifetime_fallbacks: Vec::new(),
         };
     }
+    let (free_after, fallbacks) = schedule_frees(&heap_backed, node_order, foldable, &txn_touches);
+    let scheduled: HashSet<String> = free_after.values().flatten().cloned().collect();
+    let redundant_keeps: Vec<String> = kept
+        .into_iter()
+        .filter(|k| !scheduled.contains(k))
+        .collect();
+    GlobalLifetime {
+        free_after,
+        redundant_keeps,
+        lifetime_fallbacks: fallbacks,
+    }
+}
+
+/// Scan the bare reactive transactions for manual frees, keeps, and touch sets.
+fn scan_txns(
+    program: &HirProgram,
+    state_fields: &HashSet<String>,
+) -> (HashSet<String>, HashSet<String>, HashMap<String, HashSet<String>>) {
+    let mut manually_freed = HashSet::new();
+    let mut kept = HashSet::new();
+    let mut txn_touches = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        matches!(c.kind, HirCallableKind::Transaction)
+            && c.owner.is_none()
+            && !c.exported
+            && c.sync_domains.is_empty()
+    }) {
+        let touches = scan_one_txn(c, state_fields, &mut manually_freed, &mut kept);
+        if !touches.is_empty() {
+            txn_touches.insert(c.name.clone(), touches);
+        }
+    }
+    (manually_freed, kept, txn_touches)
+}
+
+/// One transaction: manual frees/keeps plus its touch set.
+fn scan_one_txn(
+    c: &HirCallable,
+    state_fields: &HashSet<String>,
+    manually_freed: &mut HashSet<String>,
+    kept: &mut HashSet<String>,
+) -> HashSet<String> {
+    for stmt in &c.body.statements {
+        if let Some(target) = manual_free_target(stmt, state_fields) {
+            manually_freed.insert(target);
+        }
+        if let HirStmtKind::KeepHint(name) = &stmt.kind {
+            kept.insert(name.clone());
+        }
+    }
+    txn_touch_set(c, state_fields)
+}
+
+fn txn_touch_set(c: &HirCallable, state_fields: &HashSet<String>) -> HashSet<String> {
+    let mut touches = HashSet::new();
+    for stmt in &c.body.statements {
+        collect_statement_identifiers(stmt, state_fields, &mut touches);
+    }
+    touches
+}
+
+/// Schedule each heap-backed field after its last foldable consumer; record
+/// fallback reasons otherwise.
+fn schedule_frees(
+    heap_backed: &[String],
+    node_order: &[String],
+    foldable: &HashSet<String>,
+    txn_touches: &HashMap<String, HashSet<String>>,
+) -> (HashMap<String, Vec<String>>, Vec<(String, &'static str)>) {
     let mut free_after: HashMap<String, Vec<String>> = HashMap::new();
     let mut fallbacks: Vec<(String, &'static str)> = Vec::new();
-    for field in &heap_backed {
+    for field in heap_backed {
         let consumers: Vec<&String> = node_order
             .iter()
             .filter(|n| txn_touches.get(*n).map_or(false, |t| t.contains(field)))
@@ -83,16 +126,7 @@ pub fn analyze(
     for v in free_after.values_mut() {
         v.sort();
     }
-    let scheduled: HashSet<String> = free_after.values().flatten().cloned().collect();
-    let redundant_keeps: Vec<String> = kept
-        .into_iter()
-        .filter(|k| !scheduled.contains(k))
-        .collect();
-    GlobalLifetime {
-        free_after,
-        redundant_keeps,
-        lifetime_fallbacks: fallbacks,
-    }
+    (free_after, fallbacks)
 }
 
 fn manual_free_target(stmt: &HirStmt, state_fields: &HashSet<String>) -> Option<String> {
@@ -182,15 +216,7 @@ fn collect_state_identifiers(
                 collect_state_identifiers(e, state_fields, out);
             }
         }
-        HirExprKind::Match { scrutinee, arms } => {
-            collect_state_identifiers(scrutinee, state_fields, out);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    collect_state_identifiers(guard, state_fields, out);
-                }
-                collect_state_identifiers(&arm.body, state_fields, out);
-            }
-        }
+        HirExprKind::Match { .. } => collect_match_state_ids(expr, state_fields, out),
         HirExprKind::If { condition, then_branch, else_branch } => {
             collect_state_identifiers(condition, state_fields, out);
             collect_state_identifiers(then_branch, state_fields, out);
@@ -242,6 +268,24 @@ fn collect_state_identifiers(
 
 /// Mirror of `transition_graph::scan_for_state_identifiers` over HIR
 /// (statement-list variant used by the Block-expression arm).
+/// Match scrutinee, guards, and arm bodies.
+fn collect_match_state_ids(
+    expr: &HirExpr,
+    state_fields: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let HirExprKind::Match { scrutinee, arms } = &expr.kind else {
+        return;
+    };
+    collect_state_identifiers(scrutinee, state_fields, out);
+    for arm in arms {
+        if let Some(guard) = &arm.guard {
+            collect_state_identifiers(guard, state_fields, out);
+        }
+        collect_state_identifiers(&arm.body, state_fields, out);
+    }
+}
+
 fn scan_for_state_identifiers(
     stmts: &[HirStmt],
     state_fields: &HashSet<String>,

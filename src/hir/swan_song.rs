@@ -30,77 +30,88 @@ pub fn hoist_swan_song(
     body: &[HirStmt],
     state_fields: &HashSet<String>,
 ) -> (Vec<HirStmt>, Vec<Vec<HirStmt>>) {
-    let mut stmts: Vec<&HirStmt> = body
-        .iter()
-        .filter(|s| {
-            !matches!(
-                s.kind,
-                HirStmtKind::EndProgram(..) | HirStmtKind::Term(None)
-            )
-        })
-        .collect();
+    let mut stmts = without_terminators(body);
+    let let_to_field = let_to_field_map(body, state_fields);
+    let mut hoist: Vec<Vec<HirStmt>> = Vec::new();
+    if let Some(last) = stmts.last() {
+        if is_swan_song_guard(last) {
+            hoist.push(hoisted_guard_body(last, &let_to_field));
+            stmts.pop();
+        }
+    }
+    (stmts.into_iter().cloned().collect(), hoist)
+}
 
-    let mut let_to_field: HashMap<String, String> = HashMap::new();
+/// Body statements minus trailing terminators (`endprogram`/bare `term`).
+fn without_terminators(body: &[HirStmt]) -> Vec<&HirStmt> {
+    body.iter()
+        .filter(|s| !matches!(s.kind, HirStmtKind::EndProgram(..) | HirStmtKind::Term(None)))
+        .collect()
+}
+
+/// `let x = state_field;` bindings at body scope, mapped to the field name.
+fn let_to_field_map(
+    body: &[HirStmt],
+    state_fields: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     for s in body {
-        if let HirStmtKind::Assign(lhs, HirExpr {
+        let HirStmtKind::Assign(lhs, HirExpr {
             kind: HirExprKind::Identifier(let_name),
             ..
         }) = &s.kind
-        {
-            if let HirExprKind::Identifier(field_name) = &lhs.kind {
-                if state_fields.contains(field_name) {
-                    let_to_field.insert(let_name.clone(), field_name.clone());
-                }
-            }
-        }
-    }
-
-    let mut hoist: Vec<Vec<HirStmt>> = Vec::new();
-    while let Some(last_idx) = stmts.len().checked_sub(1) {
-        let HirStmtKind::Guarded(_, statements) = &stmts[last_idx].kind else {
-            break;
+        else {
+            continue;
         };
-        if !statements
-            .iter()
-            .any(|s| matches!(s.kind, HirStmtKind::EndProgram(..)))
-        {
-            break;
-        }
-        let mut body_stmts: Vec<HirStmt> = statements
-            .iter()
-            .filter(|s| !matches!(s.kind, HirStmtKind::EndProgram(..)))
-            .cloned()
-            .collect();
-        for s in &mut body_stmts {
-            remap_stmt_identifiers(s, &let_to_field);
-        }
-        let swan_song_stmt = statements.iter().find_map(|s| {
-            if let HirStmtKind::EndProgram(Some(ss)) = &s.kind {
-                Some(ss.clone())
-            } else {
-                None
+        if let HirExprKind::Identifier(field_name) = &lhs.kind {
+            if state_fields.contains(field_name) {
+                map.insert(let_name.clone(), field_name.clone());
             }
-        });
-        let swan_song_stmt = swan_song_stmt.map(|mut ss| {
-            remap_expr_into(&mut ss, &let_to_field);
-            ss
-        });
-        if !body_stmts.is_empty() || swan_song_stmt.is_some() {
-            let mut full_body = body_stmts;
-            if let Some(sw) = swan_song_stmt {
-                full_body.push(HirStmt {
-                    id: stmts[last_idx].id,
-                    span: stmts[last_idx].span,
-                    kind: HirStmtKind::Expression(sw),
-                });
-            }
-            hoist.push(full_body);
-            stmts.pop();
         }
-        break;
     }
+    map
+}
 
-    (stmts.into_iter().cloned().collect(), hoist)
+fn is_swan_song_guard(stmt: &HirStmt) -> bool {
+    let HirStmtKind::Guarded(_, statements) = &stmt.kind else {
+        return false;
+    };
+    statements
+        .iter()
+        .any(|s| matches!(s.kind, HirStmtKind::EndProgram(..)))
+}
+
+/// The hoisted block for a terminating guard: its body statements with field
+/// remapping, followed by the `endprogram` value as an expression.
+fn hoisted_guard_body(stmt: &HirStmt, let_to_field: &HashMap<String, String>) -> Vec<HirStmt> {
+    let HirStmtKind::Guarded(_, statements) = &stmt.kind else {
+        return Vec::new();
+    };
+    let mut body_stmts: Vec<HirStmt> = statements
+        .iter()
+        .filter(|s| !matches!(s.kind, HirStmtKind::EndProgram(..)))
+        .cloned()
+        .collect();
+    for s in &mut body_stmts {
+        remap_stmt_identifiers(s, let_to_field);
+    }
+    let swan = statements.iter().find_map(|s| match &s.kind {
+        HirStmtKind::EndProgram(Some(ss)) => Some(ss.clone()),
+        _ => None,
+    });
+    let swan = swan.map(|mut ss| {
+        remap_expr_into(&mut ss, let_to_field);
+        ss
+    });
+    let mut full_body = body_stmts;
+    if let Some(sw) = swan {
+        full_body.push(HirStmt {
+            id: stmt.id,
+            span: stmt.span,
+            kind: HirStmtKind::Expression(sw),
+        });
+    }
+    full_body
 }
 
 pub(crate) fn remap_stmt_identifiers(s: &mut HirStmt, map: &HashMap<String, String>) {
