@@ -82,6 +82,21 @@ pub enum Token {
     #[token("seq")]
     Seq,
 
+    /// 2026-11-08 (P1, plan 2026-11-08-general-workstream-countable-body-and-folds):
+    /// `approx` — ambiguity modifier (prefix, node/txn). Declares the node's
+    /// numeric result may deviate within FP rounding: licenses float fold
+    /// reassociation (the §12 gate-3 license). The mirror pair is `exact`.
+    /// Never a speed keyword — a numeric-semantics intent declaration,
+    /// disclosed in diagnostics.
+    #[token("approx")]
+    Approx,
+
+    /// 2026-11-08 (P1): `exact` — ambiguity modifier (prefix, node/txn).
+    /// Asserts the precise sequential result is required: no reassociation,
+    /// no FMA contraction, no fast attrs for this node. Contradicts `approx`.
+    #[token("exact")]
+    Exact,
+
     /// 2026-08-13 (layout-keywords plan): `pack` — bit-contiguous, zero-padding
     /// struct modifier (prefix, combinable with `seq` in any order).
     #[token("pack")]
@@ -632,6 +647,8 @@ impl std::fmt::Display for Token {
             Token::Node => write!(f, "node"),
             Token::Async => write!(f, "async"),
             Token::Seq => write!(f, "seq"),
+            Token::Approx => write!(f, "approx"),
+            Token::Exact => write!(f, "exact"),
             Token::Pack => write!(f, "pack"),
             Token::Trap => write!(f, "trap"),
             Token::Halt => write!(f, "halt"),
@@ -787,7 +804,7 @@ mod tests {
         // the dedicated keyword tokens that Phase 3 will converge with the
         // vocab (removing Removed/Reserved tokens that are not canonical).
         let keyword_tokens: &[&str] = &[
-            "export", "defn", "let", "const", "txn", "node", "async", "seq",
+            "export", "defn", "let", "const", "txn", "node", "async", "seq", "approx", "exact",
             "vol", "out", "spec", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
             "bootstrap",
             "mem", "relaxed", "acquire", "release", "bartered",

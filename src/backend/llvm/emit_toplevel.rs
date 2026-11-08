@@ -4783,6 +4783,15 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                     attrs.push_str(llvm_attr);
                 }
             }
+            // 2026-11-08 (P1) NOTE: `approx`/`exact` are consumed by the
+            // frontend fold-lane decision and disclosed in diagnostics; they
+            // do NOT emit LLVM function attributes. The registry's
+            // `associative`/`fp_math` mappings are INSTRUCTION fast-math
+            // flags (`reassoc`/`fast`), and emitting them here as bare
+            // function attributes produces invalid IR (verified: clang
+            // rejects `define ... #0 reassoc fast`). The `!>` metadata path
+            // above has the same latent flaw when those keys are used —
+            // BUGS.md 2026-11-08.
             attrs
         };
         // 2026-07-27: txn_attr for assume_action path (no outlining — rare path).

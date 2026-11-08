@@ -795,6 +795,8 @@ mod tests {
                     reduction: None,
                     deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -857,6 +859,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         accel.insert(
             "gemm1".into(),
@@ -895,6 +899,8 @@ mod tests {
                     reduction: None,
                     deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             },
@@ -976,6 +982,8 @@ mod tests {
                     reduction: None,
                     deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -1072,6 +1080,8 @@ mod tests {
                 reduction: None,
                 deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
             }
         };
         let entry = |shape: crate::analysis::accel::KernelShape| AccelEntry {

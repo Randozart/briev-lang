@@ -91,12 +91,18 @@ impl FoldCombine {
         }
     }
 
-    fn reduce_intrinsic(self) -> &'static str {
-        match self {
-            FoldCombine::BinaryAdd => "SubgroupIAdd#",
-            FoldCombine::BinaryMul => "SubgroupIMul#",
-            FoldCombine::CallMin => "SubgroupSMin#",
-            FoldCombine::CallMax => "SubgroupSMax#",
+    fn reduce_intrinsic(self, float: bool) -> &'static str {
+        match (self, float) {
+            // 2026-11-08 (P1, approx): the float family — licensed by the
+            // node's `approx` declaration (gate 3).
+            (FoldCombine::BinaryAdd, true) => "SubgroupFAdd#",
+            (FoldCombine::BinaryMul, true) => "SubgroupFMul#",
+            (FoldCombine::CallMin, true) => "SubgroupFMin#",
+            (FoldCombine::CallMax, true) => "SubgroupFMax#",
+            (FoldCombine::BinaryAdd, false) => "SubgroupIAdd#",
+            (FoldCombine::BinaryMul, false) => "SubgroupIMul#",
+            (FoldCombine::CallMin, false) => "SubgroupSMin#",
+            (FoldCombine::CallMax, false) => "SubgroupSMax#",
         }
     }
 
@@ -121,9 +127,10 @@ pub(crate) fn synthesize_reduce_stmts(
     shape: &KernelShape,
     red: &crate::analysis::accel::ReductionInfo,
     inner_len: u64,
+    float: bool,
 ) -> KernelShape {
     let combine = FoldCombine::from_kind(&red.kind);
-    let reduce_intrinsic = combine.reduce_intrinsic();
+    let reduce_intrinsic = combine.reduce_intrinsic(float);
     use crate::ast::BinaryOpKind::{Add, BitAnd, Mul, Shr};
     let mut out = shape.clone();
     let tiles = (inner_len / 32) as i64;
@@ -152,7 +159,13 @@ pub(crate) fn synthesize_reduce_stmts(
             Box::new(elem(t)),
         )
     };
-    let ity = Some(crate::ast::Type::int());
+    // The accumulator and fold terms carry the folded buffer's numeric kind;
+    // row/lane indices stay Int.
+    let ity = Some(if float {
+        crate::ast::Type::float()
+    } else {
+        crate::ast::Type::int()
+    });
     let range = |a: i64, b: i64| Expr::Range {
         start: Box::new(Expr::Decimal(a)),
         end: Box::new(Expr::Decimal(b)),
@@ -544,7 +557,9 @@ pub fn emit_kernel(
                 inner_len
             ));
         }
-        shape_owned = synthesize_reduce_stmts(shape, red, inner_len as u64);
+        let fold_is_float =
+            !crate::analysis::accel::fold_buffer_is_int(items, &red.row_buf);
+        shape_owned = synthesize_reduce_stmts(shape, red, inner_len as u64, fold_is_float);
         &shape_owned
     } else if cooperative
         && matches!(
@@ -1858,6 +1873,8 @@ mod decomposition_gate_tests {
             reduction: Some(ReductionInfo::dot(Expr::Decimal(64))),
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         }
     }
 

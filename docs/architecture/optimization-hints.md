@@ -11,10 +11,10 @@ This document is a human-readable rendering. When adding a new key, update both.
 | Key | Values | Description | LLVM | Webstack | CIRCT | MCMC |
 |-----|--------|-------------|------|----------|-------|------|
 | `overflow` | wrapping, checked, saturating | Integer overflow behavior | nuw nsw | implicit | comb.add flags | algebraic identities |
-| `associative` | true, false | May reassociate operations | reassoc | reorder | tree balance | reassociation mutations |
+| `associative` | true, false | **Retiring from author use (2026-11-08):** declared in source by the `approx` ambiguity keyword; this key remains the internal lowering row. May reassociate operations | reassoc | reorder | tree balance | reassociation mutations |
 | `commutative` | true, false | May swap operands | ignored | ignored | ignored | commutative swap mutations |
 | `fp_contract` | fast, strict | May form FMA | contract | fma fuse | fma | fma fusion mutations |
-| `fp_math` | ieee754, fast | Floating-point compliance | fast-math flags | no subnormals | relaxed | relaxed equivalence |
+| `fp_math` | ieee754, fast | **Retiring from author use (2026-11-08):** `approx`/`exact` are the source surface; this key remains the internal lowering row for instruction fast-math flags. Floating-point compliance | fast-math flags | no subnormals | relaxed | relaxed equivalence |
 
 ## Memory Semantics
 

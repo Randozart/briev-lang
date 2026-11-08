@@ -966,7 +966,7 @@ impl<'a> FnLowerer<'a> {
         args: &[Expr],
     ) -> Result<(Word, Type), String> {
         match name {
-            "SubgroupFAdd#" | "SubgroupFMax#" | "SubgroupFMin#" => {
+            "SubgroupFAdd#" | "SubgroupFMul#" | "SubgroupFMax#" | "SubgroupFMin#" => {
                 self.emit_subgroup_reduce(name, args)
             }
             // 2026-11-06 (§12 W3/W3.1): the Int fold lane's cross-lane
@@ -996,6 +996,7 @@ impl<'a> FnLowerer<'a> {
             return self.err(format!("{} is a float reduction", name));
         }
         let op = match name {
+            "SubgroupFMul#" => spirv::Op::GroupNonUniformFMul,
             "SubgroupFMax#" => spirv::Op::GroupNonUniformFMax,
             "SubgroupFMin#" => spirv::Op::GroupNonUniformFMin,
             _ => spirv::Op::GroupNonUniformFAdd,

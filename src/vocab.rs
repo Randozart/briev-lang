@@ -128,6 +128,15 @@ impl LanguageVocab {
                 kw("trait", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("proto", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("struct", VocabStatus::Canonical, KeywordContext::Declaration),
+                // 2026-11-08 (P1, general-workstream plan): the numeric
+                // ambiguity-keyword pair. `approx` declares a node's numeric
+                // result may deviate within FP rounding (float reassociation
+                // license, §12 gate 3); `exact` asserts the precise sequential
+                // result is required. Default (neither) is precise. Never
+                // speed keywords; the pair replaces the author-facing
+                // `!> associative` / `!> fp_math` keys.
+                kw("approx", VocabStatus::Canonical, KeywordContext::Modifier),
+                kw("exact", VocabStatus::Canonical, KeywordContext::Modifier),
                 kw("seq", VocabStatus::Canonical, KeywordContext::Modifier),
                 // 2026-08-13 (layout-keywords plan): `pack` — bit-contiguous,
                 // zero-padding struct modifier (`pack struct`). Disclosed, like

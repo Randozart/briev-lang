@@ -68,6 +68,8 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | Keyword | Meaning |
 |---|---|
 | `seq` | Ordering/sequential modifier; sequential-consistency atomic default |
+| `approx` | Numeric ambiguity modifier (node/txn): result may differ within FP rounding; licenses float fold reassociation |
+| `exact` | Numeric ambiguity modifier (node/txn): asserts precise sequential evaluation; suppresses float fold reassociation; contradicts `approx` |
 | `pack` | Bit-contiguous zero-padding struct modifier |
 | `trap` | Hardware abort (never-type) |
 | `halt` | Bare-metal stop (never-type) |
@@ -395,7 +397,7 @@ variable; v1 Int-only, plan `2026-10-01-atomic-element-rmw.md`):
 
 All ordinary lowercase keywords (no `#`), prefix-position, intent-bearing.
 
-`seq` `vol` `pack` `async` `sync<group>` `atomic` `union` `trap` `halt`
+`seq` `approx` `exact` `vol` `pack` `async` `sync<group>` `atomic` `union` `trap` `halt`
 
 Supporting markers: `box` `spill` (spawn storage), `mem` `reg` (array-lowering
 pins), `coll` (collection), `out` (liveness root), `accel` (GPU deferral),

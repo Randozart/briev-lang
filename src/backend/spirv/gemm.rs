@@ -791,6 +791,8 @@ mod tests {
             reduction: Some(ReductionInfo::dot(idx("K"))),
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         (shape, items)
     }

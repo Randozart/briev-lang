@@ -81,8 +81,21 @@ impl super::LlvmBackend {
                     Some(crate::analysis::accel::ReductionKind::Max) => "max",
                     _ => "add",
                 };
+                // 2026-11-08 (P1): disclose the numeric license source.
+                let is_float = shape
+                    .reduction
+                    .as_ref()
+                    .map(|r| !crate::analysis::accel::fold_buffer_is_int(items, &r.row_buf))
+                    .unwrap_or(false);
+                let license = if !is_float {
+                    "int (exact any order)"
+                } else if shape.approx_declared {
+                    "float, approx-declared (rounding may differ from source order)"
+                } else {
+                    "float"
+                };
                 self.warnings.push(format!(
-                    "info: fold-idiom (assoc {op}, int) → reduction synthesis (warp-slice) for accel '{}'",
+                    "info: fold-idiom (reassoc {op}, {license}) → reduction synthesis (warp-slice) for accel '{}'",
                     name
                 ));
             } else if matches!(

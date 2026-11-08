@@ -130,6 +130,15 @@ pub struct KernelShape {
     /// consumer (blob emitter, dispatch wrapper, plan) reads this field —
     /// the frontend-decides-once pillar.
     pub idiom_lane: bool,
+    /// 2026-11-08 (P1): the node declared `approx` — its numeric result may
+    /// deviate within FP rounding, which licenses float fold reassociation
+    /// (gate 3). `exact` is the asserting inverse (precise sequential
+    /// required). Neither = precise default; the why-not text names both.
+    pub approx_declared: bool,
+    /// 2026-11-08 (P1): the node declared `exact` — float folds must not be
+    /// reassociated (the parallel lane is suppressed). Int folds are
+    /// unaffected (wrapping add/mul and min/max are exact in any order).
+    pub exact_declared: bool,
 }
 
 /// The inner-loop length expression of a recognized dot-product reduction.
@@ -483,6 +492,7 @@ fn expr_is_pure(expr: &Expr) -> bool {
         // builtins are pure reads too.
         Expr::Call(name, args, _)
             if name == "SubgroupFAdd#"
+                || name == "SubgroupFMul#"
                 || name == "SubgroupIAdd#"
                 || name == "SubgroupIMul#"
                 || name == "SubgroupSMin#"
@@ -663,7 +673,9 @@ fn index_write_is_kernel(
 // pub(crate): ProgramInfo is module-internal — visibility must not
 // exceed the parameter type (private_interfaces lint).
 pub(crate) fn prove_kernel_pub(name: &str, body: &[Statement], contract: &Contract, info: &ProgramInfo, universe: &TypeUniverse, items: &[TopLevel]) -> KernelShape {
-    prove_kernel(name, body, contract, info, universe, items)
+    // Callers without txn modifiers (tests, ad-hoc probes): precise default
+    // (neither `approx` nor `exact`).
+    prove_kernel(name, body, contract, info, universe, items, false, false)
 }
 
 fn prove_kernel(
@@ -673,6 +685,8 @@ fn prove_kernel(
     info: &ProgramInfo,
     universe: &TypeUniverse,
     items: &[TopLevel],
+    approx_declared: bool,
+    exact_declared: bool,
 ) -> KernelShape {
     let mut reasons = Vec::new();
     let mut shape = KernelShape {
@@ -689,6 +703,8 @@ fn prove_kernel(
         reduction: None,
         deferred_normalize: None,
         idiom_lane: false,
+        approx_declared,
+        exact_declared,
     };
 
     // 1. Bound: the contract precondition must CONTAIN an `[i < N]` conjunct
@@ -1441,6 +1457,10 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
 pub enum FoldIdiomBlock {
     /// No Sum fold was detected in the shape at all.
     NoFold,
+    /// The node declared `exact` — precise sequential evaluation is
+    /// required, so the float fold is not reassociated. (Int folds are
+    /// unaffected: their reassociation is exact.)
+    ExactPinned,
     /// The body decomposes the counter (`i / N`, `i % N`), so the row form
     /// cannot bind (one row per subgroup needs an affine row stride).
     CounterDecomposed,
@@ -1460,6 +1480,10 @@ impl FoldIdiomBlock {
     pub fn describe(self) -> &'static str {
         match self {
             FoldIdiomBlock::NoFold => "no single-accumulator fold was recognized",
+            FoldIdiomBlock::ExactPinned => {
+                "the node declares `exact` — sequential evaluation is pinned, so the float fold is \
+                 not reassociated (remove `exact` and declare `approx` to license the parallel lane)"
+            }
             FoldIdiomBlock::CounterDecomposed => {
                 "the body decomposes the counter (i / N or i % N); the row form needs an affine row stride"
             }
@@ -1468,7 +1492,9 @@ impl FoldIdiomBlock {
                 "the fold length is not a positive multiple of 32 (one subgroup reduces one row)"
             }
             FoldIdiomBlock::FloatUnlicensed => {
-                "float folds are not licensed (gate 3: needs a numeric contract); Int folds are exact"
+                "float fold reassociation needs the node's `approx` declaration (accepts last-bit \
+                 rounding differences), or `exact` to pin the sequential order; Int folds are exact \
+                 without either"
             }
         }
     }
@@ -1496,8 +1522,17 @@ pub fn fold_idiom_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(),
     if k <= 0 || k % 32 != 0 {
         return Err(FoldIdiomBlock::LengthNotMultiple32);
     }
-    if !fold_buffer_is_int(items, &red.row_buf) {
-        return Err(FoldIdiomBlock::FloatUnlicensed);
+    let is_float = !fold_buffer_is_int(items, &red.row_buf);
+    if is_float {
+        // 2026-11-08 (P1): the numeric ambiguity pair. `exact` pins precise
+        // sequential evaluation (assertion); `approx` licenses reassociation;
+        // neither = precise default (the why-not names both fixes).
+        if shape.exact_declared {
+            return Err(FoldIdiomBlock::ExactPinned);
+        }
+        if !shape.approx_declared {
+            return Err(FoldIdiomBlock::FloatUnlicensed);
+        }
     }
     Ok(())
 }
@@ -1813,7 +1848,18 @@ pub fn analyze(
             continue;
         }
         let forced = mode.forces_marked() && marked;
-        let shape = prove_kernel(&txn.name, &txn.body, &txn.contract, &info, universe, items);
+        let approx_declared = txn.modifiers.iter().any(|m| m.name == "approx");
+        let exact_declared = txn.modifiers.iter().any(|m| m.name == "exact");
+        let shape = prove_kernel(
+            &txn.name,
+            &txn.body,
+            &txn.contract,
+            &info,
+            universe,
+            items,
+            approx_declared,
+            exact_declared,
+        );
         let decision = decide(&shape, forced, &info);
         out.insert(
             txn.name.clone(),
@@ -2874,6 +2920,8 @@ mod resident_gate_tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         shape.eligible = true;
         shape.read_buffers = reads.iter().map(|s| s.to_string()).collect();
@@ -3144,6 +3192,15 @@ mod fold_idiom_tests {
     }
 
     fn fold_shape(kind: ReductionKind, inner: Expr) -> KernelShape {
+        fold_shape_flags(kind, inner, false, false)
+    }
+
+    fn fold_shape_flags(
+        kind: ReductionKind,
+        inner: Expr,
+        approx_declared: bool,
+        exact_declared: bool,
+    ) -> KernelShape {
         KernelShape {
             index_var: "i".into(),
             count_expr: Some(Expr::Decimal(64)),
@@ -3164,6 +3221,8 @@ mod fold_idiom_tests {
             }),
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared,
+            exact_declared,
         }
     }
 
@@ -3208,6 +3267,34 @@ mod fold_idiom_tests {
             assert!(!fold_idiom_lane(&shape_k, &items), "{kind:?} non-32-multiple must refuse");
             let shape_n = fold_shape(kind, Expr::Identifier("N".into()));
             assert!(!fold_idiom_lane(&shape_n, &items), "{kind:?} non-const must refuse");
+        }
+    }
+
+    #[test]
+    fn float_approx_licenses_the_lane() {
+        // 2026-11-08 (P1): `approx` is the float-reassociation license.
+        let items_f = int_buffer_items(Type::float());
+        for kind in FOLD_KINDS {
+            let shape = fold_shape_flags(kind, Expr::Decimal(1024), true, false);
+            assert!(fold_idiom_lane(&shape, &items_f), "{kind:?} approx float must license");
+            assert_eq!(fold_idiom_outcome(&shape, &items_f), Ok(()));
+        }
+    }
+
+    #[test]
+    fn float_exact_pins_sequential() {
+        // 2026-11-08 (P1): `exact` asserts the precise sequential result.
+        let items_f = int_buffer_items(Type::float());
+        for kind in FOLD_KINDS {
+            let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
+            assert!(!fold_idiom_lane(&shape, &items_f), "{kind:?} exact float must not reassociate");
+            assert_eq!(fold_idiom_outcome(&shape, &items_f), Err(FoldIdiomBlock::ExactPinned));
+        }
+        // Int folds are exact in any order — `exact` does not block them.
+        let items_i = int_buffer_items(Type::int());
+        for kind in FOLD_KINDS {
+            let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
+            assert!(fold_idiom_lane(&shape, &items_i), "{kind:?} exact int stays licensed");
         }
     }
 

@@ -174,3 +174,22 @@ Illustrative placements (to be decided):
   strategy keywords.
 - A keyword that is faster only because the default was deficient is a
   **bug**, not a feature.
+
+## Numeric ambiguity pair: `approx` / `exact` (2026-11-08, P1)
+
+- **Category:** ambiguity keywords (declared at the site of confusion; never
+  speed keywords).
+- **Problem:** float add/mul are not associative — reassociating a reduction
+  changes rounding vs source-order evaluation. The default is precise.
+- **`approx`** (node/txn prefix): the node's numeric result may deviate within
+  FP rounding; licenses float fold reassociation (parallel reduction lane).
+  Planned stdlib compression: `approx discards the precise right of this node`;
+  consumed by the fold lane, disclosed in diagnostics.
+- **`exact`** (node/txn prefix): asserts the precise sequential result is
+  required; suppresses the parallel fold lane; pins no contraction. An
+  assertion, not a requirement (the default is already precise). `exact` +
+  *proven* exactness may still use the parallel lane when the derivation tier
+  lands (result identical).
+- **Both:** contradiction error.
+- **Not:** a speed keyword, a contract weakening, or a global `-ffast-math`
+  policy. `!>` numeric keys are not the author surface (retirement pending).

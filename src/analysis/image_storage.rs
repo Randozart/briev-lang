@@ -320,6 +320,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         let entry = AccelEntry {
             mode: crate::analysis::accel::AccelMode::TryKeyword,

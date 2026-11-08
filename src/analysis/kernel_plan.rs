@@ -867,6 +867,8 @@ mod tests {
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         let d = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86).dump();
         assert!(d.contains("node fattn"), "{d}");
@@ -912,6 +914,8 @@ mod tests {
                 reduce_end: Expr::Identifier("NKV".into()),
             }),
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         let p = KernelPlan::from_shape("fattn", &shape, &[], &consts, &GpuHardware::SM86);
         assert_eq!(p.split_tree_factor(), None, "D=100 is not warp-multiple");
@@ -1049,6 +1053,8 @@ mod tests {
                 }),
                 deferred_normalize: None,
                 idiom_lane: buf_ty == crate::ast::Type::int() && buf_ty != crate::ast::Type::float(),
+                approx_declared: false,
+                exact_declared: false,
             }
         };
         let int_shape = make(Expr::Decimal(1024), crate::ast::Type::int());
@@ -1075,6 +1081,17 @@ mod tests {
             !pf.dump().contains("op reduce"),
             "unlicensed float sum must not plan a cooperative reduce: {}",
             pf.dump()
+        );
+        // 2026-11-08 (P1): `approx` licenses the float fold lane.
+        let mut licensed = float_shape.clone();
+        licensed.approx_declared = true;
+        licensed.idiom_lane = crate::analysis::accel::fold_idiom_lane(&licensed, &float_items);
+        assert!(licensed.idiom_lane);
+        let pl = KernelPlan::from_shape("sum", &licensed, &float_items, &consts, &GpuHardware::SM86);
+        assert!(
+            pl.dump().contains("op reduce"),
+            "approx-licensed float sum plans the cooperative reduce: {}",
+            pl.dump()
         );
     }
 
@@ -1115,6 +1132,8 @@ mod tests {
                 }),
                 deferred_normalize: None,
                 idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
             }
         };
         let undeclared = {

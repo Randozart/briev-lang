@@ -169,7 +169,7 @@ proof class) → exploiting pass → test**, e.g.:
 | `accel [i<N]` map body | disjoint counter | vectorisation, barrier elision | … |
 | GEMM affine 2-D flat form | no-alias SSBO, static M/N/K | tile/stage/mma synthesis + cost model | … |
 | single-reader intermediate | no aliasing | chain fusion / store fusion | … |
-| hand-written `acc = acc + buf[k]` foreach (§12 W3, 2026-11-06) | exact associativity (Int wrapping add; gate 3) | reduction synthesis (warp-slice, `SubgroupIAdd#`/`IMul#`/`SMin#`/`SMax#`) — detection `detect_idiom_fold`, lane `fold_idiom_lane`; why-not: `fold_idiom_outcome`; retires when the general lowering reaches warp-slice parity (W3 parity gate) | `fold_idiom_tests`, `from_shape_sum_idiom_plans_cooperative_reduce`, `test_sum_idiom_lowers_subgroup_iadd`, why-not unit test, PTL `g0_sum` gate (`g0_minmax` reported — blocked on the multi-node visibility issue, BUGS.md) |
+| hand-written `acc = acc ⊕ buf[k]` foreach (§12 W3/W3.1/P1) | exact associativity: Int wrapping add/mul and min/max (any order); **Float only via the `approx` declaration**, or `exact` to pin sequential (gate 3, 2026-11-08) | reduction synthesis (warp-slice, `SubgroupIAdd#`/`IMul#`/`SMin#`/`SMax#` int; `FAdd#`/`FMul#`/`FMin#`/`FMax#` float) — detection `detect_idiom_fold`, lane `fold_idiom_lane`; why-not: `fold_idiom_outcome` (names `approx`/`exact`); retires when the general lowering reaches warp-slice parity (W3 parity gate) | `fold_idiom_tests`, `from_shape_sum_idiom_plans_cooperative_reduce`, `test_sum_idiom_lowers_subgroup_iadd`, `test_float_fold_approx_lowers_fadd_and_exact_pins`, why-not unit test, PTL gates `g0_sum`/`g0_minmax`/`g0_fsum_approx`/`g0_fsum_exact` |
 | … | … | … | … |
 
 A construct with no row, or a row with no exploiting pass, or a pass with

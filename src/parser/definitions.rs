@@ -1431,6 +1431,8 @@ impl<'a> Parser<'a> {
         matches!(
             t,
             Token::Seq
+                | Token::Approx
+                | Token::Exact
                 | Token::Pack
                 | Token::Coll
                 | Token::Accel

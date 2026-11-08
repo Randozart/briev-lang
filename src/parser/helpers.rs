@@ -140,6 +140,11 @@ impl<'a> Parser<'a> {
                 Some(Token::Seq) if !self.peek_targets_struct_like() => {
                     self.record_annotation(&mut prefix, "seq")?;
                 }
+                // 2026-11-08 (P1): the numeric ambiguity pair (node/txn).
+                // `approx` licenses float reassociation; `exact` pins precise
+                // sequential evaluation; the two contradict (checked below).
+                Some(Token::Approx) => self.record_numeric_modifier(&mut prefix, "approx")?,
+                Some(Token::Exact) => self.record_numeric_modifier(&mut prefix, "exact")?,
                 Some(Token::Pack) if !self.peek_targets_struct_like() => {
                     self.record_annotation(&mut prefix, "pack")?;
                 }
@@ -328,6 +333,21 @@ impl<'a> Parser<'a> {
             value: None,
         });
         Ok(())
+    }
+
+    /// 2026-11-08 (P1): the numeric ambiguity pair — `approx` and `exact`
+    /// contradict; any order is rejected (the default is already precise, so
+    /// there is nothing for the pair to negotiate).
+    fn record_numeric_modifier(
+        &mut self,
+        prefix: &mut ModifierPrefix,
+        name: &str,
+    ) -> Result<(), SyntaxError> {
+        let other = if name == "approx" { "exact" } else { "approx" };
+        if prefix.annotations.iter().any(|a| a.name == other) {
+            return Err(self.dup_modifier(&format!("{name}/{other} (contradiction)")));
+        }
+        self.record_annotation(prefix, name)
     }
 
     /// `sync<group>` — parse the comma-separated domain list (SPEC §12.1).

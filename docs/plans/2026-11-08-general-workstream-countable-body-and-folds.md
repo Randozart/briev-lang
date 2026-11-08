@@ -49,14 +49,102 @@ caused by it.
 `cargo test --lib` green; no silent `_ => {}` for executable statements in
 the walker.
 
-## P1 — Float folds behind a numeric contract (queued)
+## P1 — Float folds: the `approx` / `exact` ambiguity-keyword pair
 
-Gate 3 currently hard-blocks float fold reassociation
-(`FoldIdiomBlock::FloatUnlicensed`). Design first: which declared surface
-licenses float reassociation (a fold `assoc` declaration, a numeric
-tolerance contract, or an ambiguity keyword per `keyword-taxonomy.md`).
-Then extend the outcome/synthesis (FAdd/FMul/FMin/FMax group ops) and
-consume the license per Rule 25. Needs its own plan addendum before code.
+**2026-11-08 operator decisions (recorded):** default precise; `exact`
+optional assertion (not mandatory classification); `exact` also pins FMA
+contraction off; node-level now, per-`foreach` later; `!>` stays out of the
+author surface (full `!>` removal deferred to its own plan); `exact` +
+*proven* exactness may use the parallel lane once P1b lands (until then
+`exact` is strictly sequential).
+
+### Semantics
+
+| Declaration | Meaning | Compiler behavior |
+|---|---|---|
+| *(none)* — **default** | result must follow source-order evaluation | precise: no reassociation, no contraction, no fast attrs |
+| `approx node` | result may deviate within FP rounding | float folds take the warp-slice lane; emits the internal fast attrs (lowering detail) |
+| `exact node` | the precise sequential result is required | no reassociation/contraction for this node; suppresses the float fold lane; strips inherited fast attrs |
+| both | contradiction | **parse error** (mirrors `seq seq`) |
+
+`approx`/`exact` are **ambiguity keywords** (keyword-taxonomy): declared at
+the site of confusion, resolved by author intent, disclosed in diagnostics,
+never speed keywords. `exact` is an assertion, not a requirement — the
+default is already precise; `exact` defends against future module policies /
+link flags and documents intent.
+
+### `!>` stance (operator: `!>` is being retired from language use)
+
+`approx`/`exact` are the **only documented author surface** for numeric
+semantics. The `associative` / `fp_math` `!>` keys stop being author
+vocabulary; `config/meta-vocab.dbv` + the registry remain the internal
+lowering table (mechanical, not documented for authors). The SPEC §8.8 note
+that says the reassociation right is "available via `!> associative` /
+`!> fp_math: fast`" is rewritten to name the keywords. No new `!>`
+dependence is introduced. Full `!>` retirement: separate plan.
+
+### Precondition gate: `-ffast-math` A/B (recorded in this plan)
+
+`src/compile.rs:2798,2883` passes `-ffast-math` unconditionally to clang. If
+that relaxes an `.ll` whose float ops carry no fast flags, the precise
+default is false and `exact` cannot be honored — the flag must be
+gated/removed. Protocol: a rounding-sensitive float program, same `.ll`,
+link with and without `-ffast-math`, compare result bits. Record the outcome
+here. **Result:** see "A/B record" below.
+
+### Implementation
+
+- Lexer/vocab/parser: `approx`, `exact` tokens; modifier arms; contradiction
+  check in `record_annotation`; keyword-accounting gate.
+- Analysis: `KernelShape.approx_declared` / `exact_declared`; outcome gains
+  `ApproxDeclared` (Ok) and `ExactPinned` (suppressed info, not an error);
+  why-not text names both fixes.
+- SPIR-V: float synthesis (`SubgroupFAdd#`/`FMul#`/`FMin#`/`FMax#`, Float
+  types); Int path unchanged.
+- LLVM: `approx` emits the internal fast attrs; `exact` strips them and
+  suppresses the lane; disclosure strings.
+- Tests: parser (pair, contradiction both orders, order-free), analysis
+  license/suppression, IR (FAdd group op under `approx`; no group op under
+  `exact`; attrs), PTL gates (`g0_fsum_approx`, `g0_fsum_exact`), A/B.
+- Docs: SPEC (new ambiguity-keyword category + numeric-semantics subsection +
+  §8.8 rewrite), keyword-taxonomy, optimization-hints/meta-vocab marking,
+  tutorial, highlighter, ledger rows.
+
+### P1 status (2026-11-08)
+
+**LANDED.** `approx`/`exact` parse as the numeric ambiguity pair (lexer/vocab/
+parser, contradiction check); the fold lane consumes `approx` (float) and
+`exact` suppresses it; Float synthesis emits `SubgroupFAdd#`/`FMul#`/
+`FMin#`/`FMax#` with Float accumulators; diagnostics disclose the license.
+Default precise. The pair does **not** emit LLVM function attributes — the
+registry's `reassoc`/`fast` mappings are instruction flags and are invalid in
+the function-attribute position (verified; BUGS.md 2026-11-08, also latent on
+the `!>` path). Tests: parser pair/contradiction, analysis license/suppression,
+IR (`GroupNonUniformFAdd` under approx; none under exact), PTL gates
+`g0_fsum_approx` (reassoc lane, bit-exact integer-valued data) and
+`g0_fsum_exact` (pinned sequential), both `BAD=0`.
+
+**Queued:** P1b exactness-proof tier (bounded-range/count proof licenses the
+float lane with no declaration — needs the range-fact surface design);
+per-`foreach` modifier granularity (AST work); `!>` numeric-key retirement
+(the docs now mark them internal; the global `!>` removal is its own plan).
+
+### A/B record (2026-11-08)
+
+Program: sequential f32 sum of `[2^24, 1.0 × 1023]` (reassociation would
+produce 16778240; source order stays 16777216). Same emitted `.ll`, linked
+with and without `-ffast-math`:
+
+```
+== no -ffast-math ==   16777216
+== -ffast-math ==      16777216
+```
+
+**Verdict:** the link flag does not add fast-math flags to the emitted IR —
+the precise default holds at the binary level. The flag stays (codegen
+policy only), and `exact` is enforceable. This also means future LLVM
+changes could make the flag load-bearing; the A/B is the standing check
+(rerun if the toolchain matrix changes).
 
 ## P2 — W5 idiom candidates (queued)
 

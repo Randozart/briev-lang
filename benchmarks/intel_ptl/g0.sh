@@ -50,7 +50,9 @@ run_gate() {
     local out
     out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
     local bad compiled
-    bad=$(printf '%s\n' "$out" | sed -n "s/.*$(echo "$bench" | tr '[:lower:]' '[:upper:]')_BAD=\([-0-9]*\).*/\1/p" | tail -1)
+    # Fixtures name their own label (e.g. G0_SUM_BAD, G0_MINMAX_BAD); accept
+    # the last must-be-zero counter line.
+    bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
     compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'")
     local t; t=$(printf '%s\n' "$out" | grep -o '# gpu_time: .*' | tail -1)
 
@@ -87,6 +89,9 @@ echo "== g0: sum idiom (§12 W3) =="
 run_gate g0_sum vulkan
 echo "== g0: min/max idioms (§12 W3.1) =="
 run_gate g0_minmax vulkan
+echo "== g0: float fold approx/exact (§12 P1) =="
+run_gate g0_fsum_approx vulkan
+run_gate g0_fsum_exact vulkan
 
 echo "== g0: opencl + levelzero (reported, not required) =="
 report_lane() {

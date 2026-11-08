@@ -12374,3 +12374,32 @@ survives). `g0_minmax` is a required PTL rung again and PASSES
 (`bad=0 MIN=ok MAX=ok`, 2026-11-08). Plan:
 `docs/plans/2026-11-08-general-workstream-countable-body-and-folds.md`.
 **Status:** FIXED 2026-11-08.
+
+## `!> associative` / `!> fp_math: fast` emit INVALID IR — OPEN 2026-11-08
+
+**Symptom:** a txn carrying `!> associative: true` or `!> fp_math: fast`
+makes the LLVM backend append `reassoc` / `fast` as BARE function attributes
+(`define void @txn_x(...) #16 alwaysinline reassoc fast {`). Clang rejects
+both tokens there:
+
+```
+error: expected '{' in function body        (verified with clang, 2026-11-08)
+```
+
+**Root cause:** `config/meta-vocab.dbv` maps those keys to INSTRUCTION
+fast-math flags (`reassoc`, `fast`), but `apply_llvm_function_metadata`
+(`src/backend/llvm/emit_toplevel.rs`, the `meta_attrs` block) treats every
+registry value as a function attribute. Instruction flags are not valid in
+the function-attribute position.
+
+**Scope:** latent — only fires when an author writes those `!>` keys. The
+2026-11-08 P1 work deliberately does NOT emit them: `approx`/`exact` are
+consumed by the frontend fold-lane decision and disclosed in diagnostics.
+The `!>` numeric keys are being retired from the author surface in favor of
+the keyword pair.
+
+**Fix direction:** when the `!>` retirement lands, either (a) map these keys
+to per-instruction fast flags via the dead `emit_fast_math_flags` helper, or
+(b) delete the registry rows with the retired vocabulary — whichever the
+retirement plan chooses — and add a regression that builds each hint.
+**Status:** OPEN (latent; not triggered by the keyword path).

@@ -122,7 +122,9 @@ The compiler reads the whole program — the reactive node DAG, the contracts, t
 
 **Strategy keywords** — `seq`, `vol`, `pack`, `async`, `sync<…>`, `atomic`, `union`, `trap`. They express intended behaviour that plain efficient codegen would otherwise choose differently: a *constraint*, never a selection. A strategy keyword may never produce faster code than the default for the same semantics — requiring a keyword to win is a failing default, and a keyword that is faster only because the default was deficient is a bug, not a feature.
 
-**Ambiguity keywords** — declared at the site of confusion, when a strategy must be chosen whose effectiveness is uncertain and up to intent (canonical class: memory ownership — `store` vs `free`). They say "this is what I meant" where the compiler has no determinate basis to rank the strategies. Because no ranking exists, no fastest default leaks; any speed difference is a consequence of the author's declared intent. *Staged:* the category and its resolution machinery are normative; individual ambiguity keywords are admitted through the process below.
+**Ambiguity keywords** — declared at the site of confusion, when a strategy must be chosen whose effectiveness is uncertain and up to intent (canonical class: memory ownership — `store` vs `free`). They say "this is what I meant" where the compiler has no determinate basis to rank the strategies. Because no ranking exists, no fastest default leaks; any speed difference is a consequence of the author's declared intent.
+
+The **numeric ambiguity pair** `approx` / `exact` (node/txn prefix modifiers) is the second canonical class. Floating-point addition and multiplication are not associative: reassociating a reduction changes its rounding versus source-order evaluation. The default is therefore **precise**: float operations evaluate in source order, and a fold is not reassociated. `approx` declares that the node's numeric result may deviate within floating-point rounding — the fold may be reassociated (a parallel reduction lane). `exact` asserts that the precise sequential result is required: the node's floats are neither reassociated nor contracted, and the parallel fold lane is suppressed. The two contradict and cannot appear together. `exact` is an assertion, not a requirement — the default is already precise. Both are disclosed in diagnostics; neither is a speed keyword, and neither weakens a contract. A float fold is licensed without either keyword only when the compiler *proves* reassociation exact (e.g. bounding facts keep every partial sum representable). *Staged:* the category and its resolution machinery are normative; individual ambiguity keywords are admitted through the process below.
 
 **Intrinsics and fundamentals** — `Sqrt#`, `Mmap#`, `SubgroupFAdd#`, … and the fundamental types of §2.1. They name hardware machinery, not behaviour or ambiguity. Author-facing access to one is legitimate only for a *required hardware semantics* or as a *retirement-gated derivation gap* — never as a speed lever.
 
@@ -1045,7 +1047,9 @@ exceptions:
 Restrictions: `async`/`sync<group>`/`accel` apply to a node or txn;
 `vol`/`mem`/`reg` apply to `let` only; `out` applies to a defn, node,
 txn, or let; `seq`/`pack`/`coll` before a struct/obj are layout flags the
-struct parser owns (`pack seq struct`, `seq pack struct`).
+struct parser owns (`pack seq struct`, `seq pack struct`). The numeric
+ambiguity pair `approx`/`exact` applies to a node or txn; naming both on
+one declaration is a contradiction error.
 
 - Applies to `defn` and `const`. State fields live in `%State` (one
   allocation) and have no per-field linker section — a `section` prefix on
@@ -1507,11 +1511,18 @@ like every other declared trust site.
 
 > **Lemma property lists are removed (2026-09-22).** SPEC previously allowed
 > `op Add: func(#Lh, #Rh) [commutative];`. No parser accepted the grammar, no
-> pass consumed the granted rights, and the float reassociation right was
-> already available program-wide via `-ffast-math` and the `!> associative` /
-> `!> fp_math: fast` function metadata. A user op's handler has a Briev body —
+> pass consumed the granted rights. A user op's handler has a Briev body —
 > commutativity can be *proven* rather than trusted; the axiom facility stays
 > for the FFI-boundary cases where no body exists to discharge.
+>
+> **Numeric reassociation (2026-11-08).** The float-fold reassociation right
+> is declared at the site by the `approx` ambiguity keyword (§2.4); `exact`
+> asserts precise source-order evaluation. The older `!> associative` /
+> `!> fp_math` metadata keys are not the author surface and are being retired
+> from language use (see `docs/architecture/optimization-hints.md`). A D/B
+> A/B (2026-11-08) confirmed the link-time `-ffast-math` flag does not relax
+> emitted IR that lacks instruction fast-math flags, so the precise default
+> holds without either declaration.
 
 Inherent implementations may appear only in the target declaration's module. Explicit trait implementations obey ownership coherence: either the trait or target must be locally owned.
 

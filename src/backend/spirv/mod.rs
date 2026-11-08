@@ -198,6 +198,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         }
     }
 
@@ -460,6 +462,182 @@ mod tests {
                 ops2
             );
         }
+    }
+
+    /// 2026-11-08 (P1): a float fold lowers to the F-family subgroup reduce
+    /// under the node's `approx` declaration, and NOTHING when `exact` pins
+    /// the sequential order.
+    #[test]
+    fn test_float_fold_approx_lowers_fadd_and_exact_pins() {
+        let float_vec = |name: &str, n: usize| {
+            Type::Vector(Box::new(Type::float()), vec![Dimension::Anonymous(n)])
+        };
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "accel".into(),
+            crate::ast::PropertyValue::String("try_all".into()),
+        );
+        let program = vec![
+            TopLevel::ModuleMetadata(meta),
+            TopLevel::StateDecl(StateDecl {
+                name: "i".into(),
+                ty: Type::int(),
+                span: None,
+            }),
+            TopLevel::StateDecl(StateDecl {
+                name: "a".into(),
+                ty: float_vec("a", 4096),
+                span: None,
+            }),
+            TopLevel::StateDecl(StateDecl {
+                name: "y".into(),
+                ty: float_vec("y", 64),
+                span: None,
+            }),
+            TopLevel::Transaction(Transaction {
+                variadic_param: None,
+                name: "fold".into(),
+                is_reactive: true,
+                is_async: false,
+                type_params: vec![],
+                parameters: vec![],
+                output_type: None,
+                outputs: vec![],
+                contract: Contract {
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("i".into())),
+                        Box::new(Expr::Decimal(64)),
+                    ),
+                    post_condition: Expr::Bool(true),
+                    watchdog: None,
+                    explicit: false,
+                    span: None,
+                    post_authority: false,
+                },
+                body: vec![
+                    Statement::Let {
+                        name: "acc".into(),
+                        names: vec![],
+                        ty: Some(Type::float()),
+                        expr: Some(Expr::Index(
+                            Box::new(Expr::Identifier("a".into())),
+                            Box::new(Expr::BinaryOp(
+                                BinaryOpKind::Mul,
+                                Box::new(Expr::Identifier("i".into())),
+                                Box::new(Expr::Decimal(1024)),
+                            )),
+                        )),
+                        modifiers: vec![],
+                    },
+                    Statement::Foreach {
+                        item: "k".into(),
+                        list: Box::new(Expr::Range {
+                            start: Box::new(Expr::Decimal(1)),
+                            end: Box::new(Expr::Decimal(1024)),
+                            inclusive: false,
+                        }),
+                        body: vec![Statement::Assign(
+                            Expr::Identifier("acc".into()),
+                            Expr::BinaryOp(
+                                BinaryOpKind::Add,
+                                Box::new(Expr::Identifier("acc".into())),
+                                Box::new(Expr::Index(
+                                    Box::new(Expr::Identifier("a".into())),
+                                    Box::new(Expr::BinaryOp(
+                                        BinaryOpKind::Add,
+                                        Box::new(Expr::BinaryOp(
+                                            BinaryOpKind::Mul,
+                                            Box::new(Expr::Identifier("i".into())),
+                                            Box::new(Expr::Decimal(1024)),
+                                        )),
+                                        Box::new(Expr::Identifier("k".into())),
+                                    )),
+                                )),
+                            ),
+                        )],
+                    },
+                    Statement::Assign(
+                        Expr::Index(
+                            Box::new(Expr::Identifier("y".into())),
+                            Box::new(Expr::Identifier("i".into())),
+                        ),
+                        Expr::Identifier("acc".into()),
+                    ),
+                    Statement::Assign(
+                        Expr::Identifier("i".into()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(Expr::Identifier("i".into())),
+                            Box::new(Expr::Decimal(1)),
+                        ),
+                    ),
+                ],
+                metadata: std::collections::HashMap::new(),
+                derivation: None,
+                modifiers: vec![],
+                span: None,
+                doc: None,
+            }),
+        ];
+        let analysis = analyze(&program);
+        let base = eligible_shape(&analysis, "fold").clone();
+        assert!(
+            matches!(
+                base.reduction.as_ref().map(|r| &r.kind),
+                Some(crate::analysis::accel::ReductionKind::Sum)
+            ),
+            "float fold detector: {:?}",
+            base.reduction
+        );
+
+        // approx: lane fires, F-family group reduce emitted.
+        let mut approx = base.clone();
+        approx.approx_declared = true;
+        approx.idiom_lane = crate::analysis::accel::fold_idiom_lane(&approx, &program);
+        assert!(approx.idiom_lane, "approx float fold must license");
+        let mut b = SpirvBuilder::new();
+        emit_kernel(&mut b, "main", &approx, &program, true,
+                    &crate::backend::spirv::kernel::KernelSurface::default())
+            .expect("float approx fold emit");
+        let m = b.module_ref();
+        let mut ops: Vec<rspirv::spirv::Op> = Vec::new();
+        for f in &m.functions {
+            for blk in &f.blocks {
+                for i in &blk.instructions { ops.push(i.class.opcode); }
+            }
+        }
+        assert!(
+            ops.contains(&rspirv::spirv::Op::GroupNonUniformFAdd),
+            "approx float fold must lower to GroupNonUniformFAdd; ops={:?}",
+            ops
+        );
+
+        // exact: lane must not fire, and the emitted general body has no
+        // subgroup reduce.
+        let mut exact = base.clone();
+        exact.exact_declared = true;
+        exact.idiom_lane = crate::analysis::accel::fold_idiom_lane(&exact, &program);
+        assert!(!exact.idiom_lane, "exact must pin the sequential float fold");
+        let mut b2 = SpirvBuilder::new();
+        emit_kernel(&mut b2, "main", &exact, &program, false,
+                    &crate::backend::spirv::kernel::KernelSurface::default())
+            .expect("float exact fold emit");
+        let m2 = b2.module_ref();
+        let mut ops2: Vec<rspirv::spirv::Op> = Vec::new();
+        for f in &m2.functions {
+            for blk in &f.blocks {
+                for i in &blk.instructions { ops2.push(i.class.opcode); }
+            }
+        }
+        assert!(
+            !ops2.iter().any(|o| matches!(
+                o,
+                rspirv::spirv::Op::GroupNonUniformFAdd | rspirv::spirv::Op::GroupNonUniformSMax
+            )),
+            "exact float fold must not emit a subgroup reduce; ops={:?}",
+            ops2
+        );
     }
 
     /// §2.1/§2.2: the lowered kernel contains real work-item compute.
@@ -933,6 +1111,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
 
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
@@ -1082,6 +1262,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
 
         let mut builder = SpirvBuilder::new();
@@ -1711,6 +1893,8 @@ mod tests {
                 reduction: None,
                 deferred_normalize: None,
                 idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "axpy", &shape, program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -1819,6 +2003,8 @@ mod tests {
             reduction: None,
             deferred_normalize: None,
             idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
         };
         let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
         emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();
@@ -2204,6 +2390,8 @@ async node fill [i < N][i == N] {
                 reduction: None,
                 deferred_normalize: None,
                 idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
             };
             let mut builder = SpirvBuilder::new().with_universe(&test_universe(), 64);
             emit_kernel(&mut builder, "main", &shape, &program, false, &crate::backend::spirv::kernel::KernelSurface::default()).unwrap();

@@ -3509,6 +3509,8 @@ fn accel_test_entry(buffer: &str, write: bool) -> crate::analysis::accel::AccelE
         reduction: None,
         deferred_normalize: None,
         idiom_lane: false,
+            approx_declared: false,
+            exact_declared: false,
     };
     AccelEntry {
         mode: AccelMode::TryKeyword,
