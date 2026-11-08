@@ -295,7 +295,9 @@ impl Builder<'_> {
         if self.value_allocates(expr) { self.alloc_bindings.insert(name.into()); }
         let value = self.expression(expr);
         if names.len() <= 1 { self.graph.copy(value, target); return; }
-        for name in names { let target = self.local(name); self.load(value, target); }
+        // 2026-11-06 tuple provenance (#75): index-labelled fields, not a raw
+        // memory load, so unselected tuple contents do not publish.
+        self.destructure_names(value, names);
     }
 
     fn statement_assign(&mut self, target: &Expr, value_expr: &Expr) {
