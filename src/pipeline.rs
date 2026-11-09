@@ -1281,17 +1281,17 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // 2026-08-01 (C4): watchdog contract checks also run on the `check` path
     // (parse_and_check) — `brievc check` must catch trigger/handler violations
     // and missing on-fire handlers the same way `brievc build` does.
-    let watchdog_errors = crate::analysis::watchdog::analyze(&items);
+    let watchdog_errors = crate::analysis::watchdog::analyze_dual(&items);
     if !watchdog_errors.is_empty() {
         let msgs: Vec<String> = watchdog_errors.iter().map(|e| e.to_string()).collect();
         return Err(format!("watchdog errors:\n{}", msgs.join("\n")));
     }
-    crate::analysis::watchdog::check_on_fire_handlers(&items)
+    crate::analysis::watchdog::check_on_fire_handlers_dual(&items)
         .map_err(|e| format!("watchdog error:\n{}", e))?;
     // 2026-08-04: term termination diagnostics — `check` must catch
     // unreachable code after a terminating `term <value>`/`term! <value>`
     // exactly like `build` does, or the two paths silently diverge.
-    let (term_errors, term_warnings) = crate::analysis::termination::analyze(&items);
+    let (term_errors, term_warnings) = crate::analysis::termination::analyze_dual(&items);
     for w in &term_warnings {
         eprintln!("warning: {w}");
     }

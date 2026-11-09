@@ -1,0 +1,3 @@
+// A declared let type must match the initializer.
+// EXPECT-ERROR: type mismatch: expected Int for let 'x', found String
+defn f() -> Int { let x: Int = "s"; term x; };

@@ -560,6 +560,16 @@ fn ret_zero_literal(ret_ty: &str) -> &'static str {
 }
 
 /// Terminal helper: Rollback (deferred cleanup + ret-ty return).
+/// Defer registration: queue the HIR cleanup body; flush runs it LIFO at every
+/// exit (term/rollback/fallthrough). No code at the registration point.
+fn emit_defer_statement(
+    backend: &mut LlvmBackend,
+    children: &[crate::hir::stmt::HirStmt],
+) -> Option<TypedRegister> {
+    backend.fun.defer_bodies.push(children.to_vec());
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+}
+
 fn emit_rollback_statement(backend: &mut LlvmBackend, out: &mut String, indent: &str) -> Option<TypedRegister> {
     // 2026-08-09 (Phase 10): deferred cleanup runs on rollback too.
     backend.flush_defer_cleanup(out, indent);
@@ -692,6 +702,7 @@ fn emit_terminal_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &H
         HirStmtKind::KeepHint(_) => Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() }),
         HirStmtKind::FreeHint(name) => emit_free_hint_statement(backend, out, name, indent),
         HirStmtKind::SyncBlock(children) | HirStmtKind::Mutex(children) => emit_serial_statement(backend, out, children, indent),
+        HirStmtKind::Defer(children) => emit_defer_statement(backend, children),
         HirStmtKind::EndProgram(val) => emit_end_program_statement(backend, out, val, indent),
         _ => None,
     }

@@ -623,7 +623,13 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // firing's defer stack; flush_defer_cleanup emits it LIFO before
             // every exit (term/rollback/fallthrough ret). No code is emitted
             // at the registration point — the cleanup runs later.
-            backend.fun.defer_bodies.push(body.clone());
+            // 2026-11-09 (H5 seam refactor): one unified HIR stack; the AST
+            // path lowers the body at registration so LIFO order across mixed
+            // HIR/AST emission is preserved.
+            backend
+                .fun
+                .defer_bodies
+                .push(crate::hir::lower_body_statements(body));
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         Statement::SyncBlock(stmts) => {

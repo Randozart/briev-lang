@@ -1,0 +1,3 @@
+// Unknown names are rejected at typecheck.
+// EXPECT-ERROR: undefined variable 'missing'
+defn f() -> Int { term missing; };

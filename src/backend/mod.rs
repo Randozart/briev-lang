@@ -244,7 +244,7 @@ pub fn analyze_program(
 ) -> AnalysisResults {
     // 2026-11-05 (H4.1): one typed-HIR lowering per analysis run. The HIR
     // consumer flip below and every later family reads this tree.
-    let hir = build_hir(items);
+    let hir = build_hir(items, type_universe);
     let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
         items, &None, &vec![],
     );
@@ -601,14 +601,49 @@ pub fn analyze_program(
 /// analysis run. `BRIEV_HIR_EMIT=1` additionally verifies the id/export
 /// invariants so a future HIR-driven family cannot consume a malformed tree;
 /// the flag never changes emitted IR yet.
-fn build_hir(items: &[TopLevel]) -> crate::hir::HirProgram {
-    let program = crate::hir::lower_program(items);
-    if hir_emit_enabled() {
-        if let Err(err) = crate::hir::verify(&program) {
-            eprintln!("HIR_EMIT verify: {err}");
-        }
+fn build_hir(
+    items: &[TopLevel],
+    type_universe: Option<&crate::type_universe::TypeUniverse>,
+) -> crate::hir::HirProgram {
+    let mut program = crate::hir::lower_program(items);
+    let graph = crate::casting::graph::CastingGraph::new();
+    // 2026-11-09 (A1, cast-via scoping): best-effort HIR expression typing +
+    // explicit cast-path resolution. Advisory: codegen still derives register
+    // types at emission; an untyped node stays `None`.
+    if let Some(universe) = type_universe {
+        crate::hir::typing::annotate_types(&mut program, universe, &graph);
+    }
+    // 2026-11-09 (verification program P1): verify always in debug builds,
+    // and in release when the HIR-emit flag asks for the extra check. A
+    // violation is a compiler bug, never a program error.
+    if cfg!(debug_assertions) || hir_emit_enabled() {
+        verify_or_report(&program, type_universe, &graph);
     }
     program
+}
+
+fn verify_or_report(
+    program: &crate::hir::HirProgram,
+    type_universe: Option<&crate::type_universe::TypeUniverse>,
+    graph: &crate::casting::graph::CastingGraph,
+) {
+    let mut failures: Vec<String> = Vec::new();
+    if let Err(err) = crate::hir::verify(program) {
+        failures.push(err);
+    }
+    if let Some(universe) = type_universe {
+        if let Err(err) = crate::hir::verify_typed(program, universe, graph) {
+            failures.push(err);
+        }
+    }
+    if failures.is_empty() {
+        return;
+    }
+    let message = format!("HIR verification failed: {}", failures.join("; "));
+    if cfg!(debug_assertions) {
+        panic!("{message}");
+    }
+    eprintln!("{message}");
 }
 
 /// 2026-08-06 (accel plan): merge `TopLevel::ModuleMetadata` nodes into one

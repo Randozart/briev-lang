@@ -23,7 +23,7 @@ fn analysis_carries_hir() {
                  term;\n\
                };";
     let items = parse(src);
-    let analysis = analyze_program(&items, false, 4, None);
+    let analysis = analyze_program(&items, false, 4, None, None);
     let direct = lower_program(&items);
     assert_eq!(analysis.hir, direct, "one lowering, same program");
     assert!(!analysis.hir.callables.is_empty());

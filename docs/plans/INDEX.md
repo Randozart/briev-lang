@@ -13,6 +13,26 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**H5 completion next leg (2026-11-09, ACTIVE):**
+`docs/plans/2026-11-09-h5-completion-next-leg.md` — Leg B pipeline-HIR
+flips DONE (termination + watchdog under the flag with AST debug oracles);
+P5 pass-level snapshots DONE (`hir::render` + tests/snapshots/hir) → next:
+all-three seam refactors (Defer, ArrowAssign, Lambda/Spawn) → A2 typing +
+`emit_match` bodies → H5 ports
+(reclamation parity first, then electronics/accel/gpu_schedule) → default
+flip with owner sign-off. Nightly verification workflow lands with P3.
+
+**Verification program (2026-11-09, umbrella):**
+`docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
+verification hardening (typed + structure invariants, always-on in debug,
+re-verify after specialize), P2 compile-fail runner+corpus (comment
+directives, required substrings), P3 corpus-wide differential (`-O0`/`-O2`/
+`-O3`, interpreter, wasm; quick per-commit + nightly full), P4 structured
+program fuzzing (typed generator, interpreter vs compiled), P5 pass-level
+HIR/LLVM snapshots, P6 cvise/creduce workflow, P7 curated semantic corpus.
+Rides on the H5/H4 gates and A1 typing; existing coverage inventory and gaps
+are in the plan.
+
 **Live lanes (2026-11-08):**
 - **Language surfaces — `attr` + chaining (LANDED 2026-11-08: `68e4ba0a`, `a55ac25a`, `d70ebcff`, `64706531`, `ab0f6164`):** `docs/plans/2026-11-08-language-surfaces-attr-and-chaining.md` — `!>` hard-broken for owner-optional `attr` (owner registry validates known schemas), accel policy is `--accel`, chaining binds with `into` + `it` and has no positional `>>` back-refs. Bare-attr claim warnings land with the same plan (registered vocab keys only).
 - **Idiom recognition doctrine:** `docs/plans/2026-11-06-idiom-recognition-doctrine.md` — §12 (three categories, five gates, silicon carve-out), W1–W5; ledger gate `tests/idiom_ledger_gate.rs`.

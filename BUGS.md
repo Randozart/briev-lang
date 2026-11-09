@@ -20,6 +20,164 @@ non-GEMM gates.
 hand-written OpenCL C reference; check byte-offset state addressing bounds
 and NEO's handling of the serial loop (watchdog/recovery). Track under W2/W3
 of the lane-ceilings plan.
+## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
+
+**Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
+incoming object parameter left the storage unreclaimed when the object died with
+the caller's frame. Minimal repro:
+
+```briev
+obj Holder { addr: Ptr<Bit<8>>; };
+defn make() -> Ptr<Bit<8>> { let p: Ptr<Bit<8>> = Malloc#(16); Store#(p,1,8); term p; };
+defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    let ok: Bool = publish(h);
+
+## Publish into an incoming parameter leaks the storage — OPEN 2026-11-09
+
+**Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
+incoming object parameter leaves the storage unreclaimed when the owning object
+dies. Minimal repro (`tests/fixtures/memory/publish_into_parameter_leak.bv`):
+
+```briev
+obj Holder { addr: Ptr<Bit<8>>; };
+defn make() -> Ptr<Bit<8>> { let p: Ptr<Bit<8>> = Malloc#(16); Store#(p, 1, 8); term p; };
+defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    publish(h);
+    term Load#(h.addr, 8);
+};
+```
+
+Valgrind reported **16 bytes in 1 block definitely lost** (allocated in `make`,
+reached through `publish`). The control that assigned directly in the caller was
+clean, isolating the defect to publishing through a callee's incoming parameter.
+
+**Cause:** `record_incoming_store` marked the publishing callable a *barrier*,
+and a barrier suspends the caller's region so its allocations fall back to plain
+`malloc` and are never freed. The barrier was added 2026-11-08 to stop an
+INHERIT lowering from reclaiming published storage at the caller's return, which
+had caused a WebSocket use-after-free (`ws_accept_key`) when the receiver
+outlived the caller. The over-approximation disabled reclamation unconditionally,
+converting that UAF into a leak.
+
+**Fix:** the publisher barrier is now conditional on the receiver outliving the
+frame. A publisher barriered solely for publishing into an incoming parameter is
+dropped when **every call site passes a receiver argument that is a bare local of
+the caller and does not escape it** (not global-reachable, not returned). Then the
+caller's region legitimately owns the storage and reclaims it at frame exit.
+Escape-derived barriers are never overridden. Files:
+`src/analysis/reclamation.rs` (`plan`, `publish_safety`, `site_is_safe`,
+`analyze`), `src/analysis/reclamation/walk.rs` (`record_incoming_store`,
+`record_publish_call`). The projection/parameter shapes that motivated the barrier
+stay barriers (unit tests `publisher_with_parameter_receiver_stays_a_barrier`,
+`projection_argument_propagates_incoming_store_barrier`).
+
+**Verification:** `tests/publish_reclamation.rs` (Valgrind-clean),
+`reclamation_runtime::native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe`
+(was RED under Valgrind, now green), 39 reclamation unit tests green.
+
+**Residual (separate, OPEN):** when the *producer* (`make`) is **recursive**, the
+same shape still leaks. The publisher barrier is correctly dropped (the emitted
+`publish` is INHERIT), so this is a distinct reclamation-of-recursive-producer
+defect, not the barrier. Logged below.
+
+## Recursive producer allocation is not reclaimed into the caller region — OPEN 2026-11-09
+
+Distinct from the publish-barrier leak above. Repro variant where `make` recurses:
+
+```briev
+defn make(depth: Int) -> Ptr<Bit<8>> { when depth == 0 { term Malloc#(16); }; term make(depth-1); };
+defn publish(h: Holder) -> Bool { h.addr = make(1); term true; };
+```
+
+`publish` is now INHERIT (not barriered) and `exercise` is a Region, so the
+`make` allocation should adopt into `exercise`'s region and be freed at its
+leave; Valgrind instead reports it definitely lost. The non-recursive variant is
+clean. Root cause is in how a recursive producer's allocation is (not) adopted
+by the active region — needs a dedicated investigation.
+
+## Reclamation set unions dominate large application compilation — FIX IMPLEMENTED 2026-11-09
+
+**Symptom:** the debug compiler at `114b2a54` spent 47m16s CPU compiling the
+external recommender server without reaching emission before cancellation.
+RSS was approximately 475 MB. Profiling and a debugger backtrace locate repeated
+element-wise BTreeSet insertion in `Graph::field_contents` during fixed-point
+propagation, not LLVM, database access or Docker.
+
+**Correction:** represent points-to/raw/named-memory node sets as
+ordered sparse 64-bit words and union words exactly. Preserve every constraint,
+constant fact, conservative escape and convergence condition. The isolated
+union experiment confirms equal results and reduced work. The release compiler
+now builds the native server in 197.21 seconds versus a 600-second timeout at
+the base. Debug compilation still exceeds ten minutes. All 3,556 library tests,
+two set-algebra Kani proofs and 44 runtime benchmark summary rows pass; 53
+collected LLVM files are byte-identical. Full gates and timing limits are in
+`docs/plans/2026-11-09-reclamation-solver-cost.md`.
+
+Valgrind: **16 bytes in 1 block definitely lost**, allocated in `make`, reached
+through `publish` → exit 91. The control that assigns the same allocation
+*directly in the caller* (`h.addr = Malloc#(16)`) is Valgrind-clean — so the
+defect is specific to publishing through a callee's incoming parameter.
+
+**Root cause:** `src/analysis/reclamation/walk.rs:354` (`record_incoming_store`)
+treats a store into a projection of an *incoming receiver* as publishing and
+installs a **barrier that disables region reclamation**; `propagate_incoming_store`
+(`:778`) extends that to callers. The comment at `:786` ("Over-approximating here
+is safe: a barrier only disables region reclamation") is the defect: disabling
+reclamation *is* a leak. This barrier was added 2026-11-08 to stop reclamation
+from freeing storage the caller still reads (a use-after-free); it over-corrected
+a UAF into a leak. Fix = reclaim storage published into an incoming parameter at
+the object's death (or return ownership to the caller), not disable reclamation.
+
+**Already caught by a standing guard:** `tests/reclamation_runtime.rs::native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe` is **RED** on this
+tree under Valgrind; CI stays green only because the Default-gates job does not
+install Valgrind. Found independently by the memory campaign (`MEM_FAMILY=1`,
+12/12 cases across 3 seeds). Full report:
+`docs/reports/2026-11-09-memory-defect-campaign.md`.
+
+## Short-circuit division executes on the excluded edge — OPEN 2026-11-09
+
+Deterministic transition family 5 shrank `e != 0 && s / e > 0` to `s=0,e=0`.
+Interpreter returns 0; native O0 and O3 both raise SIGFPE. Emitted `sdiv` is
+before the branch. `src/backend/llvm/logical.rs:81,159–175` treats recursive
+binary arithmetic as side-effect-free and therefore safe to evaluate eagerly;
+purity does not prove speculation cannot trap. Fix needs general speculation
+safety, not removal of the source guard. Reproducer:
+`tests/fixtures/simulation/short_circuit_division.json`.
+
+## List rebinding mutates the original only in native execution — OPEN 2026-11-09
+
+Family 9: `let values: List<Int> = [s,e]; let alias: List<Int> = values;
+alias[0] = e; term values[0] + alias[0];` returns 1 in the interpreter and 2
+in native O0/O3 at `s=0,e=1`. Full typed-reference replay confirms the mismatch.
+Interpreter clones product bindings and updates only the mutated binding
+(`src/interpreter/eval.rs:52,2569`); native shares list storage. This is an
+observable value/alias semantics divergence; under the interpreter-reference
+rule the backend must preserve the independent values. Reproducer:
+`tests/fixtures/simulation/list_alias_mutation.json`.
+
+## Interpreter cannot project unnamed tuple fields — OPEN 2026-11-09
+
+Family 7: `(s+e,s-e).1` through a local tuple binding raises
+`expected a field named '1', got product`; native O0/O3 correctly returns 0
+at `s=e=0`. `src/interpreter/eval.rs:1056` only searches product field names,
+never positional tuple indices. Reproducer:
+`tests/fixtures/simulation/tuple_projection.json`.
+
+## Interpreter ignores tuple destructuring names — OPEN 2026-11-09
+
+Family 11: `let (left,right) = pair; term left-right;` raises
+`undefined variable 'right'`; native O0/O3 correctly evaluates it.
+`src/interpreter/eval.rs:2556` binds only `Statement::Let.name`, ignoring its
+`names` vector. Full typed-reference replay confirms both tuple failures.
+Reproducer: `tests/fixtures/simulation/tuple_destructuring.json`.
+
+All four findings: `docs/reports/2026-11-09-deterministic-transition-campaign.md`.
+Synthetic corruption was disabled; this investigation records defects without
+changing compiler semantics or weakening contracts.
 
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 

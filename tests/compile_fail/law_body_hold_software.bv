@@ -1,0 +1,4 @@
+// `hold` is a static obligation; a reactive body uses `when`.
+// EXPECT-ERROR: `hold` declares a static law
+let x: Int = 0;
+defn f() -> Int { hold x == 0 { term 1; }; term 0; };

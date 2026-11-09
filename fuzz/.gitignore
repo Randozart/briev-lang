@@ -1,0 +1,6 @@
+/target/
+/corpus/
+/artifacts/
+/coverage/
+/logs/
+!Cargo.lock

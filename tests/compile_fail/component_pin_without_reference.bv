@@ -1,0 +1,3 @@
+// A component with pins needs a reference designator prefix.
+// EXPECT-ERROR: no reference clause
+type Led { pin a; pin k; };

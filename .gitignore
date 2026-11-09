@@ -23,6 +23,9 @@ tests/*
 !tests/*.rs
 !tests/tier1
 !tests/fixtures
+!tests/compile_fail
+!tests/directives
+!tests/snapshots
 !tests/*.mjs
 # Generated .ll snapshots inside the fixture dirs stay ignored.
 tests/tier1/*.ll
@@ -38,6 +41,7 @@ test-project/
 /target/
 **/*.rs.bk
 Cargo.lock
+!/fuzz/Cargo.lock
 
 # ============================================
 # FFI NATIVE LIBRARY (generated build artifacts)

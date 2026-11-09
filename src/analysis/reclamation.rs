@@ -13,8 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
 mod socket_effects;
+mod node_set;
+use node_set::NodeSet;
 #[cfg(test)]
 mod structured_tests;
+#[cfg(test)]
+mod solver_tests;
 
 type Node = usize;
 
@@ -27,6 +31,14 @@ pub struct ReclamationPlan {
     pub regions: BTreeSet<String>,
     pub barriers: BTreeSet<String>,
     pub reasons: BTreeMap<String, String>,
+    /// 2026-11-09: barriers derived from escape/unsupported, kept separate so a
+    /// proven-safe publisher can be reclassified without weakening them.
+    pub escape_barriers: BTreeSet<String>,
+    /// 2026-11-09: publishers barriered solely for publish-into-incoming.
+    pub publish_only: BTreeSet<String>,
+    /// 2026-11-09: per publisher, whether each call site's receiver argument is
+    /// a non-escaping local of the caller (safe to inherit).
+    pub publish_sites: BTreeMap<String, Vec<bool>>,
 }
 
 #[derive(Clone, Default)]
@@ -62,11 +74,11 @@ struct Graph {
     entry_nodes: BTreeSet<String>,
     user_operators: BTreeSet<String>,
     methods: BTreeMap<(String, String), Option<String>>,
-    points: Vec<BTreeSet<Node>>,
+    points: Vec<NodeSet>,
     constants: Vec<BTreeSet<i64>>,
     inexact_constants: BTreeSet<Node>,
-    memory: Vec<BTreeSet<Node>>,
-    named_memory: BTreeMap<(Node, String), BTreeSet<Node>>,
+    memory: Vec<NodeSet>,
+    named_memory: BTreeMap<(Node, String), NodeSet>,
     constraints: Vec<Constraint>,
     allocation_owner: BTreeMap<Node, String>,
     callables: BTreeMap<String, Callable>,
@@ -82,6 +94,12 @@ struct Graph {
     /// caller region) rather than an inert INHERIT whose allocations the
     /// caller's region would reclaim.
     incoming_store_owners: BTreeSet<String>,
+    /// 2026-11-09: publisher -> receiver parameter name (the incoming param the
+    /// store targets). Lets a call site find the argument bound to the receiver.
+    publish_receiver_param: BTreeMap<String, String>,
+    /// 2026-11-09: publisher -> (caller owner, receiver argument local node).
+    /// `None` records a receiver argument that is not a bare caller local.
+    publish_call_args: BTreeMap<String, Vec<(String, Option<Node>)>>,
 }
 
 impl Default for Graph {
@@ -89,7 +107,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new() }
     }
 }
 
@@ -101,9 +119,9 @@ impl Graph {
 
     fn node(&mut self) -> Node {
         let node = self.points.len();
-        self.points.push(BTreeSet::new());
+        self.points.push(NodeSet::new());
         self.constants.push(BTreeSet::new());
-        self.memory.push(BTreeSet::new());
+        self.memory.push(NodeSet::new());
         node
     }
 
@@ -142,7 +160,7 @@ impl Graph {
         for constraint in self.constraints.clone() {
             match constraint {
                 Constraint::Syscall(number, args) => { self.syscall(number, &args); }
-                Constraint::EscapeContents(value) => { let refs = self.contents(value); self.escaped.extend(refs); }
+                Constraint::EscapeContents(value) => { let refs = self.contents(value); self.escaped.extend(refs.iter()); }
                 _ => {}
             }
         }
@@ -161,52 +179,54 @@ impl Graph {
                 let refs = self.points[source].clone();
                 let constants = self.constants[source].clone();
                 let inexact = self.inexact_constants.contains(&source) && self.inexact_constants.insert(target);
-                extend(&mut self.points[target], refs) | extend(&mut self.constants[target], constants) | inexact
+                self.points[target].union_with(&refs) | extend(&mut self.constants[target], constants) | inexact
             }
             Constraint::Load(base, result) => {
                 let refs = self.contents(base);
-                extend(&mut self.points[result], refs) | self.inexact_constants.insert(result)
+                self.points[result].union_with(&refs) | self.inexact_constants.insert(result)
             }
             Constraint::Store(base, value) => self.store(base, self.points[value].clone()),
             Constraint::CopyMemory(source, target) => self.store(target, self.contents(source)),
             Constraint::Syscall(..) => false,
             Constraint::EscapeContents(_) => false,
             Constraint::FieldLoad(base, field, target) => {
-                let refs = self.field_contents(base, &field); extend(&mut self.points[target], refs) | self.inexact_constants.insert(target)
+                let refs = self.field_contents(base, &field); self.points[target].union_with(&refs) | self.inexact_constants.insert(target)
             }
             Constraint::FieldStore(base, field, value) => {
                 let mut changed = false;
-                for root in self.points[base].clone() {
-                    changed |= extend(self.named_memory.entry((root, field.clone())).or_default(), self.points[value].iter().copied());
+                for root in self.points[base].clone().iter() {
+                    changed |= self.named_memory.entry((root, field.clone())).or_default().union_with(&self.points[value]);
                 }
                 changed
             }
         }
     }
 
-    fn contents(&self, base: Node) -> BTreeSet<Node> {
-        self.points[base].iter().flat_map(|root| self.root_contents(*root)).collect()
-    }
-
-    fn root_contents(&self, root: Node) -> BTreeSet<Node> {
-        let mut refs = self.memory[root].clone();
-        for ((owner, _), values) in &self.named_memory { if *owner == root { refs.extend(values); } }
+    fn contents(&self, base: Node) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for root in self.points[base].iter() { refs.union_with(&self.root_contents(root)); }
         refs
     }
 
-    fn field_contents(&self, base: Node, field: &str) -> BTreeSet<Node> {
-        let mut refs = BTreeSet::new();
-        for root in &self.points[base] {
-            refs.extend(&self.memory[*root]);
-            if let Some(values) = self.named_memory.get(&(*root, field.into())) { refs.extend(values); }
+    fn root_contents(&self, root: Node) -> NodeSet {
+        let mut refs = self.memory[root].clone();
+        for ((owner, _), values) in &self.named_memory { if *owner == root { refs.union_with(values); } }
+        refs
+    }
+
+    fn field_contents(&self, base: Node, field: &str) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for root in self.points[base].iter() {
+            refs.union_with(&self.memory[root]);
+            if let Some(values) = self.named_memory.get(&(root, field.into())) { refs.union_with(values); }
         }
         refs
     }
 
-    fn store(&mut self, base: Node, refs: BTreeSet<Node>) -> bool {
+    fn store(&mut self, base: Node, refs: NodeSet) -> bool {
         let mut changed = false;
-        for root in self.points[base].clone() {
-            changed |= extend(&mut self.memory[root], refs.iter().copied());
+        for root in self.points[base].clone().iter() {
+            changed |= self.memory[root].union_with(&refs);
         }
         changed
     }
@@ -218,34 +238,61 @@ impl Graph {
         let borrowed = !self.inexact_constants.contains(&number) && !numbers.is_empty() && numbers.iter().all(|number| {
             self.syscall_borrows(*number, args)
         });
-        let refs = args.iter().flat_map(|arg| {
-            if borrowed { self.contents(*arg) } else { self.points[*arg].clone() }
-        }).collect::<BTreeSet<_>>();
-        extend(&mut self.escaped, refs)
+        let mut refs = NodeSet::new();
+        for arg in args {
+            let values = if borrowed { self.contents(*arg) } else { self.points[*arg].clone() };
+            refs.union_with(&values);
+        }
+        extend(&mut self.escaped, refs.iter())
     }
 
     fn reachable(&self, roots: impl IntoIterator<Item = Node>) -> BTreeSet<Node> {
         let mut found = BTreeSet::new();
         let mut pending: Vec<_> = roots.into_iter().collect();
         while let Some(root) = pending.pop() {
-            if found.insert(root) { pending.extend(self.root_contents(root)); }
+            if found.insert(root) { pending.extend(self.root_contents(root).iter()); }
         }
         found
     }
 
     fn plan(&self) -> ReclamationPlan {
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter().copied());
+        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
         let mut plan = ReclamationPlan { known: self.callables.keys().cloned().collect(), ..Default::default() };
         for root in &escaped {
-            if let Some(owner) = self.allocation_owner.get(root) { plan.barriers.insert(owner.clone()); }
+            if let Some(owner) = self.allocation_owner.get(root) { plan.escape_barriers.insert(owner.clone()); }
         }
-        plan.barriers.extend(self.unsupported.iter().cloned());
-        plan.barriers.extend(self.incoming_store_owners.iter().cloned());
+        plan.escape_barriers.extend(self.unsupported.iter().cloned());
+        let publishers: BTreeSet<String> = self.incoming_store_owners.iter().cloned().collect();
+        plan.publish_only = publishers.difference(&plan.escape_barriers).cloned().collect();
+        // Preserve the existing classification inputs: publishers remain barriers
+        // here. analyze() may drop a publisher proven safe at every call site.
+        plan.barriers = plan.escape_barriers.clone();
+        plan.barriers.extend(publishers.iter().cloned());
         for (name, callable) in &self.callables {
             self.classify(name, callable, &mut plan);
         }
+        plan.publish_sites = self.publish_safety();
         plan
+    }
+
+    /// 2026-11-09: for each publisher, whether every recorded call site passes a
+    /// receiver argument that is a bare local of the caller and does not escape
+    /// that caller (not global-reachable, not returned). Only then may the
+    /// caller's region own the published storage.
+    fn publish_safety(&self) -> BTreeMap<String, Vec<bool>> {
+        self.publish_call_args.iter().map(|(publisher, sites)| {
+            let safety = sites.iter().map(|(owner, local)| self.site_is_safe(owner, *local)).collect();
+            (publisher.clone(), safety)
+        }).collect()
+    }
+
+    fn site_is_safe(&self, owner: &str, local: Option<Node>) -> bool {
+        let Some(local) = local else { return false };
+        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        if self.reachable(global_roots.chain(self.escaped.iter().copied())).contains(&local) { return false; }
+        let Some(callable) = self.callables.get(owner) else { return false };
+        !self.reachable(self.points[callable.result].iter()).contains(&local)
     }
 
     fn classify(&self, name: &str, callable: &Callable, plan: &mut ReclamationPlan) {
@@ -267,12 +314,12 @@ impl Graph {
         let allocations: BTreeSet<_> = self.allocation_owner.iter()
             .filter(|(_, owner)| owners.contains(*owner)).map(|(root, _)| *root).collect();
         if allocations.is_empty() { return; }
-        let returned = self.reachable(self.points[callable.result].iter().copied());
+        let returned = self.reachable(self.points[callable.result].iter());
         if !returned.is_disjoint(&allocations) {
             plan.reasons.insert(name.into(), "allocation reaches the returned value".into());
             return;
         }
-        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter().copied());
+        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
         let retained = self.reachable(incoming);
         if !retained.is_disjoint(&allocations) {
             let owners: BTreeSet<_> = retained.intersection(&allocations).filter_map(|root| self.allocation_owner.get(root)).collect();
@@ -322,23 +369,16 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
     if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation declared user operators: {:?}", index.user_operators); }
     let owners: Vec<_> = index.bodies.keys().cloned().collect();
     let mut result = ReclamationPlan::default();
-    let mut dependencies: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut allocating = BTreeSet::new();
+    let mut accumulator = Accumulator::default();
     for owner in owners {
         let mut graph = index.clone();
         graph.inexact_constants.extend(graph.callables[&owner].params.iter().copied());
         walk::build_owner(&mut graph, &owner);
         graph.solve();
         let plan = graph.plan();
-        allocating.extend(graph.allocation_owner.values().cloned());
-        record_dependencies(&graph, &mut dependencies);
-        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, unsupported={:?}", plan.barriers, graph.unsupported); }
-        if plan.regions.contains(&owner) { result.regions.insert(owner.clone()); }
-        result.barriers.extend(plan.barriers);
-        result.known.extend(plan.known);
-        result.default_encoding_targets.extend(graph.default_encoding_targets);
-        if let Some(reason) = plan.reasons.get(&owner) { result.reasons.insert(owner, reason.clone()); }
+        accumulator.absorb(&owner, &graph, &plan, &mut result);
     }
+    accumulator.reclassify_safe_publishers(&mut result);
     result.regions.retain(|owner| !result.barriers.contains(owner));
     // Main also executes global initialization. Until those allocations have
     // explicit global lifetime facts, only closed scalar initializers license
@@ -348,10 +388,58 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         result.entry_region = result.regions.contains(owner);
     }
     result.regions.retain(|owner| !index.entry_nodes.contains(owner));
-    allocating.extend(result.regions.iter().cloned());
-    allocating.extend(result.barriers.iter().cloned());
-    result.mutating = dependencies.into_iter().filter(|(_, calls)| !calls.is_disjoint(&allocating)).map(|(owner, _)| owner).collect();
+    accumulator.finish_mutating(&mut result);
     result
+}
+
+/// Per-owner accumulation of the plan inputs `analyze` unions across roots.
+#[derive(Default)]
+struct Accumulator {
+    dependencies: BTreeMap<String, BTreeSet<String>>,
+    allocating: BTreeSet<String>,
+    publish_only: BTreeSet<String>,
+    escape_barriers: BTreeSet<String>,
+    publish_sites: BTreeMap<String, Vec<bool>>,
+}
+
+impl Accumulator {
+    fn absorb(&mut self, owner: &str, graph: &Graph, plan: &ReclamationPlan, result: &mut ReclamationPlan) {
+        self.allocating.extend(graph.allocation_owner.values().cloned());
+        record_dependencies(graph, &mut self.dependencies);
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, unsupported={:?}", plan.barriers, graph.unsupported); }
+        if plan.regions.contains(owner) { result.regions.insert(owner.to_string()); }
+        result.barriers.extend(plan.barriers.iter().cloned());
+        self.publish_only.extend(plan.publish_only.iter().cloned());
+        self.escape_barriers.extend(plan.escape_barriers.iter().cloned());
+        for (publisher, sites) in &plan.publish_sites { self.publish_sites.entry(publisher.clone()).or_default().extend(sites.iter().copied()); }
+        result.known.extend(plan.known.iter().cloned());
+        result.default_encoding_targets.extend(graph.default_encoding_targets.iter().cloned());
+        if let Some(reason) = plan.reasons.get(owner) { result.reasons.insert(owner.to_string(), reason.clone()); }
+    }
+
+    /// 2026-11-09: a publisher barriered only for publish-into-incoming may be
+    /// reclaimed by its caller's region when EVERY call site passes a receiver
+    /// that is a non-escaping local of the caller. Never override an
+    /// escape-derived barrier.
+    fn reclassify_safe_publishers(&self, result: &mut ReclamationPlan) {
+        let safe = self.safe_publishers();
+        result.barriers.retain(|name| {
+            !(safe.contains(name) && self.publish_only.contains(name) && !self.escape_barriers.contains(name))
+        });
+    }
+
+    fn safe_publishers(&self) -> BTreeSet<String> {
+        self.publish_sites.iter()
+            .filter(|(_, sites)| !sites.is_empty() && sites.iter().all(|safe| *safe))
+            .map(|(publisher, _)| publisher.clone()).collect()
+    }
+
+    fn finish_mutating(self, result: &mut ReclamationPlan) {
+        let mut allocating = self.allocating;
+        allocating.extend(result.regions.iter().cloned());
+        allocating.extend(result.barriers.iter().cloned());
+        result.mutating = self.dependencies.into_iter().filter(|(_, calls)| !calls.is_disjoint(&allocating)).map(|(owner, _)| owner).collect();
+    }
 }
 
 fn record_dependencies(graph: &Graph, dependencies: &mut BTreeMap<String, BTreeSet<String>>) {
@@ -531,6 +619,37 @@ mod tests {
         "#);
         assert!(!plan.regions.contains("store"), "{plan:?}");
         assert!(plan.barriers.contains("store"), "{plan:?}");
+    }
+
+    #[test]
+    fn publisher_with_local_receiver_is_reclaimed() {
+        // 2026-11-09: when EVERY call site passes a non-escaping local of the
+        // caller, the caller's region legitimately owns the published storage,
+        // so the publisher need not suspend it. This is the leak fix.
+        let plan = derive(r#"
+            obj Holder { addr: Ptr; };
+            defn make() -> Ptr { term Malloc#(16); };
+            defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+            defn exercise() -> Int {
+                let h: Holder = Holder { addr: 0 as Ptr };
+                let ok: Bool = publish(h);
+                term Load#(h.addr,8);
+            };
+        "#);
+        assert!(!plan.barriers.contains("publish"), "a non-escaping local receiver must not barrier the publisher: {plan:?}");
+    }
+
+    #[test]
+    fn publisher_with_parameter_receiver_stays_a_barrier() {
+        // The receiver is a parameter that can outlive the frame, so the barrier
+        // (and its UAF protection) must remain.
+        let plan = derive(r#"
+            obj Holder { addr: Ptr; };
+            defn make() -> Ptr { term Malloc#(16); };
+            defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+            defn caller(h: Holder) -> Int { let ok: Bool = publish(h); term Load#(h.addr,8); };
+        "#);
+        assert!(plan.barriers.contains("publish"), "a parameter receiver must stay a barrier: {plan:?}");
     }
 
     #[test]

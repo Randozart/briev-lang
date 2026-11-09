@@ -34,6 +34,21 @@ use crate::ast::{Statement, TopLevel};
 ///
 /// Returns `(errors, warnings)`. Errors fail both `brievc check` and
 /// `brievc build`; warnings print to stderr.
+/// 2026-11-09 (H5 Leg B): HIR-first surface for the pipeline/call-site flips.
+/// The AST result stays the fallback and the debug oracle; under the flag a
+/// fresh HIR is lowered at this exact point (the analyses run before the
+/// plugin stages, so the backend HIR cannot be reused yet).
+pub fn analyze_dual(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
+    let ast = analyze(items);
+    if !crate::backend::hir_emit_enabled() {
+        return ast;
+    }
+    let program = crate::hir::lower_program(items);
+    let hir = crate::hir::termination::analyze(&program);
+    debug_assert_eq!(hir, ast, "HIR/AST termination drift");
+    hir
+}
+
 pub fn analyze(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();

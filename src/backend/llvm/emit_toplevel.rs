@@ -394,7 +394,11 @@ impl LlvmBackend {
     pub(super) fn flush_defer_cleanup(&mut self, out: &mut String, indent: &str) {
         while let Some(body) = self.fun.defer_bodies.pop() {
             for stmt in &body {
-                crate::backend::llvm::emit_stmt::emit_statement(self, out, stmt, indent);
+                // 2026-11-09 (H5 seam refactor): deferred cleanup bodies are
+                // HIR; the seam falls back losslessly for any non-native kind.
+                let _ = crate::backend::llvm::emit_hir_stmt::emit_hir_statement(
+                    self, out, stmt, indent,
+                );
             }
         }
     }
@@ -4357,6 +4361,12 @@ impl LlvmBackend {
                     &std::collections::HashMap::new(),
                     &mut ids,
                 ) {
+                    // 2026-11-09 (verification program P1): re-verify the
+                    // substituted tree at the point of origin.
+                    #[cfg(debug_assertions)]
+                    if let Err(err) = crate::hir::verify_single_callable(&spec_hir) {
+                        panic!("specialized HIR verification failed for {mangled}: {err}");
+                    }
                     self.hir_stmt_bodies
                         .insert(mangled.to_string(), spec_hir.body.statements.clone());
                 }

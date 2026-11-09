@@ -1,0 +1,3 @@
+// Briev has no `if`; the conditional is `when` / `match`.
+// EXPECT-ERROR: `if`/`else` do not exist in Briev
+defn f(x: Int) -> Int { if x > 0 { term 1; }; term 0; };

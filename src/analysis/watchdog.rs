@@ -34,6 +34,20 @@ impl std::fmt::Display for WatchdogError {
 
 pub type WatchdogResult = Vec<WatchdogError>;
 
+/// 2026-11-09 (H5 Leg B): HIR-first surface (AST is the fallback + debug
+/// oracle). The watchdog runs after the plugin stages but before the backend
+/// HIR exists, so this point lowers its own tree.
+pub fn analyze_dual(items: &[TopLevel]) -> WatchdogResult {
+    let ast = analyze(items);
+    if !crate::backend::hir_emit_enabled() {
+        return ast;
+    }
+    let program = crate::hir::lower_program(items);
+    let hir = crate::hir::watchdog::analyze(&program);
+    debug_assert_eq!(hir, ast, "HIR/AST watchdog drift");
+    hir
+}
+
 pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
     let trigger_names: HashSet<String> = items
         .iter()
@@ -124,6 +138,19 @@ pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
 /// handler must name a declared txn/defn/node (a callable), and must accept
 /// one argument (the last computed value). Returns the first error as a
 /// formatted message.
+/// 2026-11-09 (H5 Leg B): HIR-first on-fire handler check with the same
+/// dual-oracle discipline as `analyze_dual`.
+pub fn check_on_fire_handlers_dual(items: &[TopLevel]) -> Result<(), String> {
+    let ast = check_on_fire_handlers(items);
+    if !crate::backend::hir_emit_enabled() {
+        return ast;
+    }
+    let program = crate::hir::lower_program(items);
+    let hir = crate::hir::watchdog::check_on_fire_handlers(&program);
+    debug_assert_eq!(hir, ast, "HIR/AST on-fire parity drift");
+    hir
+}
+
 pub fn check_on_fire_handlers(items: &[TopLevel]) -> Result<(), String> {
     let mut callables: HashSet<String> = HashSet::new();
     for item in items {

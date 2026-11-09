@@ -50,11 +50,15 @@ pub mod watchdog;
 pub mod walk;
 pub mod web_commits;
 
+pub mod render;
+pub mod typing;
 pub use cast_paths::resolve_cast_paths;
+pub use render::{render_callable, render_program};
+pub use typing::annotate_types;
 pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};
 pub use facts::{build_facts, HirFacts};
 pub use frontend::lower_program_after_frontend;
-pub use lower::{lower_program, lower_program_checked, HirLowerIssue};
+pub use lower::{lower_body_statements, lower_program, lower_program_checked, HirLowerIssue};
 pub use needs_state::{compute_defn_needs_plain, compute_defn_needs_state, compute_export_needs_state};
 pub use ownership::{build_value_facts, HirDestinationClass, HirOwnershipClass, HirValueFacts, HirValueKey};
 pub use sinks::{build_sink_facts, HirAggregateKind, HirSinkFacts, HirSinkKey};
@@ -62,7 +66,7 @@ pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use tail_calls::{build_tail_call_facts, HirCallableTailCalls, HirTailCall, HirTailCallFacts};
 pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
-pub use verify::verify;
+pub use verify::{verify, verify_law_markers, verify_single_callable, verify_typed};
 
 #[cfg(test)]
 mod tests {

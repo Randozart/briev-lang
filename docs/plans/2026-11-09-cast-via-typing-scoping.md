@@ -137,3 +137,21 @@ casts audit), Praetor clean on changed files.
 - Trait-method dispatch resolution for dyn values (`Dyn<T>`) — which table is
   authoritative (protocol bindings vs trait functions) needs one worked
   example before A2.
+
+## Execution record (2026-11-09)
+
+**A1 landed.** `src/hir/typing.rs` (`annotate_types`) fills `HirExpr.ty` for
+identifiers (globals, constants, params, lets), binary results (comparisons →
+Bool; arithmetic → Float if either side is Float, Int only when both are Int),
+unary, call results (`output_list` / single `result`, then intrinsic
+signatures), and cast targets. Container kinds recurse and stay untyped unless
+unambiguous (`If` takes the then-branch type; `IsType` → Bool). `None` remains
+the answer for unknown shapes.
+
+Wiring: `backend::build_hir(items, type_universe)` runs the pass (and
+`resolve_cast_paths`) whenever the universe is supplied; `via` is now
+populated in production for the first time. `target/debug` sweep: 139/0;
+`cargo test --all`: 3605 pass; `hir_emit_ab --quick`: byte-identical.
+
+Still open: A2 (Field/Index/MethodCall/Reflect typing from type facts +
+trait/protocol tables) and the unresolved-cast audit proposed above.
