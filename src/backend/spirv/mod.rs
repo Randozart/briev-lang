@@ -84,6 +84,35 @@ pub fn compile_spirv(
     compile_spirv_builder(program, entry_name, analysis, universe, int_bits)?.build()
 }
 
+/// 2026-11-08 (Stage F): the vendor projection target — flavor + integer
+/// width. Bundled so the projection API stays at five parameters.
+#[derive(Debug, Clone, Copy)]
+pub struct SpirvProjection {
+    pub flavor: builder::SpirvFlavor,
+    pub int_bits: u64,
+}
+
+/// 2026-11-08 (Intel G1.5 Stage F): the OpenCL-flavored projection of the
+/// same frontend plan (Kernel capability, Physical64/OpenCL, state as a
+/// CrossWorkgroup kernel argument, entry `briev_kernel`). Combined-module
+/// helper for tests and single-kernel tooling; the artifact path emits one
+/// module per kernel through `kernel::emit_kernel`.
+pub fn compile_spirv_opencl(
+    program: &[TopLevel],
+    analysis: &crate::backend::AnalysisResults,
+    universe: &crate::type_universe::TypeUniverse,
+    int_bits: u64,
+) -> Result<Vec<u8>, String> {
+    compile_spirv_builder_with_flavor(
+        program,
+        kernel::OPENCL_ENTRY_NAME,
+        analysis,
+        universe,
+        SpirvProjection { flavor: builder::SpirvFlavor::OpenCL, int_bits },
+    )?
+    .build()
+}
+
 /// 2026-08-23 (§2.2): frontend-driven selection AND module construction
 /// without assembling — tests inspect the dr::Module directly. Kernels are
 /// the ELIGIBLE entries of the accel analysis (the shape's proven statements
@@ -96,35 +125,72 @@ pub fn compile_spirv_builder(
     universe: &crate::type_universe::TypeUniverse,
     int_bits: u64,
 ) -> Result<SpirvBuilder, String> {
+    compile_spirv_builder_with_flavor(
+        program,
+        entry_name,
+        analysis,
+        universe,
+        SpirvProjection { flavor: builder::SpirvFlavor::Vulkan, int_bits },
+    )
+}
+
+/// Emit one eligible candidate into the combined module. Entry is "main" for
+/// Vulkan (the runtime drivers hardcode pName "main"; build_kernels emits the
+/// same) and `briev_kernel` for OpenCL (the flavor owns the name).
+fn emit_candidate(
+    builder: &mut SpirvBuilder,
+    program: &[TopLevel],
+    txn: &crate::ast::Transaction,
+    entry: &crate::analysis::accel::AccelEntry,
+    emitted: &mut Vec<String>,
+) -> Result<(), String> {
+    let cooperative = crate::backend::spirv::kernel::is_cooperative_shape(&entry.shape);
+    let emit_name = if builder.is_opencl() {
+        kernel::OPENCL_ENTRY_NAME
+    } else {
+        "main"
+    };
+    emit_kernel(
+        builder,
+        emit_name,
+        &entry.shape,
+        program,
+        cooperative,
+        &crate::backend::spirv::kernel::KernelSurface::default(),
+    )?;
+    emitted.push(txn.name.clone());
+    Ok(())
+}
+
+/// 2026-11-08 (Stage F): build with an explicit vendor projection. One
+/// frontend plan; the flavor is a projection (D3).
+pub fn compile_spirv_builder_with_flavor(
+    program: &[TopLevel],
+    entry_name: &str,
+    analysis: &crate::backend::AnalysisResults,
+    universe: &crate::type_universe::TypeUniverse,
+    projection: SpirvProjection,
+) -> Result<SpirvBuilder, String> {
+    let int_bits = projection.int_bits;
+    let flavor = projection.flavor;
     // 2026-08-26 (§2.4): the NORMALIZED universe drives scalar type
     // resolution — (protocol, metadata), never type-name matches.
-    let mut builder = SpirvBuilder::new().with_universe(universe, int_bits);
+    let mut builder = SpirvBuilder::with_flavor(flavor).with_universe(universe, int_bits);
     let mut emitted: Vec<String> = Vec::new();
     let mut rejected: Vec<(String, Vec<String>)> = Vec::new();
 
     for item in program {
-        if let TopLevel::Transaction(txn) = item {
-            if let Some(entry) = analysis.accel.get(&txn.name) {
-                if !entry.shape.eligible {
-                    rejected.push((txn.name.clone(), entry.shape.reasons.clone()));
-                    continue;
-                }
-                // Entry point is ALWAYS "main": the runtime drivers hardcode
-                // pName "main" (briev_dev_vulkan.c), and build_kernels (the
-                // runner blob path) emits "main" too. The old per-node entry
-                // name made every standalone .spv file fail pipeline
-                // creation ("compute pipeline failed") while the same
-                // kernel embedded in the runner worked — the two paths must
-                // never disagree again.
-                let cooperative =
-                    crate::backend::spirv::kernel::is_cooperative_shape(&entry.shape);
-                // 2026-09-02: plan-free — this combined-module helper is
-                // single-kernel surface/tests only; the artifact path goes
-                // through build_kernels (one module per kernel).
-                emit_kernel(&mut builder, "main", &entry.shape, program, cooperative, &crate::backend::spirv::kernel::KernelSurface::default())?;
-                emitted.push(txn.name.clone());
-            }
+        let TopLevel::Transaction(txn) = item else {
+            continue;
+        };
+        let Some(entry) = analysis.accel.get(&txn.name) else {
+            continue;
+        };
+        if !entry.shape.eligible {
+            rejected.push((txn.name.clone(), entry.shape.reasons.clone()));
+            continue;
         }
+        emit_candidate(&mut builder, program, txn, entry, &mut emitted)?;
     }
 
     if emitted.is_empty() {
@@ -1702,6 +1768,66 @@ mod tests {
         assert!(asm.contains("StorageBuffer"), "StorageBuffer class missing");
         assert!(asm.contains("DescriptorSet 0"), "descriptor set binding missing");
         assert!(asm.contains("Binding 0"), "binding index missing");
+    }
+
+    /// 2026-11-08 (Stage F): the OpenCL projection — Kernel capability,
+    /// Physical64/OpenCL, state as a function parameter, entry
+    /// `briev_kernel`, no descriptor decorations. spirv-val is the gate.
+    #[test]
+    fn test_opencl_flavor_projection_on_scale_kernel() {
+        if std::process::Command::new("spirv-dis").arg("--version").output().is_err() {
+            eprintln!("spirv-dis not found — skipping OpenCL projection sweep");
+            return;
+        }
+        let program = scale_kernel_program();
+        let analysis = analyze(&program);
+        let shape = eligible_shape(&analysis, "scale").clone();
+        let mut builder = SpirvBuilder::new_opencl();
+        emit_kernel(
+            &mut builder,
+            "scale",
+            &shape,
+            &program,
+            false,
+            &crate::backend::spirv::kernel::KernelSurface::default(),
+        )
+        .unwrap();
+        let asm = validate_and_disassemble(&builder.build().unwrap(), "opencl_scale");
+
+        assert!(asm.contains("OpCapability Kernel"), "Kernel capability:
+{}", asm);
+        assert!(asm.contains("OpCapability Addresses"), "Addresses capability:
+{}", asm);
+        assert!(
+            asm.contains("Physical64 OpenCL"),
+            "OpenCL memory model:
+{}",
+            asm
+        );
+        assert!(
+            asm.contains("OpEntryPoint Kernel") && asm.contains("briev_kernel"),
+            "Kernel entry named briev_kernel:
+{}",
+            asm
+        );
+        assert!(
+            asm.contains("OpFunctionParameter") && asm.contains("CrossWorkgroup"),
+            "state pointer must be a CrossWorkgroup kernel argument:
+{}",
+            asm
+        );
+        assert!(
+            asm.contains("OpExecutionMode") && asm.contains("LocalSize"),
+            "LocalSize must survive the projection:
+{}",
+            asm
+        );
+        assert!(!asm.contains("DescriptorSet"), "OpenCL has no descriptors:
+{}", asm);
+        assert!(!asm.contains("Binding"), "OpenCL has no descriptor bindings:
+{}", asm);
+        assert!(!asm.contains("Block"), "Block requires Shader; illegal here:
+{}", asm);
     }
 
     /// §2.5 optional smoke: execute a fixture kernel when a Vulkan runner is

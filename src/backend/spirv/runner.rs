@@ -69,6 +69,9 @@ pub enum DispatchGeometry {
 pub struct RunnerKernel {
     pub name: String,
     pub spirv: Vec<u8>,
+    /// 2026-11-08 (Stage F): OpenCL-flavored SPIR-V image (Level Zero/NEO).
+    /// Empty = no OpenCL image; those drivers fall through to `spirv`.
+    pub opencl_spirv: Vec<u8>,
     /// 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): this
     /// kernel's image storage plans — the SSBO field table and the runtime
     /// (step 4: VkImage bindings + download) key off these.
@@ -621,6 +624,27 @@ pub fn emit_runner(
             i,
             k.spirv.len()
         ));
+        // 2026-11-08 (Stage F): OpenCL-flavored image (Level Zero/NEO).
+        if k.opencl_spirv.is_empty() {
+            out.push_str(&format!(
+                "static const uint8_t ko{}[1] = {{0}};\nstatic const uint32_t ko{}_len = 0u;\n",
+                i, i
+            ));
+        } else {
+            out.push_str(&format!("static const uint8_t ko{}[] = {{", i));
+            for (j, b) in k.opencl_spirv.iter().enumerate() {
+                if j % 20 == 0 {
+                    out.push('\n');
+                }
+                out.push_str(&format!("{},", b));
+            }
+            out.push_str("\n};\n");
+            out.push_str(&format!(
+                "static const uint32_t ko{}_len = {}u;\n",
+                i,
+                k.opencl_spirv.len()
+            ));
+        }
         // 2026-09-17 (M2.0): the CUDA-lane image (PTX text or cubin —
         // cuModuleLoadData accepts both). A dummy 1-byte array keeps the
         // positional desc initializer total when a kernel has no CUDA
@@ -712,7 +736,7 @@ pub fn emit_runner(
             .filter(|f| k.touched_fields.iter().any(|n| n == &f.name))
             .count();
         out.push_str(&format!(
-            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {}, kp{}, kp{}_len, {} }},\n",
+            "    {{ \"{}\", k{}, k{}_len, {}, k{}_fields, {}, images, {}, {}, {}ULL, seed_fields, {}, kp{}, kp{}_len, {}, ko{}, ko{}_len }},\n",
             c_ident(&k.name),
             i,
             i,
@@ -726,6 +750,8 @@ pub fn emit_runner(
             i,
             i,
             k.block_per_workitem as u32,
+            i,
+            i,
         ));
     }
     out.push_str(&format!(
@@ -987,6 +1013,21 @@ pub(crate) fn emit_node_kernel(
     crate::backend::spirv::kernel::emit_kernel(
         &mut sb, "main", shape, program, cooperative, &surface,
     )?;
+    // 2026-11-08 (Stage F): project the SAME plan through the OpenCL flavor
+    // (kernel-arg state, entry `briev_kernel`). Capability boundaries (GEMM,
+    // images, f16) leave the image empty — the Level Zero/NEO lanes then
+    // fall through to the Vulkan blob for that kernel.
+    let opencl_spirv = {
+        let mut osb = SpirvBuilder::new_opencl().with_universe(universe, int_bits);
+        match crate::backend::spirv::kernel::emit_kernel(
+            &mut osb, "main", shape, program, cooperative, &surface,
+        )
+        .and_then(|_| osb.build())
+        {
+            Ok(bytes) => bytes,
+            Err(_) => Vec::new(),
+        }
+    };
     // The dispatch flag keys on the body the emitter CHOSE — one decision,
     // never drifting between the kernel and the launch contract.
     let tiled =
@@ -994,6 +1035,7 @@ pub(crate) fn emit_node_kernel(
     let kernel = RunnerKernel {
         name: name.clone(),
         spirv: sb.build()?,
+        opencl_spirv,
         image_plans: kplans.clone(),
         index_var: shape.index_var.clone(),
         count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
@@ -1467,6 +1509,8 @@ pub struct RunProgram {
 pub struct RunKernel {
     pub name: String,
     pub spirv: Vec<u8>,
+    /// 2026-11-08 (Stage F): OpenCL-flavored image for Level Zero/NEO.
+    pub opencl_spirv: Vec<u8>,
     /// The counter's HOST offset in the state (the node's index-var field).
     pub counter_offset: u64,
     /// The node's work-item bound (const-folded count).
@@ -1575,6 +1619,7 @@ pub fn prepare_run(
         run_kernels.push(RunKernel {
             name: k.name.clone(),
             spirv: k.spirv.clone(),
+            opencl_spirv: k.opencl_spirv.clone(),
             counter_offset,
             count,
             dispatch,
@@ -1617,6 +1662,7 @@ mod dispatch_tests {
         let mut k = RunnerKernel {
             name: "gemm".to_string(),
             spirv: vec![0x03, 0x02, 0x23, 0x07],
+            opencl_spirv: Vec::new(),
             image_plans: Vec::new(),
             index_var: "i".to_string(),
             count_expr: Expr::Decimal(16777216),

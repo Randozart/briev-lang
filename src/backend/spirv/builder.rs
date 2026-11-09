@@ -19,6 +19,20 @@ use crate::type_universe::TypeUniverse;
 use rspirv::binary::Assemble;
 use rspirv::spirv::{self, Word, ExecutionModel};
 
+/// 2026-11-08 (Intel G1.5 Stage F): the vendor projection of one frontend
+/// plan (D3). Vulkan is the working lane; OpenCL unblocks Level Zero / NEO
+/// (Stage E: the flavor, not the entry name, was the blocker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpirvFlavor {
+    /// Shader capability, GLSL450, descriptor-set SSBO, GLCompute entries.
+    Vulkan,
+    /// Kernel capability, Physical64/OpenCL, CrossWorkgroup kernel args,
+    /// Kernel entries. Block/Offset member decorations are illegal here
+    /// (they require Shader) — state access uses byte-offset pointer
+    /// arithmetic. See benchmarks/results/2026-11-08-intel-g1.5-stage-f-design.md.
+    OpenCL,
+}
+
 /// Combines rspirv Builder with Briev-type lowering.
 pub struct SpirvBuilder {
     pub builder: Builder,
@@ -39,20 +53,50 @@ pub struct SpirvBuilder {
     /// cached per (scalar elem id, length) — rspirv dedups the OpTypeArray,
     /// so a second decoration would be invalid.
     vec4_arrays: HashMap<(Word, u32), Word>,
+    /// 2026-11-08 (Stage F): the vendor projection this builder emits.
+    flavor: SpirvFlavor,
 }
 
 impl SpirvBuilder {
-    /// Create builder, set Shader + Int64 + Float64 + GLSL450.
+    /// Create a Vulkan-flavored builder (the long-standing default).
     pub fn new() -> Self {
+        Self::with_flavor(SpirvFlavor::Vulkan)
+    }
+
+    /// Create an OpenCL-flavored builder (Intel G1.5 Stage F).
+    pub fn new_opencl() -> Self {
+        Self::with_flavor(SpirvFlavor::OpenCL)
+    }
+
+    pub fn with_flavor(flavor: SpirvFlavor) -> Self {
         let mut b = Builder::new();
-        b.capability(spirv::Capability::Shader);
+        match flavor {
+            SpirvFlavor::Vulkan => {
+                b.capability(spirv::Capability::Shader);
+                b.memory_model(
+                    spirv::AddressingModel::Logical,
+                    spirv::MemoryModel::GLSL450,
+                );
+            }
+            SpirvFlavor::OpenCL => {
+                // Stage E blueprint (clang --target=spirv64 -x cl): Kernel +
+                // Addresses, Physical64 addressing, OpenCL memory model.
+                b.capability(spirv::Capability::Kernel);
+                b.capability(spirv::Capability::Addresses);
+                // The byte-pointer state ABI (Stage F) emits OpTypeInt 8.
+                b.capability(spirv::Capability::Int8);
+                b.memory_model(
+                    spirv::AddressingModel::Physical64,
+                    spirv::MemoryModel::OpenCL,
+                );
+            }
+        }
         b.capability(spirv::Capability::Int64);
         b.capability(spirv::Capability::Float64);
         // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):
         // subgroup arithmetic for the dot-product reduction.
         b.capability(spirv::Capability::GroupNonUniform);
         b.capability(spirv::Capability::GroupNonUniformArithmetic);
-        b.memory_model(spirv::AddressingModel::Logical, spirv::MemoryModel::GLSL450);
         SpirvBuilder {
             builder: b,
             type_keys: HashMap::new(),
@@ -61,6 +105,46 @@ impl SpirvBuilder {
             int_bits: 64,
             glsl_set: None,
             vec4_arrays: HashMap::new(),
+            flavor,
+        }
+    }
+
+    /// The vendor projection this builder emits.
+    pub fn flavor(&self) -> SpirvFlavor {
+        self.flavor
+    }
+
+    pub fn is_opencl(&self) -> bool {
+        self.flavor == SpirvFlavor::OpenCL
+    }
+
+    /// Entry-point execution model for the flavor (GLCompute vs Kernel).
+    pub fn entry_execution_model(&self) -> ExecutionModel {
+        if self.is_opencl() {
+            ExecutionModel::Kernel
+        } else {
+            ExecutionModel::GLCompute
+        }
+    }
+
+    /// The storage class of the state buffer surface. OpenCL takes the state
+    /// as a CrossWorkgroup kernel argument; Vulkan binds an SSBO.
+    pub fn state_storage_class(&self) -> spirv::StorageClass {
+        if self.is_opencl() {
+            spirv::StorageClass::CrossWorkgroup
+        } else {
+            spirv::StorageClass::StorageBuffer
+        }
+    }
+
+    /// The state buffer appears in the entry-point interface only for the
+    /// Vulkan flavor (it is an SSBO variable). For OpenCL it is a function
+    /// parameter and must NOT be listed.
+    pub fn state_interface(&self, ssbo: Option<Word>) -> Option<Word> {
+        if self.is_opencl() {
+            None
+        } else {
+            ssbo
         }
     }
 
@@ -600,6 +684,18 @@ impl SpirvBuilder {
         execution_model: ExecutionModel,
         interface: &[Word],
     ) {
+        // 2026-11-08 (Stage F): the flavor owns the entry model and name.
+        // OpenCL rejects `main` as a kernel identifier (Stage E), so the
+        // projection's entry is `briev_kernel`; the driver looks it up.
+        if self.is_opencl() {
+            self.builder.entry_point(
+                ExecutionModel::Kernel,
+                func_id,
+                crate::backend::spirv::kernel::OPENCL_ENTRY_NAME,
+                interface.to_vec(),
+            );
+            return;
+        }
         self.builder.entry_point(
             execution_model,
             func_id,

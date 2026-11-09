@@ -139,6 +139,8 @@ mod ffi {
                 ptx: std::ptr::null(),
                 ptx_size: 0,
                 block_per_workitem: 0,
+                opencl_spirv: k.opencl_spirv.as_ptr(),
+                opencl_size: k.opencl_spirv.len() as u32,
             });
         }
 

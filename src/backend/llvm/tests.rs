@@ -3308,6 +3308,7 @@ fn test_accel_descriptors_emit() {
     let blob = crate::backend::llvm::kernel::AccelKernelBlob {
         txn_name: "force".to_string(),
         bytes: vec![0x03, 0x02, 0x23, 0x07],
+        opencl: Vec::new(),
     };
     let (ir, idx_of) =
         crate::backend::llvm::kernel::emit_accel_descriptors(&backend, &[blob], &[state_item]);
@@ -3321,7 +3322,7 @@ fn test_accel_descriptors_emit() {
     // so a short type is an OOB read, not a cosmetic mismatch.
     assert!(
         ir.contains(
-            "%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32 }"
+            "%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32, ptr, i32 }"
         ),
         "kernel type (full 15-member BrievKernelDesc): {ir}"
     );
@@ -3338,7 +3339,7 @@ fn test_accel_descriptors_emit() {
     // program_bytes/seed table/PTX/block_per_workitem).
     assert!(
         ir.contains(
-            "ptr @briev_kernel_force_fields, i32 0, ptr null, i32 0, i32 0, i64 0, ptr null, i32 0, ptr null, i32 0, i32 0 }"
+            "ptr @briev_kernel_force_fields, i32 0, ptr null, i32 0, i32 0, i64 0, ptr null, i32 0, ptr null, i32 0, i32 0, ptr null, i32 0 }"
         ),
         "kernel entry carries the full zero-filled tail: {ir}"
     );
@@ -3382,6 +3383,7 @@ fn test_accel_descriptors_skip_foreign_state_fields() {
     let blob = crate::backend::llvm::kernel::AccelKernelBlob {
         txn_name: "force".to_string(),
         bytes: vec![0x03, 0x02, 0x23, 0x07],
+        opencl: Vec::new(),
     };
     let (ir, _) = crate::backend::llvm::kernel::emit_accel_descriptors(
         &backend,
@@ -3450,6 +3452,7 @@ fn test_kernel_desc_abi_layout() {
     let blob = crate::backend::llvm::kernel::AccelKernelBlob {
         txn_name: "force".to_string(),
         bytes: vec![0x03, 0x02, 0x23, 0x07],
+        opencl: Vec::new(),
     };
     let (ir, _) =
         crate::backend::llvm::kernel::emit_accel_descriptors(&backend, &[blob], &[state_item]);
@@ -3461,7 +3464,7 @@ fn test_kernel_desc_abi_layout() {
     // ptx_size 88, block_per_workitem 92 → 96.
     let expected = [
         "ptr", "ptr", "i32", "i32", "ptr", "i32", "ptr", "i32", "i32", "i64", "ptr", "i32", "ptr",
-        "i32", "i32",
+        "i32", "i32", "ptr", "i32",
     ];
     let expected_line = format!(
         "%briev.kernel = type {{ {} }}",
@@ -3474,7 +3477,7 @@ fn test_kernel_desc_abi_layout() {
     );
     // The Rust/C reader side: pin the byte offsets the runtime depends on.
     use std::mem::{align_of, offset_of, size_of};
-    assert_eq!(size_of::<crate::accel_rt::BrievKernelDesc>(), 96, "C sizeof");
+    assert_eq!(size_of::<crate::accel_rt::BrievKernelDesc>(), 112, "C sizeof");
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, n_images), 32);
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx), 80);
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx_size), 88);
@@ -3482,6 +3485,8 @@ fn test_kernel_desc_abi_layout() {
         offset_of!(crate::accel_rt::BrievKernelDesc, block_per_workitem),
         92
     );
+    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, opencl_spirv), 96);
+    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, opencl_size), 104);
     assert_eq!(align_of::<crate::accel_rt::BrievKernelDesc>(), 8);
 }
 

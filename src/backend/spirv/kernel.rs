@@ -226,6 +226,11 @@ pub(crate) fn synthesize_reduce_stmts(
 }
 
 /// Emit one GPU kernel from an analyzed shape. Returns the function id.
+/// 2026-11-08 (Stage F): the OpenCL projection's entry-point name. `main` is
+/// not a legal OpenCL kernel identifier (Stage E finding); Level Zero / NEO
+/// look this name up.
+pub const OPENCL_ENTRY_NAME: &str = "briev_kernel";
+
 pub fn emit_kernel(
     builder: &mut SpirvBuilder,
     kernel_name: &str,
@@ -236,8 +241,24 @@ pub fn emit_kernel(
 ) -> Result<Word, String> {
     let mut cooperative = cooperative;
     let void_id = builder.lower_type(&Type::void())?;
+    // 2026-11-08 (Stage F): OpenCL kernels take the state as kernel
+    // argument 0 (`ptr CrossWorkgroup u8`) plus the dispatch bound `n`
+    // (u64, the L0 ABI's second argument). Vulkan keeps the no-arg function
+    // and an SSBO variable.
+    let state_arg_ty = if builder.is_opencl() {
+        let u8_ty = builder.lower_type(&Type::Bits(8))?;
+        Some(builder.ptr_class(spirv::StorageClass::CrossWorkgroup, u8_ty))
+    } else {
+        None
+    };
     let func_type_id = builder.gen_id();
-    builder.builder.type_function_id(Some(func_type_id), void_id, []);
+    let func_params: Vec<Word> = match state_arg_ty {
+        Some(ptr_ty) => vec![ptr_ty, builder.builder.type_int(64, 0)],
+        None => Vec::new(),
+    };
+    builder
+        .builder
+        .type_function_id(Some(func_type_id), void_id, func_params);
 
     // ── Module globals: state SSBO + invocation-id builtins. Ids thread
     // into the body lowerer so nothing is created twice.
@@ -328,7 +349,38 @@ pub fn emit_kernel(
             }
             None => false,
         };
-    let (ssbo_var, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {
+    // 2026-11-08 (Stage F) scope boundaries for the first OpenCL slice:
+    // GEMM (tensor/tiled/coopmat) and image bindings stay Vulkan-only until
+    // G3 and the image-argument path are designed; f16 storage needs
+    // capability work. Capability errors, not silent fallbacks.
+    if builder.is_opencl() {
+        if gemm_plan_early.is_some() {
+            return Err(format!(
+                "node '{kernel_name}': OpenCL projection does not cover GEMM kernels yet \
+                 (cooperative-matrix-on-IL waits on G3); the Vulkan image handles this kernel"
+            ));
+        }
+        if !surface.images.is_empty() {
+            return Err(format!(
+                "node '{kernel_name}': OpenCL projection does not cover image bindings yet \
+                 (images are kernel arguments in OpenCL, not descriptors); \
+                 the Vulkan image handles this kernel"
+            ));
+        }
+        for f in &state_fields {
+            let elem = match &f.ty {
+                Type::Vector(inner, _) => (**inner).clone(),
+                other => other.clone(),
+            };
+            if matches!(builder.shape_of(&elem)?, crate::casting::graph::SpirvShape::Float { bits: 16 }) {
+                return Err(format!(
+                    "node '{kernel_name}': OpenCL projection does not cover f16 state yet \
+                     (16-bit storage capability); the Vulkan image handles this kernel"
+                ));
+            }
+        }
+    }
+    let (ssbo_var, state_offsets, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {
         let mut warm = FnLowerer::new(builder, state_fields.clone());
         warm.set_image_plans(surface.images);
         warm.set_pair_view_fields(pair_view_fields);
@@ -339,6 +391,7 @@ pub fn emit_kernel(
         warm.declare_images()?;
         (
             warm.ssbo_var,
+            warm.state_offsets,
             warm.global_id_var,
             warm.local_id_var,
             warm.workgroup_id_var,
@@ -627,6 +680,19 @@ pub fn emit_kernel(
         .collect::<Result<Vec<_>, String>>()?;
 
     builder.begin_function(void_id, func_id, FunctionControl::empty(), func_type_id);
+    let mut ssbo_var = ssbo_var;
+    if let Some(ptr_ty) = state_arg_ty {
+        let state_ptr = builder
+            .builder
+            .function_parameter(ptr_ty)
+            .map_err(|e| format!("OpenCL state kernel argument: {e}"))?;
+        let u64_ty = builder.builder.type_int(64, 0);
+        builder
+            .builder
+            .function_parameter(u64_ty)
+            .map_err(|e| format!("OpenCL dispatch-bound argument: {e}"))?;
+        ssbo_var = Some(state_ptr);
+    }
     builder.begin_block(Some(entry_id));
     builder.instr(
         spirv::Op::Variable,
@@ -747,7 +813,7 @@ pub fn emit_kernel(
             let interface: Vec<Word> = [global_id_var, local_id_var, workgroup_id_var]
                 .into_iter()
                 .flatten()
-                .chain(ssbo_var.into_iter())
+                .chain(builder.state_interface(ssbo_var).into_iter())
                 .chain(coop_shared_a.into_iter())
                 .chain(coop_shared_b.into_iter())
                 .chain(image_vars.values().copied())
@@ -800,7 +866,7 @@ pub fn emit_kernel(
         let interface: Vec<Word> = [global_id_var, local_id_var, workgroup_id_var]
             .into_iter()
             .flatten()
-            .chain(ssbo_var.into_iter())
+            .chain(builder.state_interface(ssbo_var).into_iter())
             .chain([shared_a, shared_b])
             .chain(image_vars.values().copied())
             .collect();
@@ -821,6 +887,7 @@ pub fn emit_kernel(
     lower.image_vars = image_vars.clone();
     lower.image_types = image_types;
     lower.ssbo_var = ssbo_var;
+    lower.state_offsets = state_offsets;
     lower.global_id_var = global_id_var;
     lower.local_id_var = local_id_var;
     lower.vec4_fields = vec4_fields;
@@ -965,7 +1032,7 @@ pub fn emit_kernel(
     let interface: Vec<Word> = [global_id_var, local_id_var]
         .into_iter()
         .flatten()
-        .chain(ssbo_var.into_iter())
+        .chain(builder.state_interface(ssbo_var).into_iter())
         .chain(image_vars.values().copied())
         .collect();
     builder.set_entry_point(func_id, kernel_name, ExecutionModel::GLCompute, &interface);

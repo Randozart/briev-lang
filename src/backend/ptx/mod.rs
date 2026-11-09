@@ -614,6 +614,7 @@ fn push_deferred_combine(
     out.push(RunnerKernel {
         name: format!("{}__combine", cp.name),
         spirv: cblob,
+        opencl_spirv: Vec::new(),
         image_plans: Vec::new(),
         index_var: cp.shape.index_var.clone(),
         count_expr: cp.shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
@@ -829,6 +830,7 @@ fn general_kernel(ctx: &GeneralNodeCtx<'_>, p: GeneralKernelParts) -> RunnerKern
     RunnerKernel {
         name: p.kname,
         spirv: p.blob,
+        opencl_spirv: Vec::new(),
         image_plans: Vec::new(),
         index_var: shape.index_var.clone(),
         count_expr: shape.count_expr.clone().unwrap_or(Expr::Decimal(0)),
@@ -1483,6 +1485,7 @@ fn gemm_runner_kernel(
     RunnerKernel {
         name: name.to_string(),
         spirv: out.blob,
+        opencl_spirv: Vec::new(),
         image_plans: Vec::new(),
         index_var: shape.index_var.clone(),
         count_expr: out.count_expr,

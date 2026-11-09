@@ -52,8 +52,14 @@ pub struct FnLowerer<'a> {
     /// Width 2 = the D3 pair view (v2f16, ArrayStride 4); width 4 = the
     /// D3b quad view (v4f16, ArrayStride 8) — byte-identical retyping.
     pair_view_fields: Vec<(String, u32)>,
-    /// SSBO variable id (StorageBuffer storage class); set by setup_state_buffer.
+    /// State-buffer base pointer id. Vulkan: the SSBO variable
+    /// (StorageBuffer). OpenCL: kernel-argument 0, `ptr CrossWorkgroup u8`
+    /// (Stage F) — field access is byte-offset pointer arithmetic because
+    /// Block/Offset decorations require the Shader capability.
     pub ssbo_var: Option<Word>,
+    /// Byte offset of each state field (shared ABI layout, name-sorted,
+    /// aliases remapped). Set by setup_state_buffer.
+    pub state_offsets: Vec<u32>,
     /// BuiltIn GlobalInvocationId input variable (pre-threaded or lazy).
     pub global_id_var: Option<Word>,
     /// BuiltIn LocalInvocationId input variable (pre-threaded or lazy).
@@ -122,6 +128,7 @@ impl<'a> FnLowerer<'a> {
             state_fields,
             pair_view_fields: Vec::new(),
             ssbo_var: None,
+            state_offsets: Vec::new(),
             global_id_var: None,
             local_id_var: None,
             workgroup_id_var: None,
@@ -2153,12 +2160,20 @@ fn cast_opcode(
         // with the runner + LLVM descriptor paths; vec4-eligible arrays are
         // 16B-aligned, everything else packed.
         let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map, pinned)?;
+        self.state_offsets = proj_offsets.clone();
         // Phase 3 — buffer reuse: identify aliased fields (skipped from the
         // SSBO struct; AccessChain remaps to the target's member index) and
         // record the alias map for body lowering. Filtered to size-compatible
         // pairs — the same filter projection_offsets applied.
         let reuse = Self::filtered_reuse_map(self.builder, &self.state_fields, reuse_map)?;
         let aliased = self.apply_reuse_aliases(Some(&reuse));
+        // 2026-11-08 (Stage F): the OpenCL flavor has no SSBO struct variable.
+        // State is a CrossWorkgroup kernel argument addressed by byte offset
+        // (Block/Offset decorations require Shader). Offsets + aliases are
+        // already recorded above.
+        if self.builder.is_opencl() {
+            return Ok(());
+        }
         let mut vec4_ids: Vec<(String, Word, Type)> = Vec::new();
         let mut pair_ids: Vec<(String, Word, Type)> = Vec::new();
         let state_fields_snapshot: Vec<(String, Type)> = self
@@ -2413,6 +2428,79 @@ fn cast_opcode(
             .count() as u32
     }
 
+    // ── OpenCL state access (Stage F) ─────────────────────────────────
+    // The OpenCL flavor cannot decorate struct members (Block/Offset require
+    // Shader), so it addresses the single staging layout through physical
+    // pointer arithmetic: `ptr CrossWorkgroup u8` base + byte offset, then a
+    // pointer bitcast to the field/element type.
+
+    /// Bitcast a CrossWorkgroup pointer to `pointee_id`.
+    fn opencl_bitcast_ptr(&mut self, base: Word, pointee_id: Word) -> Result<Word, String> {
+        let ptr_ty = self
+            .builder
+            .ptr_class(StorageClass::CrossWorkgroup, pointee_id);
+        let cast = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::Bitcast,
+            Some(ptr_ty),
+            Some(cast),
+            vec![Operand::IdRef(base)],
+        ));
+        Ok(cast)
+    }
+
+    /// `base + byte_offset` on the kernel-argument byte pointer, cast to a
+    /// pointer to `pointee_id`.
+    fn opencl_state_ptr(&mut self, byte_offset: Word, pointee_id: Word) -> Result<Word, String> {
+        let Some(base) = self.ssbo_var else {
+            return self.err("kernel touches state but no state base pointer was set");
+        };
+        let u8_ty = self.builder.lower_type(&Type::Bits(8))?;
+        let u8_ptr = self
+            .builder
+            .ptr_class(StorageClass::CrossWorkgroup, u8_ty);
+        let off_ptr = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::InBoundsPtrAccessChain,
+            Some(u8_ptr),
+            Some(off_ptr),
+            vec![Operand::IdRef(base), Operand::IdRef(byte_offset)],
+        ));
+        self.opencl_bitcast_ptr(off_ptr, pointee_id)
+    }
+
+    /// Byte-offset word for a static field offset.
+    fn opencl_byte_const(&mut self, offset: u32) -> Word {
+        self.builder.i64_const(offset as u64)
+    }
+
+    /// `offset + idx * elem_bytes` as an i64 word.
+    fn opencl_indexed_offset(
+        &mut self,
+        offset: u32,
+        idx: Word,
+        elem_bytes: u32,
+    ) -> Result<Word, String> {
+        let int_ty = self.type_id(&Type::int())?;
+        let stride = self.builder.i64_const(elem_bytes as u64);
+        let scaled = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::IMul,
+            Some(int_ty),
+            Some(scaled),
+            vec![Operand::IdRef(idx), Operand::IdRef(stride)],
+        ));
+        let base = self.opencl_byte_const(offset);
+        let sum = self.builder.gen_id();
+        self.builder.emit(Instruction::new(
+            spirv::Op::IAdd,
+            Some(int_ty),
+            Some(sum),
+            vec![Operand::IdRef(base), Operand::IdRef(scaled)],
+        ));
+        Ok(sum)
+    }
+
     /// AccessChain to `field[idx]` inside the SSBO. Returns (elem ptr, elem ty).
     fn state_field_elem_ptr(&mut self, field: &str, idx: Word) -> Result<(Word, Type), String> {
         let Some(var) = self.ssbo_var else {
@@ -2430,6 +2518,13 @@ fn cast_opcode(
             other => other.clone(),
         };
         let elem_id = self.type_id(&elem_ty)?;
+        if self.builder.is_opencl() {
+            let off = self.state_offsets[pos];
+            let elem_bytes = Self::field_storage_bytes(self.builder, &elem_ty)?;
+            let byte = self.opencl_indexed_offset(off, idx, elem_bytes)?;
+            let ptr = self.opencl_state_ptr(byte, elem_id)?;
+            return Ok((ptr, elem_ty));
+        }
         // Chain: ssbo var → member index → element index. The member index
         // counts only NON-aliased fields (aliased members are skipped from
         // the SSBO struct, so positions in state_fields ≠ member indices).
@@ -2501,6 +2596,11 @@ fn cast_opcode(
             ));
         }
         let elem_id = self.type_id(&fty)?;
+        if self.builder.is_opencl() {
+            let byte = self.opencl_byte_const(self.state_offsets[pos]);
+            let ptr = self.opencl_state_ptr(byte, elem_id)?;
+            return Ok((ptr, fty));
+        }
         let member_idx = self.builder.u32_const(self.struct_member_index(pos));
         let ptr_ty = self.builder.ptr_class(StorageClass::StorageBuffer, elem_id);
         let chain = self.builder.gen_id();
@@ -2886,21 +2986,29 @@ impl<'a> FnLowerer<'a> {
             }
         };
         let (base_id, _bty) = self.emit_expr(&base_expr)?;
-        let v4_ptr = self
-            .builder
-            .ptr_class(StorageClass::StorageBuffer, vf.vector);
-        let member = self.builder.u32_const(member_pos);
-        let group = self.builder.gen_id();
-        self.builder.emit(Instruction::new(
-            spirv::Op::AccessChain,
-            Some(v4_ptr),
-            Some(group),
-            vec![
-                Operand::IdRef(ssbo),
-                Operand::IdRef(member),
-                Operand::IdRef(base_id),
-            ],
-        ));
+        let group = if self.builder.is_opencl() {
+            // Stage F: byte-offset group access (16-byte vec4 groups).
+            let off = self.state_offsets[raw_pos];
+            let byte = self.opencl_indexed_offset(off, base_id, 16)?;
+            self.opencl_state_ptr(byte, vf.vector)?
+        } else {
+            let v4_ptr = self
+                .builder
+                .ptr_class(StorageClass::StorageBuffer, vf.vector);
+            let member = self.builder.u32_const(member_pos);
+            let group = self.builder.gen_id();
+            self.builder.emit(Instruction::new(
+                spirv::Op::AccessChain,
+                Some(v4_ptr),
+                Some(group),
+                vec![
+                    Operand::IdRef(ssbo),
+                    Operand::IdRef(member),
+                    Operand::IdRef(base_id),
+                ],
+            ));
+            group
+        };
         let v4_val = self.builder.load(vf.vector, group);
         let elem_ty_id = self.type_id(&vf.elem)?;
         let acc_ptr = self

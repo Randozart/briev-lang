@@ -26,6 +26,10 @@ use std::collections::HashMap;
 pub(crate) struct AccelKernelBlob {
     pub txn_name: String,
     pub bytes: Vec<u8>,
+    /// 2026-11-08 (Stage F): OpenCL-flavored projection of the same plan
+    /// (Level Zero/NEO). Empty = capability boundary (GEMM/image/f16) or
+    /// emission failure — those drivers fall through to `bytes`.
+    pub opencl: Vec<u8>,
 }
 
 impl super::LlvmBackend {
@@ -53,7 +57,7 @@ impl super::LlvmBackend {
                     "warning: accel '{}': no TypeUniverse — staying CPU",
                     name
                 ));
-                blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new() });
+                blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new(), opencl: Vec::new() });
                 continue;
             };
             let int_bits = self.ctx.int_bits;
@@ -149,14 +153,26 @@ impl super::LlvmBackend {
                 &crate::backend::spirv::kernel::KernelSurface::default(),
             )
             .and_then(|_| sb.build());
+            // Stage F: OpenCL-flavored projection (empty on a capability
+            // boundary — the L0/NEO drivers fall through to the Vulkan blob).
+            let opencl = {
+                let mut osb = crate::backend::spirv::SpirvBuilder::new_opencl()
+                    .with_universe(&universe, int_bits);
+                crate::backend::spirv::kernel::emit_kernel(
+                    &mut osb, "main", &shape, items, idiom_lane,
+                    &crate::backend::spirv::kernel::KernelSurface::default(),
+                )
+                .and_then(|_| osb.build())
+                .unwrap_or_default()
+            };
             match emitted {
-                Ok(bytes) => blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes }),
+                Ok(bytes) => blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes, opencl }),
                 Err(e) => {
                     self.warnings.push(format!(
                         "warning: accel '{}': kernel emission failed — {} (staying CPU)",
                         name, e
                     ));
-                    blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new() });
+                    blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes: Vec::new(), opencl: Vec::new() });
                 }
             }
         }
@@ -493,10 +509,16 @@ fn emit_one_kernel_desc(
         // block_per_workitem 0 (flat gid model).
         "%briev.kernel {{ ptr @str.briev.{txn}, ptr @briev_kernel_{txn}, i32 {spirv_len}, i32 {n_fields}, \
          ptr @briev_kernel_{txn}_fields, i32 0, ptr null, i32 0, i32 0, i64 0, ptr null, i32 0, \
-         ptr null, i32 0, i32 0 }}",
+         ptr null, i32 0, i32 0, {opencl_ptr}, i32 {opencl_len} }}",
         txn = txn,
         spirv_len = k.bytes.len(),
         n_fields = table.fields.len(),
+        opencl_ptr = if k.opencl.is_empty() {
+            "ptr null".to_string()
+        } else {
+            format!("ptr @briev_kernel_{txn}_ocl")
+        },
+        opencl_len = k.opencl.len(),
     )
 }
 
@@ -540,7 +562,7 @@ pub(crate) fn emit_accel_descriptors(
     // (test_kernel_desc_abi_layout, src/backend/llvm/tests.rs) and the
     // Rust-side pin (test_briev_kernel_desc_abi_pinned, src/accel_rt.rs)
     // fail if either side drifts.
-    out.push_str("%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32 }\n");
+    out.push_str("%briev.kernel = type { ptr, ptr, i32, i32, ptr, i32, ptr, i32, i32, i64, ptr, i32, ptr, i32, i32, ptr, i32 }\n");
     out.push_str("@briev_accel_ready = private global i32 0\n");
 
     let mut desc_entries: Vec<String> = Vec::new();

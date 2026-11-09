@@ -119,6 +119,13 @@ typedef struct {
     // computing redundantly for full 32-lane d-coverage.  0 = the flat
     // gid model (every thread is a work item).  Tail, zero-fill contract.
     uint32_t block_per_workitem;
+    // 2026-11-08 (Intel G1.5 Stage F): optional OpenCL-flavored SPIR-V image
+    // (Kernel capability, Physical64/OpenCL, CrossWorkgroup kernel-arg state,
+    // entry "briev_kernel") for the Level Zero / NEO lanes. NULL/0 = no
+    // OpenCL image; those drivers fall through to the Vulkan blob.
+    // Tail of the struct, zero-fill contract.
+    const uint8_t* opencl_spirv;
+    uint32_t opencl_size;
 } BrievKernelDesc;
 
 // ────────────────────────────────────────────────────────────────────────────

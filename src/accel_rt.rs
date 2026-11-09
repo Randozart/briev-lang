@@ -75,6 +75,10 @@ pub struct BrievKernelDesc {
     pub ptx: *const u8,
     pub ptx_size: u32,
     pub block_per_workitem: u32,
+    /// 2026-11-08 (Stage F): optional OpenCL-flavored SPIR-V image for the
+    /// Level Zero / NEO lanes (entry `briev_kernel`). Null/0 = no image.
+    pub opencl_spirv: *const u8,
+    pub opencl_size: u32,
 }
 
 /// 2026-09-24 (BUGS.md descriptor-ABI drift): pins this #[repr(C)] reader
@@ -93,7 +97,7 @@ mod desc_abi {
 
     #[test]
     fn test_briev_kernel_desc_abi_pinned() {
-        assert_eq!(size_of::<BrievKernelDesc>(), 96, "C sizeof(BrievKernelDesc)");
+        assert_eq!(size_of::<BrievKernelDesc>(), 112, "C sizeof(BrievKernelDesc)");
         assert_eq!(align_of::<BrievKernelDesc>(), 8);
         assert_eq!(offset_of!(BrievKernelDesc, txn_name), 0);
         assert_eq!(offset_of!(BrievKernelDesc, spirv), 8);
@@ -110,6 +114,8 @@ mod desc_abi {
         assert_eq!(offset_of!(BrievKernelDesc, ptx), 80);
         assert_eq!(offset_of!(BrievKernelDesc, ptx_size), 88);
         assert_eq!(offset_of!(BrievKernelDesc, block_per_workitem), 92);
+        assert_eq!(offset_of!(BrievKernelDesc, opencl_spirv), 96);
+        assert_eq!(offset_of!(BrievKernelDesc, opencl_size), 104);
     }
 }
 
@@ -456,6 +462,10 @@ fn kernel_blob(
 ) -> Option<(*const u8, u32)> {
     let (blob, blob_size) = if driver_name(d) == "cuda" {
         (kdesc.ptx, kdesc.ptx_size)
+    } else if matches!(driver_name(d).as_str(), "levelzero" | "opencl") && kdesc.opencl_size > 0 {
+        // 2026-11-08 (Stage F): Level Zero / NEO consume the OpenCL-flavored
+        // image; the Vulkan blob remains their fall-through when absent.
+        (kdesc.opencl_spirv, kdesc.opencl_size)
     } else {
         (kdesc.spirv, kdesc.spirv_size)
     };
@@ -1458,6 +1468,8 @@ mod self_test {
             ptx: std::ptr::null(),
             ptx_size: 0,
             block_per_workitem: 0,
+            opencl_spirv: std::ptr::null(),
+            opencl_size: 0,
         };
 
         // ── Pack math ──

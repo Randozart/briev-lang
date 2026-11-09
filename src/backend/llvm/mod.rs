@@ -6034,6 +6034,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         self.has_accel_kernels = !kernel_blobs.is_empty();
         for blob in &kernel_blobs {
             out.push_str(&kernel::embed_spirv_blob(&blob.bytes, &blob.txn_name));
+            // 2026-11-08 (Stage F): the OpenCL-flavored image for L0/NEO.
+            if !blob.opencl.is_empty() {
+                out.push_str(&kernel::embed_spirv_blob(
+                    &blob.opencl,
+                    &format!("{}_ocl", blob.txn_name),
+                ));
+            }
         }
         // Descriptor tables + ABI declares the host dispatch wrappers use.
         let (desc_ir, idx_of) = kernel::emit_accel_descriptors(self, &kernel_blobs, items);
