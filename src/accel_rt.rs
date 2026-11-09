@@ -693,6 +693,12 @@ pub extern "C" fn briev_accel_download_written(idx: u32, state: *mut core::ffi::
     let Some(d) = driver() else {
         return 0;
     };
+    // 2026-11-08 (Stage F): a driver without the residency ops (OpenCL)
+    // dispatches through the full-copy `launch`, which already unpacks every
+    // written field into host state — there is nothing left to pull.
+    if resident_ops_missing(d) {
+        return kernel_ready(r, idx) as i32;
+    }
     let shared = d.capabilities & BRIEV_DEV_CAP_SHARED_STATE != 0;
     if !kernel_ready(r, idx) || !seeded_flag(r, shared, idx) {
         return 0;
@@ -1042,6 +1048,12 @@ pub extern "C" fn briev_accel_download(idx: u32, state: *mut core::ffi::c_void) 
     let Some(d) = driver() else {
         return 0;
     };
+    // 2026-11-08 (Stage F): a driver without the residency ops (OpenCL)
+    // dispatches through the full-copy `launch`, which already unpacks every
+    // written field into host state — nothing left to pull.
+    if resident_ops_missing(d) {
+        return kernel_ready(r, idx) as i32;
+    }
     let shared = d.capabilities & BRIEV_DEV_CAP_SHARED_STATE != 0;
     if !kernel_ready(r, idx) || !seeded_flag(r, shared, idx) {
         return 0;

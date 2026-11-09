@@ -85,6 +85,9 @@ impl SpirvBuilder {
                 b.capability(spirv::Capability::Addresses);
                 // The byte-pointer state ABI (Stage F) emits OpTypeInt 8.
                 b.capability(spirv::Capability::Int8);
+                // OpenCL builtins are IMPORTED with LinkageAttributes
+                // (`__spirv_BuiltIn*`), not supplied as pipeline inputs.
+                b.capability(spirv::Capability::Linkage);
                 b.memory_model(
                     spirv::AddressingModel::Physical64,
                     spirv::MemoryModel::OpenCL,

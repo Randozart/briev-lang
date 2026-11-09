@@ -1241,37 +1241,48 @@ impl<'a> FnLowerer<'a> {
                     "GetGlobalId#" => self.global_invocation_id()?,
                     _ => self.local_invocation_id()?,
                 };
-                // Component pointer: AccessChain(var, dim)
-                let u32_ty = self.builder.u32_type();
-                let ptr_u32 = self.builder.ptr_class(StorageClass::Input, u32_ty);
+                // Component pointer: AccessChain(var, dim). The component
+                // width follows the flavor: u32 (Vulkan pipeline input) or
+                // u64 (OpenCL import, Physical64 size_t).
+                let opencl = self.builder.is_opencl();
+                let comp_ty = if opencl {
+                    self.builder.builder.type_int(64, 0)
+                } else {
+                    self.builder.u32_type()
+                };
+                let ptr_comp = self.builder.ptr_class(StorageClass::Input, comp_ty);
                 let dim_const = self.builder.u32_const(dim);
                 let comp = self.builder.gen_id();
                 self.builder.emit(Instruction::new(
                     spirv::Op::AccessChain,
-                    Some(ptr_u32),
+                    Some(ptr_comp),
                     Some(comp),
                     vec![Operand::IdRef(var), Operand::IdRef(dim_const)],
                 ));
                 let raw = self.builder.gen_id();
                 self.builder.emit(Instruction::new(
                     spirv::Op::Load,
-                    Some(u32_ty),
+                    Some(comp_ty),
                     Some(raw),
                     vec![Operand::IdRef(comp)],
                 ));
-                // Widen u32 → i64. 2026-08-31 (plan abv-gpu-by-default):
-                // Vulkan's Shader environment only allows OpUConvert to an
-                // UNSIGNED result — zero-extend to u64 then OpBitcast to the
-                // signed i64 the kernel surface uses.
                 let int_res_ty = self.builder.lower_type(&Type::int())?;
-                let u64_ty = self.builder.builder.type_int(64, 0);
-                let wide_u = self.builder.gen_id();
-                self.builder.emit(Instruction::new(
-                    spirv::Op::UConvert,
-                    Some(u64_ty),
-                    Some(wide_u),
-                    vec![Operand::IdRef(raw)],
-                ));
+                let wide_u = if opencl {
+                    // Already 64-bit — one bitcast to the signed surface.
+                    raw
+                } else {
+                    // Widen u32 → u64 (Vulkan only allows OpUConvert to an
+                    // UNSIGNED result), then bitcast to signed i64.
+                    let u64_ty = self.builder.builder.type_int(64, 0);
+                    let wide_u = self.builder.gen_id();
+                    self.builder.emit(Instruction::new(
+                        spirv::Op::UConvert,
+                        Some(u64_ty),
+                        Some(wide_u),
+                        vec![Operand::IdRef(raw)],
+                    ));
+                    wide_u
+                };
                 let wide = self.builder.gen_id();
                 self.builder.emit(Instruction::new(
                     spirv::Op::Bitcast,
@@ -2704,9 +2715,19 @@ fn cast_opcode(
     }
 
     fn builtin_input(&mut self, builtin: spirv::BuiltIn) -> Result<Word, String> {
-        // Type: #3 x u32 (vec3<uint>) in Input storage.
-        let u32_ty = self.builder.u32_type();
-        let vec3 = self.builder.builder.type_vector(u32_ty, 3);
+        // Vulkan (Shader): `vec3<u32>` Input variable supplied by the
+        // pipeline. OpenCL (Kernel): `vec3<u64>` imported from the OpenCL
+        // runtime with LinkageAttributes (Physical64 `size_t`), Constant
+        // decorated (the Stage E clang blueprint). An Import-linkage builtin
+        // declared as a plain Input variable is never populated on NEO — all
+        // work items read gid 0, so only element 0 is written.
+        let opencl = self.builder.is_opencl();
+        let comp_ty = if opencl {
+            self.builder.builder.type_int(64, 0)
+        } else {
+            self.builder.u32_type()
+        };
+        let vec3 = self.builder.builder.type_vector(comp_ty, 3);
         let ptr = self.builder.ptr_class(StorageClass::Input, vec3);
         let var = self.builder.gen_id();
         self.builder.emit_global(Instruction::new(
@@ -2725,6 +2746,28 @@ fn cast_opcode(
                 Operand::BuiltIn(builtin),
             ],
         ));
+        if opencl {
+            self.builder.emit_global(Instruction::new(
+                spirv::Op::Decorate,
+                None,
+                None,
+                vec![
+                    Operand::IdRef(var),
+                    Operand::Decoration(spirv::Decoration::Constant),
+                ],
+            ));
+            self.builder.emit_global(Instruction::new(
+                spirv::Op::Decorate,
+                None,
+                None,
+                vec![
+                    Operand::IdRef(var),
+                    Operand::Decoration(spirv::Decoration::LinkageAttributes),
+                    Operand::LiteralString(format!("__spirv_BuiltIn{:?}", builtin)),
+                    Operand::LinkageType(spirv::LinkageType::Import),
+                ],
+            ));
+        }
         Ok(var)
     }
 

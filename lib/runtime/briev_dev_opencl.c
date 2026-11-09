@@ -141,6 +141,10 @@ typedef struct {
     // 2026-09-01: the module's OpExecutionMode LocalSize X (256 flat, 32
     // cooperative row kernels). The NDRange local size must match it.
     size_t local_x;
+    // 2026-11-08 (Stage F): the host staging window the last launch read the
+    // result into — `mapped` returns it so the runtime's field download path
+    // works (OpenCL has no persistent host-visible projection).
+    void* staging;
 } BrievOpenClKernel;
 
 static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, void** out) {
@@ -171,8 +175,39 @@ static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, voi
         p_clReleaseProgram(program);
         return 0;
     }
-    // The kernel module entry point is `main` (per-kernel module, kernel.rs).
-    cl_kernel kernel = p_clCreateKernel(program, "main", &err);
+    // 2026-11-08 (Intel G1.5 Stage F): the image may be Vulkan-flavored
+    // ("main") or the OpenCL projection ("briev_kernel"). Ask the program
+    // for its kernel names and prefer the OpenCL entry when present.
+    char entry_name[64] = "main";
+    if (p_clGetProgramInfo) {
+        size_t names_size = 0;
+        if (p_clGetProgramInfo(program, 0x1167 /* CL_PROGRAM_KERNEL_NAMES */,
+                               sizeof(names_size), &names_size, NULL) == 0 &&
+            names_size > 1) {
+            char* names = (char*)calloc(1, names_size);
+            if (names && p_clGetProgramInfo(program, 0x1167, names_size, names, NULL) == 0) {
+                const char* pick = strstr(names, "briev_kernel");
+                if (!pick) pick = strstr(names, "main");
+                if (!pick) pick = names;
+                size_t n = 0;
+                while (pick[n] && pick[n] != ' ' && n < sizeof(entry_name) - 1) n++;
+                memcpy(entry_name, pick, n);
+                entry_name[n] = '\0';
+            }
+            free(names);
+        }
+    }
+    // NEO's loader may not expose clGetProgramInfo; probe the two known
+    // entry names directly (OpenCL projection first, Vulkan second).
+    cl_kernel kernel = p_clCreateKernel(program, "briev_kernel", &err);
+    if (!kernel || err != 0) {
+        err = 0;
+        kernel = p_clCreateKernel(program, "main", &err);
+    }
+    if (!kernel || err != 0) {
+        err = 0;
+        kernel = p_clCreateKernel(program, entry_name, &err);
+    }
     if (!kernel || err != 0) {
         if (g_verbose) {
             size_t names_size = 0;
@@ -187,7 +222,7 @@ static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, voi
                     free(names);
                 }
             }
-            fprintf(stderr, "[briev_accel/opencl] clCreateKernel(\"main\") failed err=%d\n", err);
+            fprintf(stderr, "[briev_accel/opencl] clCreateKernel(\"%s\") failed err=%d\n", entry_name, err);
         }
         p_clReleaseProgram(program);
         return 0;
@@ -200,6 +235,7 @@ static int briev_dev_opencl_create_kernel(const uint8_t* spirv, size_t size, voi
     }
     k->program = program;
     k->kernel = kernel;
+    k->staging = NULL;
     // Parse the module's OpExecutionMode LocalSize (SPIR-V: opcode 16, mode
     // literal 17, followed by W/H/D) — same parse as the Vulkan driver.
     k->local_x = 256;
@@ -228,19 +264,37 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     BrievOpenClKernel* k = (BrievOpenClKernel*)handle;
     int err = 0;
     // Single READ_WRITE storage buffer holds the packed %State projection.
-    cl_mem buf = p_clCreateBuffer(cl_ctx, 0x3 /* CL_MEM_READ_WRITE */, proj_bytes, NULL, &err);
-    if (!buf || err != 0) {
+    if (!p_clCreateBuffer) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateBuffer not loaded\n");
         return 0;
     }
-    p_clEnqueueWriteBuffer(cl_queue, buf, 0, 0, proj_bytes, proj, 0, NULL, NULL);
+    cl_mem buf = p_clCreateBuffer(cl_ctx, 0x1 /* CL_MEM_READ_WRITE (1<<0) */, proj_bytes, NULL, &err);
+    if (!buf || err != 0) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/opencl] create buffer failed err=%d size=%zu\n", err, proj_bytes);
+        return 0;
+    }
+    err = p_clEnqueueWriteBuffer(cl_queue, buf, 0, 0, proj_bytes, proj, 0, NULL, NULL);
+    if (err != 0 && g_verbose) {
+        fprintf(stderr, "[briev_accel/opencl] write buffer failed err=%d\n", err);
+    }
     // Kernel signature: kernel main(ptr %state, i64 %n).
-    p_clSetKernelArg(k->kernel, 0, sizeof(cl_mem), &buf);
+    err = p_clSetKernelArg(k->kernel, 0, sizeof(cl_mem), &buf);
+    if (err != 0 && g_verbose) {
+        fprintf(stderr, "[briev_accel/opencl] set arg 0 failed err=%d\n", err);
+    }
     int64_t n = (int64_t)global_n;
-    p_clSetKernelArg(k->kernel, 1, sizeof(int64_t), &n);
+    err = p_clSetKernelArg(k->kernel, 1, sizeof(int64_t), &n);
+    if (err != 0 && g_verbose) {
+        fprintf(stderr, "[briev_accel/opencl] set arg 1 failed err=%d\n", err);
+    }
     size_t global_size = global_n;
     size_t local_size = k->local_x ? k->local_x : 64;
     err = p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
     if (err != 0) {
+        if (g_verbose) {
+            fprintf(stderr, "[briev_accel/opencl] NDRange failed err=%d (global=%zu local=%zu)\n",
+                    err, global_size, local_size);
+        }
         p_clReleaseMemObject(buf);
         return 0;
     }
@@ -248,7 +302,14 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     p_clEnqueueReadBuffer(cl_queue, buf, 0, 0, proj_bytes, proj_out, 0, NULL, NULL);
     p_clFinish(cl_queue);
     p_clReleaseMemObject(buf);
+    // The staging window now holds the result; `mapped` exposes it.
+    k->staging = proj_out;
     return 1;
+}
+
+static void* briev_dev_opencl_mapped(void* handle) {
+    BrievOpenClKernel* k = (BrievOpenClKernel*)handle;
+    return k ? k->staging : NULL;
 }
 
 static void briev_dev_opencl_destroy_kernel(void* handle) {
@@ -278,12 +339,15 @@ static void briev_dev_opencl_shutdown(void) {
 }
 
 BrievDeviceDriver briev_dev_opencl = {
-    "opencl",
-    0,  // capabilities: no zero-copy (regular buffers)
-    briev_dev_opencl_available,
-    briev_dev_opencl_init,
-    briev_dev_opencl_create_kernel,
-    briev_dev_opencl_launch,
-    briev_dev_opencl_destroy_kernel,
-    briev_dev_opencl_shutdown,
+    // 2026-11-08 (Stage F): designated init so `mapped` (9th field) is set
+    // while the optional residency tail stays zero.
+    .name = "opencl",
+    .capabilities = 0,  // no zero-copy (regular buffers)
+    .available = briev_dev_opencl_available,
+    .init = briev_dev_opencl_init,
+    .create_kernel = briev_dev_opencl_create_kernel,
+    .launch = briev_dev_opencl_launch,
+    .destroy_kernel = briev_dev_opencl_destroy_kernel,
+    .shutdown = briev_dev_opencl_shutdown,
+    .mapped = briev_dev_opencl_mapped,
 };

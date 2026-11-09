@@ -1822,6 +1822,19 @@ mod tests {
 {}",
             asm
         );
+        // Builtins are IMPORTED from the OpenCL runtime (LinkageAttributes),
+        // not supplied as pipeline inputs — a plain Input variable reads gid 0
+        // on NEO (every lane wrote element 0).
+        assert!(
+            asm.contains("__spirv_BuiltInGlobalInvocationId"),
+            "GlobalInvocationId must use the OpenCL import name:\n{}",
+            asm
+        );
+        assert!(
+            asm.contains("LinkageAttributes") && asm.contains("Import"),
+            "builtin import linkage missing:\n{}",
+            asm
+        );
         assert!(!asm.contains("DescriptorSet"), "OpenCL has no descriptors:
 {}", asm);
         assert!(!asm.contains("Binding"), "OpenCL has no descriptor bindings:

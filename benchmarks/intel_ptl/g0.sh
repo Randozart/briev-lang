@@ -93,13 +93,20 @@ echo "== g0: float fold approx/exact (§12 P1) =="
 run_gate g0_fsum_approx vulkan
 run_gate g0_fsum_exact vulkan
 
-echo "== g0: opencl + levelzero (reported, not required) =="
+echo "== g1.5 stage F: per-lane smoke (reported) =="
 report_lane() {
     local dev="$1"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g0_elem.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/g1_lane_smoke.abv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
     if printf '%s\n' "$out" | grep -q "compiled on '$dev'"; then
-        echo "-- $dev: kernel compiled (lane usable)"
+        local endpoints
+        endpoints=$(printf '%s\n' "$out" | grep -o "dst\[0\] = i64 [0-9-]* | dst\[255\] = i64 [0-9-]*" | tail -1)
+        if printf '%s\n' "$endpoints" | grep -q "dst\[0\] = i64 1 | dst\[255\] = i64 511"; then
+            echo "-- $dev: kernel compiled + correct ($endpoints)"
+        else
+            echo "-- $dev: kernel compiled but WRONG OUTPUT (${endpoints:-no endpoints})"
+            fail=1
+        fi
     else
         local reason
         reason=$(printf '%s\n' "$out" | grep -E "$dev" | grep -vE "G0_ELEM|stdout_buf|stdout_fill|folded|counter" | tail -3 | tr '\n' ' ')

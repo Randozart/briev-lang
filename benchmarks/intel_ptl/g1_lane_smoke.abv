@@ -1,0 +1,13 @@
+// g1_lane_smoke.abv — G1.5 Stage F fast per-lane check (Level Zero / NEO).
+// One workgroup of 256 lanes; the runtime prints the array endpoints, so a
+// correct run shows dst[0] = 1 and dst[255] = 511 (dst[i] = 2i + 1). FAST:
+// unlike the .bv gates this compiles in seconds (no CPU verify lanes), so the
+// lane report in g0.sh exercises compile + launch + readback on every run.
+let i: Int = 0;
+let dst: Int[256];
+
+async node scale [i < 256][i == 256] {
+    dst[i] = i * 2 + 1;
+    i = i + 1;
+    term;
+};

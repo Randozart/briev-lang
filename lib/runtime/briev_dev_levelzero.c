@@ -286,9 +286,32 @@ static int briev_dev_levelzero_create_kernel(const uint8_t* spirv, size_t size, 
     lz_kernel_desc kd = {0};
     kd.stype = ZE_ST_KERNEL_DESC;
     kd.flags = 0;
-    // The module's entry point is `main` (kernel.rs), the same name the
-    // Vulkan pipeline and the OpenCL clCreateKernel consume.
-    kd.pKernelName = "main";
+    // 2026-11-08 (Intel G1.5 Stage F): the image may be Vulkan-flavored
+    // ("main") or the OpenCL projection ("briev_kernel"). Ask the module
+    // instead of assuming, preferring the OpenCL entry when present.
+    char entry_name[64] = "main";
+    {
+        uint32_t nn = 0;
+        if (zeModuleGetKernelNames(module, &nn, NULL) == ZE_SUCCESS && nn > 0) {
+            const char** names = (const char**)calloc(nn, sizeof(char*));
+            if (names && zeModuleGetKernelNames(module, &nn, names) == ZE_SUCCESS) {
+                const char* pick = NULL;
+                for (uint32_t ni = 0; ni < nn; ni++) {
+                    if (names[ni] && strcmp(names[ni], "briev_kernel") == 0) { pick = names[ni]; break; }
+                }
+                for (uint32_t ni = 0; !pick && ni < nn; ni++) {
+                    if (names[ni] && strcmp(names[ni], "main") == 0) { pick = names[ni]; break; }
+                }
+                if (!pick && names[0]) pick = names[0];
+                if (pick) {
+                    strncpy(entry_name, pick, sizeof(entry_name) - 1);
+                    entry_name[sizeof(entry_name) - 1] = '\0';
+                }
+            }
+            free(names);
+        }
+    }
+    kd.pKernelName = entry_name;
     lz_handle kernel = NULL;
     res = zeKernelCreate(module, &kd, &kernel);
     if (res != ZE_SUCCESS) {
@@ -309,7 +332,7 @@ static int briev_dev_levelzero_create_kernel(const uint8_t* spirv, size_t size, 
             } else {
                 fprintf(stderr, "[briev_accel/levelzero] module exposes no kernels\n");
             }
-            fprintf(stderr, "[briev_accel/levelzero] zeKernelCreate(\"main\") failed res=%d (0x%x)\n", res, res);
+            fprintf(stderr, "[briev_accel/levelzero] zeKernelCreate(\"%s\") failed res=%d (0x%x)\n", entry_name, res, res);
         }
         zeModuleDestroy(module);
         return 0;
@@ -360,7 +383,7 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
         lz_host_mem_desc hd = {0};
         hd.stype = ZE_ST_HOST_MEM_ALLOC_DESC;
         hd.flags = 0;
-        int res = zeMemAllocHost(lz_driver, &hd, proj_bytes, 64, &k->staging);
+        int res = zeMemAllocHost(lz_ctx, &hd, proj_bytes, 64, &k->staging);
         if (res != ZE_SUCCESS) {
             if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] zeMemAllocHost failed res=%d bytes=%zu\n",
                                    res, proj_bytes);
