@@ -50,7 +50,9 @@ pub mod watchdog;
 pub mod walk;
 pub mod web_commits;
 
+pub mod typing;
 pub use cast_paths::resolve_cast_paths;
+pub use typing::annotate_types;
 pub use constructors::{build_constructor_facts, HirConstructorFacts, HirVariantFact, HirVariantRef};
 pub use facts::{build_facts, HirFacts};
 pub use frontend::lower_program_after_frontend;
