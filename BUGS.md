@@ -1,3 +1,21 @@
+## Reclamation set unions dominate large application compilation — FIX IMPLEMENTED 2026-11-09
+
+**Symptom:** the debug compiler at `114b2a54` spent 47m16s CPU compiling the
+external recommender server without reaching emission before cancellation.
+RSS was approximately 475 MB. Profiling and a debugger backtrace locate repeated
+element-wise BTreeSet insertion in `Graph::field_contents` during fixed-point
+propagation, not LLVM, database access or Docker.
+
+**Correction:** represent points-to/raw/named-memory node sets as
+ordered sparse 64-bit words and union words exactly. Preserve every constraint,
+constant fact, conservative escape and convergence condition. The isolated
+union experiment confirms equal results and reduced work. The release compiler
+now builds the native server in 197.21 seconds versus a 600-second timeout at
+the base. Debug compilation still exceeds ten minutes. All 3,556 library tests,
+two set-algebra Kani proofs and 44 runtime benchmark summary rows pass; 53
+collected LLVM files are byte-identical. Full gates and timing limits are in
+`docs/plans/2026-11-09-reclamation-solver-cost.md`.
+
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 
 With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary

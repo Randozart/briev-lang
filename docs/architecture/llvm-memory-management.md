@@ -1198,6 +1198,18 @@ same allocation site. Copy, projection, raw memory, return and call constraints
 reach a fixed point across recursive edges. Generic bodies use the same concrete
 specialization identity as codegen (`analysis/generic_specialization.rs`).
 
+The graph's points-to, raw-memory and named-field sets use exact sparse words
+(`analysis/reclamation/node_set.rs`, 2026-11-09). Each ordered map entry holds
+64 consecutive node memberships; union ORs words and reports whether any fact
+was added. Sparse high node IDs do not allocate empty intervening words. Iteration
+remains ascending and deterministic. The finite fixed-point solver, scalar
+constant lattice and conservative escape classification are unchanged. This
+representation removes per-fact tree insertion from repeated dense unions; it
+does not cap facts or stop solving early. Differential tests compare all memory
+facts with the original element-wise transfer rules, and Kani checks word union
+and sparse iteration. Replace only with an exact representation preserving those
+invariants.
+
 The initial consumer targets hosted native Linux x86-64 executables. Library,
 shared-library, embedded, wasm and existing arena paths keep their existing
 lowering. A scope is eligible only if no owned allocation reaches a returned

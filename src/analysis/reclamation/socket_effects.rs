@@ -42,8 +42,9 @@ impl Graph {
     /// unknown, never a proof. Retire with the general scalar fact engine.
     pub(super) fn bitwise_facts(&mut self, operator: BinaryOpKind, left: Node, right: Node, result: Node) -> bool {
         let before = (self.points[result].len(), self.constants[result].len(), self.inexact_constants.contains(&result));
-        let references = self.points[left].union(&self.points[right]).copied().collect::<Vec<_>>();
-        self.points[result].extend(references);
+        let mut references = self.points[left].clone();
+        references.union_with(&self.points[right]);
+        self.points[result].union_with(&references);
         if self.inexact_constants.contains(&left) || self.inexact_constants.contains(&right) {
             self.inexact_constants.insert(result);
         }
