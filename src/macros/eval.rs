@@ -596,7 +596,7 @@ fn evaluate_stage_stmt(
             }
             Ok(None)
         }
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             let list_val = eval_nav_chain(list, program, universe, stage, scope, sandbox, pm)?;
             let items = match list_val {
                 NavValue::Selection(sel) => sel,
@@ -2443,6 +2443,7 @@ mod tests {
                     Expr::Identifier("imp".into()),
                 ], None)),
             ],
+        modifiers: vec![],
         };
         let body = vec![foreach_stmt];
         let result = evaluate_stage_block(&body, &mut program, &mut universe,

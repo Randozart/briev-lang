@@ -772,6 +772,7 @@ mod tests {
                     inclusive: false,
                 }),
                 body,
+            modifiers: vec![],
             },
             // y[i] = acc;
             Statement::Assign(index(idx("y"), idx("i")), idx("acc")),

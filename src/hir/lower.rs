@@ -671,10 +671,11 @@ fn lower_stmt(statement: &Statement, ids: &mut IdSupply) -> HirStmt {
             HirStmtKind::Guarded(lower_expr(cond, ids), lower_body(body, ids))
         }
         Statement::Block(body) => HirStmtKind::Block(lower_body(body, ids)),
-        Statement::Foreach { item, list, body } => HirStmtKind::Foreach {
+        Statement::Foreach { item, list, body, modifiers, .. } => HirStmtKind::Foreach {
             item: item.clone(),
             list: lower_expr(list, ids),
             body: lower_body(body, ids),
+            modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
         },
         Statement::Match { expr, arms } => HirStmtKind::Match {
             expr: lower_expr(expr, ids),

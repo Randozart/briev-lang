@@ -1549,6 +1549,7 @@ mod tests {
                 item: "c".to_string(),
                 list: Box::new(Expr::Identifier("s".into())),
                 body: vec![Statement::Term(None)],
+            modifiers: vec![],
             }]),
             defn("briev_str_next_char", vec![Statement::Term(None)]),
             defn("orphan", vec![Statement::Term(None)]),

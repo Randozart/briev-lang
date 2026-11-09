@@ -193,3 +193,26 @@ Illustrative placements (to be decided):
 - **Both:** contradiction error.
 - **Not:** a speed keyword, a contract weakening, or a global `-ffast-math`
   policy. `!>` numeric keys are not the author surface (retirement pending).
+
+## The `seq` contract (2026-11-08)
+
+`seq` asserts the declared order is part of the observable semantics:
+
+- **Declarations:** `seq struct` = declaration-order layout; `seq let`
+  array = sequential/predictable layout, compiler layout optimizations
+  (16B alignment, vec4/pair retypes) disabled. Layout is observable across
+  FFI/raw-storage boundaries.
+- **Loops:** `seq foreach` = iteration order is observable — no reordering,
+  overlap, or parallelization that changes the order of effects (FFI calls,
+  overlapping writes, ordered accumulation, `break`).
+
+No reordering/vectorization is a **consequence**, not the purpose. If the
+order is provably unobservable, the declaration is redundant (razor) and is
+diagnosed when the proof is available. `seq` never makes code faster;
+requiring it to win is a failing default.
+
+Relationship to the numeric pair: `exact` = the numeric result must match
+precise source-order evaluation; `approx` = rounding may differ; `seq` = the
+effect/iteration order is observable (which also pins float accumulation
+order, so a `seq` float fold is not reassociated). `seq` + `approx` can
+coexist: order pinned across iterations, per-op contraction still permitted.

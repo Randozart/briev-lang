@@ -2267,10 +2267,11 @@ fn lower_stmt_bare_terms(s: &Statement, post: &Expr) -> Statement {
         Statement::SyncBlock(b) => Statement::SyncBlock(lower_bare_terms(b, post)),
         Statement::Mutex(b) => Statement::Mutex(lower_bare_terms(b, post)),
         Statement::Defer(b) => Statement::Defer(lower_bare_terms(b, post)),
-        Statement::Foreach { item, list, body } => Statement::Foreach {
+        Statement::Foreach { item, list, body, modifiers } => Statement::Foreach {
             item: item.clone(),
             list: list.clone(),
             body: lower_bare_terms(body, post),
+            modifiers: modifiers.clone(),
         },
         Statement::Match { expr, arms } => Statement::Match {
             expr: expr.clone(),
@@ -2738,7 +2739,7 @@ pub fn eval_statement(
             // (does NOT propagate outward), so it never surfaces to a caller.
             Err(RuntimeError::Break)
         }
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             let iterable = eval_expr(list, heap, bindings, functions)?;
             let mut result = Value::Void;
             match iterable {
@@ -3263,6 +3264,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(15));
@@ -3289,6 +3291,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(10));
@@ -3330,6 +3333,7 @@ defn go() -> Int {
                     Expr::Identifier("i".to_string()),
                 ),
             ],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(42));
@@ -3355,6 +3359,7 @@ defn go() -> Int {
                 Expr::Identifier("acc".to_string()),
                 Expr::Decimal(0),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(7));
@@ -3378,6 +3383,7 @@ defn go() -> Int {
                     Box::new(Expr::Identifier("x".to_string())),
                 ),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(6));
@@ -3403,6 +3409,7 @@ defn go() -> Int {
                     Box::new(Expr::Decimal(1)),
                 ),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(2));
@@ -3425,6 +3432,7 @@ defn go() -> Int {
                     Box::new(Expr::Cast(Box::new(Expr::Identifier("c".to_string())), crate::ast::Type::int())),
                 ),
             )],
+        modifiers: vec![],
         };
         eval_statement(&foreach, &mut heap, &mut bindings, &HashMap::new()).unwrap();
         assert_eq!(bindings.get("acc").and_then(|v| v.as_i64()), Some(0xE9));

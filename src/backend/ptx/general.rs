@@ -132,6 +132,7 @@ pub(crate) fn synthesize_row_softmax(
                 Expr::Call("Max#".into(), vec![id(m), id(&v)], None),
             ),
         ],
+    modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(m),
@@ -160,6 +161,7 @@ pub(crate) fn synthesize_row_softmax(
                 )),
             ),
         )],
+    modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(s),
@@ -181,6 +183,7 @@ pub(crate) fn synthesize_row_softmax(
                 Box::new(id(s)),
             ),
         )],
+    modifiers: vec![],
     });
 
     out.kernel_stmts = stmts;
@@ -262,6 +265,7 @@ pub(crate) fn synthesize_row_dot(
                 )),
             ),
         )],
+    modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(acc),
@@ -525,6 +529,7 @@ impl LaneReductionPlan {
                 item,
                 list,
                 body: inner,
+                ..
             } = stmt
             else {
                 continue;
@@ -1180,7 +1185,7 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
-            Statement::Foreach { item, list, body: loop_body } => {
+            Statement::Foreach { item, list, body: loop_body , ..} => {
                 // 2026-09-17 (M2a): bounded loops in the general PTX kernel —
                 // `foreach c in start..end` lowers to a counter register +
                 // label/branch pair; the item binds like a local so body
@@ -2780,6 +2785,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![Statement::Assign(id("acc"), pv_addend())],
+        modifiers: vec![],
         }];
         assert!(SerialUnrollPlan::match_body(&nested, &ctx("j", 0, 4096, 4), &c).is_none());
     }
@@ -2865,6 +2871,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![Statement::Assign(id("acc"), pv_addend())],
+        modifiers: vec![],
         });
         kernel_stmts.push(Statement::Assign(idx("out", id("t")), id("acc")));
         crate::analysis::accel::KernelShape {
@@ -3691,6 +3698,7 @@ mod tests {
                         bin(Mul, idx("q", v4_q_idx()), idx("k", v4_kv_idx())),
                     ),
                 )],
+            modifiers: vec![],
             }
         };
         let pass_a = Statement::Foreach {
@@ -3704,6 +3712,7 @@ mod tests {
                     Expr::Call("Max#".into(), vec![id("m"), id("sc")], None),
                 ),
             ],
+        modifiers: vec![],
         };
         let pass_b = Statement::Foreach {
             item: "j".into(),
@@ -3727,8 +3736,10 @@ mod tests {
                             bin(Mul, id("p"), idx("v", v4_kv_idx())),
                         ),
                     )],
+                modifiers: vec![],
                 },
             ],
+        modifiers: vec![],
         };
         let norm = Statement::Foreach {
             item: "d".into(),
@@ -3737,6 +3748,7 @@ mod tests {
                 idx("a_out", v4_q_idx()),
                 bin(Div, idx("o1", v4_q_idx()), id("l")),
             )],
+        modifiers: vec![],
         };
         v4_shape_kernel(vec![
             v4_let("kh", "Int", bin(Div, id("r"), id("G"))),
@@ -4014,15 +4026,15 @@ fn detect_deferred_region(
     }
     ;
     let _ = kh;
-    let Statement::Foreach { item: ja, list: la_range, body: la_body } = la else { return None };
+    let Statement::Foreach { item: ja, list: la_range, body: la_body , ..} = la else { return None };
     let j_name = ja.clone();
     let Expr::Range { end: la_end, .. } = la_range.as_ref() else { return None };
-    let Statement::Foreach { item: jb, list: lb_range, body: lb_body } = lb else { return None };
+    let Statement::Foreach { item: jb, list: lb_range, body: lb_body , ..} = lb else { return None };
     let Expr::Range { end: lb_end, .. } = lb_range.as_ref() else { return None };
     if format!("{:?}", la_end) != format!("{:?}", lb_end) || jb != &j_name {
         return None;
     }
-    let Statement::Foreach { item: dc, list: lc_range, body: lc_body } = lc else { return None };
+    let Statement::Foreach { item: dc, list: lc_range, body: lc_body , ..} = lc else { return None };
     let Expr::Range { end: lc_end, .. } = lc_range.as_ref() else { return None };
 
     let m_name = m_name?;
@@ -4038,7 +4050,7 @@ fn detect_deferred_region(
         Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &la_stmts[1]),
         _ => return None,
     };
-    let Statement::Foreach { item: da, list: da_range, body: da_body } = dot_a else { return None };
+    let Statement::Foreach { item: da, list: da_range, body: da_body , ..} = dot_a else { return None };
     let Expr::Range { end: da_end, .. } = da_range.as_ref() else { return None };
     if da_body.len() != 1 {
         return None;
@@ -4074,7 +4086,7 @@ fn detect_deferred_region(
         Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &lb_stmts[1]),
         _ => return None,
     };
-    let Statement::Foreach { item: db, list: db_range, body: db_body } = dot_b else { return None };
+    let Statement::Foreach { item: db, list: db_range, body: db_body , ..} = dot_b else { return None };
     let Expr::Range { end: db_end, .. } = db_range.as_ref() else { return None };
     if format!("{:?}", db_end) != format!("{:?}", da_end) || db_body.len() != 1 {
         return None;
@@ -4094,7 +4106,7 @@ fn detect_deferred_region(
     if !format!("{:?}", l_rhs).contains(&format!("\"{}\"", p_name)) {
         return None;
     }
-    let Statement::Foreach { item: dc2, list: dc2_range, body: dc2_body } = &lb_stmts[4] else { return None };
+    let Statement::Foreach { item: dc2, list: dc2_range, body: dc2_body , ..} = &lb_stmts[4] else { return None };
     if format!("{:?}", dc2_range) != format!("{:?}", lc_range) || dc2_body.is_empty() {
         return None;
     }

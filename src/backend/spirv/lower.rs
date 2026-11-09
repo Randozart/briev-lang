@@ -322,7 +322,7 @@ impl<'a> FnLowerer<'a> {
             // lowers to a STRUCTURED loop (OpLoopMerge) over a Function-scope
             // loop variable. The loop var was pre-declared in the entry block
             // by collect_locals; the body obeys the same scalar/array rules.
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, list, body , ..} => {
                 let Expr::Range { start, end, inclusive } = list.as_ref() else {
                     return self.err(
                         "foreach over a non-range collection - kernel loops iterate `start..end` ranges only",
@@ -1860,10 +1860,32 @@ fn cast_opcode(
     /// The map is filtered to size-compatible pairs first: an alias whose
     /// target has a different device storage size would corrupt (a scalar
     /// sharing an array's slot). `filtered_reuse_map` is the single filter.
+    /// 2026-11-08 (seq-loop decision): state arrays declared `seq let` are
+    /// LAYOUT-PINNED — the array is laid out sequentially in declaration
+    /// order and the compiler must not apply its layout optimizations
+    /// (16-byte array alignment / vec4 / pair views). The pinning is an
+    /// assertion: the projection uses plain packed offsets for these fields.
+    pub fn seq_layout_fields(items: &[crate::ast::TopLevel]) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for item in items {
+            if let crate::ast::TopLevel::Statement(stmt) = item {
+                if let crate::ast::Statement::Let { name, ty: Some(ty), modifiers, .. } = stmt.as_ref() {
+                    if matches!(ty, crate::ast::Type::Vector(..))
+                        && modifiers.iter().any(|m| m.name == "seq")
+                    {
+                        out.insert(name.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub fn projection_offsets(
         builder: &mut SpirvBuilder,
         fields: &[StateField],
         reuse_map: Option<&HashMap<String, String>>,
+        pinned: &std::collections::HashSet<String>,
     ) -> Result<Vec<u32>, String> {
         let reuse = Self::filtered_reuse_map(builder, fields, reuse_map)?;
         let mut offsets = Vec::with_capacity(fields.len());
@@ -1874,7 +1896,8 @@ fn cast_opcode(
             // (8 f16 OR 4 f32), so an 8-aligned f16 array like q@65576
             // (65576 % 16 == 8) made the fused attention's fill read
             // misaligned. vec4 (f32) arrays aligned before; f16 now too.
-            if Self::is_vector_type(&f.ty)? {
+            // Layout-pinned (`seq let`) fields stay packed/sequential.
+            if Self::is_vector_type(&f.ty)? && !pinned.contains(&f.name) {
                 offset = offset.next_multiple_of(16);
             }
             offsets.push(offset);
@@ -2116,7 +2139,11 @@ fn cast_opcode(
     /// Declare the StorageBuffer struct over collected fields (sorted by
     /// name — determinism rule) and create its variable. Called BEFORE any
     /// body statement lowers.
-    pub fn setup_state_buffer(&mut self, reuse_map: Option<&HashMap<String, String>>) -> Result<(), String> {        if self.state_fields.is_empty() {
+    pub fn setup_state_buffer(
+        &mut self,
+        reuse_map: Option<&HashMap<String, String>>,
+        pinned: &std::collections::HashSet<String>,
+    ) -> Result<(), String> {        if self.state_fields.is_empty() {
             return Ok(());
         }
         self.state_fields.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2125,7 +2152,7 @@ fn cast_opcode(
         // THE layout rule (plan 2026-09-01-vec4-projection-layout): shared
         // with the runner + LLVM descriptor paths; vec4-eligible arrays are
         // 16B-aligned, everything else packed.
-        let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map)?;
+        let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map, pinned)?;
         // Phase 3 — buffer reuse: identify aliased fields (skipped from the
         // SSBO struct; AccessChain remaps to the target's member index) and
         // record the alias map for body lowering. Filtered to size-compatible
@@ -2146,6 +2173,10 @@ fn cast_opcode(
                 .position(|f| &f.name == fname)
                 .unwrap_or(0)];
             let f = (fname, fty);
+            // `seq let`: layout-pinned — no pair/vec4 retyping.
+            if pinned.contains(f.0) {
+                continue;
+            }
             if let Some(width) = self.view_width(f.0, f.1)? {
                 let arr_id = Self::pair_member_type(self.builder, f.1, width)?;
                 pair_ids.push((f.0.clone(), arr_id, f.1.clone()));
@@ -3348,7 +3379,7 @@ mod vec4_gate_tests {
             StateField { name: "y".into(), ty: f32_vec(16) },
         ];
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, None).expect("layout");
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, None, &std::collections::HashSet::new()).expect("layout");
         // a @ 0 (already 16-aligned)
         assert_eq!(offs[0], 0, "a: first field, naturally aligned");
         // i: scalar Bit<64> → 8 bytes, PACKED right after a (host==this rule
@@ -3359,8 +3390,34 @@ mod vec4_gate_tests {
         // y: x ends 16400+64=16464 (already aligned) → packed
         assert_eq!(offs[3], 16464, "y: already aligned after x");
         // Determinism: same input, same output.
-        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields, None).expect("layout");
+        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields, None, &std::collections::HashSet::new()).expect("layout");
         assert_eq!(offs, offs2, "the layout rule must be deterministic");
+    }
+
+    #[test]
+    fn projection_offsets_seq_pins_arrays_to_packed_layout() {
+        // 2026-11-08 (seq-loop decision): a `seq let` array is laid out
+        // sequentially — no 16-byte alignment; the compiler's layout
+        // optimization is disabled for it.
+        let mut sb = SpirvBuilder::new();
+        let fields = vec![
+            StateField { name: "counter".into(), ty: Type::int() },
+            StateField {
+                name: "pinned".into(),
+                ty: Type::Vector(Box::new(Type::float()), vec![crate::ast::Dimension::Anonymous(16)]),
+            },
+        ];
+        let unpinned = FnLowerer::projection_offsets(
+            &mut sb, &fields, None, &std::collections::HashSet::new(),
+        ).expect("offsets");
+        assert_eq!(unpinned[0], 0);
+        assert_eq!(unpinned[1], 16, "vec4-eligible arrays align to 16 by default");
+        let mut pinned = std::collections::HashSet::new();
+        pinned.insert("pinned".to_string());
+        let packed = FnLowerer::projection_offsets(&mut sb, &fields, None, &pinned)
+            .expect("pinned offsets");
+        assert_eq!(packed[0], 0);
+        assert_eq!(packed[1], 8, "seq pins the array to the packed sequential offset");
     }
 
     #[test]
@@ -3374,7 +3431,7 @@ mod vec4_gate_tests {
         let mut reuse = HashMap::new();
         reuse.insert("y".into(), "x".into());
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse)).expect("layout");
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse), &std::collections::HashSet::new()).expect("layout");
         // x gets its natural 16B-aligned offset (0 for the first field).
         assert_eq!(offs[0], 0, "x: first field, base offset 0");
         // y is aliased to x → same offset.
@@ -3387,7 +3444,7 @@ mod vec4_gate_tests {
         ];
         let mut reuse3 = HashMap::new();
         reuse3.insert("c".into(), "a".into());
-        let offs3 = FnLowerer::projection_offsets(&mut sb, &fields3, Some(&reuse3)).expect("layout");
+        let offs3 = FnLowerer::projection_offsets(&mut sb, &fields3, Some(&reuse3), &std::collections::HashSet::new()).expect("layout");
         assert_eq!(offs3[0], 0, "a: base offset 0");
         assert_eq!(offs3[1], 16 * 4, "b: packed after a (64 bytes)");
         assert_eq!(offs3[2], 0, "c: aliased to a, shares offset 0");
@@ -3404,7 +3461,7 @@ mod vec4_gate_tests {
         let mut reuse = HashMap::new();
         reuse.insert("scal".into(), "arr".into());
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse)).expect("layout");
+        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse), &std::collections::HashSet::new()).expect("layout");
         assert_eq!(offs[0], 0, "arr: first field, offset 0");
         assert_eq!(offs[1], 16 * 4, "scal: keeps its own slot (filtered out)");
         // Same-size pair survives.
@@ -3414,7 +3471,7 @@ mod vec4_gate_tests {
             StateField { name: "arr".into(), ty: f32_vec(8) },
             StateField { name: "scal".into(), ty: f32_vec(8) },
         ];
-        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields2, Some(&reuse2)).expect("layout");
+        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields2, Some(&reuse2), &std::collections::HashSet::new()).expect("layout");
         assert_eq!(offs2[1], 0, "same-size array aliases to arr's offset 0");
     }
 }

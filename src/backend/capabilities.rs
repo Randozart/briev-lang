@@ -741,6 +741,7 @@ mod tests {
             item: "x".into(),
             list: Box::new(Expr::List(vec![Expr::Decimal(1)])),
             body: vec![Statement::Expression(Expr::Identifier("x".into()))],
+        modifiers: vec![],
         }]);
         let errs = validate_program(&prog, &VM);
         assert!(!errs.is_empty());

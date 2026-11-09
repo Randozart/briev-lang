@@ -245,7 +245,7 @@ impl Builder<'_> {
             Statement::Expression(value) | Statement::Check(value) | Statement::Gate(value) => { self.expression(value); }
             Statement::Guarded(condition, body) => { self.expression(condition); self.statements(body); }
             Statement::Block(body) | Statement::SyncBlock(body) | Statement::Mutex(body) | Statement::Defer(body) => self.statements(body),
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, list, body , ..} => {
                 if matches!(list.as_ref(), Expr::Range { .. }) { self.types.insert(item.clone(), crate::ast::Type::int()); }
                 let source = self.expression(list);
                 let target = self.local(item);

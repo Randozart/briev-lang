@@ -696,6 +696,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![spawn("Counter")],
+        modifiers: vec![],
         };
         let program = vec![countdown_with_body(Expr::Identifier("N".into()), vec![foreach])];
         let (_, dependent, errors, _) = analyze(&program);

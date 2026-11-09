@@ -77,8 +77,11 @@ pub enum Token {
     Async,
 
     /// 2026-08-01 (E): `seq` — ordering/layout/sequence modifier (prefix).
-    /// `seq struct` bypasses apply_field_modes; `seq node`/`seq txn` use
-    /// sequential dispatch; `seq Int[x]`/`seq foreach` disable vectorization.
+    /// `seq struct` preserves declaration order; `seq node`/`seq txn` use
+    /// sequential dispatch; `seq let` pins an array's layout (sequential,
+    /// no compiler layout optimization); `seq foreach` pins the iteration
+    /// order (observable effects in declared order). Suppressing
+    /// vectorization is a consequence, never the purpose — SPEC §2.4.
     #[token("seq")]
     Seq,
 

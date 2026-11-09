@@ -198,6 +198,7 @@ pub(crate) fn synthesize_reduce_stmts(
                     )),
                 ),
             )],
+        modifiers: vec![],
         });
     }
     // Cross-lane reduce — uniform across the subgroup, so every lane stores
@@ -333,7 +334,8 @@ pub fn emit_kernel(
         warm.set_pair_view_fields(pair_view_fields);
         warm.materialize_consts(items)?;
         warm.warm_builtins()?;
-        warm.setup_state_buffer(surface.reuse_map)?;
+        let pinned = FnLowerer::seq_layout_fields(items);
+        warm.setup_state_buffer(surface.reuse_map, &pinned)?;
         warm.declare_images()?;
         (
             warm.ssbo_var,
@@ -1071,6 +1073,7 @@ pub(crate) fn synthesize_softmax_stmts(
                 Expr::Call("Max#".into(), vec![id(m), id(v)], None),
             ),
         ],
+    modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(m),
@@ -1099,6 +1102,7 @@ pub(crate) fn synthesize_softmax_stmts(
                 )),
             ),
         )],
+    modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(s),
@@ -1120,6 +1124,7 @@ pub(crate) fn synthesize_softmax_stmts(
                 Box::new(id(s)),
             ),
         )],
+    modifiers: vec![],
     });
 
     out.kernel_stmts = stmts;
@@ -1767,6 +1772,7 @@ fn emit_cooperative_scalar(
             inclusive: false,
         }),
         body: new_body,
+    modifiers: vec![],
     };
     let (pre_loop, post_loop) = split_at_foreach(&shape.kernel_stmts);
     for stmt in &pre_loop {
@@ -1939,6 +1945,7 @@ mod decomposition_gate_tests {
                     inclusive: false,
                 }),
                 body: inner,
+            modifiers: vec![],
             },
         ];
         let shape = shape_with(stmts);

@@ -49,6 +49,23 @@ impl<'a> Parser<'a> {
             Some(Token::EndProgram) => self.parse_endprogram_statement(),
             Some(Token::Rollback) => self.parse_rollback_statement(),
             Some(Token::Foreach) => self.parse_foreach_statement(),
+            // 2026-11-08 (seq-loop decision): `seq foreach` — the declared
+            // iteration order is part of the observable semantics (no
+            // reordering/overlap/parallelization). Scoped statement
+            // modifier; only `seq` is admitted on a loop today.
+            Some(Token::Seq)
+                if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Foreach)) =>
+            {
+                self.pos += 1;
+                let mut stmt = self.parse_foreach_statement()?;
+                if let Statement::Foreach { modifiers, .. } = &mut stmt {
+                    modifiers.push(crate::ast::Annotation {
+                        name: "seq".to_string(),
+                        value: None,
+                    });
+                }
+                Ok(stmt)
+            }
             Some(Token::Break) => {
                 self.pos += 1;
                 self.eat(&Token::Semicolon);
@@ -414,6 +431,7 @@ impl<'a> Parser<'a> {
             item,
             list: Box::new(list),
             body,
+        modifiers: vec![],
         })
     }
 
@@ -981,6 +999,31 @@ mod tests {
     }
 
     // ── 2026-08-09 (Phase 10): defer/mutex statements ─────────────────
+
+    #[test]
+    fn seq_foreach_parses_with_the_annotation() {
+        // 2026-11-08 (seq-loop decision): `seq foreach` is a statement-level
+        // modifier; the annotation is carried on the Foreach node.
+        let src = "defn f(a: Int[4]) -> Int {
+            let acc: Int = 0;
+            seq foreach k in 0..4 { acc = acc + a[k]; };
+            term acc;
+        };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let program = p.parse_program().unwrap();
+        let crate::ast::TopLevel::Definition(d) = &program[0] else {
+            panic!("expected defn");
+        };
+        let mut saw = false;
+        for stmt in &d.body {
+            if let crate::ast::Statement::Foreach { modifiers, .. } = stmt {
+                saw = true;
+                assert!(modifiers.iter().any(|m| m.name == "seq"));
+            }
+        }
+        assert!(saw, "seq foreach must parse into a Foreach with modifiers");
+    }
 
     #[test]
     fn defer_mutex_parse() {

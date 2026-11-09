@@ -283,7 +283,7 @@ fn match_foreach(
     consts: &HashMap<String, i64>,
 ) -> Option<(String, i64, Vec<Statement>)> {
     for stmt in stmts {
-        if let Statement::Foreach { item, list, body } = stmt {
+        if let Statement::Foreach { item, list, body , ..} = stmt {
             if let Expr::Range { end, .. } = list.as_ref() {
                 let end = fold_consts(end, consts);
                 if let Some(k) = lit(&end, consts) {

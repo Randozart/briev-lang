@@ -1336,6 +1336,7 @@ mod tests {
                         Box::new(Expr::Identifier("x".to_string())),
                     ),
                 )],
+            modifiers: vec![],
             },
         ];
         let mut items = vec![

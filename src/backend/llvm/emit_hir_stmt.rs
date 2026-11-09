@@ -241,7 +241,7 @@ fn emit_foreach_statement_hir(backend: &mut LlvmBackend, out: &mut String, stmt:
     // (native or per-child conversion). The list converts BEFORE any
     // emission (carrier allocas come first in the helper), so None falls
     // back cleanly.
-    if let HirStmtKind::Foreach { item, list, body } = &stmt.kind {
+    if let HirStmtKind::Foreach { item, list, body, .. } = &stmt.kind {
         let Some(ast_list) = crate::hir::to_ast::expr(list) else {
             return None;
         };

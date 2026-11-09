@@ -126,6 +126,13 @@ The compiler reads the whole program — the reactive node DAG, the contracts, t
 
 The **numeric ambiguity pair** `approx` / `exact` (node/txn prefix modifiers) is the second canonical class. Floating-point addition and multiplication are not associative: reassociating a reduction changes its rounding versus source-order evaluation. The default is therefore **precise**: float operations evaluate in source order, and a fold is not reassociated. `approx` declares that the node's numeric result may deviate within floating-point rounding — the fold may be reassociated (a parallel reduction lane). `exact` asserts that the precise sequential result is required: the node's floats are neither reassociated nor contracted, and the parallel fold lane is suppressed. The two contradict and cannot appear together. `exact` is an assertion, not a requirement — the default is already precise. Both are disclosed in diagnostics; neither is a speed keyword, and neither weakens a contract. A float fold is licensed without either keyword only when the compiler *proves* reassociation exact (e.g. bounding facts keep every partial sum representable). *Staged:* the category and its resolution machinery are normative; individual ambiguity keywords are admitted through the process below.
 
+**The `seq` contract (2026-11-08).** `seq` asserts that the **declared order is part of the observable semantics**:
+
+- On a **declaration** (`seq struct`, `seq let` array): the layout follows declaration order — struct fields in written order; an array laid out sequentially (element `i` at offset `i · sizeof(elem)`), with the compiler's layout optimizations (16-byte array alignment, vec4/pair retyping) disabled for it. Layout pinning is an assertion the compiler checks and honors; it exists because layout is observable across FFI/raw-storage boundaries.
+- On a **loop** (`seq foreach`): iteration 0's observable effects happen before iteration 1's; the compiler must not reorder, overlap, or parallelize iterations in any way that changes that order (FFI/I/O call order, overlapping writes, ordered accumulation, `break` semantics).
+
+Suppressing vectorization/parallelization is a **consequence**, never the purpose: if the compiler can prove the loop's order unobservable, a `seq` declaration is redundant and is diagnosed when that proof is available. `seq` is a strategy keyword like the others — it may never make code faster, and requiring it to win is a failing default. It is distinct from the numeric ambiguity pair (§2.4): `exact` constrains the numeric *result*, `approx` permits rounding, `seq` constrains the *order of effects* (it also pins float accumulation order, so a `seq` float fold is not reassociated).
+
 **Intrinsics and fundamentals** — `Sqrt#`, `Mmap#`, `SubgroupFAdd#`, … and the fundamental types of §2.1. They name hardware machinery, not behaviour or ambiguity. Author-facing access to one is legitimate only for a *required hardware semantics* or as a *retirement-gated derivation gap* — never as a speed lever.
 
 **The observability razor.** A keyword is legitimate if and only if removing it changes observable behaviour. Speed is never the argument — at most a consequence. A keyword whose removal preserves all observable behaviour is a performance hint in disguise: fix the default, never keyword it. A keyword for a choice the contracts already determine is redundant: the compiler derives it, and the keyword is a bug.
@@ -1055,7 +1062,9 @@ exceptions:
 Restrictions: `async`/`sync<group>`/`accel` apply to a node or txn;
 `vol`/`mem`/`reg` apply to `let` only; `out` applies to a defn, node,
 txn, or let; `seq`/`pack`/`coll` before a struct/obj are layout flags the
-struct parser owns (`pack seq struct`, `seq pack struct`). The numeric
+struct parser owns (`pack seq struct`, `seq pack struct`); `seq let`
+pins an array's layout (§2.4 `seq` contract); `seq foreach` pins the
+iteration order (statement-level modifier). The numeric
 ambiguity pair `approx`/`exact` applies to a node or txn; naming both on
 one declaration is a contradiction error.
 

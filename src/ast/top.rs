@@ -473,6 +473,10 @@ pub enum Statement {
         item: String,
         list: Box<Expr>,
         body: Vec<Statement>,
+        /// 2026-11-08 (seq-loop decision): statement-level modifiers.
+        /// Currently only `seq`: the declared iteration order is part of the
+        /// observable semantics — no reordering/overlap/parallelization.
+        modifiers: Vec<Annotation>,
     },
     /// trg name @ instance; — whole-target form (the .port is removed).
     TrgBinding {
@@ -558,8 +562,8 @@ impl PartialEq for Statement {
             (Statement::Block(b1), Statement::Block(b2)) => b1 == b2,
             (Statement::MetadataAssignment(k1, v1), Statement::MetadataAssignment(k2, v2)) => k1 == k2 && v1 == v2,
             (Statement::Rollback(e1), Statement::Rollback(e2)) => e1 == e2,
-            (Statement::Foreach { item: i1, list: l1, body: b1 },
-             Statement::Foreach { item: i2, list: l2, body: b2 }) => i1 == i2 && l1 == l2 && b1 == b2,
+            (Statement::Foreach { item: i1, list: l1, body: b1 , ..},
+             Statement::Foreach { item: i2, list: l2, body: b2 , ..}) => i1 == i2 && l1 == l2 && b1 == b2,
             (Statement::TrgBinding { name: n1, instance: i1 },
              Statement::TrgBinding { name: n2, instance: i2 }) => n1 == n2 && i1 == i2,
             (Statement::InlineAsm { asm_string: a1, clobbers: c1, span: s1 },

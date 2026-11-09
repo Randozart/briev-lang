@@ -368,6 +368,7 @@ mod tests {
                                 )),
                             ),
                         )],
+                    modifiers: vec![],
                     },
                     Statement::Assign(
                         Expr::Index(
@@ -556,6 +557,7 @@ mod tests {
                                 )),
                             ),
                         )],
+                    modifiers: vec![],
                     },
                     Statement::Assign(
                         Expr::Index(
@@ -1843,6 +1845,7 @@ mod tests {
                                 )),
                             ),
                         )],
+                    modifiers: vec![],
                     },
                     Statement::Assign(
                         Expr::Index(

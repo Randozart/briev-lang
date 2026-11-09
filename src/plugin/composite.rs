@@ -768,7 +768,7 @@ fn unroll_static(
     let mut out = Vec::with_capacity(body.len());
     for s in body {
         match s {
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, list, body , ..} => {
                 match comptime_iters(list, consts, state_types) {
                     Some(iters) => {
                         // Splice the body once per iteration value,
@@ -942,7 +942,7 @@ fn fold_stmt_list(
                     out.push(Statement::Guarded(cond, folded));
                 }
             },
-            Statement::Foreach { item, mut list, body } => {
+            Statement::Foreach { item, mut list, body , ..} => {
                 // Generation happened in unroll_static (PRE-substitution):
                 // by the time a composite body reaches the fold, every
                 // loop range is caller-derived — a RUNTIME quantity by
@@ -956,6 +956,7 @@ fn fold_stmt_list(
                     item,
                     list,
                     body: folded,
+                modifiers: vec![],
                 });
             }
             Statement::Block(body) => {
@@ -1509,6 +1510,7 @@ fn splice_rest_foreach(
                 item,
                 list,
                 body,
+                modifiers,
             } => {
                 let is_rest = match list.as_ref() {
                     Expr::Identifier(n) => n == rest_name,
@@ -1521,6 +1523,7 @@ fn splice_rest_foreach(
                         item,
                         list,
                         body: splice_nested(body, rest_name, rest_args),
+                        modifiers,
                     });
                 }
             }

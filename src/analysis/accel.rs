@@ -156,6 +156,12 @@ pub struct ReductionInfo {
     pub col_buf: String,
     /// Dot: the single write target (`y[i]`). Softmax: the result buffer.
     pub out_buf: String,
+    /// 2026-11-08 (seq-loop decision): the matched foreach carries `seq` —
+    /// the declared iteration order is part of the observable semantics.
+    /// For float folds the accumulation order is observable (rounding), so
+    /// the reassociating lane is suppressed. Integer folds are
+    /// order-independent; `seq` is redundant there.
+    pub seq: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,6 +236,7 @@ impl ReductionInfo {
             row_buf: String::new(),
             col_buf: String::new(),
             out_buf: String::new(),
+            seq: false,
         }
     }
 }
@@ -595,7 +602,7 @@ fn stmt_is_kernel(
         // bounds are pure, and the body obeys every existing rule. The loop
         // itself adds no cross-work-item state: each invocation runs its own
         // copy. Non-range collections (heaps) stay host-side.
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             let Expr::Range { start, end, .. } = list.as_ref() else {
                 ctx.reasons.push(format!(
                     "foreach over a non-range collection — kernel loops \
@@ -988,6 +995,10 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
         row_buf: row,
         col_buf: String::new(),
         out_buf: out,
+        // 2026-11-08: softmax/lane-order interaction is out of scope for the
+        // seq-loop decision (documented follow-up); the declared-composite
+        // gate governs the softmax lane.
+        seq: false,
     })
 }
 
@@ -1222,7 +1233,7 @@ fn trailing_normalize_loop(
     reduce_end: Expr,
 ) -> Option<DeferredNormalization> {
     for (idx, stmt) in stmts.iter().enumerate().skip(after + 1) {
-        let Statement::Foreach { item, list, body } = stmt else {
+        let Statement::Foreach { item, list, body , ..} = stmt else {
             continue;
         };
         let Expr::Range { end, .. } = list.as_ref() else {
@@ -1250,9 +1261,10 @@ fn trailing_normalize_loop(
 fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInfo> {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
-        let Statement::Foreach { list, body, .. } = stmt else {
+        let Statement::Foreach { list, body, modifiers, .. } = stmt else {
             continue;
         };
+        let seq = modifiers.iter().any(|m| m.name == "seq");
         let Expr::Range { end, .. } = list.as_ref() else {
             continue;
         };
@@ -1327,6 +1339,7 @@ fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInf
             row_buf: row,
             col_buf: col,
             out_buf: String::new(),
+            seq,
         });
     }
     None
@@ -1362,9 +1375,10 @@ fn expr_reads(e: &Expr, name: &str) -> bool {
 fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
-        let Statement::Foreach { list, body, .. } = stmt else {
+        let Statement::Foreach { list, body, modifiers, .. } = stmt else {
             continue;
         };
+        let seq = modifiers.iter().any(|m| m.name == "seq");
         let Expr::Range { end, .. } = list.as_ref() else {
             continue;
         };
@@ -1428,6 +1442,7 @@ fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
             row_buf: buf_name.clone(),
             col_buf: String::new(),
             out_buf: String::new(),
+            seq,
         });
     }
     FoldClass::NotFold
@@ -1486,6 +1501,10 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
 pub enum FoldIdiomBlock {
     /// No Sum fold was detected in the shape at all.
     NoFold,
+    /// The fold's `foreach` declared `seq` — the iteration order is part of
+    /// the observable semantics, so the float fold is not reassociated.
+    /// (Integer folds are order-independent; `seq` is redundant there.)
+    SeqPinned,
     /// The node declared `exact` — precise sequential evaluation is
     /// required, so the float fold is not reassociated. (Int folds are
     /// unaffected: their reassociation is exact.)
@@ -1509,6 +1528,11 @@ impl FoldIdiomBlock {
     pub fn describe(self) -> &'static str {
         match self {
             FoldIdiomBlock::NoFold => "no single-accumulator fold was recognized",
+            FoldIdiomBlock::SeqPinned => {
+                "the fold's foreach declares `seq` — iteration order is observable (float \
+                 accumulation order pinned); remove `seq` and declare `approx` to license the \
+                 parallel lane"
+            }
             FoldIdiomBlock::ExactPinned => {
                 "the node declares `exact` — sequential evaluation is pinned, so the float fold is \
                  not reassociated (remove `exact` and declare `approx` to license the parallel lane)"
@@ -1553,6 +1577,12 @@ pub fn fold_idiom_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(),
     }
     let is_float = !fold_buffer_is_int(items, &red.row_buf);
     if is_float {
+        // 2026-11-08 (seq-loop decision, strongest pin first): `seq` on the
+        // fold's foreach declares the iteration order observable — float
+        // accumulation order changes rounding, so no reassociation.
+        if red.seq {
+            return Err(FoldIdiomBlock::SeqPinned);
+        }
         // 2026-11-08 (P1): the numeric ambiguity pair. `exact` pins precise
         // sequential evaluation (assertion); `approx` licenses reassociation;
         // neither = precise default (the why-not names both fixes).
@@ -2448,6 +2478,7 @@ mod tests {
                 inclusive: false,
             }),
             body,
+        modifiers: vec![],
         }
     }
 
@@ -2905,6 +2936,7 @@ mod resident_gate_tests {
                         Expr::Identifier("s".into()),
                         f32_idx(f, "j"),
                     )],
+                modifiers: vec![],
                 }
             })
             .collect();
@@ -2986,6 +3018,7 @@ mod resident_gate_tests {
                 inclusive: false,
             }),
             body,
+        modifiers: vec![],
         }];
         let (reads, _writes, _scalars) = collect_buffers(&stmts, &info);
         assert_eq!(reads, vec!["a".to_string()],
@@ -3179,6 +3212,7 @@ mod fold_idiom_tests {
             item: "k".into(),
             list: Box::new(range(1024)),
             body: vec![Statement::Assign(Expr::Identifier("acc".into()), rhs)],
+        modifiers: vec![],
         }]
     }
 
@@ -3207,6 +3241,7 @@ mod fold_idiom_tests {
             item: "k".into(),
             list: Box::new(range(1024)),
             body,
+        modifiers: vec![],
         }]
     }
 
@@ -3247,6 +3282,7 @@ mod fold_idiom_tests {
                 row_buf: "a".into(),
                 col_buf: String::new(),
                 out_buf: "y".into(),
+                seq: false,
             }),
             deferred_normalize: None,
             idiom_lane: false,
@@ -3328,6 +3364,35 @@ mod fold_idiom_tests {
     }
 
     #[test]
+    fn seq_foreach_pins_the_float_fold_lane() {
+        // 2026-11-08 (seq-loop decision): `seq` on the fold's foreach makes
+        // the iteration order observable — float accumulation must not be
+        // reassociated. Integer folds are order-independent (seq redundant).
+        let items_f = int_buffer_items(Type::float());
+        for kind in FOLD_KINDS {
+            let mut shape = fold_shape_flags(kind, Expr::Decimal(1024), true, false);
+            shape.reduction.as_mut().unwrap().seq = true;
+            assert!(
+                !fold_idiom_lane(&shape, &items_f),
+                "{kind:?}: seq float fold must not reassociate"
+            );
+            assert_eq!(
+                fold_idiom_outcome(&shape, &items_f),
+                Err(FoldIdiomBlock::SeqPinned)
+            );
+        }
+        let items_i = int_buffer_items(Type::int());
+        for kind in FOLD_KINDS {
+            let mut shape = fold_shape_flags(kind, Expr::Decimal(1024), false, false);
+            shape.reduction.as_mut().unwrap().seq = true;
+            assert!(
+                fold_idiom_lane(&shape, &items_i),
+                "{kind:?}: seq is redundant for integer folds"
+            );
+        }
+    }
+
+    #[test]
     fn idiom_near_miss_diagnosis_names_the_fact() {
         use super::diagnose_idiom_fold;
         // Multi-statement fold body.
@@ -3354,6 +3419,7 @@ mod fold_idiom_tests {
                     None,
                 ),
             )],
+        modifiers: vec![],
         }];
         let reason = diagnose_idiom_fold(&unsupported).expect("near-miss");
         assert!(reason.contains("only `+`"), "{reason}");
@@ -3369,6 +3435,7 @@ mod fold_idiom_tests {
                     Box::new(Expr::Decimal(1)),
                 ),
             )],
+        modifiers: vec![],
         }];
         assert!(diagnose_idiom_fold(&map).is_none());
     }

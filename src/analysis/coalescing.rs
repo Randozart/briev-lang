@@ -478,6 +478,7 @@ mod tests {
                         ),
                     ),
                 )],
+            modifiers: vec![],
             },
         ];
         let s = shape(stmts, "t");
@@ -558,6 +559,7 @@ mod tests {
                         ),
                     ),
                 )],
+            modifiers: vec![],
             },
         ];
         let s = shape(stmts, "t");

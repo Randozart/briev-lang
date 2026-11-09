@@ -2964,7 +2964,7 @@ fn elaborate_stmt(stmt: &mut Statement, ctx: &mut TypecheckContext, errors: &mut
         }
         Statement::Block(body) | Statement::SyncBlock(body)
         | Statement::Defer(body) | Statement::Mutex(body) => elaborate_stmts(body, ctx, errors),
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             elaborate_foreach(item, list, body, ctx, errors)
         }
         _ => {}
@@ -4638,7 +4638,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             Ok(())
         }
         Statement::Rollback(_) => Ok(()),
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             let list_ty = infer_type_only(list, ctx)?;
             // 2026-08-18 (Phase D): `foreach x in piggy` consults the type's
             // iteration ops (At for tier 2, Iter for tier 1) — promote their

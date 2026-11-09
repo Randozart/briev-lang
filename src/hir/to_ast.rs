@@ -218,10 +218,14 @@ pub fn stmt(s: &HirStmt) -> Option<Statement> {
         HirStmtKind::Expression(e) => Statement::Expression(expr(e)?),
         HirStmtKind::Guarded(c, b) => Statement::Guarded(expr(c)?, stmt_body(b)?),
         HirStmtKind::Block(b) => Statement::Block(stmt_body(b)?),
-        HirStmtKind::Foreach { item, list, body } => Statement::Foreach {
+        HirStmtKind::Foreach { item, list, body, modifiers } => Statement::Foreach {
             item: item.clone(),
             list: Box::new(expr(list)?),
             body: stmt_body(body)?,
+            modifiers: modifiers
+                .iter()
+                .map(|name| crate::ast::Annotation { name: name.clone(), value: None })
+                .collect(),
         },
         HirStmtKind::Match { expr: e, arms } => Statement::Match {
             expr: Box::new(expr(e)?),

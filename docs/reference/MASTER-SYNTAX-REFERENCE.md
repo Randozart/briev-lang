@@ -67,7 +67,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 
 | Keyword | Meaning |
 |---|---|
-| `seq` | Ordering/sequential modifier; sequential-consistency atomic default |
+| `seq` | Ordering/sequential modifier; sequential-consistency atomic default; `seq let` pins array layout; `seq foreach` pins iteration order |
 | `approx` | Numeric ambiguity modifier (node/txn): result may differ within FP rounding; licenses float fold reassociation |
 | `exact` | Numeric ambiguity modifier (node/txn): asserts precise sequential evaluation; suppresses float fold reassociation; contradicts `approx` |
 | `pack` | Bit-contiguous zero-padding struct modifier |

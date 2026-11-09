@@ -770,6 +770,7 @@ fn foreach_range_program() -> Vec<TopLevel> {
                         Box::new(Expr::Identifier("i".to_string())),
                     ),
                 )],
+            modifiers: vec![],
             },
             Statement::Term(None),
         ],
@@ -823,6 +824,7 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )])],
+        modifiers: vec![],
         },
         Statement::Term(None),
     ];
@@ -924,6 +926,7 @@ fn foreach_break_program() -> Vec<TopLevel> {
                         Statement::Break,
                     ],
                 )],
+            modifiers: vec![],
             },
             Statement::Term(None),
         ],

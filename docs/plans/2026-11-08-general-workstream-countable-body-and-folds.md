@@ -164,6 +164,32 @@ changes could make the flag load-bearing; the A/B is the standing check
 - **Tests:** `idiom_near_miss_diagnosis_names_the_fact` (four near-miss
   classes + a non-fold control) plus the capability test. Suite: 3558 green.
 
+## `seq` loop + layout pinning — LANDED 2026-11-08
+
+**Operator decisions:** `seq` on a loop asserts observable iteration order
+(consequence: no reorder/vectorize/parallelize); `seq let` array = layout
+pinning (sequential/predictable, no compiler layout optimization); folded in
+with the per-`foreach` modifier work.
+
+- **AST/parser:** `Statement::Foreach` carries statement modifiers; `seq
+  foreach` parses; HIR carries modifier names through the round-trip.
+- **Semantics:** a `seq` float fold is not reassociated
+  (`FoldIdiomBlock::SeqPinned`; integer folds are order-independent so `seq`
+  is redundant there). `seq let` arrays get packed projection offsets and no
+  vec4/pair retyping (the pin is consumed by the shared layout rule used by
+  the kernel, runner, and LLVM descriptor paths).
+- **Docs:** SPEC §2.4 records the `seq` contract (replacing the stale
+  "`seq foreach` disables vectorization" framing, which named an optimization
+  effect and invited performance use); lexer comment, keyword taxonomy, and
+  the master syntax reference updated.
+- **Tests:** `seq_foreach_pins_the_float_fold_lane`,
+  `projection_offsets_seq_pins_arrays_to_packed_layout`,
+  `seq_foreach_parses_with_the_annotation`; live disclosure check
+  (fold-idiom not applied … declares `seq`).
+- **Follow-ups:** recommend a redundancy diagnostic when the order is
+  provably unobservable; softmax/lane-order interaction; per-statement
+  modifier vocabulary stays `seq`-only until another consumer exists.
+
 ## P2 — W5 idiom candidates (queued)
 
 Scan (prefix/inclusive), transpose-in-GEMM (register-shuffle load path),

@@ -492,7 +492,7 @@ impl fmt::Display for Statement {
                     write!(f, "escape;")
                 }
             }
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, list, body , ..} => {
                 write!(f, "foreach({} in {}) {{ ", item, list)?;
                 for stmt in body {
                     write!(f, "{} ", stmt)?;

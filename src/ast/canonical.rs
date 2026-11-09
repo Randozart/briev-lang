@@ -662,8 +662,10 @@ fn format_block(stmts: &[Statement], level: usize, out: &mut String) {
 
 fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
     match stmt {
-        Statement::Guarded(cond, body) => format_guarded(out, level, cond, body),
-        Statement::Foreach { item, list, body } => {
+        Statement::Guarded(cond, body) => {
+            format_braced(out, level, &format!("when {} {{", cond), body);
+        }
+        Statement::Foreach { item, list, body, .. } => {
             format_braced(out, level, &format!("foreach({} in {}) {{", item, list), body);
         }
         Statement::Block(body) => format_braced(out, level, "{", body),

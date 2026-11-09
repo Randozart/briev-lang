@@ -47,6 +47,9 @@ pub enum HirStmtKind {
         item: String,
         list: HirExpr,
         body: Vec<HirStmt>,
+        /// Statement-level modifier names (currently `seq`), carried through
+        /// the HIR round-trip so their semantics are never lost.
+        modifiers: Vec<String>,
     },
     Match {
         expr: HirExpr,

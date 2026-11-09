@@ -304,10 +304,11 @@ impl LlvmBackend {
                 name: name.clone(),
                 instance: Self::rewrite_cell_identifiers(instance, cell_name),
             },
-            Statement::Foreach { item, list, body } => Statement::Foreach {
+            Statement::Foreach { item, list, body, modifiers } => Statement::Foreach {
                 item: item.clone(),
                 list: Box::new(Self::rewrite_cell_identifiers(list, cell_name)),
                 body: Self::rewrite_cell_stmt_body(body, cell_name),
+                modifiers: modifiers.clone(),
             },
             Statement::MetadataAssignment(..) | Statement::InlineDefn(_) | Statement::Match { .. } => stmt.clone(),
             // 2026-09-22 (D16 p3b): `open` — rewrite identifiers in its

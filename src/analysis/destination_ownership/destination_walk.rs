@@ -897,7 +897,7 @@ impl<'a> BodyAnalyzer<'a> {
         scope: &mut Scope,
     ) -> Option<ValueId> {
         match statement {
-            Statement::Foreach { item, list, body } => {
+            Statement::Foreach { item, list, body , ..} => {
                 let site = format!("{}/stmt/{}", body_path, format_path(stmt_path));
                 let mut expr_path = Vec::new();
                 let list_id = self.stmt_expr(list, body_path, &mut expr_path, scope);

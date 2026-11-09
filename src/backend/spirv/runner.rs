@@ -240,8 +240,9 @@ pub fn ssbo_layout(
     // Device offsets come from the ONE layout rule the kernel also uses
     // (vec4-eligible arrays 16B-aligned) — they can never drift. Computed
     // over the BUFFER fields only (the blob's SSBO struct).
+    let pinned = crate::backend::spirv::lower::FnLowerer::seq_layout_fields(items);
     let proj_offsets = crate::backend::spirv::lower::FnLowerer::projection_offsets(
-        &mut sb, &buffer_fields, reuse_map,
+        &mut sb, &buffer_fields, reuse_map, &pinned,
     )?;
     let mut out = Vec::new();
     let mut images = Vec::new();

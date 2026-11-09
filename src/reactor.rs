@@ -597,6 +597,7 @@ mod tests {
             item: "v".into(),
             list: Box::new(Expr::List(vec![Expr::Decimal(10), Expr::Decimal(20)])),
             body: vec![],
+        modifiers: vec![],
         };
         let txn = make_rct_txn(
             "iter",
@@ -623,6 +624,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![],
+        modifiers: vec![],
         };
         let txn = make_rct_txn(
             "iter_range",

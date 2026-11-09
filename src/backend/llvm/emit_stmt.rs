@@ -693,7 +693,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
         // RANGES (`0..n` / `0..=n`) as a counted loop; collections (List /
         // Data / vector fields) are the interpreter reference today and a
         // codegen follow-up (hard error here, no silent wrongness).
-        Statement::Foreach { item, list, body } => {
+        Statement::Foreach { item, list, body , ..} => {
             emit_foreach_statement(backend, out, indent, item, list, ForeachBody::Ast(body));
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
