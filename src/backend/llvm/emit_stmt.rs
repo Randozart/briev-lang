@@ -876,7 +876,21 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             backend.fun.cur_block = Some(merge);
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
-        _ => {
+        // 2026-11-08 (P0 sibling audit): every remaining Statement variant is
+        // a deliberate decision here — no silent wildcard. Compile-time /
+        // analysis-only forms carry no runtime code (display, desugar,
+        // transition-graph, and export-ABI handle them):
+        //   - MetadataAssignment: compile-time metadata
+        //   - InlineDefn: stage-block internals, stripped before codegen
+        //   - TrgBinding: compile-time trigger wiring
+        //   - Open: author-expressed disconnection (electronics analysis)
+        // Executable forms without a lowering are rejected at the capability
+        // gate (LLVM declares `inline_asm = false`; `Asm#` is the intrinsic).
+        Statement::MetadataAssignment(..)
+        | Statement::InlineDefn(_)
+        | Statement::TrgBinding { .. }
+        | Statement::Open(..)
+        | Statement::InlineAsm { .. } => {
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
     }

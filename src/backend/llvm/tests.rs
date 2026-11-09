@@ -3398,6 +3398,28 @@ fn test_accel_descriptors_skip_foreign_state_fields() {
 }
 
 #[test]
+fn llvm_rejects_inline_asm_statement_via_capability_gate() {
+    // 2026-11-08 (P0 sibling audit): `asm "..."` statements have no LLVM
+    // lowering; the capability gate must reject them (never a silent drop in
+    // the statement emitter). The sanctioned path is the `Asm#` intrinsic.
+    let item = crate::ast::TopLevel::Statement(Box::new(
+        crate::ast::Statement::InlineAsm {
+            asm_string: "nop".to_string(),
+            clobbers: vec![],
+            span: None,
+        },
+    ));
+    let errs = crate::backend::capabilities::validate_program(
+        &[item],
+        &crate::backend::llvm::CAPABILITIES,
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("inline asm")),
+        "LLVM must reject inline-asm statements; got {errs:?}"
+    );
+}
+
+#[test]
 fn test_kernel_desc_abi_layout() {
     // 2026-09-24 (BUGS.md descriptor-ABI drift): pins the emitted
     // %briev.kernel against the C BrievKernelDesc ABI. The runtime

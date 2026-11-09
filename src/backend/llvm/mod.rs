@@ -1426,6 +1426,12 @@ pub const CAPABILITIES: crate::backend::capabilities::BackendCapabilities = {
     );
     caps.obj_ports = true;
     caps.cells = false;
+    // 2026-11-08 (P0 sibling audit): the `asm "..."` STATEMENT has no LLVM
+    // lowering (the sanctioned path is the `Asm#` intrinsic). Declaring it
+    // unsupported rejects such programs with the standard capability
+    // diagnostic instead of silently dropping the instruction in the
+    // statement emitter's catch-all. No in-tree source uses `asm "..."`.
+    caps.inline_asm = false;
     caps
 };
 

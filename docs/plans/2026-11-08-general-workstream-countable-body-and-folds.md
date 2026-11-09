@@ -146,6 +146,24 @@ policy only), and `exact` is enforceable. This also means future LLVM
 changes could make the flag load-bearing; the A/B is the standing check
 (rerun if the toolchain matrix changes).
 
+## W4 completion + `emit_stmt` audit — LANDED 2026-11-08
+
+- **W4 detection-level why-nots:** `detect_idiom_fold` now classifies
+  fold-shaped near-misses (multi-statement body; operand not a plain buffer
+  read; index reads the accumulator; unsupported operator) and the blob site
+  discloses the named reason via `diagnose_idiom_fold`. Also fixed the old
+  Sum-only guard that silenced Product/Min/Max why-nots. Live check:
+  `info: fold-idiom not applied … — the folded operand must be a plain buffer
+  read …` (and the multi-statement equivalent).
+- **`emit_stmt` wildcard audit (P0 sibling):** the statement emitter's match
+  is exhaustive — compile-time/analysis-only forms (`MetadataAssignment`,
+  `InlineDefn`, `TrgBinding`, `Open`) are explicit documented no-ops; the
+  `asm "..."` STATEMENT has no LLVM lowering and is rejected at the capability
+  gate (`CAPABILITIES.inline_asm = false`; `Asm#` is the sanctioned intrinsic).
+  Regression: `llvm_rejects_inline_asm_statement_via_capability_gate`.
+- **Tests:** `idiom_near_miss_diagnosis_names_the_fact` (four near-miss
+  classes + a non-fold control) plus the capability test. Suite: 3558 green.
+
 ## P2 — W5 idiom candidates (queued)
 
 Scan (prefix/inclusive), transpose-in-GEMM (register-shuffle load path),

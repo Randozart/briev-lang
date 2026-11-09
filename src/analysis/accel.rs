@@ -1340,7 +1340,26 @@ fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInf
 /// keeps priority — a mul-add fold is still Dot. Near-misses (multi-
 /// statement bodies, accumulator read inside the operand, non-Index
 /// operands) fall to the general lowering; W4 gives them named why-nots.
-fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
+enum FoldClass {
+    NotFold,
+    Fold(ReductionInfo),
+    NearMiss(&'static str),
+}
+
+/// True when `e` mentions identifier `name` anywhere.
+fn expr_reads(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Identifier(n) => n == name,
+        Expr::BinaryOp(_, l, r) => expr_reads(l, name) || expr_reads(r, name),
+        Expr::Index(b, i) => expr_reads(b, name) || expr_reads(i, name),
+        Expr::Call(_, args, _) => args.iter().any(|a| expr_reads(a, name)),
+        _ => false,
+    }
+}
+
+/// Classify the shape: a recognized fold, a fold-shaped near-miss (W4 names
+/// the reason), or not fold-shaped at all.
+fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
         let Statement::Foreach { list, body, .. } = stmt else {
@@ -1349,15 +1368,22 @@ fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionI
         let Expr::Range { end, .. } = list.as_ref() else {
             continue;
         };
+        // The accumulator assignment is the first statement writing an
+        // identifier whose right-hand side reads that same identifier.
+        let Some((acc, rhs)) = body.iter().find_map(|st| match st {
+            Statement::Assign(lhs, rhs) => match lhs {
+                Expr::Identifier(n) if expr_reads(rhs, n) => Some((n.clone(), rhs)),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            continue;
+        };
         if body.len() != 1 {
-            continue;
+            return FoldClass::NearMiss(
+                "the fold body must be a single statement (initialize the accumulator before the loop)",
+            );
         }
-        let Statement::Assign(lhs, rhs) = &body[0] else {
-            continue;
-        };
-        let Expr::Identifier(acc) = lhs else {
-            continue;
-        };
         // Accepted fold forms (W3/W3.1): `acc = acc ⊕ x` with ⊕ ∈ {+, *},
         // and `acc = Min#/Max#(acc, x)` — commuted forms included.
         let parsed: Option<(ReductionKind, &Expr, &Expr)> = match rhs {
@@ -1371,45 +1397,32 @@ fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionI
             _ => None,
         };
         let Some((kind, lhs_e, rhs_e)) = parsed else {
-            continue;
+            return FoldClass::NearMiss(
+                "only `+`, `*`, `Min#` and `Max#` folds are recognized (this operator is not associative for the lane)",
+            );
         };
-        let is_self = |e: &Expr| matches!(e, Expr::Identifier(n) if n == acc);
-        let (acc_side, operand): (&Expr, &Expr) = if is_self(lhs_e) && !is_self(rhs_e) {
+        let is_self = |e: &Expr| matches!(e, Expr::Identifier(n) if *n == acc);
+        let (_acc_side, operand): (&Expr, &Expr) = if is_self(lhs_e) && !is_self(rhs_e) {
             (lhs_e, rhs_e)
         } else if is_self(rhs_e) && !is_self(lhs_e) {
             (rhs_e, lhs_e)
         } else {
             continue;
         };
-        // The folded operand must be a plain buffer read; its index must
-        // not reference the accumulator (that would be a scan, not a fold).
         let Expr::Index(buf, idx) = operand else {
-            continue;
+            return FoldClass::NearMiss(
+                "the folded operand must be a plain buffer read, e.g. `a[i * K + k]`",
+            );
         };
         let Expr::Identifier(buf_name) = buf.as_ref() else {
             continue;
         };
-        let mut reads_acc = false;
-        fn walk(e: &Expr, name: &str, found: &mut bool) {
-            match e {
-                Expr::Identifier(n) => {
-                    if n == name {
-                        *found = true;
-                    }
-                }
-                Expr::BinaryOp(_, l, r) => {
-                    walk(l, name, found);
-                    walk(r, name, found);
-                }
-                Expr::Index(_, i) => walk(i, name, found),
-                _ => {}
-            }
+        if expr_reads(idx, &acc) {
+            return FoldClass::NearMiss(
+                "the folded index reads the accumulator — that is a scan, not a fold",
+            );
         }
-        walk(idx, acc, &mut reads_acc);
-        if reads_acc {
-            continue;
-        }
-        return Some(ReductionInfo {
+        return FoldClass::Fold(ReductionInfo {
             inner: end.as_ref().clone(),
             kind,
             row_buf: buf_name.clone(),
@@ -1417,7 +1430,23 @@ fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionI
             out_buf: String::new(),
         });
     }
-    None
+    FoldClass::NotFold
+}
+
+fn detect_idiom_fold(stmts: &[Statement], _index_var: &str) -> Option<ReductionInfo> {
+    match classify_idiom_fold(stmts) {
+        FoldClass::Fold(r) => Some(r),
+        _ => None,
+    }
+}
+
+/// W4 (2026-11-08): why a fold-shaped foreach did not become an idiom fold.
+/// `None` when the shape is not fold-shaped at all (no near-miss claim).
+pub fn diagnose_idiom_fold(stmts: &[Statement]) -> Option<&'static str> {
+    match classify_idiom_fold(stmts) {
+        FoldClass::NearMiss(reason) => Some(reason),
+        _ => None,
+    }
 }
 
 /// §12 lane gate (W3): the Sum idiom routes into the reduction synthesis
@@ -3296,6 +3325,52 @@ mod fold_idiom_tests {
             let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
             assert!(fold_idiom_lane(&shape, &items_i), "{kind:?} exact int stays licensed");
         }
+    }
+
+    #[test]
+    fn idiom_near_miss_diagnosis_names_the_fact() {
+        use super::diagnose_idiom_fold;
+        // Multi-statement fold body.
+        let reason = diagnose_idiom_fold(&near_miss_stmts(true, false, false)).expect("near-miss");
+        assert!(reason.contains("single statement"), "{reason}");
+        // Operand is not a plain buffer read.
+        let reason = diagnose_idiom_fold(&near_miss_stmts(false, true, false)).expect("near-miss");
+        assert!(reason.contains("plain buffer read"), "{reason}");
+        // Index reads the accumulator (a scan, not a fold).
+        let reason = diagnose_idiom_fold(&near_miss_stmts(false, false, true)).expect("near-miss");
+        assert!(reason.contains("scan"), "{reason}");
+        // Unsupported fold operator.
+        let unsupported = vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(range(8)),
+            body: vec![Statement::Assign(
+                Expr::Identifier("acc".into()),
+                Expr::Call(
+                    "Fma#".into(),
+                    vec![
+                        Expr::Identifier("acc".into()),
+                        idx("a", Expr::Identifier("k".into())),
+                    ],
+                    None,
+                ),
+            )],
+        }];
+        let reason = diagnose_idiom_fold(&unsupported).expect("near-miss");
+        assert!(reason.contains("only `+`"), "{reason}");
+        // Not fold-shaped at all — no near-miss claim (a map body).
+        let map = vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(range(8)),
+            body: vec![Statement::Assign(
+                Expr::Identifier("y".into()),
+                Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("x".into())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            )],
+        }];
+        assert!(diagnose_idiom_fold(&map).is_none());
     }
 
     #[test]

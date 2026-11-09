@@ -100,16 +100,34 @@ impl super::LlvmBackend {
                 ));
             } else if matches!(
                 shape.reduction.as_ref().map(|r| &r.kind),
-                Some(crate::analysis::accel::ReductionKind::Sum)
+                Some(
+                    crate::analysis::accel::ReductionKind::Sum
+                        | crate::analysis::accel::ReductionKind::Product
+                        | crate::analysis::accel::ReductionKind::Min
+                        | crate::analysis::accel::ReductionKind::Max
+                )
             ) {
                 // 2026-11-06 (W4): name the blocked gate — a catch-all
                 // "not applied" forces the author to guess which fact
-                // failed (the honest-compiler rule, §12.2 gate 4).
+                // failed (the honest-compiler rule, §12.2 gate 4). Fires
+                // for EVERY fold kind (2026-11-08 fix: the old Sum-only
+                // guard silenced Product/Min/Max why-nots).
                 if let Err(block) = crate::analysis::accel::fold_idiom_outcome(&shape, items) {
                     self.warnings.push(format!(
-                        "info: reduce-idiom not applied for accel '{}' — {} (general lowering)",
+                        "info: fold-idiom not applied for accel '{}' — {} (general lowering)",
                         name,
                         block.describe()
+                    ));
+                }
+            } else if shape.reduction.is_none() {
+                // 2026-11-08 (W4 completion): the detector rejected a
+                // fold-SHAPED foreach. Name the failed structural fact so the
+                // author does not have to guess (disclosure both directions,
+                // §12.2 gate 4).
+                if let Some(reason) = crate::analysis::accel::diagnose_idiom_fold(&shape.kernel_stmts) {
+                    self.warnings.push(format!(
+                        "info: fold-idiom not applied for accel '{}' — {} (general lowering)",
+                        name, reason
                     ));
                 }
             }
