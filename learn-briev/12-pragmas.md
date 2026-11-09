@@ -185,7 +185,7 @@ unique.
 type Foo : Bits {
     spec Bytes: 8;
     spec Alignment: 4;
-    attr<llvm> storage: Native;   // non-physical annotation (SPEC 8.9)
+    attr storage: Native;         // non-physical annotation (SPEC 8.9)
     #volatile;                     // shorthand for attr volatile: true
 };
 ```

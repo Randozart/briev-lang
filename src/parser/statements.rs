@@ -628,8 +628,8 @@ impl<'a> Parser<'a> {
     /// attr [<owner>] key: value;
     fn parse_attr_statement(&mut self) -> Result<Statement, SyntaxError> {
         self.expect(Token::Attr)?;
-        let _owner = self.parse_attr_owner()?;
-        let (key, val) = self.parse_attr_binding()?;
+        let owner = self.parse_attr_owner()?;
+        let (key, val) = self.parse_attr_binding(owner.as_deref())?;
         Ok(Statement::MetadataAssignment(key, val))
     }
 

@@ -224,8 +224,8 @@ impl<'a> Parser<'a> {
                 let mut map = std::collections::HashMap::new();
                 while self.check(&Token::Attr) {
                     self.pos += 1; // consume 'attr'
-                    let _owner = self.parse_attr_owner()?;
-                    map.extend(self.parse_attr_entries()?);
+                    let owner = self.parse_attr_owner()?;
+                    map.extend(self.parse_attr_entries(owner.as_deref())?);
                 }
                 Ok(TopLevel::ModuleMetadata(map))
             }
@@ -4076,8 +4076,8 @@ impl<'a> Parser<'a> {
         }
         if self.check(&Token::Attr) {
             self.pos += 1;
-            let _owner = self.parse_attr_owner()?;
-            metadata.extend(self.parse_attr_entries()?);
+            let owner = self.parse_attr_owner()?;
+            metadata.extend(self.parse_attr_entries(owner.as_deref())?);
             return Ok(());
         }
         let is_spec = self.check(&Token::Spec);
@@ -7752,8 +7752,9 @@ mod tests {
 
     #[test]
     fn test_attr_owner_forms_parse() {
-        // Owned block: attr<owner> { key: value; … }.
-        let src = "attr<llvm> { tbaa: \"Node\"; overflow: wrapping; };";
+        // Owned block: attr<owner> { key: value; … } — keys validated against
+        // the owner's registered schema (llvm: tbaa, readonly, …).
+        let src = "attr<llvm> { tbaa: \"Node\"; readonly: true; };";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
@@ -7772,6 +7773,22 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         assert!(matches!(item, crate::ast::TopLevel::ModuleMetadata(m) if m.contains_key("tbaa")));
+    }
+
+    #[test]
+    fn test_attr_owner_validates_known_schema() {
+        // Known owner + unregistered key → error naming the claiming owner.
+        let src = "attr<llvm> convergence: tight;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err().to_string();
+        assert!(err.contains("webstack"), "must name the claiming owner: {err}");
+
+        // Unknown owner is a plugin domain — any key accepted.
+        let src = "attr<plugin_x> anything: 1;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(p.parse_top_level().is_ok());
     }
 
     #[test]

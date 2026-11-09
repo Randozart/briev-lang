@@ -22,8 +22,8 @@ impl<'a> Parser<'a> {
                 return Err(self.retired_exclaim_arrow());
             }
             if self.eat(&Token::Attr) {
-                let _owner = self.parse_attr_owner()?;
-                let entries = self.parse_attr_entries()?;
+                let owner = self.parse_attr_owner()?;
+                let entries = self.parse_attr_entries(owner.as_deref())?;
                 metadata.extend(entries);
                 continue;
             }
@@ -66,29 +66,62 @@ impl<'a> Parser<'a> {
     }
 
     /// One `attr` declaration: either `key: value;` or `{ key: value; … }`.
-    pub(crate) fn parse_attr_entries(&mut self) -> Result<HashMap<String, PropertyValue>, SyntaxError> {
+    pub(crate) fn parse_attr_entries(
+        &mut self,
+        owner: Option<&str>,
+    ) -> Result<HashMap<String, PropertyValue>, SyntaxError> {
         let mut entries = HashMap::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                let (key, val) = self.parse_attr_binding()?;
+                let (key, val) = self.parse_attr_binding(owner)?;
                 entries.insert(key, val);
             }
             self.expect(Token::RBrace)?;
             self.eat(&Token::Semicolon);
             return Ok(entries);
         }
-        let (key, val) = self.parse_attr_binding()?;
+        let (key, val) = self.parse_attr_binding(owner)?;
         entries.insert(key, val);
         Ok(entries)
     }
 
-    /// `key: value;` — one attr binding.
-    pub(crate) fn parse_attr_binding(&mut self) -> Result<(String, PropertyValue), SyntaxError> {
+    /// `key: value;` — one attr binding. An owned attr validates the key
+    /// against the owner's registered schema (2026-11-08 attr plan). Bare
+    /// attrs are plugin-claimed by key; the claim warning is deferred.
+    pub(crate) fn parse_attr_binding(
+        &mut self,
+        owner: Option<&str>,
+    ) -> Result<(String, PropertyValue), SyntaxError> {
         let key = self.parse_metadata_key()?;
+        self.validate_attr_key(owner, &key)?;
         self.expect(Token::Colon)?;
         let val = self.parse_metadata_value()?;
         self.expect(Token::Semicolon)?;
         Ok((key, val))
+    }
+
+    /// Known owners (`llvm`, `webstack`, `mcmc`, `compiler`, …) validate their
+    /// keys against `config/meta-vocab.dbv`; unknown owners are plugin domains
+    /// and accept any key.
+    fn validate_attr_key(&self, owner: Option<&str>, key: &str) -> Result<(), SyntaxError> {
+        let Some(owner) = owner else {
+            return Ok(());
+        };
+        let vocab = crate::meta_vocab::vocab();
+        if !vocab.owner_known(owner) || vocab.owner_owns_key(owner, key) {
+            return Ok(());
+        }
+        let fix = match vocab.owner_of(key) {
+            Some(claimed) => format!(
+                "`{key}` is claimed by `{claimed}` — write `attr<{claimed}> {key}: …;`                  or register it under `{owner}` in config/meta-vocab.dbv"
+            ),
+            None => format!(
+                "`{key}` is not registered under `{owner}` — register it in                  config/meta-vocab.dbv or use the claiming owner"
+            ),
+        };
+        self.error_at_current(&format!(
+            "`attr<{owner}>` key `{key}` is not in the owner's schema. fix: {fix}."
+        ))
     }
 
     /// Parse a metadata key. Accepts plain identifiers and keyword tokens

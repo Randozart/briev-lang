@@ -42,6 +42,7 @@ pub mod target;
     pub mod conformance;
     pub mod diagnostics;
 pub mod vocab;
+pub mod meta_vocab;
 pub mod type_universe;
 pub mod cache;
 pub mod dbriev;

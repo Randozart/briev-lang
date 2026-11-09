@@ -7,6 +7,7 @@ schema MetaField (name) {
     name: String;
     ty: String;
     description: String;
+    owner: String;   // consumer domain that claims the key ("" = internal/unowned)
 };
 
 schema BackendMapping (meta_key) {
@@ -18,20 +19,24 @@ schema BackendMapping (meta_key) {
 };
 
 as MetaField {
-    overflow: String; "Integer overflow behavior for arithmetic ops";
-    associative: Bool; "May the optimizer reassociate FP operations";
-    commutative: Bool; "May the optimizer swap commutative operands";
-    fp_contract: String; "May the optimizer form FP contractions (FMA)";
-    fp_math: String; "Floating-point compliance: ieee754 | fast";
-    readonly: Bool; "Function has no observable side effects";
-    alloc_scope: String; "Allocation scope: heap | stack";
-    inline_hint: String; "Inlining hint: always | never | hint";
-    convergence: String; "Hardware convergence mode: tight | loose";
-    unroll_hint: Int; "Loop unroll factor hint";
-    search_space: String; "MCMC search space: linear | bitwise | all";
-    cost_model: String; "MCMC cost function: latency | throughput | size";
-    tolerance: Float; "FP equivalence tolerance for MCMC";
-    allowed_mutations: Vec[String]; "Restrict MCMC to named mutations only";
+    overflow: String; "Integer overflow behavior for arithmetic ops"; compiler;
+    associative: Bool; "May the optimizer reassociate FP operations"; legacy;
+    commutative: Bool; "May the optimizer swap commutative operands"; legacy;
+    fp_contract: String; "May the optimizer form FP contractions (FMA)"; legacy;
+    fp_math: String; "Floating-point compliance: ieee754 | fast"; legacy;
+    readonly: Bool; "Function has no observable side effects"; llvm;
+    alloc_scope: String; "Allocation scope: heap | stack"; webstack;
+    inline_hint: String; "Inlining hint: always | never | hint"; llvm;
+    convergence: String; "Hardware convergence mode: tight | loose"; webstack;
+    unroll_hint: Int; "Loop unroll factor hint"; llvm;
+    search_space: String; "MCMC search space: linear | bitwise | all"; mcmc;
+    cost_model: String; "MCMC cost function: latency | throughput | size"; mcmc;
+    tolerance: Float; "FP equivalence tolerance for MCMC"; mcmc;
+    allowed_mutations: Vec[String]; "Restrict MCMC to named mutations only"; mcmc;
+    ctd: String; "Common Type Definition (semantic type identity)"; compiler;
+    alu: String; "Hardware ALU that computes the type"; compiler;
+    encoding: String; "String encoding resolved via config/encodings.dbvl"; compiler;
+    tbaa: String; "LLVM TBAA node name (a claim, not a proof)"; llvm;
 };
 
 as BackendMapping {

@@ -13,6 +13,9 @@ pub struct MetaFieldDef {
     pub name: String,
     pub field_type: MetaType,
     pub description: String,
+    /// Consumer domain that claims the key ("" = internal/unowned). Used by
+    /// `attr<owner>` validation (2026-11-08 attr plan).
+    pub owner: String,
 }
 
 /// Supported metadata value types.
@@ -132,6 +135,22 @@ impl MetadataRegistry {
         self.match_mapping(&self.circt_idx, key, value)
     }
 
+    /// Owner domain of a registered key (`None` when the key is unknown or
+    /// internal/unowned). 2026-11-08 (attr plan): `attr<owner>` validation.
+    pub fn owner_of(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).map(|f| f.owner.as_str()).filter(|o| !o.is_empty())
+    }
+
+    /// Does the vocabulary register any key under this owner domain?
+    pub fn owner_known(&self, owner: &str) -> bool {
+        self.fields.values().any(|f| f.owner == owner)
+    }
+
+    /// Is `key` registered under `owner`?
+    pub fn owner_owns_key(&self, owner: &str, key: &str) -> bool {
+        self.fields.get(key).map_or(false, |f| f.owner == owner)
+    }
+
     /// Number of registered field definitions.
     pub fn field_count(&self) -> usize {
         self.fields.len()
@@ -161,10 +180,12 @@ impl MetadataRegistry {
         }
         let type_str = value_as_string(&fields[0])?;
         let description = value_as_string(&fields[1])?;
+        let owner = fields.get(2).and_then(value_as_string).unwrap_or_default();
         Some(MetaFieldDef {
             name,
             field_type: MetaType::from_str(&type_str),
             description,
+            owner,
         })
     }
 
@@ -264,6 +285,21 @@ mod tests {
         let reg = test_registry();
         assert!(reg.field_count() >= 10, "expected >=10 field defs, got {}", reg.field_count());
         assert!(reg.mapping_count() >= 10, "expected >=10 mappings, got {}", reg.mapping_count());
+    }
+
+    #[test]
+    fn test_owner_lookup() {
+        // 2026-11-08 (attr plan): attr<owner> validation reads the owner
+        // column; unknown owners are plugin domains (owner_known = false).
+        let reg = test_registry();
+        assert_eq!(reg.owner_of("tbaa"), Some("llvm"));
+        assert_eq!(reg.owner_of("ctd"), Some("compiler"));
+        assert_eq!(reg.owner_of("tolerance"), Some("mcmc"));
+        assert_eq!(reg.owner_of("no_such_key"), None);
+        assert!(reg.owner_known("llvm"));
+        assert!(!reg.owner_known("plugin_x"));
+        assert!(reg.owner_owns_key("llvm", "tbaa"));
+        assert!(!reg.owner_owns_key("llvm", "ctd"));
     }
 
     #[test]
