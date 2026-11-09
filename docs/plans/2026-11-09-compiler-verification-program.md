@@ -81,10 +81,14 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   reasons; coverage ratchet (may shrink only); `OPT_MATRIX_FULL=1` runs all.
 - Interpreter-vs-compiled harness over the same set; interpreter callable-txn
   gaps become a documented skip ratchet (fix or accept explicitly).
+  *2026-11-09: PR #80 delivered a generated-transition version of this*
+  (`tests/deterministic_transitions.rs`, interpreter vs native `-O0`/`-O3`,
+  proptest shrinking + JSON replay). Remaining: run it over the tier1 corpus,
+  not only generated families.
 - Cross-backend corpus gate (wasm32 vs native) over the eligible subset.
 - Acceptance: zero divergence on eligible set; quick mode < ~5 min.
 
-### P4 — Structured program fuzzing — TODO (nightly, smoke per-commit)
+### P4 — Structured program fuzzing — PARTIAL (PR #80 landing, 2026-11-09)
 
 - `tests/fuzz_program_differential.rs` (`#[ignore]`, `FUZZ_ITERS`): generate
   terminating deterministic programs (Int/Bool lets, `when`, bounded
@@ -92,6 +96,11 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   proptest shrinks; tier1 seeds.
 - Growth slices: collections → enums/tuples → strings.
 - Acceptance: iterations clean per slice; every find reduced into P2 or P7.
+  *2026-11-09 (PR #80):* in-process cargo-fuzz targets
+  (`fuzz/fuzz_targets/{frontend,arithmetic,interpreter}.rs`), proptest
+  transition families 0–12 and memory families 0–4, shrink + replay
+  artifacts, nightly `Fuzz`/`Memory` workflows. Remaining: corpus seeds from
+  tier1, growth slices, and folding generated families into P3's corpus gate.
 
 ### P5 — Pass-level snapshots — TODO (per-commit, small set)
 
@@ -101,12 +110,15 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
 - Optional `.ll` snapshots for small fixtures (complements determinism gate).
 - Acceptance: two-run byte determinism; update mode reviewed in diffs.
 
-### P6 — Reduction workflow — TODO (on demand)
+### P6 — Reduction workflow — PARTIAL (PR #80 shrink/replay)
 
 - `scripts/reduce.sh` + `scripts/interesting.sh` (ICE, `-O0`/`-O3`
   divergence, interpreter mismatch); `cvise` preferred, `creduce` fallback.
 - `BUGS.md` workflow: every bug gets a reduced fixture committed with the fix.
 - Acceptance: one historical bug reduced end-to-end as the worked example.
+  *2026-11-09 (PR #80):* proptest shrinking + JSON/`.bv`/stderr replay
+  artifacts in both campaigns (the cvise/creduce wrapper from this phase
+  remains queued).
 
 ### P7 — Curated semantic corpus — TODO (incremental, per-commit)
 
@@ -174,3 +186,15 @@ uses the harness `-O3 -flto` pipeline for the top arm. Internal deadlines
 stalling CI; known non-terminating/idle fixtures belong in `SKIP` with a
 BUGS.md reason (the list may only shrink). Still queued: full corpus run and
 skip inventory, interpreter-vs-compiled, wasm cross-backend, nightly workflow.
+
+**2026-11-09 PR integration note.** #79 (sparse `NodeSet` solver) and #81
+(publish-into-incoming reclamation fix) merged together; `site_is_safe` was
+adapted to `NodeSet` iteration. #80 (deterministic differential + sanitizer
+campaigns + cargo-fuzz) overlapped P3/P4/P6; its harnesses are now the P3
+interpreter-vs-native arm and part of P4/P6. The memory workflow's family-1
+comment was corrected: the publish leak is fixed by #81 and the lane stays a
+non-blocking regression sentinel.
+
+Gates after integration: `cargo test --all` 3620 pass; reclamation 36;
+`publish_reclamation` 1; `deterministic_transitions` 5 (2 ignored reproducers);
+`memory_campaign` 3 (26 s); release A/B byte-identical; determinism quick OK.
