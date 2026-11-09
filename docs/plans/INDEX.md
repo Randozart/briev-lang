@@ -13,6 +13,17 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**Verification program (2026-11-09, umbrella):**
+`docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
+verification hardening (typed + structure invariants, always-on in debug,
+re-verify after specialize), P2 compile-fail runner+corpus (comment
+directives, required substrings), P3 corpus-wide differential (`-O0`/`-O2`/
+`-O3`, interpreter, wasm; quick per-commit + nightly full), P4 structured
+program fuzzing (typed generator, interpreter vs compiled), P5 pass-level
+HIR/LLVM snapshots, P6 cvise/creduce workflow, P7 curated semantic corpus.
+Rides on the H5/H4 gates and A1 typing; existing coverage inventory and gaps
+are in the plan.
+
 **Live lanes (2026-11-08):**
 - **Language surfaces — `attr` + chaining:** `docs/plans/2026-11-08-language-surfaces-attr-and-chaining.md` — hard-break `!>` for owner-optional `attr` metadata; `into` capture + optional `it` binding, no positional `>>` back-refs. Builds on the idiom doctrine and the general workstream (reference index inside).
 - **Idiom recognition doctrine:** `docs/plans/2026-11-06-idiom-recognition-doctrine.md` — §12 (three categories, five gates, silicon carve-out), W1–W5; ledger gate `tests/idiom_ledger_gate.rs`.

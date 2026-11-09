@@ -4340,6 +4340,12 @@ impl LlvmBackend {
                     &std::collections::HashMap::new(),
                     &mut ids,
                 ) {
+                    // 2026-11-09 (verification program P1): re-verify the
+                    // substituted tree at the point of origin.
+                    #[cfg(debug_assertions)]
+                    if let Err(err) = crate::hir::verify_single_callable(&spec_hir) {
+                        panic!("specialized HIR verification failed for {mangled}: {err}");
+                    }
                     self.hir_stmt_bodies
                         .insert(mangled.to_string(), spec_hir.body.statements.clone());
                 }

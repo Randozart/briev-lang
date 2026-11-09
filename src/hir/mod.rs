@@ -64,7 +64,7 @@ pub use program::{HirCallable, HirCallableKind, HirOutput, HirProgram};
 pub use stats::{unsupported_counts, UnsupportedCounts};
 pub use tail_calls::{build_tail_call_facts, HirCallableTailCalls, HirTailCall, HirTailCallFacts};
 pub use type_facts::{build_type_facts, HirEnumFacts, HirObjectFacts, HirTypeFacts};
-pub use verify::verify;
+pub use verify::{verify, verify_law_markers, verify_single_callable, verify_typed};
 
 #[cfg(test)]
 mod tests {
