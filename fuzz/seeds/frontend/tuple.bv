@@ -1,0 +1,5 @@
+defn pair(s: Int) -> Int {
+    let values = (s, s + 1);
+    let (left, right) = values;
+    term left + right;
+};

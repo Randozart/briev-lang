@@ -1,0 +1,4 @@
+defn step(s: Int, e: Int) -> Int {
+    when e != 0 && s / e > 0 { term s; };
+    term s - e;
+};

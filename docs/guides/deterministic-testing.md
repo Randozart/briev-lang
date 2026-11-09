@@ -103,3 +103,8 @@ Next extensions: persist curated real failures, add independent semantic models,
 generate more transition structures, then introduce shared FFI/event adapters
 and controlled reactor scheduling. Seed sharding belongs in the campaign runner;
 test-function sharding alone will not split this property's generated cases.
+
+This is the slow, high-fidelity half of the defect-discovery stack. For the
+fast, branch-coverage-driven half — in-process `cargo-fuzz` targets that
+rediscover the same defects from raw bytes — see
+`docs/guides/coverage-guided-fuzzing.md`.
