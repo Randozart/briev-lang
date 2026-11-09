@@ -289,10 +289,10 @@ impl Graph {
 
     fn site_is_safe(&self, owner: &str, local: Option<Node>) -> bool {
         let Some(local) = local else { return false };
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter().copied());
+        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
         if self.reachable(global_roots.chain(self.escaped.iter().copied())).contains(&local) { return false; }
         let Some(callable) = self.callables.get(owner) else { return false };
-        !self.reachable(self.points[callable.result].iter().copied()).contains(&local)
+        !self.reachable(self.points[callable.result].iter()).contains(&local)
     }
 
     fn classify(&self, name: &str, callable: &Callable, plan: &mut ReclamationPlan) {
