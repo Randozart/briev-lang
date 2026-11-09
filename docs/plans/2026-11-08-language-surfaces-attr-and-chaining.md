@@ -36,7 +36,7 @@ multiple `it` placeholders in one call are an error.
 
 ## Queue (order matters)
 
-### 0. Small items (executed first; tracked in the general-workstream plan)
+### 0. Small items — LANDED 2026-11-08 (tracked in the general-workstream plan)
 
 - **Per-`foreach` `approx` / `exact`** — the statement-modifier machinery
   from the `seq` work exists; wire the fold detector to the matched

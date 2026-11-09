@@ -53,16 +53,44 @@ impl<'a> Parser<'a> {
             // iteration order is part of the observable semantics (no
             // reordering/overlap/parallelization). Scoped statement
             // modifier; only `seq` is admitted on a loop today.
-            Some(Token::Seq)
-                if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Foreach)) =>
+            // 2026-11-08 (seq contract + numeric pair): statement-level
+            // modifiers on a loop. `seq` declares the iteration order
+            // observable; `approx`/`exact` are the per-fold numeric license /
+            // pin (overriding the node-level pair). Order-free run;
+            // duplicates and the approx/exact contradiction are errors.
+            Some(Token::Seq) | Some(Token::Approx) | Some(Token::Exact)
+                if self.statement_modifiers_target_foreach() =>
             {
-                self.pos += 1;
-                let mut stmt = self.parse_foreach_statement()?;
-                if let Statement::Foreach { modifiers, .. } = &mut stmt {
-                    modifiers.push(crate::ast::Annotation {
-                        name: "seq".to_string(),
+                let mut mods: Vec<crate::ast::Annotation> = Vec::new();
+                loop {
+                    let name = match self.peek() {
+                        Some(Token::Seq) => "seq",
+                        Some(Token::Approx) => "approx",
+                        Some(Token::Exact) => "exact",
+                        _ => break,
+                    };
+                    let other = match name {
+                        "approx" => "exact",
+                        "exact" => "approx",
+                        _ => "",
+                    };
+                    if mods.iter().any(|m| m.name == name) {
+                        return Err(self.dup_modifier(name));
+                    }
+                    if !other.is_empty() && mods.iter().any(|m| m.name == other) {
+                        return Err(self.dup_modifier(&format!(
+                            "{name}/{other} (contradiction)"
+                        )));
+                    }
+                    self.pos += 1;
+                    mods.push(crate::ast::Annotation {
+                        name: name.to_string(),
                         value: None,
                     });
+                }
+                let mut stmt = self.parse_foreach_statement()?;
+                if let Statement::Foreach { modifiers, .. } = &mut stmt {
+                    modifiers.extend(mods);
                 }
                 Ok(stmt)
             }
@@ -406,6 +434,19 @@ impl<'a> Parser<'a> {
         };
         self.expect(Token::Semicolon)?;
         Ok(Statement::Rollback(val))
+    }
+
+    /// True when the current token is a statement modifier and the run of
+    /// modifiers ahead terminates at `foreach`.
+    fn statement_modifiers_target_foreach(&self) -> bool {
+        let mut i = self.pos;
+        loop {
+            match self.tokens.get(i).map(|(t, _)| t) {
+                Some(Token::Seq) | Some(Token::Approx) | Some(Token::Exact) => i += 1,
+                Some(Token::Foreach) => return true,
+                _ => return false,
+            }
+        }
     }
 
     /// foreach(item in list) { ... }
@@ -1029,6 +1070,45 @@ mod tests {
             }
         }
         assert!(saw, "seq foreach must parse into a Foreach with modifiers");
+    }
+
+    #[test]
+    fn numeric_foreach_modifiers_parse_and_contradict() {
+        // 2026-11-08: `approx`/`exact` are per-fold numeric declarations.
+        let ok = "defn f(a: Float[4]) -> Float {
+            let acc: Float = 0.0;
+            approx foreach k in 0..4 { acc = acc + a[k]; };
+            term acc;
+        };";
+        let tokens = tokenize(ok).unwrap();
+        let mut p = Parser::new(tokens, ok);
+        let program = p.parse_program().unwrap();
+        let crate::ast::TopLevel::Definition(d) = &program[0] else { panic!() };
+        assert!(d.body.iter().any(|s| matches!(
+            s,
+            crate::ast::Statement::Foreach { modifiers, .. }
+                if modifiers.iter().any(|m| m.name == "approx")
+        )));
+
+        // `seq approx foreach` composes (order pinned, numeric license noted).
+        let composed = "defn f(a: Float[4]) -> Float {
+            let acc: Float = 0.0;
+            seq approx foreach k in 0..4 { acc = acc + a[k]; };
+            term acc;
+        };";
+        let tokens = tokenize(composed).unwrap();
+        let mut p = Parser::new(tokens, composed);
+        assert!(p.parse_program().is_ok());
+
+        // `approx exact foreach` is the same contradiction as the node pair.
+        let bad = "defn f(a: Float[4]) -> Float {
+            let acc: Float = 0.0;
+            approx exact foreach k in 0..4 { acc = acc + a[k]; };
+            term acc;
+        };";
+        let tokens = tokenize(bad).unwrap();
+        let mut p = Parser::new(tokens, bad);
+        assert!(p.parse_program().is_err(), "approx+exact must be rejected");
     }
 
     #[test]

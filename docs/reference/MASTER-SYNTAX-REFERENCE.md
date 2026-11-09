@@ -68,8 +68,8 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | Keyword | Meaning |
 |---|---|
 | `seq` | Ordering/sequential modifier; sequential-consistency atomic default; `seq let` pins array layout; `seq foreach` pins iteration order |
-| `approx` | Numeric ambiguity modifier (node/txn): result may differ within FP rounding; licenses float fold reassociation |
-| `exact` | Numeric ambiguity modifier (node/txn): asserts precise sequential evaluation; suppresses float fold reassociation; contradicts `approx` |
+| `approx` | Numeric ambiguity modifier (node/txn, or `approx foreach` per fold): result may differ within FP rounding; licenses float fold reassociation |
+| `exact` | Numeric ambiguity modifier (node/txn, or `exact foreach` per fold): asserts precise sequential evaluation; suppresses float fold reassociation; contradicts `approx` at the same level |
 | `pack` | Bit-contiguous zero-padding struct modifier |
 | `trap` | Hardware abort (never-type) |
 | `halt` | Bare-metal stop (never-type) |

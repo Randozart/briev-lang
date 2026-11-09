@@ -162,6 +162,12 @@ pub struct ReductionInfo {
     /// the reassociating lane is suppressed. Integer folds are
     /// order-independent; `seq` is redundant there.
     pub seq: bool,
+    /// 2026-11-08 (per-foreach numeric pair): the fold's own `approx`
+    /// declaration. Overrides the node-level pair for THIS fold.
+    pub foreach_approx: bool,
+    /// The fold's own `exact` declaration (pins this fold's sequential
+    /// evaluation; overrides a node-level `approx`).
+    pub foreach_exact: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +243,8 @@ impl ReductionInfo {
             col_buf: String::new(),
             out_buf: String::new(),
             seq: false,
+            foreach_approx: false,
+            foreach_exact: false,
         }
     }
 }
@@ -999,6 +1007,8 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
         // seq-loop decision (documented follow-up); the declared-composite
         // gate governs the softmax lane.
         seq: false,
+        foreach_approx: false,
+        foreach_exact: false,
     })
 }
 
@@ -1265,6 +1275,8 @@ fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInf
             continue;
         };
         let seq = modifiers.iter().any(|m| m.name == "seq");
+        let foreach_approx = modifiers.iter().any(|m| m.name == "approx");
+        let foreach_exact = modifiers.iter().any(|m| m.name == "exact");
         let Expr::Range { end, .. } = list.as_ref() else {
             continue;
         };
@@ -1340,6 +1352,8 @@ fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInf
             col_buf: col,
             out_buf: String::new(),
             seq,
+            foreach_approx,
+            foreach_exact,
         });
     }
     None
@@ -1379,6 +1393,8 @@ fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
             continue;
         };
         let seq = modifiers.iter().any(|m| m.name == "seq");
+        let foreach_approx = modifiers.iter().any(|m| m.name == "approx");
+        let foreach_exact = modifiers.iter().any(|m| m.name == "exact");
         let Expr::Range { end, .. } = list.as_ref() else {
             continue;
         };
@@ -1443,6 +1459,8 @@ fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
             col_buf: String::new(),
             out_buf: String::new(),
             seq,
+            foreach_approx,
+            foreach_exact,
         });
     }
     FoldClass::NotFold
@@ -1491,6 +1509,47 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
         };
     }
     false
+}
+
+/// 2026-11-08 (observability razor, `seq` contract): a `seq` declaration
+/// whose removal preserves observable order is redundant. Advisory only —
+/// the constraint is still honored when it fires.
+///
+/// Provable cases (conservative):
+/// - an INTEGER fold: wrapping add/mul and min/max are order-independent, so
+///   iteration order is not observable;
+/// - an eligible effect-free, disjoint map (`shape.eligible` — the accel
+///   proof's flat-disjoint body): no cross-iteration effects, so order is
+///   not observable.
+/// Float folds never warn: rounding makes the accumulation order observable.
+pub fn seq_redundancy(shape: &KernelShape, items: &[TopLevel]) -> Option<&'static str> {
+    let has_seq = shape.kernel_stmts.iter().any(|st| matches!(
+        st,
+        Statement::Foreach { modifiers, .. }
+            if modifiers.iter().any(|m| m.name == "seq")
+    ));
+    if !has_seq {
+        return None;
+    }
+    if let Some(red) = &shape.reduction {
+        let is_fold = matches!(
+            red.kind,
+            ReductionKind::Sum
+                | ReductionKind::Product
+                | ReductionKind::Min
+                | ReductionKind::Max
+        );
+        if is_fold && fold_buffer_is_int(items, &red.row_buf) {
+            return Some("`seq` is redundant here: integer folds are order-independent");
+        }
+        return None;
+    }
+    if shape.eligible {
+        return Some(
+            "`seq` has no observable effect here: the loop is an independent, effect-free map "
+        );
+    }
+    None
 }
 
 /// Why the §12 Sum idiom lane did not fire (W4: named facts, not a
@@ -1577,20 +1636,23 @@ pub fn fold_idiom_outcome(shape: &KernelShape, items: &[TopLevel]) -> Result<(),
     }
     let is_float = !fold_buffer_is_int(items, &red.row_buf);
     if is_float {
-        // 2026-11-08 (seq-loop decision, strongest pin first): `seq` on the
-        // fold's foreach declares the iteration order observable — float
-        // accumulation order changes rounding, so no reassociation.
+        // 2026-11-08 precedence (strongest pin first): `seq` (order
+        // observable) > per-fold `exact` > per-fold `approx` > node `exact`
+        // > node `approx` > precise default. A per-fold declaration
+        // overrides the node-level pair for THIS fold.
         if red.seq {
             return Err(FoldIdiomBlock::SeqPinned);
         }
-        // 2026-11-08 (P1): the numeric ambiguity pair. `exact` pins precise
-        // sequential evaluation (assertion); `approx` licenses reassociation;
-        // neither = precise default (the why-not names both fixes).
-        if shape.exact_declared {
+        if red.foreach_exact {
             return Err(FoldIdiomBlock::ExactPinned);
         }
-        if !shape.approx_declared {
-            return Err(FoldIdiomBlock::FloatUnlicensed);
+        let node_licensed = shape.approx_declared && !shape.exact_declared;
+        if !(red.foreach_approx || node_licensed) {
+            return Err(if shape.exact_declared {
+                FoldIdiomBlock::ExactPinned
+            } else {
+                FoldIdiomBlock::FloatUnlicensed
+            });
         }
     }
     Ok(())
@@ -3283,6 +3345,8 @@ mod fold_idiom_tests {
                 col_buf: String::new(),
                 out_buf: "y".into(),
                 seq: false,
+            foreach_approx: false,
+            foreach_exact: false,
             }),
             deferred_normalize: None,
             idiom_lane: false,
@@ -3361,6 +3425,77 @@ mod fold_idiom_tests {
             let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
             assert!(fold_idiom_lane(&shape, &items_i), "{kind:?} exact int stays licensed");
         }
+    }
+
+    #[test]
+    fn per_foreach_numeric_pair_overrides_the_node() {
+        // 2026-11-08 precedence: seq > foreach exact > foreach approx >
+        // node exact > node approx > precise default.
+        let items_f = int_buffer_items(Type::float());
+        // foreach `approx` overrides a node-level `exact`.
+        let mut shape = fold_shape_flags(ReductionKind::Sum, Expr::Decimal(1024), false, true);
+        shape.reduction.as_mut().unwrap().foreach_approx = true;
+        assert!(fold_idiom_lane(&shape, &items_f));
+        // foreach `exact` overrides a node-level `approx`.
+        let mut shape = fold_shape_flags(ReductionKind::Sum, Expr::Decimal(1024), true, false);
+        shape.reduction.as_mut().unwrap().foreach_exact = true;
+        assert_eq!(
+            fold_idiom_outcome(&shape, &items_f),
+            Err(FoldIdiomBlock::ExactPinned)
+        );
+        // `seq` still wins over a per-fold `approx`.
+        let mut shape = fold_shape_flags(ReductionKind::Sum, Expr::Decimal(1024), false, false);
+        {
+            let red = shape.reduction.as_mut().unwrap();
+            red.foreach_approx = true;
+            red.seq = true;
+        }
+        assert_eq!(
+            fold_idiom_outcome(&shape, &items_f),
+            Err(FoldIdiomBlock::SeqPinned)
+        );
+    }
+
+    fn seq_foreach_stmts() -> Vec<Statement> {
+        vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(range(8)),
+            body: vec![],
+            modifiers: vec![crate::ast::Annotation {
+                name: "seq".to_string(),
+                value: None,
+            }],
+        }]
+    }
+
+    #[test]
+    fn seq_redundancy_reports_only_provable_cases() {
+        use super::seq_redundancy;
+        // Integer fold: order-independent → redundant.
+        let items_i = int_buffer_items(Type::int());
+        let mut shape = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        shape.kernel_stmts = seq_foreach_stmts();
+        let reason = seq_redundancy(&shape, &items_i).expect("int fold seq is redundant");
+        assert!(reason.contains("integer folds"), "{reason}");
+        // Float fold: rounding makes the order observable → never redundant.
+        let items_f = int_buffer_items(Type::float());
+        let mut shape = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        shape.kernel_stmts = seq_foreach_stmts();
+        assert!(seq_redundancy(&shape, &items_f).is_none());
+        // Eligible effect-free disjoint map: order unobservable → redundant.
+        let mut map = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        map.reduction = None;
+        map.kernel_stmts = seq_foreach_stmts();
+        map.eligible = true;
+        let reason = seq_redundancy(&map, &items_i).expect("map seq is redundant");
+        assert!(reason.contains("independent"), "{reason}");
+        // Ineligible body: cannot prove → no warning.
+        map.eligible = false;
+        assert!(seq_redundancy(&map, &items_i).is_none());
+        // No seq: nothing to say.
+        let mut plain = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
+        plain.kernel_stmts = vec![];
+        assert!(seq_redundancy(&plain, &items_i).is_none());
     }
 
     #[test]

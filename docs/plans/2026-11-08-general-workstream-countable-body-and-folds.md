@@ -149,6 +149,21 @@ policy only), and `exact` is enforceable. This also means future LLVM
 changes could make the flag load-bearing; the A/B is the standing check
 (rerun if the toolchain matrix changes).
 
+## Per-`foreach` `approx`/`exact` + `seq` redundancy — LANDED 2026-11-08
+
+- Fold-level numeric declarations: `approx foreach` / `exact foreach` parse
+  (order-free modifier run, same-level contradiction error); `ReductionInfo`
+  carries per-fold flags; precedence `seq` > `exact foreach` >
+  `approx foreach` > node `exact` > node `approx` > precise default. Naming
+  honesty: it is still the *fold idiom* lane; per-fold declarations attach to
+  the matched loop.
+- Razor enforcement: `seq_redundancy` warns only where provable — integer
+  folds (order-independent) and eligible effect-free disjoint maps (order
+  unobservable); float folds are never flagged (rounding order is
+  observable). Advisory, emitted at the accel disclosure site.
+- Tests: parser (pair, composition, contradiction), precedence, redundancy
+  cases. SPEC/taxonomy/reference updated.
+
 ## W4 completion + `emit_stmt` audit — LANDED 2026-11-08
 
 - **W4 detection-level why-nots:** `detect_idiom_fold` now classifies

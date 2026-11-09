@@ -181,12 +181,15 @@ Illustrative placements (to be decided):
   speed keywords).
 - **Problem:** float add/mul are not associative — reassociating a reduction
   changes rounding vs source-order evaluation. The default is precise.
-- **`approx`** (node/txn prefix): the node's numeric result may deviate within
-  FP rounding; licenses float fold reassociation (parallel reduction lane).
+- **`approx`** (node/txn prefix, and per-fold `approx foreach`): the numeric
+  result may deviate within FP rounding; licenses float fold reassociation
+  (parallel reduction lane).
   Planned stdlib compression: `approx discards the precise right of this node`;
   consumed by the fold lane, disclosed in diagnostics.
-- **`exact`** (node/txn prefix): asserts the precise sequential result is
-  required; suppresses the parallel fold lane; pins no contraction. An
+- **`exact`** (node/txn prefix, and per-fold `exact foreach`): asserts the
+  precise sequential result is required; suppresses the parallel fold lane;
+  pins no contraction. A per-fold declaration overrides the node-level pair;
+  `seq` outranks both. An
   assertion, not a requirement (the default is already precise). `exact` +
   *proven* exactness may still use the parallel lane when the derivation tier
   lands (result identical).

@@ -472,7 +472,7 @@ impl<'a> Parser<'a> {
         false
     }
 
-    fn dup_modifier(&self, name: &str) -> SyntaxError {
+    pub(super) fn dup_modifier(&self, name: &str) -> SyntaxError {
         SyntaxError::UnexpectedToken {
             expected: format!("a structural identifier after modifiers (duplicate '{name}')"),
             found: format!("{}", self.peek().map(|t| format!("{t}")).unwrap_or_else(|| "EOF".into())),

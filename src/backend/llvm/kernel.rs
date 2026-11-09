@@ -87,9 +87,14 @@ impl super::LlvmBackend {
                     .as_ref()
                     .map(|r| !crate::analysis::accel::fold_buffer_is_int(items, &r.row_buf))
                     .unwrap_or(false);
+                let foreach_approx = shape
+                    .reduction
+                    .as_ref()
+                    .map(|r| r.foreach_approx)
+                    .unwrap_or(false);
                 let license = if !is_float {
                     "int (exact any order)"
-                } else if shape.approx_declared {
+                } else if foreach_approx || shape.approx_declared {
                     "float, approx-declared (rounding may differ from source order)"
                 } else {
                     "float"
@@ -130,6 +135,14 @@ impl super::LlvmBackend {
                         name, reason
                     ));
                 }
+            }
+            // 2026-11-08 (observability razor): disclose a redundant `seq`
+            // (the declaration has no observable effect here). Advisory.
+            if let Some(reason) = crate::analysis::accel::seq_redundancy(&shape, items) {
+                self.warnings.push(format!(
+                    "warning: accel '{}': {} (remove `seq`)",
+                    name, reason
+                ));
             }
             let emitted = crate::backend::spirv::kernel::emit_kernel(
                 &mut sb, "main", &shape, items, idiom_lane,
