@@ -1,0 +1,32 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Minimal reproducer: publish-into-incoming-parameter leaks. See BUGS.md
+// 2026-11-09 and docs/reports/2026-11-09-memory-defect-campaign.md.
+// Expected on a correct compiler: Valgrind-clean (no leak).
+// Current behaviour: 16 bytes in 1 block definitely lost (Valgrind exit 91).
+obj Holder { addr: Ptr<Bit<8>>; };
+
+defn make() -> Ptr<Bit<8>> {
+    let p: Ptr<Bit<8>> = Malloc#(16);
+    Store#(p, 1, 8);
+    term p;
+};
+
+defn publish(h: Holder) -> Bool {
+    h.addr = make();
+    term true;
+};
+
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    publish(h);
+    term Load#(h.addr, 8);
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    Print#(exercise());
+    done = true;
+    endprogram;
+};

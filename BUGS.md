@@ -1,3 +1,41 @@
+## Publish into an incoming parameter leaks the storage — OPEN 2026-11-09
+
+**Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
+incoming object parameter leaves the storage unreclaimed when the owning object
+dies. Minimal repro (`tests/fixtures/memory/publish_into_parameter_leak.bv`):
+
+```briev
+obj Holder { addr: Ptr<Bit<8>>; };
+defn make() -> Ptr<Bit<8>> { let p: Ptr<Bit<8>> = Malloc#(16); Store#(p, 1, 8); term p; };
+defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    publish(h);
+    term Load#(h.addr, 8);
+};
+```
+
+Valgrind: **16 bytes in 1 block definitely lost**, allocated in `make`, reached
+through `publish` → exit 91. The control that assigns the same allocation
+*directly in the caller* (`h.addr = Malloc#(16)`) is Valgrind-clean — so the
+defect is specific to publishing through a callee's incoming parameter.
+
+**Root cause:** `src/analysis/reclamation/walk.rs:354` (`record_incoming_store`)
+treats a store into a projection of an *incoming receiver* as publishing and
+installs a **barrier that disables region reclamation**; `propagate_incoming_store`
+(`:778`) extends that to callers. The comment at `:786` ("Over-approximating here
+is safe: a barrier only disables region reclamation") is the defect: disabling
+reclamation *is* a leak. This barrier was added 2026-11-08 to stop reclamation
+from freeing storage the caller still reads (a use-after-free); it over-corrected
+a UAF into a leak. Fix = reclaim storage published into an incoming parameter at
+the object's death (or return ownership to the caller), not disable reclamation.
+
+**Already caught by a standing guard:** `tests/reclamation_runtime.rs::native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe` is **RED** on this
+tree under Valgrind; CI stays green only because the Default-gates job does not
+install Valgrind. Found independently by the memory campaign (`MEM_FAMILY=1`,
+12/12 cases across 3 seeds). Full report:
+`docs/reports/2026-11-09-memory-defect-campaign.md`.
+
 ## Short-circuit division executes on the excluded edge — OPEN 2026-11-09
 
 Deterministic transition family 5 shrank `e != 0 && s / e > 0` to `s=0,e=0`.
