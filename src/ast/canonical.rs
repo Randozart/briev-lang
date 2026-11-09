@@ -665,8 +665,14 @@ fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
         Statement::Guarded(cond, body) => {
             format_braced(out, level, &format!("when {} {{", cond), body);
         }
-        Statement::Foreach { item, list, body, .. } => {
-            format_braced(out, level, &format!("foreach({} in {}) {{", item, list), body);
+        Statement::Foreach { item, list, body, modifiers, .. } => {
+            let prefix: String = modifiers.iter().map(|m| format!("{} ", m.name)).collect();
+            format_braced(
+                out,
+                level,
+                &format!("{}foreach({} in {}) {{", prefix, item, list),
+                body,
+            );
         }
         Statement::Block(body) => format_braced(out, level, "{", body),
         Statement::SyncBlock(body) => format_braced(out, level, "sync {", body),

@@ -1020,6 +1020,12 @@ mod tests {
             if let crate::ast::Statement::Foreach { modifiers, .. } = stmt {
                 saw = true;
                 assert!(modifiers.iter().any(|m| m.name == "seq"));
+                // Formatter fidelity: the modifier must survive printing.
+                assert!(
+                    format!("{}", stmt).contains("seq foreach"),
+                    "display must print the statement modifier: {}",
+                    stmt
+                );
             }
         }
         assert!(saw, "seq foreach must parse into a Foreach with modifiers");

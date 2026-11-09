@@ -480,8 +480,9 @@ impl Annotator {
                 output.push_str(&format!("{}}}\n", spaces));
                 output
             }
-            Statement::Foreach { item, list, body , ..} => {
-                let mut output = format!("{}foreach({} in {}) {{\n", spaces, item, self.format_expr(list));
+            Statement::Foreach { item, list, body, modifiers, .. } => {
+                let prefix: String = modifiers.iter().map(|m| format!("{} ", m.name)).collect();
+                let mut output = format!("{}{}foreach({} in {}) {{\n", spaces, prefix, item, self.format_expr(list));
                 for s in body {
                     output.push_str(&self.format_statement(s, indent + 2));
                 }

@@ -492,7 +492,12 @@ impl fmt::Display for Statement {
                     write!(f, "escape;")
                 }
             }
-            Statement::Foreach { item, list, body , ..} => {
+            Statement::Foreach { item, list, body, modifiers, .. } => {
+                // 2026-11-08: statement modifiers print in declared order
+                // (`seq foreach`); dropping them would lose the semantics.
+                for m in modifiers {
+                    write!(f, "{} ", m.name)?;
+                }
                 write!(f, "foreach({} in {}) {{ ", item, list)?;
                 for stmt in body {
                     write!(f, "{} ", stmt)?;
