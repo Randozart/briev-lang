@@ -158,32 +158,23 @@ result.value         // Result unwrapping
 
 **2026-09-16 (universal chaining):** every `.`-call — method, `#` intrinsic, `$` compile-time navigation, `!` plugin, `^`/`^^` reflection — follows the same rule: **the right-side operation applies to the left-side result**. The suffix is a naming convention that tells the compiler how to dispatch, not a different syntax. `a.Nav$(x)` and `Nav$(a, x)` are the same call; `a.serialize!()` and `a.serialize(a)` share the receiver-preserving shape.
 
-### Chaining power features (2026-09-16)
+### Chaining power features (2026-11-08)
 
 ```briev
-// Capture an intermediate value without breaking the chain.
-data.parse() >> input
-    .validate() >> valid
-    .emit(valid, input);
+// Bind an intermediate value as a real local without breaking the chain.
+data.parse() into input;
+input.validate() into valid;
+input.emit(valid);
 
-// Back-references — pass an earlier chain result as a leading argument.
-variable
-    .op()                 // result 1
-    .2>>secondOp()        // secondOp(op_result, variable) — .2 = 2 ops back
-    .step_1,1>>combined() // combined(prev_result, step_1, ...)
-
-// Cast annotation — cast then continue.
-value.rawParse().(Int)>>clamp(0, 255);
+// Cast step — cast then continue the chain.
+value.rawParse().(Int).clamp(0, 255);
 ```
 
-- `.1` is the immediately previous result (the same value the chain would
-  pass implicitly); `.2` is two back, `.N` is N back.
-- References are **leading arguments**: `receiver.N>>func(a)` dispatches as
-  `func(receiver, <ref>, a)` — the receiver binds `self` (member) or arg 0
-  (UFCS), then the resolved references precede the written args.
-- `expr >> name` captures the result as `name` for later `.name>>` references.
-- `>>` is a capture only at a chain position (followed by `.`, `;`, `}`, or
-  end of expression); inside `f(x >> y)` it stays a shift.
+- `expr into name;` is sugar for `let name = expr;`: a normal local whose type
+  is inferred, usable by name in later steps (no positional references).
+- `.(Type)` casts the in-flight value; the next `.f()` applies to the cast.
+- `>>` and `<<` are shifts only. The old `.N>>` / `.name>>` back-references
+  and `expr >> name` capture were removed in 2026-11-08.
 
 ---
 

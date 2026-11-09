@@ -6,7 +6,7 @@
 
 use super::helpers::Parser;
 use super::quantity::is_quantity_suffix;
-use crate::ast::{BinaryOpKind, ChainRef, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
+use crate::ast::{BinaryOpKind, Expr, ReflectKind, SpawnStorage, Type, UnaryOpKind};
 use crate::errors::{Span, SyntaxError};
 use crate::lexer::Token;
 
@@ -295,86 +295,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// 2026-09-16: Convert a parsed `.name` token (identifier or integer) into
-    /// a `ChainRef` — a number is positional, anything else is named.
-    fn chain_ref_from_name(name: &str) -> ChainRef {
-        match name.parse::<usize>() {
-            Ok(n) => ChainRef::Positional(n),
-            Err(_) => ChainRef::Named(name.to_string()),
-        }
-    }
-
-    /// 2026-09-16: true when the next two tokens are `identifier (` — the
-    /// shape a back-reference call must have after `>>`.
-    fn peek_is_call_head(&self) -> bool {
-        self.peek_is_identifier() && matches!(self.peek_next(), Some(Token::LParen))
-    }
-
-    /// 2026-09-16: true when the token two ahead is a chain-capture terminator
-    /// (`.`, `;`, `}`, or EOF) — the shape `expr >> name` must be read as a
-    /// capture rather than a shift expression. `>>` inside an argument list
-    /// (`f(x >> y)`) is followed by `)`, so it stays a shift.
-    fn peek_is_capture_terminator(&self) -> bool {
-        match self.tokens.get(self.pos + 2).map(|(t, _)| t) {
-            Some(Token::Dot) | Some(Token::Semicolon) | Some(Token::RBrace) | None => true,
-            _ => false,
-        }
-    }
-
-    /// 2026-09-16: Try to parse a back-reference list after `.name`/`.N`.
-    /// Returns `Some(refs)` and consumes through `>>` when the tokens form a
-    /// back-reference (`.N>>f()`, `.name>>f()`, `.N,M>>f()`). Returns `None`
-    /// with the position unchanged otherwise — the caller then treats
-    /// `.name` as ordinary field access. A call (`identifier(`) must follow
-    /// the `>>`, which keeps `x.2 >> d` (shift) unambiguous.
-    fn try_parse_chain_refs(&mut self, first_name: &str) -> Result<Option<Vec<ChainRef>>, SyntaxError> {
-        let save = self.pos;
-        if self.eat(&Token::Shr) {
-            if self.peek_is_call_head() {
-                return Ok(Some(vec![Self::chain_ref_from_name(first_name)]));
-            }
-            // 2026-09-16 (Bug E): a NUMERIC back-ref marker (`.N>>`) followed by
-            // a non-call silently misparsed as tuple-field + shift/capture
-            // (`.2>>obj.method()`). Numbers are unambiguous back-ref markers —
-            // error with the paren-shift fix. NAMED refs fall through so a field
-            // capture (`obj.field >> save`) still parses; `.name>>` is only a
-            // back-ref when a direct call follows.
-            if first_name.parse::<usize>().is_ok() {
-                return self.error_at_current(&format!(
-                    "back-reference '.{}>>' must target a direct call — parenthesize a shift like `(t.{}) >> x`",
-                    first_name, first_name
-                ));
-            }
-            self.pos = save;
-            return Ok(None);
-        }
-        if !self.check(&Token::Comma) {
-            return Ok(None);
-        }
-        // Comma-separated ref list — may also be a tuple/arg separator.
-        let mut refs = vec![Self::chain_ref_from_name(first_name)];
-        while self.eat(&Token::Comma) {
-            let next = match self.peek() {
-                Some(Token::Integer(_)) => match self.advance() {
-                    Some((Token::Integer(n), _)) => n.to_string(),
-                    _ => unreachable!(),
-                },
-                Some(Token::Identifier(_)) => self.expect_identifier()?,
-                _ => { self.pos = save; return Ok(None); }
-            };
-            refs.push(Self::chain_ref_from_name(&next));
-        }
-        if !self.eat(&Token::Shr) || !self.peek_is_call_head() {
-            self.pos = save;
-            return Ok(None);
-        }
-        Ok(Some(refs))
-    }
-
-    /// 2026-09-16: `.(Type)>>func(args)` — cast the previous result to `Type`,
-    /// then invoke `func` with the cast value as receiver. Returns `None` with
-    /// the position unchanged when the tokens are not this form.
-    fn try_parse_cast_chain(&mut self, recv: &Expr) -> Result<Option<Expr>, SyntaxError> {
+    /// 2026-11-08 (chaining plan): `.(Type)` — cast the previous result to
+    /// `Type`; the postfix loop continues on the cast value, so `x.(Int).f()`
+    /// is a method call on the cast. Returns `None` with the position unchanged
+    /// when the tokens are not this form.
+    fn try_parse_cast_step(&mut self, recv: &Expr) -> Result<Option<Expr>, SyntaxError> {
         let save = self.pos;
         if !self.eat(&Token::LParen) {
             return Ok(None);
@@ -384,22 +309,11 @@ impl<'a> Parser<'a> {
             _ => { self.pos = save; return Ok(None); }
         };
         self.advance();
-        if !self.eat(&Token::RParen) || !self.eat(&Token::Shr) || !self.peek_is_call_head() {
+        if !self.eat(&Token::RParen) {
             self.pos = save;
             return Ok(None);
         }
-        let func_name = self.expect_identifier()?;
-        self.expect(Token::LParen)?;
-        let mut args = Vec::new();
-        if !self.check(&Token::RParen) {
-            loop {
-                args.push(self.parse_expression()?);
-                if !self.eat(&Token::Comma) { break; }
-            }
-        }
-        self.expect(Token::RParen)?;
-        let cast = Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name));
-        Ok(Some(Expr::MethodCall(Box::new(cast), func_name, args, None, vec![])))
+        Ok(Some(Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name))))
     }
 
     fn parse_postfix(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
@@ -441,9 +355,9 @@ impl<'a> Parser<'a> {
                     }
                 }
             } else if self.eat(&Token::Dot) {
-                // 2026-09-16: cast annotation in a chain — `.(Type)>>func()`.
+                // 2026-11-08 (chaining plan): cast step in a chain — `.(Type)`.
                 if self.check(&Token::LParen) {
-                    if let Some(cast_expr) = self.try_parse_cast_chain(&expr)? {
+                    if let Some(cast_expr) = self.try_parse_cast_step(&expr)? {
                         expr = cast_expr;
                         continue;
                     }
@@ -487,13 +401,11 @@ impl<'a> Parser<'a> {
                 // Caveat (shared with the removed `::` form): a *variable*
                 // whose name matches a declared type is indistinguishable
                 // here — the parser cannot see bindings.
-if let Expr::Identifier(base) = &expr {
-                    // A following `>>` (back-reference chain, `.N>>f()`) or a
-                    // `$` navigation-call suffix takes precedence over enum
-                    // construction — neither is a variant access.
+                 if let Expr::Identifier(base) = &expr {
+                    // A `$` navigation-call suffix takes precedence over enum
+                    // construction — it is not a variant access.
                     if self.known_types.contains(base)
                         && !name.ends_with('$')
-                        && !self.check(&Token::Shr)
                     {
                          let enum_name = base.clone();
                          let qualified = format!("{}::{}", enum_name, name);
@@ -515,24 +427,9 @@ if let Expr::Identifier(base) = &expr {
                          continue;
                      }
                  }
-                 // 2026-09-16: back-reference chain — `.N>>f()` / `.name>>f()`.
-                 // Must be checked before field access so `.2>>f()` is not read
-                 // as tuple element `.2` followed by a shift.
-if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
-                     let func_name = self.expect_identifier()?;
-                     self.expect(Token::LParen)?;
-                    let mut args = Vec::new();
-                    if !self.check(&Token::RParen) {
-                        loop {
-                            args.push(self.parse_expression()?);
-                            if !self.eat(&Token::Comma) { break; }
-                        }
-                    }
-                    self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(expr), func_name, args, None, chain_refs);
-                // 2026-07-21: Navigation chain call: a.first$(args).
-                // 2026-09-16: Unified under MethodCall — receiver is first-class.
-                } else if name.ends_with('$') && self.check(&Token::LParen) {
+                 // 2026-07-21: Navigation chain call: a.first$(args).
+                 // 2026-09-16: Unified under MethodCall — receiver is first-class.
+                 if name.ends_with('$') && self.check(&Token::LParen) {
                     let recv = expr;
                     self.expect(Token::LParen)?;
                     let mut args = Vec::new();
@@ -543,7 +440,7 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(recv), name, args, None, vec![]);
+                    expr = Expr::MethodCall(Box::new(recv), name, args, None);
                 } else if self.check(&Token::Not) {
                     // 2026-09-16: Chained plugin intercept — obj.name!(args).
                     // The receiver is the expression built so far.
@@ -564,7 +461,6 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                         args: p_args,
                         type_args: vec![],
                         receiver: Some(Box::new(expr)),
-                        chain_refs: vec![],
                     };
                 } else if self.check(&Token::LParen) {
                     // 2026-07-31: Method call: a.f(x) — receiver preserved.
@@ -577,7 +473,7 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(expr), name, args, None, vec![]);
+                    expr = Expr::MethodCall(Box::new(expr), name, args, None);
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
@@ -716,27 +612,7 @@ if let Some(chain_refs) = self.try_parse_chain_refs(&name)? {
                     args: p_args,
                     type_args: vec![],
                     receiver: None,
-                    chain_refs: vec![],
                 };
-            } else if self.check(&Token::Shr)
-                && self.peek_next_is_identifier()
-                && self.peek_is_capture_terminator()
-                && matches!(expr, Expr::MethodCall(..) | Expr::Capture { .. })
-            {
-                // 2026-09-16: chain capture — `expr >> name`. Binds the current
-                // result to `name` and keeps the chain alive so a following
-                // `.next()` continues on the same value.
-                // 2026-09-24: receiver must be a chain value (MethodCall or a
-                // prior Capture). `let d = m >> b;` / `term a >> b;` /
-                // `f() >> n;` have non-chain receivers and must stay bitwise
-                // shift — the ident+terminator check alone misparsed every
-                // statement-position `lhs >> rhs` as capture, rebinding rhs to
-                // lhs (broke float_fmt frac_digit_loop → pow2b overflow).
-                // Undo: widen this matches! only for a documented capture form
-                // whose receiver is not also a common shift LHS.
-                self.advance(); // consume >>
-                let name = self.expect_identifier()?;
-                expr = Expr::Capture { expr: Box::new(expr), name };
             } else {
                 break;
             }
@@ -1925,10 +1801,9 @@ mod tests {
         // `data.serialize!()` — the plugin intercept now carries a receiver.
         let expr = parse_expr("data.serialize!()").unwrap();
         match expr {
-            Expr::PluginIntercept { name, receiver, chain_refs, .. } => {
+            Expr::PluginIntercept { name, receiver, .. } => {
                 assert_eq!(name, "serialize");
                 assert!(receiver.is_some(), "chained plugin must carry a receiver");
-                assert!(chain_refs.is_empty());
             }
             other => panic!("expected plugin intercept, got {other:?}"),
         }
@@ -1966,11 +1841,10 @@ mod tests {
         // `a.First$()` must produce MethodCall (receiver preserved), not Call.
         let expr = parse_expr("a.First$()").unwrap();
         match expr {
-            Expr::MethodCall(recv, name, args, _, refs) => {
+            Expr::MethodCall(recv, name, args, _) => {
                 assert_eq!(name, "First$");
                 assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "a"));
                 assert!(args.is_empty());
-                assert!(refs.is_empty());
             }
             other => panic!("expected MethodCall, got {other:?}"),
         }
@@ -1990,34 +1864,8 @@ mod tests {
     }
 
     #[test]
-    fn chain_capture_parses() {
-        // `a.b() >> step;` at statement level becomes Expr::Capture.
-        let expr = parse_expr("a.b() >> step").unwrap();
-        match expr {
-            Expr::Capture { expr, name } => {
-                assert_eq!(name, "step");
-                assert!(matches!(expr.as_ref(), Expr::MethodCall(..)));
-            }
-            other => panic!("expected capture, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn chain_capture_keeps_chain_alive() {
-        // `a.b() >> x.c()` — the capture binds then the chain continues.
-        let expr = parse_expr("a.b() >> x .c()").unwrap();
-        match expr {
-            Expr::MethodCall(recv, name, ..) => {
-                assert_eq!(name, "c");
-                assert!(matches!(recv.as_ref(), Expr::Capture { name: n, .. } if n == "x"));
-            }
-            other => panic!("expected MethodCall wrapping capture, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn shift_inside_args_stays_shift() {
-        // `f(x >> y)` — `>>` inside an argument list is a shift, not capture.
+        // `f(x >> y)` — `>>` inside an argument list is a shift.
         let expr = parse_expr("f(x >> y)").unwrap();
         match expr {
             Expr::Call(_, args, _) => {
@@ -2030,8 +1878,7 @@ mod tests {
 
     #[test]
     fn shift_ident_receiver_stays_shift() {
-        // 2026-09-24: `m >> b` (ident + EOF/`;` terminator) must be bitwise
-        // shift — the float_fmt frac_digit_loop form. Receiver is not a chain.
+        // `m >> b` must be bitwise shift.
         let expr = parse_expr("m >> b").unwrap();
         assert!(
             matches!(expr, Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
@@ -2041,7 +1888,7 @@ mod tests {
 
     #[test]
     fn shift_call_receiver_stays_shift() {
-        // `f() >> n` — a bare call is not a chain position; stays shift.
+        // `f() >> n` — a bare call receiver stays shift.
         let expr = parse_expr("f() >> n").unwrap();
         assert!(
             matches!(expr, Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, ..)),
@@ -2050,89 +1897,48 @@ mod tests {
     }
 
     #[test]
-    fn chained_captures_still_parse() {
-        // `a.b() >> s1.c() >> s2` — capture, continue chain, capture again.
-        // Each SHR sees a MethodCall receiver; `.` after s1 is a terminator.
-        let expr = parse_expr("a.b() >> s1.c() >> s2").unwrap();
+    fn shift_method_call_receiver_stays_shift() {
+        // `a.b() >> n` — the former chain-capture form is now a plain shift.
+        let expr = parse_expr("a.b() >> n").unwrap();
         match expr {
-            Expr::Capture { expr, name } => {
-                assert_eq!(name, "s2");
-                match expr.as_ref() {
-                    Expr::MethodCall(recv, m, ..) => {
-                        assert_eq!(m, "c");
-                        assert!(matches!(recv.as_ref(), Expr::Capture { name: n, .. } if n == "s1"));
-                    }
-                    other => panic!("expected MethodCall mid-chain, got {other:?}"),
-                }
+            Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, l, r) => {
+                assert!(matches!(l.as_ref(), Expr::MethodCall(..)));
+                assert!(matches!(r.as_ref(), Expr::Identifier(n) if n == "n"));
             }
-            other => panic!("expected capture, got {other:?}"),
+            other => panic!("expected shift, got {other:?}"),
         }
     }
 
     #[test]
-    fn positional_backref_parses() {
-        // `.2>>func()` — positional back-reference in a chain.
-        let expr = parse_expr("a.b().2>>func()").unwrap();
+    fn cast_step_parses() {
+        // `value.(Int)` — a chain cast step.
+        let expr = parse_expr("value.(Int)").unwrap();
         match expr {
-            Expr::MethodCall(recv, name, args, _, refs) => {
-                assert_eq!(name, "func");
+            Expr::Cast(inner, Type::Custom(n)) => {
+                assert_eq!(n, "Int");
+                assert!(matches!(inner.as_ref(), Expr::Identifier(v) if v == "value"));
+            }
+            other => panic!("expected cast, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cast_step_then_method_parses() {
+        // `x.(Int).f()` — method call on the cast value.
+        let expr = parse_expr("x.(Int).f()").unwrap();
+        match expr {
+            Expr::MethodCall(recv, name, args, _) => {
+                assert_eq!(name, "f");
                 assert!(args.is_empty());
-                assert_eq!(refs.len(), 1);
-                assert_eq!(refs[0], ChainRef::Positional(2));
-                assert!(matches!(recv.as_ref(), Expr::MethodCall(..)));
+                assert!(matches!(recv.as_ref(), Expr::Cast(_, Type::Custom(n)) if n == "Int"));
             }
-            other => panic!("expected MethodCall with ref, got {other:?}"),
+            other => panic!("expected MethodCall on cast, got {other:?}"),
         }
     }
 
     #[test]
-    fn named_backref_parses() {
-        // `.step_1>>func()` — named capture reference.
-        let expr = parse_expr("a.b().step_1>>func()").unwrap();
-        match expr {
-            Expr::MethodCall(_, name, _, _, refs) => {
-                assert_eq!(name, "func");
-                assert_eq!(refs.len(), 1);
-                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
-            }
-            other => panic!("expected MethodCall with named ref, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn multiple_backrefs_parse() {
-        // `.step_1,1>>func(a)` — multiple references become leading args.
-        let expr = parse_expr("a.b().step_1,1>>func(x)").unwrap();
-        match expr {
-            Expr::MethodCall(_, name, args, _, refs) => {
-                assert_eq!(name, "func");
-                assert_eq!(args.len(), 1);
-                assert_eq!(refs.len(), 2);
-                assert_eq!(refs[0], ChainRef::Named("step_1".into()));
-                assert_eq!(refs[1], ChainRef::Positional(1));
-            }
-            other => panic!("expected MethodCall with two refs, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cast_annotation_parses() {
-        // `value.(Int)>>clamp(0, 255)` — cast then call.
-        let expr = parse_expr("value.(Int)>>clamp(0, 255)").unwrap();
-        match expr {
-            Expr::MethodCall(recv, name, args, _, refs) => {
-                assert_eq!(name, "clamp");
-                assert_eq!(args.len(), 2);
-                assert!(refs.is_empty());
-                assert!(matches!(recv.as_ref(), Expr::Cast(inner, t) if matches!(t, Type::Custom(n) if n == "Int")));
-            }
-            other => panic!("expected cast + MethodCall, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn dot_identifier_without_shr_is_field_access() {
-        // `.name` without `>>` must stay field access, never a reference.
+    fn dot_identifier_is_field_access() {
+        // `.name` must stay field access.
         let expr = parse_expr("a.b.c").unwrap();
         match expr {
             Expr::Field(inner, name) => {
@@ -2144,8 +1950,8 @@ mod tests {
     }
 
     #[test]
-    fn dot_number_without_shr_is_tuple_access() {
-        // `.2` without `>>` must stay tuple element access.
+    fn dot_number_is_tuple_access() {
+        // `.2` must stay tuple element access.
         let expr = parse_expr("t.2").unwrap();
         match expr {
             Expr::Field(recv, name) => {
@@ -2153,28 +1959,6 @@ mod tests {
                 assert!(matches!(recv.as_ref(), Expr::Identifier(n) if n == "t"));
             }
             other => panic!("expected tuple field access, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn numeric_backref_without_call_errors() {
-        // `.2>>` (numeric marker) without a direct call target is a clear error,
-        // not a silent tuple-field + shift misparse.
-        assert!(parse_expr("t.2 >> 3").is_err(), "numeric .N>> must target a call");
-        assert!(parse_expr("a.b().2>>obj.method()").is_err(), "method targets are not direct calls");
-    }
-
-    #[test]
-    fn named_backref_falls_through_to_field_shift() {
-        // A NAMED `.name>>` with no call is a field access + shift — this keeps
-        // a field capture (`obj.field >> save`) and field shifts working.
-        let expr = parse_expr("t.step >> 3").unwrap();
-        match expr {
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Shr, l, r) => {
-                assert!(matches!(l.as_ref(), Expr::Field(..)));
-                assert!(matches!(r.as_ref(), Expr::Decimal(3)));
-            }
-            other => panic!("expected shift after field, got {other:?}"),
         }
     }
 

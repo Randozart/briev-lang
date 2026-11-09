@@ -67,7 +67,6 @@ pub enum HirExprKind {
         name: String,
         args: Vec<HirExpr>,
         analysis_id: Option<usize>,
-        chain_refs: Vec<crate::ast::ChainRef>,
     },
     Reflect {
         receiver: Box<HirExpr>,
@@ -121,7 +120,6 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
         type_args: Vec<crate::ast::Type>,
         receiver: Option<Box<HirExpr>>,
-        chain_refs: Vec<crate::ast::ChainRef>,
     },
     StructLiteral {
         type_name: String,

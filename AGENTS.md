@@ -423,7 +423,7 @@ contracts.
 | **Iterable protocol (iteration/length/String/reflection)** | `docs/architecture/iterable-protocol.md` — read before foreach/b-each/collection/reflection code; plan: `docs/plans/2026-08-12-iterable-protocol.md` |
 | **Slicing (zero-copy view + strided gather, 2026-10-09)** | `docs/architecture/slicing.md` — `List`/`Vector<N>` share a layout, so a contiguous `data[a:b]` is a free pointer rebase (no `Alloc#+Copy#`); strided `data[a:b:c]` gathers. The alias caveat + A/B live there; read before slice/collection-layout code |
 | **String unification + boundary (implemented 2026-08-14)** | `docs/plans/2026-08-14-string-unification-and-boundary.md` — `#String` is `Iterable<Char>`, `.^^Element`, `Abs#`/bit-intrinsic migration, slice-6 blockers |
-| **Universal chaining (implemented 2026-09-16)** | `docs/architecture/universal-chaining.md` — dot unifies all call surfaces (member/`#`/`$`/`!`/reflection); power features `.N>>`/`.name>>` back-refs, `>> name` captures, `.(Type)>>` casts. Plan: `docs/plans/2026-09-16-universal-chaining-rules.md` |
+| **Universal chaining (simplified 2026-11-08)** | `docs/architecture/universal-chaining.md` — dot unifies all call surfaces (member/`#`/`$`/`!`/reflection); `expr into name` binds a real local, `.(Type)` is a cast step; back-refs/capture removed (`>>` is shift only). Plan: `docs/plans/2026-11-08-language-surfaces-attr-and-chaining.md` |
 | **Frontend-driven dispatch (active plan)** | `docs/plans/2026-07-31-frontend-driven-dispatch.md` |
 | **kalman/float_math parity (active plan)** | `docs/plans/2026-07-31-regain-kalman-float-math-parity.md` |
 | **accel GPU offload (implemented 2026-08-06)** | `docs/plans/2026-08-06-accel-gpu-offload.md` |

@@ -257,7 +257,7 @@ impl<'a> BodyAnalyzer<'a> {
     ) -> ValueId {
         match expr {
             Expr::Call(name, args, _) => self.expr_call(name, args, cursor, scope),
-            Expr::MethodCall(receiver, _, args, _, _) => {
+            Expr::MethodCall(receiver, _, args, _) => {
                 self.expr_method(receiver, args, cursor, scope)
             }
             Expr::Spawn { args, .. } => self.expr_spawn(args, cursor, scope),
@@ -1160,7 +1160,7 @@ fn walk_expression_identifiers(expr: &Expr, out: &mut dyn FnMut(&str)) {
                 walk_expression_identifiers(arg, out);
             }
         }
-        Expr::MethodCall(receiver, _, args, _, _) => {
+        Expr::MethodCall(receiver, _, args, _) => {
             walk_expression_identifiers(receiver, out);
             for arg in args {
                 walk_expression_identifiers(arg, out);

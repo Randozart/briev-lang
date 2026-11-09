@@ -165,7 +165,7 @@ fn rewrite_expr(
     rewrites: &mut Vec<(Expr, Expr)>,
 ) -> Result<(), String> {
     match expr {
-        Expr::PluginIntercept { name, args, type_args: _, receiver, chain_refs: _ } if name == "inline_frgn" => {
+        Expr::PluginIntercept { name, args, type_args: _, receiver } if name == "inline_frgn" => {
             // 2026-09-16 (Bug A): walk the receiver for nested intercepts, then
             // prepend it as the first argument (UFCS-style chaining) so it is
             // not silently dropped. A chained inline_frgn fails the first-three-

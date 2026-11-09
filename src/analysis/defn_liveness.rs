@@ -691,7 +691,7 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
-            Expr::MethodCall(recv, name, args, _, _) => {
+            Expr::MethodCall(recv, name, args, _) => {
                 // Op-member dispatch — members are conservatively rooted;
                 // walk receiver/args for their own edges.
                 // 2026-09-16 (Bug F): a UFCS method call (`a.f(x)` → `f(a, x)`)
@@ -1094,7 +1094,7 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        Expr::MethodCall(recv, name, args, _, _) => {
+        Expr::MethodCall(recv, name, args, _) => {
             // 2026-09-16 (Bug F): a UFCS method call targets a top-level defn
             // (`a.f(x)` → `f(a, x)`); collect the name so the defn is rooted.
             out.push(name.clone());

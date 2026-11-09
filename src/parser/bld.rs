@@ -530,7 +530,7 @@ impl<'a> Parser<'a> {
         }
         match lhs {
             Expr::Call(callee, args, _) => Ok(BldStmt::Call { callee, args, span }),
-            Expr::MethodCall(recv, name, args, _, _) => {
+            Expr::MethodCall(recv, name, args, _) => {
                 // Method chains lower as a call on the receiver's result;
                 // v1 keeps the surface: receiver call + method call.
                 Ok(BldStmt::Call {

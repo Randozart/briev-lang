@@ -768,6 +768,21 @@ impl<'a> Parser<'a> {
             let value = Expr::BinaryOp(op, Box::new(lhs.clone()), Box::new(rhs));
             return Ok(Statement::Assign(lhs, value));
         }
+        // 2026-11-08 (chaining plan): `expr into name;` binds the chain value
+        // as a REAL local (sugar for `let name = expr;`). The receiver is a
+        // plain variable afterwards — no positional back-references.
+        if self.check_identifier("into") {
+            self.pos += 1; // consume contextual 'into'
+            let name = self.expect_identifier()?;
+            self.expect(Token::Semicolon)?;
+            return Ok(Statement::Let {
+                name,
+                names: vec![],
+                ty: None,
+                expr: Some(lhs),
+                modifiers: vec![],
+            });
+        }
         self.expect(Token::Semicolon)?;
         // 2026-07-17: Detect assignment at statement level. The expression
         // parser treats both `=` and `==` as BinaryOpKind::Eq (lowest
@@ -864,6 +879,31 @@ fn substitute_binder_ref(idx: &Expr, binders: &[(String, i64)]) -> Expr {
 mod tests {
     use super::*;
     use crate::lexer::tokenize;
+
+    // 2026-11-08 (chaining plan): `expr into name;` is a real local binding,
+    // not a positional chain capture.
+    #[test]
+    fn into_binds_chain_result_to_local() {
+        let src = "node n [true][done] { m.f(1) into r; done = r > 0; term; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_program().unwrap().into_iter().next().unwrap();
+        let crate::ast::TopLevel::Transaction(t) = item else { panic!("expected Transaction") };
+        match &t.body[0] {
+            crate::ast::Statement::Let { name, ty, expr, .. } => {
+                assert_eq!(name, "r");
+                assert!(ty.is_none(), "into infers the type");
+                assert!(matches!(expr, Some(crate::ast::Expr::MethodCall(..))),
+                    "the chain value is the initializer: {:?}", expr);
+            }
+            other => panic!("into must lower to a Let binding, got {other:?}"),
+        }
+        // `>>` remains a shift: `a >> b;` is a discarded shift expression.
+        let src = "defn f(a: Int, b: Int) -> Int { a >> b; term a; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        assert!(p.parse_program().is_ok());
+    }
 
     // 2026-08-04 (remove-vestigial-return): Briev has no `return` statement —
     // using it must fail with a helpful error pointing at `term`, not parse to

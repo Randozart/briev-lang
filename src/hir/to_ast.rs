@@ -40,15 +40,12 @@ fn method_call(
     name: &str,
     args: &[HirExpr],
     analysis_id: Option<usize>,
-    chain_refs: &[crate::ast::ChainRef],
 ) -> crate::ast::Expr {
     crate::ast::Expr::MethodCall(
         Box::new(expr(receiver).unwrap()),
         name.to_string(),
         args.iter().map(expr).collect::<Option<Vec<_>>>().unwrap(),
-        analysis_id,
-        chain_refs.to_vec(),
-    )
+        analysis_id)
 }
 
 fn literal(lit: &HirLiteral) -> crate::ast::Expr {
@@ -83,8 +80,8 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             Expr::Field(Box::new(expr(receiver)?), name.clone())
         }
         HirExprKind::Cast { inner, to, .. } => Expr::Cast(Box::new(expr(inner)?), to.clone()),
-        HirExprKind::MethodCall { receiver, name, args, analysis_id, chain_refs } => {
-            method_call(receiver, name, args, *analysis_id, chain_refs)
+        HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
+            method_call(receiver, name, args, *analysis_id)
         }
         HirExprKind::Reflect { receiver, name, kind } => {
             Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind)
@@ -144,7 +141,7 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
                 .map(|(n, e)| Some((n.clone(), expr(e)?)))
                 .collect::<Option<Vec<_>>>()?,
         },
-        HirExprKind::PluginIntercept { name, args, type_args, receiver, chain_refs } => {
+        HirExprKind::PluginIntercept { name, args, type_args, receiver } => {
             Expr::PluginIntercept {
                 name: name.clone(),
                 args: args.iter().map(expr).collect::<Option<Vec<_>>>()?,
@@ -153,7 +150,6 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
                     None => None,
                     Some(r) => Some(Box::new(expr(r)?)),
                 },
-                chain_refs: chain_refs.clone(),
             }
         }
         HirExprKind::Block(stmts) => Expr::Block(stmt_body(stmts)?),

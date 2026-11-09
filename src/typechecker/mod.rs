@@ -65,10 +65,6 @@ pub struct TypecheckContext<'a> {
     /// src`, `~<- src;`). Reading a consumed local afterward is a use-after-move
     /// compile error; reassigning it (via `=` or `let`) clears the mark.
     pub consumed_locals: std::collections::HashSet<String>,
-    /// 2026-09-16 (universal chaining): named chain captures — `expr >> name;`.
-    /// Each entry records the captured value's type so a later `.name>>func()`
-    /// back-reference can resolve its leading argument.
-    pub captures: HashMap<String, Type>,
     /// 2026-08-17 (plan 2026-08-17-error-intrinsic-piggybank-hashmap-completion.md):
     /// the enclosing member name while a member body is typechecked (set by
     /// the member-body loop). An `Error#` in the body records its message in
@@ -235,7 +231,6 @@ impl<'a> TypecheckContext<'a> {
             init_names: std::collections::HashSet::new(),
             defined_fns: std::collections::HashSet::new(),
             consumed_locals: std::collections::HashSet::new(),
-            captures: HashMap::new(),
             current_owner: None,
             coll_types: std::collections::HashSet::new(),
             foreach_depth: 0,
@@ -1524,10 +1519,10 @@ pub fn infer_expression(
         // 2026-07-31: Method call: a.m(args) — resolves the member on the
         // receiver's obj type, binds the receiver as the implicit `self`, and
         // validates the args against the member's (type-arg-substituted)
-        // parameter list. 2026-09-16: back-references (`.N>>`/`.name>>`) resolve
-        // through the chain-value stack and prepend as leading args.
-        Expr::MethodCall(recv, name, args, _, refs) => {
-            let result_ty = infer_chain_call(recv, name, args, refs, ctx)?;
+        // parameter list.
+        Expr::MethodCall(recv, name, args, _) => {
+            let (recv_ty, _) = infer_expression(recv, ctx)?;
+            let result_ty = resolve_method_call(recv, &recv_ty, name, args, ctx)?;
             Ok((result_ty, Provenance::Unknown))
         }
         Expr::FormattingAnnotation(_) => Ok((Type::void(), Provenance::Unknown)),
@@ -1623,17 +1618,6 @@ pub fn infer_expression(
                 }
             }
             Expr::UnitLiteral { .. } => Ok((Type::float(), Provenance::Unknown)),
-            Expr::Capture { expr, name } => {
-                // 2026-09-16: `expr >> name` — register the captured value's
-                // type so a later `.name>>func()` back-reference can resolve it.
-                // Registered in BOTH `captures` (for back-reference resolution)
-                // and `bindings` (so an `Expr::Identifier(name)` leading arg
-                // re-infers cleanly through the UFCS fallback).
-                let ty = infer_expression(expr, ctx)?.0;
-                ctx.captures.insert(name.clone(), ty.clone());
-                ctx.bindings.insert(name.clone(), ty.clone());
-                Ok((ty, Provenance::Unknown))
-            }
 
     }
 }
@@ -3086,7 +3070,7 @@ fn elaborate_expr_children(expr: &mut Expr, ctx: &mut TypecheckContext, errors: 
         | Expr::AddrOf(e)
         | Expr::Reflect(e, _, _)
         | Expr::Within(e, _) => elaborate_expr(e, ctx, errors),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             elaborate_expr(recv, ctx, errors);
             for a in args.iter_mut() {
                 elaborate_expr(a, ctx, errors);
@@ -3741,7 +3725,7 @@ fn call_site(expr: &Expr, ctx: &mut TypecheckContext) -> Option<(crate::proof_en
             let contract = ctx.fn_contracts.get(callee)?;
             Some((contract.clone(), args.clone()))
         }
-        Expr::MethodCall(receiver, name, args, _, _) => {
+        Expr::MethodCall(receiver, name, args, _) => {
             let mut full = vec![(**receiver).clone()];
             full.extend(args.iter().cloned());
             let typed = infer_type_only(receiver, ctx)
@@ -7726,144 +7710,6 @@ fn resolve_reflect(
     }
 }
 
-/// 2026-09-16: A value produced at one position of a dot-chain, with its type.
-/// The chain stack is `[base, r1, r2, ..., prev]`; a positional back-reference
-/// `.N` resolves to `stack[len - N]` (`.1` = the immediate previous result).
-#[derive(Clone)]
-struct ChainValue {
-    ty: Type,
-    expr: Expr,
-}
-
-/// 2026-09-16: chain back-references resolved to leading arguments — the
-/// values (re-inferable exprs for the UFCS path) and their types (for member
-/// param validation). Passed as one value to keep resolve_method_call at
-/// ≤6 parameters.
-struct ChainLeading {
-    exprs: Vec<Expr>,
-    tys: Vec<Type>,
-}
-
-/// 2026-09-16: Compute the chain-value stack for an expression. Walks nested
-/// MethodCall/Capture receivers, inferring each result type along the way.
-fn chain_value_stack(
-    expr: &Expr,
-    ctx: &mut TypecheckContext,
-) -> Result<Vec<ChainValue>, TypeError> {
-    match expr {
-        Expr::MethodCall(recv, name, args, _, refs) => {
-            let mut stack = chain_value_stack(recv, ctx)?;
-            let recv_val = stack
-                .last()
-                .cloned()
-                .unwrap_or(ChainValue { ty: Type::void(), expr: Expr::Decimal(0) });
-            let leading = resolve_chain_refs(&stack, refs, ctx)?;
-            let result_ty = resolve_method_call(
-                recv,
-                &recv_val.ty,
-                name,
-                args,
-                &leading,
-                ctx,
-            )?;
-            stack.push(ChainValue { ty: result_ty, expr: expr.clone() });
-            Ok(stack)
-        }
-        // A capture passes the value through unchanged — `.op()>>x` is both a
-        // step of the chain and a binding of the same value. 2026-09-16 (Bug C):
-        // the INLINE capture registers the name so a later `.x>>` back-reference
-        // in the same chain resolves (codegen already bound it via emit_expr).
-        Expr::Capture { expr, name } => {
-            let stack = chain_value_stack(expr, ctx)?;
-            if let Some(top) = stack.last() {
-                let ty = top.ty.clone();
-                ctx.captures.insert(name.clone(), ty.clone());
-                ctx.bindings.insert(name.clone(), ty.clone());
-            }
-            Ok(stack)
-        }
-        _ => {
-            let ty = infer_expression(expr, ctx)?.0;
-            Ok(vec![ChainValue { ty, expr: expr.clone() }])
-        }
-    }
-}
-
-/// 2026-09-16: Resolve a chain's back-references to their leading argument
-/// values and types. A named reference must point at a registered capture.
-fn resolve_chain_refs(
-    stack: &[ChainValue],
-    refs: &[ChainRef],
-    ctx: &TypecheckContext,
-) -> Result<ChainLeading, TypeError> {
-    let mut exprs = Vec::new();
-    let mut tys = Vec::new();
-    for cr in refs {
-        match cr {
-            ChainRef::Positional(n) => {
-                let idx = stack.len().checked_sub(*n).filter(|i| *n > 0 && *i < stack.len());
-                match idx {
-                    Some(i) => {
-                        exprs.push(stack[i].expr.clone());
-                        tys.push(stack[i].ty.clone());
-                    }
-                    None => {
-                        return Err(TypeError::InvalidOperation {
-                            operation: format!("back-reference '.{}>>'", n),
-                            type_name: format!(
-                                "the chain has only {} available result(s); '.1' is the immediately previous result",
-                                stack.len()
-                            ),
-                        });
-                    }
-                }
-            }
-            ChainRef::Named(name) => match ctx.captures.get(name) {
-                Some(ty) => {
-                    exprs.push(Expr::Identifier(name.clone()));
-                    tys.push(ty.clone());
-                }
-                None => {
-                    return Err(TypeError::InvalidOperation {
-                        operation: format!("named back-reference '.{}>>'", name),
-                        type_name: format!(
-                            "no chain capture named '{}' is in scope — bind one with `expr >> {}`",
-                            name, name
-                        ),
-                    });
-                }
-            },
-        }
-    }
-    Ok(ChainLeading { exprs, tys })
-}
-
-/// 2026-09-16: Type a method call that may carry chain back-references.
-/// The receiver chain supplies the reference stack; resolved refs become
-/// leading arguments of the call.
-fn infer_chain_call(
-    recv: &Expr,
-    name: &str,
-    args: &[Expr],
-    refs: &[ChainRef],
-    ctx: &mut TypecheckContext,
-) -> Result<Type, TypeError> {
-    let stack = chain_value_stack(recv, ctx)?;
-    let recv_val = stack
-        .last()
-        .cloned()
-        .unwrap_or(ChainValue { ty: Type::void(), expr: Expr::Decimal(0) });
-    let leading = resolve_chain_refs(&stack, refs, ctx)?;
-    resolve_method_call(
-        recv,
-        &recv_val.ty,
-        name,
-        args,
-        &leading,
-        ctx,
-    )
-}
-
 /// 2026-07-31: Resolve `a.m(args)` — find the member on the receiver's obj
 /// type, substitute the receiver's type arguments for the obj's type
 /// parameters, validate each arg against the substituted parameter types, and
@@ -7872,15 +7718,11 @@ fn infer_chain_call(
 /// generative op (`a.At#(i)` → `At#(a, i)`), then a plain top-level function
 /// with the receiver prepended (`a.f(x)` → `f(a, x)`). A trailing `#` is
 /// stripped for the member lookup.
-/// 2026-09-16: `leading.exprs`/`leading.tys` are the chain back-references
-/// (`.N>>`/`.name>>`) resolved to leading arguments. They occupy the first
-/// parameter positions of the member, before the written `args`.
 fn resolve_method_call(
     recv: &Expr,
     receiver: &Type,
     name: &str,
     args: &[Expr],
-    leading: &ChainLeading,
     ctx: &mut TypecheckContext,
 ) -> Result<Type, TypeError> {
     // 2026-08-22 (Phase 5, SPEC §8.6): a `dyn Trait` receiver resolves the
@@ -7911,7 +7753,7 @@ fn resolve_method_call(
                     } else {
                         &d.parameters[..]
                     };
-                    let total_args = leading.tys.len() + args.len();
+                    let total_args = args.len();
                     if total_args != value_params.len() {
                         return Err(TypeError::InvalidOperation {
                             operation: format!(
@@ -7924,19 +7766,9 @@ fn resolve_method_call(
                             type_name: format!("dyn {}", trait_name),
                         });
                     }
-                    for (i, lty) in leading.tys.iter().enumerate() {
-                        let pty = &value_params[i].1;
-                        if !types_compatible(pty, lty, ctx) && lty != pty {
-                            return Err(TypeError::TypeMismatch {
-                                expected: format!("{}", pty),
-                                found: format!("{}", lty),
-                                context: format!("chain reference argument of '.{}()' via dyn {}", name, trait_name),
-                            });
-                        }
-                    }
                     for (i, a) in args.iter().enumerate() {
                         let aty = infer_type_only(a, ctx)?;
-                        let pty = &value_params[leading.tys.len() + i].1;
+                        let pty = &value_params[i].1;
                         if !types_compatible(pty, &aty, ctx) && aty != *pty {
                             return Err(TypeError::TypeMismatch {
                                 expected: format!("{}", pty),
@@ -7977,10 +7809,7 @@ fn resolve_method_call(
         // (generative op or registered intrinsic), or `a.f(b)` → `f(a, b)` for a
         // plain top-level function.
         None => {
-            // 2026-09-16: chain back-references are leading args — they
-            // resolve to the same call shape as written args.
             let mut all = vec![(*recv).clone()];
-            all.extend(leading.exprs.iter().cloned());
             all.extend(args.iter().cloned());
             if name.ends_with('#') {
                 // 2026-08-14 (UOL §6b): keep the `#` — `a.Add#(b)` resolves via
@@ -7994,12 +7823,10 @@ fn resolve_method_call(
             // 2026-10-13 (static trait-constrained generics, SPEC §8.6, S3):
             // the method-call form of a trait method — including a trait
             // DEFAULT — on a concrete conforming receiver: `tally.bump_twice(5)`.
-            // The receiver IS the `Self` argument; the chain back-refs and
-            // written args are the value parameters after it.
-            let mut rest = leading.exprs.clone();
-            rest.extend(args.iter().cloned());
+            // The receiver IS the `Self` argument; the written args are the
+            // value parameters after it.
             if let Some(resolved) =
-                resolve_conforming_trait_call(name, receiver, &rest, ctx)?
+                resolve_conforming_trait_call(name, receiver, args, ctx)?
             {
                 return Ok(resolved);
             }
@@ -8028,27 +7855,11 @@ fn resolve_method_call(
     // check arity — the whole receiver-style disambiguation lives in the
     // helper (see `member_receiver_offset`).
     let param_offset =
-        member_receiver_offset(&params, type_name, name, leading.tys.len() + args.len())?;
-    // 2026-09-16: chain back-references occupy the first parameter positions
-    // (after the receiver, when the member names one explicitly).
-    for (i, lty) in leading.tys.iter().enumerate() {
-        let param_ty = params
-            .get(param_offset + i)
-            .cloned()
-            .map(|t| substitute_type(&t, &subst))
-            .unwrap_or(Type::int());
-        if *lty != param_ty {
-            return Err(TypeError::TypeMismatch {
-                expected: format!("{}", param_ty),
-                found: format!("{}", lty),
-                context: format!("chain reference argument {} of '.{}()'", i, name),
-            });
-        }
-    }
+        member_receiver_offset(&params, type_name, name, args.len())?;
     for (i, arg) in args.iter().enumerate() {
         let arg_ty = infer_type_only(arg, ctx)?;
         let param_ty = params
-            .get(param_offset + leading.tys.len() + i)
+            .get(param_offset + i)
             .cloned()
             .map(|t| substitute_type(&t, &subst))
             .unwrap_or(Type::int());
@@ -8056,7 +7867,7 @@ fn resolve_method_call(
             return Err(TypeError::TypeMismatch {
                 expected: format!("{}", param_ty),
                 found: format!("{}", arg_ty),
-                context: format!("argument {} of '.{}()'", leading.tys.len() + i, name),
+                context: format!("argument {} of '.{}()'", i, name),
             });
         }
     }
@@ -8655,7 +8466,7 @@ fn substitute_expr_types_children(expr: &mut Expr, subst: &HashMap<String, Type>
         }
         Expr::UnaryOp(_, e) => substitute_expr_types(e, subst),
         Expr::Field(e, _) => substitute_expr_types(e, subst),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             substitute_expr_types(recv, subst);
             for a in args.iter_mut() {
                 substitute_expr_types(a, subst);
@@ -8729,7 +8540,6 @@ fn substitute_expr_types_children(expr: &mut Expr, subst: &HashMap<String, Type>
                 substitute_expr_types(a, subst);
             }
         }
-        Expr::Capture { expr, .. } => substitute_expr_types(expr, subst),
         _ => {}
     }
 }
@@ -12444,114 +12254,6 @@ let src = "let armed: Bool = false;\n\
                    bootstrap node reset [armed == true] { };\n";
         let e = check(src);
         assert!(e.is_err(), "unprovable handoff must error, got: {:?}", e);
-    }
-
-    // 2026-09-16: chain back-references resolve to leading args.
-    #[test]
-    fn chain_backref_typechecks() {
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
-defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
-let base: Int = 2;
-txn go [base == 2][base == 2] {
-    let a: Int = base.Add#(3).1>>tri(10, 20);
-};
-"#;
-        check(src).expect("a valid positional back-reference must typecheck");
-    }
-
-    #[test]
-    fn chain_named_capture_typechecks() {
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
-defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
-let base: Int = 2;
-txn go [base == 2][base == 2] {
-    base.Add#(3) >> cap;
-    let a: Int = base.Add#(4).cap>>tri(5, 6);
-};
-"#;
-        check(src).expect("a named capture back-reference must typecheck");
-    }
-
-    #[test]
-    fn inline_capture_in_chain_registers_for_backref() {
-        // 2026-09-16 (Bug C): `expr >> mid .mid>>f(...)` — an INLINE capture
-        // mid-chain must register `mid` so the `.mid>>` reference in the same
-        // chain resolves. Codegen bound it; the typechecker previously did not.
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
-defn tri(a: Int, b: Int, c: Int) -> Int { term a + b + c; };
-let base: Int = 2;
-txn go [base == 2][base == 2] {
-    let a: Int = base.Add#(3) >> mid .mid>>tri(5);
-};
-"#;
-        check(src).expect("an inline capture followed by .name>> must typecheck");
-    }
-
-    #[test]
-    fn chain_out_of_range_backref_errors() {
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
-obj Calc {
-    base: Int;
-    op Double(x: Int) -> Int { term x + x; };
-};
-let calc: Calc = Calc { base: 0 };
-txn go [true][true] {
-    let a: Int = calc.Double(2).5>>Double(1);
-};
-"#;
-        let e = check(src);
-        assert!(e.is_err(), "an out-of-range positional back-reference must error");
-    }
-
-    #[test]
-    fn chain_unknown_named_backref_errors() {
-        fn check(src: &str) -> Result<(), Vec<TypeError>> {
-            let tokens = crate::lexer::tokenize(src).unwrap();
-            let mut p = crate::parser::Parser::new(tokens, src);
-            let mut items = p.parse_program().unwrap();
-            let universe = crate::type_universe::TypeUniverse::new();
-            check_program(&mut items, &universe)
-        }
-        let src = r#"
-obj Calc {
-    base: Int;
-    op Double(x: Int) -> Int { term x + x; };
-};
-let calc: Calc = Calc { base: 0 };
-txn go [true][true] {
-    let a: Int = calc.Double(2).nope>>Double(1);
-};
-"#;
-        let e = check(src);
-        assert!(e.is_err(), "a reference to an unknown capture must error");
     }
 
     #[test]

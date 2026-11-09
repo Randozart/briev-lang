@@ -695,7 +695,7 @@ fn collect_calls_expr(expr: &Expr, out: &mut BTreeSet<String>) {
                 collect_calls_expr(arg, out);
             }
         }
-        Expr::MethodCall(receiver, _, args, _, _) => {
+        Expr::MethodCall(receiver, _, args, _) => {
             collect_calls_expr(receiver, out);
             for arg in args {
                 collect_calls_expr(arg, out);
@@ -1035,7 +1035,7 @@ fn walk_expression_identifiers(expr: &Expr, out: &mut dyn FnMut(&str)) {
                 walk_expression_identifiers(arg, out);
             }
         }
-        Expr::MethodCall(receiver, _, args, _, _) => {
+        Expr::MethodCall(receiver, _, args, _) => {
             walk_expression_identifiers(receiver, out);
             for arg in args {
                 walk_expression_identifiers(arg, out);

@@ -1005,7 +1005,7 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
         Expr::BinaryOp(_, a, b) => expr_mentions(a, name) || expr_mentions(b, name),
         Expr::UnaryOp(_, a) => expr_mentions(a, name),
         Expr::Call(_, args, _) => args.iter().any(|a| expr_mentions(a, name)),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             expr_mentions(recv, name) || args.iter().any(|a| expr_mentions(a, name))
         }
         Expr::Cast(a, _)
@@ -1758,7 +1758,7 @@ fn child_exprs(e: &Expr) -> Vec<&Expr> {
         Expr::UnaryOp(_, a) => vec![a.as_ref()],
         Expr::Index(o, i) => vec![o.as_ref(), i.as_ref()],
         Expr::Call(_, args, _) => args.iter().collect(),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             let mut v: Vec<&Expr> = vec![recv.as_ref()];
             v.extend(args.iter());
             v

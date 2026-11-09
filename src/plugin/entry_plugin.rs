@@ -334,7 +334,7 @@ fn expr_child_refs(expr: &Expr) -> Vec<&Expr> {
         | Expr::Consume(e) | Expr::Await(e) | Expr::Field(e, _) | Expr::IsType(e, _)
         | Expr::Reflect(e, _, _) | Expr::Lambda(_, e) => vec![e],
         Expr::Call(_, args, _) | Expr::Spawn { args, .. } => args.iter().collect(),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             args.iter().chain(std::iter::once(&**recv)).collect()
         }
         Expr::If(c, t, e) => {
@@ -599,7 +599,7 @@ fn rewrite_intercept(
     entries: &mut Vec<String>,
     arg_flags: &[(String, Option<String>)],
 ) -> Result<Expr, String> {
-    let Expr::PluginIntercept { name, args, type_args, receiver, chain_refs } = expr else {
+    let Expr::PluginIntercept { name, args, type_args, receiver } = expr else {
         return Ok(expr);
     };
     let mut full_args = args.clone();
@@ -668,7 +668,6 @@ fn rewrite_intercept(
             receiver: receiver
                 .map(|r| rewrite_expr(*r, entries, arg_flags).map(Box::new))
                 .transpose()?,
-            chain_refs,
         }),
     }
 }
@@ -791,14 +790,13 @@ fn rewrite_expr_simple(
                 .collect::<Result<Vec<_>, _>>()?,
             ty,
         ),
-        Expr::MethodCall(recv, name, args, aid, chain_refs) => Expr::MethodCall(
+        Expr::MethodCall(recv, name, args, aid) => Expr::MethodCall(
             Box::new(rewrite_expr(*recv, entries, arg_flags)?),
             name,
             args.into_iter()
                 .map(|a| rewrite_expr(a, entries, arg_flags))
                 .collect::<Result<Vec<_>, _>>()?,
             aid,
-            chain_refs,
         ),
         Expr::Field(obj, name) => Expr::Field(
             Box::new(rewrite_expr(*obj, entries, arg_flags)?),

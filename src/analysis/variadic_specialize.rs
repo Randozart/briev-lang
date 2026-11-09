@@ -477,7 +477,7 @@ fn rewrite_expr_calls_children(expr: &mut Expr, ctx: &mut Ctx) -> Result<(), Str
         }
         Expr::UnaryOp(_, e) => rewrite_expr_calls(e, ctx)?,
         Expr::Field(e, _) => rewrite_expr_calls(e, ctx)?,
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             rewrite_expr_calls(recv, ctx)?;
             for a in args.iter_mut() {
                 rewrite_expr_calls(a, ctx)?;
@@ -554,7 +554,6 @@ fn rewrite_expr_calls_children(expr: &mut Expr, ctx: &mut Ctx) -> Result<(), Str
                 rewrite_expr_calls(a, ctx)?;
             }
         }
-        Expr::Capture { expr, .. } => rewrite_expr_calls(expr, ctx)?,
         Expr::Await(e) => rewrite_expr_calls(e, ctx)?,
         _ => {}
     }
@@ -748,7 +747,7 @@ fn rewrite_expr_elems_form(expr: &mut Expr, ec: &ElemCtx) -> Result<(), String> 
             }
             Ok(())
         }
-        Expr::MethodCall(recv, method, _, _, _) if method == "Count#" => {
+        Expr::MethodCall(recv, method, _, _) if method == "Count#" => {
             if let Expr::Identifier(n) = recv.as_ref() {
                 if n == ec.rest {
                     let n = ec.elems.len() as i64;
@@ -776,7 +775,7 @@ fn rewrite_expr_elems_children(expr: &mut Expr, ec: &ElemCtx) -> Result<(), Stri
         }
         Expr::UnaryOp(_, e) => rewrite_expr_elems(e, ec)?,
         Expr::Field(e, _) => rewrite_expr_elems(e, ec)?,
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             rewrite_expr_elems(recv, ec)?;
             for a in args.iter_mut() {
                 rewrite_expr_elems(a, ec)?;
@@ -853,7 +852,6 @@ fn rewrite_expr_elems_children(expr: &mut Expr, ec: &ElemCtx) -> Result<(), Stri
                 rewrite_expr_elems(a, ec)?;
             }
         }
-        Expr::Capture { expr, .. } => rewrite_expr_elems(expr, ec)?,
         Expr::Await(e) => rewrite_expr_elems(e, ec)?,
         _ => {}
     }
@@ -944,7 +942,7 @@ fn rename_expr_children(expr: &mut Expr, from: &Expr, to: &str) {
         }
         Expr::UnaryOp(_, e) => rename_expr(e, from, to),
         Expr::Field(e, _) => rename_expr(e, from, to),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             rename_expr(recv, from, to);
             for a in args.iter_mut() {
                 rename_expr(a, from, to);
@@ -1021,7 +1019,6 @@ fn rename_expr_children(expr: &mut Expr, from: &Expr, to: &str) {
                 rename_expr(a, from, to);
             }
         }
-        Expr::Capture { expr, .. } => rename_expr(expr, from, to),
         Expr::Await(e) => rename_expr(e, from, to),
         _ => {}
     }
@@ -1295,7 +1292,6 @@ mod tests {
             "Count#".to_string(),
             vec![],
             None,
-            vec![],
         ))));
         let mut items = vec![
             var_defn("sum", "xs", 0, 8, body),
@@ -1402,7 +1398,6 @@ mod tests {
                 "Count#".to_string(),
                 vec![],
                 None,
-                vec![],
             )),
             vec![
                 crate::ast::MatchArm {

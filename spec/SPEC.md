@@ -2418,34 +2418,25 @@ operation's input. `a.Nav$(x)` and `Nav$(a, x)` are the same call; a chained
 plugin `a.serialize!(x)` carries the receiver. Priority: member, then
 operation/intrinsic (`#`), then plugin intercept (`!`), then UFCS fallback.
 
-**Chain captures and back-references (§11.4.1):**
+**Binding a chain value (§11.4.1):** an intermediate result becomes a real
+local with `into`; the cast step continues the chain. There are no positional
+back-references and no chain stack — later steps reference the binding by name.
 
 ```briev
-data.parse() >> input          // capture result as `input`, chain continues
-    .validate() >> valid
-    .emit(valid, input);
+data.parse() into input;      // real local: ty inferred from the call
+input.validate() into valid;
+input.emit(valid);
 
-variable
-    .op()                      // result 1
-    .2>>secondOp()             // secondOp(op_result, variable) — .2 = 2 ops back
-    .step_1,1>>combined()      // combined(prev, step_1) — named + positional refs
+value.rawParse().(Int).clamp(0, 255);   // `. (Type)` is a cast step
 ```
 
-- `expr >> name` captures the chain result into `name`, available for later
-  `.name>>` references. A capture does not break the chain.
-- `.N>>func(a)` passes the result N operations back as a **leading argument**:
-  `func(receiver, <ref>, a)` — the receiver binds `self` (member) or arg 0
-  (UFCS), the resolved references precede the written args. `.1` is the
-  immediately previous result (the implicit receiver); `.2` is two back.
-- `.(Type)>>func()` casts the previous result to `Type` before the call.
-- `>>` is a capture only at a chain position: the receiver is a chain value
-  (method call or a prior capture) AND it is followed by `.`, `;`, `}`, or
-  expression end. Everything else is the shift operator: inside `f(x >> y)`,
-  and statement/let/term forms with non-chain receivers — `m >> b`,
-  `f() >> n`, `term a >> b` are all bitwise shift. `.N>>`/`.name>>` are
-  back-references only when followed by a call head (`identifier (`).
-- A literal receiver directly before `.N>>` (e.g. `5.1>>f()`) lexes as a
-  float; parenthesize (`(5).1>>f()`) or use a named expression.
+- `expr into name;` desugars to `let name = expr;` — an ordinary binding with
+  the usual scope, shadowing, and inference rules. It works on any expression,
+  not only chains.
+- `.(Type)` casts the previous result in place and the chain continues
+  (`.f()` after the cast applies to the cast value).
+- `>>` and `<<` are bitwise shifts only. The former `.N>>` / `.name>>`
+  back-references and the `expr >> name` capture are removed.
 
 #### 11.4.2 `String` is `Iterable<Char>`
 

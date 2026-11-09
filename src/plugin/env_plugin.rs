@@ -158,11 +158,10 @@ mod tests {
             args: vec![Expr::PluginIntercept {
                 name: "get_env".into(),
                 args: vec![Expr::Quoted(b"DEFAULT".to_vec())],
-                type_args: vec![], receiver: None, chain_refs: vec![],
+                type_args: vec![], receiver: None,
             }],
             type_args: vec![],
             receiver: Some(Box::new(Expr::Quoted(b"KEY".to_vec()))),
-            chain_refs: vec![],
         };
         crate::ast::visit_mut::walk_expr(&mut expression, &mut resolve_expr);
         let Expr::Call(name, args, _) = expression else { panic!("expanded call") };

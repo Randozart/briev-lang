@@ -2082,7 +2082,6 @@ mod cell_b2_tests {
             "emit".to_string(),
             vec![Expr::Decimal(42)],
             None,
-            vec![],
         )).unwrap();
         assert_eq!(fired.as_i64(), Some(1), "txn returns true (Bool as 1)");
         let src = bindings_instance(&interp);

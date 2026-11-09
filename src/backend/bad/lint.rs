@@ -135,7 +135,7 @@ fn collect_uses(expr: &Expr, uses: &mut HashSet<String>) {
         }
         Expr::UnaryOp(_, v) => collect_uses(v, uses),
         Expr::Field(base, _) => collect_uses(base, uses),
-        Expr::MethodCall(base, _, args, _, _) => {
+        Expr::MethodCall(base, _, args, _) => {
             collect_uses(base, uses);
             for a in args {
                 collect_uses(a, uses);

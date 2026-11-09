@@ -22,7 +22,7 @@ pub(super) fn validate(lhs: &Expr, rhs: &Expr, ctx: &mut TypecheckContext<'_>) -
     let members = ctx.type_members.get(key).map(Vec::as_slice).unwrap_or_default();
     if operator_member(members, "SetAt").is_some() {
         let call = Expr::MethodCall(receiver.clone(), "SetAt".into(),
-            vec![(**index).clone(), rhs.clone()], None, vec![]);
+            vec![(**index).clone(), rhs.clone()], None);
         infer_type_only(&call, ctx)?;
         return Ok(());
     }

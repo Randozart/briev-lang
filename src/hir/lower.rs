@@ -778,12 +778,11 @@ fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
 
 fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
     let (ty, kind) = match expr {
-        Expr::MethodCall(receiver, name, args, analysis_id, chain_refs) => (None, HirExprKind::MethodCall {
+        Expr::MethodCall(receiver, name, args, analysis_id) => (None, HirExprKind::MethodCall {
             receiver: Box::new(lower_expr(receiver, ids)),
             name: name.clone(),
             args: args.iter().map(|arg| lower_expr(arg, ids)).collect(),
             analysis_id: *analysis_id,
-            chain_refs: chain_refs.clone(),
         }),
         Expr::Reflect(receiver, name, kind) => (None, HirExprKind::Reflect {
             receiver: Box::new(lower_expr(receiver, ids)),
@@ -831,7 +830,7 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
             value: *value,
             unit: unit.clone(),
         }),
-        Expr::PluginIntercept { name, args, type_args, receiver, chain_refs } => {
+        Expr::PluginIntercept { name, args, type_args, receiver } => {
             (
                 None,
                 HirExprKind::PluginIntercept {
@@ -839,7 +838,6 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
                     args: args.iter().map(|a| lower_expr(a, ids)).collect(),
                     type_args: type_args.clone(),
                     receiver: receiver.as_ref().map(|r| Box::new(lower_expr(r, ids))),
-                    chain_refs: chain_refs.clone(),
                 },
             )
         }
@@ -910,7 +908,6 @@ fn expr_tag(expr: &Expr) -> &'static str {
     match expr {
         Expr::Within(..) => "within",
         Expr::DerivationBlock(..) => "derivation",
-        Expr::Capture { .. } => "capture",
         Expr::FormattingAnnotation(..) => "formatting-annotation",
         Expr::Exists(..) => "exists",
         _ => "other-expression",

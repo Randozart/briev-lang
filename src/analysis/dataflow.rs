@@ -147,7 +147,7 @@ impl<'a> DataflowAnalyzer<'a> {
             Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
                 self.extract_ids_recursive(recv, ids);
             }
-            Expr::MethodCall(recv, _, args, _, _) => {
+            Expr::MethodCall(recv, _, args, _) => {
                 self.extract_ids_recursive(recv, ids);
                 for a in args { self.extract_ids_recursive(a, ids); }
             }
@@ -167,9 +167,6 @@ impl<'a> DataflowAnalyzer<'a> {
                 self.extract_ids_recursive(end, ids);
             }
             Expr::UnitLiteral { .. } => {}
-            Expr::Capture { expr, .. } => {
-                self.extract_ids_recursive(expr, ids);
-            }
 
         }
     }

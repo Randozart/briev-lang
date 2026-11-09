@@ -1113,12 +1113,11 @@ fn rewrite_labels(expr: Expr, ctx: &SymCtx<'_>) -> Expr {
         ),
         Expr::UnaryOp(kind, v) => Expr::UnaryOp(kind, Box::new(rewrite_labels(*v, ctx))),
         Expr::Field(base, name) => Expr::Field(Box::new(rewrite_labels(*base, ctx)), name),
-        Expr::MethodCall(base, name, args, id, refs) => Expr::MethodCall(
+        Expr::MethodCall(base, name, args, id) => Expr::MethodCall(
             Box::new(rewrite_labels(*base, ctx)),
             name,
             args.into_iter().map(|a| rewrite_labels(a, ctx)).collect(),
             id,
-            refs,
         ),
         Expr::Index(base, idx) => Expr::Index(
             Box::new(rewrite_labels(*base, ctx)),

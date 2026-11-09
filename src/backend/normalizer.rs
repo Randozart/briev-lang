@@ -130,7 +130,7 @@ impl<'a, 'b> Harvester<'a, 'b> {
         // form `a.f(x)` (op members / UFCS — the name is the defn).
         let name = match e {
             Expr::Call(name, _, _) => name,
-            Expr::MethodCall(_, name, _, _, _) => name,
+            Expr::MethodCall(_, name, _, _) => name,
             _ => return,
         };
         if name.ends_with('#') {

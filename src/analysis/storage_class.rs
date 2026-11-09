@@ -58,7 +58,7 @@ pub(crate) fn collect_raw_idents(expr: &Expr, out: &mut HashSet<String>) {
                 collect_raw_idents(arg, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_raw_idents(recv, out);
             for arg in args {
                 collect_raw_idents(arg, out);

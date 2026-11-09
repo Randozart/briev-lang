@@ -146,7 +146,7 @@ impl fmt::Display for Expr {
             Expr::AddrOf(inner) => write!(f, "&{}", inner),
             Expr::Consume(inner) => write!(f, "~{}", inner),
             Expr::Await(inner) => write!(f, "await {}", inner),
-            Expr::PluginIntercept { name, args, type_args: _, receiver: _, chain_refs: _ } => {
+            Expr::PluginIntercept { name, args, type_args: _, receiver: _ } => {
                 write!(f, "{}!(", name)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
@@ -158,7 +158,7 @@ impl fmt::Display for Expr {
                 ReflectKind::Runtime => write!(f, "{}.^{}", recv, name),
                 ReflectKind::CompileTime => write!(f, "{}.^^{}", recv, name),
             },
-            Expr::MethodCall(recv, name, args, _, _) => {
+            Expr::MethodCall(recv, name, args, _) => {
                 write!(f, "{}.{}(", recv, name)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
@@ -169,7 +169,6 @@ impl fmt::Display for Expr {
             Expr::FormattingAnnotation(fmt_) => write!(f, "formatting <~ {}", fmt_.name()),
             Expr::StructLiteral { type_name, .. } => write!(f, "{} {{ ... }}", type_name),
             Expr::UnitLiteral { value, unit } => write!(f, "{}{}", value, unit),
-            Expr::Capture { expr, name } => write!(f, "({}) >> {}", expr, name),
         }
     }
 }

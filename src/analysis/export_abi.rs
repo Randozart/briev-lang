@@ -426,13 +426,13 @@ fn collect_expr_locals(expr: &Expr, out: &mut HashSet<String>) {
         }
         Expr::UnaryOp(_, i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Consume(i)
         | Expr::Await(i) | Expr::Cast(i, _) | Expr::IsType(i, _)
-        | Expr::Capture { expr: i, .. } | Expr::Reflect(i, _, _) => collect_expr_locals(i, out),
+        | Expr::Reflect(i, _, _) => collect_expr_locals(i, out),
         Expr::Field(o, _) => collect_expr_locals(o, out),
         Expr::Index(o, i) => {
             collect_expr_locals(o, out);
             collect_expr_locals(i, out);
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_expr_locals(recv, out);
             for a in args { collect_expr_locals(a, out); }
         }
@@ -664,7 +664,7 @@ fn expr_needs_state(
         // ("an unused leading pointer param is free"). Undo: restore
         // `rec(recv) || args.iter().any(|a| rec(a))` (reopens the undefined
         // `%state` class for dot-called stateful members).
-        Expr::MethodCall(recv, method, args, _, _) => {
+        Expr::MethodCall(recv, method, args, _) => {
             rec(recv)
                 || args.iter().any(|a| rec(a))
                 || method_is_stateful_on_any_type(method, regular, needs)
@@ -710,7 +710,6 @@ fn expr_needs_state(
         Expr::PluginIntercept { args, receiver, .. } => {
             receiver.as_ref().is_some_and(|r| rec(r)) || args.iter().any(|a| rec(a))
         }
-        Expr::Capture { expr, .. } => rec(expr),
         // Derivation blocks are compile-time construction scaffolding — treat
         // conservatively (they may reference state through field derivation).
         Expr::DerivationBlock(_) => true,
@@ -839,7 +838,6 @@ mod tests {
                 "grow_member".to_string(),
                 vec![],
                 None,
-                Vec::new(),
             ),
         ))]);
         items.push(exported(caller));

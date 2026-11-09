@@ -601,30 +601,23 @@ pub(crate) fn parse_expr(expr: &SExpr) -> Result<Expr, String> {
                 "method" => {
                     let recv = Box::new(parse_expr(&parts[1])?);
                     let name = sexpr_str(&parts[2])?.to_string();
-                    let refs = parse_chain_refs(&parts[3])?;
                     let mut args = Vec::new();
-                    for i in 4..parts.len() { args.push(parse_expr(&parts[i])?); }
-                    Ok(Expr::MethodCall(recv, name, args, None, refs))
+                    for i in 3..parts.len() { args.push(parse_expr(&parts[i])?); }
+                    Ok(Expr::MethodCall(recv, name, args, None))
                 }
-                "capture" => Ok(Expr::Capture {
-                    expr: Box::new(parse_expr(&parts[1])?),
-                    name: sexpr_str(&parts[2])?.to_string(),
-                }),
                 "plugin" => {
                     let name = sexpr_str(&parts[1])?.to_string();
                     let receiver = match &parts[2] {
                         SExpr::List(l) if !l.is_empty() && sexpr_str(&l[0])? == "none" => None,
                         other => Some(Box::new(parse_expr(other)?)),
                     };
-                    let chain_refs = parse_chain_refs(&parts[3])?;
                     let mut args = Vec::new();
-                    for i in 4..parts.len() { args.push(parse_expr(&parts[i])?); }
+                    for i in 3..parts.len() { args.push(parse_expr(&parts[i])?); }
                     Ok(Expr::PluginIntercept {
                         name,
                         args,
                         type_args: vec![],
                         receiver,
-                        chain_refs,
                     })
                 }
                 "index" => Ok(Expr::Index(Box::new(parse_expr(&parts[1])?), Box::new(parse_expr(&parts[2])?))),
@@ -646,34 +639,6 @@ pub(crate) fn parse_expr(expr: &SExpr) -> Result<Expr, String> {
             }
         }
     }
-}
-
-/// 2026-09-16 (Bug D): parse a `(refs (pos N) (named X) ...)` back-reference list.
-fn parse_chain_refs(expr: &SExpr) -> Result<Vec<ChainRef>, String> {
-    let SExpr::List(items) = expr else {
-        return Err("chain refs must be a list".into());
-    };
-    let mut out = Vec::new();
-    for it in items.iter().skip(1) {
-        let SExpr::List(r) = it else {
-            return Err("a chain reference must be a list".into());
-        };
-        if r.is_empty() {
-            return Err("empty chain reference".into());
-        }
-        match sexpr_str(&r[0])? {
-            "pos" => {
-                let n = match &r[1] {
-                    SExpr::Atom(Atom::Int(n)) => *n as usize,
-                    _ => return Err("pos chain ref needs an integer".into()),
-                };
-                out.push(ChainRef::Positional(n));
-            }
-            "named" => out.push(ChainRef::Named(sexpr_str(&r[1])?.to_string())),
-            other => return Err(format!("unknown chain ref '{}'", other)),
-        }
-    }
-    Ok(out)
 }
 
 fn parse_type(expr: &SExpr) -> Result<Type, String> {

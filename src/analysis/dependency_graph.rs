@@ -280,7 +280,7 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
             collect_expr_ids_inner(recv, ids);
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_expr_ids_inner(recv, ids);
             for a in args { collect_expr_ids_inner(a, ids); }
         }
@@ -300,9 +300,6 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
             collect_expr_ids_inner(end, ids);
         }
         Expr::UnitLiteral { .. } => {}
-        Expr::Capture { expr, .. } => {
-            collect_expr_ids_inner(expr, ids);
-        }
 
     }
 }

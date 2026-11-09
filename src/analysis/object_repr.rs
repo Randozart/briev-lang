@@ -244,7 +244,7 @@ impl<'a> CallUseProof<'a> {
                 }
                 self.expression_is_clean(arg)
             }),
-            Expr::MethodCall(receiver, _, args, _, _) => {
+            Expr::MethodCall(receiver, _, args, _) => {
                 self.expression_is_clean(receiver)
                     && args.iter().all(|arg| self.expression_is_clean(arg))
             }

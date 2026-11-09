@@ -412,7 +412,7 @@ pub fn eval_nav_chain(
         }
         // 2026-09-16: MethodCall with $-suffix — unified chaining.
         // Prepend receiver to args, then delegate to the Call handler.
-        Expr::MethodCall(recv, name, args, _, _) if name.ends_with('$') => {
+        Expr::MethodCall(recv, name, args, _) if name.ends_with('$') => {
             let mut call_args = vec![(**recv).clone()];
             call_args.extend(args.iter().cloned());
             eval_nav_call(name, &call_args, program, universe, stage, scope, sandbox, pm)
@@ -2079,7 +2079,7 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
         | Expr::TaggedLiteral(_,_)
         | Expr::FormattingAnnotation(_) | Expr::StructLiteral { .. } | Expr::Slice { .. } | Expr::Range { .. } | Expr::Spawn { .. } => Ok(()),
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => resolve_dollar_refs_in_expr(recv, scope),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             resolve_dollar_refs_in_expr(recv, scope)?;
             for a in args {
                 resolve_dollar_refs_in_expr(a, scope)?;
@@ -2087,7 +2087,6 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
             Ok(())
         }
         Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Capture { expr, .. } => resolve_dollar_refs_in_expr(expr, scope),
         Expr::PluginIntercept { receiver, args, .. } => {
             if let Some(recv) = receiver {
                 resolve_dollar_refs_in_expr(recv, scope)?;

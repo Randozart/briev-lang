@@ -989,7 +989,7 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
             collect_expr_identifiers(recv, ids);
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_expr_identifiers(recv, ids);
             for a in args { collect_expr_identifiers(a, ids); }
         }
@@ -1009,9 +1009,6 @@ pub fn collect_expr_identifiers(expr: &Expr, ids: &mut std::collections::HashSet
         Expr::Range { start, end, inclusive: _ } => {
             collect_expr_identifiers(start, ids);
             collect_expr_identifiers(end, ids);
-        }
-        Expr::Capture { expr, .. } => {
-            collect_expr_identifiers(expr, ids);
         }
 
     }

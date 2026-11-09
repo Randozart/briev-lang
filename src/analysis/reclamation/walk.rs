@@ -458,7 +458,7 @@ impl Builder<'_> {
                 let base = self.expression(base); let result = self.graph.node(); self.load(base, result); result
             }
             Expr::Cast(value, target) => self.cast(value, target),
-            Expr::MethodCall(receiver, name, args, None, refs) if refs.is_empty() => {
+            Expr::MethodCall(receiver, name, args, None) => {
                 // 2026-11-05 union (#66 + #68): a NON-OBSERVABLE intrinsic
                 // method carries intrinsic effects (#68); every other
                 // concrete method gets call-graph edges (#66).
@@ -472,7 +472,7 @@ impl Builder<'_> {
                     self.method_call(receiver, name, args)
                 }
             }
-            Expr::Consume(value) | Expr::Capture { expr: value, .. } => self.expression(value),
+            Expr::Consume(value) => self.expression(value),
             Expr::AddrOf(value) => {
                 let value = self.expression(value); let result = self.graph.allocation(self.owner);
                 self.graph.constraints.push(Constraint::Store(result, value)); result
@@ -609,7 +609,7 @@ impl Builder<'_> {
             Expr::Tuple(values) => values.iter().map(|value| self.expression_type(value))
                 .collect::<Option<Vec<_>>>().map(crate::ast::Type::Tuple),
             Expr::Cast(_, target) => Some(target.clone()),
-            Expr::MethodCall(receiver, name, args, None, refs) if refs.is_empty() => {
+            Expr::MethodCall(receiver, name, args, None) => {
                 // 2026-11-05 union (#66 + #68): intrinsic return kinds win;
                 // concrete methods resolve through the call graph.
                 let intrinsic = crate::intrinsic_signatures::get_intrinsic_signature(name)

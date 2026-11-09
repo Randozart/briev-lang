@@ -985,7 +985,7 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
         Expr::Field(recv, _) | Expr::Reflect(recv, _, _) => {
             collect_strings_expr(recv, seen, out);
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_strings_expr(recv, seen, out);
             for a in args { collect_strings_expr(a, seen, out); }
         }
@@ -1001,7 +1001,6 @@ fn collect_strings_expr(expr: &Expr, seen: &mut std::collections::HashSet<String
                 collect_strings_expr(end, seen, out);
             }
             Expr::UnitLiteral { .. } => {}
-            Expr::Capture { expr, .. } => { collect_strings_expr(expr, seen, out); }
 
     }
 }
@@ -6572,7 +6571,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], &[], "  ");
+            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], "  ");
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -6604,7 +6603,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], &[], "  ");
+            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], "  ");
             if row_size == 0 {
                 // Scalar/string element collection: one snapshot word per item.
                 let word64 = self.view_projection_word(out, "  ", &word);
@@ -8509,7 +8508,7 @@ fn collect_written_fields_inner(body: &[Statement], out: &mut std::collections::
                 }
                 insert_write_root(value, out);
             }
-            Statement::Expression(Expr::MethodCall(recv, name, _, _, _)) => {
+            Statement::Expression(Expr::MethodCall(recv, name, _, _)) => {
                 if name == "push" || name == "pop" {
                     insert_write_root(recv, out);
                 }
@@ -8621,7 +8620,7 @@ fn walk_expr_children(e: &Expr, f: &mut dyn FnMut(&Expr)) {
             f(idx);
         }
         Expr::Field(base, _) => f(base),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             f(recv);
             for a in args {
                 f(a);

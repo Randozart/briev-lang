@@ -1445,7 +1445,7 @@ fn expand_expr_values(
                 expand_expr_values(x, registry, comptime, state_types)?;
             }
         }
-        Expr::MethodCall(r, _, a, _, _) => {
+        Expr::MethodCall(r, _, a, _) => {
             expand_expr_values(r, registry, comptime, state_types)?;
             for x in a.iter_mut() {
                 expand_expr_values(x, registry, comptime, state_types)?;
@@ -1703,7 +1703,7 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
                 subst_expr(a, param, arg);
             }
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             subst_expr(recv, param, arg);
             for a in args.iter_mut() {
                 subst_expr(a, param, arg);
@@ -1762,7 +1762,6 @@ fn subst_expr(e: &mut Expr, param: &str, arg: &Expr) {
             args,
             type_args: _,
             receiver,
-            chain_refs: _,
         } => {
             subst_intercept_args(args, receiver, param, arg);
         }
@@ -1884,7 +1883,7 @@ fn collect_idents(e: &Expr, out: &mut HashSet<String>) {
                 collect_idents(a, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             collect_idents(recv, out);
             for a in args {
                 collect_idents(a, out);
@@ -2911,7 +2910,6 @@ async node k [i < 1][i == 1] {
                     args: vec![Expr::Decimal(3)],
                     type_args: vec![],
                     receiver: None,
-                    chain_refs: vec![],
                 }),
                 Statement::Term(Some(Expr::Identifier("r2".into()))),
             ],

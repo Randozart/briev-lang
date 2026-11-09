@@ -200,7 +200,7 @@ fn rewrite_expr(
         }
         Expr::UnaryOp(_, i) => rewrite_expr(i, universe, fields)?,
         Expr::Field(o, _) => rewrite_expr(o, universe, fields)?,
-        Expr::MethodCall(o, _, args, _, _) => {
+        Expr::MethodCall(o, _, args, _) => {
             rewrite_expr(o, universe, fields)?;
             for a in args.iter_mut() {
                 rewrite_expr(a, universe, fields)?;
@@ -554,7 +554,7 @@ fn walk_wildcards(e: &Expr, out: &mut Vec<String>) {
                 walk_wildcards(a, out);
             }
         }
-        Expr::MethodCall(o, _, args, _, _) => {
+        Expr::MethodCall(o, _, args, _) => {
             walk_wildcards(o, out);
             for a in args {
                 walk_wildcards(a, out);
@@ -614,7 +614,7 @@ fn substitute_wildcards(e: &mut Expr, bases: &[(String, Type)], idx: &Expr) {
                 substitute_wildcards(a, bases, idx);
             }
         }
-        Expr::MethodCall(o, _, args, _, _) => {
+        Expr::MethodCall(o, _, args, _) => {
             substitute_wildcards(o, bases, idx);
             for a in args.iter_mut() {
                 substitute_wildcards(a, bases, idx);
@@ -867,28 +867,26 @@ fn rewrite_enum_expr(
     }
     // `Enum.Variant(args)` parsed as a method call on a field because the
     // parser did not know the imported enum name. Lower the pair together.
-    if let Expr::MethodCall(recv, name, args, _, refs) = e {
-        if refs.is_empty() {
-            // `Enum.Variant(args)` parses as a method call on the bare
-            // Identifier; unit `Enum.Variant` parses as a Field.
-            let enum_name = match recv.as_ref() {
-                Expr::Identifier(base) if enums.get(base).is_some_and(|v| v.contains(name)) => {
-                    Some(base.clone())
-                }
-                _ => enum_variant_field(recv, enums).map(|(base, _)| base),
-            };
-            if let Some(enum_name) = enum_name {
-                let mut lowered_args = std::mem::take(args);
-                for a in lowered_args.iter_mut() {
-                    rewrite_enum_expr(a, enums);
-                }
-                *e = Expr::Call(
-                    format!("{}::{}", enum_name, name),
-                    lowered_args,
-                    None,
-                );
-                return;
+    if let Expr::MethodCall(recv, name, args, _) = e {
+        // `Enum.Variant(args)` parses as a method call on the bare
+        // Identifier; unit `Enum.Variant` parses as a Field.
+        let enum_name = match recv.as_ref() {
+            Expr::Identifier(base) if enums.get(base).is_some_and(|v| v.contains(name)) => {
+                Some(base.clone())
             }
+            _ => enum_variant_field(recv, enums).map(|(base, _)| base),
+        };
+        if let Some(enum_name) = enum_name {
+            let mut lowered_args = std::mem::take(args);
+            for a in lowered_args.iter_mut() {
+                rewrite_enum_expr(a, enums);
+            }
+            *e = Expr::Call(
+                format!("{}::{}", enum_name, name),
+                lowered_args,
+                None,
+            );
+            return;
         }
     }
     rewrite_enum_expr_children(e, enums);
@@ -910,7 +908,7 @@ fn rewrite_enum_expr_children(
         }
         Expr::UnaryOp(_, inner) => rewrite_enum_expr(inner, enums),
         Expr::Field(inner, _) => rewrite_enum_expr(inner, enums),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             rewrite_enum_expr(recv, enums);
             for a in args.iter_mut() {
                 rewrite_enum_expr(a, enums);
@@ -989,7 +987,6 @@ fn rewrite_enum_expr_children(
                 rewrite_enum_expr(a, enums);
             }
         }
-        Expr::Capture { expr, .. } => rewrite_enum_expr(expr, enums),
         _ => {}
     }
 }

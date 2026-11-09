@@ -286,7 +286,6 @@ pub fn eval_symbolic(expr: &Expr, state: &SymbolicState) -> SymbolicValue {
         Expr::Slice { .. } => { SymbolicValue::Unknown },
         Expr::Range { .. } => { SymbolicValue::Unknown },
         Expr::Spawn { .. } => { SymbolicValue::Unknown },
-        Expr::Capture { expr, .. } => eval_symbolic(expr, state),
 
     }
 }

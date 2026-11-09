@@ -34,7 +34,7 @@ pub fn walk_expr<F: FnMut(&mut Expr)>(e: &mut Expr, f: &mut F) {
 
         // ── Call-shaped ─────────────────────────────────────────────
         Expr::Call(_, args, _) => walk_all(args, f),
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             walk_expr(recv, f);
             walk_all(args, f);
         }
@@ -101,7 +101,6 @@ pub fn walk_expr<F: FnMut(&mut Expr)>(e: &mut Expr, f: &mut F) {
         | Expr::AddrOf(inner)
         | Expr::Consume(inner)
         | Expr::Await(inner) => walk_expr(inner, f),
-        Expr::Capture { expr, .. } => walk_expr(expr, f),
         Expr::Block(stmts) => walk_stmts(stmts, f),
         Expr::DerivationBlock(block) => walk_derivation(block, f),
     }

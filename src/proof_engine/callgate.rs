@@ -722,7 +722,7 @@ fn eval_bounds(e: &Expr, map: &HashMap<String, Bounds>) -> Bounds {
         Expr::Char(c) => Bounds::exact(*c as i128),
         Expr::TaggedLiteral(n, _) => Bounds::exact(*n as i128),
         Expr::Identifier(_) | Expr::Field(_, _) | Expr::Call(_, _, _)
-        | Expr::MethodCall(_, _, _, _, _) | Expr::Reflect(_, _, _) => Bounds::unknown(),
+        | Expr::MethodCall(_, _, _, _) | Expr::Reflect(_, _, _) => Bounds::unknown(),
         Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, inner) => {
             let b = eval_bounds(inner, map);
             Bounds {
@@ -1194,12 +1194,11 @@ fn replace_atoms(e: &Expr, defs: &[(Expr, Expr)]) -> Expr {
             args.iter().map(|a| replace_atoms(a, defs)).collect(),
             *id,
         ),
-        Expr::MethodCall(recv, name, args, id, refs) => Expr::MethodCall(
+        Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
             Box::new(replace_atoms(recv, defs)),
             name.clone(),
             args.iter().map(|a| replace_atoms(a, defs)).collect(),
             *id,
-            refs.clone(),
         ),
         Expr::Reflect(base, target, kind) => {
             Expr::Reflect(Box::new(replace_atoms(base, defs)), target.clone(), *kind)
@@ -1397,12 +1396,11 @@ pub fn substitute_params(goal: &Expr, params: &[String], args: &[Expr]) -> Expr 
                 c_args.iter().map(|a| go(a, params, args)).collect(),
                 *id,
             ),
-            Expr::MethodCall(recv, name, c_args, id, refs) => Expr::MethodCall(
+            Expr::MethodCall(recv, name, c_args, id) => Expr::MethodCall(
                 Box::new(go(recv, params, args)),
                 name.clone(),
                 c_args.iter().map(|a| go(a, params, args)).collect(),
                 *id,
-                refs.clone(),
             ),
             Expr::Reflect(base, target, kind) => {
                 Expr::Reflect(Box::new(go(base, params, args)), target.clone(), *kind)
@@ -1453,12 +1451,11 @@ fn rename_identifier(e: &Expr, from: &str, to: &str) -> Expr {
             args.iter().map(|a| rename_identifier(a, from, to)).collect(),
             *id,
         ),
-        Expr::MethodCall(recv, name, args, id, refs) => Expr::MethodCall(
+        Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
             Box::new(rename_identifier(recv, from, to)),
             name.clone(),
             args.iter().map(|a| rename_identifier(a, from, to)).collect(),
             *id,
-            refs.clone(),
         ),
         Expr::Reflect(base, target, kind) => Expr::Reflect(
             Box::new(rename_identifier(base, from, to)),
@@ -1666,7 +1663,7 @@ pub fn mentions(e: &Expr, var: &str) -> bool {
         Expr::Call(_, args, _) | Expr::Tuple(args) | Expr::List(args) => {
             args.iter().any(|a| mentions(a, var))
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             mentions(recv, var) || args.iter().any(|a| mentions(a, var))
         }
         Expr::PluginIntercept { args, receiver, .. } => {
@@ -1680,7 +1677,6 @@ pub fn mentions(e: &Expr, var: &str) -> bool {
                 || end.as_ref().is_some_and(|x| mentions(x, var))
                 || stride.as_ref().is_some_and(|x| mentions(x, var))
         }
-        Expr::Capture { expr, .. } => mentions(expr, var),
         Expr::If(c, t, e) => {
             mentions(c, var)
                 || mentions(t, var)
@@ -1752,7 +1748,7 @@ fn free_identifiers(e: &Expr, out: &mut BTreeSet<String>) {
                 free_identifiers(a, out);
             }
         }
-        Expr::MethodCall(recv, _, args, _, _) => {
+        Expr::MethodCall(recv, _, args, _) => {
             free_identifiers(recv, out);
             for a in args {
                 free_identifiers(a, out);
@@ -1909,14 +1905,13 @@ fn rename_term_components(e: &Expr, first: &str, names: &[String]) -> Expr {
                 .collect(),
             *id,
         ),
-        Expr::MethodCall(recv, name, args, id, refs) => Expr::MethodCall(
+        Expr::MethodCall(recv, name, args, id) => Expr::MethodCall(
             Box::new(rename_term_components(recv, first, names)),
             name.clone(),
             args.iter()
                 .map(|a| rename_term_components(a, first, names))
                 .collect(),
             *id,
-            refs.clone(),
         ),
         other => other.clone(),
     }
