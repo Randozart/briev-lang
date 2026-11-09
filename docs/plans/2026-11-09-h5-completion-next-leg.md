@@ -64,7 +64,7 @@ flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 - Two-run byte determinism is the gate; snapshots complement (not replace)
   `ll_determinism_check`.
 
-## Seam refactors (third)
+## Seam refactors (third, Defer DONE 2026-11-09)
 
 1. **Defer**: `defer_bodies: Vec<Vec<HirStmt>>` on the backend;
    `flush_defer_cleanup` walks the statement seam. Delete the AST-body queue.
@@ -139,3 +139,13 @@ asserted stable within-process; snapshot comparison supplies the
 cross-process check. `.gitignore` whitelists `tests/snapshots`.
 
 Next: the three seam refactors.
+
+**Seam refactor 1 — Defer (2026-11-09, DONE).** `defer_bodies` now carries
+`Vec<HirStmt>`; the HIR `Defer` arm queues the HIR body directly, the AST arm
+(and the countable-loop synthesized defer) lower at registration via
+`hir::lower_body_statements`, and `flush_defer_cleanup` emits through the
+statement seam (lossless fallback per child). Found and fixed en route: a
+node firing that ends by **fallthrough** (no explicit `term`/`rollback` in the
+emitted body) never flushed its defer stack; the SSA loop now flushes before
+its per-firing exit checks. New coverage: `tests/directives/defer_cleanup.bv`
+(stdout `1\n7\n`) and a `defer` HIR snapshot fixture.

@@ -638,6 +638,13 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
     }
 }
 
+/// Lower a standalone statement list (defer bodies registered from the AST
+/// path). Fresh ids; deterministic order.
+pub fn lower_body_statements(body: &[Statement]) -> Vec<HirStmt> {
+    let mut ids = IdSupply::default();
+    lower_body(body, &mut ids)
+}
+
 fn lower_body(body: &[Statement], ids: &mut IdSupply) -> Vec<HirStmt> {
     body.iter().map(|statement| lower_stmt(statement, ids)).collect()
 }

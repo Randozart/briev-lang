@@ -1,0 +1,10 @@
+// Defer bodies register on the HIR stack and run LIFO at every exit.
+// EXPECT-STDOUT: 1
+// EXPECT-STDOUT: 7
+let done: Bool = false;
+node main [done == false][done == true] {
+    defer { println!(7); };
+    println!(1);
+    done = true;
+    term;
+};

@@ -1194,7 +1194,7 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-08-09 (Phase 10): `defer { ... }` bodies registered by the current
     /// transaction/reactive firing, in registration order. Flushed LIFO before
     /// every exit (term/rollback/fallthrough ret) via flush_defer_cleanup.
-    pub defer_bodies: Vec<Vec<crate::ast::Statement>>,
+    pub defer_bodies: Vec<Vec<crate::hir::stmt::HirStmt>>,
     /// 2026-08-04 (term-termination-diagnostics): label that a value-form
     /// `term <val>` / `term! <val>` in a VOID function branches to, unwinding
     /// the rest of the transaction body (interpreter TermReturn in

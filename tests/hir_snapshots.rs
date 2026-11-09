@@ -47,6 +47,18 @@ defn use_it() -> Int { term id(7); };
 "#,
     ),
     (
+        "defer",
+        r#"
+let done: Bool = false;
+node main [done == false][done == true] {
+    defer { println!(7); };
+    println!(1);
+    done = true;
+    term;
+};
+"#,
+    ),
+    (
         "laws",
         r#"
 let attached: Bool = true;

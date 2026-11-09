@@ -543,6 +543,10 @@ impl LlvmBackend {
                 }
                 self.fun.void_txn_abort_label = None;
                 if !self.fun.terminated {
+                    // 2026-11-09 (H5 seam refactor / defer LIFO): a firing that
+                    // ends by fallthrough must run its deferred cleanup too; the
+                    // explicit exits flush inside emit_statement.
+                    self.flush_defer_cleanup(out, "  ");
                     // 2026-08-06 (beginprogram plan): clear the entry flag when
                     // the entry loop's goal is met.
                     self.emit_beginprogram_goal_check(out, txn);

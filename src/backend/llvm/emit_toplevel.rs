@@ -377,7 +377,11 @@ impl LlvmBackend {
     pub(super) fn flush_defer_cleanup(&mut self, out: &mut String, indent: &str) {
         while let Some(body) = self.fun.defer_bodies.pop() {
             for stmt in &body {
-                crate::backend::llvm::emit_stmt::emit_statement(self, out, stmt, indent);
+                // 2026-11-09 (H5 seam refactor): deferred cleanup bodies are
+                // HIR; the seam falls back losslessly for any non-native kind.
+                let _ = crate::backend::llvm::emit_hir_stmt::emit_hir_statement(
+                    self, out, stmt, indent,
+                );
             }
         }
     }
