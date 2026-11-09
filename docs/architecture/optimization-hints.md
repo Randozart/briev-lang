@@ -1,7 +1,9 @@
-# !> Optimization Hints — Vocabulary Reference
+# attr — Consumer Metadata Vocabulary Reference
 
-2026-07-28: Phase G.0 — Complete reference for every `!>` metadata key,
-its values, semantics, and which backends honor it.
+Complete reference for every non-physical consumer-metadata key (`attr`),
+its values, semantics, and which owner/backends honor it. Physical layout is
+`spec`; `!>` is removed (2026-11-08). Offload policy (`accel`,
+`accel_report`) is a compiler mode, not a key.
 
 The machine-readable source of truth is `config/meta-vocab.dbv` (Data Briev format).
 This document is a human-readable rendering. When adding a new key, update both.
@@ -11,10 +13,10 @@ This document is a human-readable rendering. When adding a new key, update both.
 | Key | Values | Description | LLVM | Webstack | CIRCT | MCMC |
 |-----|--------|-------------|------|----------|-------|------|
 | `overflow` | wrapping, checked, saturating | Integer overflow behavior | nuw nsw | implicit | comb.add flags | algebraic identities |
-| `associative` | true, false | **Retiring from author use (2026-11-08):** declared in source by the `approx` ambiguity keyword; this key remains the internal lowering row. May reassociate operations | reassoc | reorder | tree balance | reassociation mutations |
+| `associative` | true, false | **Retired author surface (2026-11-08):** numeric intent is the `approx` keyword; this row survives only as internal lowering. May reassociate operations | reassoc | reorder | tree balance | reassociation mutations |
 | `commutative` | true, false | May swap operands | ignored | ignored | ignored | commutative swap mutations |
 | `fp_contract` | fast, strict | May form FMA | contract | fma fuse | fma | fma fusion mutations |
-| `fp_math` | ieee754, fast | **Retiring from author use (2026-11-08):** `approx`/`exact` are the source surface; this key remains the internal lowering row for instruction fast-math flags. Floating-point compliance | fast-math flags | no subnormals | relaxed | relaxed equivalence |
+| `fp_math` | ieee754, fast | **Retired author surface (2026-11-08):** `approx`/`exact` are the source surface; this row survives only as internal lowering for instruction fast-math flags. Floating-point compliance | fast-math flags | no subnormals | relaxed | relaxed equivalence |
 
 ## Memory Semantics
 

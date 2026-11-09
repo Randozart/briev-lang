@@ -26,7 +26,7 @@ use std::collections::HashSet;
 /// is deferred to the casting graph's `resolve_llvm_type()`.
 /// - Flexible types (Int, UInt, Bit) have no baked-in width — resolved per-target.
 /// - Fixed-width types (Int32, Float) carry explicit width metadata
-///   (`spec Bits: N;`, §8.2 — `!> bits: N;` writes the same key).
+///   (`spec Bits: N;`, §8.2 — `attr bits: N;` writes the same key).
 /// - Struct types derive LLVM type from field shapes at codegen time.
 /// - Protocol (Cast.) properties are retained for graph-based membership checks.
 /// - Explicit user `llvm <~` is validated against known LLVM type strings.

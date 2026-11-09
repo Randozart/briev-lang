@@ -50,6 +50,12 @@ pub enum Token {
     #[token("spec")]
     Spec,
 
+    /// 2026-11-08 (attr plan, language-surfaces): `attr` — non-physical
+    /// consumer metadata (`attr key: value;` bare/plugin-claimed, or
+    /// `attr<owner> { … }`). Replaces the retired `!>` operator (SPEC §8.9).
+    #[token("attr")]
+    Attr,
+
     /// 2026-09-11 (Part C, Electronics Briev): first-class component pin —
     /// `pin a = 1;` or `pin a;` (auto-number) inside a component type body.
     #[token("pin")]
@@ -648,6 +654,7 @@ impl std::fmt::Display for Token {
         match self {
             Token::Export => write!(f, "export"),
             Token::Spec => write!(f, "spec"),
+            Token::Attr => write!(f, "attr"),
             Token::Pin => write!(f, "pin"),
             Token::Defn => write!(f, "defn"),
             Token::Let => write!(f, "let"),
@@ -815,7 +822,7 @@ mod tests {
         // vocab (removing Removed/Reserved tokens that are not canonical).
         let keyword_tokens: &[&str] = &[
             "export", "defn", "let", "const", "txn", "node", "async", "seq", "approx", "exact",
-            "vol", "out", "spec", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
+            "vol", "out", "spec", "attr", "pin", "pack", "trap", "halt", "atomic", "union", "coll", "await", "spawn", "term", "term!", "rollback", "import",
             "bootstrap",
             "mem", "relaxed", "acquire", "release", "bartered",
             "from", "as", "frgn", "meld", "reg", "op", "prop",

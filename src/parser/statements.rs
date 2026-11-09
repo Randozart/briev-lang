@@ -183,7 +183,9 @@ impl<'a> Parser<'a> {
                 } else if self.check_identifier("$defn") {
                     self.parse_inline_defn()
                 } else if self.check(&Token::ExclaimArrow) {
-                    self.parse_metadata_statement()
+                    Err(self.retired_exclaim_arrow())
+                } else if self.check(&Token::Attr) {
+                    self.parse_attr_statement()
                 } else if self.check_identifier("free") {
                     self.parse_lifetime_hint(true)
                 } else if self.check_identifier("keep") {
@@ -623,13 +625,11 @@ impl<'a> Parser<'a> {
         Ok(Statement::Guarded(cond, body))
     }
 
-    /// !> key: value;
-    fn parse_metadata_statement(&mut self) -> Result<Statement, SyntaxError> {
-        self.expect(Token::ExclaimArrow)?;
-        let key = self.expect_identifier()?;
-        self.expect(Token::Colon)?;
-        let val = self.parse_metadata_value_standalone()?;
-        self.expect(Token::Semicolon)?;
+    /// attr [<owner>] key: value;
+    fn parse_attr_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.expect(Token::Attr)?;
+        let _owner = self.parse_attr_owner()?;
+        let (key, val) = self.parse_attr_binding()?;
         Ok(Statement::MetadataAssignment(key, val))
     }
 

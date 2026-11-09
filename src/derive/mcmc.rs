@@ -57,7 +57,7 @@ pub struct McmcConfig {
     pub correctness_weight: f64,
     pub performance_weight: f64,
     pub seed: Option<u64>,
-    // ── Phase G.4: Config driven by !> metadata ──────────────────
+    // ── Phase G.4: Config driven by attr metadata ────────────────
     pub tolerance: Option<f64>,
     pub allowed_mutations: Vec<String>,
     pub cost_fn: CostFn,
@@ -354,7 +354,7 @@ fn expr_to_value(expr: &Expr) -> crate::interpreter::Value {
     }
 }
 
-/// 2026-07-28: Phase G.4 — Build an McmcConfig from !> metadata.
+/// 2026-07-28: Phase G.4 — Build an McmcConfig from attr metadata.
 /// Reads search_space, cost_model, tolerance, and allowed_mutations keys.
 pub fn mcmc_config_from_metadata(metadata: &HashMap<String, PropertyValue>) -> McmcConfig {
     let mut config = McmcConfig::default();

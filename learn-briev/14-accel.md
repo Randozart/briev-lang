@@ -72,19 +72,20 @@ accel node force [i < nb][i == nb] {
 - The compiler **proves** the map (disjoint per-`i` writes, counter advance,
   pure, flat types). If the proof fails or the speedup is unverified, a
   keyword-marked body stays on the CPU path and always emits a one-line
-  compile-time remark naming the reason — never silent. `!> accel_report:
-  verbose;` adds full per-analysis detail.
+  compile-time remark naming the reason — never silent. Verbose diagnostics
+  add full per-analysis detail.
 - On a GPU it launches N work-items once and fast-forwards the counter; on
   CPU the counted loop runs natively (each firing = one work-item).
 - **Verifiable speedup only**: in `try` mode the compiler verifies the GPU
   path is faster (statically for known N, or via a runtime auto-tuning probe
   that measures both lanes and checks output equality) before deferring.
-- Module shortcut: `!> accel: try_all;` makes every eligible body a candidate;
-  `force;` requires keyword-marked bodies to offload (errors on ineligible);
-  `try_all_force;` combines both. See SPEC §9.7.
+- Policy is the compiler mode: `--accel=try-all` makes every eligible body a
+  candidate; `--accel=force` requires keyword-marked bodies to offload (errors
+  on ineligible); `--accel=try-all-force` combines both. `.abv` files default
+  to `try-all`. See SPEC §9.7.
 
 ```briev
-!> accel: try_all;
+// build with --accel=try-all
 
 let i: Int = 0;
 accel node init_bodies [beginprogram && i < nb][i == nb] {

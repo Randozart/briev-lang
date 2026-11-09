@@ -23,6 +23,7 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | Keyword | Meaning |
 |---|---|
 | `spec` | Physical-layout metadata (`spec Bits: 64;`) |
+| `attr` | Non-physical consumer metadata (`attr key: value;`, `attr<owner> { … }`) |
 | `export` | Visibility / re-export |
 | `defn` | Function definition |
 | `let` | Local variable / state field binding |
@@ -454,7 +455,8 @@ Rust plugin macros (`src/plugin/`):
 
 | Form | Meaning |
 |---|---|
-| `!> key: value;` | Module/declaration metadata `[deprecated → spec]` (see §13) |
+| `attr key: value;` | Non-physical consumer metadata (bare, plugin-claimed key) |
+| `attr<owner> { key: value; … }` | Non-physical consumer metadata validated by an owner schema |
 | `spec <PascalCase>: value;` | Physical-layout metadata (`Bits`, `MaxBits`, `Bytes`, `Align`, `Endian`) |
 | `[pre][post]` | Contract pair on defn/txn/node |
 | `[pre]]` | Pre-only contract |
@@ -508,7 +510,9 @@ vocab (`src/vocab.rs:240-269`) records these as **removed**: `sig`,
 `trg!`, `cell!`, `sync!`, `frgn!`, `syscall!`, `Ptr!`, `Ok`, `Err`, `Some`,
 `None`, `some`, `none`, `cycles`, `seconds`, `minute`, `minutes`,
 `nanoseconds`. Removed lexical forms include `:>`, `<:`, `|>`, `++`, `#pragma`,
-`#!exit`, `#?`, `#[`, and legacy duration aliases.
+`#!exit`, `#?`, `#[`, and legacy duration aliases. The `!>` metadata operator
+is removed (2026-11-08): use `attr key: value;` / `attr<owner> { … }` for
+consumer metadata and `spec <PascalCase>: value;` for physical layout.
 
 ---
 
@@ -523,7 +527,6 @@ in a future release.
 |---|---|---|
 | `foreach (item in list)` paren form | `foreach item in list` | `parser/statements.rs:286` "tolerated legacy form" |
 | `sync { }` block | `mutex { }` | `lexer.rs:190` "replaces the legacy sync {}" |
-| `!> key: value;` annotation metadata | `spec <PascalCase>: value;` | `parser/definitions.rs:2443` "annotation form (legacy)" |
 | `print!(value)` / `println!(value)` single-value | `print!("fmt {0}", args)` format form | `plugin/print_plugin.rs:16` "legacy single-value form" |
 | `Get#` / `Insert#` intrinsics | `At#` / `InsertAt#` | `intrinsic_signatures.rs:167` "legacy Get#/Insert#" |
 | `ToInt#` / `ToFloat#` / `ToString#` | casts (`as`) / stdlib | tagged `[legacy: fall-to-external]` |

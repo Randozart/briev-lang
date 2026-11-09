@@ -1480,7 +1480,7 @@ A protocol is a compiler-visible semantic category and cast-coherence domain. Pr
 
 ```briev
 proto UTF8: String {
-    !> encoding: UTF8;
+    attr utf8: encoding;
 };
 ```
 
@@ -1534,9 +1534,10 @@ like every other declared trust site.
 >
 > **Numeric reassociation (2026-11-08).** The float-fold reassociation right
 > is declared at the site by the `approx` ambiguity keyword (§2.4); `exact`
-> asserts precise source-order evaluation. The older `!> associative` /
-> `!> fp_math` metadata keys are not the author surface and are being retired
-> from language use (see `docs/architecture/optimization-hints.md`). A D/B
+> asserts precise source-order evaluation. The older `associative` /
+> `fp_math` metadata keys are retired from language use: numeric intent is the
+> `approx`/`exact` keyword pair, never metadata (see
+> `docs/architecture/optimization-hints.md`). A D/B
 > A/B (2026-11-08) confirmed the link-time `-ffast-math` flag does not relax
 > emitted IR that lacks instruction fast-math flags, so the precise default
 > holds without either declaration.
@@ -1588,41 +1589,41 @@ isr<arm_cortex_m> handler @ 1: main_tick() [true][done == true] {
 };
 ```
 
-### 8.9 Metadata
+### 8.9 Metadata — `attr`
 
-`!>` is the canonical annotation operator for non-physical metadata.
-
-```briev
-type Int32: Int {
-    !> ctd: Int;      // annotation (e.g. cell-tag dispatch)
-};
-```
-
-`!> observable: true` is not valid; use the `out` modifier.
-
-> **2026-08-13 (Deferred Layout).** Physical-layout metadata is declared with
-> the **`spec`** keyword, not `!>`: `spec Alignment: 2;`, `spec Bits: 12;`,
-> `spec MaxBits: 16;`, `spec Bytes: 4;`, `spec Endian: Big;` (see §8.2). `spec`
-> keys are PascalCase; values use the same grammar as `!>` values. `!>` remains
-> the annotation operator for non-physical metadata (`ctd`, `inline_hint`, …); it no
-> longer carries physical-layout keys. `spec` and `!>` share one metadata map —
-> a physical key spelled with `!>` still parses for backward compatibility
-> (stdlib and examples migrated to `spec` in 2026-08-13), but `spec`
-> supersedes it; an unknown `spec` name is an error, never silently accepted.
-
-At module top level, `!>` binds metadata to the module as a whole.
-Top-level `!>` is a shortcut for attaching metadata to the script; it never
-attaches to the following declaration.
+`attr` is the surface for **non-physical consumer metadata** (backend, plugin,
+analysis, tooling). Physical representation belongs to `spec` (§8.2); behaviour
+belongs to contracts and operators. `attr` never changes observable program
+meaning, never encodes representation/ABI, and never weakens or discharges a
+contract.
 
 ```briev
-!> inline_hint: always;
+attr jira_ticket: OPS-1234;            // bare: a plugin/consumer claims the key
+attr<llvm> { overflow: wrapping; tbaa: "FloatNode"; };   // owner block
+attr<llvm> tbaa: "FloatNode";          // owned single line
 ```
 
-Metadata keys and values are lowercase. Multiple top-level `!>` bindings merge
-into one module metadata map (last binding wins per key). Values use the same
-grammar as declaration metadata (identifier, integer, boolean, string, or
-list). Module metadata is available to any backend or plugin that consults
-the metadata vocabulary.
+**Owner.** The optional `<owner>` names the schema that claims the keys. It is
+a validation hint, not stored downstream: keys are globally unique, so an
+unowned key still resolves to its consumer. Unknown owner names are accepted
+(plugin domains); a known owner validates its keys. `attr<accel>` does not
+exist — the offload policy is a compiler mode (§9.7).
+
+`attr` is legal at module, type, defn, node, and txn level (and on statements
+inside a body). It never replaces `spec`, which stays type-body-only. Metadata
+keys and values are lowercase; values use the declaration-metadata grammar
+(identifier, integer, boolean, string, or list).
+
+At module top level, `attr` binds metadata to the module as a whole; it never
+attaches to the following declaration. Multiple top-level `attr` bindings merge
+into one module metadata map (last binding wins per key), and are available to
+any backend or plugin that consults the metadata vocabulary.
+
+> **2026-11-08 — `!>` removed (hard break).** The old `!>` operator mixed
+> physical layout, consumer metadata, and policy, hiding which consumer owned a
+> key. It is a compile error now: write `attr key: value;` /
+> `attr<owner> { … }` for consumer metadata, or `spec <PascalCase>: value;` for
+> physical layout.
 
 ### 8.10 `coll` — compiler-owned Length semantics
 

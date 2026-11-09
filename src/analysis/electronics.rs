@@ -51,7 +51,7 @@ pub struct PinRef {
 /// Per-component-type schematic facts extracted from the type declaration.
 #[derive(Debug, Clone)]
 pub struct TypeInfo {
-    /// KiCad reference-designator prefix (`R`, `D`, `J`) — `!> Reference` on
+    /// KiCad reference-designator prefix (`R`, `D`, `J`) — `attr Reference` on
     /// the type, defaulting to the type's first letter uppercased.
     pub reference_prefix: String,
     /// Declared pins (name, KiCad number), sorted by number.
@@ -59,7 +59,7 @@ pub struct TypeInfo {
     /// 2026-09-21 (E12): resolved class properties, index-aligned to
     /// `pins`. Defaults apply for unclassed pins.
     pub pin_classes: Vec<PinClassProps>,
-    /// Max voltage any pin of this type tolerates — `!> Tolerance: 3.3`.
+    /// Max voltage any pin of this type tolerates — `attr Tolerance: 3.3`.
     /// None = unrated: the pin places no constraint (skeleton semantics;
     /// per-pin ratings are a follow-on).
     pub tolerance: Option<f64>,
@@ -222,7 +222,7 @@ impl Default for PinClassProps {
 /// A transaction that states `[j1.p1.voltage == 5.0]` (pre OR post — the
 /// supply is at 5 V before and after firing) DRIVES its net at 5 V. Two
 /// different drive values on one net is a shorted supply. Every pin on a
-/// driven net whose type declares `!> Tolerance: <max>` must tolerate the
+/// driven net whose type declares `attr Tolerance: <max>` must tolerate the
 /// class; a 5 V net into a 3.3 V-only pin is a compile error, never a fried
 /// board. Unrated pins place no constraint.
 #[derive(Debug, Clone, Default)]
@@ -890,7 +890,7 @@ fn envelope_values(
 }
 
 /// Extract declared pins per component type from TypeDef bodies, plus the
-/// schematic facts (`!> Reference` prefix) each type carries. Also resolves
+/// schematic facts (`attr Reference` prefix) each type carries. Also resolves
 /// pin-class ascriptions (E12) against the program's declared types —
 /// the prelude injects the class fundamentals from std/electronics.bv.
 fn collect_type_pins(
@@ -915,7 +915,7 @@ fn collect_type_pins(
                     td.body.pins.iter().map(|p| (p.name.clone(), p.number)).collect(),
                 );
                 // 2026-09-11 (B3): reference/tolerance are STRUCTURAL clause
-                // fields — the !> metadata path is deleted. reference is
+                // fields — the annotation metadata path is deleted. reference is
                 // parse-mandatory when pins exist, so it is always present.
                 let prefix = td
                     .body

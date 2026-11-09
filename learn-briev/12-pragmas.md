@@ -162,7 +162,7 @@ the item is. They appear on the signature line before the keyword:
 
 > **Removed 2026-08-06:** the `#gpu` / `#?gpu` / `#!gpu` directive family and
 > the `--gpu-offload` flag are gone — GPU deferral is the `accel` keyword /
-> `!> accel:` module metadata (see `14-accel.md`). The `#`-prefix is reserved
+> the `--accel` compiler mode (see `14-accel.md`). The `#`-prefix is reserved
 > for compiler directives that are *not* performance/offload requests.
 
 Diagnostic output shows the compiler's reasoning at compile time:
@@ -170,60 +170,64 @@ Diagnostic output shows the compiler's reasoning at compile time:
 [my_func] gpu: NOT offloaded (body contains non-GPU-safe intrinsic)
 ```
 
-## Inline Metadata (`!>`) in Body Blocks
+## Consumer Metadata (`attr`) in Body Blocks
 
-The `!> key: value;` declaration attaches declarative metadata inside type and
-body blocks. Unlike `#` (directives), `!>` data describes properties of the
-item. (The old `<~` token was removed; `!>` is the sole metadata form.)
+The `attr key: value;` declaration attaches non-physical consumer metadata
+(backend, plugin, tooling) inside type and body blocks. Physical layout is
+`spec` (§8.2); behaviour is contracts and operators. `attr` never changes
+observable meaning. An optional owner (`attr<llvm> { … }`) names the schema
+that claims the keys; the owner is a validation hint — keys are globally
+unique.
 
-**Type bodies**: `!> key: value;` declares a type property:
+**Type bodies**: `attr key: value;` declares a consumer property:
 
 ```briev
 type Foo : Bits {
     spec Bytes: 8;
     spec Alignment: 4;
-    !> storage: Native;   // non-physical annotation (SPEC 8.9)
-    #volatile;            // shorthand for !> volatile: true
+    attr<llvm> storage: Native;   // non-physical annotation (SPEC 8.9)
+    #volatile;                     // shorthand for attr volatile: true
 };
 ```
 
-**Definition bodies**: `!>` at the top of a function body declares metadata:
+**Definition bodies**: `attr` at the top of a function body declares metadata:
 
 ```briev
 defn process() -> Int {
-    !> jira: "FIN-8422";   // Documentation metadata
-    !> priority: 2;
+    attr jira: "FIN-8422";   // Documentation metadata
+    attr priority: 2;
     term 42;
 };
 ```
 
-**Guard branches**: `!>` inside a guard block scopes metadata to that branch:
+**Guard branches**: `attr` inside a guard block scopes metadata to that branch:
 
 ```briev
 txn compute [count < N][count == N] {
     [count % 2 == 0] {
-        !> priority: 1;
+        attr priority: 1;
         &even = even + 1;
     };
 };
 ```
 
+> **Removed 2026-11-08:** the `!>` operator is a compile error. Its replacement
+> is `attr key: value;` (consumer metadata) or `spec <PascalCase>: value;`
+> (physical layout). Module-level `attr` binds to the module.
+
 ---
 
-## `!> observable: true` — Dead Code Elimination Guard
+## Observability — `out`, not metadata
 
-Side-effecting intrinsics (like `Print#`, `Malloc#`, `Memcpy#`) must
-not be eliminated by the compiler's dead code elimination pass. Use the
-`!> observable: true` metadata to mark a function or intrinsic as having
-external side effects:
+A value is live when an FFI call consumes it, so side-effecting intrinsics
+(`Print#`, `Malloc#`, `Memcpy#`) are not eliminated. Declarations with external
+effects carry the `out` modifier — `observable` is not a metadata key:
 
 ```briev
 defn print_hello() {
-    !> observable: true;
     Print#(42);
 };
 ```
 
-Intrinsics declared with `!> observable: true` in their metadata will
-always be emitted, even if their return value is unused. This is the
-compile-time equivalent of C's `__attribute__((used))`.
+`attr` never opts code out of dead-code elimination; use `out` on the
+declaration, or make the value structurally live through `endprogram`.

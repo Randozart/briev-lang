@@ -138,10 +138,10 @@ pub enum TopLevel {
     /// $const name = expr; — compile-time immutable constant.
     /// 2026-07-25: Same lifetime, error on reassignment.
     CompileTimeConst(String, Expr),
-    /// 2026-08-06 (accel plan): module-level `!> key: value;` metadata.
+    /// 2026-11-08 (attr plan): module-level `attr key: value;` metadata.
     /// A shortcut for attaching metadata to the script (SPEC §8.9); consumed
     /// by backends and plugins via AnalysisResults.module_metadata.
-    /// Multiple consecutive top-level `!>` bindings merge (last wins per key).
+    /// Multiple consecutive top-level `attr` bindings merge (last wins per key).
     ModuleMetadata(HashMap<String, PropertyValue>),
     /// 2026-08-09: `init` — runtime-seeded invariant (SPEC §8.1). Set exactly
     /// once before `beginprogram`/any transition fires; provably immutable

@@ -4,7 +4,7 @@
 //! a KiCad 7 S-expression schematic (`.kicad_sch`, version 20230121). The
 //! backend makes NO netlist decisions and NO type-name matches (Rule 15):
 //! component symbols are generic boxes whose geometry is computed from the
-//! type's pin list; reference prefixes come from `!>` metadata and values
+//! type's pin list; reference prefixes come from `attr` metadata and values
 //! from instance literal fields — configuration the source carries, never
 //! compiler knowledge.
 //!

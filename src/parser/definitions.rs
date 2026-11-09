@@ -216,21 +216,21 @@ impl<'a> Parser<'a> {
                 span: self.peek_with_span().map(|(_, s)| self.make_span(s.clone())).unwrap_or_else(crate::errors::Span::dummy),
             }),
             Some(Token::Trg) => self.parse_top_level_trg().map(TopLevel::Trigger),
-            // 2026-08-06 (accel plan): top-level `!> key: value;` module
-            // metadata (SPEC §8.9). Multiple consecutive bindings merge into
-            // one ModuleMetadata node; last binding wins per key.
-            Some(Token::ExclaimArrow) => {
+            // 2026-11-08 (attr plan): top-level non-physical consumer
+            // metadata (SPEC §8.9): `attr key: value;`, `attr<owner> { … }`,
+            // or `attr<owner> key: value;`. Consecutive attrs merge into one
+            // ModuleMetadata node; last binding wins per key.
+            Some(Token::Attr) => {
                 let mut map = std::collections::HashMap::new();
-                while self.check(&Token::ExclaimArrow) {
-                    self.pos += 1; // consume '!>'
-                    let key = self.parse_metadata_key()?;
-                    self.expect(Token::Colon)?;
-                    let val = self.parse_metadata_value()?;
-                    self.expect(Token::Semicolon)?;
-                    map.insert(key, val);
+                while self.check(&Token::Attr) {
+                    self.pos += 1; // consume 'attr'
+                    let _owner = self.parse_attr_owner()?;
+                    map.extend(self.parse_attr_entries()?);
                 }
                 Ok(TopLevel::ModuleMetadata(map))
             }
+            // Retired operator: one diagnostic at every former site.
+            Some(Token::ExclaimArrow) => Err(self.retired_exclaim_arrow()),
             // 2026-07-14: Handle `type Name : Parent { slots }` definitions
             // 2026-07-16: P2 — Check for extension group Type.[a,b,c] before single type
             Some(Token::Type) => self.parse_type_or_group().map(TopLevel::TypeDef),
@@ -1827,7 +1827,10 @@ impl<'a> Parser<'a> {
                 self.reject_retired_envelope_clause()?;
                 continue;
             }
-            if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
+            if self.check(&Token::ExclaimArrow)
+                || self.check(&Token::Spec)
+                || self.check(&Token::Attr)
+            {
                 self.parse_metadata_clause(&mut metadata)?;
                 continue;
             }
@@ -2409,14 +2412,16 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    /// Parse `!> key: value;` / `spec Name: value;` within a component body.
+    /// Parse `attr key: value;` / `spec Name: value;` within a component body.
     /// Component-local law parameters are allowed once pins are declared.
     fn parse_component_metadata_clause(
         &mut self,
         targets: &mut TypeBodyTargets<'_>,
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
     ) -> Result<bool, SyntaxError> {
-        let at_metadata = self.check(&Token::ExclaimArrow) || self.check(&Token::Spec);
+        let at_metadata = self.check(&Token::ExclaimArrow)
+            || self.check(&Token::Spec)
+            || self.check(&Token::Attr);
         if !at_metadata {
             return Ok(false);
         }
@@ -3754,7 +3759,7 @@ impl<'a> Parser<'a> {
                 if self.parse_component_header_clause(&mut targets)? {
                     continue;
                 }
-                // !> key/value and spec metadata share the component-header
+                // attr key/value and spec metadata share the component-header
                 // dispatch so component-local law parameters keep their scope.
                 if self.parse_component_metadata_clause(&mut targets, &mut metadata)? {
                     continue;
@@ -4048,7 +4053,7 @@ impl<'a> Parser<'a> {
     ///   `!> <lowercase_key>: <value>;`       — annotation form (legacy)
     ///   `spec <PascalCase>: <value>;`         — declared-layout form (modern)
     /// Both write the SAME lowercase metadata keys, so consumers have a single
-    /// read path. `!>` keeps the ctd/alu special cases (the `<...>` layout DSL
+    /// read path. `attr` keeps the ctd/alu special cases (the `<...>` layout DSL
     /// was removed 2026-08-13 — see the layout-keywords plan); `spec` has the
     /// five physical-layout keys (Alignment/Bits/MaxBits/Bytes/Endian).
     /// Invoked with the cursor AT the `!>` or `spec` token.
@@ -4066,6 +4071,15 @@ impl<'a> Parser<'a> {
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
         allow_law_parameter: bool,
     ) -> Result<(), SyntaxError> {
+        if self.check(&Token::ExclaimArrow) {
+            return Err(self.retired_exclaim_arrow());
+        }
+        if self.check(&Token::Attr) {
+            self.pos += 1;
+            let _owner = self.parse_attr_owner()?;
+            metadata.extend(self.parse_attr_entries()?);
+            return Ok(());
+        }
         let is_spec = self.check(&Token::Spec);
         self.advance();
         let key = self.expect_identifier()?;
@@ -4543,8 +4557,11 @@ impl<'a> Parser<'a> {
                 if self.parse_component_law_clause(&mut hold_laws, &mut modes)? {
                     continue;
                 }
-                // !> key: value; or spec PascalCase: value; — metadata.
-                if self.check(&Token::ExclaimArrow) || self.check(&Token::Spec) {
+                // attr key: value; / spec PascalCase: value; — metadata.
+                if self.check(&Token::ExclaimArrow)
+                    || self.check(&Token::Spec)
+                    || self.check(&Token::Attr)
+                {
                     self.parse_metadata_clause(&mut metadata)?;
                     continue;
                 }
@@ -4723,8 +4740,12 @@ impl<'a> Parser<'a> {
         let mut metadata: std::collections::HashMap<String, PropertyValue> = std::collections::HashMap::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // spec PascalCase: value; — declared physical layout.
-                if self.check(&Token::Spec) {
+                // spec PascalCase: value; — declared physical layout;
+                // attr — consumer metadata.
+                if self.check(&Token::Spec)
+                    || self.check(&Token::Attr)
+                    || self.check(&Token::ExclaimArrow)
+                {
                     self.parse_metadata_clause(&mut metadata)?;
                     continue;
                 }
@@ -6303,9 +6324,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spec_does_not_break_exclaim_arrow() {
-        // `!>` still parses alongside `spec` in the same body.
-        let tl = parse_top("type W: Int { !> ctd: Add; spec Bits: 8; };").unwrap();
+    fn test_spec_and_attr_coexist() {
+        // `attr` and `spec` coexist in one body (2026-11-08).
+        let tl = parse_top("type W: Int { attr ctd: Add; spec Bits: 8; };").unwrap();
         let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
         assert_eq!(td.body.metadata["ctd"], crate::ast::PropertyValue::Identifier("Add".into()));
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(8));
@@ -7659,37 +7680,16 @@ mod tests {
     }
 
     #[test]
-    fn test_top_level_module_metadata_parses() {
-        // 2026-08-06 (accel plan): top-level `!> key: value;` becomes
+    fn test_top_level_attr_parses() {
+        // 2026-11-08 (attr plan): top-level `attr key: value;` becomes
         // TopLevel::ModuleMetadata (SPEC §8.9).
-        let src = "!> accel: try_all;";
+        let src = "attr target: spirv;";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         match item {
             crate::ast::TopLevel::ModuleMetadata(map) => {
                 assert_eq!(map.len(), 1, "expected one metadata key");
-                assert!(matches!(map.get("accel"),
-                    Some(crate::ast::PropertyValue::Identifier(s)) if s == "try_all"));
-            }
-            other => panic!("expected ModuleMetadata, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_top_level_module_metadata_merges_last_wins() {
-        // 2026-08-06 (accel plan): consecutive top-level `!>` lines merge
-        // into one ModuleMetadata node; last binding wins per key.
-        let src = "!> accel: try_all;\n!> accel: force;\n!> target: spirv;";
-        let tokens = tokenize(src).unwrap();
-        let mut p = Parser::new(tokens, src);
-        let item = p.parse_top_level().unwrap();
-        match item {
-            crate::ast::TopLevel::ModuleMetadata(map) => {
-                assert_eq!(map.len(), 2, "expected two merged keys, got {map:?}");
-                assert!(matches!(map.get("accel"),
-                    Some(crate::ast::PropertyValue::Identifier(s)) if s == "force"),
-                    "last binding must win, got {map:?}");
                 assert!(matches!(map.get("target"),
                     Some(crate::ast::PropertyValue::Identifier(s)) if s == "spirv"));
             }
@@ -7698,10 +7698,31 @@ mod tests {
     }
 
     #[test]
+    fn test_top_level_attr_merges_last_wins() {
+        // 2026-11-08 (attr plan): consecutive top-level `attr` lines merge
+        // into one ModuleMetadata node; last binding wins per key.
+        let src = "attr target: a;\nattr target: b;\nattr flag: on;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        match item {
+            crate::ast::TopLevel::ModuleMetadata(map) => {
+                assert_eq!(map.len(), 2, "expected two merged keys, got {map:?}");
+                assert!(matches!(map.get("target"),
+                    Some(crate::ast::PropertyValue::Identifier(s)) if s == "b"),
+                    "last binding must win, got {map:?}");
+                assert!(matches!(map.get("flag"),
+                    Some(crate::ast::PropertyValue::Identifier(s)) if s == "on"));
+            }
+            other => panic!("expected ModuleMetadata, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_module_metadata_then_node_parses_both() {
-        // 2026-08-06 (accel plan): module metadata and following declarations
+        // 2026-11-08 (attr plan): module metadata and following declarations
         // parse as separate top-level items.
-        let src = "!> accel: try_all;\nnode work [true][done] { done = true; term; };";
+        let src = "attr target: spirv;\nnode work [true][done] { done = true; term; };";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
@@ -7711,10 +7732,10 @@ mod tests {
     }
 
     #[test]
-    fn test_module_metadata_value_grammar() {
-        // 2026-08-06 (accel plan): module metadata accepts the full value
-        // grammar (identifier/int/bool/string/list).
-        let src = "!> a: 7;\n!> b: true;\n!> c: \"hi\";\n!> d: [1, two];";
+    fn test_module_attr_value_grammar() {
+        // 2026-11-08 (attr plan): `attr` accepts the full value grammar
+        // (identifier/int/bool/string/list).
+        let src = "attr a: 7;\nattr b: true;\nattr c: \"hi\";\nattr d: [1, two];";
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
@@ -7727,6 +7748,58 @@ mod tests {
             }
             other => panic!("expected ModuleMetadata, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_attr_owner_forms_parse() {
+        // Owned block: attr<owner> { key: value; … }.
+        let src = "attr<llvm> { tbaa: \"Node\"; overflow: wrapping; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        match item {
+            crate::ast::TopLevel::ModuleMetadata(map) => {
+                assert_eq!(map.len(), 2, "block entries must merge: {map:?}");
+                assert!(matches!(map.get("tbaa"),
+                    Some(crate::ast::PropertyValue::String(s)) if s == "Node"));
+            }
+            other => panic!("expected ModuleMetadata, got {other:?}"),
+        }
+
+        // Owned single line.
+        let src = "attr<llvm> tbaa: \"Node\";";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let item = p.parse_top_level().unwrap();
+        assert!(matches!(item, crate::ast::TopLevel::ModuleMetadata(m) if m.contains_key("tbaa")));
+    }
+
+    #[test]
+    fn test_attr_accel_owner_is_rejected_with_flag_hint() {
+        // Offload policy is a compiler mode; attr<accel> does not exist.
+        let src = "attr<accel> target: gpu;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err().to_string();
+        assert!(err.contains("--accel"), "fix hint must name the flag: {err}");
+    }
+
+    #[test]
+    fn test_exclaim_arrow_is_rejected_with_attr_fix_hint() {
+        // Hard break (2026-11-08): `!>` names its replacements.
+        let src = "!> target: spirv;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err().to_string();
+        assert!(err.contains("attr"), "fix hint must name attr: {err}");
+        assert!(err.contains("spec"), "fix hint must name spec: {err}");
+
+        // Scoped metadata site.
+        let src = "type W: Int { !> ctd: Add; spec Bits: 8; };";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_top_level().unwrap_err().to_string();
+        assert!(err.contains("retired"), "scoped site must reject: {err}");
     }
 
     #[test]

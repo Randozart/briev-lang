@@ -11,7 +11,7 @@ and the two design decisions that shape the frontend.
    relate, pin connections are *inferred from precondition equalities*, and
    nets are their transitive closure (union-find). What triggers what comes
    from the existing reactor trigger analysis for free.
-2. **Pins are first-class, not metadata.** `!> Pins: [1, 2];` metadata was a
+2. **Pins are first-class, not metadata.** `attr Pins: [1, 2];` metadata was a
    shortcut; pins now have a keyword, mirroring `.sbv` cells' structural
    `input`/`output` ports. `pin a;` (auto-number: highest-so-far + 1) or
    `pin a = 7;` (explicit datasheet number, ≥ 1, unique per type).
@@ -34,7 +34,7 @@ and the two design decisions that shape the frontend.
   → backend: KiCad 7 schematic emission (src/backend/electronics/mod.rs)
        - consumes the netlist, never re-derives it
        - no type-name matches: geometry from pin lists, prefixes/values
-         from `!>` metadata and instance literal fields (Rule 15)
+         from `attr` metadata and instance literal fields (Rule 15)
        - refuses to emit an incomplete board (dangling → compile error)
 ```
 
@@ -193,7 +193,7 @@ Phase B of `2026-09-11-fundamentals-doctrine-and-electronics.md` landed:
   inheritance. Provenance-only: nothing executes.
 - **Clauses**: `pin` / `reference` parse via shared helpers in
   `parse_type_body`, `parse_obj_like`, and `parse_cell`. `reference` is
-  parse-mandatory when pins exist. The `!> Reference` metadata path is
+  parse-mandatory when pins exist. The `attr Reference` metadata path is
   DELETED — analysis reads `td.body.reference` and `CellDef.pins/reference`.
   (2026-09-24: the `tolerance`/`rating` clauses joined that deletion — the
   envelope is `spec Tolerance`/`spec Rating` body metadata, see the dated

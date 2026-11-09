@@ -1206,7 +1206,7 @@ impl CastingGraph {
     /// llvm_type properties.
     ///
     /// Width resolution priority (WidthParametric protocols). The canonical
-    /// declaration form is `spec Bits: N;` (§8.2); `!> bits: N;` writes the
+    /// declaration form is `spec Bits: N;` (§8.2); `attr bits: N;` writes the
     /// same metadata key and is accepted, but diagnostics recommend `spec`.
     /// 1. `bits` — exact width (hard contract)
     /// 2. `maxbits` — upper bound
@@ -1235,7 +1235,7 @@ impl CastingGraph {
                 // Check metadata from universe entry
                 let key = ty.universe_key().and_then(|k| universe.get(k));
                 let bits = key.and_then(|rt| {
-                    // Priority: !> bits → !> maxbits → !> minbits
+                    // Priority: bits → maxbits → minbits
                     rt.properties.get("bits")
                         .or_else(|| rt.properties.get("maxbits"))
                         .or_else(|| rt.properties.get("minbits"))

@@ -347,7 +347,7 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             keys.sort();
             for key in keys {
                 indent(out, level);
-                let _ = write!(out, "!> {}: {};", key, meta[key]);
+                let _ = write!(out, "attr {}: {};", key, meta[key]);
             }
         }
         TopLevel::Init(init) => {
@@ -470,7 +470,7 @@ fn format_struct_into(
 
 /// 2026-08-13 (layout-keywords plan): print a type/struct body's metadata —
 /// physical-layout keys in the declared `spec <PascalCase>` form, everything
-/// else as `!> <key>: <value>`. Deterministic: sorted keys. The internal
+/// else as `attr <key>: <value>`. Deterministic: sorted keys. The internal
 /// `atomic_fields` carrier is skipped (the `atomic` field prefix encodes it).
 fn print_metadata_clauses(out: &mut String, metadata: &std::collections::HashMap<String, crate::ast::PropertyValue>) {
     let mut meta_keys: Vec<&String> = metadata.keys().collect();
@@ -483,14 +483,14 @@ fn print_metadata_clauses(out: &mut String, metadata: &std::collections::HashMap
         if let Some(spec_name) = spec_display_key(key) {
             let _ = write!(out, "spec {}: {};", spec_name, metadata[key]);
         } else {
-            let _ = write!(out, "!> {}: {};", key, metadata[key]);
+            let _ = write!(out, "attr {}: {};", key, metadata[key]);
         }
     }
 }
 
 /// 2026-08-13 (layout-keywords plan): lowercase metadata key → PascalCase spec
 /// name (the canonical formatter's half of `spec_name_to_key` in the parser —
-/// keep in sync). Non-layout keys return None → printed as `!>`.
+/// keep in sync). Non-layout keys return None → printed as `attr`.
 fn spec_display_key(key: &str) -> Option<&'static str> {
     match key {
         "alignment" => Some("Alignment"),
@@ -848,7 +848,7 @@ fn format_typedef_into(t: &TypeDef, out: &mut String, level: usize) {
         let _ = write!(out, "{}: {};", slot.name, slot.ty);
     }
     // 2026-08-13 (layout-keywords plan): TypeDef metadata round-trips via the
-    // shared printer (spec form for physical-layout keys, `!>` otherwise).
+    // shared printer (spec form for physical-layout keys, `attr` otherwise).
     print_metadata_clauses(out, &t.body.metadata);
     let _ = write!(out, " }};");
 }
@@ -898,10 +898,10 @@ mod tests {
         "defn looped(items: List<Int>) -> Int [true][true] {\n  let acc: Int = 0;\n  foreach(item in items) {\n    acc = acc + item;\n  };\n  term acc;\n};\n",
         "defn lifetime(x: Int) -> Int [true][true] {\n  let buf: Ptr<Int> = Malloc#(4);\n  keep buf;\n  term x;\n};\n",
         "defn watchdog(a: Int) -> Int [a >= 0][a >= 0] ?[progress] within 10ms {\n  term a;\n};\n",
-        // 2026-08-06 (accel plan): module-level `!>` metadata round-trips.
-        "!> accel: try_all;\n",
-        "!> accel: force;\n!> target: spirv;\n",
-        "!> flags: [fast, contract];\n",
+        // 2026-11-08 (attr plan): module-level `attr` metadata round-trips.
+        "attr notes: \"alpha\";\n",
+        "attr a: 1;\nattr b: 2;\n",
+        "attr flags: [fast, contract];\n",
         // 2026-08-13 (layout-keywords plan): physical-layout metadata round-trips.
         "type W8: Int {\n  spec Bits: 8;\n};\n",
         "struct Flags {\n  spec Bytes: 1;\n  spec Alignment: 1;\n  a: Bool;\n};\n",
@@ -911,7 +911,7 @@ mod tests {
         "pack struct Eth {\n  spec Endian: Big;\n  dst: Bit<48>;\n  src: Bit<48>;\n  etype: Bit<16>;\n};\n",
         "seq pack struct Mix {\n  spec Alignment: 1;\n  a: Bit<12>;\n  b: Bit<4>;\n};\n",
         // 2026-08-13 (layout-keywords plan Phase 5): the `atomic` field
-        // modifier round-trips through the prefix (not `!> atomic_fields`).
+        // modifier round-trips through the prefix (not `attr atomic_fields`).
         "struct Counter {\n  atomic count: Int;\n  other: Int;\n};\n",
         // 2026-08-13 (layout-keywords plan Phase 6): `union` round-trips.
         "union Word {\n  i: Int;\n  f: Float;\n};\n",
@@ -936,16 +936,16 @@ mod tests {
         );
     }
 
-    /// 2026-08-13 (layout-keywords plan): a type body containing mixed `spec`
-    /// and `!>` metadata prints both forms and round-trips.
+    /// 2026-11-08 (attr plan): a type body containing mixed `spec` and `attr`
+    /// metadata prints both forms and round-trips.
     #[test]
-    fn formatter_preserves_spec_and_exclaim_metadata() {
-        let src = "type W: Int {\n  !> ctd: Add;\n  spec Bits: 8;\n  spec Endian: Little;\n};\n";
+    fn formatter_preserves_spec_and_attr_metadata() {
+        let src = "type W: Int {\n  attr ctd: Add;\n  spec Bits: 8;\n  spec Endian: Little;\n};\n";
         let items = parse(src).expect("parse");
         let out = format_program(&items);
         assert!(out.contains("spec Bits: 8;"), "output: {out}");
         assert!(out.contains("spec Endian: Little;"), "output: {out}");
-        assert!(out.contains("!> ctd: Add;"), "output: {out}");
+        assert!(out.contains("attr ctd: Add;"), "output: {out}");
         assert_idempotent(src);
     }
 }

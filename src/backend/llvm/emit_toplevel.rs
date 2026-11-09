@@ -4759,7 +4759,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                 }
             }
         };
-        // 2026-07-28: Phase H.0 — Emit function-level attributes from !> metadata.
+        // 2026-07-28: Phase H.0 — Emit function-level attributes from attr metadata.
         // Iterates over txn.metadata (sorted for deterministic IR), converts each
         // PropertyValue to a string, and looks up the LLVM IR attribute via the
         // MetadataRegistry. The registry's wildcard pattern "*" matches any value.
@@ -4789,7 +4789,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
             // `associative`/`fp_math` mappings are INSTRUCTION fast-math
             // flags (`reassoc`/`fast`), and emitting them here as bare
             // function attributes produces invalid IR (verified: clang
-            // rejects `define ... #0 reassoc fast`). The `!>` metadata path
+            // rejects `define ... #0 reassoc fast`). The `attr` metadata path
             // above has the same latent flaw when those keys are used —
             // BUGS.md 2026-11-08.
             attrs

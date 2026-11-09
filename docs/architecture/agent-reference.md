@@ -29,8 +29,8 @@ at any declared width (`Bit` bare = flexible); `Blob` is the `[len][bytes]`
 byte buffer. See `docs/plans/2026-08-15-fundamentals-as-types.md`.
 
 **Width resolution** (for `WidthParametric` fundamentals `Int`, `UInt`,
-`Bit<N>`): `!> bits: N` (exact) → `!> maxbits: N` (upper bound) →
-`!> minbits: N` (lower bound) → `int_bits` (target default). `!> bits: 32`
+`Bit<N>`): `spec Bits: N` (exact) → `spec MaxBits: N` (upper bound) →
+internal `minbits` (lower bound) → `int_bits` (target default). `spec Bits: 32`
 asserts the type is exactly 32 bits on every target — a hard contract, not
 a hint.
 
@@ -162,7 +162,7 @@ frgn XXH64(data_ptr: Int, len: Int, seed: Int) -> Int as frgn__xxh64 from "link/
 
 - `Int` narrowing is fundamental-based (`Int`/`UInt` membership via the
   parent chain, never type names). Fixed-width types (`Int8`…`Int64`) cap
-  the floor via `!> bits: N`.
+  the floor via `spec Bits: N`.
 
 ### 1.7 Types
 
@@ -202,8 +202,9 @@ frgn XXH64(data_ptr: Int, len: Int, seed: Int) -> Int as frgn__xxh64 from "link/
   `#` is part of the identifier lexically. No `_` prefix convention.
 - No `inop` keyword — all compiler-known ops are `#` intrinsics with entries in
   `get_intrinsic_signature()` and `execute_intrinsic()`.
-- Side-effecting intrinsics MUST declare `!> observable: true` (`Print#`,
-  `Malloc#`, `Memcpy#`, …) so DCE cannot eliminate the call.
+- Side-effecting intrinsics are kept live by FFI consumption; declarations
+  with external effects carry the `out` modifier. `observable` is not a
+  metadata key (SPEC §8.9).
 
 ### The `Print#` convenience intrinsic and the `println!` macro (2026-08-01)
 
@@ -286,8 +287,8 @@ the register boxes in `backend-strategy.md` are coincidental.
 Physical layout is DECLARED, never assumed: a type carries protocol + metadata
 only, and the backend derives the representation at materialization time.
 `spec <PascalCase>` is the canonical spelling for the five physical keys
-(`spec Bits/MaxBits/Bytes/Alignment/Endian`); the legacy `!> bits:`/`!> maxbits:`
-etc. write the same lowercase keys and stay readable. Three layout modifiers on
+(`spec Bits/MaxBits/Bytes/Alignment/Endian`); the retired `!>` spelling no
+longer parses (2026-11-08) — consumer metadata is `attr`. Three layout modifiers on
 struct declarations:
 
 - `pack struct` — bit-contiguous, zero padding; sub-byte `Bit<N>` fields slice

@@ -1,6 +1,7 @@
 // ── Metadata Parser ────────────────────────────────────────────────────
-// 2026-07-12: Phase 1.5 — Parse `<~ expr;` metadata declarations.
-// Flat code: each function is max 2 levels of nesting.
+// 2026-11-08 (attr plan): `attr [<owner>] key: value;` / `attr<owner> { … }`
+// is the non-physical consumer metadata surface; `spec` owns physical layout.
+// `!>` is retired (one diagnostic, `retired_exclaim_arrow`).
 
 use super::helpers::Parser;
 use crate::ast::PropertyValue;
@@ -14,26 +15,84 @@ impl<'a> Parser<'a> {
     /// Stops when it encounters a non-metadata token.
     pub fn parse_body_metadata(&mut self) -> Result<HashMap<String, PropertyValue>, SyntaxError> {
         let mut metadata = HashMap::new();
-        while self.check(&Token::ExclaimArrow) || self.check_identifier_prefix("#") {
-            let key = if self.eat(&Token::ExclaimArrow) {
-                // !> key: value; — inline metadata
-                let key = self.parse_metadata_key()?;
-                self.expect(Token::Colon)?;
-                self.parse_metadata_value().map(|val| (key, val))?
-            } else {
-                // #key value; or #key(value) — annotation syntax
-                let key = self.expect_identifier()?; // e.g. "#inline"
-                let val = PropertyValue::Bool(true);
-                (key, val)
-            };
+        while self.check(&Token::Attr) || self.check(&Token::ExclaimArrow)
+            || self.check_identifier_prefix("#")
+        {
+            if self.check(&Token::ExclaimArrow) {
+                return Err(self.retired_exclaim_arrow());
+            }
+            if self.eat(&Token::Attr) {
+                let _owner = self.parse_attr_owner()?;
+                let entries = self.parse_attr_entries()?;
+                metadata.extend(entries);
+                continue;
+            }
+            // #key value; or #key(value) — annotation syntax
+            let key = self.expect_identifier()?; // e.g. "#inline"
             self.expect(Token::Semicolon)?;
-            metadata.insert(key.0, key.1);
+            metadata.insert(key, PropertyValue::Bool(true));
         }
         Ok(metadata)
     }
 
+    /// `!>` is retired (2026-11-08, attr plan). Kept as the one diagnostic so
+    /// every former site names the replacement construct.
+    pub(crate) fn retired_exclaim_arrow(&self) -> SyntaxError {
+        self.error_at_current::<()>(
+            "the `!>` metadata operator is retired. why: one operator mixed physical layout, consumer metadata, and policy, hiding which consumer owns a key. fix: write `attr key: value;` for consumer metadata, `attr<owner> { key: value; … }` for an owner schema, or `spec Name: value;` for physical layout."
+        )
+        .unwrap_err()
+    }
+
+    /// Optional `<owner>` after `attr`. The owner names the schema that claims
+    /// the keys; it is a validation hint, not stored (keys are globally
+    /// unique). Unknown owners are accepted (plugin domains).
+    pub(crate) fn parse_attr_owner(&mut self) -> Result<Option<String>, SyntaxError> {
+        if !self.eat(&Token::Lt) {
+            return Ok(None);
+        }
+        // Owners may collide with keyword tokens (`accel`); read the
+        // spelling like a metadata key so the diagnostic below is reachable.
+        let owner = self.parse_metadata_key()?;
+        self.expect(Token::Gt)?;
+        if matches!(owner.as_str(), "accel" | "accel_report") {
+            return Err(self
+                .error_at_current::<()>(
+                    "offload policy is a compiler mode, not an attr. fix: use `--accel=<keyword-only|try-all|force|try-all-force>` (verbose diagnostics replace the report key); `attr<accel>` does not exist.",
+                )
+                .unwrap_err());
+        }
+        Ok(Some(owner))
+    }
+
+    /// One `attr` declaration: either `key: value;` or `{ key: value; … }`.
+    pub(crate) fn parse_attr_entries(&mut self) -> Result<HashMap<String, PropertyValue>, SyntaxError> {
+        let mut entries = HashMap::new();
+        if self.eat(&Token::LBrace) {
+            while !self.check(&Token::RBrace) && !self.is_at_end() {
+                let (key, val) = self.parse_attr_binding()?;
+                entries.insert(key, val);
+            }
+            self.expect(Token::RBrace)?;
+            self.eat(&Token::Semicolon);
+            return Ok(entries);
+        }
+        let (key, val) = self.parse_attr_binding()?;
+        entries.insert(key, val);
+        Ok(entries)
+    }
+
+    /// `key: value;` — one attr binding.
+    pub(crate) fn parse_attr_binding(&mut self) -> Result<(String, PropertyValue), SyntaxError> {
+        let key = self.parse_metadata_key()?;
+        self.expect(Token::Colon)?;
+        let val = self.parse_metadata_value()?;
+        self.expect(Token::Semicolon)?;
+        Ok((key, val))
+    }
+
     /// Parse a metadata key. Accepts plain identifiers and keyword tokens
-    /// (e.g. `!> tbaa: "node";` — `tbaa` requires backticks/string form). The keyword's
+    /// (e.g. `attr tbaa: "node";`). The keyword's
     /// spelling comes from `Token::Display`, so the emitted key matches the
     /// source spelling.
     pub(crate) fn parse_metadata_key(&mut self) -> Result<String, SyntaxError> {

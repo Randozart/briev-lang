@@ -51,6 +51,7 @@ keywords "the lexer recognizes" — no such tokens exist. Passes only because
 | duration aliases `seconds/minute/cycles` | `definitions.rs:1585-1641` | only `cyc/ns/ms/s/min` accepted |
 | **`foreach (item in list)` paren form** | `statements.rs:286-290` | **(b) STILL PARSED** — deprecated, see MASTER §13 |
 | **`sync { }` block** | `lexer.rs:190`; `statements.rs:88,336-343` | **(b) STILL PARSED** — deprecated → `mutex { }`; LLVM emission FIXED 2026-09-08 (was silent-drop) |
+| **`!>` metadata operator** | `metadata.rs:retired_exclaim_arrow` | **REMOVED 2026-11-08** — error → `attr key: value;` or `spec <PascalCase>: value;` |
 
 ---
 
@@ -157,9 +158,9 @@ Not part of the current compile pipeline; active shipped surface in `lib/`.
 | Category | Count | Notable |
 |---|---|---|
 | (a) lexed removed tokens | 3 | `meld`, `pvt`, `sed` |
-| (b) deprecated-but-works | 7 | `foreach (x in list)`, `sync { }`, `!>`, single-value `print!`, `Get#`/`Insert#`, `ToInt#`/`ToFloat#`/`ToString#`, `maxbits <~ N;` — see MASTER §13 |
+| (b) deprecated-but-works | 6 | `foreach (x in list)`, `sync { }`, single-value `print!`, `Get#`/`Insert#`, `ToInt#`/`ToFloat#`/`ToString#`, `maxbits <~ N;` — see MASTER §13 |
 | (b2) tolerated legacy parse | 1 | `foreach (x in list)` paren form; `node name()` empty parens (tolerated, not deprecated) |
-| (c) rejected-with-error | 15+ | §2 |
+| (c) rejected-with-error | 16+ | §2 (incl. removed `!>` metadata operator) |
 | (d) dead codegen/analysis | ~26 | 5 LLVM arms, 1 dup, ~12 AST variants, 3 dead fields, 1 dead diagnostic, 2 dead whitelist items |
 | (e) documented-only | ~15 | 12 stale feature docs, `#!exit`/`#on_exit`, stale lexer test, `lib/compiler/*.bv` |
 

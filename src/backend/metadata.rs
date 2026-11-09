@@ -192,7 +192,7 @@ fn value_as_string(df: &DataField) -> Option<String> {
     }
 }
 
-/// Apply LLVM function-level attributes from !> metadata.
+/// Apply LLVM function-level attributes from attr metadata.
 pub fn apply_llvm_function_metadata(
     fn_attrs: &mut Vec<String>,
     metadata: &[(&str, &str)],
@@ -223,7 +223,7 @@ pub fn emit_fast_math_flags(
     flags
 }
 
-/// Apply Webstack options from !> metadata.
+/// Apply Webstack options from attr metadata.
 pub fn apply_webstack_metadata<'a>(
     metadata: &[(&str, &str)],
     registry: &'a MetadataRegistry,
@@ -237,7 +237,7 @@ pub fn apply_webstack_metadata<'a>(
     opts
 }
 
-/// Apply CIRCT options from !> metadata.
+/// Apply CIRCT options from attr metadata.
 pub fn apply_circt_metadata<'a>(
     metadata: &[(&str, &str)],
     registry: &'a MetadataRegistry,

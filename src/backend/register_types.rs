@@ -160,7 +160,7 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         let floor = iv("minbits");
         // 2026-08-13 (layout-keywords plan): `spec Bytes: N` is the AUTHORITATIVE
         // storage size (§2.1 precedence: Bytes > Bits > slot-sum > primordial).
-        // All bits metadata here are BIT counts (spec Bits/!> bits); the byte
+        // All bits metadata here are BIT counts (spec Bits / internal bits key); the byte
         // conversion rounds UP via div_ceil so sub-byte widths keep a byte.
         let bytes_override = iv("bytes");
         // 2026-07-31: Phase 3 (§8.6) — clone the primordial so the warning
@@ -180,7 +180,7 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
         // `width_known` conjunct.
         //
         // The message names `spec Bits: N` — the canonical PHYSICAL metadata
-        // form (§8.2). `!>` is the semantic-metadata form (`!> ctd: Add;`) and
+        // form (§8.2). `attr` is the consumer-metadata form (`attr ctd: Add;`) and
         // is not a width declaration to recommend.
         let width_known = exact_bits.is_some()
             || ceiling.is_some()
@@ -267,7 +267,7 @@ pub fn register_typedefs(items: &[TopLevel], universe: &mut TypeUniverse, int_bi
             }));
         let mut properties: std::collections::HashMap<String, PropertyValue> = td.body.metadata.clone();
         // 2026-08-13 (layout-keywords plan): `spec` keys — including
-        // `endian` (Big/Little/Target) — share the metadata map with `!>`,
+        // `endian` (Big/Little/Target) — share the metadata map with `attr`,
         // so they surface on `ResolvedType.properties` verbatim and are
         // queryable from Briev via reflection (`.^^`). Phase 2 pack emission
         // reads `endian` here (absent ⇒ Target/native).
@@ -363,7 +363,7 @@ pub fn record_structural_layout(
     if !universe.warnings.iter().any(|w| w.contains(&marker)) {
         universe.warnings.push(format!(
             "warning: {marker} — slot-sum bytes ({bytes}), alignment 8. \
-             Declare !> bytes/alignment on '{name}' to pin its representation."
+             Declare spec Bytes/Alignment on '{name}' to pin its representation."
         ));
     }
     ResolvedType {
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn test_register_typedefs_byte_aligned_bits_unchanged() {
-        // `spec Bits: 64` → 8 bytes, identical to the `!> bits: 64` behavior.
+        // `spec Bits: 64` → 8 bytes, identical to the legacy internal `bits: 64` behavior.
         let mut u = TypeUniverse::new();
         let items = vec![make_type_def_meta("Wordish", vec![("bits", 64)])];
         register_typedefs(&items, &mut u, 64).unwrap();
@@ -618,8 +618,8 @@ mod tests {
     fn test_slotless_type_without_width_metadata_still_warns_spec_bits() {
         // The Phase 3 §8.6 "fallback is never silent" contract survives for a
         // type whose width is GENUINELY unknown, and the message teaches the
-        // canonical §8.2 form (`spec Bits: N;`) — never the `!>` spelling,
-        // which is semantic metadata (`!> ctd: Add;`), not a width.
+        // canonical §8.2 form (`spec Bits: N;`) — never the legacy annotation spelling,
+        // which is consumer metadata (`attr ctd: Add;`), not a width.
         let mut u = TypeUniverse::new();
         let items = vec![make_type_def_meta("Mystery", vec![])];
         register_typedefs(&items, &mut u, 64).unwrap();
@@ -638,7 +638,7 @@ mod tests {
         );
         assert!(
             !width.contains("!>"),
-            "stale `!>` width syntax in: {width}"
+            "stale annotation width syntax in: {width}"
         );
         assert_eq!(u.get("Mystery").expect("registered").max_bits, 64);
     }

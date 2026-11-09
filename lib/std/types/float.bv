@@ -17,14 +17,14 @@
 type Float16 : Float {
     spec MaxBits: 16;
     spec Alignment: 2;
-    !> tbaa: "FloatNode";
+    attr<llvm> tbaa: "FloatNode";
 };
 
 // 4-lane SIMD float vector
 type Float4 : Bits {
     spec MaxBits: 128;
     spec Alignment: 16;
-    !> tbaa: "FloatNode";
+    attr<llvm> tbaa: "FloatNode";
 
     op Add: FAddV4F32(#Lh, #Rh);
     op Sub: FSubV4F32(#Lh, #Rh);

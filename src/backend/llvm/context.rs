@@ -557,7 +557,7 @@ pub atomic_fields: std::collections::HashMap<String, String>,
     /// @__web_flush_buf declaration. 0 before generate() runs.
     pub web_max_entries: u32,
 
-    // 2026-07-28: Phase H.0 — !> metadata registry for optimization hints.
+    // 2026-07-28: Phase H.0 — consumer-metadata (`attr`) registry for hints.
     // Maps (key, value) metadata pairs to backend-specific LLVM IR attributes.
     // Loaded once from config/meta-vocab.dbv at CompilerContext construction.
     // Each backend has its own registry instance (Webstack/CIRCT load separately).
@@ -783,7 +783,7 @@ impl CompilerContext {
                 is_trg: HashSet::new(),
                 all_vars: HashSet::new(),
             },
-            // 2026-07-28: Phase H.0 — !> metadata registry for optimization hints.
+            // 2026-07-28: Phase H.0 — consumer-metadata (`attr`) registry for hints.
             // Each backend loads its own MetadataRegistry instance from the embedded
             // config/meta-vocab.dbv file. The registry maps (key, value) metadata pairs
             // to backend-specific IR attributes (e.g., ("readonly", "*") → "readonly").

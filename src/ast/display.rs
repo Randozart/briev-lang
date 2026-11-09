@@ -174,9 +174,9 @@ impl fmt::Display for Expr {
     }
 }
 
-/// Round-trippable rendering of `!>` metadata values (inverse of
+/// Round-trippable rendering of `attr` metadata values (inverse of
 /// `Parser::parse_metadata_value`): identifiers are bare, strings quoted,
-/// lists bracketed. Used by the canonical formatter for module-level `!>` and
+/// lists bracketed. Used by the canonical formatter for module-level `attr` and
 /// by statement metadata display.
 impl fmt::Display for MatchArm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -188,9 +188,9 @@ impl fmt::Display for MatchArm {
     }
 }
 
-/// Round-trippable rendering of `!>` metadata values (inverse of
+/// Round-trippable rendering of `attr` metadata values (inverse of
 /// `Parser::parse_metadata_value`): identifiers are bare, strings quoted,
-/// lists bracketed. Used by the canonical formatter for module-level `!>` and
+/// lists bracketed. Used by the canonical formatter for module-level `attr` and
 /// by statement metadata display.
 impl fmt::Display for PropertyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -483,7 +483,7 @@ impl fmt::Display for Statement {
             // 2026-09-22 (D16 p3b): author-expressed disconnection.
             Statement::Open(lhs, rhs) => write!(f, "open {}, {};", lhs, rhs),
             Statement::MetadataAssignment(key, val) => {
-                write!(f, "!> {}: {};", key, val)
+                write!(f, "attr {}: {};", key, val)
             }
             Statement::Rollback(val) => {
                 if let Some(val) = val {

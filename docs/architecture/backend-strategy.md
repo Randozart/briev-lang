@@ -72,7 +72,7 @@ table above matches it. Two older claims in this file were wrong and are
 corrected here:
 - `.abv` does NOT route through the LLVM accel path. Standalone SPIR-V
   emission is its own backend (`BackendKind::Spirv`).
-- GPU OFFLOAD is a different mechanism entirely: module-level `!> accel:`
+- GPU OFFLOAD is a different mechanism entirely: the `--accel` compiler mode
   metadata drives `BackendKind::Gpu` (LLVM emitter reuse, plan
   `2026-08-06-accel-gpu-offload.md`). It is selected by metadata, not by
   file extension.
@@ -228,7 +228,7 @@ Kernels from the frontend accel analysis (eligible AccelEntries;
 body = proven statements); work-item emission (`index_var` binds
 GetGlobalId(0), no loop — one invocation IS one work item); one
 StorageBuffer binding (Block-decorated struct, sorted member order,
-explicit offsets). Standalone `.abv` only — GPU OFFLOAD is `!> accel`
+explicit offsets). Standalone `.abv` only — GPU OFFLOAD is the `--accel` mode
 metadata through BackendKind::Gpu (LLVM).
 
 ### v2 kernel surface (2026-08-26, plan §2.1–2.6)

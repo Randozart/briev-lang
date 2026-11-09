@@ -92,7 +92,7 @@ pub struct AnalysisResults {
     // strips the per-push grow guard (dead once cap == peak). Per coll NAME
     // (not base): two local `Q`s in one txn must not share a strip.
     pub coll_pregrow: std::collections::HashMap<(String, String), i64>,
-    // 2026-08-06 (accel plan): module-level `!>` metadata (SPEC §8.9) merged
+    // 2026-08-06 (accel plan): module-level `attr` metadata (SPEC §8.9) merged
     // from TopLevel::ModuleMetadata nodes, last binding wins per key. Any
     // backend or plugin may consume it; the `accel` key gates the GPU
     // offload analysis (src/analysis/accel.rs).
@@ -613,7 +613,7 @@ fn build_hir(items: &[TopLevel]) -> crate::hir::HirProgram {
 
 /// 2026-08-06 (accel plan): merge `TopLevel::ModuleMetadata` nodes into one
 /// module map (SPEC §8.9). Last binding wins per key, matching the parser's
-/// merge semantics across consecutive top-level `!>` lines.
+/// merge semantics across consecutive top-level `attr` lines.
 fn collect_module_metadata(
     items: &[TopLevel],
 ) -> HashMap<String, crate::ast::PropertyValue> {
@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn test_collect_module_metadata_merges_nodes() {
         // 2026-08-06 (accel plan): analyze_program surfaces module-level
-        // `!>` metadata; multiple ModuleMetadata nodes merge, last wins.
+        // `attr` metadata; multiple ModuleMetadata nodes merge, last wins.
         use crate::ast::PropertyValue;
         let mut m1 = std::collections::HashMap::new();
         m1.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));

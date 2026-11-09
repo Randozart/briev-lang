@@ -11,7 +11,7 @@ removed `#gpu` pragma family.
 
 GPU offloading is requested with the **`accel` keyword** on a `node`/`txn`
 (`accel node name [i < N][i == N] { ... }`) or the module shortcut
-`!> accel: try_all;`. The work-item counter `i` is a REAL state field
+built with `--accel=try-all`. The work-item counter `i` is a REAL state field
 (`let i: Int = 0;` + `i = i + 1`); `accel` marks the native counted loop as a
 parallel map over work-items. The compiler PROVES the map (disjoint affine
 per-`i` writes, counter advance, flat types) and then either coalesces the
@@ -69,7 +69,7 @@ accel node force [i < nb][i == nb] {
 - **Dispatch**: the GPU path launches N work-items once and fast-forwards the
   counter to N (the loop exits after one firing); the CPU path runs the
   counted loop natively.
-- Module shortcut: `!> accel: try_all;` / `force;` / `try_all_force;` — see
+- Policy mode: `--accel=try-all` / `force` / `try-all-force` — see
   SPEC §9.7.
 
 ---

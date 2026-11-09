@@ -86,7 +86,7 @@ Stochastic search over the expression space using Metropolis-Hastings.
 Improves on the enumerative/SMT result by finding lower-cost equivalents.
 
 ### Phase G: Metadata Vocabulary
-`!>` metadata annotations on functions and loops map to backend-specific
+`attr` metadata annotations on functions and loops map to backend-specific
 attributes through the `MetadataRegistry` (config/meta-vocab.dbv).
 
 ### Verification Loop (CEGIS)
