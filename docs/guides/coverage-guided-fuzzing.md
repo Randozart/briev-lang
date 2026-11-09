@@ -41,6 +41,17 @@ The fuzz crate pins `libfuzzer-sys = "=0.4.13"`. Use the nightly pinned in
 `rust-toolchain.toml`-style discipline for reproducible replay; a different
 nightly can change codegen and coverage.
 
+**Always pass `--target` explicitly in automation.** `cargo-fuzz`'s default
+target is baked into the binary at build time (`current_platform`). A prebuilt
+cargo-fuzz (e.g. via `taiki-e/install-action`) can default to `*-musl`, where
+ASan fails with *"sanitizer is incompatible with statically linked libc"*.
+Derive the host triple instead:
+
+```bash
+HOST=$(rustc -vV | sed -n 's/^host: //p')
+cargo +nightly fuzz run --target "$HOST" arithmetic fuzz/corpus/arithmetic -- -max_total_time=120
+```
+
 ## Run
 
 ```bash

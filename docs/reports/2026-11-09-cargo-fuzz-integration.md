@@ -74,6 +74,37 @@ One-time nightly + `cargo-fuzz` install; ~42 s to build; the blocking PR lane
 is bounded to 30 s + 60 s. The nightly lane uses `-fork=$(nproc)` over a
 matrix of targets and uploads findings. Corpus growth is cached between runs.
 
+## CI failure and fix (PR #80)
+
+The first CI run failed the **Fuzz smoke** job in 22 s:
+
+```
+error: sanitizer is incompatible with statically linked libc, disable it using `-C target-feature=-crt-static`
+error[E0463]: can't find crate for `core`  (the `x86_64-unknown-linux-musl` target may not be installed)
+```
+
+`install-action` installs cargo-fuzz via `cargo-binstall`, and the prebuilt
+binary's default target is baked in at *its* build time
+(`current_platform::CURRENT_PLATFORM`) — it resolved to `*-musl`, where ASan
+cannot run. Locally the source-built cargo-fuzz defaulted to gnu, which is why
+the failure only appeared in CI.
+
+Fix (`fuzz.yml`): pin `tool: cargo-fuzz@0.13.2` and pass the runtime host triple
+explicitly to every invocation:
+
+```yaml
+- run: |
+    echo "FUZZ_TARGET=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_ENV"
+...
+- run: cargo fuzz build --target "$FUZZ_TARGET"
+- run: cargo fuzz run --target "$FUZZ_TARGET" frontend fuzz/corpus/frontend -- -max_total_time=30 -print_final_stats=1
+```
+
+Two YAML hazards caught while fixing: `run: echo "...: ..."` is an *invalid
+plain scalar* because of the colon–space inside the sed pattern — the resolve
+step uses a block scalar (`run: |`). The guide now documents the `--target`
+requirement so local and CI runs agree.
+
 ## Follow-ups (not in this PR)
 
 1. A valid, contract-bearing program generator to fuzz the typechecker/proof

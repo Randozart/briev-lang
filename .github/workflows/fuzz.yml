@@ -33,14 +33,23 @@ jobs:
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.2
+
+      # 2026-11-09: cargo-fuzz's default --target is baked in at build time
+      # (current_platform::CURRENT_PLATFORM). A prebuilt cargo-fuzz fetched by
+      # install-action can default to *-musl, where ASan fails with "sanitizer
+      # is incompatible with statically linked libc". Always pass the runtime
+      # host triple explicitly so CI links the glibc ASan supports.
+      - name: Resolve host target triple
+        run: |
+          echo "FUZZ_TARGET=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
 
       - name: Build fuzz targets
-        run: cargo fuzz build
+        run: cargo fuzz build --target "$FUZZ_TARGET"
 
       - name: Seed corpora
         run: |
@@ -49,10 +58,10 @@ jobs:
           cp -n fuzz/seeds/arithmetic/* fuzz/corpus/arithmetic/ || true
 
       - name: Fuzz frontend (30s)
-        run: cargo fuzz run frontend fuzz/corpus/frontend -- -max_total_time=30 -print_final_stats=1
+        run: cargo fuzz run --target "$FUZZ_TARGET" frontend fuzz/corpus/frontend -- -max_total_time=30 -print_final_stats=1
 
       - name: Fuzz arithmetic oracle (60s)
-        run: cargo fuzz run arithmetic fuzz/corpus/arithmetic -- -max_total_time=60 -print_final_stats=1
+        run: cargo fuzz run --target "$FUZZ_TARGET" arithmetic fuzz/corpus/arithmetic -- -max_total_time=60 -print_final_stats=1
 
       - name: Upload smoke findings
         if: always()
@@ -79,7 +88,13 @@ jobs:
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-fuzz
+          tool: cargo-fuzz@0.13.2
+
+      # See the smoke job: pass the runtime host triple so ASan links glibc,
+      # not a prebuilt cargo-fuzz's baked-in default.
+      - name: Resolve host target triple
+        run: |
+          echo "FUZZ_TARGET=$(rustc -vV | sed -n 's/^host: //p')" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -87,7 +102,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build fuzz target
-        run: cargo fuzz build ${{ matrix.target }}
+        run: cargo fuzz build --target "$FUZZ_TARGET" ${{ matrix.target }}
 
       - name: Restore corpus
         uses: actions/cache/restore@v4
@@ -106,7 +121,7 @@ jobs:
         id: run
         continue-on-error: true
         run: |
-          cargo fuzz run ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- \
+          cargo fuzz run --target "$FUZZ_TARGET" ${{ matrix.target }} fuzz/corpus/${{ matrix.target }} -- \
             -max_total_time=${{ github.event.inputs.seconds || 300 }} \
             -fork=$(nproc) -print_final_stats=1
 
