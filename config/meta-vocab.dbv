@@ -32,8 +32,6 @@ as MetaField {
     cost_model: String; "MCMC cost function: latency | throughput | size";
     tolerance: Float; "FP equivalence tolerance for MCMC";
     allowed_mutations: Vec[String]; "Restrict MCMC to named mutations only";
-    accel: String; "GPU deferral policy (SPEC 9.7): try_all | force | try_all_force. Lowercase; absent = keyword-marked bodies, try mode. Module-level shortcut for the accel keyword.";
-    accel_report: String; "Accel observability (SPEC 9.7): verbose emits a remark for every analyzed body. Composes with the accel policy.";
 };
 
 as BackendMapping {

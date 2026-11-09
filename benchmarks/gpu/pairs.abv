@@ -1,4 +1,3 @@
-!> accel: try_all;
 let i: Int = 0;
 let px: Float[64];
 let fx: Float[4096];

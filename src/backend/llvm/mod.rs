@@ -2811,6 +2811,9 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
                 // flat-type proof in src/analysis/accel.rs (rule 18 — never name
                 // matching). Built by the normalizer before the backend runs.
                 self.ctx.type_universe.as_ref(),
+                // 2026-11-08 (attr plan): no CLI context on the fallback path
+                // → the conservative default policy.
+                None,
             ),
         };
         self.generate_with_analysis(items, exit_condition, analysis, entry_warnings)

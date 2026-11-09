@@ -187,46 +187,13 @@ fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Resu
     Ok(())
 }
 
-/// (`.abv`) assumes GPU by default — the extension IS the accel intent, so
-/// the module accel policy defaults to `try_all` with no `!> accel:`
-/// metadata and no per-node `accel` keyword required. An explicit
-/// `!> accel:` binding always wins (the default is only injected when no
-/// module sets the key). Eligibility proofs still gate: a non-kernel-shaped
-/// body is skipped with reasons, and a file with no eligible kernel errors
-/// helpfully in the SPIR-V backend. Non-`.abv` sources are untouched.
-/// To undo: delete this fn and its call site in compile_source.
-fn apply_abv_accel_default(items: &mut Vec<briev_compiler::ast::TopLevel>, file_path: &str) {
-    if get_extension(file_path) != ".abv"
-        || items.iter().any(
-            |i| matches!(i, briev_compiler::ast::TopLevel::ModuleMetadata(m) if m.contains_key("accel")),
-        )
-    {
-        return;
-    }
-    // Insert into the LAST metadata node (merge semantics: last binding
-    // wins), or append a new one when the module declares no metadata.
-    let injection = || {
-        let mut meta = std::collections::HashMap::new();
-        meta.insert(
-            "accel".into(),
-            briev_compiler::ast::PropertyValue::Identifier("try_all".into()),
-        );
-        briev_compiler::ast::TopLevel::ModuleMetadata(meta)
-    };
-    match items
-        .iter()
-        .rposition(|i| matches!(i, briev_compiler::ast::TopLevel::ModuleMetadata(_)))
-    {
-        Some(idx) => {
-            if let briev_compiler::ast::TopLevel::ModuleMetadata(m) = &mut items[idx] {
-                m.insert(
-                    "accel".into(),
-                    briev_compiler::ast::PropertyValue::Identifier("try_all".into()),
-                );
-            }
-        }
-        None => items.push(injection()),
-    }
+/// `.abv` assumes GPU (2026-08-31, plan abv-gpu-by-default B3): the
+/// extension IS the accel intent. 2026-11-08 (attr plan): expressed as the
+/// compiler mode (`--accel`), never as injected source metadata; an explicit
+/// flag always wins at the call site.
+fn abv_accel_default(file_path: &str) -> Option<briev_compiler::analysis::accel::AccelMode> {
+    (get_extension(file_path) == ".abv")
+        .then_some(briev_compiler::analysis::accel::AccelMode::TryAll)
 }
 
 /// 2026-10-07 (host-boundary decision record, D7): read the web host
@@ -323,8 +290,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     enforce_module_config(&mut items)?;
 
     // ── .abv assumes GPU (2026-08-31, plan abv-gpu-by-default B3) ────
-    // The extension IS the accel intent; see apply_abv_accel_default.
-    apply_abv_accel_default(&mut items, file_path);
+    // 2026-11-08 (attr plan): the extension IS the accel intent, expressed
+    // as the compiler mode (the old metadata injection is retired).
 
     // Extract inline $(Stage) blocks from the AST — they are plugins,
     // not runtime code.
@@ -1830,11 +1797,16 @@ fn codegen(
     // mechanism-less `node @ vector` declarations).
     let effective_isr_mechanism = opts.isr_mechanism.clone()
         .or_else(|| briev_compiler::config_tuning::target_settings_for(&tuning_triple).isr_mechanism);
+    // 2026-11-08 (attr plan): the accel policy is a compiler mode. `.abv`
+    // files default to try-all (the extension IS the GPU intent); an explicit
+    // `--accel` always wins.
+    let effective_accel_mode = opts.accel_mode.or_else(|| abv_accel_default(&opts.file_path));
     let mut analysis = briev_compiler::backend::analyze_program(
         items,
         false,
         briev_compiler::config_tuning::target_settings_for(&tuning_triple).vector_min_width,
         Some(&*universe),
+        effective_accel_mode,
     );
 
     // ── Capability validation (Plan 0.2, 2026-08-23) ───────────────────
@@ -3288,54 +3260,18 @@ mod tests {
     use super::*;
     use briev_compiler::pipeline::PreprocessedSource;
 
-    /// 2026-08-31 (plan abv-gpu-by-default B3): `.abv` assumes GPU — the
-    /// module accel policy defaults to try_all with no annotations; an
-    /// explicit `!> accel:` wins; non-.abv sources are untouched.
+    /// 2026-08-31 (plan abv-gpu-by-default B3): `.abv` assumes GPU. The
+    /// extension selects the try-all compiler mode without annotations; an
+    /// explicit `--accel` wins; non-.abv sources keep the default.
     #[test]
-    fn abv_default_injects_try_all_only_when_accel_absent() {
-        use briev_compiler::ast::{PropertyValue, TopLevel};
-        let accel_of = |items: &[TopLevel]| {
-            items
-                .iter()
-                .find_map(|i| match i {
-                    TopLevel::ModuleMetadata(m) => m.get("accel").cloned(),
-                    _ => None,
-                })
-        };
-
-        // No metadata at all → appended node with accel = try_all.
-        let mut items: Vec<TopLevel> = vec![];
-        apply_abv_accel_default(&mut items, "k.abv");
-        assert!(matches!(
-            accel_of(&items),
-            Some(PropertyValue::Identifier(v)) if v == "try_all"
-        ));
-
-        // Metadata without an accel key → default lands in it.
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("other".into(), PropertyValue::Identifier("x".into()));
-        let mut items = vec![TopLevel::ModuleMetadata(meta)];
-        apply_abv_accel_default(&mut items, "k.abv");
-        assert!(matches!(
-            accel_of(&items),
-            Some(PropertyValue::Identifier(v)) if v == "try_all"
-        ));
-
-        // Explicit policy wins — no injection.
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".into(), PropertyValue::Identifier("force".into()));
-        let mut items = vec![TopLevel::ModuleMetadata(meta)];
-        apply_abv_accel_default(&mut items, "k.abv");
-        assert!(matches!(
-            accel_of(&items),
-            Some(PropertyValue::Identifier(v)) if v == "force"
-        ));
-
-        // Non-.abv sources are untouched (no metadata added).
-        let mut items: Vec<TopLevel> = vec![];
-        apply_abv_accel_default(&mut items, "k.bv");
-        assert!(accel_of(&items).is_none());
-        assert!(items.is_empty());
+    fn abv_defaults_to_try_all_mode() {
+        use briev_compiler::analysis::accel::AccelMode;
+        // The extension selects GPU try-all; a non-.abv source keeps the
+        // compiler default (TryKeyword) and an explicit flag wins upstream.
+        assert_eq!(abv_accel_default("k.abv"), Some(AccelMode::TryAll));
+        assert_eq!(abv_accel_default("path/to/k.abv"), Some(AccelMode::TryAll));
+        assert_eq!(abv_accel_default("k.bv"), None);
+        assert_eq!(abv_accel_default("k"), None);
     }
 
     /// 2026-08-18 (check/build divergence): `brievc check` on a program that
@@ -3456,6 +3392,7 @@ node go [done == false][done == true] {
             dev: false,
             split: false,
             accel_cpu_fallback: None,
+            accel_mode: None,
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,

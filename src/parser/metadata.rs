@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a metadata key. Accepts plain identifiers and keyword tokens
-    /// (e.g. `!> accel: try_all;` — `accel` is a keyword). The keyword's
+    /// (e.g. `!> tbaa: "node";` — `tbaa` requires backticks/string form). The keyword's
     /// spelling comes from `Token::Display`, so the emitted key matches the
     /// source spelling.
     pub(crate) fn parse_metadata_key(&mut self) -> Result<String, SyntaxError> {

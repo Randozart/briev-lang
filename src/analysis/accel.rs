@@ -5,11 +5,12 @@
 //! switch. The backend never re-derives these decisions (it has no `accel`
 //! knowledge by design — see docs/plans/2026-08-06-accel-gpu-offload.md).
 //!
-//! Policy (module-level `!> accel: <value>`):
+//! Policy (compiler mode `--accel=<value>`, 2026-11-08 attr plan):
 //!   - absent            → TryKeyword: only `accel`-keyword bodies, try mode
-//!   - `try_all`         → every eligible body is a candidate, try mode
+//!   - `try-all`         → every eligible body is a candidate, try mode
 //!   - `force`           → keyword bodies MUST offload (strict)
-//!   - `try_all_force`   → every body tried; keyword bodies forced
+//!   - `try-all-force`   → every body tried; keyword bodies forced
+//! `.abv` files default to `try-all` (the extension is the GPU intent).
 //!
 //! Try mode: speedup must be verified (static crossover for known N, else a
 //! runtime probe). Any miss is a silent CPU fallback with a remark. Force mode:
@@ -26,16 +27,16 @@ use crate::type_universe::TypeUniverse;
 use crate::type_universe::operators::protocol_category;
 use std::collections::{HashMap, HashSet};
 
-/// Module-level policy resolved from `!> accel: <value>`.
+/// Offload policy selected by the compiler (`--accel=<value>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccelMode {
     /// Absent: only `accel`-keyword bodies, try mode.
     TryKeyword,
-    /// `try_all`: every body, try mode.
+    /// `try-all`: every body, try mode.
     TryAll,
     /// `force`: keyword bodies, force mode.
     Force,
-    /// `try_all_force`: every body tried; keyword bodies forced.
+    /// `try-all-force`: every body tried; keyword bodies forced.
     TryAllForce,
 }
 
@@ -53,22 +54,6 @@ impl AccelMode {
     /// Whether a keyword-marked body is forced (not merely tried).
     fn forces_marked(self) -> bool {
         matches!(self, AccelMode::Force | AccelMode::TryAllForce)
-    }
-}
-
-/// Resolve the module policy from `AnalysisResults.module_metadata`.
-/// Unknown values fall back to the conservative default (`TryKeyword`) —
-/// never an error, matching the "absent is default" rule.
-pub fn resolve_mode(module_metadata: &HashMap<String, PropertyValue>) -> AccelMode {
-    let value = match module_metadata.get("accel") {
-        Some(PropertyValue::Identifier(s)) | Some(PropertyValue::String(s)) => s.as_str(),
-        _ => return AccelMode::TryKeyword,
-    };
-    match value {
-        "try_all" => AccelMode::TryAll,
-        "force" => AccelMode::Force,
-        "try_all_force" => AccelMode::TryAllForce,
-        _ => AccelMode::TryKeyword,
     }
 }
 
@@ -1950,14 +1935,16 @@ fn decide(shape: &KernelShape, forced: bool, info: &ProgramInfo) -> AccelDecisio
 /// backend always supplies it).
 pub fn analyze(
     items: &[TopLevel],
-    module_metadata: &HashMap<String, PropertyValue>,
     universe: Option<&TypeUniverse>,
+    // 2026-11-08 (attr plan): the offload policy is a COMPILER MODE
+    // (`--accel`); source metadata no longer carries it.
+    mode_override: Option<AccelMode>,
 ) -> HashMap<String, AccelEntry> {
     let mut out = HashMap::new();
     let Some(universe) = universe else {
         return out;
     };
-    let mode = resolve_mode(module_metadata);
+    let mode = mode_override.unwrap_or(AccelMode::TryKeyword);
     let info = ProgramInfo::build(items);
     for item in items {
         let txn = match item {
@@ -2081,27 +2068,6 @@ mod tests {
         map.get(name).unwrap_or_else(|| panic!("no entry for {name}"))
     }
 
-    // ── resolve_mode ─────────────────────────────────────────────
-
-    #[test]
-    fn mode_absent_is_try_keyword() {
-        let meta = HashMap::new();
-        assert_eq!(resolve_mode(&meta), AccelMode::TryKeyword);
-    }
-
-    #[test]
-    fn mode_values() {
-        let mut meta = HashMap::new();
-        meta.insert("accel".into(), PropertyValue::Identifier("try_all".into()));
-        assert_eq!(resolve_mode(&meta), AccelMode::TryAll);
-        meta.insert("accel".into(), PropertyValue::Identifier("force".into()));
-        assert_eq!(resolve_mode(&meta), AccelMode::Force);
-        meta.insert("accel".into(), PropertyValue::Identifier("try_all_force".into()));
-        assert_eq!(resolve_mode(&meta), AccelMode::TryAllForce);
-        meta.insert("accel".into(), PropertyValue::Identifier("bogus".into()));
-        assert_eq!(resolve_mode(&meta), AccelMode::TryKeyword);
-    }
-
     // ── eligibility: bound ────────────────────────────────────────
 
     #[test]
@@ -2118,7 +2084,7 @@ mod tests {
         items.push(txn_with("ok", pre_lt("i", Expr::Identifier("nb".into())), body.clone()));
         // Non-`[i < N]` precondition → ineligible.
         items.push(txn_with("bad", Expr::Bool(true), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert!(entry(&map, "ok").shape.eligible);
         assert!(!entry(&map, "bad").shape.eligible);
         assert!(entry(&map, "bad").shape.reasons.iter().any(|r| r.contains("[i < N]")));
@@ -2142,7 +2108,7 @@ mod tests {
             ),
         ];
         items.push(txn_with("t", pre_lt("k", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible, "undeclared counter must be rejected");
         assert!(e.shape.reasons.iter().any(|r| r.contains("not a state counter")));
@@ -2159,7 +2125,7 @@ mod tests {
             Expr::Decimal(1),
         )];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible, "never-incremented counter must be rejected");
         assert!(e.shape.reasons.iter().any(|r| r.contains("never incremented")));
@@ -2195,7 +2161,7 @@ mod tests {
         items.push(txn_with("affine", pre.clone(), ok_body));
         items.push(txn_with("const_slot", pre.clone(), cross_body));
         items.push(txn_with("free_j", pre, free_j));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert!(entry(&map, "affine").shape.eligible);
         assert!(!entry(&map, "const_slot").shape.eligible);
         assert!(!entry(&map, "free_j").shape.eligible);
@@ -2234,7 +2200,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("acc", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "acc");
         assert!(e.shape.eligible, "reasons: {:?}", e.shape.reasons);
         assert!(
@@ -2268,7 +2234,7 @@ mod tests {
             ),
         ];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(e.shape.eligible);
         assert_eq!(e.shape.kernel_stmts.len(), 1);
@@ -2286,7 +2252,7 @@ mod tests {
             Expr::Call("println!".into(), vec![Expr::Decimal(1)], None),
         )];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), with_inc(body)));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert!(!entry(&map, "t").shape.eligible);
         assert!(entry(&map, "t").shape.reasons.iter().any(|r| r.contains("no offloadable statements")));
     }
@@ -2308,7 +2274,7 @@ mod tests {
             Expr::Identifier("x".into()),
         )];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), with_inc(body)));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible);
         assert!(e.shape.reasons.iter().any(|r| r.contains("not a flat scalar")));
@@ -2328,7 +2294,7 @@ mod tests {
         ];
         // `[i < nb]` with nb a runtime state scalar → Probe (try mode).
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(e.shape.eligible);
         assert_eq!(e.decision, AccelDecision::Probe);
@@ -2351,7 +2317,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("N".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         // N=4 below the PCIe crossover → CPU.
         assert_eq!(entry(&map, "t").decision, AccelDecision::Cpu);
     }
@@ -2370,9 +2336,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let mut meta = HashMap::new();
-        meta.insert("accel".into(), PropertyValue::Identifier("force".into()));
-        let map = analyze(&items, &meta, Some(&universe()));
+        let map = analyze(&items, Some(&universe()), Some(AccelMode::Force));
         let e = entry(&map, "t");
         assert!(e.forced);
         assert_eq!(e.decision, AccelDecision::Gpu);
@@ -2395,9 +2359,7 @@ mod tests {
         };
         t.modifiers.clear();
         items.push(TopLevel::Transaction(t));
-        let mut meta = HashMap::new();
-        meta.insert("accel".into(), PropertyValue::Identifier("try_all".into()));
-        let map = analyze(&items, &meta, Some(&universe()));
+        let map = analyze(&items, Some(&universe()), Some(AccelMode::TryAll));
         assert!(map.contains_key("t"), "try_all must target unmarked bodies");
         assert_eq!(entry(&map, "t").decision, AccelDecision::Probe);
     }
@@ -2419,7 +2381,7 @@ mod tests {
         t.modifiers.clear();
         items.push(TopLevel::Transaction(t));
         // No module key → absent → unmarked body is not a candidate.
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert!(!map.contains_key("t"));
     }
 
@@ -2448,7 +2410,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("pairs", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "pairs").shape.work_cols, Some(4096));
     }
 
@@ -2467,7 +2429,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("flat", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "flat").shape.work_cols, None);
     }
 
@@ -2499,7 +2461,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("mix", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "mix").shape.work_cols, None);
     }
 
@@ -2760,7 +2722,7 @@ mod tests {
             inc_i(),
         ];
         items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
-        let map = analyze(&items, &HashMap::new(), Some(&universe()));
+        let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(e.shape.eligible, "kernel must stay eligible: {:?}", e.shape.reasons);
         let info = e

@@ -97,6 +97,7 @@ fn test_accel_kernel_module_emits_projected_state() {
         false,
         4,
         Some(&crate::type_universe::TypeUniverse::new()),
+        None,
     );
     let entry = analysis.accel.get("force").expect("accel entry for force");
     assert!(entry.shape.eligible, "kernel shape must be eligible: {:?}", entry.shape.reasons);

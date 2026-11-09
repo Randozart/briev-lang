@@ -207,16 +207,9 @@ mod tests {
     /// incremented in the body; `out[i] = i * 2` is work-item affine. This is
     /// exactly the shape src/analysis/accel.rs proves eligible.
     fn scale_kernel_program() -> Vec<TopLevel> {
-        // 2026-08-23: `!> accel: try_all` gates the analysis — without it
-        // accel.analyze produces no entries at all (policy: absent means
-        // keyword-bodies-only).
-        let mut meta = std::collections::HashMap::new();
-        meta.insert(
-            "accel".into(),
-            crate::ast::PropertyValue::String("try_all".into()),
-        );
+        // 2026-11-08 (attr plan): the fixture relies on the analyze() helper's
+        // try-all mode; no metadata policy is carried in source.
         vec![
-            TopLevel::ModuleMetadata(meta),
             TopLevel::StateDecl(StateDecl {
                 name: "i".into(),
                 ty: Type::int(),
@@ -275,7 +268,12 @@ mod tests {
 
     fn analyze(program: &[TopLevel]) -> crate::backend::AnalysisResults {
         let universe = crate::type_universe::TypeUniverse::new();
-        crate::backend::analyze_program(program, false, 1, Some(&universe))
+        // 2026-11-08 (attr plan): the offload policy is a compiler mode, not
+        // source metadata; these fixtures exercise the try-all lane.
+        crate::backend::analyze_program(
+            program, false, 1, Some(&universe),
+            Some(crate::analysis::accel::AccelMode::TryAll),
+        )
     }
 
     fn eligible_shape<'a>(
@@ -922,12 +920,8 @@ mod tests {
     /// SSBO read side, not just writes.
     #[test]
     fn test_mad_kernel_reads_two_buffers() {
-        // out[i] = fa * (a[i] + b[i])
-        // Policy gate — without '!> accel:' the analysis produces no entries.
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".into(), crate::ast::PropertyValue::String("try_all".into()));
+        // out[i] = fa * (a[i] + b[i]); the analyze() helper runs try-all.
         let program = vec![
-            TopLevel::ModuleMetadata(meta),
             TopLevel::StateDecl(StateDecl {
                 name: "i".into(),
                 ty: Type::int(),
@@ -1735,7 +1729,7 @@ mod tests {
     fn test_selection_rejects_ineligible_and_honors_entry_name() {
         let program = scale_kernel_program();
         let analysis = analyze(&program);
-        // Eligible + `!> accel:` metadata → "main" accepts any kernel.
+        // Eligible kernel under the try-all mode → "main" accepts any kernel.
         let binary = compile_spirv(&program, "main", &analysis, &test_universe(), 64)
             .expect("eligible fixture must build under wildcard entry");
         // The entry point must be named "main" in the emitted module too —
@@ -1758,8 +1752,12 @@ mod tests {
 
         // Ineligible body (counter never incremented) → not a kernel.
         let mut bad = scale_kernel_program();
-        if let TopLevel::Transaction(t) = &mut bad[3] {
-            t.body.pop(); // drop the i = i + 1 increment
+        for item in &mut bad {
+            if let TopLevel::Transaction(t) = item {
+                if t.name == "scale" {
+                    t.body.pop(); // drop the i = i + 1 increment
+                }
+            }
         }
         let analysis_bad = analyze(&bad);
         assert!(!analysis_bad.accel.get("scale").map_or(false, |e| e.shape.eligible));
@@ -2132,9 +2130,6 @@ mod tests {
             doc: None,
         });
         let program = vec![
-            // `!> accel: try_all` gates the analysis — without it
-            // accel.analyze produces no entries at all (policy: absent means
-            // keyword-bodies-only).
             TopLevel::ModuleMetadata({
                 let mut m = std::collections::HashMap::new();
                 m.insert(
@@ -2184,8 +2179,6 @@ mod tests {
         // registration into the universe is what the real compiler does —
         // hand-built fixtures miss invisible registration state.
         let src = r#"
-!> accel: try_all;
-
 const N: Int = 4096;
 
 type R32: Float {
@@ -2254,6 +2247,7 @@ async node fill [i < N][i == N] {
             dev: false,
             split: false,
             accel_cpu_fallback: None,
+            accel_mode: None,
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,
@@ -2271,7 +2265,7 @@ async node fill [i < N][i == N] {
         // NOT the test analyze() helper — it builds a FRESH universe and
         // would lose the normalizer's R32 registration (fundamentals are
         // seeded in every universe, source types are not).
-        let analysis = crate::backend::analyze_program(&items, false, 1, Some(&universe));
+        let analysis = crate::backend::analyze_program(&items, false, 1, Some(&universe), Some(crate::analysis::accel::AccelMode::TryAll));
         let plan = crate::analysis::image_storage::ImageStoragePlan {
             array: "img".into(),
             width: 64,
@@ -2540,8 +2534,6 @@ async node fill [i < N][i == N] {
         // 2026-10-03 (declared matmul): the fixture DECLARES — the tensor
     // channel follows the declaration (Rules 23/24).
     let src = r#"
-!> accel: try_all;
-
 import "std/types/float.bv";
 import "std/numeric.bv";
 
@@ -2606,6 +2598,7 @@ async node gemm [i < M * N][i == M * N] {
             dev: false,
             split: false,
             accel_cpu_fallback: None,
+            accel_mode: None,
             isr_mechanism: None,
             triple_override: None,
             linker_script_override: None,
@@ -2618,7 +2611,7 @@ async node gemm [i < M * N][i == M * N] {
             crate::pipeline::compile_to_typed(&path, src, &opts).expect("pipeline");
         crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
             .expect("normalize");
-        let analysis = crate::backend::analyze_program(&items, false, 1, Some(&universe));
+        let analysis = crate::backend::analyze_program(&items, false, 1, Some(&universe), Some(crate::analysis::accel::AccelMode::TryAll));
         let kernels = crate::backend::spirv::runner::build_kernels(
             &items,
             &universe,
@@ -2679,10 +2672,7 @@ async node gemm [i < M * N][i == M * N] {
             ty: Type::Vector(Box::new(Type::float()), vec![Dimension::Anonymous(n as usize)]),
             span: None,
         });
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".into(), crate::ast::PropertyValue::String("try_all".into()));
         let program = vec![
-            TopLevel::ModuleMetadata(meta),
             TopLevel::StateDecl(StateDecl { name: "i".into(), ty: Type::int(), span: None }),
             float_state("a", 1024),
             float_state("b", 1024),

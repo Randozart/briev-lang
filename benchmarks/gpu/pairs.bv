@@ -1,4 +1,3 @@
-!> accel: force;
 
 // pairs.bv — compute-throughput GPU benchmark: NB² work items; item idx
 // computes a softened pairwise interaction between bodies (idx >> 12) and

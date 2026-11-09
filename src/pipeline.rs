@@ -274,6 +274,9 @@ pub struct BuildOptions {
     /// fewer work items fall to the CPU loop (--accel-cpu-fallback N).
     /// None = no fallback (current default). Only applies to .bv accel paths.
     pub accel_cpu_fallback: Option<u64>,
+    /// 2026-11-08 (attr plan): GPU offload policy is a compiler MODE, not
+    /// program metadata (`--accel`). None = keyword-marked bodies, try mode.
+    pub accel_mode: Option<crate::analysis::accel::AccelMode>,
     /// 2026-09-06 (ISR plan): the active target profile's ISR mechanism —
     /// the configured default behind mechanism-less `isr` declarations.
     /// Populated from folio.toml [target.<name>] isr_mechanism.
@@ -335,7 +338,8 @@ impl Default for BuildOptions {
             sysquery_files: vec![], style_css: None,
             view_html: None, view_bindings: vec![],
             ssr: false, dev: false, split: false,
-            accel_cpu_fallback: None, isr_mechanism: None,
+            accel_cpu_fallback: None,
+            accel_mode: None, isr_mechanism: None,
             triple_override: None, linker_script_override: None,
             entry_override: None, raw_bin: false,
             no_link: false, web_page_key: None,

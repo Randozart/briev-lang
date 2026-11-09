@@ -1604,7 +1604,7 @@ type Int32: Int {
 > the **`spec`** keyword, not `!>`: `spec Alignment: 2;`, `spec Bits: 12;`,
 > `spec MaxBits: 16;`, `spec Bytes: 4;`, `spec Endian: Big;` (see §8.2). `spec`
 > keys are PascalCase; values use the same grammar as `!>` values. `!>` remains
-> the annotation operator for non-physical metadata (`ctd`, `accel`, …); it no
+> the annotation operator for non-physical metadata (`ctd`, `inline_hint`, …); it no
 > longer carries physical-layout keys. `spec` and `!>` share one metadata map —
 > a physical key spelled with `!>` still parses for backward compatibility
 > (stdlib and examples migrated to `spec` in 2026-08-13), but `spec`
@@ -1615,7 +1615,7 @@ Top-level `!>` is a shortcut for attaching metadata to the script; it never
 attaches to the following declaration.
 
 ```briev
-!> accel: try_all;
+!> inline_hint: always;
 ```
 
 Metadata keys and values are lowercase. Multiple top-level `!>` bindings merge
@@ -2051,27 +2051,31 @@ If eligibility cannot be proven or the speedup is not verified, execution
 uses the CPU path. An ineligible or unverified `accel` body is never an error
 by itself, but a **keyword-marked** body that stays on the CPU path always
 emits a default compile-time remark (one line naming the body and the reason —
-proof failure or unverified speedup). `!> accel_report: verbose;` adds the
-full per-analysis detail; the one-line remark is not opt-outable.
+proof failure or unverified speedup). The compiler's verbose diagnostics add
+the full per-analysis detail; the one-line remark is not opt-outable.
 
-**Force mode.** Under `!> accel: force;` or `!> accel: try_all_force;`, an
+**Force mode.** Under `--accel force` or `--accel try-all-force`, an
 `accel`-keyword-marked body must offload: eligibility must be provable or the
 compiler rejects the program, the speedup gate is skipped (the developer
 asserts GPU wins), and a missing GPU at runtime is a runtime error — never a
 silent CPU fallback.
 
-**Module shortcut.** Top-level module metadata `!> accel:` (§8.9) takes
-lowercase policy values:
+**Policy selection.** The offload policy is a **compiler mode** (`--accel`,
+2026-11-08), never source metadata:
 
-- `try_all` — every eligible body in the module is a candidate, verified;
-- `force` — `accel`-keyword bodies must offload (see Force mode);
-- `try_all_force` — every body is tried and keyword bodies are forced.
+- `--accel keyword-only` (default for `.bv`) — only bodies carrying the
+  `accel` keyword are candidates, in try mode;
+- `--accel try-all` — every eligible body in the module is a candidate,
+  verified;
+- `--accel force` — `accel`-keyword bodies must offload (see Force mode);
+- `--accel try-all-force` — every body is tried and keyword bodies are
+  forced.
 
-Absent means only bodies carrying the `accel` keyword are candidates, in try
-mode. There is no `off` value; absence is the default. `!> accel_report:
-verbose;` is a separate observability key that emits an optimization remark
-for every analyzed body. The keyword and the module shortcut feed the same
-verification pipeline.
+`.abv` files default to `try-all` (the extension IS the GPU intent); an
+explicit `--accel` always wins. There is no `off` value; `keyword-only` is the
+default. Verbose diagnostics emit a remark for every analyzed body; the
+one-line remark for a keyword-marked CPU fallback is always emitted. The
+keyword and the mode feed the same verification pipeline.
 
 
 ### 9.8 GPU kernel synthesis tiers (2026-09-01)

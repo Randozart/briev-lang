@@ -1,5 +1,5 @@
 // scale.abv — Accelerator Briev Volume: GPU is the DEFAULT target for
-// this file extension; no `!> accel:` metadata and no `accel` keyword are
+// this file extension; no policy metadata and no `accel` keyword are
 // required (2026-08-31, plan abv-gpu-by-default B3). Every counted-loop
 // body is an accel candidate; the eligibility proof keeps kernel shape.
 let i: Int = 0;

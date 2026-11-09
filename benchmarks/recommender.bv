@@ -1,4 +1,3 @@
-!> accel: try_all;
 
 // recommender — neighborhood-CF recommender core (AutAI, Ren et al. CIKM'12),
 // derived from Otto Westerlund's cpp-vs-briev corpus
@@ -103,7 +102,7 @@ defn predict_item(sim_a: Int, start_a: Int, nzuser_a: Int, nzrat_a: Int,
 // LCG: x = (x * 1103515245 + 12345) % 2147483647 — products stay below i64
 // range, so the sequence is identical on every platform/run. Density 1/16
 // yields ~99k nonzeros (Otto's dataset shape).
-async node build_data [beginprogram && phase == 0][true] {
+async accel node build_data [beginprogram && phase == 0][true] {
     let m: Ptr<Float> = Malloc#(NROWS * NCOLS * 8) as Ptr<Float>;
     let s: Ptr<Float> = Malloc#(NROWS * 8) as Ptr<Float>;
     let stp: Ptr<Int> = Malloc#((NCOLS + 1) * 8) as Ptr<Int>;
@@ -135,7 +134,7 @@ async node build_data [beginprogram && phase == 0][true] {
 };
 
 // ── node 1: build the sparse per-item layout (count -> prefix -> fill) ──────
-async node build_sparse [phase == 1][phase == 2] {
+async accel node build_sparse [phase == 1][phase == 2] {
     let mat: Ptr<Float> = mat_addr as Ptr<Float>;
     let st: Ptr<Int> = start_addr as Ptr<Int>;
     let cp: Ptr<Int> = curpos_addr as Ptr<Int>;
@@ -176,7 +175,7 @@ async node build_sparse [phase == 1][phase == 2] {
 };
 
 // ── node 2: predict one item per tick, over its sparse block only ───────────
-async node predict [phase == 2][phase == 3] {
+async accel node predict [phase == 2][phase == 3] {
     let mat: Ptr<Float> = mat_addr as Ptr<Float>;
     let own: Float = mat[QUERY_USER * NCOLS + item];
     when own == 0.0 {

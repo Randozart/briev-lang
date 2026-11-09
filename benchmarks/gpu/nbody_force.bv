@@ -1,4 +1,3 @@
-!> accel: force;
 
 // nbody_newton_accel — many-body central-force simulation, parallel over
 // bodies (Design A: counted loops over the work-item counter `i`).

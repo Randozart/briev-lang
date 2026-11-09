@@ -9,7 +9,7 @@ use crate::ast::{Annotation, Expr};
 // Hashtag values and stored on AST nodes. The resolution logic maps
 // each hashtag to an LLVM IR effect (function attribute, loop metadata,
 // export symbol). The legacy #gpu family is removed — GPU deferral is
-// the `accel` keyword / `!> accel:` metadata (SPEC §9.7).
+// the `accel` keyword / `--accel` compiler mode (SPEC §9.7).
 //
 // By keeping resolution in a dedicated file, adding a new directive
 // (e.g., #novector, #interleave) is a single-function addition here —
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn test_gpu_directive_removed() {
         // 2026-08-06 (accel plan): the #gpu pragma family is removed — GPU
-        // deferral is the `accel` keyword / `!> accel:` metadata (SPEC §9.7).
+        // deferral is the `accel` keyword / `--accel` compiler mode (SPEC §9.7).
         let effects = resolve_directives(&[tag("gpu")], DirectiveCtx::Transaction);
         assert_eq!(effects.len(), 0, "gpu directive must be gone");
     }

@@ -303,6 +303,8 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut sysquery_files: Vec<String> = Vec::new();
     let mut int_bits = 64u64;
     let mut accel_cpu_fallback: Option<u64> = None;
+    // 2026-11-08 (attr plan): GPU offload policy is a compiler mode.
+    let mut accel_mode: Option<briev_compiler::analysis::accel::AccelMode> = None;
     let mut triple_override: Option<String> = None;
     let mut linker_script_override: Option<String> = None;
     let mut raw_bin = false;
@@ -386,6 +388,27 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             if int_bits != 8 && int_bits != 16 && int_bits != 32 && int_bits != 64 {
                 return Err(format!("--int-bits must be 8, 16, 32, or 64, got: {}", int_bits));
             }
+            i += 2;
+        } else if arg == "--accel" {
+            let val = args.get(i + 1).ok_or(
+                "--accel requires a mode: keyword-only | try-all | force | try-all-force",
+            )?;
+            accel_mode = Some(match val.as_str() {
+                "keyword-only" | "try_keyword" => {
+                    briev_compiler::analysis::accel::AccelMode::TryKeyword
+                }
+                "try-all" | "try_all" => briev_compiler::analysis::accel::AccelMode::TryAll,
+                "force" => briev_compiler::analysis::accel::AccelMode::Force,
+                "try-all-force" | "try_all_force" => {
+                    briev_compiler::analysis::accel::AccelMode::TryAllForce
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid --accel value: '{}' (keyword-only | try-all | force | try-all-force)",
+                        val
+                    ))
+                }
+            });
             i += 2;
         } else if arg == "--accel-cpu-fallback" {
             let val = args.get(i + 1).ok_or("--accel-cpu-fallback requires a number argument (min work items for GPU)")?;
@@ -930,6 +953,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         dev: false,
         split: false,
         accel_cpu_fallback: None,
+        accel_mode,
         isr_mechanism: None,
         triple_override: None,
         linker_script_override: None,

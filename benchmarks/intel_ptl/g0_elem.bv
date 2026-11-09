@@ -9,11 +9,11 @@
 // backend cannot dead-store the verification (the first draft's prints did
 // not keep field stores live — the pass only sees contract/exit reads).
 //
-// !> accel: force keeps the decision deterministic (no probe); the runtime
-// still falls back to the CPU body if the device chain dies, which is why
-// the gate script ALSO asserts the verbose "compiled on '<device>'" line.
+// The `accel` keyword marks the body; the default policy analyses marked
+// bodies in try mode (a one-time CPU-vs-GPU probe). The gate script ALSO
+// asserts the verbose "compiled on '<device>'" line so a CPU fallback cannot
+// pass.
 
-!> accel: force;
 
 const N: Int = 1048576;   // 1 Mi f32; arrays + projection fit comfortably
 

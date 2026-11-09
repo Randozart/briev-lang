@@ -1,5 +1,4 @@
 
-!> accel: try_all;
 
 const N: Int = 4096;
 

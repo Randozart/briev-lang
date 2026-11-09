@@ -9,7 +9,6 @@
 //
 // Runs under `ulimit -s 65536` (BUGS.md 2026-11-06).
 
-!> accel: force;
 
 const ROWS: Int = 4096;
 const K: Int = 1024;

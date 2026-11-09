@@ -368,26 +368,6 @@ mod tests {
     }
 
     #[test]
-    fn test_field_def_accel_exists() {
-        // 2026-08-06 (accel plan): `accel` is a registered metadata field
-        // (SPEC §9.7), so `!> accel: try_all;` is a valid, typed module key.
-        let reg = test_registry();
-        let field = reg.field_def("accel");
-        assert!(field.is_some(), "accel field must be registered in meta-vocab.dbv");
-        assert_eq!(field.unwrap().name, "accel");
-    }
-
-    #[test]
-    fn test_field_def_accel_report_exists() {
-        // 2026-08-06 (accel plan): `accel_report` is the separate observability
-        // key (SPEC §9.7); `!> accel_report: verbose;` composes with the policy.
-        let reg = test_registry();
-        let field = reg.field_def("accel_report");
-        assert!(field.is_some(), "accel_report field must be registered in meta-vocab.dbv");
-        assert_eq!(field.unwrap().name, "accel_report");
-    }
-
-    #[test]
     fn test_emit_fast_math_flags_fp_math_fast() {
         let reg = test_registry();
         let metadata = vec![("fp_math", "fast"), ("fp_contract", "fast")];

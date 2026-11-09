@@ -1879,9 +1879,11 @@ let a_out: Float[1024];
         let mut universe = TypeUniverse::new();
         crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
             .expect("normalize");
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
-        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
+        let accel = crate::analysis::accel::analyze(
+            &items, Some(&universe),
+            Some(crate::analysis::accel::AccelMode::TryAll),
+        );
         assert!(
             accel.get("sfused").map(|e| e.shape.eligible).unwrap_or(false),
             "sfused is an eligible kernel"
@@ -2187,9 +2189,11 @@ async node g [i < M * N][i == M * N] {
         let mut universe = TypeUniverse::new();
         crate::backend::spirv::normalizer::normalize(&mut items, &mut universe, 64)
             .expect("normalize");
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
-        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
+        let accel = crate::analysis::accel::analyze(
+            &items, Some(&universe),
+            Some(crate::analysis::accel::AccelMode::TryAll),
+        );
         assert!(
             accel.get("g").map(|e| e.shape.eligible).unwrap_or(false),
             "g is an eligible kernel: {:?}",
@@ -2234,9 +2238,11 @@ unroll<2> async node u [i < M][i == M] {
         let mut universe = TypeUniverse::new();
         crate::backend::spirv::normalizer::normalize(&mut { items.clone() }, &mut universe, 64)
             .expect("normalize");
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("accel".to_string(), PropertyValue::Identifier("try_all".into()));
-        let accel = crate::analysis::accel::analyze(&items, &meta, Some(&universe));
+        // 2026-11-08 (attr plan): policy is the compiler mode, not metadata.
+        let accel = crate::analysis::accel::analyze(
+            &items, Some(&universe),
+            Some(crate::analysis::accel::AccelMode::TryAll),
+        );
         assert!(
             accel.get("u").map(|e| e.shape.eligible).unwrap_or(false),
             "u is an eligible kernel: {:?}",

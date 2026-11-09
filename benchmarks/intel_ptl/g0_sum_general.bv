@@ -12,7 +12,6 @@
 // Runs under `ulimit -s 65536` (state arrays exceed the 8 MB stack frame —
 // BUGS.md 2026-11-06).
 
-!> accel: force;
 import { get_env_int } from "std/env.bv";
 
 const ROWS: Int = 4096;

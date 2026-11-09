@@ -238,6 +238,9 @@ pub fn analyze_program(
     optimize: bool,
     min_width: usize,
     type_universe: Option<&crate::type_universe::TypeUniverse>,
+    // 2026-11-08 (attr plan): `--accel` compiler-mode override (None =
+    // keyword-marked bodies, try mode).
+    accel_mode: Option<crate::analysis::accel::AccelMode>,
 ) -> AnalysisResults {
     // 2026-11-05 (H4.1): one typed-HIR lowering per analysis run. The HIR
     // consumer flip below and every later family reads this tree.
@@ -434,7 +437,7 @@ pub fn analyze_program(
         ast_task_segments(items, &spawn_targets)
     };
     let module_metadata = collect_module_metadata(items);
-    let accel = crate::analysis::accel::analyze(items, &module_metadata, type_universe);
+    let accel = crate::analysis::accel::analyze(items, type_universe, accel_mode);
     // 2026-09-18 (M3.5, plan coalesced-kv-memory-path): the coalescing
     // analysis — under the analysis-transparency doctrine the compiler
     // must show what the fastest code would be. Advisory only: layout is
