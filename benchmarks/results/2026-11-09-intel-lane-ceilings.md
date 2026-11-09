@@ -55,3 +55,30 @@ Four-number matrix pending: Vulkan ceiling (hand GLSL), OpenCL ceiling
 (hand OpenCL C), Briev-Vulkan, Briev-OpenCL; roofline bounds first. No lane
 verdict is drawn from generated-kernel numbers (emitter quality ≠ lane
 ceiling).
+
+## W2a — device facts + roofline bounds (2026-11-09)
+
+PTL iGPU: `Intel(R) Arc(TM) B390`, 96 compute units @ 2.5 GHz, 58 GiB shared
+(LPDDR5X, exact bandwidth not reported by clinfo/vulkaninfo), Vulkan 1.4.354
+(Mesa 26.2.1), NEO 26.31.39395.
+
+Roofline bounds for the fixed kernel set (assuming ~120 GB/s effective and
+~3.8 TFLOPS FP32 SIMD — both to be measured with a bandwidth/FLOPS probe;
+XMX ceilings are separate and need a cooperative-matrix reference):
+
+| kernel | work | bound |
+|---|---|---|
+| elementwise self-add, 1Mi f32 | 8 MB traffic | ~67 µs |
+| reduce, 4096 rows × K=1024 f32 | 16 MB read | ~133 µs |
+| GEMM 512³ | 268 MFLOP, 3×1 MB | ~71 µs (SIMD compute) |
+| GEMM 4096³ | 137 GFLOP | ~36 ms (SIMD compute; XMX changes the ceiling) |
+
+**Important:** current Briev `.bv` gate numbers are NOT usable as lane
+numbers — the fixtures fold the counted loops (`txn folded to O(1)`) and the
+`# gpu_time` lines are dispatch-timestamp-only (Vulkan driver), absent on
+L0/NEO. A fair four-number matrix requires W2b/W2c: real dispatches at the
+fixed shapes, wall-clock over repetitions, identical harness for both lanes,
+plus hand-written OpenCL C and GLSL references.
+
+Next: W2b (OpenCL C ceiling harness under `benchmarks/intel_ptl/ceiling/`),
+then W2c (GLSL) if W2b shows the OpenCL ceiling is competitive.
