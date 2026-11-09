@@ -13,8 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
 mod socket_effects;
+mod node_set;
+use node_set::NodeSet;
 #[cfg(test)]
 mod structured_tests;
+#[cfg(test)]
+mod solver_tests;
 
 type Node = usize;
 
@@ -62,11 +66,11 @@ struct Graph {
     entry_nodes: BTreeSet<String>,
     user_operators: BTreeSet<String>,
     methods: BTreeMap<(String, String), Option<String>>,
-    points: Vec<BTreeSet<Node>>,
+    points: Vec<NodeSet>,
     constants: Vec<BTreeSet<i64>>,
     inexact_constants: BTreeSet<Node>,
-    memory: Vec<BTreeSet<Node>>,
-    named_memory: BTreeMap<(Node, String), BTreeSet<Node>>,
+    memory: Vec<NodeSet>,
+    named_memory: BTreeMap<(Node, String), NodeSet>,
     constraints: Vec<Constraint>,
     allocation_owner: BTreeMap<Node, String>,
     callables: BTreeMap<String, Callable>,
@@ -101,9 +105,9 @@ impl Graph {
 
     fn node(&mut self) -> Node {
         let node = self.points.len();
-        self.points.push(BTreeSet::new());
+        self.points.push(NodeSet::new());
         self.constants.push(BTreeSet::new());
-        self.memory.push(BTreeSet::new());
+        self.memory.push(NodeSet::new());
         node
     }
 
@@ -142,7 +146,7 @@ impl Graph {
         for constraint in self.constraints.clone() {
             match constraint {
                 Constraint::Syscall(number, args) => { self.syscall(number, &args); }
-                Constraint::EscapeContents(value) => { let refs = self.contents(value); self.escaped.extend(refs); }
+                Constraint::EscapeContents(value) => { let refs = self.contents(value); self.escaped.extend(refs.iter()); }
                 _ => {}
             }
         }
@@ -161,52 +165,54 @@ impl Graph {
                 let refs = self.points[source].clone();
                 let constants = self.constants[source].clone();
                 let inexact = self.inexact_constants.contains(&source) && self.inexact_constants.insert(target);
-                extend(&mut self.points[target], refs) | extend(&mut self.constants[target], constants) | inexact
+                self.points[target].union_with(&refs) | extend(&mut self.constants[target], constants) | inexact
             }
             Constraint::Load(base, result) => {
                 let refs = self.contents(base);
-                extend(&mut self.points[result], refs) | self.inexact_constants.insert(result)
+                self.points[result].union_with(&refs) | self.inexact_constants.insert(result)
             }
             Constraint::Store(base, value) => self.store(base, self.points[value].clone()),
             Constraint::CopyMemory(source, target) => self.store(target, self.contents(source)),
             Constraint::Syscall(..) => false,
             Constraint::EscapeContents(_) => false,
             Constraint::FieldLoad(base, field, target) => {
-                let refs = self.field_contents(base, &field); extend(&mut self.points[target], refs) | self.inexact_constants.insert(target)
+                let refs = self.field_contents(base, &field); self.points[target].union_with(&refs) | self.inexact_constants.insert(target)
             }
             Constraint::FieldStore(base, field, value) => {
                 let mut changed = false;
-                for root in self.points[base].clone() {
-                    changed |= extend(self.named_memory.entry((root, field.clone())).or_default(), self.points[value].iter().copied());
+                for root in self.points[base].clone().iter() {
+                    changed |= self.named_memory.entry((root, field.clone())).or_default().union_with(&self.points[value]);
                 }
                 changed
             }
         }
     }
 
-    fn contents(&self, base: Node) -> BTreeSet<Node> {
-        self.points[base].iter().flat_map(|root| self.root_contents(*root)).collect()
-    }
-
-    fn root_contents(&self, root: Node) -> BTreeSet<Node> {
-        let mut refs = self.memory[root].clone();
-        for ((owner, _), values) in &self.named_memory { if *owner == root { refs.extend(values); } }
+    fn contents(&self, base: Node) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for root in self.points[base].iter() { refs.union_with(&self.root_contents(root)); }
         refs
     }
 
-    fn field_contents(&self, base: Node, field: &str) -> BTreeSet<Node> {
-        let mut refs = BTreeSet::new();
-        for root in &self.points[base] {
-            refs.extend(&self.memory[*root]);
-            if let Some(values) = self.named_memory.get(&(*root, field.into())) { refs.extend(values); }
+    fn root_contents(&self, root: Node) -> NodeSet {
+        let mut refs = self.memory[root].clone();
+        for ((owner, _), values) in &self.named_memory { if *owner == root { refs.union_with(values); } }
+        refs
+    }
+
+    fn field_contents(&self, base: Node, field: &str) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for root in self.points[base].iter() {
+            refs.union_with(&self.memory[root]);
+            if let Some(values) = self.named_memory.get(&(root, field.into())) { refs.union_with(values); }
         }
         refs
     }
 
-    fn store(&mut self, base: Node, refs: BTreeSet<Node>) -> bool {
+    fn store(&mut self, base: Node, refs: NodeSet) -> bool {
         let mut changed = false;
-        for root in self.points[base].clone() {
-            changed |= extend(&mut self.memory[root], refs.iter().copied());
+        for root in self.points[base].clone().iter() {
+            changed |= self.memory[root].union_with(&refs);
         }
         changed
     }
@@ -218,23 +224,25 @@ impl Graph {
         let borrowed = !self.inexact_constants.contains(&number) && !numbers.is_empty() && numbers.iter().all(|number| {
             self.syscall_borrows(*number, args)
         });
-        let refs = args.iter().flat_map(|arg| {
-            if borrowed { self.contents(*arg) } else { self.points[*arg].clone() }
-        }).collect::<BTreeSet<_>>();
-        extend(&mut self.escaped, refs)
+        let mut refs = NodeSet::new();
+        for arg in args {
+            let values = if borrowed { self.contents(*arg) } else { self.points[*arg].clone() };
+            refs.union_with(&values);
+        }
+        extend(&mut self.escaped, refs.iter())
     }
 
     fn reachable(&self, roots: impl IntoIterator<Item = Node>) -> BTreeSet<Node> {
         let mut found = BTreeSet::new();
         let mut pending: Vec<_> = roots.into_iter().collect();
         while let Some(root) = pending.pop() {
-            if found.insert(root) { pending.extend(self.root_contents(root)); }
+            if found.insert(root) { pending.extend(self.root_contents(root).iter()); }
         }
         found
     }
 
     fn plan(&self) -> ReclamationPlan {
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter().copied());
+        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
         let mut plan = ReclamationPlan { known: self.callables.keys().cloned().collect(), ..Default::default() };
         for root in &escaped {
@@ -267,12 +275,12 @@ impl Graph {
         let allocations: BTreeSet<_> = self.allocation_owner.iter()
             .filter(|(_, owner)| owners.contains(*owner)).map(|(root, _)| *root).collect();
         if allocations.is_empty() { return; }
-        let returned = self.reachable(self.points[callable.result].iter().copied());
+        let returned = self.reachable(self.points[callable.result].iter());
         if !returned.is_disjoint(&allocations) {
             plan.reasons.insert(name.into(), "allocation reaches the returned value".into());
             return;
         }
-        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter().copied());
+        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
         let retained = self.reachable(incoming);
         if !retained.is_disjoint(&allocations) {
             let owners: BTreeSet<_> = retained.intersection(&allocations).filter_map(|root| self.allocation_owner.get(root)).collect();
