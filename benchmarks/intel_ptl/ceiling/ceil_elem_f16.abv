@@ -1,0 +1,13 @@
+// Ceiling matrix: elementwise y[i] = a[i] + b[i], f16 storage.
+// Zeroed state is fine — the kernel still reads/writes the full arrays.
+const N: Int = 1048576;
+let i: Int = 0;
+let a: Float16[N];
+let b: Float16[N];
+let y: Float16[N];
+
+async accel node elem [i < N][i == N] {
+    y[i] = (a[i] as Float + b[i] as Float) as Float16;
+    i = i + 1;
+    term;
+};

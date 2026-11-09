@@ -1,3 +1,22 @@
+## Float16 state lowers to protocol `Data` in GPU kernels — OPEN 2026-11-09
+
+**Symptom:** an `.abv`/kernel program whose state contains `Float16` arrays is
+rejected before SPIR-V emission: "type 'Float16' lowers to protocol 'Data' —
+GPU kernels support scalar state rooted in Int, UInt, Float, or Bool only".
+So f16 ceiling kernels and `examples/gpu/attn_decode_h.abv` cannot reach the
+device even though `Float16` declares `spec MaxBits: 16` and the Float parent
+chain.
+
+**Note:** the declared `matmul!` also could not compile with an f16
+accumulator (`let acc: acc_ty = 0;` — Float16 accepts no Int/Float literal and
+has no arithmetic operator surface). Added `matmul_f16!` (f16 storage, f32
+accumulate, explicit `as Float16` store) and switched the f16 callers; that is
+a workaround, not the state-protocol fix.
+
+**Next:** make the Float protocol recognize Float16 as a scalar shape in the
+kernel state classification (casting graph / universe), then re-enable the f16
+ceiling rows. Track under W2/W3 of the lane-ceilings plan.
+
 ## OpenCL (NEO) exact-fold kernel intermittently hangs in clFinish — OPEN 2026-11-09
 
 **Symptom:** on PTL (Arc B390, NEO 26.31.39395), `g0_fsum_exact.bv` on

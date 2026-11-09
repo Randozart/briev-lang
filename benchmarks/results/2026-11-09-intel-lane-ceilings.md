@@ -82,3 +82,47 @@ plus hand-written OpenCL C and GLSL references.
 
 Next: W2b (OpenCL C ceiling harness under `benchmarks/intel_ptl/ceiling/`),
 then W2c (GLSL) if W2b shows the OpenCL ceiling is competitive.
+
+## W2b — OpenCL C ceiling references (device time, 2026-11-09)
+
+Hand-written OpenCL C, NEO 26.31 on Arc B390; device time from profiling
+events (median of 20 after 3 warmups; GEMM 4096³ median of 3). Correctness
+vs a double-precision CPU reference (sampled rows for GEMM) PASS on every row.
+
+| shape | f32 | f16 (f32 accumulate) |
+|---|---|---|
+| copy 1Mi (2 arrays) | 0.0654 ms / 128.2 GB/s | 0.0285 ms / 147.0 GB/s |
+| elem 1Mi (3 arrays) | 0.0800 ms / 157.3 GB/s | 0.0472 ms / 133.3 GB/s |
+| reduce 4096×1024 | 0.1729 ms / 97.0 GB/s | 0.0966 ms / 86.9 GB/s |
+| GEMM 512³ | 0.4213 ms / 637.2 GFLOP/s | 0.2325 ms / 1154.6 GFLOP/s |
+| GEMM 4096³ | 94.19 ms / 1459.2 GFLOP/s | 84.40 ms / 1628.4 GFLOP/s |
+
+Reading: measured memory bandwidth ≈ 130–160 GB/s; the SIMD f32 GEMM ceiling
+is ~1.46 TFLOP/s and f16-storage/f32-accumulate ~1.63 TFLOP/s. These are the
+lane's achievable numbers for these kernel forms, not vendor tensor-core
+peaks (XMX needs a cooperative-matrix reference — G3).
+
+Harness: `benchmarks/intel_ptl/ceiling/{cl_api.h,ceiling_harness.c,run.sh}`.
+
+## W2d — Briev-side numbers: blocked by reactor folding (gap)
+
+Const-bound `.bv`/`.abv` programs are precomputed (`txn folded to O(1)`), and
+the reactor then dispatches with a folded/zero work count: `# gpu_time` is
+either absent (L0/OpenCL) or implausibly small (Vulkan 0.001 ms for 1Mi
+elements). Runtime env bounds do not help: `get_env_int!` folds at compile
+time when the variable is present during compilation.
+
+Consequence: Briev lane numbers must come from the **blob harness** (launch
+the Briev OpenCL/Vulkan image directly with a known state layout), exactly as
+`benchmarks/gpu/gemm_bench.c` does for Vulkan. That is the next W2 step; the
+device-time plumbing added to the L0/OpenCL drivers is the prerequisite and is
+in place (event-based, matching Vulkan's `# gpu_time`).
+
+## Time-plumbing findings
+
+- OpenCL events require the opaque-pointer `cl_event` type; the driver carried
+  a struct typedef and queried before `clFinish`. Fixed (profiling queue,
+  finish-then-query).
+- NEO reports `timerResolution = 52` as **nanoseconds per tick** (not
+  cycles/sec): `ms = ticks * resolution / 1e6`. Also fixed the L0 kernel
+  timestamp field order (`global.start, global.end, context.start, context.end`).

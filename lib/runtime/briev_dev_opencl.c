@@ -23,7 +23,7 @@ typedef void* cl_command_queue;
 typedef void* cl_program;
 typedef void* cl_kernel;
 typedef void* cl_mem;
-typedef struct { void* data; } cl_event;
+typedef void* cl_event;
 
 static void* cl_lib = NULL;
 static int cl_ready = 0;
@@ -39,6 +39,8 @@ static cl_command_queue (*p_clCreateCommandQueue)(cl_context, cl_device_id, uint
 static cl_program (*p_clCreateProgramWithIL)(cl_context, const void*, size_t, int*) = NULL;
 static int (*p_clBuildProgram)(cl_program, uint32_t, const cl_device_id*, const char*, void*, void*) = NULL;
 static int (*p_clGetProgramBuildInfo)(cl_program, cl_device_id, uint32_t, size_t, void*, size_t*) = NULL;
+static int (*p_clGetEventProfilingInfo)(cl_event, uint32_t, size_t, void*, size_t*) = NULL;
+static int (*p_clReleaseEvent)(cl_event) = NULL;
 static int (*p_clGetProgramInfo)(cl_program, uint32_t, size_t, void*, size_t*) = NULL;
 static cl_kernel (*p_clCreateKernel)(cl_program, const char*, int*) = NULL;
 static int (*p_clSetKernelArg)(cl_kernel, uint32_t, size_t, const void*) = NULL;
@@ -82,6 +84,8 @@ static int load_opencl_symbols(void) {
     LOAD(clReleaseContext);
     LOAD(clReleaseMemObject);
     LOAD(clCreateBuffer);
+    LOAD(clGetEventProfilingInfo);
+    LOAD(clReleaseEvent);
 #undef LOAD
     return 1;
 }
@@ -127,7 +131,8 @@ static int briev_dev_opencl_init(void) {
         if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateContext failed err=%d\n", err);
         return 0;
     }
-    cl_queue = p_clCreateCommandQueue(cl_ctx, cl_device, 0, &err);
+    // 2026-11-09 (lane ceilings): profiling queue for device-time reporting.
+    cl_queue = p_clCreateCommandQueue(cl_ctx, cl_device, 0x2 /* CL_QUEUE_PROFILING_ENABLE */, &err);
     if (!cl_queue || err != 0) {
         if (g_verbose) fprintf(stderr, "[briev_accel/opencl] clCreateCommandQueue failed err=%d\n", err);
         return 0;
@@ -290,8 +295,23 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     size_t global_size = global_n;
     size_t local_size = k->local_x ? k->local_x : 64;
     if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue global=%zu local=%zu\n", global_size, local_size); fflush(stderr); }
-    err = p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
+    cl_event ev = NULL;
+    err = p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, &ev);
     if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue res=%d\n", err); fflush(stderr); }
+    if (err == 0 && ev && p_clGetEventProfilingInfo) {
+        uint64_t t0 = 0, t1 = 0;
+        p_clFinish(cl_queue);
+        p_clGetEventProfilingInfo(ev, 0x1282 /* START */, sizeof(t0), &t0, NULL);
+        p_clGetEventProfilingInfo(ev, 0x1283 /* END */, sizeof(t1), &t1, NULL);
+        if (g_verbose) fprintf(stderr, "# gpu_time: %.3f ms\n", (double)(t1 - t0) / 1e6);
+        if (p_clReleaseEvent) p_clReleaseEvent(ev);
+        if (err != 0) { p_clReleaseMemObject(buf); return 0; }
+        p_clEnqueueReadBuffer(cl_queue, buf, 0, 0, proj_bytes, proj_out, 0, NULL, NULL);
+        p_clFinish(cl_queue);
+        p_clReleaseMemObject(buf);
+        k->staging = proj_out;
+        return 1;
+    }
     if (err != 0) {
         if (g_verbose) {
             fprintf(stderr, "[briev_accel/opencl] NDRange failed err=%d (global=%zu local=%zu)\n",

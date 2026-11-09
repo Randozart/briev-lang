@@ -67,8 +67,17 @@ typedef struct { uint32_t stype; void* pNext; uint32_t flags; size_t maxFill;
                  uint32_t numQueues; } lz_queue_group_props;
 typedef struct { uint32_t x; uint32_t y; uint32_t z; } lz_group_count;
 
+// 2026-11-09 (lane ceilings): L0 event timing (device time, like Vulkan).
+typedef struct { uint32_t stype; const void* pNext; uint32_t flags; uint32_t count; } lz_event_pool_desc;
+typedef struct { uint32_t stype; const void* pNext; uint32_t index; uint32_t signal; uint32_t wait; } lz_event_desc;
+typedef struct { uint64_t globalStart; uint64_t globalEnd; uint64_t contextStart; uint64_t contextEnd; } lz_kernel_ts;
+
 static void* lz_lib = NULL;
 static int lz_ready = 0;
+// 2026-11-09 (lane ceilings): device timer resolution (ticks/sec) and valid
+// bits for kernel timestamps (ze_device_properties_t offsets 80/92).
+static uint64_t lz_timer_resolution = 0;
+static uint32_t lz_timestamp_valid_bits = 0;
 static lz_handle lz_driver;
 static lz_handle lz_dev;
 static lz_handle lz_ctx;
@@ -98,6 +107,12 @@ static void (*zeKernelDestroy)(lz_handle) = NULL;
 static int (*zeModuleGetKernelNames)(lz_handle, uint32_t*, const char**) = NULL;
 static int (*zeKernelSetArgumentValue)(lz_handle, uint32_t, size_t, const void*) = NULL;
 static int (*zeKernelSetGroupSize)(lz_handle, uint32_t, uint32_t, uint32_t) = NULL;
+static int (*zeEventPoolCreate)(lz_handle, const lz_event_pool_desc*, uint32_t, const lz_handle*, lz_handle*) = NULL;
+static int (*zeEventCreate)(lz_handle, const lz_event_desc*, lz_handle*) = NULL;
+static int (*zeEventDestroy)(lz_handle) = NULL;
+static int (*zeEventPoolDestroy)(lz_handle) = NULL;
+static int (*zeEventHostSynchronize)(lz_handle, uint64_t) = NULL;
+static int (*zeEventQueryKernelTimestamp)(lz_handle, lz_kernel_ts*) = NULL;
 
 static int load_l0_symbols(void) {
     lz_lib = dlopen("libze_loader.so.1", RTLD_LAZY | RTLD_LOCAL);
@@ -131,6 +146,12 @@ static int load_l0_symbols(void) {
     LOAD(zeModuleGetKernelNames);
     LOAD(zeKernelSetArgumentValue);
     LOAD(zeKernelSetGroupSize);
+    LOAD(zeEventPoolCreate);
+    LOAD(zeEventCreate);
+    LOAD(zeEventDestroy);
+    LOAD(zeEventPoolDestroy);
+    LOAD(zeEventHostSynchronize);
+    LOAD(zeEventQueryKernelTimestamp);
 #undef LOAD
     return 1;
 }
@@ -175,6 +196,10 @@ static int briev_dev_levelzero_available(void) {
             if (zeDeviceGetProperties(devs[ei], props) != ZE_SUCCESS) {
                 continue;
             }
+            uint64_t timer_res = 0;
+            uint32_t valid_bits = 0;
+            memcpy(&timer_res, props + 80, 8);
+            memcpy(&valid_bits, props + 92, 4);
             uint32_t dtype, vendor_id, device_id;
             memcpy(&dtype, props + 16, 4);
             memcpy(&vendor_id, props + 20, 4);
@@ -184,6 +209,12 @@ static int briev_dev_levelzero_available(void) {
             }
             lz_driver = drv[di];
             lz_dev = devs[ei];
+            lz_timer_resolution = timer_res;
+            lz_timestamp_valid_bits = valid_bits;
+            if (g_verbose) {
+                fprintf(stderr, "[briev_accel/levelzero] timestamps: res=%llu bits=%u\n",
+                        (unsigned long long)timer_res, valid_bits);
+            }
             snprintf(lz_name, sizeof(lz_name), "levelzero:%x:%x",
                      vendor_id, device_id);
             // Compute queue group ordinal for the immediate list (fallback 0).
@@ -415,7 +446,25 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
     size_t groups = (global_n + local - 1) / local;
     if (groups > 0xFFFFFFFFu) { groups = 0xFFFFFFFFu; }
     lz_group_count gc = { (uint32_t)groups, 1, 1 };
-    res = zeCommandListAppendLaunchKernel(lz_cmd_list, k->kernel, &gc, NULL, 0, NULL);
+    // 2026-11-09 (lane ceilings): timestamp event for device-time reporting.
+    lz_event_pool_desc pd = { 0x10 /* EVENT_POOL_DESC */, NULL, 4 /* KERNEL_TIMESTAMP */, 1 };
+    lz_event_desc ed = { 0x11 /* EVENT_DESC */, NULL, 0, 4 /* HOST scope */, 0 };
+    lz_handle pool = NULL, event = NULL;
+    int ev_res = zeEventPoolCreate(lz_ctx, &pd, 0, NULL, &pool);
+    if (ev_res != ZE_SUCCESS) {
+        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] event pool failed res=%d\n", ev_res);
+    }
+    int have_ev = 0;
+    if (ev_res == ZE_SUCCESS) {
+        ev_res = zeEventCreate(pool, &ed, &event);
+        if (ev_res != ZE_SUCCESS) {
+            if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] event create failed res=%d\n", ev_res);
+        } else {
+            have_ev = 1;
+        }
+    }
+    res = zeCommandListAppendLaunchKernel(lz_cmd_list, k->kernel, &gc,
+                                          have_ev ? event : NULL, 0, NULL);
     if (res != ZE_SUCCESS) {
         if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] append launch failed res=%d groups=%zu\n",
                                res, groups);
@@ -425,6 +474,33 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
     if (res != ZE_SUCCESS) {
         if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] host sync failed res=%d\n", res);
         return 0;
+    }
+    if (have_ev) {
+        zeEventHostSynchronize(event, ZE_TIMEOUT_MAX);
+        lz_kernel_ts ts = {0};
+        int qres = zeEventQueryKernelTimestamp(event, &ts);
+        if (qres != ZE_SUCCESS && g_verbose) {
+            fprintf(stderr, "[briev_accel/levelzero] timestamp query failed res=%d\n", qres);
+        }
+        if (qres == ZE_SUCCESS && g_verbose) {
+            uint64_t mask = lz_timestamp_valid_bits >= 64
+                ? ~(uint64_t)0
+                : ((uint64_t)1 << lz_timestamp_valid_bits) - 1;
+            uint64_t ticks = (ts.globalEnd - ts.globalStart) & mask;
+            // NEO reports timerResolution as NANOSECONDS PER TICK (52 on
+            // PTL), not cycles/sec: ticks * resolution = ns. Keep the
+            // spec-shaped cycles/sec branch for drivers that report a large
+            // frequency.
+            double ms = 0.0;
+            if (lz_timer_resolution > 0 && lz_timer_resolution < 1000000) {
+                ms = (double)ticks * (double)lz_timer_resolution / 1e6;
+            } else if (lz_timer_resolution > 0) {
+                ms = (double)ticks * 1000.0 / (double)lz_timer_resolution;
+            }
+            fprintf(stderr, "# gpu_time: %.3f ms\n", ms);
+        }
+        zeEventDestroy(event);
+        zeEventPoolDestroy(pool);
     }
     memcpy(proj_out, k->staging, proj_bytes);
     return 1;

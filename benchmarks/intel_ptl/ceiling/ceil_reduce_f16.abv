@@ -1,0 +1,17 @@
+// Ceiling matrix: serial row sum out[i] = sum_k x[i*K + k], f16 storage.
+// General lane (no reassociation license): one serial K loop per work item.
+const ROWS: Int = 4096;
+const K: Int = 1024;
+let i: Int = 0;
+let x: Float16[4194304];
+let y: Float16[4096];
+
+async accel node rowsum [i < ROWS][i == ROWS] {
+    let acc: Float = 0.0;
+    foreach k in 0..K {
+        acc = acc + (x[i * K + k] as Float);
+    };
+    y[i] = acc as Float16;
+    i = i + 1;
+    term;
+};

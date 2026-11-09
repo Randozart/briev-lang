@@ -208,6 +208,25 @@ $defn dot(
     obuf[widx] = acc;
 };
 
+// matmul_f16! — the declared GEMM with f16 STORAGE and f32 accumulation.
+// 2026-11-09: Float16 has no arithmetic operator surface (only casts), so
+// the canonical f32 body above cannot express an f16 accumulator. This twin
+// keeps the same declared structure (the tensor lowerings derive M, N, K and
+// the field names from it) with a concrete `as Float16` store.
+$defn matmul_f16(
+    abuf: Expr, bbuf: Expr, ybuf: Expr,
+    mlen: Expr, nlen: Expr, klen: Expr, idx: Expr,
+    m: ExprItem, n: ExprItem, kk: ExprItem, acc: ExprItem
+) {
+    let acc: Float = 0.0;
+    let m: Int = idx / nlen;
+    let n: Int = idx % nlen;
+    foreach kk in 0..klen {
+        acc = acc + (abuf[m * klen + kk] as Float) * (bbuf[kk * nlen + n] as Float);
+    }
+    ybuf[idx] = acc as Float16;
+};
+
 // softmax_rows! — the DECLARED row-per-work-item softmax (plan
 // 2026-10-03-declared-dot-detect-reduction-rung.md, the softmax-branch
 // residual): the three-pass form — Max# fold, Exp# sum, normalize — one

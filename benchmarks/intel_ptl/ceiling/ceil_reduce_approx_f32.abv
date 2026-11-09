@@ -1,0 +1,16 @@
+// Ceiling matrix: row sum with the reassociation license (sum fold lane).
+const ROWS: Int = 4096;
+const K: Int = 1024;
+let i: Int = 0;
+let x: Float[4194304];
+let y: Float[4096];
+
+approx async accel node rowsum [i < ROWS][i == ROWS] {
+    let acc: Float = 0;
+    foreach k in 0..K {
+        acc = acc + x[i * K + k];
+    };
+    y[i] = acc;
+    i = i + 1;
+    term;
+};

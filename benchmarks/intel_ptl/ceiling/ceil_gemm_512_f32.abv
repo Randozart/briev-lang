@@ -1,0 +1,15 @@
+// Ceiling matrix: declared GEMM (matmul!) 512^3, f32 storage.
+import "std/numeric.bv";
+const M: Int = 512;
+const N: Int = 512;
+const K: Int = 512;
+let i: Int = 0;
+let a: Float[262144];
+let b: Float[262144];
+let y: Float[262144];
+
+async accel node gemm [i < M * N][i == M * N] {
+    matmul!(a, b, y, M, N, K, i, Float);
+    i = i + 1;
+    term;
+};

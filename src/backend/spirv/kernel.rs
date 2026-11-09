@@ -278,7 +278,14 @@ pub fn emit_kernel(
         if let Some(elem) = elem {
             if let Ok(crate::casting::graph::SpirvShape::Float { bits: 16 }) = builder.shape_of(&elem) {
                 builder.builder.capability(rspirv::spirv::Capability::Float16);
-                builder.builder.capability(rspirv::spirv::Capability::StorageBuffer16BitAccess);
+                // 2026-11-09 (Stage F f16): OpenCL stores f16 through
+                // CrossWorkgroup pointers (Float16Buffer); Vulkan needs the
+                // Shader-only 16-bit storage capability.
+                if builder.is_opencl() {
+                    builder.builder.capability(rspirv::spirv::Capability::Float16Buffer);
+                } else {
+                    builder.builder.capability(rspirv::spirv::Capability::StorageBuffer16BitAccess);
+                }
                 break;
             }
         }
@@ -366,18 +373,6 @@ pub fn emit_kernel(
                  (images are kernel arguments in OpenCL, not descriptors); \
                  the Vulkan image handles this kernel"
             ));
-        }
-        for f in &state_fields {
-            let elem = match &f.ty {
-                Type::Vector(inner, _) => (**inner).clone(),
-                other => other.clone(),
-            };
-            if matches!(builder.shape_of(&elem)?, crate::casting::graph::SpirvShape::Float { bits: 16 }) {
-                return Err(format!(
-                    "node '{kernel_name}': OpenCL projection does not cover f16 state yet \
-                     (16-bit storage capability); the Vulkan image handles this kernel"
-                ));
-            }
         }
     }
     let (ssbo_var, state_offsets, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {

@@ -20,7 +20,7 @@ let v: Float16[16384];
 let o: Float16[16384];
 
 async node qk [i < M * N][i == M * N] {
-    matmul!(q, kt, s, M, N, K, i, Float16);
+    matmul_f16!(q, kt, s, M, N, K, i);
     i = i + 1;
     term;
 };
@@ -32,7 +32,7 @@ async node scale [j < M * N][j == M * N] {
 };
 
 async node pv [l < M * N][l == M * N] {
-    matmul!(s2, v, o, M, N, K, l, Float16);
+    matmul_f16!(s2, v, o, M, N, K, l);
     l = l + 1;
     term;
 };
