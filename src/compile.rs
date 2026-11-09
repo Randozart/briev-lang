@@ -517,7 +517,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees
     // a body whose semantics the interpreter would unwind early.
     {
-        let (term_errors, term_warnings) = briev_compiler::analysis::termination::analyze(&items);
+        let (term_errors, term_warnings) = briev_compiler::analysis::termination::analyze_dual(&items);
         for w in &term_warnings {
             eprintln!("warning: {w}");
         }
@@ -772,12 +772,12 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-08-01: wire the trigger->handler watchdog analysis into the
     // pipeline, and validate the `-> handler(val)` on-fire callback (the
     // handler must exist and be callable with the last computed value).
-    let watchdog_errors = briev_compiler::analysis::watchdog::analyze(&items);
+    let watchdog_errors = briev_compiler::analysis::watchdog::analyze_dual(&items);
     if !watchdog_errors.is_empty() {
         let msgs: Vec<String> = watchdog_errors.iter().map(|e| e.to_string()).collect();
         return Err(format!("watchdog errors:\n{}", msgs.join("\n")));
     }
-    briev_compiler::analysis::watchdog::check_on_fire_handlers(&items)
+    briev_compiler::analysis::watchdog::check_on_fire_handlers_dual(&items)
         .map_err(|e| format!("watchdog error:\n{}", e))?;
 
     // ── Protocol round-trip verification ──────────────────────────────

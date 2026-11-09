@@ -103,12 +103,12 @@ surfaces still walk the AST:
    (declared parent links) and `HirProgram.trait_functions` (ALL trait
    function names — callable lowering skips body-less requirement slots,
    so conformance reads this table).
-   **Ported, PORT-ONLY (2026-11-05):** `termination` —
-   `src/hir/termination.rs`, 4 curated parity tests. The flip is deferred:
-   its consumers (`compile.rs`, `pipeline.rs`) run BEFORE the backend
-   builds HIR, so the pipeline must own an HIR build first (candidate for
-   the flip batch). Coverage note: top-level non-let statements cannot be
-   mirrored (HIR carries globals only) — inert for this rule.
+   **Ported + consumer flipped (2026-11-09, H5 Leg B):** `termination` —
+   `src/hir/termination.rs`, 4 curated parity tests. `analyze_dual` lowers a
+   fresh HIR at the analysis point (before the plugin stages, by design) and
+   uses it under `BRIEV_HIR_EMIT`, with the AST result as fallback and debug
+   oracle. Coverage note: top-level non-let statements cannot be mirrored
+   (HIR carries globals only) — inert for this rule.
    **Already HIR-sourced transitively:** `batch_shape` — its input map
    comes from `build_swan_songs`, which is HIR-derived under the flag
    (H4 slice B). No port needed; add it to the flip-batch verification
@@ -122,10 +122,13 @@ surfaces still walk the AST:
    (HIR had only a `has_triggers` bool), and `HirCallable.is_impl_fn`
    (the on-fire callable set = bare txns/defns + type members; impl
    functions excluded — the AST walker never unwraps impl blocks).
-   PORT-ONLY: consumers run in the pipeline before HIR exists (same
-   pipeline-HIR batch as termination). Parser note for fixtures: watchdog
-   syntax is `?[cond]` / `![cond] -> handler(val)` after the postcondition
-   brackets — no `@`; trigger references in guards are bare identifiers.
+   **Ported + consumer flipped (2026-11-09, H5 Leg B):** `analyze_dual` and
+   `check_on_fire_handlers_dual` build a fresh HIR at the watchdog point
+   (after the plugin stages, before the backend tree) and use it under
+   `BRIEV_HIR_EMIT`, with the AST result as fallback/debug oracle. Parser
+   note for fixtures: watchdog syntax is `?[cond]` / `![cond] ->
+   handler(val)` after the postcondition brackets — no `@`; trigger
+   references in guards are bare identifiers.
    **Ported + consumer flipped (2026-11-05):** `global_lifetime` —
    `src/hir/global_lifetime.rs`, consumer flipped with a debug equality
    assert. The field-initializer map is dual-built (HIR: state decls get

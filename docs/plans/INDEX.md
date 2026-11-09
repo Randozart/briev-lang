@@ -13,6 +13,14 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**H5 completion next leg (2026-11-09, ACTIVE):**
+`docs/plans/2026-11-09-h5-completion-next-leg.md` — Leg B pipeline-HIR
+flips DONE (termination + watchdog under the flag with AST debug oracles);
+next: P5 pass-level snapshots → all-three seam refactors (Defer,
+ArrowAssign, Lambda/Spawn) → A2 typing + `emit_match` bodies → H5 ports
+(reclamation parity first, then electronics/accel/gpu_schedule) → default
+flip with owner sign-off. Nightly verification workflow lands with P3.
+
 **Verification program (2026-11-09, umbrella):**
 `docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
 verification hardening (typed + structure invariants, always-on in debug,
