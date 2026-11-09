@@ -1,0 +1,3 @@
+// `break` needs an enclosing foreach.
+// EXPECT-ERROR: may only appear inside a 'foreach' body
+defn f() -> Int { break; term 1; };

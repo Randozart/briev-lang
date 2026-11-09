@@ -63,7 +63,7 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
 - Acceptance: corpus sweep 0 mismatch; `cargo test --all` green; no IR change
   (`hir_emit_ab.sh --quick` byte-identical).
 
-### P2 — Compile-fail runner + corpus — TODO (per-commit)
+### P2 — Compile-fail runner + corpus — DONE (per-commit, 2026-11-09)
 
 - `src/test_runner.rs` directives:
   `// RUN: --backend llvm --optimize-budget 0` · `// EXPECT-ERROR: <substr>`
@@ -74,7 +74,7 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
 - Acceptance: every diagnostic family covered; runner names the missing
   substring; suite < ~60 s.
 
-### P3 — Differential gates — TODO (quick per-commit, full nightly)
+### P3 — Differential gates — ACTIVE (opt-level quick DONE; interpreter/wasm/full queued)
 
 - `tests/opt_level_parity.rs`: eligible tier1 fixtures → one `.ll` →
   `-O0`/`-O2`/`-O3` link+run, compare stdout/exit. Explicit skip list with
@@ -154,3 +154,23 @@ cast path, clean-pass control). Gates: `cargo test --all` 3611 pass (before
 the P1 refactor; 3568 lib + negatives after), corpus sweep 139/0 mismatch
 with always-on verification, `hir_emit_ab --quick` byte-identical, Praetor
 clean on `src/hir`.
+
+**P2 (2026-11-09, DONE).** `brievc test` now understands comment directives
+(`RUN:`, `EXPECT-ERROR:` all-substrings, `EXPECT-STDOUT:` inline,
+`EXPECT-EXIT:`); `.golden` behavior is unchanged and mutually exclusive with
+an inline stdout pin. New `tests/compile_fail/` (13 cases: law-surface
+migration, tautology, missing contract, undefined name, break placement, `if`
+keyword, duplicate init, type mismatch, component reference) and
+`tests/directives/` (inline stdout proof). `tests/diagnostics.rs` runs both
+suites through the real binary. The runner is split into
+`check_compile_fail`/`run_program` and Praetor-clean. Runtime ~4 s.
+
+**P3 (opt-level slice, 2026-11-09).** `tests/opt_level_parity.rs` compiles one
+`.ll` per fixture and links/runs it at `-O0`, `-O2`, `-O3`, comparing stdout
+and exit code against the `-O0` arm. Quick mode (4 fixtures, no LTO) runs in
+~20 s; `OPT_MATRIX_FULL=1` enumerates every program-surface tier1 fixture and
+uses the harness `-O3 -flto` pipeline for the top arm. Internal deadlines
+(build 120 s, link 300 s, run 10 s) keep a non-terminating fixture from
+stalling CI; known non-terminating/idle fixtures belong in `SKIP` with a
+BUGS.md reason (the list may only shrink). Still queued: full corpus run and
+skip inventory, interpreter-vs-compiled, wasm cross-backend, nightly workflow.

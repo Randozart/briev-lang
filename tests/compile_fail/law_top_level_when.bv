@@ -1,0 +1,4 @@
+// The law head is `hold`; top-level `when` is a targeted error.
+// EXPECT-ERROR: `when` is the runtime guard
+let x: Bool = true;
+when x { x = true; }

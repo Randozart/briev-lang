@@ -1,0 +1,4 @@
+// Nodes must declare pre/post conditions.
+// EXPECT-ERROR: must declare a contract
+let x: Int = 0;
+node n { x = 1; };

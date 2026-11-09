@@ -1,0 +1,8 @@
+// Inline stdout pin: no sibling .golden needed.
+// EXPECT-STDOUT: 2
+let done: Bool = false;
+node main [done == false][done == true] {
+    println!(1 + 1);
+    done = true;
+    term;
+};

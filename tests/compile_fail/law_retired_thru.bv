@@ -1,0 +1,3 @@
+// The mechanism strategy clause is spelled `through`.
+// EXPECT-ERROR: strategy clause is spelled `through`
+node n [true][true] { hold true { term; } thru Fet; };

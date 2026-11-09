@@ -1,0 +1,3 @@
+// An obj/type-body law uses `hold`.
+// EXPECT-ERROR: obj/type-body law of fact is declared with `hold`
+obj Sensor { temperature: Int; when temperature > 100 { alarm = true; } };

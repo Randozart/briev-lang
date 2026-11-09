@@ -9,9 +9,17 @@
 // PASS = exit 0, plus a byte-equal stdout match when a sibling `<name>.golden`
 // file exists (the daily_use_smoke golden convention, generalized).
 //
-// v1 scope: no new language surface — a test IS a program whose success is
-// its exit code; contracts already assert. To undo: remove the main.rs arm
-// + this module.
+// v2 (2026-11-09, verification program P2): comment directives add
+// compile-fail tests and per-test options without new language surface:
+//
+//   // RUN: --backend llvm --optimize-budget 0   extra build arguments
+//   // EXPECT-ERROR: <substring>                 build MUST fail; every
+//                                               listed substring must appear
+//   // EXPECT-STDOUT: <text>                     inline stdout pin (one line
+//                                               per directive, newline-joined)
+//   // EXPECT-EXIT: <n>                         expected exit code (default 0)
+//
+// A compile-fail test never links/runs and cannot also pin stdout.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,7 +30,17 @@ pub struct TestOutcome {
     pub detail: String,
 }
 
-fn spawn_build(exe: &Path, bv: &Path, scratch: &Path) -> Result<(), String> {
+struct BuildOutcome {
+    success: bool,
+    output: String,
+}
+
+fn spawn_build(
+    exe: &Path,
+    bv: &Path,
+    scratch: &Path,
+    extra: &[String],
+) -> Result<BuildOutcome, String> {
     let out = Command::new(exe)
         .args([
             "build",
@@ -31,12 +49,59 @@ fn spawn_build(exe: &Path, bv: &Path, scratch: &Path) -> Result<(), String> {
             "--out",
             &scratch.to_string_lossy(),
         ])
+        .args(extra)
         .output()
         .map_err(|e| format!("spawn brievc build: {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).into_owned())
+    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+    output.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(BuildOutcome {
+        success: out.status.success(),
+        output,
+    })
+}
+
+#[derive(Default)]
+struct Directives {
+    run_args: Vec<String>,
+    expect_errors: Vec<String>,
+    expect_stdout: Option<String>,
+    expect_exit: i32,
+}
+
+fn parse_directives(src: &str) -> Directives {
+    let mut d = Directives::default();
+    let mut stdout = String::new();
+    for line in src.lines() {
+        apply_directive(line, &mut d, &mut stdout);
+    }
+    if !stdout.is_empty() {
+        d.expect_stdout = Some(stdout);
+    }
+    d
+}
+
+fn apply_directive(line: &str, d: &mut Directives, stdout: &mut String) {
+    let Some(rest) = line.trim().strip_prefix("//") else {
+        return;
+    };
+    let rest = rest.trim();
+    if let Some(args) = rest.strip_prefix("RUN:") {
+        d.run_args.extend(args.split_whitespace().map(str::to_string));
+        return;
+    }
+    if let Some(needle) = rest.strip_prefix("EXPECT-ERROR:") {
+        d.expect_errors.push(needle.trim().to_string());
+        return;
+    }
+    if let Some(text) = rest.strip_prefix("EXPECT-STDOUT:") {
+        stdout.push_str(text.trim_start());
+        stdout.push('\n');
+        return;
+    }
+    if let Some(code) = rest.strip_prefix("EXPECT-EXIT:") {
+        if let Ok(code) = code.trim().parse() {
+            d.expect_exit = code;
+        }
     }
 }
 
@@ -85,46 +150,92 @@ fn run_one(exe: &Path, bv: &Path, root: &Path) -> TestOutcome {
     if let Err(e) = std::fs::create_dir_all(&scratch) {
         return TestOutcome { name, passed: false, detail: format!("scratch dir: {e}") };
     }
-    // Readability precheck only — spawn_build re-reads the file itself.
-    // Keeps a missing/unreadable source failing as `read:` before `build:`.
-    let _src = match std::fs::read_to_string(bv) {
+    let src = match std::fs::read_to_string(bv) {
         Ok(s) => s,
         Err(e) => return TestOutcome { name, passed: false, detail: format!("read: {e}") },
     };
-    if let Err(e) = spawn_build(exe, bv, &scratch) {
-        return TestOutcome { name, passed: false, detail: format!("build failed:\n{e}") };
-    }
-    let (stdout, code) = match link_and_run(&scratch, &name) {
-        Ok(r) => r,
+    let dirs = parse_directives(&src);
+    let build = match spawn_build(exe, bv, &scratch, &dirs.run_args) {
+        Ok(b) => b,
         Err(e) => return TestOutcome { name, passed: false, detail: e },
     };
-    if code != 0 {
+    if !dirs.expect_errors.is_empty() {
+        return check_compile_fail(name, &dirs, &build);
+    }
+    if !build.success {
+        return TestOutcome { name, passed: false, detail: format!("build failed:\n{}", build.output) };
+    }
+    run_program(name, bv, &dirs, &scratch)
+}
+
+/// A compile-fail case: the build must fail and every expected substring must
+/// appear in the combined compiler output.
+fn check_compile_fail(name: String, dirs: &Directives, build: &BuildOutcome) -> TestOutcome {
+    if build.success {
         return TestOutcome {
             name,
             passed: false,
-            detail: format!("exit code {code}"),
+            detail: "expected a compile failure, but the build succeeded".to_string(),
         };
     }
-    // Golden: a sibling `<name>.golden` pins stdout byte-for-byte.
+    let missing: Vec<&String> = dirs
+        .expect_errors
+        .iter()
+        .filter(|needle| !build.output.contains(needle.as_str()))
+        .collect();
+    if !missing.is_empty() {
+        return TestOutcome {
+            name,
+            passed: false,
+            detail: format!(
+                "missing expected diagnostic(s) {missing:?}; compiler output:\n{}",
+                build.output.trim()
+            ),
+        };
+    }
+    TestOutcome { name, passed: true, detail: String::new() }
+}
+
+/// A run-pass case: link, run, then check exit code and stdout (inline
+/// directive or sibling `.golden`).
+fn run_program(name: String, bv: &Path, dirs: &Directives, scratch: &Path) -> TestOutcome {
+    let (stdout, code) = match link_and_run(scratch, &name) {
+        Ok(r) => r,
+        Err(e) => return TestOutcome { name, passed: false, detail: e },
+    };
+    if code != dirs.expect_exit {
+        return TestOutcome {
+            name,
+            passed: false,
+            detail: format!("exit code {code} (expected {})", dirs.expect_exit),
+        };
+    }
     let golden_path = bv.with_extension("golden");
-    if golden_path.exists() {
-        match std::fs::read_to_string(&golden_path) {
-            Ok(expected) => {
-                if stdout != expected {
-                    return TestOutcome {
-                        name,
-                        passed: false,
-                        detail: format!(
-                            "golden mismatch:\n  expected: {:?}\n  got:      {:?}",
-                            expected, stdout
-                        ),
-                    };
-                }
+    let expected = match &dirs.expect_stdout {
+        Some(inline) => {
+            if golden_path.exists() {
+                return TestOutcome {
+                    name,
+                    passed: false,
+                    detail: "both EXPECT-STDOUT and a .golden file are present; pick one".to_string(),
+                };
             }
+            inline.clone()
+        }
+        None if golden_path.exists() => match std::fs::read_to_string(&golden_path) {
+            Ok(text) => text,
             Err(e) => {
                 return TestOutcome { name, passed: false, detail: format!("golden read: {e}") }
             }
-        }
+        },
+        None => return TestOutcome { name, passed: true, detail: String::new() },
+    };
+    if stdout != expected {
+        return TestOutcome {
+            name,
+            passed: false,
+            detail: format!("stdout mismatch:\n  expected: {expected:?}\n  got:      {stdout:?}"),
+        };
     }
     TestOutcome { name, passed: true, detail: String::new() }
 }

@@ -1,0 +1,4 @@
+// An init is seeded exactly once.
+// EXPECT-ERROR: duplicate `init` declaration for 'x'
+init x: Int = 1;
+init x: Int = 2;
