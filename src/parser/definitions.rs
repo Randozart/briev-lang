@@ -7776,6 +7776,33 @@ mod tests {
     }
 
     #[test]
+    fn test_unclaimed_bare_attr_warns_once() {
+        // A registered key (readonly, owner llvm) is claimed by the vocab.
+        let src = "attr readonly: true;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_top_level().unwrap();
+        assert!(p.warnings.is_empty(), "claimed key must not warn: {:?}", p.warnings);
+
+        // An unregistered bare key has no consumer → one advisory warning,
+        // deduped across occurrences.
+        let src = "attr unrelated_key: 1;\nattr unrelated_key: 2;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_program().unwrap();
+        assert_eq!(p.warnings.len(), 1, "one warning per key: {:?}", p.warnings);
+        assert!(p.warnings[0].contains("unrelated_key"), "{:?}", p.warnings);
+        assert!(p.warnings[0].contains("unclaimed"), "{:?}", p.warnings);
+
+        // Owned attrs are claimed by construction — never warn.
+        let src = "attr<plugin_x> anything: 1;";
+        let tokens = tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        p.parse_top_level().unwrap();
+        assert!(p.warnings.is_empty(), "owned attr must not warn: {:?}", p.warnings);
+    }
+
+    #[test]
     fn test_attr_owner_validates_known_schema() {
         // Known owner + unregistered key → error naming the claiming owner.
         let src = "attr<llvm> convergence: tight;";

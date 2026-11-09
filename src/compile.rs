@@ -32,7 +32,7 @@ pub use briev_compiler::pipeline::{
 };
 use briev_compiler::pipeline::{
     build_plugin_manager, check_types, compile_view, effective_view_html,
-    evaluate_pending_comptime, lex_for_path, load_target_config, parse,
+    evaluate_pending_comptime, lex_for_path, load_target_config, parse_with_warnings,
     preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs,
     view_external_roots, view_root_signals, CompiledView, ViewMountSpecs,
 };
@@ -281,7 +281,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // ── Parse ─────────────────────────────────────────────────────────
     let tokens = lex_for_path(file_path, &source)?;
-    let mut items = parse(file_path, &tokens, &source)?;
+    let (mut items, parse_warnings) = parse_with_warnings(file_path, &tokens, &source)?;
+    for warning in &parse_warnings {
+        eprintln!("warning: {warning}");
+    }
 
     // 2026-09-30 (D30): the `###` module-config block — extracted, applied
     // with block > --config-dir > built-in precedence (after the CLI's dir

@@ -94,10 +94,33 @@ impl<'a> Parser<'a> {
     ) -> Result<(String, PropertyValue), SyntaxError> {
         let key = self.parse_metadata_key()?;
         self.validate_attr_key(owner, &key)?;
+        self.warn_if_unclaimed(owner, &key);
         self.expect(Token::Colon)?;
         let val = self.parse_metadata_value()?;
         self.expect(Token::Semicolon)?;
         Ok((key, val))
+    }
+
+    /// A bare attr (`attr key: value;`) with no registered consumer is a
+    /// no-op for every backend. Warn once per key; owned attrs are claimed by
+    /// construction and never warn here.
+    fn warn_if_unclaimed(&mut self, owner: Option<&str>, key: &str) {
+        if owner.is_some() {
+            return;
+        }
+        let claimed = crate::meta_vocab::vocab().owner_of(key).is_some()
+            || crate::meta_vocab::vocab().field_def(key).is_some();
+        if claimed {
+            return;
+        }
+        let msg = format!(
+            "attr `{key}` is unclaimed — no consumer registers this key, so it \
+             is ignored. fix: attach the claiming owner (`attr<owner> {key}: …;`) \
+             or drop the key."
+        );
+        if !self.warnings.contains(&msg) {
+            self.warnings.push(msg);
+        }
     }
 
     /// Known owners (`llvm`, `webstack`, `mcmc`, `compiler`, …) validate their

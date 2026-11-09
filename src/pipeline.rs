@@ -1072,7 +1072,10 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     let mut source = preprocessed.briev_source;
     pm.run_source(StageKind::PreLex, &mut source)?;
     let tokens = lex_for_path(file_path, &source)?;
-    let mut items = parse(file_path, &tokens, &source)?;
+    let (mut items, parse_warnings) = parse_with_warnings(file_path, &tokens, &source)?;
+    for warning in &parse_warnings {
+        eprintln!("warning: {warning}");
+    }
     extract_inline_stage_blocks(&mut items, &mut pm);
     {
         let mut eval_universe = TypeUniverse::new();
@@ -1192,7 +1195,10 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     }
     pm.run_source(StageKind::PreLex, &mut source)?;
     let tokens = lex_for_path(file_path, &source)?;
-    let mut items = parse(file_path, &tokens, &source)?;
+    let (mut items, parse_warnings) = parse_with_warnings(file_path, &tokens, &source)?;
+    for warning in &parse_warnings {
+        eprintln!("warning: {warning}");
+    }
     extract_inline_stage_blocks(&mut items, &mut pm);
     {
         let mut eval_universe = TypeUniverse::new();
@@ -1350,8 +1356,21 @@ pub fn lex_for_path(
 }
 
 pub fn parse(file_path: &str, tokens: &[(Token, std::ops::Range<usize>)], source: &str) -> Result<Vec<crate::ast::TopLevel>, String> {
+    parse_with_warnings(file_path, tokens, source).map(|(items, _)| items)
+}
+
+/// 2026-11-08 (attr plan): the parse plus its advisory diagnostics (unclaimed
+/// bare attrs). Callers that surface warnings use this; `parse` drops them.
+pub fn parse_with_warnings(
+    file_path: &str,
+    tokens: &[(Token, std::ops::Range<usize>)],
+    source: &str,
+) -> Result<(Vec<crate::ast::TopLevel>, Vec<String>), String> {
     let mut parser = crate::parser::Parser::new(tokens.to_vec(), source);
-    parser.parse_program().map_err(|e| format!("{}: parse error: {}", file_path, e))
+    let items = parser
+        .parse_program()
+        .map_err(|e| format!("{}: parse error: {}", file_path, e))?;
+    Ok((items, parser.warnings))
 }
 
 pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String> {
@@ -1435,6 +1454,18 @@ mod tests {
     use super::*;
     use crate::glue::web_generator::{BindRoute, ParamKind};
     use crate::view_compiler::{Binding, Directive, ItemBinding, ItemDirective};
+
+    #[test]
+    fn parse_surfaces_unclaimed_attr_warnings() {
+        // 2026-11-08 (attr plan): the advisory channel reaches callers that
+        // surface warnings; registered keys stay silent.
+        let src = "attr ghost_key: 1;\nattr readonly: true;";
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        let (_, warnings) = parse_with_warnings("t.bv", &tokens, src).expect("parse");
+        assert_eq!(warnings.len(), 1, "one unclaimed-key warning: {warnings:?}");
+        assert!(warnings[0].contains("ghost_key"));
+        assert!(!warnings[0].contains("readonly"));
+    }
 
     #[test]
     fn browser_root_imports_plain_briev_module_with_browser_prelude() {

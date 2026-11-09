@@ -36,6 +36,10 @@ pub struct Parser<'a> {
     /// Mirrors the C typedef-table approach; includes primitives, hashwords,
     /// and in-file `type`/`struct`/`obj`/`enum`/`meld` declaration names.
     pub known_types: HashSet<String>,
+    /// 2026-11-08 (attr plan): advisory diagnostics collected during the
+    /// parse (unclaimed bare attrs). The compiler surfaces them; the parser
+    /// remains error-only.
+    pub warnings: Vec<String>,
     /// 2026-09-22 (unified-metaprogramming plan): the most recently parsed
     /// `...name` rest parameter (TypeScript-style), recorded by
     /// `parse_parameter_list`. Compile-time `$defn`/`$txn` paths consume it
@@ -51,6 +55,7 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(tokens: Vec<(Token, std::ops::Range<usize>)>, source: &'a str) -> Self {
         let mut p = Parser {
+            warnings: Vec::new(),
             known_types: HashSet::new(),
             tokens,
             pos: 0,

@@ -1609,6 +1609,11 @@ unowned key still resolves to its consumer. Unknown owner names are accepted
 (plugin domains); a known owner validates its keys. `attr<accel>` does not
 exist — the offload policy is a compiler mode (§9.7).
 
+**Claiming.** Every key names a consumer. A bare attr (`attr key: value;`)
+whose key is not registered in the metadata vocabulary warns once: no backend
+consults it. Fix by attaching the claiming owner (`attr<owner> key: …;`) or
+removing the key. Owned attrs are claimed by construction and never warn.
+
 `attr` is legal at module, type, defn, node, and txn level (and on statements
 inside a body). It never replaces `spec`, which stays type-body-only. Metadata
 keys and values are lowercase; values use the declaration-metadata grammar

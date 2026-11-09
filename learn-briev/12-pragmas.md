@@ -173,7 +173,9 @@ Diagnostic output shows the compiler's reasoning at compile time:
 ## Consumer Metadata (`attr`) in Body Blocks
 
 The `attr key: value;` declaration attaches non-physical consumer metadata
-(backend, plugin, tooling) inside type and body blocks. Physical layout is
+(backend, plugin, tooling) inside type and body blocks. An unclaimed bare key
+(no registered consumer) warns once and is ignored; attach the claiming owner
+(`attr<owner>`) or drop it. Physical layout is
 `spec` (§8.2); behaviour is contracts and operators. `attr` never changes
 observable meaning. An optional owner (`attr<llvm> { … }`) names the schema
 that claims the keys; the owner is a validation hint — keys are globally
