@@ -16,8 +16,9 @@ warns).
 **H5 completion next leg (2026-11-09, ACTIVE):**
 `docs/plans/2026-11-09-h5-completion-next-leg.md` — Leg B pipeline-HIR
 flips DONE (termination + watchdog under the flag with AST debug oracles);
-next: P5 pass-level snapshots → all-three seam refactors (Defer,
-ArrowAssign, Lambda/Spawn) → A2 typing + `emit_match` bodies → H5 ports
+P5 pass-level snapshots DONE (`hir::render` + tests/snapshots/hir) → next:
+all-three seam refactors (Defer, ArrowAssign, Lambda/Spawn) → A2 typing +
+`emit_match` bodies → H5 ports
 (reclamation parity first, then electronics/accel/gpu_schedule) → default
 flip with owner sign-off. Nightly verification workflow lands with P3.
 

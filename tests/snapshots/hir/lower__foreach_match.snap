@@ -1,0 +1,26 @@
+program
+  callable f kind=Defn owner=None exported=false symbol=None result=Some(Custom("Int")) type_params=[] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+    params [xs: Applied("List", [Custom("Int")])]
+    contract pre
+      expr#NodeId(0) ty=Custom("Bool") lit Bool(true)
+    contract post
+      expr#NodeId(1) ty=Custom("Bool") lit Bool(true)
+    let#NodeId(4) acc names=["acc"] ty=Some(Custom("Int")) mods=[]
+      expr#NodeId(3) ty=Custom("Int") lit Int(0)
+    foreach#NodeId(11) v mods=[]
+      expr#NodeId(5) ty=- ident xs
+      assign#NodeId(10)
+        expr#NodeId(6) ty=- ident acc
+        expr#NodeId(9) ty=- binary Add
+          expr#NodeId(7) ty=- ident acc
+          expr#NodeId(8) ty=- ident v
+    term#NodeId(19)
+      expr#NodeId(18) ty=- match
+        expr#NodeId(12) ty=- ident acc
+        expr-arm
+          pattern#NodeId(14) "literal"
+            expr#NodeId(13) ty=Custom("Int") lit Int(0)
+          expr#NodeId(15) ty=Custom("Int") lit Int(0)
+        expr-arm
+          pattern#NodeId(16) "wildcard"
+          expr#NodeId(17) ty=- ident acc

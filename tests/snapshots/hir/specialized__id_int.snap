@@ -1,0 +1,8 @@
+  callable id$Int kind=Defn owner=None exported=false symbol=None result=Some(Custom("Int")) type_params=[] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+    params [x: Custom("Int")]
+    contract pre
+      expr#NodeId(1) ty=Custom("Bool") lit Bool(true)
+    contract post
+      expr#NodeId(2) ty=Custom("Bool") lit Bool(true)
+    term#NodeId(4)
+      expr#NodeId(5) ty=- ident x

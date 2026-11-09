@@ -1,0 +1,18 @@
+program
+  callable id kind=Defn owner=None exported=false symbol=None result=Some(Custom("T")) type_params=["T"] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+    params [x: Custom("T")]
+    contract pre
+      expr#NodeId(0) ty=Custom("Bool") lit Bool(true)
+    contract post
+      expr#NodeId(1) ty=Custom("Bool") lit Bool(true)
+    term#NodeId(4)
+      expr#NodeId(3) ty=Custom("T") ident x
+  callable use_it kind=Defn owner=None exported=false symbol=None result=Some(Custom("Int")) type_params=[] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+    params []
+    contract pre
+      expr#NodeId(6) ty=Custom("Bool") lit Bool(true)
+    contract post
+      expr#NodeId(7) ty=Custom("Bool") lit Bool(true)
+    term#NodeId(11)
+      expr#NodeId(10) ty=Custom("T") call id analysis=None
+        expr#NodeId(9) ty=Custom("Int") lit Int(7)

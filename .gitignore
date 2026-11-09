@@ -25,6 +25,7 @@ tests/*
 !tests/fixtures
 !tests/compile_fail
 !tests/directives
+!tests/snapshots
 !tests/*.mjs
 # Generated .ll snapshots inside the fixture dirs stay ignored.
 tests/tier1/*.ll

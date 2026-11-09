@@ -55,7 +55,7 @@ AST mutations.
 flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 `src/analysis`, `src/pipeline*`, `src/compile*` changed dirs.
 
-## P5 — pass-level snapshots (second)
+## P5 — pass-level snapshots (second, DONE 2026-11-09)
 
 - `hir::render`: deterministic canonical HIR text (ids, kinds, types, markers).
 - `tests/hir_snapshots.rs` + `tests/snapshots/hir/*.snap`, refresh via
@@ -128,3 +128,14 @@ vs 551–567 ms HIR; sweep_sparse 488–501 vs 498–508; linked_list 480–496 
 529–530 (~5–9% on small programs, flag-only). Gates: `cargo test --all` 3620
 pass; corpus sweep 139/0 with the flag on (debug oracles armed); HIR-emit A/B
 byte-identical; termination 16 / watchdog 37 module tests.
+
+**P5 (2026-11-09, DONE).** `hir::render` renders a deterministic canonical
+HIR text (ids, best-effort types, law markers, cast paths, contracts,
+specialized callables). `tests/hir_snapshots.rs` pins lower/typed snapshots
+for five focused fixtures plus one specialization snapshot under
+`tests/snapshots/hir/`; refresh with `UPDATE_SNAPSHOTS=1`. The renderer is
+order-stable by construction (vec order only, no map iteration) and is
+asserted stable within-process; snapshot comparison supplies the
+cross-process check. `.gitignore` whitelists `tests/snapshots`.
+
+Next: the three seam refactors.
