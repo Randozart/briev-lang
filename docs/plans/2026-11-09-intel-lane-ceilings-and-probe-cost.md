@@ -61,7 +61,82 @@ IR becomes O(#write buffers); runtime cost stays O(N) (one pass, vectorizable).
 - On-device: all six `g0.sh` fixtures pass on Vulkan; then L0/NEO smoke and the
   six gates (lane promotion only after correctness).
 
-## W2 — Lane ceilings (four numbers, not two)
+## W2 — Lane ceilings (four numbers, not two) — COMPLETE SET
+
+### W2b — OpenCL C ceiling harness (primary)
+
+`benchmarks/intel_ptl/ceiling/`:
+- `cl_api.h` — minimal OpenCL typedefs/prototypes loaded via dlopen
+  (`libOpenCL.so.1`; the node has no CL headers). Mirrors
+  `lib/runtime/briev_dev_opencl.c`.
+- `harness.c` — generic single-kernel runner:
+  - loads any SPIR-V (hand-built reference or Briev OpenCL image),
+  - creates a profiling command queue (`CL_QUEUE_PROFILING_ENABLE`),
+  - packs inputs, warmup 5 + ITERS 20, **device time from event
+    timestamps** (primary) and wall-clock (secondary),
+  - correctness against a double-precision CPU reference (relative error,
+    exact for integer shapes), sampled + full for small shapes,
+  - reports min/median/spread; fails on wrong output.
+- `kernels/` hand-written OpenCL C references:
+  - `selfadd_f32`, `selfadd_f16`
+  - `rowsum_f32`, `rowsum_f16` (serial + subgroup variants)
+  - `gemm_512_f32`, `gemm_4096_f32` (tiled, register-blocked)
+  - `gemm_512_f16`, `gemm_4096_f16` (fp16 storage/compute where supported;
+    fall back to fp16-storage/fp32-accumulate and record it)
+  - `copy_bw` and `flux` probes to pin the measured bandwidth/FLOPs ceilings.
+- `run.sh` — compiles references (`clang --target=spirv64 -x cl`), runs
+  reference and Briev blob through the SAME harness, emits a table/JSON row.
+
+The same harness also runs the **Briev OpenCL image** (state ptr + n ABI,
+Briev projection layout) so Briev-vs-ceiling uses identical timing and
+packing. It doubles as the exact-fold hang diagnostic (IGC vs runtime).
+
+### W2c — Vulkan GLSL ceiling harness
+
+Same directory, `vk_harness.c`:
+- minimal Vulkan compute: instance/device/queue, storage-buffer descriptor
+  (set 0, binding 0), pipeline from any SPIR-V, dispatch,
+  **timestamp queries** for device time; CPU reference correctness.
+- `kernels/*.comp` hand-written GLSL mirrors of the W2b set (f32 + f16 via
+  `GL_EXT_shader_16bit_storage`/`float16` where supported; record caps).
+- Runs both the GLSL reference and the **Briev Vulkan image** (entry `main`,
+  descriptor SSBO) through the same harness.
+
+### W2d — Matrix + attribution
+
+Shapes × dtypes: elementwise 1Mi, reduce 4096×1024, GEMM 512³, GEMM 4096³;
+f32 and f16 (BF16 as a follow-up row). Columns: Vulkan ceiling (GLSL),
+OpenCL ceiling (CL C), Briev-Vulkan, Briev-OpenCL. All device-time, same
+packing/iteration policy, correctness-gated.
+
+Then the attribution checklist must be answered before interpreting:
+residency present? state addressing cost? vector width? subgroups? local
+size? tiling/staging? same algorithmic shape as the reference?
+
+### W3 — close the gaps the matrix exposes
+
+- L0/OpenCL residency (`launch_dev`, `launch_dev2d`, batched dispatch) so
+  end-to-end application numbers do not pay a full projection copy.
+- Exact-fold `clFinish` hang (BUGS.md): harness-first isolation, then fix.
+- OpenCL state addressing vs natural-layout experiment (one staging layout).
+- Subgroup/vec4/local-size parity if the matrix shows a gap.
+
+### W4 — promotion
+
+Promote OpenCL to REQUIRED only when: W2 matrix exists, the exact-fold hang
+is fixed, and the five non-GEMM gates pass repeatedly on the lane. Record
+per-lane evidence before promotion.
+
+## Sync with main
+
+The `main` worktree (`../briev-lang`) is shared with another session. Protocol:
+- Merge `main`'s **committed** tip into `intel-xpu-harvest` at each milestone
+  (never touch the other worktree's uncommitted files; never stash/checkout).
+- Resolve conflicts in favor of BOTH intents: keep main's refactors and this
+  branch's Intel/probe changes; run `cargo test --lib` after every merge.
+- Record the merge commit and base in this plan's results file.
+
+## W2 — original framing (kept for reference)
 
 Fixed kernel set: elementwise self-add, reduction (sum/minmax), GEMM 512³,
 GEMM 4096³ (4096³ is gated by G3 only for the *coopmat* path; a SIMD reference
