@@ -1,3 +1,68 @@
+## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
+
+**Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*
+incoming object parameter left the storage unreclaimed when the object died with
+the caller's frame. Minimal repro:
+
+```briev
+obj Holder { addr: Ptr<Bit<8>>; };
+defn make() -> Ptr<Bit<8>> { let p: Ptr<Bit<8>> = Malloc#(16); Store#(p,1,8); term p; };
+defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    let ok: Bool = publish(h);
+    term Load#(h.addr, 8);
+};
+```
+
+Valgrind reported **16 bytes in 1 block definitely lost** (allocated in `make`,
+reached through `publish`). The control that assigned directly in the caller was
+clean, isolating the defect to publishing through a callee's incoming parameter.
+
+**Cause:** `record_incoming_store` marked the publishing callable a *barrier*,
+and a barrier suspends the caller's region so its allocations fall back to plain
+`malloc` and are never freed. The barrier was added 2026-11-08 to stop an
+INHERIT lowering from reclaiming published storage at the caller's return, which
+had caused a WebSocket use-after-free (`ws_accept_key`) when the receiver
+outlived the caller. The over-approximation disabled reclamation unconditionally,
+converting that UAF into a leak.
+
+**Fix:** the publisher barrier is now conditional on the receiver outliving the
+frame. A publisher barriered solely for publishing into an incoming parameter is
+dropped when **every call site passes a receiver argument that is a bare local of
+the caller and does not escape it** (not global-reachable, not returned). Then the
+caller's region legitimately owns the storage and reclaims it at frame exit.
+Escape-derived barriers are never overridden. Files:
+`src/analysis/reclamation.rs` (`plan`, `publish_safety`, `site_is_safe`,
+`analyze`), `src/analysis/reclamation/walk.rs` (`record_incoming_store`,
+`record_publish_call`). The projection/parameter shapes that motivated the barrier
+stay barriers (unit tests `publisher_with_parameter_receiver_stays_a_barrier`,
+`projection_argument_propagates_incoming_store_barrier`).
+
+**Verification:** `tests/publish_reclamation.rs` (Valgrind-clean),
+`reclamation_runtime::native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe`
+(was RED under Valgrind, now green), 39 reclamation unit tests green.
+
+**Residual (separate, OPEN):** when the *producer* (`make`) is **recursive**, the
+same shape still leaks. The publisher barrier is correctly dropped (the emitted
+`publish` is INHERIT), so this is a distinct reclamation-of-recursive-producer
+defect, not the barrier. Logged below.
+
+## Recursive producer allocation is not reclaimed into the caller region — OPEN 2026-11-09
+
+Distinct from the publish-barrier leak above. Repro variant where `make` recurses:
+
+```briev
+defn make(depth: Int) -> Ptr<Bit<8>> { when depth == 0 { term Malloc#(16); }; term make(depth-1); };
+defn publish(h: Holder) -> Bool { h.addr = make(1); term true; };
+```
+
+`publish` is now INHERIT (not barriered) and `exercise` is a Region, so the
+`make` allocation should adopt into `exercise`'s region and be freed at its
+leave; Valgrind instead reports it definitely lost. The non-recursive variant is
+clean. Root cause is in how a recursive producer's allocation is (not) adopted
+by the active region — needs a dedicated investigation.
+
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 
 With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary

@@ -361,6 +361,7 @@ impl Builder<'_> {
         if let Expr::Identifier(root_name) = root {
             if self.param_names.contains(root_name.as_str()) {
                 self.graph.incoming_store_owners.insert(self.owner.into());
+                self.graph.publish_receiver_param.insert(self.owner.into(), root_name.clone());
             }
         }
     }
@@ -756,12 +757,28 @@ impl Builder<'_> {
         }
         if let Some(target) = self.free_member_target(name, arguments) {
             let result = self.call_nodes(&target, &args);
+            self.record_publish_call(&target, arguments);
             self.propagate_incoming_store(&target, arguments);
             return result;
         }
         let result = self.call_nodes(name, &args);
+        self.record_publish_call(name, arguments);
         self.propagate_incoming_store(name, arguments);
         result
+    }
+
+    /// 2026-11-09: record, for a publisher target, whether this call site passes
+    /// a bare non-parameter local identifier for the receiver parameter. The
+    /// escape check runs later (post-solve) in `Graph::site_is_safe`.
+    fn record_publish_call(&mut self, target: &str, arguments: &[Expr]) {
+        let Some(receiver) = self.graph.publish_receiver_param.get(target).cloned() else { return };
+        let Some(index) = self.graph.bodies.get(target)
+            .and_then(|(params, _)| params.iter().position(|(name, _)| name == &receiver)) else { return };
+        let local = match arguments.get(index) {
+            Some(Expr::Identifier(name)) if self.bindings.contains_key(name) && !self.param_names.contains(name) => Some(self.binding(name)),
+            _ => None,
+        };
+        self.graph.publish_call_args.entry(target.into()).or_default().push((self.owner.into(), local));
     }
 
     /// 2026-11-08: does this value expression produce (or name) storage that can

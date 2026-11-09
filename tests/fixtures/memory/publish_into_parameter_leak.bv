@@ -1,0 +1,32 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// Regression fixture: publishing an allocation into a callee's incoming object
+// parameter must be reclaimed when the object dies with the caller's frame.
+// Before the fix this leaked (Valgrind: definitely lost); see BUGS.md 2026-11-09
+// and tests/publish_reclamation.rs.
+obj Holder { addr: Ptr<Bit<8>>; };
+
+defn make() -> Ptr<Bit<8>> {
+    let p: Ptr<Bit<8>> = Malloc#(16);
+    Store#(p, 1, 8);
+    term p;
+};
+
+defn publish(h: Holder) -> Bool {
+    h.addr = make();
+    term true;
+};
+
+defn exercise() -> Int {
+    let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
+    let ok: Bool = publish(h);
+    term Load#(h.addr, 8);
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    Print#(exercise());
+    done = true;
+    endprogram;
+};
