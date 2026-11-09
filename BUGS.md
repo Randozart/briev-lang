@@ -1,3 +1,44 @@
+## Short-circuit division executes on the excluded edge — OPEN 2026-11-09
+
+Deterministic transition family 5 shrank `e != 0 && s / e > 0` to `s=0,e=0`.
+Interpreter returns 0; native O0 and O3 both raise SIGFPE. Emitted `sdiv` is
+before the branch. `src/backend/llvm/logical.rs:81,159–175` treats recursive
+binary arithmetic as side-effect-free and therefore safe to evaluate eagerly;
+purity does not prove speculation cannot trap. Fix needs general speculation
+safety, not removal of the source guard. Reproducer:
+`tests/fixtures/simulation/short_circuit_division.json`.
+
+## List rebinding mutates the original only in native execution — OPEN 2026-11-09
+
+Family 9: `let values: List<Int> = [s,e]; let alias: List<Int> = values;
+alias[0] = e; term values[0] + alias[0];` returns 1 in the interpreter and 2
+in native O0/O3 at `s=0,e=1`. Full typed-reference replay confirms the mismatch.
+Interpreter clones product bindings and updates only the mutated binding
+(`src/interpreter/eval.rs:52,2569`); native shares list storage. This is an
+observable value/alias semantics divergence; under the interpreter-reference
+rule the backend must preserve the independent values. Reproducer:
+`tests/fixtures/simulation/list_alias_mutation.json`.
+
+## Interpreter cannot project unnamed tuple fields — OPEN 2026-11-09
+
+Family 7: `(s+e,s-e).1` through a local tuple binding raises
+`expected a field named '1', got product`; native O0/O3 correctly returns 0
+at `s=e=0`. `src/interpreter/eval.rs:1056` only searches product field names,
+never positional tuple indices. Reproducer:
+`tests/fixtures/simulation/tuple_projection.json`.
+
+## Interpreter ignores tuple destructuring names — OPEN 2026-11-09
+
+Family 11: `let (left,right) = pair; term left-right;` raises
+`undefined variable 'right'`; native O0/O3 correctly evaluates it.
+`src/interpreter/eval.rs:2556` binds only `Statement::Let.name`, ignoring its
+`names` vector. Full typed-reference replay confirms both tuple failures.
+Reproducer: `tests/fixtures/simulation/tuple_destructuring.json`.
+
+All four findings: `docs/reports/2026-11-09-deterministic-transition-campaign.md`.
+Synthetic corruption was disabled; this investigation records defects without
+changing compiler semantics or weakening contracts.
+
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 
 With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary
