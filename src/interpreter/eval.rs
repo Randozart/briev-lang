@@ -3919,6 +3919,26 @@ defn go() -> Int {
     }
 
     #[test]
+    fn test_it_receiver_placement_call_order() {
+        // `a.g(1, it)` parses to `g(1, a)` — receiver last. pin the runtime
+        // argument order with `g(x, y) = x * 10 + y`: g(1, 7) = 17.
+        let body = Expr::BinaryOp(
+            BinaryOpKind::Add,
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Mul,
+                Box::new(Expr::Identifier("x".into())),
+                Box::new(Expr::Decimal(10)),
+            )),
+            Box::new(Expr::Identifier("y".into())),
+        );
+        let mut functions = HashMap::new();
+        functions.insert("g".into(), term_fn("g", vec!["x", "y"], body));
+        let call = Expr::Call("g".into(), vec![Expr::Decimal(1), Expr::Decimal(7)], None);
+        let r = eval_expr(&call, &mut VirtualHeap::new(), &mut HashMap::new(), &functions).unwrap();
+        assert_eq!(r.as_i64(), Some(17));
+    }
+
+    #[test]
     fn test_user_function_reads_caller_state_dynamically() {
         // The defn body reads `k` from the CALLER's bindings (dynamic scoping),
         // not a captured snapshot.

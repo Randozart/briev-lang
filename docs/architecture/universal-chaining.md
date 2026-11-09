@@ -45,6 +45,10 @@ value.rawParse().(Int).clamp(0, 255);   // cast step, chain continues
   expression, not only chains.
 - **`.(Type)`** casts the in-flight value; the next `.f()` applies to the
   cast value.
+- **`it` names the receiver's argument position.** `a.f(x, it)` = `f(x, a)`;
+  `a.f(it, x)` = `a.f(x)` (receiver remains argument 0). At most one `it`;
+  absent means argument 0. It is rejected on `$` navigation and `!` plugin
+  calls, whose receiver threading is explicit.
 - **No positional references.** `>>`/`<<` are bitwise shifts only. The former
   `.N>>` / `.name>>` back-references, the `expr >> name` capture, the chain
   stack, and `Expr::Capture` were removed in 2026-11-08: passing an earlier
@@ -62,7 +66,9 @@ value.rawParse().(Int).clamp(0, 255);   // cast step, chain continues
 
 - **Parser:** `.(Type)` parses as an `Expr::Cast` step that the postfix loop
   continues from. `into` is statement-level sugar producing `Statement::Let`
-  with `ty: None`.
+  with `ty: None`. `it` is resolved at the call site: position 0 consumes the
+  placeholder (receiver stays implicit arg 0); a later position substitutes
+  the receiver and emits a plain UFCS/intrinsic call.
 - **Typechecker/interpreter/codegen:** a method call resolves the receiver and
   arguments normally; the receiver is the first argument (member `self` or
   UFCS arg 0), and args follow in source order. There is no chain stack to

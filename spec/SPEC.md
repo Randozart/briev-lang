@@ -2435,6 +2435,10 @@ value.rawParse().(Int).clamp(0, 255);   // `. (Type)` is a cast step
   not only chains.
 - `.(Type)` casts the previous result in place and the chain continues
   (`.f()` after the cast applies to the cast value).
+- `it` in a dot-call argument list names where the receiver goes:
+  `a.f(x, it)` is `f(x, a)`; `a.f(it, x)` is `a.f(x)` (receiver stays
+  argument 0). At most one `it`; absent means argument 0. It is not valid on
+  `$` navigation or `!` plugin calls (their receiver threading is explicit).
 - `>>` and `<<` are bitwise shifts only. The former `.N>>` / `.name>>`
   back-references and the `expr >> name` capture are removed.
 

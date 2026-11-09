@@ -316,6 +316,45 @@ impl<'a> Parser<'a> {
         Ok(Some(Expr::Cast(Box::new(recv.clone()), Type::Custom(type_name))))
     }
 
+    /// 2026-11-08 (chaining plan): optional `it` receiver placement.
+    /// `a.f(x, it)` = `f(x, a)` (receiver at the placeholder's position);
+    /// `a.f(it, x)` = `a.f(x)` (receiver stays argument 0); absent = arg 0.
+    /// At most one `it`; more is a parse error. A non-zero position is a
+    /// function-style call, so the dot receiver is substituted into the
+    /// argument list and the call is emitted as a plain (UFCS) call.
+    fn desugar_receiver_it(
+        &self,
+        recv: Expr,
+        name: String,
+        mut args: Vec<Expr>,
+    ) -> Result<Expr, SyntaxError> {
+        let positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a, Expr::Identifier(n) if n == "it"))
+            .map(|(i, _)| i)
+            .collect();
+        if positions.len() > 1 {
+            return Err(self
+                .error_at_current::<()>(
+                    "`it` may appear at most once in a call — it names the single \
+                     position that receives the dot receiver",
+                )
+                .unwrap_err());
+        }
+        match positions.first() {
+            None => Ok(Expr::MethodCall(Box::new(recv), name, args, None)),
+            Some(0) => {
+                args.remove(0);
+                Ok(Expr::MethodCall(Box::new(recv), name, args, None))
+            }
+            Some(&k) => {
+                args[k] = recv;
+                Ok(Expr::Call(name, args, None))
+            }
+        }
+    }
+
     fn parse_postfix(&mut self, allow_index: bool) -> Result<Expr, SyntaxError> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -440,6 +479,12 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
+                    if args.iter().any(|a| matches!(a, Expr::Identifier(n) if n == "it")) {
+                        return self.error_at_current(
+                            "`it` is not valid on `$` navigation calls — it places the \
+                             dot receiver in a runtime argument list",
+                        );
+                    }
                     expr = Expr::MethodCall(Box::new(recv), name, args, None);
                 } else if self.check(&Token::Not) {
                     // 2026-09-16: Chained plugin intercept — obj.name!(args).
@@ -456,6 +501,12 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
+                    if p_args.iter().any(|a| matches!(a, Expr::Identifier(n) if n == "it")) {
+                        return self.error_at_current(
+                            "`it` is not valid on `!` plugin calls — plugin dispatch \
+                             threads the receiver explicitly",
+                        );
+                    }
                     expr = Expr::PluginIntercept {
                         name,
                         args: p_args,
@@ -473,7 +524,7 @@ impl<'a> Parser<'a> {
                         }
                     }
                     self.expect(Token::RParen)?;
-                    expr = Expr::MethodCall(Box::new(expr), name, args, None);
+                    expr = self.desugar_receiver_it(expr, name, args)?;
                 } else {
                     expr = Expr::Field(Box::new(expr), name);
                 }
@@ -1907,6 +1958,41 @@ mod tests {
             }
             other => panic!("expected shift, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn it_places_receiver_at_placeholder() {
+        // a.f(x, it) = f(x, a) — function-style call, receiver last.
+        match parse_expr("a.f(1, it)").unwrap() {
+            Expr::Call(name, args, _) => {
+                assert_eq!(name, "f");
+                assert!(matches!(&args[0], Expr::Decimal(1)));
+                assert!(matches!(&args[1], Expr::Identifier(r) if r == "a"));
+            }
+            other => panic!("expected plain call, got {other:?}"),
+        }
+        // a.f(it) = a.f() — receiver stays argument 0.
+        match parse_expr("a.f(it)").unwrap() {
+            Expr::MethodCall(recv, name, args, _) => {
+                assert_eq!(name, "f");
+                assert!(args.is_empty(), "the placeholder is consumed: {args:?}");
+                assert!(matches!(recv.as_ref(), Expr::Identifier(r) if r == "a"));
+            }
+            other => panic!("expected method call, got {other:?}"),
+        }
+        // Intrinsic form: a.Add#(1, it) = Add#(1, a).
+        assert!(matches!(
+            parse_expr("a.Add#(1, it)").unwrap(),
+            Expr::Call(name, args, _) if name == "Add#" && args.len() == 2
+        ));
+    }
+
+    #[test]
+    fn it_appears_at_most_once() {
+        let err = parse_expr("a.f(it, it)").unwrap_err().to_string();
+        assert!(err.contains("at most once"), "got: {err}");
+        let err = parse_expr("a.Nav$(it)").unwrap_err().to_string();
+        assert!(err.contains("navigation"), "got: {err}");
     }
 
     #[test]

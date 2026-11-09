@@ -173,6 +173,8 @@ value.rawParse().(Int).clamp(0, 255);
 - `expr into name;` is sugar for `let name = expr;`: a normal local whose type
   is inferred, usable by name in later steps (no positional references).
 - `.(Type)` casts the in-flight value; the next `.f()` applies to the cast.
+- `it` places the receiver in the argument list: `a.f(x, it)` = `f(x, a)`;
+  `a.f(it, x)` = `a.f(x)`. One `it` at most; absent means first argument.
 - `>>` and `<<` are shifts only. The old `.N>>` / `.name>>` back-references
   and `expr >> name` capture were removed in 2026-11-08.
 
