@@ -13,6 +13,12 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
+**Live lanes (2026-11-08):**
+- **Language surfaces — `attr` + chaining:** `docs/plans/2026-11-08-language-surfaces-attr-and-chaining.md` — hard-break `!>` for owner-optional `attr` metadata; `into` capture + optional `it` binding, no positional `>>` back-refs. Builds on the idiom doctrine and the general workstream (reference index inside).
+- **Idiom recognition doctrine:** `docs/plans/2026-11-06-idiom-recognition-doctrine.md` — §12 (three categories, five gates, silicon carve-out), W1–W5; ledger gate `tests/idiom_ledger_gate.rs`.
+- **General workstream (fold idioms):** `docs/plans/2026-11-08-general-workstream-countable-body-and-folds.md` — P0 countable-body fix, P1 `approx`/`exact`, W4 why-nots, `seq` contract; gates in `benchmarks/intel_ptl/g0.sh`.
+- **Intel XPU / G1.5:** `docs/plans/2026-11-08-intel-g1.5-opencl-flavored-spirv.md` — Stage E PASS (OpenCL-flavored IL); Stage F (projection emitter) queued; Vulkan is the working Intel lane.
+
 **Active stability lane (2026-10-25):** `docs/plans/2026-10-25-stability-v0.1.md` — freeze features; make `cargo test --all` a hard gate, close interpreter/backend parity, declare Tier 1 = x86_64 Linux + wasm32, add a nightly performance baseline, and ship `v0.1.0-preview` then `v0.1.0`. GPU/embedded remain experimental; Otto’s server stays external.
 
 **ws_frame safe fast path (2026-11-03, Step 1 DONE — objective revised):**

@@ -1,6 +1,9 @@
 # General workstream: countable-body statement drops + queued fold work
 
 **2026-11-08.** Status: ACTIVE.
+**Follow-on umbrella:** `docs/plans/2026-11-08-language-surfaces-attr-and-chaining.md`
+(references this plan; owns the small-item queue below plus the `attr` and
+chaining surfaces).
 **Provenance:** the §12 idiom workstream (`2026-11-06-idiom-recognition-doctrine.md`,
 W3/W3.1) surfaced a host-side backend bug while wiring the `g0_minmax` XPU
 gate. This plan owns the **general compiler/language** follow-ups. The XPU
