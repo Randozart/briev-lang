@@ -14,7 +14,7 @@ use crate::lexer::Token;
 
 /// Mutable targets for the shared component-header body scanner.
 struct TypeBodyTargets<'a> {
-    when_laws: &'a mut Vec<crate::ast::top::WhenLawDecl>,
+    hold_laws: &'a mut Vec<crate::ast::top::HoldLawDecl>,
     modes: &'a mut Vec<crate::ast::top::ModeDecl>,
     pins: &'a mut Vec<crate::ast::top::PinDecl>,
     pin_high_water: &'a mut u64,
@@ -116,10 +116,16 @@ impl<'a> Parser<'a> {
         }
         match self.peek() {
             Some(Token::Defn) => self.parse_definition().map(TopLevel::Definition),
-            // 2026-09-22 (Slice C): top-level `when G { … }` is the static
-            // when law — `G ⟹ facts`, the compiler obliges. (Inside a
-            // defn/node/txn body, `when` stays reactive — unchanged.)
-            Some(Token::When) => self.parse_top_level_when_law(),
+            // 2026-11-09: top-level `hold G { … }` is the static obligation
+            // law — `G ⟹ facts`, the compiler makes it so. (Inside a
+            // defn/node/txn body, `when` stays the runtime guard.)
+            Some(Token::Hold) => self.parse_top_level_hold_law(),
+            // Hard cut: the law head is `hold`; top-level `when` is a
+            // wrong-keyword error with the fix.
+            Some(Token::When) => self.error_at_current(
+                "`when` is the runtime guard and belongs inside a defn/node/txn body; \
+                 a static law of fact is declared with `hold`: `hold <cond> { <facts> }`",
+            ),
             Some(Token::Txn) => self
                 .parse_transaction(false, false)
                 .map(TopLevel::Transaction),
@@ -2369,18 +2375,18 @@ impl<'a> Parser<'a> {
     }
 
     /// 2026-09-22 (Slice C): top-level `when <guard> { <facts> };` — the
-    /// static when law. Parses the same shape as a guarded statement but
+    /// static hold law. Parses the same shape as a guarded statement but
     /// yields a TopLevel so the analysis treats it as a forced fact, not
     /// reactive behavior.
     /// 2026-10-15 (lifecycle laws, plan
     /// docs/plans/2026-10-15-lifecycle-laws-termination-warning.md): a
-    /// lifecycle arm — `when G { endprogram; }` or `when G { reside; }` —
+    /// lifecycle arm — `hold G { endprogram; }` or `hold G { reside; }` —
     /// replaces facts. `reside;` parses as a bare identifier expression (no
     /// new grammar); the arm is stripped out of `facts` so the fact-law
     /// consumers see an empty list. A lifecycle law carries EXACTLY ONE arm
     /// — anything else is a fact law (unchanged path).
-    fn parse_top_level_when_law(&mut self) -> Result<TopLevel, SyntaxError> {
-        self.pos += 1; // consume 'when'
+    fn parse_top_level_hold_law(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume 'hold'
         let guard = self.parse_expression()?;
         let mut facts = self.parse_block()?;
         self.eat(&Token::Semicolon);
@@ -2395,7 +2401,7 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        Ok(TopLevel::WhenLaw(crate::ast::top::WhenLawDecl {
+        Ok(TopLevel::HoldLaw(crate::ast::top::HoldLawDecl {
             guard,
             facts,
             lifecycle,
@@ -2418,13 +2424,13 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
 
-    /// Parse component pins, scalar electronics properties, when laws, and
+    /// Parse component pins, scalar electronics properties, hold laws, and
     /// named modes in one place. Returns true when a clause was consumed.
     fn parse_component_header_clause(
         &mut self,
         targets: &mut TypeBodyTargets<'_>,
     ) -> Result<bool, SyntaxError> {
-        if self.parse_component_law_clause(targets.when_laws, targets.modes)? {
+        if self.parse_component_law_clause(targets.hold_laws, targets.modes)? {
             return Ok(true);
         }
         if self.check(&Token::Pin) {
@@ -2438,15 +2444,21 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse type-body component-law clauses. Returns true when a clause was
-    /// consumed. Combining `when` and named modes keeps body scanners flat.
+    /// consumed. Combining `hold` and named modes keeps body scanners flat.
     fn parse_component_law_clause(
         &mut self,
-        when_laws: &mut Vec<crate::ast::top::WhenLawDecl>,
+        hold_laws: &mut Vec<crate::ast::top::HoldLawDecl>,
         modes: &mut Vec<crate::ast::top::ModeDecl>,
     ) -> Result<bool, SyntaxError> {
-        if self.check(&Token::When) {
-            when_laws.push(self.parse_when_law()?);
+        if self.check(&Token::Hold) {
+            hold_laws.push(self.parse_hold_law()?);
             return Ok(true);
+        }
+        if self.check(&Token::When) {
+            return self.error_at_current(
+                "`when` is the runtime guard; an obj/type-body law of fact is \
+                 declared with `hold`: `hold <cond> { <facts> }`",
+            );
         }
         let at_mode = self.check_identifier("mode")
             && matches!(
@@ -2481,14 +2493,14 @@ impl<'a> Parser<'a> {
     /// 2026-09-22 (Slice C): `when <guard> { <facts> };` — shared by the
     /// top-level and type/obj-body parse sites. The guard is an expression;
     /// the facts are ordinary body statements (assignments, pin drives).
-    fn parse_when_law(&mut self) -> Result<crate::ast::top::WhenLawDecl, SyntaxError> {
-        self.pos += 1; // consume 'when'
+    fn parse_hold_law(&mut self) -> Result<crate::ast::top::HoldLawDecl, SyntaxError> {
+        self.pos += 1; // consume 'hold'
         let guard = self.parse_expression()?;
         let facts = self.parse_block()?;
         self.eat(&Token::Semicolon);
         // Type-body laws are FACT laws only — lifecycle arms are a
         // top-level construct (residency/termination are program-scoped).
-        Ok(crate::ast::top::WhenLawDecl {
+        Ok(crate::ast::top::HoldLawDecl {
             guard,
             facts,
             lifecycle: None,
@@ -3725,14 +3737,14 @@ impl<'a> Parser<'a> {
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
         let mut members: Vec<crate::ast::TopLevel> = Vec::new();
-        // 2026-09-22 (Slice C): static when laws declared in the type body.
-        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        // 2026-09-22 (Slice C): static hold laws declared in the type body.
+        let mut hold_laws: Vec<crate::ast::top::HoldLawDecl> = Vec::new();
         let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             // 2026-09-24 (SPST modes): component header clauses share one
             // dispatch so the type-body scanner does not grow branchy again.
         let mut targets = TypeBodyTargets {
-                when_laws: &mut when_laws,
+                hold_laws: &mut hold_laws,
                 modes: &mut modes,
                 pins: &mut pins,
                 pin_high_water: &mut pin_high_water,
@@ -3791,7 +3803,7 @@ impl<'a> Parser<'a> {
                 op_bindings,
                 constraints: vec![],
                 members,
-                when_laws,
+                hold_laws,
                 modes,
                 span: None,
             },
@@ -4521,14 +4533,14 @@ impl<'a> Parser<'a> {
         let mut atomic_slots: Vec<String> = Vec::new();
         let mut operators: Vec<OperatorDef> = Vec::new();
         let mut op_bindings: Vec<OperatorBinding> = Vec::new();
-        // 2026-09-22 (Slice C): static when laws in the obj body.
-        let mut when_laws: Vec<crate::ast::top::WhenLawDecl> = Vec::new();
+        // 2026-09-22 (Slice C): static hold laws in the obj body.
+        let mut hold_laws: Vec<crate::ast::top::HoldLawDecl> = Vec::new();
         let mut modes: Vec<crate::ast::top::ModeDecl> = Vec::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
-                // 2026-09-24 (SPST modes): when laws and named modes share
+                // 2026-09-24 (SPST modes): hold laws and named modes share
                 // one component-law dispatch here too.
-                if self.parse_component_law_clause(&mut when_laws, &mut modes)? {
+                if self.parse_component_law_clause(&mut hold_laws, &mut modes)? {
                     continue;
                 }
                 // !> key: value; or spec PascalCase: value; — metadata.
@@ -4600,7 +4612,7 @@ impl<'a> Parser<'a> {
             ports_in, ports_out,
             bit_range: None, span: None, coll, seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, when_laws, modes, span: None,
+                slots, pins: vec![], reference: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, hold_laws, modes, span: None,
             },
         }))
     }
@@ -4886,7 +4898,7 @@ impl<'a> Parser<'a> {
             body: TypeDefBody {
                 slots, pins: vec![], reference: None,
                 metadata: std::collections::HashMap::new(),
-                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
+                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
             },
         }))
     }

@@ -46,7 +46,7 @@ pub enum TopLevel {
     /// with a suggest-`unpop` hint.
     ShortCircuit(ParticipationDecl),
     /// 2026-09-22 (Slice C, plan 2026-09-22-electronics-participation-and-
-    /// when-law.md): the static `when` law at TOP LEVEL — `when G { F₁;
+    /// when-law.md): the static `hold` law at TOP LEVEL — `hold G { F₁;
     /// …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it
     /// so. The meaning is decided by position: in a defn/node/txn, `when`
     /// stays guarded/reactive behavior (Statement::Guarded); at top level,
@@ -54,7 +54,7 @@ pub enum TopLevel {
     /// propagates the consequence and errors if anything contradicts an
     /// in-force fact under a satisfiable guard. "Make it so" is propagate +
     /// verify, never synthesis (the solver adds no parts).
-    WhenLaw(WhenLawDecl),
+    HoldLaw(HoldLawDecl),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -1260,10 +1260,10 @@ pub struct TypeDefBody {
     /// 2026-07-31: obj member declarations (txn/defn) — self-parameterized
     /// methods on the obj. Populated by parse_obj_like.
     pub members: Vec<TopLevel>,
-    /// 2026-09-22 (Slice C): static `when` laws declared in the type/obj
-    /// body — `when G { F₁; …; }`. Each instance of this type inherits the
+    /// 2026-09-22 (Slice C): static `hold` laws declared in the type/obj
+    /// body — `hold G { F₁; …; }`. Each instance of this type inherits the
     /// law; the compiler obliges it (propagate + verify).
-    pub when_laws: Vec<WhenLawDecl>,
+    pub hold_laws: Vec<HoldLawDecl>,
     /// 2026-09-24 (SPST component modes): explicitly named, mutually
     /// exclusive operating states. Each instance is solved once per mode.
     /// Component behavior remains stdlib/user vocabulary — the compiler knows
@@ -1328,21 +1328,22 @@ pub struct ParticipationDecl {
     pub span: Option<Span>,
 }
 
-/// 2026-09-22 (Slice C): the static `when` law — `when G { F₁; …; Fₙ }`.
-/// The guard and the forced facts it implies. Position decides semantics:
-/// top level / obj / type → static forced fact (this struct); defn/node/txn
-/// → reactive guarded behavior (Statement::Guarded, unchanged).
+/// 2026-09-22 (Slice C): the static `hold` law — `hold G { F₁; …; Fₙ }`
+/// (renamed from `when` 2026-11-09). The guard and the forced facts it
+/// implies. Position decides semantics: top level / obj / type → static
+/// forced fact (this struct); defn/node/txn → runtime guard (`when`,
+/// Statement::Guarded, unchanged).
 #[derive(Debug, Clone)]
-pub struct WhenLawDecl {
+pub struct HoldLawDecl {
     pub guard: Expr,
     pub facts: Vec<Statement>,
     /// 2026-10-15 (lifecycle laws, plan
     /// docs/plans/2026-10-15-lifecycle-laws-termination-warning.md): a
-    /// lifecycle arm — `when G { endprogram; }` or `when G { reside; }` —
+    /// lifecycle arm — `hold G { endprogram; }` or `hold G { reside; }` —
     /// instead of facts. A lifecycle law carries EXACTLY ONE lifecycle arm
     /// and no facts (fact laws are separate); the parser strips the arm out
     /// of `facts` into this field so every existing fact consumer (the
-    /// when-law pass, electronics participation) sees an empty fact list and
+    /// hold-law pass, electronics participation) sees an empty fact list and
     /// needs no changes. `EndProgram` lowers to a monitor txn (the reactor
     /// evaluates `G` every tick and ends the process when it holds);
     /// `Reside` is compile-time only — open-ended residency intent that
@@ -1351,13 +1352,13 @@ pub struct WhenLawDecl {
     pub span: Option<Span>,
 }
 
-/// The lifecycle arm of a top-level when-law (see `WhenLawDecl::lifecycle`).
+/// The lifecycle arm of a top-level hold-law (see `HoldLawDecl::lifecycle`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum LifeCycleArm {
-    /// `when G { endprogram; }` — the law `G ⟹ ended`, enforced by a
+    /// `hold G { endprogram; }` — the law `G ⟹ ended`, enforced by a
     /// reactor monitor.
     EndProgram,
-    /// `when G { reside; }` — open-ended residency intent; compile-time.
+    /// `hold G { reside; }` — open-ended residency intent; compile-time.
     Reside,
 }
 

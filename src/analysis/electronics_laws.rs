@@ -234,7 +234,7 @@ pub fn elaborate_component_laws(items: &[TopLevel], ctx: &LawContext<'_>) -> Law
         }
     }
     for td in type_defs.into_values() {
-        if !td.body.when_laws.is_empty() || !td.body.modes.is_empty() {
+        if !td.body.hold_laws.is_empty() || !td.body.modes.is_empty() {
             elaborate_type_laws(td, ctx, &mut ir);
         }
     }
@@ -275,7 +275,7 @@ fn instance_type_laws(
     let mut errors = Vec::new();
     // Named modes and guarded branches are separate authority mechanisms.
     // Always-active laws are ordinary facts shared by every mode.
-    let has_guarded_law = td.body.when_laws.iter().any(|law| !matches!(law.guard, crate::ast::Expr::Bool(true)));
+    let has_guarded_law = td.body.hold_laws.iter().any(|law| !matches!(law.guard, crate::ast::Expr::Bool(true)));
     if !td.body.modes.is_empty() && has_guarded_law {
         errors.push(format!(
             "component type '{}' declares both named modes and guarded `when` laws — pick one \
@@ -295,7 +295,7 @@ fn instance_type_laws(
             }
         }
     }
-    for raw in &td.body.when_laws {
+    for raw in &td.body.hold_laws {
         let source = format!("component law on '{}' (type '{}')", inst_name, td.name);
         match elaborate_law(&raw.guard, &raw.facts, inst_name, ctx, &source) {
             Ok(law) => laws.push(law),
@@ -312,7 +312,7 @@ fn instance_type_laws(
             Err(error) => errors.push(error),
         }
     }
-    if td.body.modes.is_empty() && td.body.when_laws.iter().any(|law| matches!(law.guard, crate::ast::Expr::Identifier(_))) {
+    if td.body.modes.is_empty() && td.body.hold_laws.iter().any(|law| matches!(law.guard, crate::ast::Expr::Identifier(_))) {
         // Reserved for future named guards; ordinary identifiers are rejected
         // by the expression elaborator below, so no silent behavior exists.
     }
@@ -728,7 +728,7 @@ mod tests {
             pin a; pin b;
             reference "R";
             spec Resistance: Ohm;
-            when true {
+            hold true {
                 a.voltage - b.voltage == Resistance * a.current;
                 a.current + b.current == 0;
             }
@@ -767,7 +767,7 @@ mod tests {
                 pin a; pin b;
                 reference "B";
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == a.current; }
+                hold true { a.voltage - b.voltage == a.current; }
         };
             let bad: Broken = Broken { spec Resistance: 1Ohm; };
         "#;
@@ -783,7 +783,7 @@ mod tests {
             type Broken {
                 pin a; pin b;
                 reference "B";
-                when true { a.voltage * b.voltage == 0Volt; }
+                hold true { a.voltage * b.voltage == 0Volt; }
             };
             let bad: Broken = Broken { };
         "#;
@@ -799,7 +799,7 @@ mod tests {
                 pin a; pin b;
                 reference "R";
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
             let r1: Resistor = Resistor { value: "330R"; };
         "#;
@@ -818,7 +818,7 @@ mod tests {
             type Dup {
                 pin a; pin b;
                 reference "D";
-                when true {
+                hold true {
                     a.voltage == b.voltage;
                     a.voltage == b.voltage;
                 }
@@ -836,7 +836,7 @@ mod tests {
             type Switch {
                 pin a; pin b;
                 reference "S";
-                when a.voltage >= b.voltage { a.current == 0Amp; }
+                hold a.voltage >= b.voltage { a.current == 0Amp; }
             };
             let sw1: Switch = Switch {};
         "#;

@@ -132,7 +132,7 @@ sync<timer> node boot [beginprogram && i < n][i == n] {
 node done [i == n][true] {
     endprogram 0;
 };
-when true { reside; };
+hold true { reside; };
 "#;
     let (items, universe) = crate::library::parse_and_check("scratch/logical_begin.bv", source)
         .expect("typed reactive program");

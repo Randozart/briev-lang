@@ -72,6 +72,7 @@ impl<'a> Parser<'a> {
             Some(Token::LBrace) => self.parse_block_statement(),
             Some(Token::LBracket) => self.parse_guard_statement_bracket(),
             Some(Token::When) => self.parse_guard_statement_when(),
+            Some(Token::Hold) => self.parse_hold_statement(),
             Some(Token::Semicolon) => {
                 self.pos += 1;
                 Ok(Statement::Expression(crate::ast::Expr::Decimal(0)))
@@ -510,24 +511,55 @@ impl<'a> Parser<'a> {
     fn parse_guard_statement_when(&mut self) -> Result<Statement, SyntaxError> {
         self.pos += 1; // consume 'when'
         let cond = self.parse_expression()?;
-        let mut body = self.parse_block()?;
-        // 2026-09-21 (D16 phase 2): trailing strategy clause —
-        // `when cond { ... } thru <Name>;`. The selection desugars into a
-        // marker statement the analysis reads; zero new Statement
-        // variants. `thru` is a contextual identifier.
-        // 2026-09-23 (D16 revision): `via` → `thru` — "via" is the settled
-        // PCB term for a layer-jumping hole (our own .kicad_pcb routing
-        // emits `(via ...)`); `thru` keeps the "passing through the
-        // mechanism" meaning with no collision.
+        let body = self.parse_block()?;
+        // 2026-11-09: the mechanism strategy clause belongs to `hold` —
+        // a conditional mechanism is a static obligation, not a runtime
+        // guard. (`thru` was the 2026-09-23 spelling; `through` replaced
+        // it when the law head became `hold`.)
         if self.check_identifier("thru") {
-            self.pos += 1;
+            return self.error_at_current(
+                "the strategy clause is spelled `through`: `hold <cond> { … } through <Type>;`",
+            );
+        }
+        if self.check_identifier("through") {
+            return self.error_at_current(
+                "a conditional mechanism is a static obligation — use `hold <cond> { … } through <Type>;` \
+                 (`when` is the runtime guard and takes no strategy clause)",
+            );
+        }
+        // 2026-07-17: Same trailing semicolon fix as bracket guard.
+        self.expect(Token::Semicolon)?;
+        Ok(Statement::Guarded(cond, body))
+    }
+
+    /// hold condition { body } through Type;
+    ///
+    /// 2026-11-09: the one statement-position law shape. The mechanism
+    /// selection desugars into a marker statement the analysis reads; zero
+    /// new Statement variants. `through` is a contextual identifier.
+    fn parse_hold_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.pos += 1; // consume 'hold'
+        let cond = self.parse_expression()?;
+        let mut body = self.parse_block()?;
+        // The `hold` marker distinguishes a fact body from a `when` runtime
+        // guard; it never reaches an analysis (each consumer strips it).
+        body.push(Statement::MetadataAssignment(
+            "hold".to_string(),
+            crate::ast::PropertyValue::Bool(true),
+        ));
+        if self.check_identifier("thru") {
+            return self.error_at_current(
+                "the strategy clause is spelled `through`: `hold <cond> { … } through <Type>;`",
+            );
+        }
+        if self.check_identifier("through") {
+            self.pos += 1; // consume contextual 'through'
             let name = self.expect_identifier()?;
             body.push(Statement::MetadataAssignment(
-                "thru".to_string(),
+                "through".to_string(),
                 crate::ast::PropertyValue::Identifier(name),
             ));
         }
-        // 2026-07-17: Same trailing semicolon fix as bracket guard.
         self.expect(Token::Semicolon)?;
         Ok(Statement::Guarded(cond, body))
     }

@@ -574,7 +574,7 @@ impl<'a> Builder<'a> {
                 // `endprogram code;` → `call @exit_prog(code)` when defined
                 // (the C fallback keeps the `__exit` ABI name).
                 // 2026-10-15 (lifecycle laws): the BARE form matters now —
-                // the `when G { endprogram; }` monitor txns carry
+                // the `hold G { endprogram; }` monitor txns carry
                 // `EndProgram(None)` and reach endprogram with no other
                 // caller; without this row the IR-scan net rejected the
                 // whole program ("emitted code calls unreached defn

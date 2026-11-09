@@ -2229,9 +2229,9 @@ fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(
         // 2026-09-30 (D30): the module-config block is raw config text —
         // no $-refs to resolve.
         TopLevel::ModuleConfig(_) => Ok(()),
-        // 2026-09-22 (Slice C): the static when law — resolve $-refs in its
+        // 2026-09-22 (Slice C): the static hold law — resolve $-refs in its
         // guard and facts.
-        TopLevel::WhenLaw(w) => {
+        TopLevel::HoldLaw(w) => {
             resolve_dollar_refs_in_expr(&mut w.guard, scope)?;
             for fact in &mut w.facts {
                 resolve_dollar_refs_in_stmt(fact, scope)?;

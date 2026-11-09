@@ -309,7 +309,7 @@ pub fn check_satisfiable(a: &Expr, b: &Expr) -> bool {
             // 2026-09-22 (Slice C): opposite numeric comparisons on the SAME
             // lhs are unsatisfiable together — `temperature > 100` vs
             // `temperature <= 100`. This is what lets mutually-exclusive
-            // when-law guards and node guards be classified as disjoint.
+            // hold-law guards and node guards be classified as disjoint.
             if comparison_contradicts(a, b) {
                 return false;
             }
@@ -451,7 +451,7 @@ fn expr_eq(l: &Expr, r: &Expr) -> bool {
         (Expr::Decimal(a), Expr::Decimal(b)) => a == b,
         (Expr::Bool(a), Expr::Bool(b)) => a == b,
         (Expr::Quoted(a), Expr::Quoted(b)) => a == b,
-        // 2026-09-22 (Slice A, plan 2026-09-22-...-when-law): field-access
+        // 2026-09-22 (Slice A, plan 2026-09-22-...-hold-law): field-access
         // chains compare structurally — `u1.sclk.voltage` equals itself, so
         // the concurrency gate can match the SAME pin-access lhs across two
         // guards and (via const_ne) see `== 3.3V` vs `== 1.8V` as mutually

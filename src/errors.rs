@@ -349,6 +349,10 @@ pub enum TypeError {
     BreakOutsideLoop {
         span: Span,
     },
+    /// 2026-11-09: `hold` in a reactive body. A `hold` body declares facts
+    /// under a condition by obligation; the software pipeline only enforces
+    /// laws at top level or in obj/type bodies.
+    HoldOutsideLawContext,
 }
 
 impl fmt::Display for TypeError {
@@ -393,6 +397,9 @@ impl fmt::Display for TypeError {
             }
             TypeError::MissingContract { declaration } => {
                 write!(f, "'{}' must declare a contract with pre and post conditions so the compiler can prove and classify the transition", declaration)
+            }
+            TypeError::HoldOutsideLawContext => {
+                write!(f, "`hold` declares a static law; inside a reactive defn/node/txn body use `when` for a runtime guard (laws live at top level or in an obj/type body)")
             }
             TypeError::BreakOutsideLoop { .. } => {
                 write!(f, "'break' may only appear inside a 'foreach' body (it exits the innermost enclosing 'foreach'); at top level there is no loop to break out of")

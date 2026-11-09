@@ -5135,6 +5135,73 @@ fn check_coll_declarations(items: &[TopLevel], errors: &mut Vec<TypeError>) {
     }
 }
 
+
+/// Report every `hold` fact body in a reactive position (software surface).
+fn scan_hold_bodies(items: &[TopLevel], errors: &mut Vec<TypeError>) {
+    for item in items {
+        scan_hold_item(item, errors);
+    }
+}
+
+fn scan_hold_item(item: &TopLevel, errors: &mut Vec<TypeError>) {
+    match item {
+        TopLevel::Definition(d) | TopLevel::TypeDefOperator(d) => scan_hold_body(&d.body, errors),
+        TopLevel::Transaction(t) => scan_hold_body(&t.body, errors),
+        TopLevel::Init(i) => scan_hold_body(&i.body, errors),
+        TopLevel::Cell(c) => {
+            for t in &c.transactions {
+                scan_hold_body(&t.body, errors);
+            }
+            for d in &c.definitions {
+                scan_hold_body(&d.body, errors);
+            }
+        }
+        TopLevel::Impl(i) => {
+            for d in &i.functions {
+                scan_hold_body(&d.body, errors);
+            }
+        }
+        TopLevel::TypeDef(t) => scan_hold_bodies(&t.body.members, errors),
+        TopLevel::Obj(o) => {
+            for t in &o.transactions {
+                scan_hold_body(&t.body, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scan_hold_body(stmts: &[Statement], errors: &mut Vec<TypeError>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Guarded(_, body) => {
+                if body.iter().any(is_hold_marker) {
+                    errors.push(TypeError::HoldOutsideLawContext);
+                }
+                scan_hold_body(body, errors);
+            }
+            Statement::Block(b)
+            | Statement::SyncBlock(b)
+            | Statement::Mutex(b)
+            | Statement::Defer(b) => scan_hold_body(b, errors),
+            Statement::Foreach { body, .. } => scan_hold_body(body, errors),
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    scan_hold_body(&arm.body, errors);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_hold_marker(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::MetadataAssignment(key, crate::ast::PropertyValue::Bool(true)) if key == "hold"
+    )
+}
+
 pub fn check_program(items: &mut [TopLevel], universe: &TypeUniverse) -> Result<(), Vec<TypeError>> {
     check_program_with_target(items, universe, None, false)
 }
@@ -5297,6 +5364,14 @@ pub fn check_program_with_target(
         .collect();
 
     let mut errors = Vec::new();
+
+    // 2026-11-09: a `hold` fact body is a static obligation. The software
+    // pipeline enforces laws at top level and in obj/type bodies only; a
+    // `hold` inside a reactive body is rejected rather than silently run as
+    // a guard. (The electronics surface consumes `hold` fact regions.)
+    if !surface_electronics {
+        scan_hold_bodies(items, &mut errors);
+    }
 
     // 2026-08-09 (init kind, Phase 2): set-once — an `init` name may be
     // declared exactly once (its seeding IS the one write). A duplicate
@@ -5874,7 +5949,7 @@ pub fn check_program_with_target(
                         slots: fake_slots, pins: vec![], reference: None, metadata: Default::default(),
                         projections: vec![], bindings: vec![],
                         operators: vec![], op_bindings: vec![],
-                        constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
+                        constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
                     },
                 };
                 let slot_map: std::collections::HashMap<String, Vec<(String, crate::ast::Type)>> =

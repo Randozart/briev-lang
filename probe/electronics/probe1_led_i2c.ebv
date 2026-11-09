@@ -48,7 +48,7 @@ type Res {
     spec Resistance: Ohm;
     spec PullUp: true;
     spec SeriesPart: true;
-    when true {
+    hold true {
         a.voltage - b.voltage == Resistance * a.current;
         a.current + b.current == 0;
     }

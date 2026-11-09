@@ -5,13 +5,13 @@
 //!
 //! A top-level lifecycle law states the program's termination policy:
 //!
-//! - `when G { endprogram; };` — the law `G ⟹ ended`. Lowered to a
-//!   synthetic reactive monitor txn whose body is `when G { endprogram; }`:
+//! - `hold G { endprogram; };` — the law `G ⟹ ended`. Lowered to a
+//!   synthetic reactive monitor txn whose body is `hold G { endprogram; }`:
 //!   the reactor evaluates `G` every tick and ends the process when it
 //!   holds. Cost class = any reactive txn watching `G`.
-//! - `when G { reside; };` — open-ended residency intent. Compile-time
+//! - `hold G { reside; };` — open-ended residency intent. Compile-time
 //!   only (residency IS the equilibrium behavior); suppresses the
-//!   no-terminator warning while `G` is satisfiable. The when-law pass
+//!   no-terminator warning while `G` is satisfiable. The hold-law pass
 //!   errors on unsatisfiable guards, so suppression inherits that proof.
 //!
 //! The termination analysis is a MAY-reachability walk over the SAME live
@@ -26,7 +26,7 @@ use crate::ast::{
 };
 use std::collections::HashSet;
 
-/// Lower `when G { endprogram; }` laws into synthetic reactive monitor
+/// Lower `hold G { endprogram; }` laws into synthetic reactive monitor
 /// txns (`__briev_lifecycle_N`, `__` = internal-symbol convention). Runs
 /// on BOTH pipeline paths (build + check) before typecheck, so the
 /// monitor typechecks, analyses, and emits exactly like an authored txn.
@@ -35,7 +35,7 @@ pub fn lower_lifecycle_laws(items: &mut Vec<TopLevel>) {
     let mut monitors: Vec<TopLevel> = Vec::new();
     let mut counter = 0usize;
     for item in items.iter_mut() {
-        let TopLevel::WhenLaw(w) = item else { continue };
+        let TopLevel::HoldLaw(w) = item else { continue };
         if w.lifecycle != Some(LifeCycleArm::EndProgram) {
             continue;
         }
@@ -66,7 +66,7 @@ pub fn lower_lifecycle_laws(items: &mut Vec<TopLevel>) {
             variadic_param: None,
             span: None,
             doc: Some(
-                "2026-10-15 (lifecycle laws): lowered from `when G { endprogram; }` \
+                "2026-10-15 (lifecycle laws): lowered from `hold G { endprogram; }` \
                  — the reactor monitors G and ends the process when it holds."
                     .to_string(),
             ),
@@ -97,7 +97,7 @@ pub fn analyze_termination(
     let has_reside = items.iter().any(|i| {
         matches!(
             i,
-            TopLevel::WhenLaw(w) if w.lifecycle == Some(LifeCycleArm::Reside)
+            TopLevel::HoldLaw(w) if w.lifecycle == Some(LifeCycleArm::Reside)
         )
     });
     let mut has_terminator = false;
@@ -144,8 +144,8 @@ pub fn termination_warning(report: &TerminationReport) -> Option<crate::diagnost
              and their callees); no endprogram, halt, or trap is reachable",
         )
         .fix(
-            "end it where it settles — `when <done> { endprogram; };` — or \
-             declare open-ended residency: `when true { reside; };`",
+            "end it where it settles — `hold <done> { endprogram; };` — or \
+             declare open-ended residency: `hold true { reside; };`",
         ),
     )
 }
@@ -171,7 +171,7 @@ fn stmt_reaches_terminator(s: &Statement) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::top::WhenLawDecl;
+    use crate::ast::top::HoldLawDecl;
 
     /// Parse real Briev source (behavioral tests — AGENTS: test the
     /// contract, not the implementation). Same helper shape as the other
@@ -183,7 +183,7 @@ mod tests {
     }
 
     fn law(guard: Expr, arm: LifeCycleArm) -> TopLevel {
-        TopLevel::WhenLaw(WhenLawDecl {
+        TopLevel::HoldLaw(HoldLawDecl {
             guard,
             facts: vec![],
             lifecycle: Some(arm),
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn endprogram_law_lowers_to_reactive_monitor() {
         let mut items = parse(
-            "let n: Int = 0;\nwhen n == 1 { endprogram; };\nnode main [n == 0][n == 1] { n = 1; term; };\n",
+            "let n: Int = 0;\nhold n == 1 { endprogram; };\nnode main [n == 0][n == 1] { n = 1; term; };\n",
         );
         lower_lifecycle_laws(&mut items);
         let monitors: Vec<&Transaction> = items
@@ -210,12 +210,12 @@ mod tests {
         assert!(
             matches!(m.body.as_slice(), [Statement::Guarded(g, body)]
                 if matches!(body.as_slice(), [Statement::EndProgram(None)])),
-            "monitor body = `when G {{ endprogram; }}`"
+            "monitor body = `hold G {{ endprogram; }}`"
         );
         // The law stays behind with its arm intact (the termination pass
-        // and the when-law pass read it).
+        // and the hold-law pass read it).
         assert!(
-            items.iter().any(|i| matches!(i, TopLevel::WhenLaw(w)
+            items.iter().any(|i| matches!(i, TopLevel::HoldLaw(w)
                 if w.lifecycle == Some(LifeCycleArm::EndProgram))),
             "the law item itself remains"
         );

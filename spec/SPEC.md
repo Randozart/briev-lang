@@ -482,14 +482,14 @@ hard compile errors — the compiler never chooses silently. Every
 intent-established connection carries its provenance (which node, which
 intent) in the verification output.
 
-**Conditional wiring through mechanisms (2026-09-21).** `when cond { …
-} thru <Name>;` — a single pin voltage-comparison condition plus a
+**Conditional wiring through mechanisms (2026-09-21).** `hold cond { …
+} through <Name>;` — a single pin voltage-comparison condition plus a
 declared switching part synthesizes a conditional connection: the
 condition's net drives the part's `Control`-class pin, and its
 `Path`-class pins bridge the wired pins. `Control` and `Path` are class
 fundamentals in `std/electronics.bv`; any declared type with exactly one
-`Control` pin and at least two `Path` pins is a mechanism. `thru <Name>`
-narrows by type (or instance); no `thru` and several qualifying mechanisms
+`Control` pin and at least two `Path` pins is a mechanism. `through <Name>`
+narrows by type (or instance); no `through` and several qualifying mechanisms
 is a hard error naming the candidates. The bridge is recorded as a
 conditional edge (closed when the control net's region holds) with full
 provenance; the schematic shows the switch as ordinary copper. Copper
@@ -554,13 +554,18 @@ top-level facts express participation choices:
   that warning for a part proven to fail first — deferred, thermal model
   pending, see the hardware-dialect-gaps ledger.)
 
-**The static `when` law (2026-09-22).** `when G { F₁; …; Fₙ }` declares
-`G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must make it so. Its meaning is decided
-by position:
+**The static `hold` law (2026-09-22; renamed from `when` 2026-11-09).**
+`hold G { F₁; …; Fₙ }` declares `G ⟹ F₁ ∧ … ∧ Fₙ`, and the compiler must
+make it so. One keyword, one load: `hold` states that facts hold by
+obligation; `when` remains the runtime guard (execute the body when the
+condition holds).
 
-- Inside a `defn` / `node` / `txn`, `when` is guarded/reactive behavior —
-  unchanged.
-- At top level, or in an `obj`/`type` body, `when` is a **static forced
+- Inside a `defn` / `node` / `txn` body, `when` is guarded/reactive
+  behavior — unchanged. A `hold` fact body is legal on the electronics
+  surface (a conditional netlist fact / mechanism region); the software
+  pipeline rejects it, because laws live at top level or in `obj`/`type`
+  bodies.
+- At top level, or in an `obj`/`type` body, `hold` is a **static forced
   fact**: the compiler propagates the consequence (derives it downstream —
   into the netlist's voltage/current/power proofs for electronics, into
   proof obligations for software) and verifies consistency — anything that
@@ -573,12 +578,15 @@ by position:
 
 ```briev
 // electronics — a conditional drive (type-body law)
-type Regulator { pin in: Power; pin out: Power; pin gnd: Ground;
-    when in.voltage >= 5V { out.voltage = 3.3V; } }
+type Regulator { pin vin: Power; pin vout: Power; pin gnd: Ground;
+    hold vin.voltage >= 5V { vout.voltage = 3.3V; } }
 // software — a conditional member fact (obj-body law)
-obj Sensor { when temperature > 100 { thermal_alarm = true; } }
+obj Sensor { hold temperature > 100 { thermal_alarm = true; } }
 // top-level — a free-standing forced fact
-when usb_attached { j1.vbus.voltage = 5.0V; }
+hold usb_attached { j1.vbus.voltage = 5.0V; }
+// lifecycle — termination under a condition
+let n: Int = 0;
+hold n == 1 { endprogram; }
 ```
 
 **ERC: contention and wired-AND (2026-09-22, D6/D12).** A net with TWO
@@ -590,11 +598,11 @@ compiler reads `spec WiredAnd`, never a class name.
 
 **Mechanisms may be relays (2026-09-22).** A bridge mechanism has one
 Control pin (a gate/FET) OR TWO (a relay coil — one element across both
-coil pins). `when cond { … } thru Type;` synthesizes: the condition net
+coil pins). `hold cond { … } through Type;` synthesizes: the condition net
 drives every control pin; the Path pins bridge the wired pins. A relay is
-just a type with two `Control` + two `Path` pins. (`thru` — since
-2026-09-23, the mechanism-strategy keyword; `via` is the PCB layer-hole
-term and is reserved for that meaning.)
+just a type with two `Control` + two `Path` pins. (`through` — the
+mechanism-strategy keyword; it replaced `thru` on 2026-11-09. `via` is the
+PCB layer-hole term and is reserved for that meaning.)
 
 **Whole-bus equality (2026-09-22).** A range-indexed pin equality in a
 precondition expands element-wise: `u2.gpio[0..=3].voltage ==

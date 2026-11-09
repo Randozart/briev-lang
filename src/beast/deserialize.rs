@@ -230,7 +230,7 @@ fn parse_typedef(parts: &[SExpr]) -> Result<Box<TypeDef>, String> {
         ports_out: Vec::new(),
         body: TypeDefBody { slots, pins, reference: None, metadata, projections: vec![], bindings: vec![],
             operators: vec![], op_bindings: vec![],
-            constraints: vec![], members, when_laws: vec![], modes: vec![], span: None },
+            constraints: vec![], members, hold_laws: vec![], modes: vec![], span: None },
     }))
 }
 

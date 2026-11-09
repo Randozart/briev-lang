@@ -366,7 +366,7 @@ fn classify_local_fields(
             }
         }
         // One generic walker covers every TopLevel form: other txns/defns,
-        // exports, cells, trigger bindings, when-laws, assertions, fuzzed
+        // exports, cells, trigger bindings, hold-laws, assertions, fuzzed
         // items, type/operator bodies, compile-time items, cfg/sync groups,
         // and initialization expressions. Missing a surface here would
         // misclassify a field as Local and skip its exit store.

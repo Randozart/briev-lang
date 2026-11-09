@@ -328,7 +328,7 @@ solver; later slices elaborate and solve them.
 law-derived rail birth via `spec Output`. The LDO output law is an
 ordinary law parameter — dimension-only at the type (`spec Output:
 Volt;`), value at the instance (`spec Output: 3.3V`) — with an
-unconditional `when true { vout.voltage == Output; }`. Birth detection
+unconditional `hold true { vout.voltage == Output; }`. Birth detection
 is generic: an always-guarded equation pinning a single supply-class
 pin voltage to a constant drives its net as a contract fact would; the
 births merge into the driven-rail map ahead of the membership ladder

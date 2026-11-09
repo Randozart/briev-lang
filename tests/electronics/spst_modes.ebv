@@ -39,7 +39,7 @@ type Resistor {
     spec Tolerance: any;
     spec Rating: 0.05W;
     spec Resistance: Ohm;
-    when true {
+    hold true {
         a.voltage - b.voltage == Resistance * a.current;
         a.current + b.current == 0;
     }

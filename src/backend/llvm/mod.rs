@@ -2916,7 +2916,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
          self.ctx.emit_all_defns =
              analysis.defn_liveness.keep_all || self.ctx.library_mode || self.ctx.force_emit_all;
         // 2026-10-15 (lifecycle laws): termination-reachability warning.
-        // The frontend lowered `when G { endprogram; }` laws into monitor
+        // The frontend lowered `hold G { endprogram; }` laws into monitor
         // txns (their endprogram counts), reside laws suppress. Stalling
         // stays LEGAL — this informs, it does not reject.
         if !self.ctx.library_mode && !self.ctx.is_shared_lib {
@@ -3795,7 +3795,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                                     slots: td_slots.clone(), pins: Vec::new(), reference: None, metadata: Default::default(),
                                     projections: vec![], bindings: vec![],
                                     operators: vec![], op_bindings: vec![],
-                                    constraints: vec![], members: vec![], when_laws: vec![], modes: vec![], span: None,
+                                    constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
                                 },
                             };
                             let synth = crate::backend::llvm::coll_scaffold::synthesize_members(

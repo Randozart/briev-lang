@@ -423,7 +423,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // parameters per call-site arity before typecheck (SPEC §9.1).
     // Additive: appends instantiations + retargets call sites.
     briev_compiler::analysis::variadic_specialize::specialize_variadic(&mut items)?;
-    // 2026-10-15 (lifecycle laws): `when G { endprogram; }` lowers to a
+    // 2026-10-15 (lifecycle laws): `hold G { endprogram; }` lowers to a
     // reactive monitor txn before typecheck; reside laws stay for the
     // termination pass. This pipeline (compile.rs) is the BUILD path the
     // CLI drives — pipeline.rs::compile_to_typed carries the same lowering
@@ -503,7 +503,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     briev_compiler::hardware_validator::HardwareValidator::enforce_silicon(
         file_path, &items, &source,
     )?;
-    // 2026-10-15 (lifecycle laws): `when G { endprogram; }` lowers to a
+    // 2026-10-15 (lifecycle laws): `hold G { endprogram; }` lowers to a
     // reactive monitor txn; reside laws stay for the termination pass.
     // AFTER typecheck deliberately: the monitor reuses the law's guard
     // verbatim (laws are proof-checked), and a synthesized txn would trip
@@ -637,15 +637,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         ));
     }
 
-    // ── Static when-law gate (2026-09-22, Slice C2) ──────────────────────
-    // Software `when G { F }` at top level / in obj / in type bodies is a
+    // ── Static hold-law gate (2026-09-22, Slice C2) ──────────────────────
+    // Software `hold G { F }` at top level / in obj / in type bodies is a
     // forced fact the compiler must make hold everywhere. A member fact that
     // any node/txn body or another law contradicts under a jointly-
     // satisfiable guard is a refusal.
-    let when_errors = briev_compiler::analysis::when_law::run_when_law_check(&items);
+    let when_errors = briev_compiler::analysis::hold_law::run_hold_law_check(&items);
     if !when_errors.is_empty() {
         return Err(format!(
-            "when-law gate:\n  {}",
+            "hold-law gate:\n  {}",
             when_errors.join("\n  ")
         ));
     }

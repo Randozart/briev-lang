@@ -423,7 +423,7 @@ mod tests {
                 op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
-                when_laws: vec![],
+                hold_laws: vec![],
 
                 modes: vec![],
                 span: None,

@@ -85,7 +85,7 @@ type Resistor {
     spec Resistance: Ohm;
     // Ohm's law plus branch-current conservation. Positive current enters
     // each pin; the analyzer maps the two pin voltages to their nets.
-    when true {
+    hold true {
         a.voltage - b.voltage == Resistance * a.current;
         a.current + b.current == 0;
     }
@@ -134,14 +134,14 @@ type Led {
     spec DynamicResistance: Ohm;
     // 2026-09-24 (component laws): a LED is a directional light-emitting
     // junction; parameters belong to the chosen part, not the type name.
-    when a.voltage - k.voltage >= ForwardVoltage {
+    hold a.voltage - k.voltage >= ForwardVoltage {
         a.current ==
             (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
     }
-    when a.voltage - k.voltage < ForwardVoltage {
+    hold a.voltage - k.voltage < ForwardVoltage {
         a.current == 0Amp;
     }
-    when true {
+    hold true {
         a.current + k.current == 0;
     }
 };
@@ -162,7 +162,7 @@ type Wire {
     reference "W";
     // 2026-09-24 (component laws): a populated wire is an ideal link; an
     // unpop wire remains the participation model's open pad pair.
-    when true {
+    hold true {
         a.voltage == b.voltage;
         a.current + b.current == 0;
     }
@@ -180,14 +180,14 @@ type Diode {
     spec Rating: any;
     spec ForwardVoltage: Volt;
     spec DynamicResistance: Ohm;
-    when a.voltage - k.voltage >= ForwardVoltage {
+    hold a.voltage - k.voltage >= ForwardVoltage {
         a.current ==
             (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
     }
-    when a.voltage - k.voltage < ForwardVoltage {
+    hold a.voltage - k.voltage < ForwardVoltage {
         a.current == 0Amp;
     }
-    when true {
+    hold true {
         a.current + k.current == 0;
     }
 };

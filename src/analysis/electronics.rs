@@ -1026,7 +1026,7 @@ fn collect_type_pins(
                 );
                 info.insert(
                     td.name.clone(),
-                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.when_laws.is_empty() || !td.body.modes.is_empty(), spec_defaults, bistable, modes: td.body.modes.iter().map(|m| m.name.clone()).collect(), pin_units, unit_groups },
+                    TypeInfo { reference_prefix: prefix, pins, pin_classes, tolerance, rating, resistance, has_laws: !td.body.hold_laws.is_empty() || !td.body.modes.is_empty(), spec_defaults, bistable, modes: td.body.modes.iter().map(|m| m.name.clone()).collect(), pin_units, unit_groups },
                 );
             }
         }
@@ -1522,7 +1522,7 @@ fn derive_voltage(
 ) -> VoltageCheck {
     let pin_to_net = pin_net_index(inputs.nets);
     let drives = collect_drives(items, &pin_to_net, instances, type_pins);
-    // 2026-09-22 (Slice C): conditional drives from the static when laws —
+    // 2026-09-22 (Slice C): conditional drives from the static hold laws —
     // guard-aware, joined with the unconditional contract drives.
     let when_drives = collect_when_drives(items, &pin_to_net, instances, type_pins);
     let mut check = classify_drives(drives, when_drives, inputs.nets, inputs.shortcircuit);
@@ -2060,7 +2060,7 @@ fn collect_drives(
     drives
 }
 
-/// A conditional voltage drive from a static `when` law (Slice C): when the
+/// A conditional voltage drive from a static `hold` law (Slice C): when the
 /// guard holds, the net is driven at the value. The law says `G ⟹ (net at
 /// volts)`; the compiler must make it so — propagate the consequence and
 /// error if anything contradicts it under a jointly-satisfiable guard.
@@ -2072,8 +2072,8 @@ struct ConditionalDrive {
 }
 
 /// 2026-09-22 (Slice C): collect conditional drives from the static when
-/// laws — top-level (`TopLevel::WhenLaw`) and type-body (`TypeDefBody.
-/// when_laws`, instantiated per instance so `out` becomes `inst.out`).
+/// laws — top-level (`TopLevel::HoldLaw`) and type-body (`TypeDefBody.
+/// hold_laws`, instantiated per instance so `out` becomes `inst.out`).
 /// A law fact that is a pin-voltage assignment (`out.voltage = 3.3V`) or a
 /// pin-voltage equality (`out.voltage == 3.3V`) becomes a conditional drive.
 fn collect_when_drives(
@@ -2086,21 +2086,21 @@ fn collect_when_drives(
     let mut out = Vec::new();
     // Top-level laws reference instance pins directly.
     for item in items {
-        let TopLevel::WhenLaw(w) = item else { continue };
+        let TopLevel::HoldLaw(w) = item else { continue };
         collect_when_fact_drives(&w.guard, &w.facts, &ctx, "top-level", &mut out);
     }
     // Type-body laws are inherited per instance: qualify bare pin names with
     // the instance so `out.voltage` reads `inst.out.voltage`.
     for item in items {
         let TopLevel::TypeDef(td) = item else { continue };
-        if td.body.when_laws.is_empty() {
+        if td.body.hold_laws.is_empty() {
             continue;
         }
         for (inst_name, inst) in instances {
             if inst.type_name != td.name {
                 continue;
             }
-            for law in &td.body.when_laws {
+            for law in &td.body.hold_laws {
                 let guard = qualify_pin_refs(&law.guard, inst_name, &td.body.pins);
                 let facts = law
                     .facts
@@ -2120,7 +2120,7 @@ fn collect_when_drives(
 /// Extract conditional drives from one law's facts. A fact is a pin-voltage
 /// assignment or equality; the law's guard gates it.
 /// Lookup tables for drive extraction (pin→net, instance, pin table).
-/// Bundled so the when-law drive collectors stay under the parameter gate.
+/// Bundled so the hold-law drive collectors stay under the parameter gate.
 struct DriveCtx<'a> {
     pin_to_net: &'a BTreeMap<(String, String), String>,
     instances: &'a BTreeMap<String, &'a ComponentInstance>,
@@ -2150,7 +2150,7 @@ fn collect_when_fact_drives(
             net: net.clone(),
             volts: v,
             guard: guard.clone(),
-            source: format!("when-law ({}) '{}.{}'", source, pin.component, pin.pin),
+            source: format!("hold-law ({}) '{}.{}'", source, pin.component, pin.pin),
         });
     }
 }
@@ -4774,7 +4774,7 @@ struct CurrentObligation {
 /// The region context threading through a guarded-fact walk (D16):
 /// `control` Some means mechanizable — wiring facts become bridge
 /// requests under it. `cond` Some (no control) means signal-level but
-/// not mechanizable — the D7 gate. `thru` is this region's strategy
+/// not mechanizable — the D7 gate. `through` is this region's strategy
 /// selection.
 #[derive(Clone, Copy)]
 struct RegionCtx<'a> {
@@ -4828,7 +4828,7 @@ fn condition_control(expr: &Expr, ctx: &NetlistContext) -> (Option<PinRef>, Opti
     (
         None,
         Some(format!(
-            "mechanism condition must be a single pin voltage comparison (e.g. `{shape}.voltage == 3.3V`), or a mechanism-bodied `when ... thru Type;` — got `{shape} = {}`, where the pin side must be a `.voltage` access and the non-pin side a voltage literal",
+            "mechanism condition must be a single pin voltage comparison (e.g. `{shape}.voltage == 3.3V`), or a mechanism-bodied `hold ... through Type;` — got `{shape} = {}`, where the pin side must be a `.voltage` access and the non-pin side a voltage literal",
             other
         )),
     )
@@ -4847,20 +4847,23 @@ fn voltage_operand(expr: &Expr, ctx: &NetlistContext) -> Option<PinRef> {
     resolve_pin(base, ctx.instances, ctx.type_pins)
 }
 
-/// Pull a trailing `thru <Name>` marker out of a guarded body (D16 phase
-/// 2): returns the strategy and the body without it.
-fn take_thru_strategy(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
+/// Pull the parser's law markers out of a guarded body (D16 phase 2):
+/// `through <Name>` yields the strategy; the `hold` marker is consumed
+/// whole. Returns the strategy and the body without either marker.
+fn take_law_markers(body: &[Statement]) -> (Option<String>, Vec<Statement>) {
     let mut strategy = None;
     let mut rest = Vec::with_capacity(body.len());
     for stmt in body {
-        if let Statement::MetadataAssignment(k, crate::ast::PropertyValue::Identifier(name)) = stmt
-        {
-            if k == "thru" {
+        match stmt {
+            Statement::MetadataAssignment(k, crate::ast::PropertyValue::Identifier(name))
+                if k == "through" =>
+            {
                 strategy = Some(name.clone());
-                continue;
             }
+            Statement::MetadataAssignment(k, crate::ast::PropertyValue::Bool(true))
+                if k == "hold" => {}
+            _ => rest.push(stmt.clone()),
         }
-        rest.push(stmt.clone());
     }
     (strategy, rest)
 }
@@ -4886,7 +4889,7 @@ impl FactSink<'_> {
                 "wiring inside `when {desc}` (node '{}') is conditional — copper cannot be. \
                  State the condition in the node guard (making the wiring unconditional in \
                  that region), or make it a single pin comparison and declare a switching \
-                 part (`when ... thru Type;`, mechanism synthesis)",
+                 part (`hold ... through Type;`, mechanism synthesis)",
                 self.node
             ));
             return;
@@ -5103,7 +5106,7 @@ fn walk_guarded(
     ctx: &mut NetlistContext,
     sink: &mut FactSink,
 ) {
-        let (strategy, inner_rest) = take_thru_strategy(inner);
+        let (strategy, inner_rest) = take_law_markers(inner);
         let (control, cond_err) = condition_control(c, ctx);
         if let Some(e) = cond_err {
             // A malformed mechanism condition: record the shape error and
@@ -5300,7 +5303,7 @@ fn synthesize_bridges(
                         "strategy names '{}' but no qualifying mechanism of that type is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins",
                     t
                 ),
-                    None => "no qualifying mechanism is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins, or narrow with `when ... thru Type;`"
+                    None => "no qualifying mechanism is declared — declare one with one Control pin (or a two-pin coil) and at least two Path pins, or narrow with `hold ... through Type;`"
                         .to_string(),
                 };
                 errors.push(format!(
@@ -5313,14 +5316,14 @@ fn synthesize_bridges(
                 synthesize_one(ctx, &candidates[0], br, proofs);
                 let strategy = br.strategy.as_deref().unwrap_or("-");
                 synthesized.push(format!(
-                    "{}.{} <-> {}.{} under {}.{} thru {} (node '{}')",
+                    "{}.{} <-> {}.{} under {}.{} through {} (node '{}')",
                     br.a.component, br.a.pin, br.b.component, br.b.pin,
                     br.control.component, br.control.pin, strategy, br.node
                 ));
             }
             n => {
                 errors.push(format!(
-                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `when ... thru <Type>;` or pre-wire one mechanism's control pin",
+                    "bridge {}.{} <-> {}.{} under {}.{} (node '{}') is ambiguous: {} mechanisms could synthesize it ({}). Disambiguate with the strategy clause: `hold ... through <Type>;` or pre-wire one mechanism's control pin",
                     br.a.component, br.a.pin, br.b.component, br.b.pin,
                     br.control.component, br.control.pin, br.node, n, candidates.join(", ")
                 ));
@@ -6896,7 +6899,7 @@ fn conditional_bridge_strings(bridges: &[BridgeRequest]) -> Vec<String> {
         .map(|br| {
             let strategy = br.strategy.as_deref().unwrap_or("-");
             format!(
-                "{}.{} <-> {}.{} under {}.{} thru {} (node '{}')",
+                "{}.{} <-> {}.{} under {}.{} through {} (node '{}')",
                 br.a.component, br.a.pin, br.b.component, br.b.pin,
                 br.control.component, br.control.pin, strategy, br.node
             )
@@ -7893,7 +7896,7 @@ mod tests {
                 reference "U";
                 spec Tolerance: any;
                 spec Output: Volt;
-                when true { vout.voltage == Output; }
+                hold true { vout.voltage == Output; }
             };
             type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
             let u1: Ldo = Ldo { spec Output: 3.3V };
@@ -7943,7 +7946,7 @@ mod tests {
                 reference "U";
                 spec Tolerance: any;
                 spec Output: Volt;
-                when true { vout.voltage == Output; }
+                hold true { vout.voltage == Output; }
             };
             type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
             let u1: Ldo = Ldo { spec Output: 3.3V };
@@ -7986,7 +7989,7 @@ mod tests {
                 reference "U";
                 spec Tolerance: any;
                 spec Output: Volt;
-                when true { vout.voltage == Output; }
+                hold true { vout.voltage == Output; }
             };
             type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
             let u1: Ldo = Ldo { spec Output: 3.3V };
@@ -8020,7 +8023,7 @@ mod tests {
                 reference "U";
                 spec Tolerance: any;
                 spec Output: Volt;
-                when true { vout.voltage == Output; }
+                hold true { vout.voltage == Output; }
             };
             let u1: Ldo = Ldo { spec Output: 1.8V };
             txn on [u1.vout.voltage == 3.3V] { }
@@ -8188,13 +8191,13 @@ mod tests {
         type Ground { spec KicadType: "power_in"; spec Return: true; };
         type Rail { pin hi: Power; pin lo: Power; reference "P"; };
         type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm;
-            when true {
+            hold true {
                 a.voltage - b.voltage == Resistance * a.current;
                 a.current + b.current == 0;
             };
         };
         type Led { pin a; pin k; reference "D"; spec MaxCurrent: 20mA; spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-            when a.voltage - k.voltage >= ForwardVoltage {
+            hold a.voltage - k.voltage >= ForwardVoltage {
                 a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
             };
         };
@@ -8378,7 +8381,7 @@ mod tests {
             type Ground { spec KicadType: "power_in"; spec Return: true; };
             type Rail { pin hi: Power; pin lo: Power; reference "P"; };
             type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm; spec Rating: 5W;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 };
@@ -8615,17 +8618,17 @@ mod tests {
             type Led {
                 pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
                 spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-                when a.voltage - k.voltage >= ForwardVoltage {
+                hold a.voltage - k.voltage >= ForwardVoltage {
                     a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
                 }
-                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Resistor {
                 pin a; pin b; reference "R"; spec Tolerance: any;
                 spec SeriesPart: true; spec PullUp: true;
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
             type Src { pin p: Power; reference "S"; spec Tolerance: any; };
             type Sink { pin g; reference "X"; spec Tolerance: any; };
@@ -8672,17 +8675,17 @@ mod tests {
             type Led {
                 pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
                 spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-                when a.voltage - k.voltage >= ForwardVoltage {
+                hold a.voltage - k.voltage >= ForwardVoltage {
                     a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
                 }
-                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Resistor {
                 pin a; pin b; reference "R"; spec Tolerance: any;
                 spec SeriesPart: true;
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
 
             type Src { pin p: Power; reference "S"; spec Tolerance: any; };
@@ -8761,17 +8764,17 @@ mod tests {
             type Led {
                 pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
                 spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-                when a.voltage - k.voltage >= ForwardVoltage {
+                hold a.voltage - k.voltage >= ForwardVoltage {
                     a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
                 }
-                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Resistor {
                 pin a; pin b; reference "R"; spec Tolerance: any;
                 spec SeriesPart: true;
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
             type Src { pin p: Power; reference "S"; spec Tolerance: any; };
             type Sink { pin g; reference "X"; spec Tolerance: any; };
@@ -8823,17 +8826,17 @@ mod tests {
             type Led {
                 pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
                 spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-                when a.voltage - k.voltage >= ForwardVoltage {
+                hold a.voltage - k.voltage >= ForwardVoltage {
                     a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
                 }
-                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Resistor {
                 pin a; pin b; reference "R"; spec Tolerance: any;
                 spec SeriesPart: true;
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
             type Src { pin p: Power; reference "S"; spec Tolerance: any; };
             type Sink { pin g; reference "X"; spec Tolerance: any; };
@@ -8874,17 +8877,17 @@ mod tests {
             type Led {
                 pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
                 spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
-                when a.voltage - k.voltage >= ForwardVoltage {
+                hold a.voltage - k.voltage >= ForwardVoltage {
                     a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
                 }
-                when a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Resistor {
                 pin a; pin b; reference "R"; spec Tolerance: any;
                 spec SeriesPart: true;
                 spec Resistance: Ohm;
-                when true { a.voltage - b.voltage == Resistance * a.current; }
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
             };
             type Src { pin p: Power; reference "S"; spec Tolerance: any; };
             type Sink { pin g; reference "X"; spec Tolerance: any; };
@@ -9153,7 +9156,7 @@ mod tests {
                 [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
                 [true]
             {
-                when true {
+                hold true {
                     d1.a = u1.gpio0;
                 };
             }
@@ -9191,7 +9194,7 @@ mod tests {
                 [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
                 [true]
             {
-                when j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
+                hold j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
                     d1.a = u1.gpio0;
                 };
             }
@@ -9222,8 +9225,8 @@ mod tests {
                 [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
                 [true]
             {
-                when j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
-                    when true {
+                hold j1.p1.voltage > 3.0V && j1.p1.voltage < 3.6V {
+                    hold true {
                         d1.a = u1.gpio0;
                     };
                 };
@@ -9259,9 +9262,9 @@ mod tests {
             [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
             [true]
         {
-            when u1.gpio0.voltage == 3.3V {
+            hold u1.gpio0.voltage == 3.3V {
                 d1.a = u1.gnd;
-            };
+            } through Fet;
         }
     "#;
 
@@ -9331,7 +9334,7 @@ mod tests {
         assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
         let e = &nl.intent_errors[0];
         assert!(e.contains("ambiguous") && e.contains("q1") && e.contains("q2"), "{}", e);
-        assert!(e.contains("thru <Type>"), "{}", e);
+        assert!(e.contains("through <Type>"), "{}", e);
     }
 
     #[test]
@@ -9354,7 +9357,7 @@ mod tests {
             let j2: Jack = Jack { value: "j2" };
             node n [d1.k.voltage == j1.p2.voltage && j2.p1.voltage == j1.p1.voltage
                 && j2.p2.voltage == j1.p2.voltage] {
-                when u1.vout.voltage == 5.0V { d1.a = rly.c1; } thru Relay;
+                hold u1.vout.voltage == 5.0V { d1.a = rly.c1; } through Relay;
             };
         "#;
         let nl = analyze(src);
@@ -9513,10 +9516,10 @@ mod tests {
         );
     }
 
-    // ── 2026-09-22 (Slice C): the static when law — X implies Y ────────
+    // ── 2026-09-22 (Slice C): the static hold law — X implies Y ────────
 
     #[test]
-    fn type_when_law_propagates_conditional_drive() {
+    fn type_hold_law_propagates_conditional_drive() {
         // A regulator's type-body law: when the input is >= 5V, the output
         // is driven at 3.3V. The law is inherited per instance and the
         // conditional drive joins the net's class.
@@ -9524,7 +9527,7 @@ mod tests {
             type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
             type Conn { pin p; pin g; reference "J"; spec Tolerance: any; };
             type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
-                when vin.voltage >= 5V { vout.voltage = 3.3V; }
+                hold vin.voltage >= 5V { vout.voltage = 3.3V; }
             }
             let u1: Regulator = Regulator { value: "LM1117" };
             let j1: Conn = Conn { value: "j" };
@@ -9540,13 +9543,13 @@ mod tests {
         // with the (9V, vin) drive, so no shorted-supply violation.
         assert!(
             !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
-            "the when-law must not conflict: {:?}",
+            "the hold-law must not conflict: {:?}",
             nl.voltage.violations
         );
     }
 
     #[test]
-    fn when_law_contradiction_is_a_violation() {
+    fn hold_law_contradiction_is_a_violation() {
         // The law says when the input is >= 5V, the output is 3.3V. Another
         // contract drives the output net at 5V unconditionally — while the
         // law's guard can hold, that is a contradiction.
@@ -9554,7 +9557,7 @@ mod tests {
             type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
             type Conn { pin p; reference "J"; spec Tolerance: any; };
             type Regulator { pin vin: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
-                when vin.voltage >= 5V { vout.voltage = 3.3V; }
+                hold vin.voltage >= 5V { vout.voltage = 3.3V; }
             }
             let u1: Regulator = Regulator { value: "LM1117" };
             let j1: Conn = Conn { value: "j" };
@@ -9563,21 +9566,21 @@ mod tests {
         let nl = analyze(src);
         assert!(
             nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
-            "a when-law contradicted by an unconditional drive must violate: {:?}",
+            "a hold-law contradicted by an unconditional drive must violate: {:?}",
             nl.voltage.violations
         );
     }
 
     #[test]
-    fn mutually_exclusive_when_law_guards_do_not_conflict() {
+    fn mutually_exclusive_hold_law_guards_do_not_conflict() {
         // Two laws with mutually-exclusive guards on the same pin drive it
         // at different voltages — but the guards can never both hold, so no
         // contradiction.
         let src = r#"
             type Power { pin vout; reference "P"; spec KicadType: "power_in"; spec Supply: true; spec Tolerance: any; };
             type Switch { pin sel: Power; pin vout: Power; pin gnd: Power; reference "U"; spec Tolerance: any;
-                when sel.voltage == 3.3V { vout.voltage = 1.8V; }
-                when sel.voltage == 1.8V { vout.voltage = 3.3V; }
+                hold sel.voltage == 3.3V { vout.voltage = 1.8V; }
+                hold sel.voltage == 1.8V { vout.voltage = 3.3V; }
             }
             let u1: Switch = Switch { value: "x" };
             node n [u1.sel.voltage == 3.3V && u1.vout.voltage == 1.8V] { };
@@ -9585,7 +9588,7 @@ mod tests {
         let nl = analyze(src);
         assert!(
             !nl.voltage.violations.iter().any(|v| v.contains("shorted supply")),
-            "mutually-exclusive when-law guards must not conflict: {:?}",
+            "mutually-exclusive hold-law guards must not conflict: {:?}",
             nl.voltage.violations
         );
     }
@@ -10109,17 +10112,13 @@ mod tests {
     }
 
     #[test]
-    fn thru_strategy_narrows_to_type() {
+    fn through_strategy_narrows_to_type() {
         // Two switches, different types: `via Fet` selects q1.
         let src = MECH_BOARD.replace(
             "let q1: Fet = Fet { value: \"bs170\" };",
             "let q1: Fet = Fet { value: \"bs170\" };
         type Relay { pin coil: Control; pin c1: Path; pin c2: Path; reference \"K\"; };
         let k1: Relay = Relay { value: \"g5le\" };",
-        );
-        let src = src.replace(
-            "            };\n        }",
-            "            } thru Fet;\n        }",
         );
         let nl = analyze(&src);
         assert!(nl.intent_errors.is_empty(), "{:?}", nl.intent_errors);
@@ -10130,17 +10129,14 @@ mod tests {
         );
         assert!(
             !nl.intent_proofs.iter().any(|p| p.contains("k1")),
-            "thru Fet must not pick the relay: {:?}",
+            "through Fet must not pick the relay: {:?}",
             nl.intent_proofs
         );
     }
 
     #[test]
-    fn thru_with_no_declared_instance_is_an_error() {
-        let src = MECH_BOARD.replace(
-            "            };\n        }",
-            "            } thru Relay;\n        }",
-        );
+    fn through_with_no_declared_instance_is_an_error() {
+        let src = MECH_BOARD.replace("through Fet;", "through Relay;");
         let src = src.replace(
             "let q1: Fet = Fet { value: \"bs170\" };",
             "type Relay { pin coil: Control; pin c1: Path; pin c2: Path; reference \"K\"; };
@@ -10160,8 +10156,8 @@ mod tests {
         // d1.a = u1.gnd also stated unconditionally in the body — the
         // mechanism bridge is redundant; the switch can never open them.
         let src = MECH_BOARD.replace(
-            "            };\n        }",
-            "            };\n            d1.a = u1.gnd;\n        }",
+            "            } through Fet;\n        }",
+            "            } through Fet;\n            d1.a = u1.gnd;\n        }",
         );
         let nl = analyze(&src);
         assert_eq!(nl.intent_errors.len(), 1, "{:?}", nl.intent_errors);
@@ -10334,7 +10330,7 @@ mod tests {
                 pin a; pin b;
                 reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                 spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
@@ -10364,7 +10360,7 @@ mod tests {
                 pin a; pin b;
                 reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                 spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
@@ -10400,7 +10396,7 @@ mod tests {
                 pin a; pin b;
                 reference "R"; spec Tolerance: any;
                 spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.current + b.current == 0;
                 }
             };
@@ -10429,7 +10425,7 @@ mod tests {
             type Wire {
                 pin a; pin b;
                 reference "W"; spec Tolerance: any;
-                when true {
+                hold true {
                     a.voltage == b.voltage;
                     a.current + b.current == 0;
                 }
@@ -10461,7 +10457,7 @@ mod tests {
                     pin a; pin b;
                     reference "R"; spec Tolerance: any; {rating}
                     spec Resistance: Ohm;
-                    when true {{
+                    hold true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
@@ -10509,7 +10505,7 @@ mod tests {
                     pin a; pin b;
                     reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                     spec Resistance: Ohm;
-                    when true {{
+                    hold true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
@@ -10544,7 +10540,7 @@ mod tests {
                     pin a; pin b;
                     reference "R"; spec Tolerance: any; spec Rating: 0.05W;
                     spec Resistance: Ohm;
-                    when true {{
+                    hold true {{
                         a.voltage - b.voltage == Resistance * a.current;
                         a.current + b.current == 0;
                     }}
@@ -10581,7 +10577,7 @@ mod tests {
                 pin a; pin b;
                 reference "R"; spec Tolerance: any; spec Rating: any;
                 spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
@@ -10627,7 +10623,7 @@ mod tests {
                 pin a; pin b;
                 reference "R"; spec Tolerance: any; spec Rating: any;
                 spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 }
@@ -10660,9 +10656,9 @@ mod tests {
             type Flip {
                 pin a; pin k;
                 reference "F"; spec Tolerance: any; spec Rating: any;
-                when a.current >= 0Amp { a.current == 1Amp; }
-                when a.current < 0Amp { a.current == -1Amp; }
-                when true { a.current + k.current == 0; }
+                hold a.current >= 0Amp { a.current == 1Amp; }
+                hold a.current < 0Amp { a.current == -1Amp; }
+                hold true { a.current + k.current == 0; }
             };
             type Source { pin p; pin n; reference "V"; spec Tolerance: any; };
             let v1: Source = Source { };
@@ -10691,9 +10687,9 @@ mod tests {
                     pin a; pin k;
                     reference "F"; spec Tolerance: any; spec Rating: any;
                     spec Bistable: true;
-                    when a.current >= 0Amp {{ a.current == 1Amp; }}
-                    when a.current < 0Amp {{ a.current == -1Amp; }}
-                    when true {{ a.current + k.current == 0; }}
+                    hold a.current >= 0Amp {{ a.current == 1Amp; }}
+                    hold a.current < 0Amp {{ a.current == -1Amp; }}
+                    hold true {{ a.current + k.current == 0; }}
                 }};
                 type Source {{ pin p; pin n; reference "V"; spec Tolerance: any; }};
                 let v1: Source = Source {{ }};
@@ -10846,14 +10842,14 @@ mod tests {
             type Diode {
                 pin a; pin k;
                 reference "D"; spec Tolerance: any; spec Rating: any;
-                when a.voltage - k.voltage >= 0.7Volt {
+                hold a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
                 }
-                when a.voltage - k.voltage < 0.7Volt {
+                hold a.voltage - k.voltage < 0.7Volt {
                     a.current == 0Amp;
                 }
-                when true {
+                hold true {
                     a.current + k.current == 0;
                 }
             };
@@ -10878,14 +10874,14 @@ mod tests {
             type Diode {
                 pin a; pin k;
                 reference "D"; spec Tolerance: any; spec Rating: any;
-                when a.voltage - k.voltage >= 0.7Volt {
+                hold a.voltage - k.voltage >= 0.7Volt {
                     a.current ==
                         (a.voltage - k.voltage - 0.7Volt) / 100Ohm;
                 }
-                when a.voltage - k.voltage < 0.7Volt {
+                hold a.voltage - k.voltage < 0.7Volt {
                     a.current == 0Amp;
                 }
-                when true {
+                hold true {
                     a.current + k.current == 0;
                 }
             };
@@ -11347,7 +11343,7 @@ mod tests {
         let src = r#"
             struct Pin { voltage: Float; current: Float; };
             type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: Ohm;
-                when true {
+                hold true {
                     a.voltage - b.voltage == Resistance * a.current;
                     a.current + b.current == 0;
                 };

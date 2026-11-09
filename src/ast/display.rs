@@ -436,11 +436,40 @@ impl fmt::Display for Statement {
                 }
             }
             Statement::Guarded(cond, body) => {
-                write!(f, "when {} {{ ", cond)?;
+                let strategy = body.iter().find_map(|s| match s {
+                    Statement::MetadataAssignment(k, PropertyValue::Identifier(n))
+                        if k == "through" =>
+                    {
+                        Some(n.as_str())
+                    }
+                    _ => None,
+                });
+                let is_hold = strategy.is_some()
+                    || body.iter().any(|s| {
+                        matches!(
+                            s,
+                            Statement::MetadataAssignment(k, PropertyValue::Bool(true)) if k == "hold"
+                        )
+                    });
+                let keyword = if is_hold { "hold" } else { "when" };
+                write!(f, "{} {} {{ ", keyword, cond)?;
                 for stmt in body {
+                    if matches!(
+                        stmt,
+                        Statement::MetadataAssignment(k, PropertyValue::Identifier(_)) if k == "through"
+                    ) || matches!(
+                        stmt,
+                        Statement::MetadataAssignment(k, PropertyValue::Bool(true)) if k == "hold"
+                    ) {
+                        continue;
+                    }
                     write!(f, "{} ", stmt)?;
                 }
-                write!(f, "}}")
+                write!(f, "}}")?;
+                if let Some(ty) = strategy {
+                    write!(f, " through {};", ty)?;
+                }
+                Ok(())
             }
             Statement::Gate(cond) => write!(f, "[{}];", cond),
             Statement::Expression(expr) => write!(f, "{};", expr),

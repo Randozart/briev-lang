@@ -322,7 +322,7 @@
           "name": "keyword.control.briev"
         },
         {
-          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|match|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg|bootstrap|acquire|bartered|break|halt|pin|program|relaxed|release)\\b",
+          "match": "\\b(let|const|init|type|trait|proto|struct|seq|union|enum|impl|obj|cell|extern|coll|defn|txn|node|asm|render|frgn|optional|export|import|from|as|op|term|endprogram|beginprogram|defer|rollback|mutex|match|hold|when|foreach|spawn|await|free|keep|trg|within|async|sync|vol|out|spec|pack|atomic|trap|borrow|consume|owned|shared|borrowed|box|spill|quote|mem|reg|bootstrap|acquire|bartered|break|halt|pin|program|relaxed|release)\\b",
           "name": "keyword.control.briev"
         },
         {

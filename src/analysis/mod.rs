@@ -14,7 +14,7 @@ pub mod task_segments;
 pub mod call_graph;
 pub mod concurrency_gate;
 pub mod causality;
-pub mod when_law;
+pub mod hold_law;
 pub mod lifecycle;
 pub mod cross_reference;
 pub mod dataflow;

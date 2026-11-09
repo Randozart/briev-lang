@@ -336,6 +336,12 @@ pub enum Token {
     #[token("when")]
     When,
 
+    /// 2026-11-09: static obligation law head — `hold G { facts }` at top
+    /// level and in obj/type bodies; `hold cond { … } through Type;` for an
+    /// electronics mechanism. `when` keeps the runtime-guard meaning.
+    #[token("hold")]
+    Hold,
+
     // ── Operators ─────────────────────────────────────────────
     #[token("=>")]
     FatArrow,
@@ -709,6 +715,7 @@ impl std::fmt::Display for Token {
             Token::Input => write!(f, "input"),
             Token::Output => write!(f, "output"),
             Token::When => write!(f, "when"),
+            Token::Hold => write!(f, "hold"),
             Token::FatArrow => write!(f, "=>"),
             Token::Eq => write!(f, "="),
             Token::EqEq => write!(f, "=="),

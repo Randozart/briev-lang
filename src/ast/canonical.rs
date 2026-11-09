@@ -174,10 +174,10 @@ fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
             indent(out, level);
             let _ = write!(out, "shortcircuit unpop {};", d.instance);
         }
-        // 2026-09-22 (Slice C): the static when law.
-        TopLevel::WhenLaw(w) => {
+        // 2026-11-09: the static hold law (`hold G { facts }`).
+        TopLevel::HoldLaw(w) => {
             indent(out, level);
-            let _ = write!(out, "when {}", w.guard);
+            let _ = write!(out, "hold {}", w.guard);
             for fact in &w.facts {
                 indent(out, level + 1);
                 let _ = write!(out, "{}", fact);
@@ -579,6 +579,66 @@ fn format_callable(
 
 /// 2026-08-05: format a braced block statement: `<header> { body };`.
 /// `header` already includes the opening brace.
+/// `when cond { … };` for a runtime guard, or
+/// `hold cond { … } through Type;` for a conditional mechanism (the strategy
+/// marker lives inside the guarded body as `MetadataAssignment("through", …)`).
+fn format_guarded(out: &mut String, level: usize, cond: &Expr, body: &[Statement]) {
+    let strategy = through_strategy(body);
+    let keyword = if strategy.is_some() || is_hold_marker_body(body) {
+        "hold"
+    } else {
+        "when"
+    };
+    let facts: Vec<Statement> = body
+        .iter()
+        .filter(|s| !is_hold_marker(s) && !is_through_marker(s))
+        .cloned()
+        .collect();
+    indent(out, level);
+    let _ = write!(out, "{} {} {{", keyword, cond);
+    if facts.is_empty() {
+        out.push(' ');
+    } else {
+        out.push('\n');
+        format_block(&facts, level + 1, out);
+        indent(out, level);
+    }
+    out.push('}');
+    match strategy {
+        Some(ty) => {
+            let _ = write!(out, " through {};", ty);
+        }
+        None => out.push(';'),
+    }
+}
+
+fn is_hold_marker_body(body: &[Statement]) -> bool {
+    body.iter().any(is_hold_marker)
+}
+
+fn is_hold_marker(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::MetadataAssignment(key, PropertyValue::Bool(true)) if key == "hold"
+    )
+}
+
+fn is_through_marker(stmt: &Statement) -> bool {
+    matches!(
+        stmt,
+        Statement::MetadataAssignment(key, PropertyValue::Identifier(_)) if key == "through"
+    )
+}
+
+fn through_strategy(body: &[Statement]) -> Option<&str> {
+    body.iter().find_map(|s| match s {
+        Statement::MetadataAssignment(key, PropertyValue::Identifier(name)) if key == "through" => {
+            Some(name.as_str())
+        }
+        _ => None,
+    })
+}
+
 fn format_braced(out: &mut String, level: usize, header: &str, body: &[Statement]) {
     indent(out, level);
     out.push_str(header);
@@ -602,9 +662,7 @@ fn format_block(stmts: &[Statement], level: usize, out: &mut String) {
 
 fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
     match stmt {
-        Statement::Guarded(cond, body) => {
-            format_braced(out, level, &format!("when {} {{", cond), body);
-        }
+        Statement::Guarded(cond, body) => format_guarded(out, level, cond, body),
         Statement::Foreach { item, list, body } => {
             format_braced(out, level, &format!("foreach({} in {}) {{", item, list), body);
         }

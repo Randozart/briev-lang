@@ -99,7 +99,8 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `match` | Pattern match |
 | `foreach` | Iteration — paren form `foreach (x in list)` deprecated (§13) |
 | `break` | Exit nearest foreach |
-| `when` | Guarded block |
+| `hold` | Static obligation law (`hold G { facts }`); `obj`/`type` bodies and top level; `hold G { … } through Type;` for a conditional mechanism |
+| `when` | Runtime guarded block |
 
 ### Literals & units
 
@@ -462,7 +463,8 @@ Rust plugin macros (`src/plugin/`):
 | `?[cond]` / `![cond]` | Watchdog (optional / required liveliness) |
 | `within N <unit>` | Watchdog deadline (`cyc`/`ns`/`ms`/`s`/`min`) |
 | `[cond];` | Convergence gate |
-| `[cond] stmt;` / `when cond { body };` | Guarded statement / block |
+| `[cond] stmt;` / `when cond { body };` | Guarded statement / block (runtime) |
+| `hold cond { facts };` / `hold cond { … } through Type;` | Static law / conditional mechanism (electronics fact body) |
 | `@ link sym` | Bind external runtime symbol (trg) |
 | `op Parse(Decimal, pre:"0x")` / `suf:` / `reg:` | Literal discriminator attributes |
 

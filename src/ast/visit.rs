@@ -319,7 +319,7 @@ pub fn walk_toplevel<F: FnMut(&Expr)>(item: &TopLevel, f: &mut F) {
         }
         TopLevel::Budget(b) => walk_expr(&b.contract, f),
         TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => {}
-        TopLevel::WhenLaw(w) => {
+        TopLevel::HoldLaw(w) => {
             walk_expr(&w.guard, f);
             walk_stmts(&w.facts, f);
         }
@@ -435,7 +435,7 @@ fn walk_stmt_arms<F: FnMut(&Expr)>(arms: &[StmtMatchArm], f: &mut F) {
 
 /// A type/obj body's behavioral payload: member defs (whose bodies reference
 /// same-module fns — `obj GrowBuf { put_u8 → grow_to_fit }`), op-binding
-/// exprs, constraints, and when-laws. Slots/bindings/operators/ports carry
+/// exprs, constraints, and hold-laws. Slots/bindings/operators/ports carry
 /// Types, not Exprs. Split out of `walk_toplevel` (Praetor complexity).
 fn walk_type_body<F: FnMut(&Expr)>(td: &super::top::TypeDef, f: &mut F) {
     // 2026-10-18 (splice closure): before this descent the closure never
@@ -450,7 +450,7 @@ fn walk_type_body<F: FnMut(&Expr)>(td: &super::top::TypeDef, f: &mut F) {
     for c in &td.body.constraints {
         walk_expr(c, f);
     }
-    for law in &td.body.when_laws {
+    for law in &td.body.hold_laws {
         walk_expr(&law.guard, f);
         walk_stmts(&law.facts, f);
     }

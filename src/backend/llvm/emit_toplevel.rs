@@ -2821,7 +2821,7 @@ impl LlvmBackend {
                             metadata: Default::default(), pins: Vec::new(), reference: None, projections: vec![],
                             bindings: vec![], operators: vec![],
                             op_bindings: vec![], constraints: vec![],
-                            members: vec![], when_laws: vec![], modes: vec![], span: None,
+                            members: vec![], hold_laws: vec![], modes: vec![], span: None,
                         },
                     };
                     if let Some((seq_expr, elem_ty)) = crate::backend::llvm::coll_scaffold::derive_sequence_member(

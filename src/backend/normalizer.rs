@@ -216,7 +216,7 @@ fn seed_obj<'a>(o: &'a crate::ast::top::StructDefinition, work: &mut Vec<Seed<'a
 }
 
 /// TypeDef: type-level expressions (parent, constraints, op_bindings,
-/// projections, when-laws, modes) are emitted only while their TYPE is
+/// projections, hold-laws, modes) are emitted only while their TYPE is
 /// live; without the liveness set at the gate, seeding them would reject
 /// programs whose types are dead (over-seed = the prelude bug class).
 /// They are reached through call expansion when actually used — the
@@ -270,7 +270,7 @@ fn seed_toplevel<'a>(item: &'a TopLevel, work: &mut Vec<Seed<'a>>) {
             // are the worked example). Compile-time `$txn` never reaches
             // backend emission.
         }
-        TopLevel::WhenLaw(w) => {
+        TopLevel::HoldLaw(w) => {
             work.push(Seed::Expr(&w.guard));
             work.push(Seed::Stmts(w.facts.as_slice()));
         }

@@ -110,7 +110,7 @@ impl LanguageVocab {
         };
         let ss = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         LanguageVocab {
-            version: "2026-08-05.1".to_string(),
+            version: "2026-11-09.1".to_string(),
             keywords: vec![
                 // Declarations
                 kw("let", VocabStatus::Canonical, KeywordContext::Declaration),
@@ -204,6 +204,9 @@ impl LanguageVocab {
                 kw("rollback", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("mutex", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("match", VocabStatus::Canonical, KeywordContext::Statement),
+                // 2026-11-09: `hold` is the static obligation law head
+                // (`hold G { facts }`); `when` remains the runtime guard.
+                kw("hold", VocabStatus::Canonical, KeywordContext::Declaration),
                 kw("when", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("foreach", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("break", VocabStatus::Canonical, KeywordContext::Statement),

@@ -79,7 +79,7 @@ type Sensor {
     spec SeriesPart: true;
     // 2026-09-24 (component laws): structured physics. `value` remains the
     // BOM label only.
-    when true {
+    hold true {
         a.voltage - b.voltage == Resistance * a.current;
         a.current + b.current == 0;
     }

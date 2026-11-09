@@ -1,9 +1,10 @@
 // 2026-09-22 (Slice C2, plan 2026-09-22-electronics-participation-and-when-
-// law.md): the software side of the static `when` law.
+// law.md): the software side of the static `hold` law (renamed from `when`
+// 2026-11-09).
 //
-// At top level or in an obj/type body, `when G { F1; ...; Fn }` declares
+// At top level or in an obj/type body, `hold G { F1; ...; Fn }` declares
 // G ⟹ F1 ∧ … ∧ Fn, and the compiler must make it so. Inside a defn/node/
-// txn, `when` stays guarded/reactive behavior (Statement::Guarded, which
+// txn, `when` stays the runtime guard (Statement::Guarded, which
 // this pass does not touch). The software obligation: if a member fact
 // forces a value, no node/txn body assignment or another law may force the
 // same member to a DIFFERENT value under a jointly-satisfiable guard —
@@ -37,7 +38,7 @@ fn collect_law_facts(items: &[TopLevel]) -> Vec<LawFact> {
     // the type's own slots (self-scoped members). Single pass over items.
     for item in items {
         match item {
-            TopLevel::WhenLaw(w) => {
+            TopLevel::HoldLaw(w) => {
                 collect_facts(&w.guard, &w.facts, "top-level", &mut out);
             }
             TopLevel::TypeDef(td) => collect_type_laws(td, &mut out),
@@ -49,7 +50,7 @@ fn collect_law_facts(items: &[TopLevel]) -> Vec<LawFact> {
 
 /// A type body's laws, each contributing its member facts.
 fn collect_type_laws(td: &crate::ast::TypeDef, out: &mut Vec<LawFact>) {
-    for law in &td.body.when_laws {
+    for law in &td.body.hold_laws {
         collect_facts(
             &law.guard,
             &law.facts,
@@ -84,7 +85,7 @@ fn collect_facts(guard: &Expr, facts: &[Statement], source: &str, out: &mut Vec<
             member: member.clone(),
             value: value.clone(),
             guard: guard.clone(),
-            source: format!("when-law ({})", source),
+            source: format!("hold law ({})", source),
         });
     }
 }
@@ -160,7 +161,7 @@ fn check_one_assignment(
         let sat = check_satisfiable(&law.guard, guard);
         if sat {
             errors.push(format!(
-                "when-law '{}' forces '{}' to '{}' under its guard, but node '{}' assigns it a \
+                "hold law '{}' forces '{}' to '{}' under its guard, but node '{}' assigns it a \
                  different value in a state where both could hold. The law must hold everywhere — \
                  remove the conflicting assignment, or make the guards mutually exclusive.",
                 law.source, law.member, law.value, txn_name
@@ -200,9 +201,9 @@ fn expr_may_equal(a: &Expr, b: &Expr) -> bool {
     }
 }
 
-/// Run the software when-law check. Returns errors naming every law that
+/// Run the software hold-law check. Returns errors naming every law that
 /// could be violated; an empty vec means every law holds.
-pub fn run_when_law_check(items: &[TopLevel]) -> Vec<String> {
+pub fn run_hold_law_check(items: &[TopLevel]) -> Vec<String> {
     let mut errors = Vec::new();
     let facts = collect_law_facts(items);
     if facts.is_empty() {
@@ -258,7 +259,7 @@ fn check_member_laws(member: &str, laws: &[&LawFact], errors: &mut Vec<String>) 
     let first = groups.next().unwrap();
     for group in groups {
         errors.push(format!(
-            "when-laws '{}' and '{}' force '{}' to different values under jointly-\
+            "hold laws '{}' and '{}' force '{}' to different values under jointly-\
              satisfiable guards — the laws cannot both hold. Make the guards mutually \
              exclusive.",
             first[0].source, group[0].source, member
@@ -276,16 +277,16 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
-        run_when_law_check(&items)
+        run_hold_law_check(&items)
     }
 
     #[test]
-    fn top_level_when_law_forces_member() {
+    fn top_level_hold_law_forces_member() {
         // The law holds — no assignment contradicts it.
         let src = r#"
             let alarm: Bool = false;
             let temperature: Int = 20;
-            when temperature > 100 { alarm = true; }
+            hold temperature > 100 { alarm = true; }
             node n [temperature > 100] { alarm = true; };
         "#;
         let errors = check(src);
@@ -293,18 +294,18 @@ mod tests {
     }
 
     #[test]
-    fn top_level_when_law_contradiction_is_refused() {
+    fn top_level_hold_law_contradiction_is_refused() {
         // The law forces alarm=true under temperature>100; the node assigns
         // alarm=false in a state where the law's guard can also hold.
         let src = r#"
             let alarm: Bool = false;
             let temperature: Int = 20;
-            when temperature > 100 { alarm = true; }
+            hold temperature > 100 { alarm = true; }
             node n [temperature > 100] { alarm = false; };
         "#;
         let errors = check(src);
         assert_eq!(errors.len(), 1, "a contradicted law must refuse: {errors:?}");
-        assert!(errors[0].contains("when-law") && errors[0].contains("alarm"), "{}", errors[0]);
+        assert!(errors[0].contains("hold law") && errors[0].contains("alarm"), "{}", errors[0]);
     }
 
     #[test]
@@ -315,7 +316,7 @@ mod tests {
         let src = r#"
             let alarm: Bool = false;
             let temperature: Int = 20;
-            when temperature > 100 { alarm = true; }
+            hold temperature > 100 { alarm = true; }
             node n [temperature <= 100] { alarm = false; };
         "#;
         let errors = check(src);
@@ -323,11 +324,11 @@ mod tests {
     }
 
     #[test]
-    fn type_body_when_law_contradiction_is_refused() {
+    fn type_body_hold_law_contradiction_is_refused() {
         // An obj-body law forces a member; a node contradicts it.
         let src = r#"
             let alarm: Bool = false;
-            obj Sensor { temperature: Int; when temperature > 100 { alarm = true; } };
+            obj Sensor { temperature: Int; hold temperature > 100 { alarm = true; } };
             node n [alarm == false] { alarm = false; };
         "#;
         let errors = check(src);
@@ -341,8 +342,8 @@ mod tests {
         // jointly-satisfiable guards.
         let src = r#"
             let x: Int = 0;
-            when x >= 0 { x = 1; }
-            when x >= 0 { x = 2; }
+            hold x >= 0 { x = 1; }
+            hold x >= 0 { x = 2; }
         "#;
         let errors = check(src);
         assert_eq!(errors.len(), 1, "law-vs-law contradiction must refuse: {errors:?}");
