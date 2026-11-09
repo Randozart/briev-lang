@@ -1,0 +1,4 @@
+defn select(s: Int) -> Int {
+    let values: List<Int> = [s, 1, 2];
+    term values[0];
+};

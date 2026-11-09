@@ -1,0 +1,63 @@
+name: Memory
+
+# 2026-11-09: aggressive memory-defect campaign (ASan/LSan/UBSan + Valgrind) over
+# generated ownership-heavy programs. The bounded smoke runs as part of the
+# normal `cargo test --all` gate (tests/memory_campaign.rs); this workflow is
+# the long, sharded, non-blocking discovery lane.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Cases per family
+        default: "8"
+      seeds:
+        description: Space-separated seeds
+        default: "1 7 2026"
+
+jobs:
+  explore:
+    name: Memory explore (family ${{ matrix.family }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        family: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install clang + valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm valgrind
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Memory campaign (family ${{ matrix.family }})
+        # Family 1 covers publish-into-incoming-parameter (fixed by PR #81).
+        # Keep it non-blocking as a regression sentinel: a red result there is
+        # a real defect report, never hidden.
+        continue-on-error: ${{ matrix.family == 1 }}
+        env:
+          MEM_CASES: ${{ github.event.inputs.cases || '8' }}
+          MEM_VALGRIND: "1"
+        run: |
+          for seed in ${{ github.event.inputs.seeds || '1 7 2026' }}; do
+            echo "=== family ${{ matrix.family }} seed $seed ==="
+            MEM_FAMILY=${{ matrix.family }} MEM_SEED=$seed \
+              MEM_ARTIFACTS="target/memory-f${{ matrix.family }}-s$seed" \
+              cargo test --test memory_campaign \
+                generated_memory_programs_are_memory_safe -- --nocapture
+          done
+
+      - name: Upload findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-artifacts-f${{ matrix.family }}
+          path: target/memory-f${{ matrix.family }}-s*/
+          if-no-files-found: ignore
