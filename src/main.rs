@@ -389,10 +389,20 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 return Err(format!("--int-bits must be 8, 16, 32, or 64, got: {}", int_bits));
             }
             i += 2;
-        } else if arg == "--accel" {
-            let val = args.get(i + 1).ok_or(
-                "--accel requires a mode: keyword-only | try-all | force | try-all-force",
-            )?;
+        } else if arg == "--accel" || arg.starts_with("--accel=") {
+            // Both spellings: `--accel force` and `--accel=force` (SPEC §9.7).
+            let (val, consumed) = if let Some(v) = arg.strip_prefix("--accel=") {
+                (v.to_string(), 1)
+            } else {
+                (
+                    args.get(i + 1)
+                        .ok_or(
+                            "--accel requires a mode: keyword-only | try-all | force | try-all-force",
+                        )?
+                        .clone(),
+                    2,
+                )
+            };
             accel_mode = Some(match val.as_str() {
                 "keyword-only" | "try_keyword" => {
                     briev_compiler::analysis::accel::AccelMode::TryKeyword
@@ -409,7 +419,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                     ))
                 }
             });
-            i += 2;
+            i += consumed;
         } else if arg == "--accel-cpu-fallback" {
             let val = args.get(i + 1).ok_or("--accel-cpu-fallback requires a number argument (min work items for GPU)")?;
             accel_cpu_fallback = Some(val.parse()

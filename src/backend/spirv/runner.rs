@@ -1025,7 +1025,12 @@ pub(crate) fn emit_node_kernel(
         .and_then(|_| osb.build())
         {
             Ok(bytes) => bytes,
-            Err(_) => Vec::new(),
+            Err(e) => {
+                if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
+                    eprintln!("[accel] node '{}' has no OpenCL projection: {}", name, e);
+                }
+                Vec::new()
+            }
         }
     };
     // The dispatch flag keys on the body the emitter CHOSE — one decision,

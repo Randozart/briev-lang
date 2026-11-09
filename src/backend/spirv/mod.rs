@@ -1843,6 +1843,42 @@ mod tests {
 {}", asm);
     }
 
+    /// 2026-11-09: the OpenCL flavor must import OpenCL.std, never
+    /// GLSL.std.450 — IGC rejects the latter with "Expects OpenCL.std.
+    /// Actual is GLSL.std.450" (the min/max fold lane surfaced this).
+    #[test]
+    fn test_opencl_flavor_uses_opencl_std_ext_insts() {
+        if std::process::Command::new("spirv-dis").arg("--version").output().is_err() {
+            eprintln!("spirv-dis not found — skipping OpenCL ext-inst sweep");
+            return;
+        }
+        let mut b = SpirvBuilder::new_opencl();
+        let void_ty = b.builder.type_void();
+        let i64_ty = b.builder.type_int(64, 1);
+        let fn_ty = b.gen_id();
+        b.builder
+            .type_function_id(Some(fn_ty), void_ty, [i64_ty, i64_ty]);
+        let fid = b.gen_id();
+        b.begin_function(void_ty, fid, spirv::FunctionControl::empty(), fn_ty);
+        let p1 = b.builder.function_parameter(i64_ty).expect("param 1");
+        let p2 = b.builder.function_parameter(i64_ty).expect("param 2");
+        let block = b.gen_id();
+        b.begin_block(Some(block));
+        let _ = b.glsl_smaxmin(i64_ty, p1, p2, true);
+        b.ret();
+        b.end_function();
+        let asm = validate_and_disassemble(&b.build().unwrap(), "opencl_ext_insts");
+        assert!(
+            asm.contains("OpExtInstImport \"OpenCL.std\""),
+            "OpenCL flavor must import OpenCL.std:\n{asm}"
+        );
+        assert!(
+            !asm.contains("GLSL.std.450"),
+            "OpenCL flavor must never import GLSL.std.450:\n{asm}"
+        );
+        assert!(asm.contains("OpenCL.std") && asm.contains("s_max"), "{asm}");
+    }
+
     /// §2.5 optional smoke: execute a fixture kernel when a Vulkan runner is
     /// installed. Probe-gated — absent runner skips loudly, never fails.
     #[test]

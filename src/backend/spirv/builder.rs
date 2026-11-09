@@ -55,6 +55,10 @@ pub struct SpirvBuilder {
     vec4_arrays: HashMap<(Word, u32), Word>,
     /// 2026-11-08 (Stage F): the vendor projection this builder emits.
     flavor: SpirvFlavor,
+    /// Lazy OpenCL.std extended-instruction set id (OpenCL flavor's
+    /// equivalent of `glsl_set`). OpenCL modules MUST NOT import
+    /// GLSL.std.450 (IGC rejects: "Expects OpenCL.std. Actual is GLSL.std.450").
+    ocl_set: Option<Word>,
 }
 
 impl SpirvBuilder {
@@ -109,6 +113,7 @@ impl SpirvBuilder {
             glsl_set: None,
             vec4_arrays: HashMap::new(),
             flavor,
+            ocl_set: None,
         }
     }
 
@@ -248,6 +253,35 @@ impl SpirvBuilder {
         arr
     }
 
+    /// The extended-instruction set for this flavor (lazy, cached per
+    /// module): GLSL.std.450 for Vulkan, OpenCL.std for OpenCL.
+    fn ext_set(&mut self) -> Word {
+        if self.is_opencl() {
+            if let Some(s) = self.ocl_set {
+                return s;
+            }
+            let s = self.builder.ext_inst_import("OpenCL.std");
+            self.ocl_set = Some(s);
+            return s;
+        }
+        if let Some(s) = self.glsl_set {
+            return s;
+        }
+        let s = self.builder.ext_inst_import("GLSL.std.450");
+        self.glsl_set = Some(s);
+        s
+    }
+
+    /// Ext-inst opcode for the current flavor. GLSL and OpenCL number their
+    /// instructions differently; the call sites pass both.
+    fn ext_op(&self, glsl: spirv::GLOp, ocl: spirv::CLOp) -> u32 {
+        if self.is_opencl() {
+            ocl as u32
+        } else {
+            glsl as u32
+        }
+    }
+
     /// O2 (plan 2026-08-31-gpu-next): emit `GLSL.std.450 Fma(a, b, c)` —
     /// one rounding instead of FMul+FAdd's two, and immune to whether the
     /// driver contracts mul+add chains. The OpExtInstImport is emitted
@@ -265,20 +299,13 @@ impl SpirvBuilder {
     /// back-edge id before the header is emitted, and the body must define
     /// its value INTO that id.
     pub fn glsl_fma_with_id(&mut self, result_id: Word, result_ty: Word, a: Word, b: Word, c: Word) {
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
+        let set = self.ext_set();
         self.builder
             .ext_inst(
                 result_ty,
                 Some(result_id),
                 set,
-                spirv::GLOp::Fma as u32,
+                self.ext_op(spirv::GLOp::Fma, spirv::CLOp::fma),
                 [
                     Operand::IdRef(a),
                     Operand::IdRef(b),
@@ -292,20 +319,13 @@ impl SpirvBuilder {
     /// Same lazy-import mechanism as Fma (glsl_set cached per module).
     pub fn glsl_exp(&mut self, result_ty: Word, x: Word) -> Word {
         let id = self.gen_id();
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
+        let set = self.ext_set();
         self.builder
             .ext_inst(
                 result_ty,
                 Some(id),
                 set,
-                spirv::GLOp::Exp as u32,
+                self.ext_op(spirv::GLOp::Exp, spirv::CLOp::exp),
                 [Operand::IdRef(x)],
             )
             .expect("Exp emission inside a function block");
@@ -317,20 +337,13 @@ impl SpirvBuilder {
     /// shading). Same lazy-import mechanism as Exp.
     pub fn glsl_sqrt(&mut self, result_ty: Word, x: Word) -> Word {
         let id = self.gen_id();
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
+        let set = self.ext_set();
         self.builder
             .ext_inst(
                 result_ty,
                 Some(id),
                 set,
-                spirv::GLOp::Sqrt as u32,
+                self.ext_op(spirv::GLOp::Sqrt, spirv::CLOp::sqrt),
                 [Operand::IdRef(x)],
             )
             .expect("Sqrt emission inside a function block");
@@ -342,20 +355,13 @@ impl SpirvBuilder {
     /// Same lazy-import mechanism as Exp/Sqrt.
     pub fn glsl_fabs(&mut self, result_ty: Word, x: Word) -> Word {
         let id = self.gen_id();
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
+        let set = self.ext_set();
         self.builder
             .ext_inst(
                 result_ty,
                 Some(id),
                 set,
-                spirv::GLOp::FAbs as u32,
+                self.ext_op(spirv::GLOp::FAbs, spirv::CLOp::fabs),
                 [Operand::IdRef(x)],
             )
             .expect("FAbs emission inside a function block");
@@ -367,17 +373,13 @@ impl SpirvBuilder {
     /// kernel bodies; single hardware instruction on every backend).
     pub fn glsl_fmaxmin(&mut self, result_ty: Word, a: Word, b: Word, max: bool) -> Word {
         let id = self.gen_id();
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
-        let op = if max { spirv::GLOp::FMax } else { spirv::GLOp::FMin };
+        let set = self.ext_set();
+        let op = self.ext_op(
+            if max { spirv::GLOp::FMax } else { spirv::GLOp::FMin },
+            if max { spirv::CLOp::fmax } else { spirv::CLOp::fmin },
+        );
         self.builder
-            .ext_inst(result_ty, Some(id), set, op as u32, [Operand::IdRef(a), Operand::IdRef(b)])
+            .ext_inst(result_ty, Some(id), set, op, [Operand::IdRef(a), Operand::IdRef(b)])
             .expect("FMax/FMin emission inside a function block");
         id
     }
@@ -388,17 +390,13 @@ impl SpirvBuilder {
     /// opcodes 42/39).
     pub fn glsl_smaxmin(&mut self, result_ty: Word, a: Word, b: Word, max: bool) -> Word {
         let id = self.gen_id();
-        let set = match self.glsl_set {
-            Some(s) => s,
-            None => {
-                let s = self.builder.ext_inst_import("GLSL.std.450");
-                self.glsl_set = Some(s);
-                s
-            }
-        };
-        let op = if max { spirv::GLOp::SMax } else { spirv::GLOp::SMin };
+        let set = self.ext_set();
+        let op = self.ext_op(
+            if max { spirv::GLOp::SMax } else { spirv::GLOp::SMin },
+            if max { spirv::CLOp::s_max } else { spirv::CLOp::s_min },
+        );
         self.builder
-            .ext_inst(result_ty, Some(id), set, op as u32, [Operand::IdRef(a), Operand::IdRef(b)])
+            .ext_inst(result_ty, Some(id), set, op, [Operand::IdRef(a), Operand::IdRef(b)])
             .expect("SMax/SMin emission inside a function block");
         id
     }

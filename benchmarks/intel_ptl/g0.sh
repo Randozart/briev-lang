@@ -43,18 +43,18 @@ tar -C "$ROOT" -cf - target/compiler-in-briv \
 fail=0
 sample_report() {
     local bench="$1" dev="$2"
-    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
+    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" | grep -E "G0_.*_BAD|compiled on" | tail -3 || true
 }
 run_gate() {
     local bench="$1" dev="$2"
     local out
-    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 240 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'")
     local bad compiled
     # Fixtures name their own label (e.g. G0_SUM_BAD, G0_MINMAX_BAD); accept
     # the last must-be-zero counter line.
     bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
-    compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'")
-    local t; t=$(printf '%s\n' "$out" | grep -o '# gpu_time: .*' | tail -1)
+    compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'" || true)
+    local t; t=$(printf '%s\n' "$out" | grep -o '# gpu_time: .*' | tail -1 || true)
 
     # Every GPU_<KIND> / CPU_<KIND> pair the fixture prints (SUM, MIN, MAX)
     # must agree; the fixture defines which kinds it reports.
@@ -92,6 +92,76 @@ run_gate g0_minmax vulkan
 echo "== g0: float fold approx/exact (§12 P1) =="
 run_gate g0_fsum_approx vulkan
 run_gate g0_fsum_exact vulkan
+
+# Reported-lane variant: a timeout/HANG is printed, not fatal; a wrong result
+# (BAD != 0 or GPU != CPU) still fails the gate.
+run_gate_reported() {
+    local bench="$1" dev="$2"
+    local out
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 90 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$bench.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    local bad compiled
+    bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
+    compiled=$(printf '%s\n' "$out" | grep -c "kernel '.*' compiled on '$dev'" || true)
+    local mismatch=0 k gpu cpu kinds=""
+    for k in SUM MIN MAX; do
+        gpu=$(printf '%s\n' "$out" | sed -n "s/.*GPU_${k}=\([-0-9.eE+]*\).*/\1/p" | tail -1)
+        cpu=$(printf '%s\n' "$out" | sed -n "s/.*CPU_${k}=\([-0-9.eE+]*\).*/\1/p" | tail -1)
+        [ -z "$gpu" ] && [ -z "$cpu" ] && continue
+        if [ "$gpu" = "$cpu" ]; then kinds="$kinds $k=ok"; else kinds="$kinds $k=DIFF"; fi
+    done
+    case "$kinds" in *DIFF) mismatch=1 ;; esac
+    if [ "$compiled" -lt 1 ]; then
+        echo "-- $bench on $dev: HANG/no output (bad=${bad:-?}) — reported"
+    elif [ "${bad:-x}" != "0" ] || [ "$mismatch" -ne 0 ]; then
+        echo "-- $bench on $dev: WRONG (bad=${bad:-?}${kinds})"
+        fail=1
+    else
+        echo "-- $bench on $dev: bad=0${kinds}"
+    fi
+}
+
+report_gemm_fallback() {
+    local dev="$1"
+    local out
+    out=$("${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && BRIEV_HOME=$WORK BRIEV_ACCEL_VERBOSE=1 BRIEV_ACCEL_DEVICE=$dev timeout 300 $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/g0_gemm.bv --stdlib-path lib --config-dir config --out g0out 2>&1'" || true)
+    local bad
+    bad=$(printf '%s\n' "$out" | sed -n 's/.*_BAD=\([-0-9]*\).*/\1/p' | tail -1)
+    if printf '%s\n' "$out" | grep -q "has no OpenCL projection"; then
+        if [ "${bad:-x}" = "0" ]; then
+            echo "-- gemm on $dev: CPU fallback (no OpenCL projection, Vulkan-only until G3), self-check ok"
+        else
+            echo "-- gemm on $dev: CPU fallback but self-check failed (bad=${bad:-?})"
+            fail=1
+        fi
+    elif printf '%s\n' "$out" | grep -q "compiled on '$dev'"; then
+        echo "-- gemm on $dev: kernel compiled (unexpected before G3 — record it)"
+    else
+        echo "-- gemm on $dev: no output (${bad:-?})"
+        fail=1
+    fi
+}
+
+# 2026-11-09 (plan intel-lane-ceilings-and-probe-cost): the five non-GEMM
+# gates are REQUIRED on the Intel lanes too. GEMM stays Vulkan-only until G3
+# (cooperative-matrix-on-IL): L0/NEO cannot consume the Vulkan image (IGC
+# requires OpenCL.std), so the lane falls back to the CPU body — clean, but
+# not a lane pass.
+echo "== g0: levelzero lane (required) =="
+for bench in g0_elem g0_sum g0_minmax g0_fsum_approx g0_fsum_exact; do
+    run_gate "$bench" levelzero
+done
+# 2026-11-09: the OpenCL (NEO) lane is REPORTED, not required yet: the
+# exact-fold kernel intermittently hangs in clFinish (~1/3 under node load;
+# BUGS.md). Correct runs match the host reference; a HANG must be visible,
+# never silent. Promote once the hang is fixed.
+echo "== g0: opencl lane (reported; NEO hang tracked in BUGS.md) =="
+for bench in g0_elem g0_sum g0_minmax g0_fsum_approx g0_fsum_exact; do
+    run_gate_reported "$bench" opencl
+done
+echo "== g0: gemm on Intel lanes (reported; Vulkan-only until G3) =="
+report_gemm_fallback levelzero
+report_gemm_fallback opencl
+
 
 echo "== g1.5 stage F: per-lane smoke (reported) =="
 report_lane() {

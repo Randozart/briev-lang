@@ -3580,6 +3580,41 @@ fn test_accel_probe_functions_emit() {
 }
 
 #[test]
+fn test_accel_probe_gate_uses_loop_for_large_arrays() {
+    // 2026-11-09 (plan intel-lane-ceilings-and-probe-cost): the gate compares
+    // each element at RUNTIME; its IR must stay O(#buffers). The old emission
+    // unrolled a block per element — 1M elements produced ~640 MB of IR and
+    // >45 min of link time on the const-bound Intel gates.
+    let mut backend = LlvmBackend::new();
+    backend.accel_kernel_idx.insert("force".to_string(), 0);
+    backend.ctx.field_index_map.insert("i".to_string(), 0);
+    backend.ctx.field_types.push("i64".to_string());
+    backend.ctx.field_briev_types.push(Type::int());
+    backend.ctx.field_index_map.insert("a".to_string(), 1);
+    backend.ctx.field_types.push("[1048576 x i64]".to_string());
+    backend.ctx.field_briev_types.push(Type::Vector(
+        Box::new(Type::Custom("Int".to_string())),
+        vec![crate::ast::Dimension::Anonymous(1048576)],
+    ));
+    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", true));
+    let mut out = String::new();
+    backend.emit_accel_probe_functions(&mut out, "force", false);
+
+    assert!(out.contains("phi i64"), "array compare must be a loop:\n{out}");
+    assert!(out.contains("icmp uge i64"), "loop bound check missing:\n{out}");
+    assert!(out.contains("1048576"), "bound must be the array count");
+    assert!(
+        out.len() < 20_000,
+        "gate IR must be constant-size, got {} bytes",
+        out.len()
+    );
+    assert!(
+        !out.contains("ok.9999"),
+        "no per-element blocks may be emitted"
+    );
+}
+
+#[test]
 fn test_accel_run_probe_sandboxes_beginprogram_flag() {
     // 2026-09-25 (bug 11): a beginprogram accel body's CPU lane runs
     // @txn_<name>_cpu, whose goal check clears the REAL @briev_begin_<name>

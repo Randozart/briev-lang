@@ -1,3 +1,26 @@
+## OpenCL (NEO) exact-fold kernel intermittently hangs in clFinish — OPEN 2026-11-09
+
+**Symptom:** on PTL (Arc B390, NEO 26.31.39395), `g0_fsum_exact.bv` on
+`BRIEV_ACCEL_DEVICE=opencl` hangs inside `clFinish` on roughly 1 run in 3
+(6-run probe: runs 2/4/6 at `enqueue global=4096 local=256` → `finish...` with
+no completion; 45 s timeout). Correct runs return the host-identical result.
+
+**Scope:** the exact lane's kernel is the serial-k fold (no subgroup
+reduction, no barriers, constant 1024 loop inside the 16-wide peeled
+prologue). The approx lane (subgroup reduce) has not hung in the same probes.
+The `.abv` 256-lane smoke (OpenCL projection, same emitter) is stable.
+
+**Not a lane verdict:** per `docs/plans/2026-11-09-intel-lane-ceilings-and-probe-cost.md`,
+a generated-kernel defect is an emitter/lane-integration work item, not
+evidence about NEO's ceiling. `g0.sh` keeps the OpenCL lane REPORTED (a hang
+is printed, a wrong result fails); `levelzero` is REQUIRED for the five
+non-GEMM gates.
+
+**Next:** A/B the OpenCL projection of the exact-fold kernel against a
+hand-written OpenCL C reference; check byte-offset state addressing bounds
+and NEO's handling of the serial loop (watchdog/recovery). Track under W2/W3
+of the lane-ceilings plan.
+
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 
 With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary

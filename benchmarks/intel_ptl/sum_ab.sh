@@ -27,7 +27,7 @@ tar -C "$ROOT" -cf - target/compiler-in-briv \
 
 sample() {
     local file="$1"
-    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && for i in \$(seq 1 $REPS); do K=1024 BRIEV_HOME=$WORK BRIEV_ACCEL_DEVICE=vulkan $WORK/bin/brievc run benchmarks/intel_ptl/$file --stdlib-path lib --config-dir config --out g0out 2>&1 | grep -E \"G0_SUM_BAD|gpu_time\"; done'"
+    "${SSH[@]}" "bash -lc 'ulimit -s 65536; cd $WORK && for i in \$(seq 1 $REPS); do K=1024 BRIEV_HOME=$WORK BRIEV_ACCEL_DEVICE=vulkan $WORK/bin/brievc run --accel=force benchmarks/intel_ptl/$file --stdlib-path lib --config-dir config --out g0out 2>&1 | grep -E \"G0_SUM_BAD|gpu_time\"; done'"
 }
 
 report() {

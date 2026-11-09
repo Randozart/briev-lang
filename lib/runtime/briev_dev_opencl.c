@@ -289,7 +289,9 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     }
     size_t global_size = global_n;
     size_t local_size = k->local_x ? k->local_x : 64;
+    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue global=%zu local=%zu\n", global_size, local_size); fflush(stderr); }
     err = p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, NULL);
+    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue res=%d\n", err); fflush(stderr); }
     if (err != 0) {
         if (g_verbose) {
             fprintf(stderr, "[briev_accel/opencl] NDRange failed err=%d (global=%zu local=%zu)\n",
@@ -298,7 +300,9 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
         p_clReleaseMemObject(buf);
         return 0;
     }
+    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] finish...\n"); fflush(stderr); }
     p_clFinish(cl_queue);
+    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] finish done\n"); fflush(stderr); }
     p_clEnqueueReadBuffer(cl_queue, buf, 0, 0, proj_bytes, proj_out, 0, NULL, NULL);
     p_clFinish(cl_queue);
     p_clReleaseMemObject(buf);

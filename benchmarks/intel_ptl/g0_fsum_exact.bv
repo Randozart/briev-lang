@@ -9,8 +9,9 @@
 // BAD=0 print AND the "compiled on '<device>'" log line. Near-miss
 // disclosure: build once with K%32 != 0 and read the why-not info line.
 //
-// Runs under `ulimit -s 65536` (state arrays exceed the 8 MB stack frame —
-// BUGS.md 2026-11-06).
+// The gate builds with `--accel=force` (the retired per-fixture force
+// policy). Runs under `ulimit -s 65536` (state arrays exceed the 8 MB stack
+// frame — BUGS.md 2026-11-06).
 
 
 const ROWS: Int = 4096;

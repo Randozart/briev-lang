@@ -1969,6 +1969,19 @@ pub fn analyze(
             exact_declared,
         );
         let decision = decide(&shape, forced, &info);
+        // 2026-11-09: opt-in explain for lane debugging (never silent about
+        // why an authored `accel` body does not reach the device).
+        if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
+            let reasons = if shape.reasons.is_empty() {
+                "-".to_string()
+            } else {
+                shape.reasons.join("; ")
+            };
+            eprintln!(
+                "[accel] {}: eligible={} decision={:?} reasons={}",
+                txn.name, shape.eligible, decision, reasons
+            );
+        }
         out.insert(
             txn.name.clone(),
             AccelEntry { mode, forced, shape, decision },

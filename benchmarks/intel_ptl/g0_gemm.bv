@@ -7,9 +7,10 @@
 // doing nothing. Run with `ulimit -s 65536` (two 512^2 + output f32 arrays
 // exceed the default 8 MB stack frame — BUGS.md 2026-11-06).
 //
-// The `accel` keyword marks the body; the default policy analyses it in try
-// mode. The gate script asserts the verbose "compiled on '<device>'" line so
-// a CPU fallback cannot pass.
+// The `accel` keyword marks the body; the gate builds with `--accel=force`
+// (the retired per-fixture force policy), so the tier is deterministic. The
+// gate script asserts the verbose "compiled on '<device>'" line so a CPU
+// fallback cannot pass.
 
 import "std/numeric.bv";
 

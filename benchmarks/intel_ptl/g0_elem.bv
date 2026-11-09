@@ -9,8 +9,9 @@
 // backend cannot dead-store the verification (the first draft's prints did
 // not keep field stores live — the pass only sees contract/exit reads).
 //
-// The `accel` keyword marks the body; the default policy analyses marked
-// bodies in try mode (a one-time CPU-vs-GPU probe). The gate script ALSO
+// The `accel` keyword marks the body; the gate builds with `--accel=force`
+// (the retired per-fixture force policy), so the tier is deterministic. The
+// gate script ALSO
 // asserts the verbose "compiled on '<device>'" line so a CPU fallback cannot
 // pass.
 

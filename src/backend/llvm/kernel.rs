@@ -158,12 +158,20 @@ impl super::LlvmBackend {
             let opencl = {
                 let mut osb = crate::backend::spirv::SpirvBuilder::new_opencl()
                     .with_universe(&universe, int_bits);
-                crate::backend::spirv::kernel::emit_kernel(
+                match crate::backend::spirv::kernel::emit_kernel(
                     &mut osb, "main", &shape, items, idiom_lane,
                     &crate::backend::spirv::kernel::KernelSurface::default(),
                 )
                 .and_then(|_| osb.build())
-                .unwrap_or_default()
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
+                            eprintln!("[accel] node '{}' has no OpenCL projection: {}", name, e);
+                        }
+                        Vec::new()
+                    }
+                }
             };
             match emitted {
                 Ok(bytes) => blobs.push(AccelKernelBlob { txn_name: name.clone(), bytes, opencl }),

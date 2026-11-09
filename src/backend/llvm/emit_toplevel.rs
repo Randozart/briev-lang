@@ -26,7 +26,24 @@ fn peel_column_type(ty: &crate::ast::Type) -> Option<(String, Vec<crate::ast::Ty
     }
 }
 
+/// One array group of the probe output-equality gate (loop emission).
+struct ProbeArrayLoop<'a> {
+    gi: usize,
+    fidx: usize,
+    count: u64,
+    elem: &'a str,
+    next: &'a str,
+}
+
 /// Arguments for one output-equality-gate element comparison (probe).
+/// One comparison group of the output-equality gate: a scalar field compares
+/// once, an array field compares in a runtime loop. The work-item counter is
+/// skipped (it diverges by design — the GPU lane fast-forwards it).
+enum ProbeGroup {
+    Scalar { fidx: usize, elem: String },
+    Array { fidx: usize, count: u64, elem: String },
+}
+
 struct ProbeCmpArg<'a> {
     elem: &'a str,
     x: &'a str,
@@ -5817,79 +5834,124 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
     }
 
     /// Emit the write-buffer comparison body of the output-equality gate.
-    /// Each write buffer is checked element-wise; the first mismatch branches
-    /// to the shared `fail:` label (which the caller emits after this body).
+    ///
+    /// 2026-11-09 (plan intel-lane-ceilings-and-probe-cost): arrays are
+    /// compared in a RUNTIME LOOP, one loop per write buffer. The old emission
+    /// unrolled one basic block per element — a 1M-element buffer produced
+    /// ~640 MB of IR and >45 min of link time (const-bound Intel gates). The
+    /// comparison is still element-for-element; only the emission is compact.
     fn emit_probe_ok_body(&mut self, out: &mut String, name: &str, counter_fidx: usize) {
         let entry = &self.accel_entries[name];
-        // Collect the element checks (buffer field, element index, type) so the
-        // control flow can chain them with deterministic next labels.
-        let checks = Self::probe_ok_checks(
+        let groups = Self::probe_ok_groups(
             &entry.shape,
             &self.ctx.field_index_map,
             &self.ctx.field_types,
             counter_fidx,
         );
-        let n_checks = checks.len();
-        for (ci, (fidx, k, elem, is_float)) in checks.into_iter().enumerate() {
-            if ci > 0 {
-                writeln!(out, "ok.{}:", ci).ok();
-            }
-            let next = if ci + 1 < n_checks {
-                format!("ok.{}", ci + 1)
+        // Entry falls into the first group (or straight to ok.final).
+        let first = if groups.is_empty() {
+            "ok.final".to_string()
+        } else {
+            "ok.0".to_string()
+        };
+        writeln!(out, "  br label %{}", first).ok();
+        for (gi, group) in groups.iter().enumerate() {
+            let next = if gi + 1 < groups.len() {
+                format!("ok.{}", gi + 1)
             } else {
                 "ok.final".to_string()
             };
-            let xa = self.fun.gen_reg();
-            let ya = self.fun.gen_reg();
-            let x = self.fun.gen_reg();
-            let y = self.fun.gen_reg();
-            if k == 0 && !self.ctx.field_types[fidx].starts_with('[') {
-                writeln!(out, "  {} = getelementptr inbounds %State, ptr %a, i32 0, i32 {}", xa, fidx).ok();
-                writeln!(out, "  {} = getelementptr inbounds %State, ptr %b, i32 0, i32 {}", ya, fidx).ok();
-            } else {
-                writeln!(out, "  {} = getelementptr inbounds %State, ptr %a, i32 0, i32 {}, i32 {}", xa, fidx, k).ok();
-                writeln!(out, "  {} = getelementptr inbounds %State, ptr %b, i32 0, i32 {}, i32 {}", ya, fidx, k).ok();
+            match group {
+                ProbeGroup::Scalar { fidx, elem } => {
+                    writeln!(out, "ok.{}:", gi).ok();
+                    let xa = self.fun.gen_reg();
+                    let ya = self.fun.gen_reg();
+                    let x = self.fun.gen_reg();
+                    let y = self.fun.gen_reg();
+                    writeln!(out, "  {} = getelementptr inbounds %State, ptr %a, i32 0, i32 {}", xa, fidx).ok();
+                    writeln!(out, "  {} = getelementptr inbounds %State, ptr %b, i32 0, i32 {}", ya, fidx).ok();
+                    writeln!(out, "  {} = load {}, ptr {}", x, elem, xa).ok();
+                    writeln!(out, "  {} = load {}, ptr {}", y, elem, ya).ok();
+                    self.emit_probe_cmp(
+                        out,
+                        ProbeCmpArg { elem, x: &x, y: &y, next: &next },
+                    );
+                }
+                ProbeGroup::Array { fidx, count, elem } => {
+                    self.emit_probe_array_loop(
+                        out,
+                        ProbeArrayLoop { gi, fidx: *fidx, count: *count, elem, next: &next },
+                    );
+                }
             }
-            writeln!(out, "  {} = load {}, ptr {}", x, elem, xa).ok();
-            writeln!(out, "  {} = load {}, ptr {}", y, elem, ya).ok();
-            self.emit_probe_cmp(
-                out,
-                ProbeCmpArg { elem: &elem, x: &x, y: &y, next: &next },
-            );
         }
         writeln!(out, "ok.final:").ok();
         writeln!(out, "  ret i8 1").ok();
     }
 
-    /// The output-equality gate's element checks: (field index, element index,
-/// LLVM element type, is-float) for every write-buffer element, skipping the
-/// work-item counter (it diverges by design — the GPU lane fast-forwards it).
-/// Flat iteration keeps the gate's emission single-loop.
-fn probe_ok_checks(
+    /// One write buffer's element loop: `for k in 0..count: compare a[k], b[k]`.
+    /// The first mismatch branches to `fail`; exhaustion falls into `next`.
+    fn emit_probe_array_loop(&mut self, out: &mut String, g: ProbeArrayLoop<'_>) {
+        let ProbeArrayLoop { gi, fidx, count, elem, next } = g;
+        let header = format!("ok.{}.head", gi);
+        let body = format!("ok.{}.body", gi);
+        let cont = format!("ok.{}.cont", gi);
+        let k = self.fun.gen_reg();
+        let k_next = self.fun.gen_reg();
+        let done = self.fun.gen_reg();
+        writeln!(out, "ok.{}:", gi).ok();
+        writeln!(out, "  br label %{}", header).ok();
+        writeln!(out, "{}:", header).ok();
+        // count == 0 keeps the historical "compare element 0" semantic.
+        let bound = count.max(1);
+        writeln!(
+            out,
+            "  {} = phi i64 [ 0, %ok.{} ], [ {}, %{} ]",
+            k, gi, k_next, cont
+        )
+        .ok();
+        writeln!(out, "  {} = icmp uge i64 {}, {}", done, k, bound).ok();
+        writeln!(out, "  br i1 {}, label %{}, label %{}", done, next, body).ok();
+        writeln!(out, "{}:", body).ok();
+        let xa = self.fun.gen_reg();
+        let ya = self.fun.gen_reg();
+        let x = self.fun.gen_reg();
+        let y = self.fun.gen_reg();
+        writeln!(out, "  {} = getelementptr inbounds %State, ptr %a, i32 0, i32 {}, i64 {}", xa, fidx, k).ok();
+        writeln!(out, "  {} = getelementptr inbounds %State, ptr %b, i32 0, i32 {}, i64 {}", ya, fidx, k).ok();
+        writeln!(out, "  {} = load {}, ptr {}", x, elem, xa).ok();
+        writeln!(out, "  {} = load {}, ptr {}", y, elem, ya).ok();
+        self.emit_probe_cmp(
+            out,
+            ProbeCmpArg { elem, x: &x, y: &y, next: &cont },
+        );
+        writeln!(out, "{}:", cont).ok();
+        writeln!(out, "  {} = add i64 {}, 1", k_next, k).ok();
+        writeln!(out, "  br label %{}", header).ok();
+    }
+
+/// The output-equality gate's groups, one per write buffer (2026-11-09:
+/// constant IR — never one check per element).
+fn probe_ok_groups(
     shape: &crate::analysis::accel::KernelShape,
     field_index_map: &std::collections::HashMap<String, usize>,
     field_types: &[String],
     counter_fidx: usize,
-) -> Vec<(usize, u64, String, bool)> {
+) -> Vec<ProbeGroup> {
     shape
         .write_buffers
         .iter()
         .filter_map(|buf| field_index_map.get(buf).copied())
         .filter(|&fidx| fidx != counter_fidx)
-        .flat_map(|fidx| {
+        .map(|fidx| {
             let ty = &field_types[fidx];
             if let Some(rest) = ty.strip_prefix('[') {
                 let mut parts = rest.split(" x ");
                 let count: u64 = parts.next().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
                 let elem = parts.next().unwrap_or("i64").trim_end_matches(']').trim().to_string();
-                let is_float = elem == "float" || elem == "double";
-                (0..count.max(1))
-                    .map(move |k| (fidx, k, elem.clone(), is_float))
-                    .collect::<Vec<_>>()
+                ProbeGroup::Array { fidx, count, elem }
             } else {
-                let elem = ty.clone();
-                let is_float = elem == "float" || elem == "double";
-                vec![(fidx, 0u64, elem, is_float)]
+                ProbeGroup::Scalar { fidx, elem: ty.clone() }
             }
         })
         .collect()

@@ -428,8 +428,25 @@ fn create_kernels(
     verbose: bool,
 ) -> bool {
     let r = rt();
+    // 2026-11-09: Level Zero / NEO consume ONLY the OpenCL-flavored
+    // projection. Feeding them the Vulkan image is a hard failure inside IGC
+    // (GLSL.std.450 import) and the chain cannot fall back cleanly. Kernels
+    // outside the OpenCL slice (GEMM/images/f16) make the lane unusable —
+    // mark the chain dead so the program takes the CPU lane.
+    let opencl_only = matches!(driver_name(d).as_str(), "levelzero" | "opencl");
     for i in 0..n as usize {
         let kdesc = unsafe { &*descs.add(i) };
+        if opencl_only && kdesc.opencl_size == 0 {
+            if verbose {
+                eprintln!(
+                    "[briev_accel] kernel '{}' has no OpenCL projection for driver '{}' — CPU fallback",
+                    desc_name(kdesc),
+                    driver_name(d)
+                );
+            }
+            r.driver = std::ptr::null();
+            return false;
+        }
         let Some((blob, blob_size)) = kernel_blob(d, kdesc, verbose) else {
             r.kernels[i] = std::ptr::null_mut();
             continue;
