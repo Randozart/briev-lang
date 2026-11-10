@@ -479,6 +479,10 @@ impl LspServer {
                 format!("'{}' is a reserved keyword and cannot be used as an identifier", keyword),
                 *span,
             ),
+            SyntaxError::BacktrackLimit { span } => (
+                "Input is too deeply nested to parse (backtracking limit reached)".to_string(),
+                *span,
+            ),
             SyntaxError::ParseErrors(_) => (
                 "multiple parse errors".to_string(),
                 Span::new(0, 0, 0, 0),

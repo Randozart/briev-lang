@@ -22,13 +22,29 @@ libFuzzer. This is the standard `cargo-fuzz` layout.
 | Target | Input model | Pass/fail |
 |---|---|---|
 | `frontend` | Raw bytes → lex → parse | Panics and hangs are failures; parse errors are normal |
+| `typecheck` | Raw bytes → parse → import resolve → typecheck | Panics and hangs are failures; parse/type errors are normal |
 | `arithmetic` | Bytes → generated integer program → interpreter vs model | Any disagreement fails |
+| `interpreter` | As `arithmetic`, plus tuple projection/destructuring | Any disagreement fails |
 | `interpreter` | As `arithmetic`, plus tuple projection/destructuring | Reproduces **known OPEN** tuple defects |
+| `welltyped` | Bytes → **well-typed** program (lets, guards, match, list, enum, float) → typecheck must accept → interpreter vs model | Rejection, interpreter error, or disagreement fails |
 
 `arithmetic` deliberately avoids tuples so it stays green and validates the
-oracle. `interpreter` includes tuples and currently *fails immediately* — that
-is the point: it independently rediscovers the open defects rather than being
-told about them.
+oracle. `interpreter` includes tuples; its two defects (tuple projection and
+destructuring) were **fixed 2026-11-10** — a 120 s run now completes ~57 k runs
+with zero findings, and the minimized reproducers are committed as
+`fuzz/cases/tuple-projection.input` and `tuple-destructuring.input`.
+
+`typecheck` reaches the frontend past the parser (import resolution, type
+registration, typechecker/proof engine), which `frontend` never exercises.
+2026-11-10: it was added after the frontend campaign found a parser DoS
+(exponential backtracking + stack overflow on nested input) — see
+`docs/plans/2026-11-10-exhaustive-defect-campaign.md`.
+
+`welltyped` is the grammar-aware generator
+(`src/typed_program.rs`): it emits a typed program and asserts the
+typechecker accepts it and the interpreter agrees with the model, reaching the
+typechecker/interpreter far deeper than random bytes. See
+`docs/plans/2026-11-10-welltyped-generation-and-oracle.md`.
 
 ## Setup (once)
 
@@ -59,17 +75,20 @@ cargo +nightly fuzz run --target "$HOST" arithmetic fuzz/corpus/arithmetic -- -m
 cargo +nightly fuzz build
 
 # Seed the working corpora (copied, never overwritten)
-mkdir -p fuzz/corpus/frontend fuzz/corpus/arithmetic fuzz/corpus/interpreter
+mkdir -p fuzz/corpus/frontend fuzz/corpus/arithmetic fuzz/corpus/interpreter fuzz/corpus/typecheck
 cp -n fuzz/seeds/frontend/*    fuzz/corpus/frontend/    || true
 cp -n fuzz/seeds/arithmetic/*  fuzz/corpus/arithmetic/  || true
 cp -n fuzz/seeds/interpreter/* fuzz/corpus/interpreter/ || true
+cp -n fuzz/seeds/typecheck/*   fuzz/corpus/typecheck/   || true
 
 # Bounded smoke (what CI runs on a PR)
 cargo +nightly fuzz run frontend    fuzz/corpus/frontend    -- -max_total_time=30 -print_final_stats=1
 cargo +nightly fuzz run arithmetic  fuzz/corpus/arithmetic  -- -max_total_time=60 -print_final_stats=1
 
-# Nightly discovery (all targets; interpreter is expected to find the tuple bug)
+# Nightly discovery (all targets)
+cargo +nightly fuzz run typecheck   fuzz/corpus/typecheck   -- -max_total_time=300 -fork=$(nproc) -print_final_stats=1
 cargo +nightly fuzz run interpreter fuzz/corpus/interpreter -- -max_total_time=300 -fork=$(nproc) -print_final_stats=1
+cargo +nightly fuzz run welltyped   fuzz/corpus/welltyped   -- -max_total_time=300 -fork=$(nproc) -print_final_stats=1
 ```
 
 `-print_final_stats=1` reports executed inputs and coverage — quote those

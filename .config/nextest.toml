@@ -1,0 +1,11 @@
+# 2026-11-09: parallel test-binary runner (cargo-nextest).
+# Test binaries run concurrently (cargo test serializes them), which is the
+# main wall-clock cost with ~110 integration binaries. `-j 4` keeps clang/
+# brievc-spawning tests from starving each other on an 8-core host.
+[profile.default]
+test-threads = 4
+fail-fast = false
+retries = 0
+slow-timeout = { period = "180s" }
+status-level = "fail"
+final-status-level = "slow"

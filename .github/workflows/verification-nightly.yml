@@ -17,6 +17,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  ast-optout-suite:
+    name: AST opt-out suite (BRIEV_HIR_EMIT=0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install LLVM + clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.151
+      - uses: Swatinem/rust-cache@v2
+      # The flipped default is HIR; this keeps the one-release opt-out path
+      # honest without doubling every PR gate.
+      - name: Full suite on the AST path
+        env:
+          BRIEV_HIR_EMIT: "0"
+        run: cargo nextest run --all -j 4
+
   full-opt-matrix:
     name: Full tier1 optimization matrix
     runs-on: ubuntu-24.04

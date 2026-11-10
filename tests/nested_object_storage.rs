@@ -17,8 +17,7 @@ fn nested_object_storage_preserves_adjacent_fields() {
     for hir in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let mut compiler = Command::new(env!("CARGO_BIN_EXE_brievc"));
-        compiler.env_remove("BRIEV_HIR_EMIT");
-        if hir { compiler.env("BRIEV_HIR_EMIT", "1"); }
+        compiler.env("BRIEV_HIR_EMIT", if hir { "1" } else { "0" });
         checked(compiler.current_dir(root).env("BRIEV_HOME", root)
             .arg("build").arg("tests/fixtures/nested_object_storage.bv")
             .args(["--stdlib-path", "lib", "--config-dir", "config", "--out"])

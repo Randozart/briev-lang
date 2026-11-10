@@ -48,6 +48,9 @@ fn program(case: &Case) -> String {
         2 => list_return_alias_mutate(case.size),
         3 => defn_image_into_state(case.size),
         4 => per_iteration_allocation(case.size, case.iterations),
+        5 => enum_payload_allocation(case.size),
+        6 => nested_object_field(case.size),
+        7 => tuple_of_allocations(case.size),
         _ => panic!("unknown memory family {}", case.family),
     }
 }
@@ -101,6 +104,39 @@ fn per_iteration_allocation(size: i64, iterations: i64) -> String {
     format!(
         "defn tick(i: Int, size: Int) -> Int {{\n    let buf: Ptr<Bit<8>> = Malloc#(size + 8);\n    Store#(buf, i, 8);\n    term Load#(buf, 8);\n}};\n\
 let total: Int = 0;\nlet done: Bool = false;\nnode main [!done][done] {{\n    foreach index in 0..{iterations} {{ total = total + tick(index, {size}); }};\n    Print#(total);\n    done = true;\n    endprogram;\n}};\n"
+    )
+}
+
+/// Family 5 (2026-11-10): an allocation carried as an enum payload, matched
+/// out. Exercises Sum image ownership (the `Enum image escapes to state`
+/// defect family, BUGS.md 2026-11-03).
+fn enum_payload_allocation(size: i64) -> String {
+    format!(
+        "enum Payload {{ Empty, Full(Ptr<Bit<8>>) }};\n\
+defn make(size: Int) -> Ptr<Bit<8>> {{ term Malloc#(size + 8); }};\n\
+defn exercise(size: Int) -> Int {{\n    let p: Ptr<Bit<8>> = make(size);\n    Store#(p, 5, 8);\n    let e: Payload = Payload.Full(p);\n    term match e {{ Payload.Full(q) => Load#(q, 8), Payload.Empty => 0, }};\n}};\n\
+let done: Bool = false;\nnode main [!done][done] {{ Print#(exercise({size})); done = true; endprogram; }};\n"
+    )
+}
+
+/// Family 6 (2026-11-10): an allocation inside a nested object field. Exercises
+/// nested-field object storage/escape (the `nested-field-object-escape` lane).
+fn nested_object_field(size: i64) -> String {
+    format!(
+        "obj Inner {{ p: Ptr<Bit<8>>; }};\n\
+obj Outer {{ inner: Inner; tag: Int; }};\n\
+defn make(size: Int) -> Inner {{\n    let i: Inner = Inner {{ p: Malloc#(size + 8) }};\n    Store#(i.p, 3, 8);\n    term i;\n}};\n\
+defn exercise(size: Int) -> Int {{\n    let o: Outer = Outer {{ inner: make(size), tag: size }};\n    term Load#(o.inner.p, 8) + o.tag;\n}};\n\
+let done: Bool = false;\nnode main [!done][done] {{ Print#(exercise({size})); done = true; endprogram; }};\n"
+    )
+}
+
+/// Family 7 (2026-11-10): two allocations held in a tuple, projected out.
+/// Exercises tuple-element ownership (the `emit_tuple_materialize` sink).
+fn tuple_of_allocations(size: i64) -> String {
+    format!(
+        "defn exercise(size: Int) -> Int {{\n    let a: Ptr<Bit<8>> = Malloc#(size + 8);\n    let b: Ptr<Bit<8>> = Malloc#(size + 8);\n    Store#(a, 1, 8);\n    Store#(b, 2, 8);\n    let t = (a, b);\n    term Load#(t.0, 8) + Load#(t.1, 8);\n}};\n\
+let done: Bool = false;\nnode main [!done][done] {{ Print#(exercise({size})); done = true; endprogram; }};\n"
     )
 }
 
@@ -316,7 +352,7 @@ fn replay(path: &std::path::PathBuf, artifact: &Path) {
     assert!((1..512).contains(&case.size), "replay size 1..=511");
     assert!((0..8).contains(&case.depth), "replay depth 0..=7");
     assert!((1..64).contains(&case.iterations), "replay iterations 1..=63");
-    assert!(case.family <= 4, "family 0..=4");
+    assert!(case.family <= 7, "family 0..=7");
     exercise(&case, artifact).unwrap();
 }
 
@@ -329,7 +365,7 @@ fn generated_memory_programs_are_memory_safe() {
     }
     let seed: u64 = std::env::var("MEM_SEED").unwrap_or_else(|_| "1".into()).parse().expect("seed");
     let family: u8 = std::env::var("MEM_FAMILY").unwrap_or_else(|_| "0".into()).parse().expect("family");
-    assert!(family <= 4, "family 0..=4");
+    assert!(family <= 7, "family 0..=7");
     let count: u32 = std::env::var("MEM_CASES").unwrap_or_else(|_| "4".into()).parse().expect("count");
     assert!(count > 0, "count must be positive");
     let mut bytes = [0u8; 32];
@@ -351,7 +387,7 @@ fn generated_memory_programs_are_memory_safe() {
 
 #[test]
 fn memory_campaign_families_generate_terminating_programs() {
-    for family in 0..=4 {
+    for family in 0..=7 {
         let case = Case { family, size: 16, depth: 2, iterations: 3 };
         let source = program(&case);
         assert!(source.contains("endprogram;"), "family {family} terminates");

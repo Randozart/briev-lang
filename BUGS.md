@@ -1,3 +1,82 @@
+## Interpreter negated a Float literal to Int(0) — FIXED 2026-11-10
+
+**Symptom:** `let x: Float = -1.5;` evaluated to `Int(0)`, while
+`(0.0 - 1.5)` evaluated correctly to `Float(-1.5)`. Found by the well-typed
+program generator (`src/typed_program.rs`), which flagged the
+interpreter/model disagreement.
+
+**Root cause:** `eval_unary_op`'s `UnaryOpKind::Neg` used
+`val.as_i64().unwrap_or(0)`. `as_i64()` returns `None` for a `Float`
+(an `Atom::Float`), so a negated float silently collapsed to `Int(0)`.
+
+**Fix:** negate an `Atom::Float` as a float (`Value::float(-f)`); non-float
+operands keep the integer path. Regression:
+`typed_program::tests::negative_float_literal_is_a_float`.
+
+## Interpreter Int↔Float casts were identity — FIXED 2026-11-10
+
+**Symptom:** `7 as Float` stayed `Int(7)` and `2.75 as Int` stayed
+`Float(2.75)` in the reference interpreter, while the backend converts
+(`sitofp`/`fptosi`). Found by the native float differential family (a generated
+program disagreed with the interpreter by 1).
+
+**Root cause:** `Expr::Cast`'s `target_protocol_category` match handled
+`Bool`/`Char` sources for the `Int`/`Float` targets but fell through
+`_ => Ok(v)` for `Int`↔`Float`, so the cast was a no-op.
+
+**Fix:** `Float → Int` truncates toward zero (`f as i64`, mirroring `fptosi`);
+`Int → Float` converts (`n as f64`). Regression:
+`interpreter::eval::tests::test_cast_int_to_float_converts` and
+`::test_cast_float_to_int_truncates_toward_zero`.
+
+## Float width is inconsistent across the pipeline — OPEN 2026-11-10
+
+`Float` is declared 32-bit (`src/type_universe/mod.rs:216`:
+`("Float", 4, 32, 32, 4, …)`) and codegen emits `float` (f32, with `fast`
+flags), but its arithmetic operators bind to 64-bit intrinsics
+(`src/type_universe/operators.rs:86`: `("Float", "Add") => FAddF64#`, …) and
+the interpreter computes in **f64**. Consequence: interpreter-vs-native float
+comparison drifts for values not exactly representable in f32 — e.g.
+`(2033878 as Float) * 2.5 - (10 as Float) / 4.0 + 0.25` is `5084692` in the
+interpreter and at `-O3`, but `5084693` at `-O0` (f32 rounds 5084692.75 up).
+
+This blocks an exact-equality **native float differential family**; it needs
+either one width end-to-end or a tolerance-aware trace channel. Reported, not
+fixed — the correct resolution (make `Float` f64, or make the interpreter and
+the operator bindings f32) is a design decision.
+
+## Counted bare terms returned without publishing state — FIX IMPLEMENTED 2026-11-10
+
+**Symptom:** CI exhausted its 45-minute timeout in the effect-shape quick
+guard after all structural checks passed. `mixed_effect_shape` with the
+default escaped shape livelocked even at `BOUND=1`; forced-stateless exited.
+Upstream run: `42811020216`; fork run: `42779354309`.
+
+**Cause:** `49b9440c` delegated bare `term;` from the countable-body walker to
+the ordinary P-gated term emitter. Its successful edge emitted `ret void`
+before the counted loop's exit-block stores. The counters lived only in SSA,
+so the reactor saw the original counters and kept firing the nodes. Merely
+publishing the counter would also lose other carried values at the boundary.
+
+**Evidence:** on `d7c4869d`, identical O3/LTO link commands for original IR
+and an IR experiment adding current-counter stores distinguished timeout from
+termination. At `BOUND=1000001`, the experiment printed two `1000000` lines,
+matching stateless output. The new focused observer fixture also timed out
+at `BOUND=1` before the fix.
+
+**Repair:** an internal-fold-scoped obligation publishes all current native
+loop-carried values on the successful bare-term edge, before cleanup and
+return. Post-false paths and inline-member exits preserve their semantics.
+The post-false continuation also updates the active block: a guard assigning
+a carrier before `term;` otherwise built merge phis naming the pre-term block
+instead of `term.cont` (independently reproduced as an LLVM verifier failure).
+Guarded carrier writes also invalidate their pre-guard last-value cache: the
+cache otherwise overrides the merged SSA value, dropping guarded increments
+on post-false iterations (the observer printed 29 instead of the expected 32).
+The effect-shape shell gate bounds program execution and names timeout cases;
+the native regression checks exact output and termination under O0/O3 for
+both memory shapes, including zero-trip and conditional-term cases.
+
 ## String search/case stdlib: byte/char confusion — FIXED 2026-11-10
 
 Found while making `sentiment` the first fully native kiosk engine method
@@ -275,7 +354,7 @@ observable value/alias semantics divergence; under the interpreter-reference
 rule the backend must preserve the independent values. Reproducer:
 `tests/fixtures/simulation/list_alias_mutation.json`.
 
-## Interpreter cannot project unnamed tuple fields — OPEN 2026-11-09
+## Interpreter cannot project unnamed tuple fields — FIXED 2026-11-10
 
 Family 7: `(s+e,s-e).1` through a local tuple binding raises
 `expected a field named '1', got product`; native O0/O3 correctly returns 0
@@ -283,7 +362,13 @@ at `s=e=0`. `src/interpreter/eval.rs:1056` only searches product field names,
 never positional tuple indices. Reproducer:
 `tests/fixtures/simulation/tuple_projection.json`.
 
-## Interpreter ignores tuple destructuring names — OPEN 2026-11-09
+**Fix (2026-11-10):** `eval_field` resolves a numeric projection `.N`
+positionally when the product is UNNAMED (tuple/list literal, `names: None`);
+named struct products still resolve by declared field name. Regression:
+`tests/deterministic_transitions.rs::interpreter_tuple_projection_reproducer`
+(un-ignored, green).
+
+## Interpreter ignores tuple destructuring names — FIXED 2026-11-10
 
 Family 11: `let (left,right) = pair; term left-right;` raises
 `undefined variable 'right'`; native O0/O3 correctly evaluates it.
@@ -291,9 +376,40 @@ Family 11: `let (left,right) = pair; term left-right;` raises
 `names` vector. Full typed-reference replay confirms both tuple failures.
 Reproducer: `tests/fixtures/simulation/tuple_destructuring.json`.
 
+**Fix (2026-11-10):** `Statement::Let` binds every component of `names`
+positionally when there is more than one binder; a non-tuple or wrong-arity
+value is a `TypeError`, never a silent first-name-only binding. Regression:
+`tests/deterministic_transitions.rs::interpreter_tuple_destructuring_reproducer`
+(un-ignored, green).
+
 All four findings: `docs/reports/2026-11-09-deterministic-transition-campaign.md`.
 Synthetic corruption was disabled; this investigation records defects without
 changing compiler semantics or weakening contracts.
+
+## Parser DoS: exponential backtracking + stack overflow on nested input — FIXED 2026-11-10
+
+Found by the frontend fuzz campaign (`docs/plans/2026-11-10-exhaustive-defect-campaign.md`).
+The statement/tail-expression speculative parse (`parse_block_expr`,
+`parse_tail_body`) re-parses the same span on failure, so malformed deeply
+nested input was exponential in nesting depth: an 88-byte input took ~20 s
+(five libFuzzer `slow-unit`s). Separately, ~1000 nested `{` (or 300 nested `(`)
+exhausted the native stack and ABORTED the compiler
+(`fatal runtime error: stack overflow`).
+
+**Fix:** `src/parser/helpers.rs` adds a parse-step budget linear in the token
+count (`steps_remaining`) and a recursion-depth cap (`MAX_PARSE_DEPTH = 24`,
+chosen to fit a 2 MiB thread stack even with debug frames). Exceeding either
+returns `SyntaxError::BacktrackLimit` (house-style diagnostic). The whole
+conformance sweep parses within the cap. Regression:
+`tests/fuzz_frontend.rs::test_pathological_nesting_is_bounded`,
+`::test_deep_nesting_does_not_overflow_stack`,
+`::test_deep_expression_reports_complexity_limit`; replay case
+`fuzz/cases/pathological-nesting.input`.
+
+**Follow-up (not a patch):** the depth cap is a compromise forced by ~64 KiB
+debug frames per nesting level; the ideal fix removes the re-parse (packrat
+memoization or an iterative block-item parse) and/or grows the stack on demand,
+then the cap can be raised.
 
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 

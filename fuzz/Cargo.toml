@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
-briev-compiler = { path = ".." }
+briev-compiler = { path = "..", features = ["fuzzing"] }
 
 [workspace]
 members = ["."]
@@ -31,6 +31,20 @@ bench = false
 [[bin]]
 name = "interpreter"
 path = "fuzz_targets/interpreter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "typecheck"
+path = "fuzz_targets/typecheck.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "welltyped"
+path = "fuzz_targets/welltyped.rs"
 test = false
 doc = false
 bench = false

@@ -1207,6 +1207,11 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// Set alongside `txn_name` at each body entry; `None`/`Bool(true)` =
     /// no P → unconditional stop.
     pub item_post: Option<crate::ast::Expr>,
+    /// 2026-11-10: an internally folded txn keeps state in loop registers.
+    /// A successful bare term must publish those registers before returning
+    /// to the reactor. Scoped by emit_countable_loop_wrapped; retire with a
+    /// unified loop-exit materialization path.
+    pub counted_txn_term_publication: bool,
 
     // SSA state
     pub ssa_state_reg: Option<String>,
@@ -1524,6 +1529,7 @@ impl FunctionContext {
             defer_bodies: Vec::new(),
             void_txn_abort_label: None,
             item_post: None,
+            counted_txn_term_publication: false,
             ssa_state_reg: None,
             param_slots: HashMap::new(),
             state_reg_name: "%state".to_string(),
@@ -1599,6 +1605,7 @@ impl FunctionContext {
 
     /// Clear all local variable bindings (used at function entry).
     pub fn clear_locals(&mut self) {
+        self.counted_txn_term_publication = false;
         self.clear_local_bindings();
         self.let_binding_types.clear();
         self.let_original_types.clear();

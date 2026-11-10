@@ -202,3 +202,21 @@ non-blocking regression sentinel.
 Gates after integration: `cargo test --all` 3620 pass; reclamation 36;
 `publish_reclamation` 1; `deterministic_transitions` 5 (2 ignored reproducers);
 `memory_campaign` 3 (26 s); release A/B byte-identical; determinism quick OK.
+
+## Test-run efficiency (2026-11-09)
+
+`cargo test --all` serializes ~110 integration binaries; that, plus running
+the suite twice (HIR + opt-out) per change, dominated turnaround. Changes:
+
+- `cargo-nextest` adopted (`-j 4`): concurrent test binaries with a shared
+  build. `.config/nextest.toml` sets threads, no retries, slow-timeout warning.
+- `scripts/gate.sh quick` = library minus the full conformance sweep + the
+  focused integration suites (~100 s warm, vs ~7 min full). `full` = all
+  binaries. CI uses nextest for both library and all-target steps.
+- The AST opt-out suite is a nightly job (`BRIEV_HIR_EMIT=0`), not a second
+  per-commit run.
+- Conflict-marker guard added to the gate script and CI. A committed
+  `<<<<<<<` block had corrupted the publish-reclamation fixture; the guard
+  turns that class into an immediate failure. (The canonical Guarded printer
+  had also regressed to `when` in a parallel-edit merge; restored to
+  `format_guarded`.)

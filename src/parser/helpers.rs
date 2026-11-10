@@ -50,13 +50,36 @@ pub struct Parser<'a> {
     /// (`...xs: Int[<=8]`) and specialize it per call-site arity (the
     /// `isr`/`op member` rejection is unchanged).
     pub pending_variadic: Option<crate::ast::VariadicParam>,
+    /// 2026-11-10 (fuzz finding, docs/plans/2026-11-10-exhaustive-defect-
+    /// campaign.md): parse-step budget. The statement/tail-expression
+    /// speculative parse (`parse_block_expr`, `parse_tail_body`) re-parses the
+    /// same span on failure, which is exponential in nesting depth for
+    /// malformed input (an 88-byte input took ~20 s; the frontend fuzzer
+    /// recorded it as a `slow-unit`). The budget is linear in the token count,
+    /// so a super-linear parse is rejected with `BacktrackLimit` instead of
+    /// hanging. Valid programs use O(tokens) parse calls, far under budget.
+    pub steps_remaining: u64,
+    /// 2026-11-10 (fuzz finding): current parser recursion depth. Deeply
+    /// nested input (e.g. ~1000 unmatched `{`) exhausted the native stack and
+    /// ABORTED the compiler (`fatal runtime error: stack overflow`); the work
+    /// budget above does not bound depth because each level costs one step.
+    /// `enter_parse_depth` enforces `MAX_PARSE_DEPTH` so a crash becomes a
+    /// house-style diagnostic. 256 levels is far beyond any real program.
+    pub depth: u32,
 }
+
+/// 2026-11-10: maximum parser nesting depth (statements + expressions).
+/// Chosen to fit the smallest supported thread stack even with debug-build
+/// stack frames (~8 KiB/level measured); far beyond any real program.
+pub const MAX_PARSE_DEPTH: u32 = 24;
 
 impl<'a> Parser<'a> {
     pub fn new(tokens: Vec<(Token, std::ops::Range<usize>)>, source: &'a str) -> Self {
         let mut p = Parser {
             warnings: Vec::new(),
             known_types: HashSet::new(),
+            steps_remaining: 50_000 + (tokens.len() as u64) * 200,
+            depth: 0,
             tokens,
             pos: 0,
             source,
@@ -67,6 +90,34 @@ impl<'a> Parser<'a> {
         };
         p.prescan_known_types();
         p
+    }
+
+    /// 2026-11-10: charge one parse step against the backtracking budget. See
+    /// `steps_remaining`. Returns a house-style diagnostic when exhausted.
+    pub fn charge_parse_step(&mut self) -> Result<(), crate::errors::SyntaxError> {
+        if self.steps_remaining == 0 {
+            let span = self
+                .peek_with_span()
+                .map(|(_, s)| self.make_span(s.clone()))
+                .unwrap_or(crate::errors::Span::dummy());
+            return Err(crate::errors::SyntaxError::BacktrackLimit { span });
+        }
+        self.steps_remaining -= 1;
+        Ok(())
+    }
+
+    /// 2026-11-10: charge one nesting level. Pairs with a decrement in the
+    /// caller (`parse_statement`/`parse_expression` wrappers). See `depth`.
+    pub fn enter_parse_depth(&mut self) -> Result<(), crate::errors::SyntaxError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            let span = self
+                .peek_with_span()
+                .map(|(_, s)| self.make_span(s.clone()))
+                .unwrap_or(crate::errors::Span::dummy());
+            return Err(crate::errors::SyntaxError::BacktrackLimit { span });
+        }
+        self.depth += 1;
+        Ok(())
     }
 
     /// 2026-08-04 (Phase 1): collect type names from the token stream for the

@@ -169,7 +169,17 @@ pub struct AnalysisResults {
 /// True when the dual-mode HIR backend is requested. Off by default; H4 flips
 /// each family only after a byte-identical IR A/B.
 pub fn hir_emit_enabled() -> bool {
-    std::env::var_os("BRIEV_HIR_EMIT").is_some()
+    // 2026-11-09 (H5 default flip, owner sign-off): typed-HIR emission is the
+    // default. `BRIEV_HIR_EMIT=0|false|off|no` opts out for one release while
+    // the remaining AST arms are deleted family-by-family; unset or any other
+    // value keeps HIR on.
+    match std::env::var("BRIEV_HIR_EMIT") {
+        Ok(value) => !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => true,
+    }
 }
 
 /// Intent: Run shared program analysis for backend code generation.

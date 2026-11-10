@@ -199,6 +199,84 @@ mod unit_tests {
             let _ = parser.parse_program();
         }
     }
+
+    #[test]
+    fn test_pathological_nesting_is_bounded() {
+        // 2026-11-10 (fuzz finding): malformed deeply-nested input used to drive
+        // exponential backtracking in the statement/tail-expression speculative
+        // parse (an 88-byte input took ~20 s and was recorded by the frontend
+        // fuzzer as a `slow-unit`), and ~1000 unmatched `{` overflowed the
+        // native stack (aborting the compiler). Both must now be bounded.
+        // Run on an 8 MiB stack, matching the production `brievc` main thread.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let input = "defn r{-{{*{-{{{-{{-{-{*{-{{{-{-{*{-{{{s {";
+                let Ok(tokens) = briev_compiler::lexer::tokenize(input) else {
+                    return;
+                };
+                let mut parser = Parser::new(tokens, input);
+                let start = std::time::Instant::now();
+                let result = parser.parse_program();
+                assert!(
+                    start.elapsed().as_secs() < 5,
+                    "pathological input took {:?}; the parse limits are not bounding work",
+                    start.elapsed()
+                );
+                let err = result.expect_err("malformed input must not parse");
+                // Either the complexity/depth limit or a normal syntax error is
+                // acceptable; the invariant is that it is bounded and prompt.
+                let _ = err;
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_deep_nesting_does_not_overflow_stack() {
+        // 2026-11-10: ~1000 unmatched braces used to abort with a stack
+        // overflow. The depth limit must turn it into an error instead.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let input = format!("defn f {}x", "{".repeat(1000));
+                let Ok(tokens) = briev_compiler::lexer::tokenize(&input) else {
+                    return;
+                };
+                let mut parser = Parser::new(tokens, &input);
+                assert!(
+                    parser.parse_program().is_err(),
+                    "1000-deep nesting must be rejected, not overflow the stack"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn test_deep_expression_reports_complexity_limit() {
+        // Deeply nested expressions must surface the parser complexity limit
+        // (house-style diagnostic), not a crash or a generic error.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(|| {
+                let input = format!("let x: Int = {}1{};", "(".repeat(300), ")".repeat(300));
+                let Ok(tokens) = briev_compiler::lexer::tokenize(&input) else {
+                    return;
+                };
+                let mut parser = Parser::new(tokens, &input);
+                let err = parser.parse_program().expect_err("deep nesting must be rejected");
+                assert!(
+                    format!("{err}").contains("complexity limit"),
+                    "expected a complexity-limit diagnostic, got: {err}"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 }
 
 proptest! {

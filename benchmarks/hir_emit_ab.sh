@@ -6,8 +6,8 @@
 #   bash benchmarks/hir_emit_ab.sh           # full corpus
 #   bash benchmarks/hir_emit_ab.sh --quick   # 3 programs (per-commit)
 #
-# Currently the HIR flag is inert (H4.1 plumbing): emission is AST-driven in
-# both passes, so this is the always-on tripwire for the flip.
+# 2026-11-09 (H5 default flip): HIR is the default; `BRIEV_HIR_EMIT=0` opts
+# back to the AST path for this A/B tripwire.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -48,6 +48,8 @@ for row in "${CORPUS[@]}"; do
     ok=1
     for mode in ast hir; do
         flag=()
+        # 2026-11-09 (flip): HIR is the default; the AST arm opts out.
+        flag=(BRIEV_HIR_EMIT=0)
         [ "$mode" = hir ] && flag=(BRIEV_HIR_EMIT=1)
         if ! env BOUND=1000 ${envs[@]+"${envs[@]}"} ${flag[@]+"${flag[@]}"} \
              "$BV" build "$src" --llvm --out "$TMP/$mode" --stdlib-path lib \

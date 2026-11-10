@@ -3,10 +3,8 @@
 //===----------------------------------------------------------------------===//
 // Regression fixture: publishing an allocation into a callee's incoming object
 // parameter must be reclaimed when the object dies with the caller's frame.
-// Before the fix this leaked (Valgrind: definitely lost); see BUGS.md 2026-11-09,
-// tests/publish_reclamation.rs, docs/reports/2026-11-09-memory-defect-campaign.md.
-// Expected on a correct compiler: Valgrind-clean (no leak).
-
+// Before the fix this leaked (Valgrind: definitely lost); see BUGS.md 2026-11-09
+// and tests/publish_reclamation.rs.
 obj Holder { addr: Ptr<Bit<8>>; };
 
 defn make() -> Ptr<Bit<8>> {
@@ -22,7 +20,7 @@ defn publish(h: Holder) -> Bool {
 
 defn exercise() -> Int {
     let h: Holder = Holder { addr: 0 as Ptr<Bit<8>> };
-    publish(h);
+    let ok: Bool = publish(h);
     term Load#(h.addr, 8);
 };
 
@@ -30,5 +28,5 @@ let done: Bool = false;
 node main [!done][done] {
     Print#(exercise());
     done = true;
-    term;
+    endprogram;
 };

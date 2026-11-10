@@ -21,6 +21,8 @@ struct Case {
     threshold: i64,
     bias: i64,
     events: Vec<i64>,
+    #[serde(default)]
+    operations: Vec<u8>,
 }
 
 fn cases(family: u8) -> BoxedStrategy<Case> {
@@ -29,13 +31,15 @@ fn cases(family: u8) -> BoxedStrategy<Case> {
         -50i64..51,
         -10i64..11,
         prop::collection::vec(-20i64..21, 1..17),
+        prop::collection::vec(0u8..4, 1..9),
     )
-        .prop_map(move |(initial, threshold, bias, events)| Case {
+        .prop_map(move |(initial, threshold, bias, events, operations)| Case {
             family,
             initial,
             threshold,
             bias,
             events,
+            operations,
         })
         .boxed()
 }
@@ -48,6 +52,7 @@ fn reference_preserves_guard_boundary_and_event_order() {
         threshold: 0,
         bias: 3,
         events: vec![0, 2, -4, 1],
+        operations: vec![],
     };
     assert_eq!(reference(&case).unwrap(), vec![7, 12, 16, 20]);
 }
@@ -70,6 +75,7 @@ fn reference_campaign_families_have_known_traces() {
             threshold: 0,
             bias: 3,
             events: vec![0, 2, -4, 1],
+            operations: vec![],
         };
         assert_eq!(reference(&case).unwrap(), expected, "family {family}");
     }
@@ -88,6 +94,7 @@ fn reference_collection_and_match_traces() {
             threshold: 0,
             bias: 3,
             events: vec![0, 2, -4, 1],
+            operations: vec![],
         };
         assert_eq!(reference(&case).unwrap(), expected, "family {family}");
     }
@@ -101,12 +108,27 @@ fn reference_list_rebinding_preserves_original_value() {
         threshold: 0,
         bias: 3,
         events: vec![0, 2, -4, 1],
+        operations: vec![],
     };
     assert_eq!(reference(&case).unwrap(), vec![7, 9, 5, 6]);
 }
 
 #[test]
-#[ignore = "confirmed interpreter tuple projection defect; see transition campaign report"]
+fn reference_enum_construction_and_match_trace() {
+    // Family 14: construct Mode.Active(e) / Mode.Idle and match it, returning
+    // Int. Exercises native enum (Sum) layout + match against the interpreter.
+    let case = Case {
+        family: 14,
+        initial: 7,
+        threshold: 0,
+        bias: 3,
+        events: vec![0, 2, -4, 1],
+        operations: vec![],
+    };
+    assert_eq!(reference(&case).unwrap(), vec![7, 9, 5, 6]);
+}
+
+#[test]
 fn interpreter_tuple_projection_reproducer() {
     let case = Case {
         family: 7,
@@ -114,12 +136,12 @@ fn interpreter_tuple_projection_reproducer() {
         threshold: 0,
         bias: 0,
         events: vec![0],
+        operations: vec![],
     };
     assert_eq!(reference(&case).unwrap(), vec![0]);
 }
 
 #[test]
-#[ignore = "confirmed interpreter tuple destructuring defect; see transition campaign report"]
 fn interpreter_tuple_destructuring_reproducer() {
     let case = Case {
         family: 11,
@@ -127,8 +149,70 @@ fn interpreter_tuple_destructuring_reproducer() {
         threshold: 0,
         bias: 0,
         events: vec![0],
+        operations: vec![],
     };
     assert_eq!(reference(&case).unwrap(), vec![0]);
+}
+
+// 2026-11-10: compose operations instead of selecting only whole-program
+// templates, exposing interactions while retaining proptest sequence shrinking.
+// Retire this bounded grammar when a typed recursive generator subsumes it.
+fn composed_body(case: &Case) -> String {
+    let mut body = String::from("let x: Int = s;\n");
+    for operation in &case.operations {
+        let statement = match operation {
+            0 => "x = x + e;".to_string(),
+            1 => format!("x = x - ({});", case.bias),
+            2 => format!("when x > ({}) {{ x = x - e; }};", case.threshold),
+            3 => format!("x = x % {};", case.bias.abs() + 1),
+            _ => panic!("invalid generated operation"),
+        };
+        body.push_str(&statement);
+        body.push('\n');
+    }
+    body.push_str("term x;");
+    body
+}
+
+fn composed_trace(case: &Case) -> Vec<i64> {
+    let mut state = case.initial;
+    case.events.iter().map(|event| {
+        for operation in &case.operations {
+            state = model_operation(case, *operation, state, *event);
+        }
+        state
+    }).collect()
+}
+
+fn model_operation(case: &Case, operation: u8, state: i64, event: i64) -> i64 {
+    match operation {
+        0 => state + event,
+        1 => state - case.bias,
+        2 if state > case.threshold => state - event,
+        2 => state,
+        3 => state % (case.bias.abs() + 1),
+        _ => panic!("invalid generated operation"),
+    }
+}
+
+#[test]
+fn composed_operations_match_known_trace() {
+    let case = Case {
+        family: 13, initial: 7, threshold: 0, bias: 3,
+        events: vec![0, 2, -4, 1], operations: vec![0, 2, 1, 3],
+    };
+    assert_eq!(composed_trace(&case), vec![0, -3, -2, 0]);
+    assert_eq!(reference(&case).unwrap(), composed_trace(&case));
+}
+
+#[test]
+fn composed_native_smoke() {
+    let case = Case {
+        family: 13, initial: 7, threshold: 0, bias: 3,
+        events: vec![0, 2, -4, 1], operations: vec![0, 2, 1, 3],
+    };
+    let directory = tempfile::tempdir().unwrap();
+    compare(&case, directory.path()).unwrap();
 }
 
 fn function(case: &Case) -> String {
@@ -149,10 +233,14 @@ fn function(case: &Case) -> String {
         10 => "let values = make_values(s, e); term values[(e * e) % 2];".into(),
         11 => "let pair = (s + e, s - e); let (left, right) = pair; term left - right;".into(),
         12 => format!("match e {{ 0 => {{ when s > {threshold} {{ term s + ({bias}); }}; }}, _ => {{ term s - e; }} }} term s + e;"),
+        13 => composed_body(case),
+        14 => "let k: Mode = Mode.Idle; when e != 0 { k = Mode.Active(e); }; term match k { Mode.Active(n) => s + n, Mode.Idle => s - e, };".into(),
         _ => panic!("unknown transition family {}", case.family),
     };
     let helper = if case.family == 10 {
         "defn make_values(s: Int, e: Int) -> List<Int> { term [s, e]; };\n"
+    } else if case.family == 14 {
+        "enum Mode { Idle, Active(Int) };\n"
     } else {
         ""
     };
@@ -255,13 +343,16 @@ fn compare(case: &Case, directory: &Path) -> Result<(), String> {
     let path = directory.join("transition.bv");
     fs::write(&path, source).map_err(|e| e.to_string())?;
     let expected = reference(case)?;
+    if case.family == 13 && expected != composed_trace(case) {
+        return Err(format!("interpreter disagrees with independent model: {expected:?}; model: {:?}", composed_trace(case)));
+    }
     checked(
         Command::new("timeout")
             .arg("60")
             .arg(env!("CARGO_BIN_EXE_brievc"))
             .current_dir(root)
             .env("BRIEV_HOME", root)
-            .env_remove("BRIEV_HIR_EMIT")
+            .env("BRIEV_HIR_EMIT", "0")
             .arg("build")
             .arg(&path)
             .args(["--stdlib-path", "lib", "--config-dir", "config", "--out"])
@@ -350,7 +441,8 @@ fn scripted_integer_transitions() {
                 && (-10..=10).contains(&case.bias)
         );
         assert!(case.events.iter().all(|v| (-20..=20).contains(v)));
-        assert!(case.family <= 12, "family must be 0..=12");
+        assert!(case.family <= 14, "family must be 0..=14");
+        assert!(case.operations.len() <= 8 && case.operations.iter().all(|op| *op < 4));
         exercise(&case, &artifact).unwrap();
         return;
     }
@@ -364,7 +456,7 @@ fn scripted_integer_transitions() {
         .unwrap_or_else(|_| "0".into())
         .parse()
         .expect("integer family");
-    assert!(family <= 12, "family must be 0..=12");
+    assert!(family <= 14, "family must be 0..=14");
     let count = std::env::var("BRIEV_SIM_CASES")
         .unwrap_or_else(|_| "4".into())
         .parse()

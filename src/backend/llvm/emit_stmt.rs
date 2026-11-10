@@ -339,6 +339,7 @@ fn emit_bare_term_stop(backend: &mut LlvmBackend, out: &mut String, indent: &str
         backend.fun.terminated = true;
         return;
     }
+    backend.publish_counted_txn_term_state(out, indent);
     if backend.ctx.webstack_enabled {
         emit_web_flush_batch(backend, out, indent);
     }
@@ -1530,6 +1531,10 @@ pub(crate) fn emit_bare_term_gate(
                     emit_bare_term_stop(backend, out, indent);
                     writeln!(out, "{}{}:", indent, cont).ok();
                     backend.fun.terminated = false;
+                    // 2026-11-10: enclosing guarded carrier phis must name
+                    // this actual continuation, not the pre-term guard block.
+                    // Retire when block construction owns predecessor tracking.
+                    backend.fun.cur_block = Some(cont);
                 }
 }
 

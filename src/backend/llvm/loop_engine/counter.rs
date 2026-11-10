@@ -341,6 +341,8 @@ impl LlvmBackend {
         watchdog: Option<&crate::ast::top::WatchdogSpec>,
         is_main: bool,
     ) {
+        let saved_term_publication = self.fun.counted_txn_term_publication;
+        self.fun.counted_txn_term_publication = !is_main;
         if is_main {
             self.emit_main_header(out, "#0", true);
             self.emit_state_base(out);
@@ -683,6 +685,23 @@ impl LlvmBackend {
         }
         self.flush_pending_struct_allocas(out);
         out.push_str(&loop_buf);
+        self.fun.counted_txn_term_publication = saved_term_publication;
+    }
+
+    /// 2026-11-10: successful terms bypass the counted loop's exit stores.
+    /// Publish the current (post-assignment) carriers, including the counter,
+    /// before returning to the reactor. Otherwise it sees the old counter and
+    /// refires forever. Keep the SSA maps for the post-false sibling path;
+    /// retire this hook when all folded exits share one materialization block.
+    pub(crate) fn publish_counted_txn_term_state(&mut self, out: &mut String, indent: &str) {
+        if !self.fun.counted_txn_term_publication {
+            return;
+        }
+        let mut fields: Vec<_> = self.fun.pending_phi_backedge.clone().into_iter().collect();
+        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, value) in fields {
+            self.emit_state_store_i64(out, indent, &name, &value);
+        }
     }
 
     // ── Garbage-scheduler free emission ───────────────────────────────
@@ -2288,7 +2307,7 @@ impl LlvmBackend {
                     self.fun.terminated = false;
                     writeln!(out, "{}:", pre_guard_block).ok();
                     self.fun.cur_block = Some(pre_guard_block.clone());
-                    let lvt_before = self.fun.last_val_temps.clone();
+                    let mut lvt_before = self.fun.last_val_temps.clone();
                     let pending_before = self.fun.pending_phi_backedge.clone();
                     let cond_reg = self.emit_expr(out, cond, "  ");
                     let bool_reg = self.as_bool_reg(out, "  ", &cond_reg);
@@ -2332,14 +2351,15 @@ impl LlvmBackend {
                         writeln!(out, "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
                             mrg, ty, v, body_actual, old_v, pre_guard_block).ok();
                         self.fun.pending_phi_backedge.insert(f.clone(), mrg);
+                        // 2026-11-10: last_val_temps wins over the backedge
+                        // map on reads. A pre-guard cached value must not hide
+                        // this merge phi, including after a post-false term.
+                        // Retire with one SSA value environment for guards.
+                        lvt_before.remove(f);
+                        self.fun.last_val_types.remove(f);
                     }
-                    for (f, v) in &self.fun.last_val_temps {
-                        if lvt_before.get(f).map(|old| old != v).unwrap_or(true) {
-                            // Conditionally-defined temp: drop so later reads
-                            // don't cite a register from a non-dominating block.
-                            let _ = (f, v);
-                        }
-                    }
+                    // Drop conditionally-defined temporaries so later reads
+                    // cannot cite a register from a non-dominating block.
                     self.fun.last_val_temps = lvt_before;
                     self.fun.cur_block = Some(next_label);
                 }
@@ -2420,6 +2440,9 @@ impl LlvmBackend {
                 }
                 // Bare term/endprogram (no value) keep the reference path's
                 // control-flow semantics (the valued forms are handled above).
+                // 2026-11-10: successful bare terms in internal folds publish
+                // their carried state through the shared stop emitter before
+                // returning; the ordinary loop-exit stores are bypassed there.
                 Statement::Term(None) | Statement::EndProgram(None) => {
                     super::emit_stmt::emit_statement(self, out, stmt, "  ");
                 }

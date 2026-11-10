@@ -36,6 +36,23 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAIL=0
 
+# 2026-11-10: a generated-program livelock must name the failing case rather
+# than consume the CI job's entire timeout. Keep this bound even after fixing
+# counted-term publication; EFFECT_RUN_TIMEOUT allows slower local runners.
+run_case() {
+  local name="$1" bound="$2" binary="$3" output="$4"
+  if BOUND="$bound" timeout --kill-after=5s "${EFFECT_RUN_TIMEOUT:-30s}" \
+      "$binary" >"$output" 2>"$output.err"; then
+    return 0
+  else
+    local status=$?
+    echo "FAIL $name: execution failed (status $status; timeout ${EFFECT_RUN_TIMEOUT:-30s})" >&2
+    cat "$output.err" >&2
+    FAIL=1
+    return 1
+  fi
+}
+
 shape_of() {
   if grep -Fq "info: effect shape escaped" "$1"; then
     echo escaped
@@ -92,9 +109,10 @@ if ! BRIEV_DIAG_PLAIN_CONTEXT=1 BRIEV_DIAG_EFFECT=stateless \
   echo "FAIL plain-context float_math: build failed" >&2
   FAIL=1
 else
-  BOUND=5000001 "$TMP/shape_float_math/float_math" >"$TMP/auto_float.out"
-  BOUND=5000001 "$plain_float/float_math" >"$TMP/plain_float.out"
-  if ! cmp -s "$TMP/auto_float.out" "$TMP/plain_float.out"; then
+  if ! run_case "default float_math" 5000001 "$TMP/shape_float_math/float_math" "$TMP/auto_float.out" \
+      || ! run_case "plain-context float_math" 5000001 "$plain_float/float_math" "$TMP/plain_float.out"; then
+    FAIL=1
+  elif ! cmp -s "$TMP/auto_float.out" "$TMP/plain_float.out"; then
     echo "FAIL plain-context float_math: output differs from default" >&2
     FAIL=1
   else
@@ -117,9 +135,10 @@ elif ! BRIEV_DIAG_EFFECT=stateless "$BRIEVC" build tests/tier1/mixed_effect_shap
     --out "$mixed_plain" >"$mixed_plain/build.log" 2>&1; then
   echo "FAIL mixed_effect_shape: forced-stateless build failed" >&2
   FAIL=1
+elif ! run_case "mixed_effect_shape auto" 1000001 "$mixed_auto/mixed_effect_shape" "$TMP/mixed_auto.out" \
+    || ! run_case "mixed_effect_shape stateless" 1000001 "$mixed_plain/mixed_effect_shape" "$TMP/mixed_plain.out"; then
+  FAIL=1
 else
-  BOUND=1000001 "$mixed_auto/mixed_effect_shape" >"$TMP/mixed_auto.out" 2>"$TMP/mixed_auto.err"
-  BOUND=1000001 "$mixed_plain/mixed_effect_shape" >"$TMP/mixed_plain.out" 2>"$TMP/mixed_plain.err"
   sort "$TMP/mixed_auto.out" >"$TMP/mixed_auto.sorted"
   sort "$TMP/mixed_plain.out" >"$TMP/mixed_plain.sorted"
   if ! cmp -s "$TMP/mixed_auto.sorted" "$TMP/mixed_plain.sorted"; then

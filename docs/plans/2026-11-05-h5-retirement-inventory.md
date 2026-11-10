@@ -189,3 +189,11 @@ surfaces still walk the AST:
   the compiler is a bug signal, per the existing BUGS.md discipline.
 - Recognition ban, derivation gate, and the named-consumer rule apply to
   any future emission feature: new emission lands on HIR first, always.
+
+## H5 default flip (2026-11-09)
+
+Typed-HIR emission is the default (`hir_emit_enabled()` true unless
+`BRIEV_HIR_EMIT=0|false|off|no`). Owner sign-off given after: HIR/opt-out
+suites both 3624/0, sweep 139/0, A/B byte-identical, runtime benchmarks MATCH.
+AST arms remain for one release as the opt-out path; ports and family-by-family
+deletion continue.

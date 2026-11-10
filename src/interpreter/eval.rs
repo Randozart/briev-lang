@@ -122,11 +122,18 @@ pub fn eval_expr(
                 "Int" => match v {
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Int(if b { 1 } else { 0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Int(c as i64))),
+                    // 2026-11-10 (fuzz finding): `f as Int` must TRUNCATE a
+                    // Float (LLVM fptosi), not fall through to identity — the
+                    // backend converts, so the reference must too (Rule 5).
+                    Value::Atom(Atom::Float(f)) => Ok(Value::Atom(Atom::Int(f as i64))),
                     _ => Ok(v),
                 },
                 "Float" => match v {
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Float(c as i64 as f64))),
+                    // 2026-11-10 (fuzz finding): `n as Float` must CONVERT an
+                    // Int (LLVM sitofp), not fall through to identity.
+                    Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Float(n as f64))),
                     _ => Ok(v),
                 },
                 "Char" => match v {
@@ -1044,13 +1051,29 @@ fn eval_field(
 ) -> Result<Value, RuntimeError> {
     let recv = eval_expr(obj, heap, bindings, functions)?;
     match recv {
-        Value::Product { fields, names } => match names.as_ref().and_then(|ns| ns.iter().position(|n| n == name)) {
-            Some(i) => fields.get(i).cloned().ok_or_else(|| field_oob(name, fields.len())),
-            None => Err(RuntimeError::TypeError {
-                expected: format!("a field named '{}'", name),
-                found: describe_value(&Value::Product { fields, names }),
-            }),
-        },
+        Value::Product { fields, names } => {
+            // 2026-11-10: named products (struct literals) resolve by declared
+            // field name; an UNNAMED product (tuple/list literal) resolves a
+            // numeric projection `.N` positionally (SPEC tuple access). Before
+            // this, `pair.1` on a tuple raised "expected a field named '1'".
+            let index = names
+                .as_ref()
+                .and_then(|ns| ns.iter().position(|n| n == name))
+                .or_else(|| {
+                    if names.is_none() {
+                        name.parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                });
+            match index {
+                Some(i) => fields.get(i).cloned().ok_or_else(|| field_oob(name, fields.len())),
+                None => Err(RuntimeError::TypeError {
+                    expected: format!("a field named '{}'", name),
+                    found: describe_value(&Value::Product { fields, names }),
+                }),
+            }
+        }
         // 2026-08-22 (Phase 7b, SPEC §9.5): instance fields — ports yield
         // their SHARED EventQ handle (the wire), slots their current value.
         Value::Instance { fields, .. } => {
@@ -2072,6 +2095,12 @@ fn eval_unary_op(
     let val = eval_expr(expr, heap, bindings, functions)?;
     match kind {
         UnaryOpKind::Neg => {
+            // 2026-11-10 (fuzz finding): a Float must negate to a Float.
+            // `as_i64()` returns None for a Float, so the old `unwrap_or(0)`
+            // silently collapsed `-1.5` to `Int(0)`.
+            if let Value::Atom(Atom::Float(f)) = &val {
+                return Ok(Value::float(-f));
+            }
             let n = val.as_i64().unwrap_or(0);
             Ok(i64_to_bits(n.wrapping_neg()))
         }
@@ -2413,6 +2442,39 @@ fn eval_let_binding(
     Ok(Value::Dyn { trait_name, concrete, inner: Box::new(val) })
 }
 
+/// 2026-11-10: bind a `let`. A single binder inserts under its own name; a
+/// tuple destructuring `let (a, b) = pair;` binds each component positionally.
+/// Before this, only the first binder was inserted, so every later binder
+/// raised "undefined variable". A non-tuple or wrong-arity value is an error,
+/// never a silent partial binding. Extracted to keep `eval_statement` flat.
+fn bind_let_binding(
+    name: &str,
+    names: &[String],
+    val: Value,
+    bindings: &mut HashMap<String, Value>,
+) -> Result<(), RuntimeError> {
+    if names.len() <= 1 {
+        bindings.insert(name.to_string(), val);
+        return Ok(());
+    }
+    let Value::Product { fields, .. } = &val else {
+        return Err(RuntimeError::TypeError {
+            expected: format!("a {}-element tuple to destructure", names.len()),
+            found: describe_value(&val),
+        });
+    };
+    if fields.len() != names.len() {
+        return Err(RuntimeError::TypeError {
+            expected: format!("a tuple of {} elements", names.len()),
+            found: format!("a tuple of {} elements", fields.len()),
+        });
+    }
+    for (binding, value) in names.iter().zip(fields.iter()) {
+        bindings.insert(binding.clone(), value.clone());
+    }
+    Ok(())
+}
+
 pub fn eval_statement(
     stmt: &Statement,
     heap: &mut VirtualHeap,
@@ -2430,10 +2492,10 @@ pub fn eval_statement(
         // program. Both engines agree a static-only check has no runtime
         // meaning; the former runtime ContractViolation is retired.
         Statement::Check(_cond) => Ok(Value::Void),
-        Statement::Let { name, ty, expr, .. } => {
+        Statement::Let { name, names, ty, expr, .. } => {
             if let Some(expr) = expr {
                 let val = eval_let_binding(ty.as_ref(), expr, heap, bindings, functions)?;
-                bindings.insert(name.clone(), val);
+                bind_let_binding(name, names, val, bindings)?;
             }
             Ok(Value::Void)
         }
@@ -2793,8 +2855,32 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_int_to_char_builds_character() {
+    fn test_cast_int_to_float_converts() {
+        // 2026-11-10 (fuzz finding): `n as Float` used to fall through to
+        // identity, leaving an Int where the backend produces a Float.
         assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Decimal(7)), Type::float())),
+            Value::Atom(Atom::Float(7.0))
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_int_truncates_toward_zero() {
+        // 2026-11-10 (fuzz finding): `f as Int` used to fall through to
+        // identity (returning the Float). The backend emits fptosi; the
+        // reference must truncate toward zero.
+        assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Float(2.75)), Type::int())),
+            Value::Atom(Atom::Int(2))
+        );
+        assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Float(-2.75)), Type::int())),
+            Value::Atom(Atom::Int(-2))
+        );
+    }
+
+    #[test]
+    fn test_cast_int_to_char_builds_character() {        assert_eq!(
             eval1(&Expr::Cast(Box::new(Expr::Decimal(65)), Type::char_())),
             Value::Atom(Atom::Char('A'))
         );
