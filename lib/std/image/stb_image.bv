@@ -1,0 +1,40 @@
+// stb_image.bv — JPEG/PNG/BMP decode boundary over the vendored stb_image.
+//
+// The C implementation is a stdlib extension (c-independence roadmap:
+// "Briev/stb boundary"), not a compiler intrinsic. Decoded pixels are an
+// 8-bit RGB buffer; callers convert to their own layout.
+
+import "std/result.bv";
+
+frgn stbi_load_from_memory(data: Int, length: Int, width_out: Int, height_out: Int, channels_out: Int, desired: Int) -> Int from "std/c/stb_image/stb_image.c";
+frgn stbi_image_free(data: Int) -> Void from "std/c/stb_image/stb_image.c";
+
+obj DecodedImage {
+    width: Int;
+    height: Int;
+    rgb: Int;
+};
+
+defn image_decode(bytes: String) [true][is_ok(term) || is_err(term)] -> Result<DecodedImage, String> {
+    when (bytes .^Length) == 0 { term Err("empty image"); };
+    let data: Int = ((bytes as Data) as Int) + 8;
+    let wbuf: Int = Malloc#(8) as Int;
+    let hbuf: Int = Malloc#(8) as Int;
+    let cbuf: Int = Malloc#(8) as Int;
+    let ptr: Int = stbi_load_from_memory(data, bytes .^Length, wbuf, hbuf, cbuf, 3);
+    let wp: Ptr<Int32> = wbuf as Ptr<Int32>;
+    let hp: Ptr<Int32> = hbuf as Ptr<Int32>;
+    let w: Int = wp[0] as Int;
+    let h: Int = hp[0] as Int;
+    Free#(wbuf as Ptr<Bit<8>>);
+    Free#(hbuf as Ptr<Bit<8>>);
+    Free#(cbuf as Ptr<Bit<8>>);
+    when ptr == 0 { term Err("unsupported or corrupt image"); };
+    let decoded: DecodedImage = DecodedImage { width: w, height: h, rgb: ptr };
+    term Ok(decoded);
+};
+
+defn image_free(img: DecodedImage) -> Void {
+    stbi_image_free(img.rgb);
+    term;
+};
