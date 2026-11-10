@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [frontend, arithmetic, interpreter]
+        target: [frontend, arithmetic, interpreter, typecheck]
     steps:
       - uses: actions/checkout@v4
 
@@ -140,8 +140,9 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}/
           if-no-files-found: ignore
 
-      # The interpreter target reproduces known OPEN defects; keep the job
-      # green so a red nightly means a *new* finding, not a standing one.
+      # 2026-11-10: the interpreter tuple defects are fixed; the typecheck
+      # target was added after the frontend campaign found a parser DoS. Any
+      # red nightly here is a NEW finding — see uploaded artifacts.
       - name: Note standing findings
         if: steps.run.outcome == 'failure'
         run: |
