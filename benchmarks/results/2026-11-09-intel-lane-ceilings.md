@@ -234,3 +234,30 @@ Also committed alongside this investigation:
 - integer/float literal admission at a float target when exactly representable
   (`let acc: Half = 0;` works; `4.1` still rejected) — enables the canonical
   `matmul!(..., Half)` body.
+
+## f16 GEMM: declaration kind fixed; kernel quality still open (2026-11-09)
+
+Fix landed: composites declare their specialization kind
+(`attr declared_kind: matmul;`), `mark_declared` writes the kind (not the
+macro name) and finds the first `let`, and the shape matcher unwraps
+declared widen/narrow casts. `matmul_f16!` now reaches the GEMM channel:
+Vulkan emits `OpCooperativeMatrixKHR` + v4half workgroup tiles (previously a
+LocalSize-256 naive kernel).
+
+**But the f16 kernel still loses badly to the f32 tiled path on this device:**
+
+| GEMM 512³ f16 | 1.05 ms (coopmat) | 1.70 ms (tiled, coopmat off) | f32 tiled: 0.123 ms | CL C ceiling: 0.233 ms |
+|---|---|---|---|---|
+| GEMM 4096³ f16 | 371 ms (coopmat) | 459 ms (tiled) | f32 tiled: 39.7 ms | CL C ceiling: 84.4 ms |
+
+A/B via `spirv_coopmat: 0|1` (`/tmp/cfg_nocm`), same binary/config otherwise.
+So: (a) the coopmat tier is the better f16 path here, but still ~9× behind the
+f32 tiled kernel; (b) the Mesa/ANV coopmat path is not the hardware XMX
+ceiling (0.74 TF vs the f32 SIMD path's 6.9 TF). This is a strategy fact, not
+a lane verdict: the emitter needs an f16-storage/f32-accumulate tiled kernel
+(like the C reference, 84 ms) and coopmat selection must follow measured
+device facts. L0/NEO now correctly report no OpenCL projection for GEMM (the
+documented Vulkan-only boundary) instead of running a general f16 kernel.
+
+Tracked as W3: (1) f16 tiled microkernel with vec4/v4half staging and f32
+accumulation; (2) strategy-fact coopmat selection; (3) re-run the f16 GEMM row.

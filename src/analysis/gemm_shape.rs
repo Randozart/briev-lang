@@ -59,7 +59,30 @@ pub fn declared_composite(shape: &KernelShape, name: &str) -> bool {
 /// specialization (Rules 23/24). The scan keys the FIRST LET (host
 /// statements may precede the expansion — order never mattered here).
 pub fn declared_matmul(shape: &KernelShape) -> bool {
-    declared_composite(shape, "matmul")
+    let ok = declared_composite(shape, "matmul");
+    if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
+        let marked: Vec<String> = shape
+            .kernel_stmts
+            .iter()
+            .take(1)
+            .filter_map(|s| match s {
+                Statement::Let { modifiers, .. } => Some(
+                    modifiers
+                        .iter()
+                        .filter(|m| m.name == "declared_composite")
+                        .filter_map(|m| match &m.value {
+                            Some(Expr::Identifier(n)) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        eprintln!("[decl] declared_matmul={} markers={:?}", ok, marked);
+    }
+    ok
 }
 
 /// Detect the canonical flattened-2D matmul in a kernel shape. `None` when
@@ -343,7 +366,11 @@ fn match_reduction(
 /// The store: y[i] = acc (LHS index is the BARE counter).
 fn match_y_store(stmts: &[Statement], iv: &str, acc: &str) -> Option<String> {
     for stmt in stmts {
-        let Statement::Assign(lhs, Expr::Identifier(v)) = stmt else {
+        // `y[i] = acc;` or the f16 twin's `y[i] = acc as Float16;`.
+        let Statement::Assign(lhs, value) = stmt else {
+            continue;
+        };
+        let Expr::Identifier(v) = unwrap_cast(value) else {
             continue;
         };
         if v != acc {
@@ -362,15 +389,25 @@ fn match_y_store(stmts: &[Statement], iv: &str, acc: &str) -> Option<String> {
     None
 }
 
-fn match_index_of(e: &Expr) -> Option<&Expr> {
+/// 2026-11-09 (float-formats plan): a declared composite may widen/narrow
+/// its operands (`matmul_f16`: (a as Float) * (b as Float), store as Float16).
+/// The declaration is the license; unwrap the casts for the SHAPE match.
+fn unwrap_cast(e: &Expr) -> &Expr {
     match e {
+        Expr::Cast(inner, _) => unwrap_cast(inner),
+        other => other,
+    }
+}
+
+fn match_index_of(e: &Expr) -> Option<&Expr> {
+    match unwrap_cast(e) {
         Expr::Index(_, idx) => Some(idx),
         _ => None,
     }
 }
 
 fn match_field_of(e: &Expr) -> Option<String> {
-    match e {
+    match unwrap_cast(e) {
         Expr::Index(of, _) => match of.as_ref() {
             Expr::Identifier(f) => Some(f.clone()),
             _ => None,

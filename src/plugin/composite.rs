@@ -1310,7 +1310,13 @@ fn build_emit_node(args: &[Expr]) -> Result<Transaction, String> {
 /// stay unmarked (documented: the declared-lowering channel consumes
 /// Let-first declarations only).
 fn mark_declared(body: &mut [Statement], name: &str) {
-    if let Some(Statement::Let { modifiers, .. }) = body.first_mut() {
+    // 2026-11-09: find the first LET, not necessarily the first statement —
+    // a composite may open with a `declared_kind` metadata line (which the
+    // expansion also consumes, see the caller).
+    if let Some(Statement::Let { modifiers, .. }) = body
+        .iter_mut()
+        .find(|s| matches!(s, Statement::Let { .. }))
+    {
         modifiers.push(Annotation {
             name: "declared_composite".into(),
             value: Some(Expr::Identifier(name.to_string())),
@@ -1348,7 +1354,34 @@ fn expand_stmt_list(
             if let Some(def) = registry.get(&name) {
                 let mut expanded =
                     expand_composite_invocation(def, &args, comptime, state_types)?;
-                mark_declared(&mut expanded, &def.name);
+                // 2026-11-09 (float-formats plan): a composite may declare its
+                // SPECIALIZATION KIND (e.g. matmul_f16 -> matmul) so analyses
+                // gate on the declaration's semantics, not the macro's name.
+                // `attr declared_kind: matmul;` in the $defn body.
+                let mut kind = def
+                    .metadata
+                    .get("declared_kind")
+                    .and_then(|v| match v {
+                        crate::ast::PropertyValue::Identifier(n) => Some(n.clone()),
+                        crate::ast::PropertyValue::String(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                // A body-level `attr declared_kind: matmul;` arrives as the
+                // expansion's first MetadataAssignment — consume it.
+                if kind.is_none() {
+                    if let Some(Statement::MetadataAssignment(k, v)) = expanded.first() {
+                        if k == "declared_kind" {
+                            match v {
+                                crate::ast::PropertyValue::Identifier(n)
+                                | crate::ast::PropertyValue::String(n) => kind = Some(n.clone()),
+                                _ => {}
+                            }
+                            expanded.remove(0);
+                        }
+                    }
+                }
+                let kind = kind.unwrap_or_else(|| def.name.clone());
+                mark_declared(&mut expanded, &kind);
                 let tail = stmts.split_off(i + 1);
                 stmts.truncate(i);
                 stmts.extend(expanded);

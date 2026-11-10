@@ -218,6 +218,9 @@ $defn matmul_f16(
     mlen: Expr, nlen: Expr, klen: Expr, idx: Expr,
     m: ExprItem, n: ExprItem, kk: ExprItem, acc: ExprItem
 ) {
+    // 2026-11-09: same specialization kind as matmul! (tensor/GEMM channel)
+    // with f16 storage and a Float accumulator.
+    attr declared_kind: matmul;
     let acc: Float = 0.0;
     let m: Int = idx / nlen;
     let n: Int = idx % nlen;

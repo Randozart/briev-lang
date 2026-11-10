@@ -479,9 +479,18 @@ impl KernelPlan {
         // the compiler will DO — the tensor channel follows the
         // declaration, so an undeclared body's plan has no gemm lane
         // (Rules 23/24).
-        let gemm = crate::analysis::gemm_shape::declared_matmul(shape)
+        let declared = crate::analysis::gemm_shape::declared_matmul(shape);
+        let gemm = declared
             .then(|| detect_gemm_shape(shape, items))
             .flatten();
+        if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
+            eprintln!(
+                "[plan] {} declared_matmul={} gemm_detected={}",
+                name,
+                declared,
+                gemm.is_some()
+            );
+        }
         let proofs = PlanProofs {
             disjoint_workitems: shape.eligible,
             associative_reduce: has_reduce || has_deferred || gemm.is_some(),

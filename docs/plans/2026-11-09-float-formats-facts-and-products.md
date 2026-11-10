@@ -142,6 +142,12 @@ kernel falls to the general path (0.84 ms vs 0.123 ms at 512³). Clean fixes:
 composite expander. Do NOT add name lists in analysis. Tracked as the top W3
 item.
 
+**Update 2026-11-09:** the declaration-kind fix + cast-tolerant shape match
+landed; `matmul_f16!` now takes the coopmat tier. Device A/B: coopmat 1.05 ms
+(512³) / 371 ms (4096³) vs tiled 1.70 / 459 vs f32 tiled 0.123 / 39.7. The
+structural gap is closed; the f16 microkernel quality and coopmat strategy
+facts are now the W3 work items.
+
 ## Verification
 
 - `cargo test --lib`; `ll_determinism_check.sh --quick`; Praetor on changed
