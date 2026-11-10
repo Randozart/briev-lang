@@ -137,7 +137,7 @@ observable value/alias semantics divergence; under the interpreter-reference
 rule the backend must preserve the independent values. Reproducer:
 `tests/fixtures/simulation/list_alias_mutation.json`.
 
-## Interpreter cannot project unnamed tuple fields — OPEN 2026-11-09
+## Interpreter cannot project unnamed tuple fields — FIXED 2026-11-10
 
 Family 7: `(s+e,s-e).1` through a local tuple binding raises
 `expected a field named '1', got product`; native O0/O3 correctly returns 0
@@ -145,13 +145,25 @@ at `s=e=0`. `src/interpreter/eval.rs:1056` only searches product field names,
 never positional tuple indices. Reproducer:
 `tests/fixtures/simulation/tuple_projection.json`.
 
-## Interpreter ignores tuple destructuring names — OPEN 2026-11-09
+**Fix (2026-11-10):** `eval_field` resolves a numeric projection `.N`
+positionally when the product is UNNAMED (tuple/list literal, `names: None`);
+named struct products still resolve by declared field name. Regression:
+`tests/deterministic_transitions.rs::interpreter_tuple_projection_reproducer`
+(un-ignored, green).
+
+## Interpreter ignores tuple destructuring names — FIXED 2026-11-10
 
 Family 11: `let (left,right) = pair; term left-right;` raises
 `undefined variable 'right'`; native O0/O3 correctly evaluates it.
 `src/interpreter/eval.rs:2556` binds only `Statement::Let.name`, ignoring its
 `names` vector. Full typed-reference replay confirms both tuple failures.
 Reproducer: `tests/fixtures/simulation/tuple_destructuring.json`.
+
+**Fix (2026-11-10):** `Statement::Let` binds every component of `names`
+positionally when there is more than one binder; a non-tuple or wrong-arity
+value is a `TypeError`, never a silent first-name-only binding. Regression:
+`tests/deterministic_transitions.rs::interpreter_tuple_destructuring_reproducer`
+(un-ignored, green).
 
 All four findings: `docs/reports/2026-11-09-deterministic-transition-campaign.md`.
 Synthetic corruption was disabled; this investigation records defects without

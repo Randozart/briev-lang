@@ -106,7 +106,6 @@ fn reference_list_rebinding_preserves_original_value() {
 }
 
 #[test]
-#[ignore = "confirmed interpreter tuple projection defect; see transition campaign report"]
 fn interpreter_tuple_projection_reproducer() {
     let case = Case {
         family: 7,
@@ -119,7 +118,6 @@ fn interpreter_tuple_projection_reproducer() {
 }
 
 #[test]
-#[ignore = "confirmed interpreter tuple destructuring defect; see transition campaign report"]
 fn interpreter_tuple_destructuring_reproducer() {
     let case = Case {
         family: 11,
