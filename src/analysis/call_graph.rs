@@ -174,6 +174,13 @@ pub fn extract_called_functions(body: &[Statement]) -> Vec<String> {
             Statement::Expression(e) => {
                 collect_call_names(e, &mut called);
             }
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
+                collect_call_names(e, &mut called);
+            }
+            Statement::Block(stmts) | Statement::Defer(stmts)
+            | Statement::SyncBlock(stmts) | Statement::Mutex(stmts) => {
+                called.extend(extract_called_functions(stmts));
+            }
             Statement::Guarded(_, statements) => {
                 called.extend(extract_called_functions(statements));
             }

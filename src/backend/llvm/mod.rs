@@ -3110,6 +3110,13 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // ABI. Computed here once; the backend only consumes the decision.
         self.ctx.defn_needs_state =
             crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
+        // 2026-11-10: plain Alloc# in a helper reachable from a transaction
+        // uses the tick arena (`%State`), so that helper must receive state.
+        for name in self.ctx.needs_arena.clone() {
+            if let Some(v) = self.ctx.defn_needs_state.get_mut(&name) {
+                *v = true;
+            }
+        }
         self.ctx.defn_needs_plain =
             crate::analysis::export_abi::compute_defn_needs_plain(items, &plain_lets);
         // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the

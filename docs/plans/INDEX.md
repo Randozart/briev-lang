@@ -119,6 +119,14 @@ captured final block) at the two hardcoded sites, then fixes the arena
 subsystem (Direct-SSA init, brk-aware fini, grow preserves the bump) and
 re-enables selection behind an IR gate. Prerequisite for per-worker arenas.
 
+**Memory decisions + auto-free (2026-11-10, ACTIVE — M1):**
+`docs/plans/2026-11-10-memory-decisions-and-auto-free.md` — plain `Alloc#()`
+is the author surface; the compiler picks arena/stack/malloc when feasible.
+Provenance + interprocedural escape summaries; prove dead sole owners and
+auto-free (reported in `memcheck`, `keep` overrides); warn on undecided
+owners, deny in kiosk CI; no GC/refcount; no new `store` keyword. M1 compiler
+first, then tensor ownership/per-tick arena, then VAD RPC + op ledger.
+
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
 XIII, D27–D33). The long-term ownership/health model: lifetime is a proof in

@@ -1,0 +1,251 @@
+# Memory decisions, provenance, and auto-free (2026-11-10)
+
+Status: ACTIVE — M1 (compiler) first, then M2 tensor ownership, then M3 service.
+Companions: `2026-11-03-lifetime-and-reclamation.md`,
+`2026-11-03-arena-enablement.md`, `2026-08-01-free-check.md`,
+`2026-11-10-unified-program-capability-and-ceilings.md`,
+`2026-11-10-kiosk-native-acceptance-program.md`.
+
+## 0. Decisions (locked)
+
+1. **No `store` keyword.** Storage shape is determinate from lifetime,
+   escape, size, target facts, and FFI visibility. A keyword that picks a
+   shape is redundant or a performance hint; the observability razor rejects
+   both. Layout/placement that is observable already has `seq`, `Ptr`,
+   `@addr`, `vol`, and FFI boundaries.
+2. **Plain `Alloc#(size)` is the author surface.** The compiler picks
+   `Arena` when feasible, `Alloca` for a bounded frame, `Malloc` when the
+   value escapes or the decision is unknown. An explicit strategy argument is
+   an ambiguity/override, never a speed lever.
+3. **Auto-free proved dead owners.** When the compiler proves storage stale
+   (last owner gone), solely owned, and unobservable, it frees it at the
+   owner-loss point — silently at runtime, but **always listed in
+   `memcheck`**. A `keep` hint overrides.
+4. **Remind on undecided ownership.** Unknown/escaping heap owners produce a
+   warning by default; kiosk CI uses `--deny-memory-ambiguity`. Unsound free
+   and stale use are errors.
+5. **`Malloc#` remains the raw manual intrinsic.** It is the explicit
+   `@malloc`/`@free` pair for ABI/embedded/manual allocations. It does not
+   bypass diagnostics: provenance-tracked `Malloc#` allocations participate
+   in the same decision obligation.
+6. **No runtime GC/refcount.** Unknown lifetime still leaks (reported), per
+   the lifetime north star. `keep until <event>` as a runtime lifetime is
+   rejected; lexical cleanup uses `defer`/scopes/state/arena.
+7. **No new syntax until a concrete ambiguity needs it.** If a case remains
+   after provenance/decisions, add one site-local ambiguity keyword with the
+   warn-default/error-when-unsound arm — named for ownership, never storage.
+
+## 1. The gap that motivated this
+
+The compiler already derives and reclaims:
+
+- `Alloc#` with a proved `Frame`/`TxnBody` lifetime → stack or per-tick
+  arena, reclaimed at tick end (`emit_arena_fini`).
+- Reactor state fields initialized with `Malloc#`/`Alloc#` → last-touch
+  scheduled free.
+- Owned strings/aggregates/collections; consume/destroy; verified
+  `free x;`/`keep x;` hints.
+- `Unknown`/`Program` lifetime → boxed heap, **leaked by design**.
+
+The tensor runtime opted out: `Tensor.ptr: Int`, `Malloc#` buffers, escaped
+env lists, aliasing (`tensor_rename`). The allocation DAG cannot associate the
+`Int` with an allocation, so no free/keep obligation fires. One-shot CLI runs
+hide the leak; a long-running VAD/detect daemon exposes it.
+
+## 2. Memory-decision model
+
+### 2.1 Staleness
+
+An allocation is **stale** when:
+
+- its owning handle has no future use,
+- no live alias/borrow/ordered reader can observe the storage,
+- it is not externally retained (FFI/export/state field with unknown reader).
+
+If stale and solely owned → `auto-free` at the last owner loss. Otherwise the
+compiler classifies and demands a decision.
+
+### 2.2 Decision states
+
+| State | Meaning |
+|---|---|
+| `auto-free@site` | proved stale/sole/unobservable; compiler frees |
+| `free@site` | author-pinned `free x;` |
+| `keep` | author says it lives longer (`keep x;`) |
+| `transfer` | returned/stored into an owned destination |
+| `state-owned` | reactor state field; existing scheduler |
+| `arena` | arena/stack lifetime (no explicit free) |
+| `undecided` | warning; `--deny-memory-ambiguity` errors |
+| `unsafe` | free/use would be unsound → error |
+
+`memcheck` prints every allocation, including auto-frees, with the site,
+owner-loss site, alias reason, and suggested decisions.
+
+### 2.3 Diagnostics
+
+- **Lost owner** (overwrite/scope exit/escape): "allocation becomes
+  unreachable; add `free`, `keep`, return/transfer, or an arena/owned type."
+- **Unknown** (alias/FFI/ordered reader): "lifetime unknown; explicit
+  decision required."
+- **Unsound free** (live alias/reader): error.
+- **Stale use**: error (existing `free`/consume contract).
+- **Redundant keep/free**: warning.
+
+## 3. Provenance and interprocedural escape (M1 core)
+
+### 3.1 Provenance gate (spike first)
+
+Test whether allocation provenance survives:
+
+`Malloc#`/`Alloc#` → local `Int` → object field → helper call → return.
+
+If it does not, auto-free is limited to provenance-carrying handles. The
+tensor ABI must then carry an owner identity (typed owner handle or explicit
+owned type), not an opaque `Int`. **No provenance, no auto-free.**
+
+### 3.2 Interprocedural escape summaries
+
+The current allocation DAG treats every call argument as escaping. That forces
+`Malloc` even when a helper only reads/writes. Add body-derived summaries:
+
+- per callable/parameter: `escapes` (returned, state/field/collection/object,
+  FFI/unknown call, escaped aggregate) or `non-escaping`;
+- fixed point across the call graph; unknown/foreign calls escape;
+- allocation DAG consumes the summary: only escaping argument positions mark
+  an allocation escaped.
+
+### 3.3 Arena context for plain `Alloc#`
+
+Non-escaping `Alloc#` in a callable reachable from a transaction (or a
+stateful runtime method) defaults to `Arena`; the callable must receive
+`%State` so `emit_arena_alloc` is valid. Functions not reachable from a
+reactor tick default to the current frame/stack/malloc rules. Explicit
+strategy arguments still win.
+
+### 3.4 Auto-free emission
+
+Consume the dead-owner proof; emit strategy-aware free at the owner-loss
+point. `keep x;`/`free x;` suppress/replace. No free for aliases/FFI/unknown.
+Machine-readable `memcheck` output for CI.
+
+## 4. M1 work breakdown
+
+**M1.0 — Plan, baseline, provenance spike.**
+- Write this plan; update INDEX/unified/kiosk pointers.
+- Baseline: `memcheck` on current fixtures; IR for plain `Alloc#` in a
+  stateless helper vs transaction; prove/disprove provenance through
+  `Int`/object/cast/call.
+- Add fixture tests for each decision state.
+
+**M1.1 — Interprocedural escape summaries.**
+- New/extended analysis with unit tests; allocation DAG consumes summaries.
+- Fixtures: non-escaping read helper stays Arena; returned/stored/FFI escape
+  → Malloc/decision.
+
+**M1.2 — Arena context + `%State` propagation.**
+- Mark callables needing arena as stateful; plain `Alloc#` selects Arena when
+  feasible. IR gate: no `@malloc` for non-escaping calls from a tick; arena
+  init/fini.
+
+**M1.3 — Auto-free + keep override + memcheck.**
+- Dead-owner free; `keep` suppress; report all decisions.
+- `--deny-memory-ambiguity`; warning/error tests.
+
+**M1.4 — Exit gates.**
+- `cargo test --lib` green; no double-free; `__briev_free_count` fixtures.
+- No false positives on stdlib/FFI.
+- Kiosk path: zero undecided heap allocations after migration.
+- Docs updated: `llvm-memory-management.md`, lifetime plan addendum,
+  `memcheck` docs.
+
+## 5. M2 — tensor ownership + per-tick arena
+
+- `Tensor` carries an ownership class (`owned`/`arena`/`borrowed`/
+  `persistent`) and a provenance-carrying handle.
+- Activations: plain `Alloc#()` in a stateful inference txn → arena.
+- Weights/model graph: persistent (`keep`/Malloc), cached.
+- Session state: persistent tensor copied out before tick end.
+- Daemon handles one request per tick so the per-tick arena resets.
+- Gates: 10k-tick RSS plateau, no per-request malloc, YuNet/VAD/ResNet parity.
+
+## 6. M3 — VAD RPC + op ledger + S2 exit
+
+- VAD session/state RPC, edge hysteresis, barge-in hook.
+- Op coverage ledger + fixtures; unsupported-op diagnostics.
+- S2 exit report; device perf gate routed to S4.
+
+## 7. Risks
+
+- Provenance may not survive `Int`/casts/object fields; the tensor ABI may
+  need an owned handle. Decide from the spike before building auto-free.
+- Interprocedural summaries must stay conservative on unknown/foreign calls;
+  false "non-escaping" is a use-after-free.
+- Auto-free changes observability/liveness; IR/golden and benchmark tests.
+- `deny` on legacy kiosk code will surface many leaks; phase the migration.
+- Arena selection requires `%State`; stateless helpers must not silently fall
+  back to malloc while claiming Arena.
+
+## 8. Undo / retirement
+
+- If the spike shows provenance cannot be retained without a tensor ABI
+  redesign, record that decision and keep the explicit region allocator as a
+  **TEMPORARY** fallback with a retirement gate: "compiler-owned when tensor
+  handles carry allocation provenance."
+- Do not add `store`/`keep until` syntax as a fallback.
+
+## 9. M1.0 spike results (2026-11-10)
+
+### 9.1 What the compiler did before this change
+
+| Shape | Result |
+|---|---|
+| `Alloc#` in a stateless `defn` | `@malloc` |
+| `Alloc#` in a txn, value dead inside the txn | arena (`%State` bump) |
+| `Alloc#` in a txn passed to a helper that only `Load#`s it | arena — but only because calls were not modeled at all |
+| `Alloc#` in a helper called from a txn | `@malloc` (defn defaulted stateless/Malloc) |
+| `Alloc#` returned from a txn / stored into state | arena in some shapes — an escape hole |
+
+Root causes found:
+
+1. `let p: Int = Alloc#(n) as Int;` parses as `Cast(Call(Alloc#))`; the
+   producer-link check matched only a top-level `Call`, so the allocation was
+   never linked to `p`.
+2. `add_producer` recorded `source_vars` but never added the consumer edge;
+   the forward walk could not reach `Return`/`Call` sinks.
+3. `DagNode::Call` was never constructed; a helper call could not mark an
+   argument as escaping.
+4. `extract_called_functions` ignored `Term`/`Tail`/block statements, so the
+   call graph never saw `txn { term helper(n); }`.
+
+### 9.2 Implemented in this slice
+
+- `src/analysis/allocation.rs`:
+  - body-derived parameter-escape summaries (least fixed point), alias
+    tracking through lets/casts/fields/aggregates, state/return/unknown-call
+    sinks; borrowing intrinsics (`Load#`/`Store#`/`Copy#`/...) do not escape;
+  - call nodes in the allocation DAG for escaping argument positions only;
+  - `add_producer` now links source variables;
+  - `expr_contains_alloc` handles casts/wrappers;
+  - `return_alias_vars` separates “returned value aliases this” from
+    “identifier appeared in the result expression”;
+  - `arena_reachable_defns` marks defns reachable from a transaction; their
+    non-escaping `Alloc#` defaults to Arena.
+- `src/analysis/call_graph.rs`: `Term`/`Tail`/block/defer/sync/mutex bodies
+  contribute calls.
+- `src/backend/llvm/mod.rs`: defns in `needs_arena` are marked `needs_state`
+  so the arena in `%State` is addressable.
+- Unit tests: non-escaping helper stays Arena; helper allocating from a txn
+  uses Arena; returning/storing/alias helpers force Malloc.
+
+### 9.3 Verified IR
+
+`txn make { term helper(n); }` with `defn helper { let p = Alloc#(n); Store#; term Load#; }`
+now emits `@helper(ptr %state, i64)` with arena init/bump; the returning and
+state-storing variants emit `@malloc`.
+
+### 9.4 Still open (next slices)
+
+- Auto-free + `keep` override + memory-decision reporting in `memcheck`.
+- Provenance tracking for `Malloc#`/`Int`-held raw handles (the tensor ABI).
+- Per-tick arena sizing/growth and daemon one-request-per-tick.
+- Formal decision fixtures for lost owner/unknown/unsafe; `--deny-memory-ambiguity`.

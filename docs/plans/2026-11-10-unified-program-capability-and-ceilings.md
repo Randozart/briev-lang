@@ -19,7 +19,7 @@ is unverified.
 | Trust: HIR completion | `docs/plans/2026-11-09-h5-completion-next-leg.md` |
 | Trust: verification | `docs/plans/2026-11-09-compiler-verification-program.md` |
 | Trust: release discipline | `docs/plans/2026-10-25-stability-v0.1.md` |
-| Trust: ownership/memory | `docs/plans/2026-11-03-lifetime-and-reclamation.md`, `2026-11-03-arena-enablement.md`, `2026-11-03-arena-runtime-parity-and-folding.md`, `2026-10-29-destination-ownership-reconciliation.md` |
+| Trust: ownership/memory | `docs/plans/2026-11-03-lifetime-and-reclamation.md`, `2026-11-03-arena-enablement.md`, `2026-11-03-arena-runtime-parity-and-folding.md`, `2026-10-29-destination-ownership-reconciliation.md`, `2026-11-10-memory-decisions-and-auto-free.md` |
 | Proof consumption | `docs/plans/2026-10-26-proof-consumption-ledger.md`, `2026-10-26-proof-completeness-and-guard-elimination.md` |
 | ABI / interop | `docs/plans/2026-10-27-eternal-abi-and-temporal-transport.md` |
 | Intel lane | `docs/plans/2026-11-08-intel-g1.5-opencl-flavored-spirv.md` |
