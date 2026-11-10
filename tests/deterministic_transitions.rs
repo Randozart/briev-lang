@@ -106,6 +106,20 @@ fn reference_list_rebinding_preserves_original_value() {
 }
 
 #[test]
+fn reference_enum_construction_and_match_trace() {
+    // Family 14: construct Mode.Active(e) / Mode.Idle and match it, returning
+    // Int. Exercises native enum (Sum) layout + match against the interpreter.
+    let case = Case {
+        family: 14,
+        initial: 7,
+        threshold: 0,
+        bias: 3,
+        events: vec![0, 2, -4, 1],
+    };
+    assert_eq!(reference(&case).unwrap(), vec![7, 9, 5, 6]);
+}
+
+#[test]
 #[ignore = "confirmed interpreter tuple projection defect; see transition campaign report"]
 fn interpreter_tuple_projection_reproducer() {
     let case = Case {
@@ -149,10 +163,13 @@ fn function(case: &Case) -> String {
         10 => "let values = make_values(s, e); term values[(e * e) % 2];".into(),
         11 => "let pair = (s + e, s - e); let (left, right) = pair; term left - right;".into(),
         12 => format!("match e {{ 0 => {{ when s > {threshold} {{ term s + ({bias}); }}; }}, _ => {{ term s - e; }} }} term s + e;"),
+        14 => "let k: Mode = Mode.Idle; when e != 0 { k = Mode.Active(e); }; term match k { Mode.Active(n) => s + n, Mode.Idle => s - e, };".into(),
         _ => panic!("unknown transition family {}", case.family),
     };
     let helper = if case.family == 10 {
         "defn make_values(s: Int, e: Int) -> List<Int> { term [s, e]; };\n"
+    } else if case.family == 14 {
+        "enum Mode { Idle, Active(Int) };\n"
     } else {
         ""
     };
@@ -350,7 +367,7 @@ fn scripted_integer_transitions() {
                 && (-10..=10).contains(&case.bias)
         );
         assert!(case.events.iter().all(|v| (-20..=20).contains(v)));
-        assert!(case.family <= 12, "family must be 0..=12");
+        assert!(case.family <= 14, "family must be 0..=14");
         exercise(&case, &artifact).unwrap();
         return;
     }
@@ -364,7 +381,7 @@ fn scripted_integer_transitions() {
         .unwrap_or_else(|_| "0".into())
         .parse()
         .expect("integer family");
-    assert!(family <= 12, "family must be 0..=12");
+    assert!(family <= 14, "family must be 0..=14");
     let count = std::env::var("BRIEV_SIM_CASES")
         .unwrap_or_else(|_| "4".into())
         .parse()

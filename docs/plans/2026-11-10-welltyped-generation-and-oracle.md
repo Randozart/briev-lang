@@ -50,13 +50,23 @@ random programs.
 
 - `cargo test --lib` — 3577 pass
 - `fuzzing::typed_program` — 4 pass (600 random programs, ints + floats)
+- `deterministic_transitions` family 14 (native enum) — reference trace + 6
+  native cases agree at `-O0`/`-O3`
 - `welltyped` fuzz campaign — see the campaign log
+
+## Native differential extension
+
+`tests/deterministic_transitions.rs` gains **family 14**: it constructs
+`Mode.Active(e)` / `Mode.Idle` and `match`es it, returning `Int`. This is the
+first native-differential family beyond `Int`/`List`/`Int-match`, so native
+enum (Sum) layout and matching are compared against the interpreter at `-O0`
+and `-O3`.
 
 ## Gaps / next
 
 - The generator does not yet emit: multi-node/reactor programs, `foreach`,
   strings, generics, structs, or the native backend path. The oracle here is
   interpreter-vs-model, not interpreter-vs-native.
-- Next: feed the same generated programs through the native differential
-  (`tests/deterministic_transitions.rs`) so backend codegen is covered too, and
-  widen the grammar (structs, strings, `foreach`).
+- Native differential still covers only `Int`/`List`/`Int-match`/`enum`;
+  **float** and **string** native families remain (they need a non-Int trace
+  channel).
