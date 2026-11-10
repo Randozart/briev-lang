@@ -36,6 +36,11 @@ The same module is the adapter for the `welltyped` fuzz target
 (`fuzz/fuzz_targets/welltyped.rs`), and its unit test runs 600 deterministic
 random programs.
 
+`src/typed_program.rs` is gated on `cfg(any(test, feature = "fuzzing"))`: the
+default build excludes it, `cargo test --lib` covers it, and the `fuzz/`
+workspace enables the `fuzzing` feature to reach it (the sibling `fuzzing`
+modules need `proptest`, a dev-dependency, so they cannot be un-gated).
+
 ## Findings
 
 - **Interpreter negated a Float literal to `Int(0)`** — `-1.5` evaluated to
