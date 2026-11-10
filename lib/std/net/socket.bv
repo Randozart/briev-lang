@@ -90,6 +90,13 @@ defn sock_shutdown(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
     term syscall(48, s.fd, SHUT_RDWR);
 };
 
+// sock_shutdown_write - shutdown(2) only the WRITE side (SHUT_WR): flush our
+// request and signal EOF to the peer while keeping the read side open for the
+// response. Used by the kiosk native daemon's per-request upstream relay.
+defn sock_shutdown_write(s: Socket) [s.fd >= -4096][term >= -4096] -> Int {
+    term syscall(48, s.fd, SHUT_WR);
+};
+
 // ── struct sockaddr_in (16 bytes, Linux) ──────────────────────────────────
 //
 // The kernel's connect(2)/bind(2) take a pointer to this exact 16-byte
