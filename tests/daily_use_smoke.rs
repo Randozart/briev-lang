@@ -726,3 +726,20 @@ fn socket_loopback_golden_output() {
         "socket loopback golden stdout drifted: {out:?}"
     );
 }
+
+/// 2026-11-10 (kiosk native program W1): Unix-domain sockets
+/// (sock_unix / sock_bind_listen_unix / sock_connect_unix + stale-path unlink)
+/// end to end in one process. Golden matches the TCP loopback: five ok-flags,
+/// the received byte, and the whole-trip verdict ("11111651").
+#[test]
+fn unix_socket_loopback_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("unix_socket_loopback_smoke", "golden", &[]);
+    assert_eq!(
+        out, "11111651",
+        "unix socket loopback golden stdout drifted: {out:?}"
+    );
+}
