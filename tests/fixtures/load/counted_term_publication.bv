@@ -1,0 +1,27 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// The observer must see all carried values, not just the induction counter.
+let i: Int = 0;
+let total: Int = get_env_int!("BOUND");
+let sum: Int = 10;
+let value: Float = 1.0;
+
+node accumulate [i < total][i == total] {
+    sum = sum + 3;
+    value = value + 0.5;
+    i = i + 1;
+    // False posts must continue through the tail; the successful term skips it.
+    when i > 0 {
+        sum = sum + 1;
+        term;
+    };
+    sum = sum + 2;
+};
+
+node report [i == total][true] {
+    println!(i);
+    println!(sum);
+    println!(value as Int);
+    endprogram;
+};

@@ -1,3 +1,35 @@
+## Counted bare terms returned without publishing state — FIX IMPLEMENTED 2026-11-10
+
+**Symptom:** CI exhausted its 45-minute timeout in the effect-shape quick
+guard after all structural checks passed. `mixed_effect_shape` with the
+default escaped shape livelocked even at `BOUND=1`; forced-stateless exited.
+Upstream run: `42811020216`; fork run: `42779354309`.
+
+**Cause:** `49b9440c` delegated bare `term;` from the countable-body walker to
+the ordinary P-gated term emitter. Its successful edge emitted `ret void`
+before the counted loop's exit-block stores. The counters lived only in SSA,
+so the reactor saw the original counters and kept firing the nodes. Merely
+publishing the counter would also lose other carried values at the boundary.
+
+**Evidence:** on `d7c4869d`, identical O3/LTO link commands for original IR
+and an IR experiment adding current-counter stores distinguished timeout from
+termination. At `BOUND=1000001`, the experiment printed two `1000000` lines,
+matching stateless output. The new focused observer fixture also timed out
+at `BOUND=1` before the fix.
+
+**Repair:** an internal-fold-scoped obligation publishes all current native
+loop-carried values on the successful bare-term edge, before cleanup and
+return. Post-false paths and inline-member exits preserve their semantics.
+The post-false continuation also updates the active block: a guard assigning
+a carrier before `term;` otherwise built merge phis naming the pre-term block
+instead of `term.cont` (independently reproduced as an LLVM verifier failure).
+Guarded carrier writes also invalidate their pre-guard last-value cache: the
+cache otherwise overrides the merged SSA value, dropping guarded increments
+on post-false iterations (the observer printed 29 instead of the expected 32).
+The effect-shape shell gate bounds program execution and names timeout cases;
+the native regression checks exact output and termination under O0/O3 for
+both memory shapes, including zero-trip and conditional-term cases.
+
 ## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
 
 **Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*

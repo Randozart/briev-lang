@@ -4,6 +4,22 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-10: internally folded transactions retain their current field values
+in `pending_phi_backedge` until a publication boundary. A successful P-gated
+bare `term;` bypasses the counted-loop exit block, so `emit_bare_term_stop`
+publishes those native-typed carriers before cleanup and return. This includes
+the induction counter: returning with the old state counter makes the reactor
+refire indefinitely. `counted_txn_term_publication` scopes this obligation to
+the transaction wrapper; inline-member exits return to their caller without
+publishing the enclosing transaction. Post-false paths retain their register
+state, and field stores are emitted in sorted order. A guarded assignment
+before the term requires the post-false continuation to update `cur_block`
+for the enclosing merge phi's predecessor. The guard merge also invalidates
+pre-guard last-value cache entries for modified carriers, so subsequent reads
+use the merge phi rather than the stale value. The bounded native gate is
+`tests/counted_term_publication.rs` (escaped/stateless, O0/O3, conditional
+terms and an observer of published Int/Float state).
+
 2026-11-08: backend source-fixture validation mirrors the production callable
 contract gate: `detect_tautology` applies to transactions and definitions.
 Protocol invariant checks must not be substituted for this gate; a node's
