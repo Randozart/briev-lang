@@ -24,11 +24,18 @@ libFuzzer. This is the standard `cargo-fuzz` layout.
 | `frontend` | Raw bytes → lex → parse | Panics and hangs are failures; parse errors are normal |
 | `arithmetic` | Bytes → generated integer program → interpreter vs model | Any disagreement fails |
 | `interpreter` | As `arithmetic`, plus tuple projection/destructuring | Reproduces **known OPEN** tuple defects |
+| `welltyped` | Bytes → **well-typed** program (lets, guards, match, list, enum, float) → typecheck must accept → interpreter vs model | Rejection, interpreter error, or disagreement fails |
 
 `arithmetic` deliberately avoids tuples so it stays green and validates the
 oracle. `interpreter` includes tuples and currently *fails immediately* — that
 is the point: it independently rediscovers the open defects rather than being
 told about them.
+
+`welltyped` is the grammar-aware generator
+(`src/fuzzing/typed_program.rs`): it emits a typed program and asserts the
+typechecker accepts it and the interpreter agrees with the model, reaching the
+typechecker/interpreter far deeper than random bytes. See
+`docs/plans/2026-11-10-welltyped-generation-and-oracle.md`.
 
 ## Setup (once)
 
@@ -70,6 +77,7 @@ cargo +nightly fuzz run arithmetic  fuzz/corpus/arithmetic  -- -max_total_time=6
 
 # Nightly discovery (all targets; interpreter is expected to find the tuple bug)
 cargo +nightly fuzz run interpreter fuzz/corpus/interpreter -- -max_total_time=300 -fork=$(nproc) -print_final_stats=1
+cargo +nightly fuzz run welltyped   fuzz/corpus/welltyped   -- -max_total_time=300 -fork=$(nproc) -print_final_stats=1
 ```
 
 `-print_final_stats=1` reports executed inputs and coverage — quote those

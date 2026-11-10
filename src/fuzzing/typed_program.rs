@@ -526,19 +526,24 @@ mod tests {
         assert!(program(&[1, 2, 3]).is_none());
     }
 
+    fn pseudo_random_bytes(state: &mut u64, len: usize) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                *state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (*state >> 33) as u8
+            })
+            .collect()
+    }
+
     #[test]
     fn generated_programs_typecheck_and_agree() {
         // Deterministic pseudo-random bytes; every generated program must
         // typecheck, interpret, and agree with the model (ints and floats).
         let mut state: u64 = 0x9E3779B97F4A7C15;
         for _ in 0..600 {
-            let mut bytes = Vec::with_capacity(96);
-            for _ in 0..96 {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                bytes.push((state >> 33) as u8);
-            }
+            let bytes = pseudo_random_bytes(&mut state, 96);
             check(&bytes);
         }
     }
