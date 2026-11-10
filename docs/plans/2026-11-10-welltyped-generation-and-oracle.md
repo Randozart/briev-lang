@@ -57,7 +57,10 @@ modules need `proptest`, a dev-dependency, so they cannot be un-gated).
 - `typed_program` — 4 pass (600 random programs, ints + floats)
 - `deterministic_transitions` family 14 (native enum) — reference trace + 6
   native cases agree at `-O0`/`-O3`
-- `welltyped` fuzz campaign — see the campaign log
+- `welltyped` fuzz campaign (300 s, 8 workers) — **112,575 execs, zero
+  findings** (coverage 5540, corpus 284). Throughput is ~50 exec/s, far below
+  the byte-oriented targets, because every input runs the full frontend +
+  typecheck + interpret; the value is depth, not volume.
 
 ## Native differential extension
 
