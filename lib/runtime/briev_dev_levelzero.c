@@ -422,7 +422,7 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
             return 0;
         }
         k->bytes = proj_bytes;
-        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] staging %zu bytes (host USM)\n", proj_bytes);
+        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] staging %zu bytes (host USM) n=%llu\n", proj_bytes, (unsigned long long)global_n);
     }
     memcpy(k->staging, proj, proj_bytes);
     // Kernel signature: main(ptr %state, i64 %n) — arg values are copied by

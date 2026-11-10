@@ -294,7 +294,7 @@ static int briev_dev_opencl_launch(void* handle, const void* proj, size_t proj_b
     }
     size_t global_size = global_n;
     size_t local_size = k->local_x ? k->local_x : 64;
-    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue global=%zu local=%zu\n", global_size, local_size); fflush(stderr); }
+    if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue global=%zu local=%zu n=%llu\n", global_size, local_size, (unsigned long long)global_n); fflush(stderr); }
     cl_event ev = NULL;
     err = p_clEnqueueNDRangeKernel(cl_queue, k->kernel, 1, NULL, &global_size, &local_size, 0, NULL, &ev);
     if (g_verbose) { fprintf(stderr, "[briev_accel/opencl] enqueue res=%d\n", err); fflush(stderr); }

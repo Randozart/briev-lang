@@ -765,6 +765,36 @@ pub extern "C" fn briev_accel_invalidate_resident() {
     r.program_seeded = false;
 }
 
+/// 2026-11-09 (lane ceilings): measurement-only repetition. `run` is called
+/// N times and the AVERAGE wall time per launch is printed as
+/// `# bench_time: <ms>`. Wall includes the lane's submit/copy path, which is
+/// the honest application cost; the drivers still print their device-time
+/// lines. Default 1 = no change. Env: BRIEV_ACCEL_BENCH_ITERS.
+fn bench_iterations() -> u32 {
+    std::env::var("BRIEV_ACCEL_BENCH_ITERS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| *n > 1)
+        .map(|n| n.min(10_000))
+        .unwrap_or(1)
+}
+
+fn run_bench<F: FnMut() -> bool>(iters: u32, verbose: bool, mut run: F) -> bool {
+    if iters <= 1 {
+        return run();
+    }
+    let start = std::time::Instant::now();
+    let mut ok = true;
+    for _ in 0..iters {
+        ok &= run();
+    }
+    let ms = start.elapsed().as_secs_f64() * 1e3 / iters as f64;
+    if verbose {
+        eprintln!("# bench_time: {:.4} ms ({} launches, wall)", ms, iters);
+    }
+    ok
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn briev_accel_launch(
     idx: u32,
@@ -793,15 +823,20 @@ pub extern "C" fn briev_accel_launch(
             );
         }
     }
-    let ok = d.launch.map_or(false, |f| unsafe {
-        (f)(
-            r.kernels[idx as usize],
-            proj.as_ptr() as *const core::ffi::c_void,
-            bytes,
-            work_n as usize,
-            proj_out.as_mut_ptr() as *mut core::ffi::c_void,
-        )
-    } != 0);
+    let iters = bench_iterations();
+    let verbose = unsafe { g_verbose } != 0;
+    let launch_fn = d.launch;
+    let ok = run_bench(iters, verbose, || {
+        launch_fn.map_or(false, |f| unsafe {
+            (f)(
+                r.kernels[idx as usize],
+                proj.as_ptr() as *const core::ffi::c_void,
+                bytes,
+                work_n as usize,
+                proj_out.as_mut_ptr() as *mut core::ffi::c_void,
+            )
+        } != 0)
+    });
     // Unpack: copy written fields back to the host state.
     for i in 0..k.n_fields as usize {
         let f = unsafe { &*k.fields.add(i) };
@@ -868,16 +903,19 @@ pub extern "C" fn briev_accel_launch_resident_2d(
     let (full_sync, dirty, n_dirty) = seed_or_sync_scalars(d, k, idx, state, mapped);
     // No device→host scalar sync: the host owns the scalars (they were
     // just uploaded); arrays stay device-resident until download.
-    let ok = unsafe {
-        (d.launch_dev2d.unwrap())(
+    let iters = bench_iterations();
+    let verbose = unsafe { g_verbose } != 0;
+    let launch_dev2d = d.launch_dev2d.unwrap();
+    let ok = run_bench(iters, verbose, || unsafe {
+        (launch_dev2d)(
             kernel,
             nx as usize,
             ny as usize,
             full_sync,
             dirty.as_ptr(),
             n_dirty as u32,
-        )
-    } != 0;
+        ) != 0
+    });
     // 2026-09-18 (multi-kernel composition): after the FIRST resident
     // dispatch (full_sync=1), the output arrays live on-device but NOT in
     // host state. Pull written fields back so subsequent kernels seed

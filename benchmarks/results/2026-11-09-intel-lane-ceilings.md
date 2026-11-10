@@ -126,3 +126,50 @@ in place (event-based, matching Vulkan's `# gpu_time`).
 - NEO reports `timerResolution = 52` as **nanoseconds per tick** (not
   cycles/sec): `ms = ticks * resolution / 1e6`. Also fixed the L0 kernel
   timestamp field order (`global.start, global.end, context.start, context.end`).
+
+## W2d — first Briev-side measurements (2026-11-09, PROVISIONAL)
+
+Harness: `BRIEV_ACCEL_BENCH_ITERS=N` repeats the driver launch N times inside
+one reactor dispatch and prints `# bench_time` (average wall per launch).
+Drivers print `# gpu_time` (event/timestamp device time) and the dispatch
+geometry. Ceiling rows above are the reference.
+
+| shape | ceiling (CL C, device) | Briev-L0 gpu/bench | Briev-NEO gpu/bench | Briev-Vulkan bench |
+|---|---|---|---|---|
+| elem 1Mi f32 | 0.080 ms | 0.201 / 1.32 ms | 0.025 / 2.57 ms | 0.33 ms |
+| elem 1Mi f16 (native) | 0.047 ms | 0.106 / 0.97 ms | 0.019 / 1.97 ms | 0.30 ms |
+| reduce 4096×1024 f32 | 0.173 ms | 0.277 / 1.81 ms | 0.039 / 3.28 ms | 0.69 ms |
+| reduce 4096×1024 f16 | 0.097 ms | 0.126 / 1.24 ms | 0.029 / 2.30 ms | 0.49 ms |
+| GEMM 512³ f32 | 0.421 ms | CPU fallback (Vulkan-only) | CPU fallback | 0.31 ms |
+| GEMM 512³ f16 | 0.233 ms | 0.330 / 1.37 ms | 0.417 / 0.72 ms | 1.16 ms |
+| GEMM 4096³ f32 | 94.2 ms | CPU fallback | CPU fallback | 40.6 ms |
+| GEMM 4096³ f16 | 84.4 ms | 982.7 / 997 ms | 115.1 / 135 ms | 460 ms |
+
+Reading so far:
+- **Elementwise/reduce**: Briev-L0 device time is ~1.3–2.2× the hand OpenCL C
+  ceiling; NEO **beats** the reference (the C reference is a simple form).
+  Wall adds 1–3 ms of per-launch submission/copy — the residency gap (W3).
+- **f16 native arithmetic is real** (`OpFAdd %half`): elem f16 is ~2× faster
+  than f32 on L0 (0.106 vs 0.201 ms).
+- **f32 GEMM on Intel lanes** is a documented capability boundary (Vulkan
+  image only) — NA, not a lane result.
+- **f16 GEMM 4096³** is 12× off the ceiling on L0/NEO and 5× on Vulkan: the
+  `matmul_f16!` path (explicit casts, f32 accumulate) is not reaching the
+  tensor/cooperative lowering at this shape. Attribution item for W3.
+- `g0_sum` (Int fold, serial form) shows 41.9 ms wall on Vulkan: the fold lane
+  did not fire for that build; device timestamp said 0.003 ms — a clear signal
+  the Vulkan timestamp path is broken, not the kernel.
+
+### Timing-method caveat (OPEN)
+
+Vulkan `# gpu_time` is not trustworthy in this stack: a 1Mi elementwise kernel
+reports 0.000–0.001 ms while wall is 0.33 ms, and g0_sum reports 0.003 ms while
+wall is 41.9 ms (the serial reduce really does ~4B ops). OpenCL/L0 event
+timings are consistent with the ceilings. Until the Vulkan timestamp path is
+fixed (query-pool reset/submit scope), Vulkan Briev numbers are **wall-only**
+and marked provisional. Briev GEMM 4096 f16 wall (460 ms) vs device-timestamp
+(8.8 ms) is the same defect.
+
+Next: fix Vulkan timestamp measurement; then attribute the L0 ~2× elementwise
+gap (byte-offset state addressing / index math) and the f16-GEMM
+tensor-lowering gap; implement residency for L0/NEO (wall → device).
