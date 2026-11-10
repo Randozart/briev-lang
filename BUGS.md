@@ -1,3 +1,26 @@
+## Driver .c edits may not rebuild the linked GPU runtime — OPEN 2026-11-09
+
+**Symptom:** editing `lib/runtime/briev_dev_*.c` and running `cargo build`
+can leave `target/compiler-in-briv/libbriev_gpu_rt.a` (linked into `.bv`
+programs) stale, and sometimes the crate fails with
+`undefined symbol: briev_dev_vulkan` / `gpu-rt: briev_dev_levelzero.c compile
+failed`. Measurements then reflect the OLD driver (this produced several
+bogus lane numbers before it was noticed).
+
+**Why:** `build.rs` registers `rerun-if-changed` for the driver sources only
+after the staticlib step succeeds; a failed/partial run can cache a build
+script result that never recompiles the drivers. A syntax error in a driver
+also fails the whole gpu-rt archive (then the crate link fails).
+
+**Workaround (verified):** after any `lib/runtime/*.c` or `*.h` edit,
+`touch build.rs && cargo build --release`, then sync **both**
+`target/release/brievc` and `target/compiler-in-briv/` to the node. Check a
+new log string with `strings <binary> | grep` when in doubt.
+
+**Fix (next):** make the driver compile step unconditional (or always emit
+`cargo:rerun-if-changed` before any early return) so a stale archive cannot
+ship.
+
 ## Float16 state lowers to protocol `Data` in GPU kernels — OPEN 2026-11-09
 
 **Symptom:** an `.abv`/kernel program whose state contains `Float16` arrays is
