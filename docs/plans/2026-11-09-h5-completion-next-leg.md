@@ -76,7 +76,7 @@ flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 
 Each refactor: A/B byte-identical, sweep, affected runtime fixtures, Praetor.
 
-## A2 typing + `emit_match` bodies (fourth, Field/Index DONE 2026-11-09)
+## A2 typing + `emit_match` bodies (fourth, DONE 2026-11-09)
 
 - Extend `hir::typing` for `Field`/`Index` from `hir::type_facts`, then
   `MethodCall`/`Reflect` from trait/protocol tables (one dyn-dispatch worked
@@ -187,8 +187,10 @@ depends only on `emit_match` bodies and the owner sign-off.
 struct/object field table from `HirTypeDefKind` (generic parameter lists kept)
 and fills `HirExpr.ty` for `Field` (with substitution at the use site) and
 `Index` (`List<T>`/`Array<T>`/`Vector` element). Cast paths now resolve for
-field- and index-sourced casts. MethodCall/Reflect result typing remains (the
-dyn-dispatch authority question from the scoping doc).
+field- and index-sourced casts. **A2 completion (same day):** MethodCall results resolve via the owning
+member/trait callable (arity incl. `self`; ambiguous arities stay untyped);
+dyn receivers resolve through their trait owner; reflection types as `Int`
+(every emitted form materializes an i64). A2 is now complete.
 
 **`emit_match` bodies (verified 2026-11-09).** Expression bodies already
 dual-fuel (`MatchArms::Hir`, `emit_match_arm_dual`), statement arm bodies emit

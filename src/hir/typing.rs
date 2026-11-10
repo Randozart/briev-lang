@@ -24,6 +24,10 @@ type Returns = HashMap<String, Vec<Type>>;
 #[derive(Default)]
 struct TypeFacts {
     fields: HashMap<String, (Vec<String>, Vec<(String, Type)>)>,
+    /// (owner, method) → declared result types by arity. `owner` is the type
+    /// or trait that owns the member callable; a dyn receiver resolves through
+    /// its trait owner.
+    methods: HashMap<(String, String), Vec<(usize, Option<Type>)>>,
 }
 
 fn build_type_facts(program: &HirProgram) -> TypeFacts {
@@ -35,6 +39,19 @@ fn build_type_facts(program: &HirProgram) -> TypeFacts {
         };
         let table = fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect();
         facts.fields.insert(def.name.clone(), (def.type_params.clone(), table));
+    }
+    for callable in &program.callables {
+        let Some(owner) = &callable.owner else { continue };
+        let outputs = declared_outputs(callable);
+        let result = match outputs.as_slice() {
+            [single] => Some(single.clone()),
+            _ => None,
+        };
+        facts
+            .methods
+            .entry((owner.clone(), callable.name.clone()))
+            .or_default()
+            .push((callable.params.len(), result));
     }
     facts
 }
@@ -188,16 +205,18 @@ fn annotate_expr(expr: &mut HirExpr, env: &Env, returns: &Returns, facts: &TypeF
             annotate_expr(receiver, env, returns, facts);
             field_type(facts, receiver.ty.as_ref(), name)
         }
-        HirExprKind::MethodCall { receiver, args, .. } => {
+        HirExprKind::MethodCall { receiver, name, args, .. } => {
             annotate_expr(receiver, env, returns, facts);
-            for arg in args {
+            for arg in args.iter_mut() {
                 annotate_expr(arg, env, returns, facts);
             }
-            None
+            method_type(facts, receiver.ty.as_ref(), name, args.len())
         }
         HirExprKind::Reflect { receiver, .. } => {
             annotate_expr(receiver, env, returns, facts);
-            None
+            // Every reflection form materializes an i64 category/size/count
+            // value at emission (Length/Ptr/Size/Alignment/Bytes/Element/Type).
+            Some(Type::int())
         }
         HirExprKind::Index(a, b) => {
             annotate_expr(a, env, returns, facts);
@@ -320,6 +339,38 @@ fn index_type(container: Option<&Type>) -> Option<Type> {
         Type::Applied(n, args) if n == "List" || n == "Array" => args.first().cloned(),
         Type::Vector(inner, _) => Some((**inner).clone()),
         _ => None,
+    }
+}
+
+/// Base type/trait name of a receiver: `Custom`, `Applied`, or the trait
+/// inside `Dyn` (generic args do not affect member-owner lookup).
+fn receiver_base(receiver: Option<&Type>) -> Option<&str> {
+    match receiver? {
+        Type::Custom(n) | Type::Applied(n, _) => Some(n),
+        Type::Dyn(inner) => receiver_base(Some(inner)),
+        _ => None,
+    }
+}
+
+/// `receiver.method(args)` result type from the owning member callable with
+/// matching arity. Ambiguous arities with differing results stay untyped.
+fn method_type(
+    facts: &TypeFacts,
+    receiver: Option<&Type>,
+    name: &str,
+    argc: usize,
+) -> Option<Type> {
+    let base = receiver_base(receiver)?;
+    let candidates = facts.methods.get(&(base.to_string(), name.to_string()))?;
+    let mut results = candidates
+        .iter()
+        .filter(|(params, _)| *params == argc || *params == argc + 1)
+        .map(|(_, result)| result.clone());
+    let first = results.next()??;
+    if results.all(|r| r.as_ref() == Some(&first)) {
+        Some(first)
+    } else {
+        None
     }
 }
 
@@ -464,6 +515,8 @@ mod tests {
             let mut collect = |e: &mut HirExpr| match &e.kind {
                 HirExprKind::Field { name, .. } => out.push((format!("field:{name}"), e.ty.clone())),
                 HirExprKind::Index(..) => out.push(("index".to_string(), e.ty.clone())),
+                HirExprKind::MethodCall { .. } => out.push(("method".to_string(), e.ty.clone())),
+                HirExprKind::Reflect { .. } => out.push(("reflect".to_string(), e.ty.clone())),
                 _ => {}
             };
             crate::hir::walk::walk_body_mut(&mut callable.body.statements, &mut collect);
@@ -504,12 +557,28 @@ mod tests {
     }
 
     #[test]
+    fn method_results_and_reflection_get_types() {
+        let (mut program, resolved) = annotated(
+            "obj Box { defn get(self) -> Int { term 1; }; };\n\
+             defn f(b: Box, xs: List<Int>) -> Float { term b.get() as Float; };\n\
+             defn g(xs: List<Int>) -> Float { term xs.^Length as Float; };",
+        );
+        let typed = collect_typed(&mut program);
+        assert!(
+            typed.iter().any(|(n, _)| n == "method"), "{typed:?}"
+        );
+        // Two explicit casts with known sources must resolve.
+        assert_eq!(resolved, 2, "method/reflect source casts must resolve");
+    }
+
+    #[test]
     fn unknown_shapes_stay_untyped() {
-        let (program, _) = annotated("defn f(a: Int) -> Int { term a.^Length; };");
+        // A field access on a scalar has no declared field type.
+        let (program, _) = annotated("defn f(a: Int) -> Int { term a.b; };");
         let f = body_of(&program, "f");
-        let HirStmtKind::Term(Some(reflect)) = &f.body.statements[0].kind else {
+        let HirStmtKind::Term(Some(field)) = &f.body.statements[0].kind else {
             panic!("term expected");
         };
-        assert_eq!(reflect.ty, None, "reflect typing lands with A2");
+        assert_eq!(field.ty, None, "unknown receiver shapes stay untyped");
     }
 }

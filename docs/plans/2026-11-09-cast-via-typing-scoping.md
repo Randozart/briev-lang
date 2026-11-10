@@ -162,3 +162,14 @@ with use-site substitution, and `List<T>`/`Array<T>`/`Vector` indexing types
 the element. Explicit casts through field/index sources now resolve `via`.
 Two focused tests plus a cast-path test; gates: lib 3576, sweep 139/0, A/B
 byte-identical, all-tests 3623. MethodCall/Reflect remain.
+
+**A2 completion (2026-11-09).** MethodCall result types resolve through the
+owning member callable (`HirCallable.owner` + name, arity matched with or
+without `self`; ambiguous arities with differing results stay untyped). Dyn
+receivers resolve through their trait owner (`Type::Dyn` peels to the trait
+name), which is the authoritative table: member/trait callables carry the
+declared result, `trait_functions` remains a name list used by liveness.
+Reflection is untyped no longer: every emitted form (`Length`, `Ptr`, `Size`,
+`Alignment`, `Bytes`, `Element`, `Type`) materializes an i64, so the result is
+`Int`. Casts sourced from methods/reflection now resolve `via`. Gates: typing
+tests 8; lib 3577; sweep 139/0; A/B byte-identical; all-tests 3624.
