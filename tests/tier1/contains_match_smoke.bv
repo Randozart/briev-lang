@@ -1,0 +1,15 @@
+// contains() early-match gate — 2026-11-10 (kiosk W1).
+// Regression: the txn POST required i == len, so a match before the end could
+// never commit and the reactor spun. Golden: 1 1 1 0 0 1 (match, prefix, whole,
+// absent, partial-at-end, longer needle).
+import "std/string.bv";
+
+node entry [beginprogram][true] {
+    Print#(contains("abc", "b") as Int);
+    Print#(contains("abc", "a") as Int);
+    Print#(contains("abc", "abc") as Int);
+    Print#(contains("abc", "z") as Int);
+    Print#(contains("abc", "cd") as Int);
+    Print#(contains("abc", "") as Int);
+    term;
+};

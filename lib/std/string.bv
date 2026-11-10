@@ -82,11 +82,15 @@ defn trim_end(s: String) [true][CharCount#(term) <= CharCount#(s)] -> String {
   term s;
 };
 
-// Basic search
-txn contains_loop(haystack: String, needle: String, i: Int)
-    [i < CharCount#(haystack)][i == CharCount#(haystack)] -> Bool
+// Basic search. 2026-11-10 (kiosk W1): the POST must NOT re-evaluate the
+// match at the incremented index — that committed the txn at a matching i
+// with the PREVIOUS iteration's result (find("abc","b") returned -1). Search
+// loops commit on `i == lim` only; a match fast-forwards i to lim.
+txn contains_loop(haystack: String, needle: String, i: Int, lim: Int)
+    [i < lim][i == lim] -> Bool
 {
-  when i + CharCount#(needle) <= CharCount#(haystack) && haystack[i:i+CharCount#(needle)] == needle {
+  when i + needle .^Length <= haystack .^Length && haystack[i:i+needle .^Length] == needle {
+    i = lim;
     term true;
   };
   i = i + 1;
@@ -94,29 +98,34 @@ txn contains_loop(haystack: String, needle: String, i: Int)
 };
 
 defn contains(haystack: String, needle: String) [true][term == true || term == false] -> Bool {
-  term contains_loop(haystack, needle, 0);
+  let lim: Int = haystack .^Length;
+  when lim == 0 { term false; };
+  term contains_loop(haystack, needle, 0, lim);
 };
 
 defn starts_with(s: String, prefix: String) [true][term == true || term == false] -> Bool {
-  when CharCount#(prefix) > CharCount#(s) {
+  when prefix .^Length > s .^Length {
     term false;
   };
-  term s[0:CharCount#(prefix)] == prefix;
+  term s[0:prefix .^Length] == prefix;
 };
 
 defn ends_with(s: String, suffix: String) [true][term == true || term == false] -> Bool {
-  when CharCount#(suffix) > CharCount#(s) {
+  when suffix .^Length > s .^Length {
     term false;
   };
-  let slen = CharCount#(s);
-  let suflen = CharCount#(suffix);
+  let slen = s .^Length;
+  let suflen = suffix .^Length;
   term s[slen - suflen:slen] == suffix;
 };
 
+// 2026-11-10 (kiosk W1): commit ONLY on `i == lim`; the found arm sets
+// lim = i. Including the match in the post exited at a matching i with the
+// stale -1 result from the previous iteration.
 txn find_loop(s: String, needle: String, i: Int, lim: Int)
-    [i < lim][i == lim || (i + CharCount#(needle) <= CharCount#(s) && s[i:i+CharCount#(needle)] == needle)] -> Int
+    [i < lim][i == lim] -> Int
 {
-  when i + CharCount#(needle) <= CharCount#(s) && s[i:i+CharCount#(needle)] == needle {
+  when i + needle .^Length <= s .^Length && s[i:i+needle .^Length] == needle {
     lim = i;
     term i;
   };
@@ -125,7 +134,7 @@ txn find_loop(s: String, needle: String, i: Int, lim: Int)
 };
 
 defn find(s: String, needle: String) [true][term >= -1] -> Int {
-  term find_loop(s, needle, 0, CharCount#(s));
+  term find_loop(s, needle, 0, s .^Length);
 };
 
 // Substring operations
@@ -363,40 +372,50 @@ defn is_numeric_str(s: String) [true][term == true || term == false] -> Bool {
     term is_numeric_loop(s, 0);
 };
 
-txn to_lower_loop(s: String, sb: StringBuilder, i: Int)
-    [i < s .^Length][i == s .^Length] -> String
-{
-    let b: Int = byte_at(s, i);
-    when b >= 65 && b <= 90 {
-        sb = append_char(sb, int_to_char(b + 32));
-    };
-    when b < 65 || b > 90 {
-        sb = append_char(sb, int_to_char(b));
-    };
-    i = i + 1;
-    term sb.buffer;
+// 2026-11-10 (kiosk W1): BYTE-PRESERVING ASCII fold. Char-wise folding via
+// `s[i] as Char` re-encodes UTF-8 continuation bytes (an em dash became
+// mojibake and changed length). Strings are byte buffers: copy bytes, fold
+// only A-Z, leave every other byte (including multi-byte UTF-8) untouched.
+defn fold_lower_byte(b: Int) [true][term >= 0] -> Int {
+    when b >= 65 && b <= 90 { term b + 32; };
+    term b;
+};
+
+defn fold_upper_byte(b: Int) [true][term >= 0] -> Int {
+    when b >= 97 && b <= 122 { term b - 32; };
+    term b;
+};
+
+txn fold_lower_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void {
+    Store#(dst + j, fold_lower_byte(Load#(src + j, 1)), 1);
+    j = j + 1;
+    term;
+};
+
+txn fold_upper_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void {
+    Store#(dst + j, fold_upper_byte(Load#(src + j, 1)), 1);
+    j = j + 1;
+    term;
 };
 
 defn to_lower_str(s: String) [true][term .^Length == s .^Length] -> String {
-    term to_lower_loop(s, new_builder(), 0);
-};
-
-txn to_upper_loop(s: String, sb: StringBuilder, i: Int)
-    [i < s .^Length][i == s .^Length] -> String
-{
-    let b: Int = byte_at(s, i);
-    when b >= 97 && b <= 122 {
-        sb = append_char(sb, int_to_char(b - 32));
-    };
-    when b < 97 || b > 122 {
-        sb = append_char(sb, int_to_char(b));
-    };
-    i = i + 1;
-    term sb.buffer;
+    let n: Int = s .^Length;
+    when n == 0 { term ""; };
+    let dstp: Int = Malloc#(n + 9) as Int;
+    Store#(dstp, n, 8);
+    fold_lower_copy((s as Data) as Int + 8, dstp + 8, 0, n);
+    Store#(dstp + 8 + n, 0, 1);
+    term (dstp as Data) as String;
 };
 
 defn to_upper_str(s: String) [true][term .^Length == s .^Length] -> String {
-    term to_upper_loop(s, new_builder(), 0);
+    let n: Int = s .^Length;
+    when n == 0 { term ""; };
+    let dstp: Int = Malloc#(n + 9) as Int;
+    Store#(dstp, n, 8);
+    fold_upper_copy((s as Data) as Int + 8, dstp + 8, 0, n);
+    Store#(dstp + 8 + n, 0, 1);
+    term (dstp as Data) as String;
 };
 
 // 2026-08-13: the found-index case clamps the loop bound (`lim`/`lo`) to the

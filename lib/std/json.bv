@@ -105,6 +105,20 @@ defn handle_object(pairs: List<(String, JsonValue)>, key: String) -> Result<Stri
     }
 };
 
+/// 2026-11-10 (kiosk W1): object member access that returns the VALUE, not
+/// just scalar strings. Needed by RPC servers reading nested params objects.
+defn json_get_value(v: JsonValue, key: String) -> Result<JsonValue, String> {
+    match v {
+        Object(pairs) => {
+            when pairs.Count#() == 0 {
+                term Err(e_utoken());
+            };
+            find_pair(pairs, key, 0)
+        },
+        _ => Err("not_an_object"),
+    }
+};
+
 defn json_get(v: JsonValue, key: String) -> Result<String, String> {
     match v {
         Object(pairs) => handle_object(pairs, key),

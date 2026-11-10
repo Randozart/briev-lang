@@ -1,0 +1,18 @@
+// Unicode search/case gate — 2026-11-10 (kiosk W1).
+// Byte/char confusion: search used CharCount# (chars) as byte bounds, and
+// to_lower_str re-encoded UTF-8 continuation bytes (mojibake). This pins:
+// length preservation, contains/find after a multi-byte char, and
+// starts/ends with byte lengths. Golden: 1 1 8 1 1 1 -> "118111".
+import "std/string.bv";
+
+node entry [beginprogram][true] {
+    let s: String = "A — B good";
+    let l: String = to_lower_str(s);
+    Print#((l .^Length == s .^Length) as Int);
+    Print#(contains(l, "good") as Int);
+    Print#(find(l, "good"));
+    Print#(contains(l, "b") as Int);
+    Print#(starts_with(l, "a") as Int);
+    Print#(ends_with(l, "good") as Int);
+    term;
+};

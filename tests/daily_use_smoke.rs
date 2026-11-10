@@ -747,6 +747,31 @@ fn expr_body_match_string_golden_output() {
     );
 }
 
+/// 2026-11-10 (kiosk W1): contains() must find a match before the end.
+/// Golden: 1 1 1 0 0 1.
+#[test]
+fn contains_match_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("contains_match_smoke", "golden", &[]);
+    assert_eq!(out, "111001", "contains match golden drifted: {out:?}");
+}
+
+/// 2026-11-10 (kiosk W1): byte/char consistency in search + case fold over a
+/// UTF-8 string. Golden: length, contains, find index, contains, starts, ends
+/// -> "118111".
+#[test]
+fn unicode_search_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("unicode_search_smoke", "golden", &[]);
+    assert_eq!(out, "118111", "unicode search golden drifted: {out:?}");
+}
+
 #[test]
 fn unix_socket_loopback_golden_output() {
     if !has("clang") {

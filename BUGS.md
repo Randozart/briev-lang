@@ -1,3 +1,29 @@
+## String search/case stdlib: byte/char confusion — FIXED 2026-11-10
+
+Found while making `sentiment` the first fully native kiosk engine method
+(kiosk W1). Three defects, one root (byte views vs character counts):
+
+1. **Search loop committed at the incremented match.** `find_loop` /
+   `contains_loop` included the match in the POST; after a no-match iteration
+   incremented `i` onto a matching byte, the post went true and the txn
+   committed the PREVIOUS result. `find("abc","b")` → -1,
+   `contains("abc","b")` → false; matches at index 0 and the whole string
+   worked, hiding it. Fix: search loops commit only on `i == lim`; a match
+   fast-forwards `i` to `lim` (result stored first).
+2. **Character count used as byte bound.** `contains`/`find`/
+   `starts_with`/`ends_with` used `CharCount#` for slice indices/bounds.
+   A multi-byte char before the needle shifted the byte tail out of the
+   scanned range (`contains("… — … good","good")` false). Fix: use `.^Length`
+   (stored bytes) for every byte-indexed bound.
+3. **Case fold corrupted UTF-8.** `to_lower_str`/`to_upper_str` looped bytes
+   and re-encoded each byte through `Char` (`s[i] as Char`), so an em dash
+   became mojibake and the length changed. Fix: byte-preserving ASCII fold
+   (Malloc + Load/Store, fold only A-Z/a-z).
+
+Regressions: `tests/tier1/contains_match_smoke.bv`,
+`tests/tier1/unicode_search_smoke.bv` (daily_use_smoke goldens `111001`,
+`118111`).
+
 ## Returning a String from a `match` arm on `Result<T,String>` miscompiles — FIXED 2026-11-10
 
 **Symptom:** a function that returns a `String` bound in a `match` arm over
