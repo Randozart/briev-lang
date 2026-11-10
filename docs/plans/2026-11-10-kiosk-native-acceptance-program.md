@@ -1,6 +1,8 @@
 # The Kiosk Native Acceptance Program (2026-11-10)
 
 **Status:** ACTIVE — top-level program.
+
+**Unified program:** `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md` — this plan is a detail of the one program (capability and ceiling meters + trust substrate).
 **Mission:** make Briev capable of expressing and compiling the entire
 `2d-Kiosk-Avatar` stack natively — service runtime, media, vision, ML graph
 and kernels, transport, client — with **VITRIOL as the only sanctioned

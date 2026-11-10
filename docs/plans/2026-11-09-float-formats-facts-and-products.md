@@ -1,6 +1,8 @@
 # Float formats as facts and products (2026-11-09)
 
 **Status:** active. Decisions locked: **`Half` is canonical (LLVM-matching)**,
+
+**Unified program:** `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md` — this plan is a detail of the one program (capability and ceiling meters + trust substrate).
 `Float16` is the stdlib alias, and **a type declaration must be able to
 introduce a new float format without compiler edits** — formats are facts,
 lowerings are products.

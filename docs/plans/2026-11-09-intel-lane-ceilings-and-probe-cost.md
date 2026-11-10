@@ -1,6 +1,8 @@
 # Intel lane ceilings + compiler efficiency (2026-11-09)
 
 **Status:** active. Builds on Stage F slice 1 (`2026-11-08-intel-g1.5-stage-f-slice1.md`).
+
+**Unified program:** `docs/plans/2026-11-10-unified-program-capability-and-ceilings.md` — this plan is a detail of the one program (capability and ceiling meters + trust substrate).
 **Objective:** make the compiler fast enough to iterate, and evaluate the Intel
 OpenCL/Level-Zero lane **without mistaking our emitter's quality for the lane's
 ceiling**.

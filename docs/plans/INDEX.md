@@ -13,7 +13,21 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
 
-**Kiosk native acceptance program (2026-11-10, ACTIVE — TOP-LEVEL):**
+**UNIFIED PROGRAM (2026-11-10, TOP-LEVEL UMBRELLA):**
+`docs/plans/2026-11-10-unified-program-capability-and-ceilings.md` — one
+program, two meters: the kiosk acceptance suite is the **external capability
+meter**; the Intel/GPU lane ceilings + float-format seam are the **internal
+performance meter**; H5/verification/stability/lifetime/arenas/proofs/eternal
+ABI are the **trust substrate** for both. Defines the extension rule (every
+ceiling names a kiosk consumer or records `none`; every kiosk gap becomes a
+compiler/lane item with a gate), one critical path (kiosk S2 tensor core until
+the first native model), work classes A–D with stop/go, the unified ledger
+schema, one measurement schema, edge-readiness gates, U0–U5, and the immediate
+actions. References — does not replace — the kiosk program, lane ceilings,
+float formats, H5, verification, stability, lifetime/arena/destination,
+proof-consumption, eternal ABI, Intel G1.5, and doctrine plans.
+
+**Kiosk native acceptance program (2026-11-10, ACTIVE — capability detail):**
 `docs/plans/2026-11-10-kiosk-native-acceptance-program.md` — make Briev
 capable of the entire `2d-Kiosk-Avatar` stack natively. The fork
 (`briev-kiosk`) runs the original as a permanent differential oracle; the
