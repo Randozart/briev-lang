@@ -12700,3 +12700,47 @@ to per-instruction fast flags via the dead `emit_fast_math_flags` helper, or
 (b) delete the registry rows with the retired vocabulary — whichever the
 retirement plan chooses — and add a regression that builds each hint.
 **Status:** OPEN (latent; not triggered by the keyword path).
+
+## `List<Float> <- call()` emits INVALID IR (`sitofp i64 <float>`) — OPEN 2026-11-10
+
+**Symptom:** arrow-pushing a function result into a `List<Float>` produces IR
+that LLVM rejects:
+
+```
+%t28 = call float @one()
+%t33 = sitofp i64 %t28 to float        ; operand already float
+error: '%t28' defined with type 'float' but expected 'i64'
+```
+
+Literal pushes (`xs <- 1.0`) and integer lists are unaffected; the failure is
+the element expression being routed through an integer conversion before the
+list store. Discovered while building `briev/ml/onnx.bv` (packed float
+attribute reader); worked around by not accumulating floats in a `List`.
+
+**Repro:**
+```briev
+defn one() -> Float { term 1.0; };
+
+node entry [beginprogram][true] {
+    let xs: List<Float> = [];
+    xs <- one();
+    let n: Int = xs.Count#();
+    let ignored: Int = print_int(n);
+    endprogram;
+};
+```
+Build with the pinned compiler: IR verification fails at the emitted
+`sitofp`. The same shape inside a linked module (ONNX reader) fails the same
+way, so it is the construct, not the caller.
+
+**Root cause:** suspected in the arrow/InsertAt lowering for `List<Float>`:
+the element expression's type is not threaded into the conversion, so the
+Int→Float coercion is applied even when the source is already `Float`.
+Receiver/protocol handling should preserve the element type and emit no
+conversion (or a single fpext only for narrower float formats).
+
+**Fix direction:** add the construct as a regression fixture; in
+`emit_stmt`/InsertAt element lowering, key the coercion on the declared
+element type vs the expression type instead of an assumed Int source.
+**Status:** OPEN. Workaround: build the float list through a typed buffer
+(`Malloc#` + `Ptr<Float>`), as `briev/ml/tensor.bv` does.
