@@ -58,7 +58,8 @@ fn index<'a>(
             HirCallableKind::Transaction
             | HirCallableKind::CompileTimeTxn
             | HirCallableKind::CompileTimeDefn
-            | HirCallableKind::MemberTransaction => {}
+            | HirCallableKind::MemberTransaction
+            | HirCallableKind::IsrHandler => {}
             HirCallableKind::Defn | HirCallableKind::MemberDefn => {
                 let key = if c.trait_default {
                     c.name.clone()

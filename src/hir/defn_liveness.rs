@@ -137,8 +137,18 @@ impl<'a> Builder<'a> {
         if c.trait_default {
             return;
         }
+        // 2026-11-09 (H5 flip gate): the AST index never sees `impl` member
+        // bodies (the pipeline merges/erases impls before the AST analysis;
+        // dyn thunks and member dispatch inline them). Indexing them here made
+        // `mark("greet")` root an impl body the AST never had, so HIR liveness
+        // disagreed (dyn trait tests). Skip them to mirror the AST exactly.
+        if c.is_impl_fn {
+            return;
+        }
         match c.kind {
-            HirCallableKind::Transaction | HirCallableKind::MemberTransaction => {
+            HirCallableKind::Transaction
+            | HirCallableKind::MemberTransaction
+            | HirCallableKind::IsrHandler => {
                 self.index_txn(c);
             }
             HirCallableKind::Defn | HirCallableKind::MemberDefn => self.index_defn(c),
@@ -162,7 +172,7 @@ impl<'a> Builder<'a> {
         // A member txn is usage-rooted; only top-level reactive / lifecycle /
         // async txns seed roots (AST parity).
         if c.owner.is_none() {
-            if c.is_reactive || c.name.starts_with("__reset_") {
+            if c.is_reactive || c.is_isr || c.name.starts_with("__reset_") {
                 self.roots.insert(c.name.clone());
             }
             if c.is_async {

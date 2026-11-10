@@ -76,7 +76,7 @@ flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 
 Each refactor: A/B byte-identical, sweep, affected runtime fixtures, Praetor.
 
-## A2 typing + `emit_match` bodies (fourth, Field/Index DONE 2026-11-09)
+## A2 typing + `emit_match` bodies (fourth, DONE 2026-11-09)
 
 - Extend `hir::typing` for `Field`/`Index` from `hir::type_facts`, then
   `MethodCall`/`Reflect` from trait/protocol tables (one dyn-dispatch worked
@@ -187,8 +187,10 @@ depends only on `emit_match` bodies and the owner sign-off.
 struct/object field table from `HirTypeDefKind` (generic parameter lists kept)
 and fills `HirExpr.ty` for `Field` (with substitution at the use site) and
 `Index` (`List<T>`/`Array<T>`/`Vector` element). Cast paths now resolve for
-field- and index-sourced casts. MethodCall/Reflect result typing remains (the
-dyn-dispatch authority question from the scoping doc).
+field- and index-sourced casts. **A2 completion (same day):** MethodCall results resolve via the owning
+member/trait callable (arity incl. `self`; ambiguous arities stay untyped);
+dyn receivers resolve through their trait owner; reflection types as `Int`
+(every emitted form materializes an i64). A2 is now complete.
 
 **`emit_match` bodies (verified 2026-11-09).** Expression bodies already
 dual-fuel (`MatchArms::Hir`, `emit_match_arm_dual`), statement arm bodies emit
@@ -197,3 +199,28 @@ through. The remaining AST body is the collection-witness `List` arm (needs
 the declared result type to construct through `Init`/`InsertAt`) — an accepted
 constructor exception, same category as the `#StdOut` `Print#` call. The H5
 flip's match precondition is therefore satisfied.
+
+**H5 flip readiness probe (2026-11-09).** First full `BRIEV_HIR_EMIT=1
+cargo test --all` found nine HIR-only failures, all real fidelity gaps now
+fixed:
+
+- `defn_liveness` indexed `impl` member bodies the AST never sees (the
+  pipeline erases/merges impls; dyn thunks and member dispatch inline them),
+  so `mark("greet")` over-rooted a body. Impl callables (`is_impl_fn`) are
+  now skipped, mirroring the AST index.
+- ISR handlers were dropped by HIR lowering, so liveness lost their callee
+  edges (`{"tick"}` vs `{}`). They now lower as
+  `HirCallableKind::IsrHandler` with `is_isr`, rooted by liveness and excluded
+  from bare-transaction consumers (swan-song, needs-state) exactly like the
+  AST's separate `TopLevel::IsrHandler` arm.
+
+With both fixes: HIR-flag `cargo test --all` 3624/0 and normal `cargo test
+--all` 3624/0; sweep 139/0; release A/B byte-identical. Remaining before the
+default flip: benchmarks under the flag, then owner sign-off (the flip keeps
+`BRIEV_HIR_EMIT` as the opt-out).
+
+**Benchmarks under the flag (2026-11-09).** `BRIEV_HIR_EMIT=1
+benchmarks/build_and_bench.sh --runtime --correctness`: every runtime
+benchmark MATCH (one PASS for bridge_multi, whose reference also PASSes).
+Combined with the byte-identical `.ll` gates, timing parity follows from IR
+identity. Every flip precondition is met except owner sign-off.

@@ -126,6 +126,35 @@ fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut Lo
 }
 
 /// Impl members: type-qualified (`Type::member`) keys used by needs_state.
+/// `isr<mech> handler @ vector: name(params) [pre][post] { body }` — lowered
+/// as a transaction-shaped callable so liveness walks its body edges; the
+/// `is_isr` flag roots it (the AST roots the handler name directly).
+fn lower_isr_handler(h: &crate::ast::top::IsrHandler, ids: &mut IdSupply) -> HirCallable {
+    let contract = lower_contract(&h.contract, ids);
+    let mut c = lower_callable(
+        ids,
+        CallableLowerSpec {
+            name: &h.name,
+            kind: HirCallableKind::IsrHandler,
+            contract: Some(contract),
+            is_reactive: false,
+            is_async: false,
+            parameters: &h.params,
+            type_params: Vec::new(),
+            variadic: false,
+            result: None,
+            output_list: Vec::new(),
+            outputs: None,
+            body: &h.body,
+            span: Some(h.span),
+            exported: false,
+            export_symbol: None,
+        },
+    );
+    c.is_isr = true;
+    c
+}
+
 fn lower_impl_item(imp: &crate::ast::top::ImplDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
     for f in &imp.functions {
         if f.body.is_empty() {
@@ -285,6 +314,7 @@ fn lower_item(
         // Trait defaults are indexed by BARE name (no type qualification), so a
         // default shared by stateful and stateless conformers stays one node.
         TopLevel::Trait(tr) => lower_trait_item(tr, ids, out),
+        TopLevel::IsrHandler(h) => out.callables.push(lower_isr_handler(h, ids)),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
@@ -623,6 +653,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
         type_params: spec.type_params,
         variadic: spec.variadic,
         is_impl_fn: false,
+        is_isr: false,
         sync_domains: Vec::new(),
         result: spec.result,
         output_list: spec.output_list,
