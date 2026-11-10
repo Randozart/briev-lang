@@ -3,7 +3,7 @@ program
     expr#NodeId(1) ty=Custom("Int") lit Int(0)
   global done ty=Some(Custom("Bool")) storage=None state_decl=false modifiers=[]
     expr#NodeId(3) ty=Custom("Bool") lit Bool(false)
-  callable n kind=Transaction owner=None exported=false symbol=None result=None type_params=[] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+  callable n kind=Transaction owner=None exported=false symbol=None result=None type_params=[] variadic=false sync=[] trait_default=false impl_fn=false isr=false outputs=[]
     params []
     contract pre
       expr#NodeId(6) ty=- binary Eq

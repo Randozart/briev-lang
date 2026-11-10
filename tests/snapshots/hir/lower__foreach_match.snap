@@ -1,5 +1,5 @@
 program
-  callable f kind=Defn owner=None exported=false symbol=None result=Some(Custom("Int")) type_params=[] variadic=false sync=[] trait_default=false impl_fn=false outputs=[]
+  callable f kind=Defn owner=None exported=false symbol=None result=Some(Custom("Int")) type_params=[] variadic=false sync=[] trait_default=false impl_fn=false isr=false outputs=[]
     params [xs: Applied("List", [Custom("Int")])]
     contract pre
       expr#NodeId(0) ty=Custom("Bool") lit Bool(true)

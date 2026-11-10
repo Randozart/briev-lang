@@ -354,6 +354,12 @@ contracts.
 
 - **Build**: `cargo build` · **Test**: `cargo test --lib` (default emission is
   typed HIR since 2026-11-09; `BRIEV_HIR_EMIT=0` opts back to the AST path)
+- **Fast gates**: `bash scripts/gate.sh quick` (nextest: lib minus the full
+  conformance sweep + focused integration suites; ~1–2 min warm) /
+  `bash scripts/gate.sh full` (all test binaries in parallel). cargo-nextest
+  runs test binaries concurrently; `cargo test` serializes them (~110
+  integration binaries). CI uses `cargo nextest run --lib --all -j 4`; the
+  AST opt-out suite runs nightly, not per commit.
 - **Test backend registry**: `cargo test --lib -- backend::tests`
 - **Compile RBV**: `./target/release/brievc rbv <file.rbv>`
 - **Benchmark**: `bash benchmarks/build_and_bench.sh` — always use this harness.

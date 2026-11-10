@@ -25,8 +25,20 @@ jobs:
       - name: Prepare test directories
         run: mkdir -p /tmp/opencode
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.151
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: No conflict markers
+        run: |
+          if git grep -nE '^(<<<<<<< |>>>>>>> |=======$)' -- ':!target'; then
+            echo "committed conflict markers" >&2
+            exit 1
+          fi
 
       - name: Build release compiler
         run: cargo build --release --bin brievc
@@ -35,7 +47,9 @@ jobs:
         run: bash benchmarks/effect_shape_guard.sh --quick
 
       - name: Library tests
-        run: cargo test --lib
+        # nextest runs test binaries concurrently (cargo test serializes them);
+        # -j 4 keeps clang/brievc-spawning tests from starving each other.
+        run: cargo nextest run --lib -j 4
 
       - name: Target support table
         run: ./target/release/brievc targets
@@ -53,7 +67,7 @@ jobs:
           fi
 
       - name: All-target tests
-        run: cargo test --all
+        run: cargo nextest run --all -j 4
 
       - name: Preserve deterministic simulation counterexample
         if: always()

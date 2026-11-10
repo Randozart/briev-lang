@@ -662,9 +662,7 @@ fn format_block(stmts: &[Statement], level: usize, out: &mut String) {
 
 fn format_stmt_into(stmt: &Statement, out: &mut String, level: usize) {
     match stmt {
-        Statement::Guarded(cond, body) => {
-            format_braced(out, level, &format!("when {} {{", cond), body);
-        }
+        Statement::Guarded(cond, body) => format_guarded(out, level, cond, body),
         Statement::Foreach { item, list, body, modifiers, .. } => {
             let prefix: String = modifiers.iter().map(|m| format!("{} ", m.name)).collect();
             format_braced(
