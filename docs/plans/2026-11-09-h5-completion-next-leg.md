@@ -218,3 +218,9 @@ With both fixes: HIR-flag `cargo test --all` 3624/0 and normal `cargo test
 --all` 3624/0; sweep 139/0; release A/B byte-identical. Remaining before the
 default flip: benchmarks under the flag, then owner sign-off (the flip keeps
 `BRIEV_HIR_EMIT` as the opt-out).
+
+**Benchmarks under the flag (2026-11-09).** `BRIEV_HIR_EMIT=1
+benchmarks/build_and_bench.sh --runtime --correctness`: every runtime
+benchmark MATCH (one PASS for bridge_multi, whose reference also PASSes).
+Combined with the byte-identical `.ll` gates, timing parity follows from IR
+identity. Every flip precondition is met except owner sign-off.
