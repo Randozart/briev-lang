@@ -1234,6 +1234,19 @@ node entry [beginprogram][true] { Print#(make(16)); endprogram; };
     }
 
     #[test]
+    fn helper_alloc_called_from_node_uses_arena() {
+        let src = r#"
+defn helper(n: Int) -> Int {
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 42, 8);
+    term Load#(p, 8);
+};
+node entry [beginprogram][true] { Print#(helper(16)); endprogram; };
+"#;
+        assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
+    }
+
+    #[test]
     fn helper_that_returns_pointer_forces_malloc() {
         let src = r#"
 defn pass(p: Int) -> Int { term p; };

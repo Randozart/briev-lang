@@ -57,6 +57,21 @@ impl CallGraph {
                     let called = extract_called_functions(&defn.body);
                     self.defn_edges.entry(defn.name.clone()).or_default().extend(called);
                 }
+                // A `node`/`cell` owns its transactions and definitions; the
+                // daemon's entry node lives here. Index them so arena-context
+                // propagation and needs-state see the node's calls.
+                TopLevel::Cell(cell) => {
+                    for txn in &cell.transactions {
+                        self.txn_names.insert(txn.name.clone());
+                        let called = extract_called_functions(&txn.body);
+                        self.graph.entry(txn.name.clone()).or_default().extend(called);
+                    }
+                    for defn in &cell.definitions {
+                        self.defn_names.insert(defn.name.clone());
+                        let called = extract_called_functions(&defn.body);
+                        self.defn_edges.entry(defn.name.clone()).or_default().extend(called);
+                    }
+                }
                 _ => {}
             }
         }

@@ -249,3 +249,18 @@ state-storing variants emit `@malloc`.
 - Provenance tracking for `Malloc#`/`Int`-held raw handles (the tensor ABI).
 - Per-tick arena sizing/growth and daemon one-request-per-tick.
 - Formal decision fixtures for lost owner/unknown/unsafe; `--deny-memory-ambiguity`.
+
+### 9.5 Node/cell roots (follow-up in the same slice)
+
+The native daemon is a `node` (a cell with transactions), not a top-level
+`Transaction`. `CallGraph::build_from_program` and `arena_reachable_defns`
+only indexed top-level transactions/defns, so the daemon's helper calls were
+still outside arena context. Cell transactions and cell definitions are now
+indexed as call-graph roots, and `extract_called_functions` sees
+`Term`/`Tail`/block bodies. A `node entry { helper(16) }` whose helper does a
+non-escaping `Alloc#` now emits a stateful helper with arena init/bump.
+
+Still open for tensors: helpers return a `Tensor { ptr }`; the returned
+pointer is an escape under the current summary (correct until destination
+threading/ownership classes land), so tensor buffers need M2's owned-handle
+or caller-provided-buffer design before auto-free can apply.
