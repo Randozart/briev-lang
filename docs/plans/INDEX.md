@@ -3,7 +3,7 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 3343 green (2026-10-25); daily corpus 29 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
+**Suite state:** `cargo test --lib` 3571 green (2026-11-10); daily corpus 29 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
@@ -12,6 +12,19 @@ reference), the json-interpreter array hang + two more Rule-5 divergences
 (`&&`/`||` short-circuit, trailing-expression result), the 12 stale
 normalizer warnings, and the unfired-`txn` empty-program silence (build now
 warns).
+
+**Kiosk native acceptance program (2026-11-10, ACTIVE — TOP-LEVEL):**
+`docs/plans/2026-11-10-kiosk-native-acceptance-program.md` — make Briev
+capable of the entire `2d-Kiosk-Avatar` stack natively. The fork
+(`briev-kiosk`) runs the original as a permanent differential oracle; the
+only sanctioned external runtime is **VITRIOL** (LLM), ONNX is the model
+format (Briev executes the graph), and OpenVINO is interop-now/retire-later.
+Defines the proof statement, nativeness boundary + FFI provenance rule, the
+W0–W12 workstreams (service runtime, Tensor/ONNX compiler+runtime, kernels/
+devices, audio/media, vision/avatar, transport/WebRTC, app/client, VITRIOL,
+real-time, verification), the capability/retirement ledgers, the S0–S8
+stages, the model acceptance ladder, and the SLO/differential harness
+discipline. Compiler lanes feed this program; its scenarios gate Briev PRs.
 
 **H5 completion next leg (2026-11-09, ACTIVE):**
 `docs/plans/2026-11-09-h5-completion-next-leg.md` — Leg B pipeline-HIR
