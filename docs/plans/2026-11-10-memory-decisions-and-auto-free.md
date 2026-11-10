@@ -228,20 +228,20 @@ Root causes found:
   - `expr_contains_alloc` handles casts/wrappers;
   - `return_alias_vars` separates “returned value aliases this” from
     “identifier appeared in the result expression”;
-  - `arena_reachable_defns` marks defns reachable from a transaction; their
-    non-escaping `Alloc#` defaults to Arena.
+  - `arena_reachable_defns`/`arena_leaf_safe` classify helper context; the
+    context gate is **DISABLED** in this slice (see 9.6 — stateful object
+    return ABI bug), but the analysis is in place for the next slice.
 - `src/analysis/call_graph.rs`: `Term`/`Tail`/block/defer/sync/mutex bodies
-  contribute calls.
-- `src/backend/llvm/mod.rs`: defns in `needs_arena` are marked `needs_state`
-  so the arena in `%State` is addressable.
-- Unit tests: non-escaping helper stays Arena; helper allocating from a txn
-  uses Arena; returning/storing/alias helpers force Malloc.
+  contribute calls; cell transactions/definitions are indexed.
+- Unit tests: non-escaping helper keeps a txn allocation Arena; returning/
+  storing/alias helpers force Malloc. Helper-context tests are removed until
+  the stateful ABI is fixed.
 
 ### 9.3 Verified IR
 
-`txn make { term helper(n); }` with `defn helper { let p = Alloc#(n); Store#; term Load#; }`
-now emits `@helper(ptr %state, i64)` with arena init/bump; the returning and
-state-storing variants emit `@malloc`.
+Transaction-local non-escaping `Alloc#` remains arena. A helper that itself
+allocates still emits `@malloc` in this slice because helper arena context is
+disabled; returning/state-storing/alias helpers correctly emit `@malloc`.
 
 ### 9.4 Still open (next slices)
 
@@ -257,10 +257,29 @@ The native daemon is a `node` (a cell with transactions), not a top-level
 only indexed top-level transactions/defns, so the daemon's helper calls were
 still outside arena context. Cell transactions and cell definitions are now
 indexed as call-graph roots, and `extract_called_functions` sees
-`Term`/`Tail`/block bodies. A `node entry { helper(16) }` whose helper does a
-non-escaping `Alloc#` now emits a stateful helper with arena init/bump.
+`Term`/`Tail`/block bodies. The node-root infrastructure is in place but the
+helper arena context stays disabled pending 9.6.
 
 Still open for tensors: helpers return a `Tensor { ptr }`; the returned
 pointer is an escape under the current summary (correct until destination
 threading/ownership classes land), so tensor buffers need M2's owned-handle
 or caller-provided-buffer design before auto-free can apply.
+
+### 9.6 Blocker found — helper arena context changes the stateful ABI
+
+Enabling helper arena context (even restricted to scalar/void leaf helpers)
+makes parser/executor helpers stateful. That exposed a miscompile in the
+**stateful object-return ABI**: `parse_value_info` returned an `OnnxValue`
+whose `name` was read as a metadata key (`pkg.torch.onnx.original_node_name`)
+instead of the input name (`x`). `ml_smoke` then failed with “node input not
+found” for every model with initializers.
+
+Evidence: with context disabled, the same compiler passes all tiny models;
+with context enabled, `onnx_inspect` and the executor misread the graph.
+`needs_arena` propagation and the call/escape fixes themselves are sound;
+the corruption appears when a helper becomes stateful and returns an object.
+
+**Decision:** disable helper arena context in this slice. Next M1.1 is to fix
+the stateful object-return ABI (or prove the correct sret/state ordering) with
+a focused regression, then re-enable the gate and keep the helper Arena tests.
+No kiosk pin bump until this is resolved.

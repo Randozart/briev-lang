@@ -205,6 +205,40 @@ pub fn extract_called_functions(body: &[Statement]) -> Vec<String> {
     called
 }
 
+/// Conservative gate: does the body contain a method/reflection/spawn call
+/// whose target is not visible to `extract_called_functions`?
+pub fn body_has_indirect_call(body: &[Statement]) -> bool {
+    body.iter().any(stmt_has_indirect_call)
+}
+
+fn stmt_has_indirect_call(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::Let { expr: Some(e), .. } | Statement::Expression(e)
+        | Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => expr_has_indirect_call(e),
+        Statement::Assign(_, e) => expr_has_indirect_call(e),
+        Statement::Guarded(_, body) | Statement::Block(body) | Statement::Defer(body)
+        | Statement::SyncBlock(body) | Statement::Mutex(body) => body_has_indirect_call(body),
+        _ => false,
+    }
+}
+
+fn expr_has_indirect_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::MethodCall(recv, _, args, _) => true || expr_has_indirect_call(recv) || args.iter().any(expr_has_indirect_call),
+        Expr::Spawn { args, .. } | Expr::List(args) | Expr::Tuple(args) => args.iter().any(expr_has_indirect_call),
+        Expr::StructLiteral { fields, specs, .. } => fields.iter().chain(specs.iter()).any(|(_, e)| expr_has_indirect_call(e)),
+        Expr::Call(_, args, _) => args.iter().any(expr_has_indirect_call),
+        Expr::BinaryOp(_, l, r) => expr_has_indirect_call(l) || expr_has_indirect_call(r),
+        Expr::UnaryOp(_, e) | Expr::Cast(e, _) | Expr::Deref(e) | Expr::AddrOf(e) | Expr::Field(e, _)
+        | Expr::Consume(e) | Expr::Await(e) | Expr::Within(e, _) => expr_has_indirect_call(e),
+        Expr::Index(e, i) => expr_has_indirect_call(e) || expr_has_indirect_call(i),
+        Expr::If(c, t, e2) => expr_has_indirect_call(c) || expr_has_indirect_call(t) || e2.as_ref().map_or(false, |x| expr_has_indirect_call(x)),
+        Expr::Match(s, arms) => expr_has_indirect_call(s) || arms.iter().any(|a| expr_has_indirect_call(&a.body)),
+        Expr::Block(stmts) => body_has_indirect_call(stmts),
+        _ => false,
+    }
+}
+
 /// Recursively collect function/transaction call names from expressions
 pub fn collect_call_names(expr: &Expr, called: &mut Vec<String>) {
     match expr {

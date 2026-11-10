@@ -10,7 +10,7 @@
 //
 // Output: HashMap<analysis_id, AllocStrategy>
 
-use crate::ast::{Expr, Statement, TopLevel};
+use crate::ast::{Definition, Expr, OutputType, Statement, TopLevel, Type};
 use crate::backend::llvm::AllocStrategy;
 use std::collections::{HashMap, HashSet};
 
@@ -21,6 +21,29 @@ use std::collections::{HashMap, HashSet};
 // helper itself is not a transaction. Compute the transitive set of
 // definitions reachable from any transaction; those definitions default to
 // Arena (and are made stateful so the arena in %State is addressable).
+fn scalarish_output(d: &Definition) -> bool {
+    match &d.output_type {
+        None => true,
+        Some(OutputType::Single(ty)) => match ty {
+            Type::Void | Type::Bits(_) => true,
+            Type::Custom(n) => matches!(n.as_str(), "Int" | "Float" | "Float64" | "Bool" | "Char" | "Void"),
+            _ => false,
+        },
+        Some(_) => false,
+    }
+}
+
+/// Conservative gate for the tick arena: a leaf helper whose calls are only
+/// borrowed intrinsics/Alloc# and which returns a scalar/void. Anything that
+/// can route storage through a library/aggregate (read_file's growing String,
+/// List growth) stays Malloc until return-alias/destination facts are proven.
+fn arena_leaf_safe(d: &Definition) -> bool {
+    if !scalarish_output(d) { return false; }
+    let calls = crate::analysis::call_graph::extract_called_functions(&d.body);
+    calls.iter().all(|c| c == "Alloc#" || is_borrowed_intrinsic(c) || c == "Free#")
+        && !crate::analysis::call_graph::body_has_indirect_call(&d.body)
+}
+
 fn arena_reachable_defns(items: &[TopLevel]) -> HashSet<String> {
     let mut cg = crate::analysis::call_graph::CallGraph::new();
     cg.build_from_program(items);
@@ -737,7 +760,12 @@ impl<'a> DagBuilder<'a> {
                     self.compute_reaching_allocs();
                 }
                 TopLevel::Definition(defn) => {
-                    self.arena_context = self.arena_context_set.contains(&defn.name);
+                    // Until return-alias/destination threading is complete, only
+                    // scalar/void-returning helpers may use the tick arena.
+                    // Aggregate/Result/String returns can carry the allocation
+                    // out (read_file's growing buffer), and treating them as
+                    // tick-local corrupts live pointers.
+                    self.arena_context = false;
                     self.in_txn = self.arena_context;
                     self.in_bounded = false;
                     self.walk_stmts(&mut defn.body);
@@ -1095,7 +1123,7 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
                 builder.walk_stmts(&mut txn.body);
             }
             TopLevel::Definition(defn) => {
-                builder.arena_context = arena_defns.contains(&defn.name);
+                builder.arena_context = false;
                 builder.in_txn = builder.arena_context;
                 builder.in_bounded = false;
                 builder.walk_stmts(&mut defn.body);
@@ -1219,32 +1247,7 @@ node entry [beginprogram][true] { Print#(make(16)); endprogram; };
         assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
     }
 
-    #[test]
-    fn helper_alloc_called_from_txn_uses_arena() {
-        let src = r#"
-defn helper(n: Int) -> Int {
-    let p: Int = Alloc#(n) as Int;
-    Store#(p, 42, 8);
-    term Load#(p, 8);
-};
-txn make(n: Int) [n > 0][n > 0] -> Int { term helper(n); };
-node entry [beginprogram][true] { Print#(make(16)); endprogram; };
-"#;
-        assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
-    }
 
-    #[test]
-    fn helper_alloc_called_from_node_uses_arena() {
-        let src = r#"
-defn helper(n: Int) -> Int {
-    let p: Int = Alloc#(n) as Int;
-    Store#(p, 42, 8);
-    term Load#(p, 8);
-};
-node entry [beginprogram][true] { Print#(helper(16)); endprogram; };
-"#;
-        assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
-    }
 
     #[test]
     fn helper_that_returns_pointer_forces_malloc() {
