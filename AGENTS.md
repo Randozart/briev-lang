@@ -410,6 +410,7 @@ contracts.
 | **Backend contracts & decision record** | `docs/architecture/backend-contracts.md` — per-backend charters, emission invariants, ABI decisions, known limitations |
 | **The ptxas contract** | `docs/architecture/ptxas-contract.md` — what the assembler decides vs what survives the PTX text; control surface (maxnreg, pinning, offline-vs-JIT), drift ledger, the honest 1.9/27.5/42 TF ladder, NVPTX verdict |
 | **Rigorous methodology (REQUIRED reading)** | `docs/handoff-methodology.md` — the investigate→plan→experiment→implement→verify→document loop, evidence standard, and failure modes, with the frontend-driven-dispatch session as the worked example |
+| **IR layers, serialized artifacts, BIRD naming decision** | `docs/architecture/ir-layers-and-naming.md` — HIR vs AST vs BEAST vs reserved BIRD; plugin intent; cleanliness exit criteria |
 | **Language syntax, contracts, coding standards, backend rules** | `docs/architecture/agent-reference.md` |
 | **Full pre-rewrite guidelines** | `AGENTS.md.archive` |
 | **Historical context** | `AGENTS_HISTORY.md`, `AGENTS_HISTORY_2.md` |

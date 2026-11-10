@@ -168,6 +168,9 @@ pub struct BuildOptions {
     pub optimize_budget: u64,
     /// BEAST snapshot stages to emit (--emit-beast). Empty = no emission.
     pub emit_beast_stages: Vec<BeastFilter>,
+    /// 2026-11-10: emit canonical HIR text at Typed and Provenanced
+    /// (--emit-hir). Debug/tooling artifact; never read back.
+    pub emit_hir: bool,
     /// Selected backend (resolved from extension + --backend flag).
     pub backend: BackendKind,
     /// Disable automatic stdlib import (for bare-metal/no-OS targets).
@@ -320,7 +323,7 @@ impl Default for BuildOptions {
             run: false,
             config_dir: None, file_path: String::new(),
             emit_ir_only: false, out_dir: None,
-            optimize_budget: 256, emit_beast_stages: vec![],
+            optimize_budget: 256, emit_beast_stages: vec![], emit_hir: false,
             backend: BackendKind::Llvm, no_stdlib: false,
             stdlib_path: None, disable_plugins: vec![],
             enable_plugins: vec![], trg_unresolved_action: TrgUnresolvedAction::Warn,

@@ -111,7 +111,10 @@ Source ─► ... ─► Parsed ─► Resolved ─► Typed ─► ... ─► P
                .beast.parse  .beast.resolve .beast.types  .beast.prov
 
 --emit-beast writes .beast files at each AST stage for programmer
-visualization.  Plugins never read .beast — they operate on the live AST.
+visualization, and REAL backend IR text (`.ir`) at Generated/Optimized.
+Plugins never read .beast — they operate on the live AST; IR-stage plugins
+receive the live IR text. `--emit-hir` writes canonical HIR at Typed and
+Provenanced. See `docs/architecture/ir-layers-and-naming.md`.
 
 
                           BACKEND DISPATCH (--backend selects)
@@ -283,12 +286,12 @@ A backend can start with just `bytes` and be fully correct. It then opts into `p
 | `lexer.rs` | Logos-based tokenizer |
 | `parser/` | Recursive descent parser → `Vec<TopLevel>` |
 
-### Mid-End — BEAST (`src/beast/`)
+### Mid-End — BEAST (`src/beast/`) — AST snapshots, not the plugin path
 
 | Module | Purpose |
 |--------|---------|
 | `beast/sexpr.rs` | S-expression tokenizer, parser, pretty-printer |
-| `beast/serialize.rs` | Walk `Vec<TopLevel>` + `TypeUniverse` → `.beast` text |
+| `beast/serialize.rs` | Walk `Vec<TopLevel>` + `TypeUniverse` → `.beast` text (read-only visualization; distribution payload) |
 | `beast/deserialize.rs` | `.beast` text → `Vec<TopLevel>` + `TypeUniverse` |
 | `beast/pattern.rs` | Pattern compiler for `.beast` query syntax (retained for `Pattern$`) |
 | `beast/layout.rs` | Layout DSL parser for metadata annotations |

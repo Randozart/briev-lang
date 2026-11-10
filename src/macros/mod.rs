@@ -7,6 +7,7 @@ pub mod audit;
 pub mod compile_time;
 pub mod diff;
 pub mod eval;
+pub mod ir_eval;
 pub mod lockfile;
 pub mod memcheck;
 pub mod pattern_live;

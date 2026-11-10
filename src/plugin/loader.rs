@@ -97,8 +97,11 @@ impl Plugin for StageBlockPlugin {
         self.evaluate_body(program, universe)
     }
 
-    fn on_ir(&self, _ir: &mut String) -> Result<(), String> {
-        Ok(())
+    fn on_ir(&self, ir: &mut String) -> Result<(), String> {
+        // 2026-11-10: IR-stage blocks operate on the live backend IR text
+        // (Find$/ReplaceWith$/InsertBefore$/InsertAfter$/Delete$/queries).
+        // Unsupported statements error rather than silently no-op.
+        macros::ir_eval::evaluate_ir_block(&self.body, ir)
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

@@ -130,7 +130,8 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --out <dir>      Set output directory", name);
     eprintln!("  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu", name);
     eprintln!("  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)", name);
-    eprintln!("  {} build <file.bv> --emit-beast [ast|mid|post|all]  Emit BEAST snapshots (default: all)", name);
+    eprintln!("  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots", name);
+    eprintln!("  {} build <file.bv> --emit-hir             Emit canonical HIR at Typed/Provenanced", name);
     eprintln!("  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)", name);
     eprintln!("  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)", name);
     eprintln!("  {} build <file.bv> --stdlib-path <p>   Set stdlib search path", name);
@@ -265,7 +266,8 @@ fn run_fmt(args: &[String]) -> Result<(), String> {
 ///   --out <dir>             output directory
 ///   --optimize-budget <N>   simulation budget (default 256)
 ///   --backend <name>        select backend (llvm, circt, webstack, gpu)
-///   --emit-beast [stage]     emit BEAST snapshots (ast, mid, post, all; default all)
+///   --emit-beast [stage]     emit AST (.beast) and IR (.ir) stage snapshots
+///   --emit-hir               emit canonical HIR at Typed and Provenanced
 fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut file_path: Option<String> = None;
     let mut emit_ir_only = false;
@@ -276,6 +278,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut library_mode = false;
     let mut keep_all_defns = false;
     let mut emit_beast = Vec::new();
+    let mut emit_hir = false;
     let mut backend_override: Option<String> = None;
     let mut no_stdlib = false;
     let mut run_flag = false;
@@ -362,6 +365,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 }
             }
             i += if stage_str.is_some() { 2 } else { 1 };
+        } else if arg == "--emit-hir" {
+            emit_hir = true;
+            i += 1;
         } else if arg == "--backend" {
             let name = args.get(i + 1).ok_or("--backend requires a name argument (llvm, circt, webstack, gpu, spirv, vm)")?;
             backend_override = Some(name.clone());
@@ -549,6 +555,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         out_dir,
         optimize_budget,
         emit_beast_stages: emit_beast,
+        emit_hir,
         backend,
         no_stdlib,
         stdlib_path,
@@ -920,6 +927,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         out_dir: None,
         optimize_budget: 256,
         emit_beast_stages: vec![],
+        emit_hir: false,
         backend: briev_compiler::target::BackendKind::Vm,
         // 2026-08-23 (Plan 1 HCALL slice): the tamer archive must not carry
         // the LLVM-oriented stdlib prelude — those helpers are outside the

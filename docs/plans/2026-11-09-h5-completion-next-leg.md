@@ -245,3 +245,21 @@ Validation at the flip:
 
 Next: H5 ports (reclamation parity first) and family-by-family AST-arm
 deletion; keep the tripwire and opt-out until a clean release cycle passes.
+
+**Plugin/emission audit (2026-11-10).** Audited the plugin system against the
+HIR flip and fixed two gaps:
+
+- `StageBlockPlugin::on_ir` was a no-op, so documented `$(Generated)` /
+  `$(Optimized)` `Find$`/`ReplaceWith$` chains silently did nothing. New
+  `macros::ir_eval` implements the IR text surface (Find/ReplaceWith/
+  InsertBefore/InsertAfter/Delete/First/Last/Nth/Count/Text, `let` bindings,
+  `Ir$.` prefix) and ERRORS on unsupported statements. Tests:
+  `tests/plugin_pipeline.rs` (live-AST stage + IR mutation + loud error).
+- `--emit-beast codegen|optimize` labelled `.ir` but serialized the AST. Those
+  stages now write the real backend IR text; `--emit-hir` writes canonical HIR
+  at Typed/Provenanced. Tests: `tests/emitted_artifacts.rs`.
+- Decision record: `docs/architecture/ir-layers-and-naming.md` (HIR is the IR;
+  BEAST remains AST visualization/pattern/distribution; BIRD reserved for a
+  round-trippable serialized HIR with adoption gates).
+
+Gates: quick gate + focused suites; emitted-artifact and plugin tests green.
