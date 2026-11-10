@@ -1,3 +1,35 @@
+## Interpreter Int↔Float casts were identity — FIXED 2026-11-10
+
+**Symptom:** `7 as Float` stayed `Int(7)` and `2.75 as Int` stayed
+`Float(2.75)` in the reference interpreter, while the backend converts
+(`sitofp`/`fptosi`). Found by the native float differential family (a generated
+program disagreed with the interpreter by 1).
+
+**Root cause:** `Expr::Cast`'s `target_protocol_category` match handled
+`Bool`/`Char` sources for the `Int`/`Float` targets but fell through
+`_ => Ok(v)` for `Int`↔`Float`, so the cast was a no-op.
+
+**Fix:** `Float → Int` truncates toward zero (`f as i64`, mirroring `fptosi`);
+`Int → Float` converts (`n as f64`). Regression:
+`interpreter::eval::tests::test_cast_int_to_float_converts` and
+`::test_cast_float_to_int_truncates_toward_zero`.
+
+## Float width is inconsistent across the pipeline — OPEN 2026-11-10
+
+`Float` is declared 32-bit (`src/type_universe/mod.rs:216`:
+`("Float", 4, 32, 32, 4, …)`) and codegen emits `float` (f32, with `fast`
+flags), but its arithmetic operators bind to 64-bit intrinsics
+(`src/type_universe/operators.rs:86`: `("Float", "Add") => FAddF64#`, …) and
+the interpreter computes in **f64**. Consequence: interpreter-vs-native float
+comparison drifts for values not exactly representable in f32 — e.g.
+`(2033878 as Float) * 2.5 - (10 as Float) / 4.0 + 0.25` is `5084692` in the
+interpreter and at `-O3`, but `5084693` at `-O0` (f32 rounds 5084692.75 up).
+
+This blocks an exact-equality **native float differential family**; it needs
+either one width end-to-end or a tolerance-aware trace channel. Reported, not
+fixed — the correct resolution (make `Float` f64, or make the interpreter and
+the operator bindings f32) is a design decision.
+
 ## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
 
 **Symptom (Valgrind, definite leak):** storing an allocation into a *callee's*

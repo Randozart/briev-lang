@@ -79,7 +79,10 @@ MEM_REPLAY=target/memory-failure/case.json \
 
 Families: `0` escape-from-callee, `1` publish-into-parameter, `2` list
 return/alias/mutate, `3` defn image stored into node state, `4` per-iteration
-allocation in a bounded loop.
+allocation in a bounded loop, `5` enum payload allocation (Sum image
+ownership), `6` allocation in a nested object field, `7` two allocations held
+in a tuple then projected out. Families 5–7 were added 2026-11-10 to cover the
+historically buggy aggregate-escape sinks (BUGS.md 2026-11-03).
 
 ## Corpus sweep
 
