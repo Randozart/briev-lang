@@ -132,6 +132,16 @@ Open questions: composition vs micro-layout control (decides logical vs
 fragment v1); fundamental family vs stdlib over `Matrix`; author-pinned
 layouts allowed; host-side tiles in scope.
 
+## Discovered: f16 GEMM declaration kind (2026-11-09)
+
+`matmul_f16!` misses the tensor channel because `mark_declared` writes the
+macro NAME (`matmul_f16`) and `declared_matmul` gates on `"matmul"` — the
+kernel falls to the general path (0.84 ms vs 0.123 ms at 512³). Clean fixes:
+(a) a `declared_kind` fact on `$defn` that `mark_declared` writes, or
+(b) fold `matmul_f16` into `matmul!` with `as acc_ty` substitution in the
+composite expander. Do NOT add name lists in analysis. Tracked as the top W3
+item.
+
 ## Verification
 
 - `cargo test --lib`; `ll_determinism_check.sh --quick`; Praetor on changed

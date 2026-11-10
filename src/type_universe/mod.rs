@@ -217,7 +217,7 @@ impl TypeUniverse {
             // the hardware-format fact row so every consumer (typechecker's
             // fresh universe, parser, backends) sees it without an import.
             // The parent extra keeps ONE width/format fact on Half.
-            ("Float16",2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("parent", "Half")]),
+            ("Float16",2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("parent", "Half"), ("alias", "Half")]),
             ("BFloat", 2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("disamb", "bfloat")]),
             ("Float",  4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),
             ("Float32",4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),

@@ -643,6 +643,24 @@ impl<'a> TypecheckContext<'a> {
         }
     }
 
+    /// 2026-11-09 (float-formats plan): canonicalize a declared ALIAS to its
+    /// target (`Float16` -> `Half`, marked by the `alias` fact on the universe
+    /// row). Aliases are the same format with a second spelling; comparisons,
+    /// operator checks and bindings must see one type. Follows chains.
+    fn canonical_alias(&self, ty: &Type) -> Type {
+        let Type::Custom(start) = ty else { return ty.clone() };
+        let mut current = start.clone();
+        for _ in 0..16 {
+            let Some(rt) = self.universe.get(&current) else { break };
+            let Some(crate::ast::PropertyValue::String(next)) = rt.properties.get("alias") else {
+                break;
+            };
+            if *next == current { break; }
+            current = next.clone();
+        }
+        if &current == start { ty.clone() } else { Type::Custom(current) }
+    }
+
     /// Does `operand` implement protocol `hw` (e.g. `Int`)? Checks the
     /// universe's `Cast.` properties (primordials) AND the typechecker's own
     /// `type_protocols`/`type_parents` records (custom types — `MyNum : Int`
@@ -2677,6 +2695,12 @@ pub(crate) fn types_compatible(
     if declared == value {
         return true;
     }
+    // 2026-11-09 (float-formats plan): one format, two spellings.
+    let declared_c = ctx.canonical_alias(declared);
+    let value_c = ctx.canonical_alias(value);
+    if &declared_c == &value_c {
+        return true;
+    }
     if let Type::Union(members) = declared {
         return members.iter().any(|m| m == value);
     }
@@ -3239,6 +3263,10 @@ fn float_literal_fits(
 fn expr_literal_f32(e: &Expr) -> Option<f32> {
     match e {
         Expr::Float(v) => Some(*v as f32),
+        // 2026-11-09 (float-formats plan): integer literals are admissible
+        // when exactly representable at the target's width (the zero/identity
+        // initializer for an f16 accumulator is the motivating case).
+        Expr::Decimal(n) => Some(*n as f32),
         Expr::UnitLiteral { value, unit } => {
             Some(crate::parser::quantity::literal_si(*value, unit) as f32)
         }
@@ -3319,6 +3347,9 @@ fn infer_binary_op(
 ) -> Result<Type, TypeError> {
     let lhs_ty = infer_type_only(lhs, ctx)?;
     let rhs_ty = infer_type_only(rhs, ctx)?;
+    // 2026-11-09: aliases compare as their canonical format (Float16 == Half).
+    let lhs_ty = ctx.canonical_alias(&lhs_ty);
+    let rhs_ty = ctx.canonical_alias(&rhs_ty);
 
     // Check type compatibility
     let lhs_str = format!("{}", lhs_ty);
@@ -4195,7 +4226,7 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
                 // admission. Broader literals are rejected: the precision
                 // contract narrows explicitly, never silently.
                 let float_literal = match (declared, expr.as_ref()) {
-                    (t, Some(e @ Expr::Float(_))) => {
+                    (t, Some(e @ (Expr::Float(_) | Expr::Decimal(_)))) => {
                         // Category gate first: only FLOAT-category targets
                         // admit float literals (a hypothetical `FakeInt16`
                         // must not). 2026-09-02: membership derives through

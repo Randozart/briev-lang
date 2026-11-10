@@ -211,3 +211,26 @@ Attribution:
 
 INDEX: matrix now usable for f32/f16 elem, reduce, f16 GEMM, Vulkan f32 GEMM.
 Next: f16 GEMM tensor path, L0/NEO residency, and the GLSL ceiling reference.
+
+## f16 GEMM root cause (2026-11-09)
+
+The f16 GEMM rows miss the tensor/cooperative channel for a mechanical reason:
+`mark_declared` writes the **composite name** into the `declared_composite`
+marker, and `declared_matmul` gates on `"matmul"`. `matmul_f16!` marks
+`"matmul_f16"` → general kernel (Vulkan 0.84–0.96 ms at 512³ vs 0.123 ms for
+the f32 tensor path; 459 ms at 4096³ vs 39.7 ms).
+
+Two clean fixes (pick one, not a name list in analysis):
+1. Give `$defn` a declared kind (`declared_kind: matmul`) that `mark_declared`
+   writes instead of the macro name; `matmul_f16` declares it. One mechanism,
+   no analysis name matching.
+2. Fold `matmul_f16` into `matmul!` by allowing `as acc_ty` in the composite
+   expander (type-param substitution in cast position) and eliding identity
+   casts; then the single declaration carries storage + accumulator types.
+
+Also committed alongside this investigation:
+- alias canonicalization: `Float16` (alias fact) compares as `Half` in binary
+  ops, `types_compatible`, and bindings (one format, two spellings).
+- integer/float literal admission at a float target when exactly representable
+  (`let acc: Half = 0;` works; `4.1` still rejected) — enables the canonical
+  `matmul!(..., Half)` body.
