@@ -10,7 +10,7 @@ and cannot judge correctness. This work adds a **grammar-aware generator**: it
 builds a typed expression tree and emits Briev source from it, so the tree is
 both the generator and the oracle.
 
-## Design (`src/fuzzing/typed_program.rs`)
+## Design (`src/typed_program.rs`)
 
 A program is emitted from a byte cursor over a small typed grammar:
 
@@ -49,7 +49,7 @@ random programs.
 ## Gates
 
 - `cargo test --lib` — 3577 pass
-- `fuzzing::typed_program` — 4 pass (600 random programs, ints + floats)
+- `typed_program` — 4 pass (600 random programs, ints + floats)
 - `deterministic_transitions` family 14 (native enum) — reference trace + 6
   native cases agree at `-O0`/`-O3`
 - `welltyped` fuzz campaign — see the campaign log

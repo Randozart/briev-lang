@@ -13,6 +13,11 @@ kani = []
 
 kani_full = []
 
+# 2026-11-10: exposes the well-typed program generator (`src/typed_program.rs`)
+# to the external `fuzz/` workspace. Off by default so it is not part of the
+# production build.
+fuzzing = []
+
 [[bin]]
 name = "brievc"
 path = "src/main.rs"

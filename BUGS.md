@@ -2,7 +2,7 @@
 
 **Symptom:** `let x: Float = -1.5;` evaluated to `Int(0)`, while
 `(0.0 - 1.5)` evaluated correctly to `Float(-1.5)`. Found by the well-typed
-program generator (`src/fuzzing/typed_program.rs`), which flagged the
+program generator (`src/typed_program.rs`), which flagged the
 interpreter/model disagreement.
 
 **Root cause:** `eval_unary_op`'s `UnaryOpKind::Neg` used
@@ -11,7 +11,7 @@ interpreter/model disagreement.
 
 **Fix:** negate an `Atom::Float` as a float (`Value::float(-f)`); non-float
 operands keep the integer path. Regression:
-`fuzzing::typed_program::tests::negative_float_literal_is_a_float`.
+`typed_program::tests::negative_float_literal_is_a_float`.
 
 ## Publish into an incoming parameter leaked the storage — FIX IMPLEMENTED 2026-11-09
 

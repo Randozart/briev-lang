@@ -32,7 +32,7 @@ is the point: it independently rediscovers the open defects rather than being
 told about them.
 
 `welltyped` is the grammar-aware generator
-(`src/fuzzing/typed_program.rs`): it emits a typed program and asserts the
+(`src/typed_program.rs`): it emits a typed program and asserts the
 typechecker accepts it and the interpreter agrees with the model, reaching the
 typechecker/interpreter far deeper than random bytes. See
 `docs/plans/2026-11-10-welltyped-generation-and-oracle.md`.

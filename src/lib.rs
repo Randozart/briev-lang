@@ -55,6 +55,12 @@ pub mod glue;
 pub mod gpu_rt;
 #[cfg(test)]
 pub mod fuzzing;
+/// 2026-11-10: grammar-aware well-typed program generation + semantic oracle.
+/// Always compiled under `cfg(test)`; the external `fuzz/` workspace enables
+/// the `fuzzing` feature to reach it. Kept out of the default build because it
+/// is test/fuzz support only.
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod typed_program;
 pub mod hardware;
 pub mod hardware_validator;
 pub mod import_resolver;

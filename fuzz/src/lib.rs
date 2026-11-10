@@ -21,7 +21,7 @@ pub fn frontend(data: &[u8]) {
 /// 2026-11-10: grammar-aware generation of WELL-TYPED programs with a semantic
 /// oracle. Unlike the byte-oriented `frontend` target, this reaches the
 /// typechecker and interpreter deeply and asserts agreement — see
-/// `briev_compiler::fuzzing::typed_program`.
+/// `briev_compiler::typed_program`.
 pub fn welltyped(data: &[u8]) {
-    briev_compiler::fuzzing::typed_program::check(data);
+    briev_compiler::typed_program::check(data);
 }
