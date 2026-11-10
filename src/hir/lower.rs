@@ -30,6 +30,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut inits = Vec::new();
     let mut protocol_binding_fns = Vec::new();
     let mut trigger_names = Vec::new();
+    let mut trigger_bindings = Vec::new();
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
     let has_triggers;
     {
@@ -44,6 +45,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             inits: &mut inits,
             protocol_binding_fns: &mut protocol_binding_fns,
             trigger_names: &mut trigger_names,
+            trigger_bindings: &mut trigger_bindings,
             trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
             has_triggers: false,
@@ -64,6 +66,7 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         inits,
         protocol_binding_fns,
         trigger_names,
+        trigger_bindings,
         trait_functions,
         always_stateful,
         has_triggers,
@@ -81,6 +84,7 @@ struct LowerOutputs<'a> {
     inits: &'a mut Vec<HirInit>,
     protocol_binding_fns: &'a mut Vec<String>,
     trigger_names: &'a mut Vec<String>,
+    trigger_bindings: &'a mut Vec<String>,
     trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
@@ -293,6 +297,11 @@ fn lower_item(
             out.has_triggers = true;
             if !out.trigger_names.contains(&trg.name) {
                 out.trigger_names.push(trg.name.clone());
+            }
+        }
+        TopLevel::TriggerBinding { name, .. } => {
+            if !out.trigger_bindings.contains(name) {
+                out.trigger_bindings.push(name.clone());
             }
         }
         TopLevel::ProtocolDef(pd) => lower_protocol_bindings(pd, out),

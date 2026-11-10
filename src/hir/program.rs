@@ -228,6 +228,9 @@ pub struct HirProgram {
     pub has_triggers: bool,
     /// Top-level `trigger` names (watchdog validity + §3.2 surface).
     pub trigger_names: Vec<String>,
+    /// 2026-11-10: top-level `trg name @ instance.port` binding names — the
+    /// externally-driven input set the dependency graph seeds.
+    pub trigger_bindings: Vec<String>,
     /// Top-level `trait` declarations: name + ALL declared function names
     /// (requirements included — callable lowering skips body-less slots, so
     /// the conformance analysis reads this table instead). First declaration

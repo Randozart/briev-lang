@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// A variable-level dependency graph built from the program's top-level
 /// declarations and transactions. Used by the `trg` reactive dirty-flag
 /// system to topologically order variables and assign bit indices.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DependencyGraph {
     /// Variables in topological order (trg inputs first, then dependents).
     pub topo_order: Vec<String>,

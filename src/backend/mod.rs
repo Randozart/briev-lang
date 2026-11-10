@@ -258,15 +258,27 @@ pub fn analyze_program(
     let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
         items, &None, &vec![],
     );
-    let dependency_graph = crate::analysis::dependency_graph::DependencyGraph::build(items)
-        .unwrap_or_else(|_| crate::analysis::dependency_graph::DependencyGraph {
-            topo_order: Vec::new(),
-            bit_index: std::collections::HashMap::new(),
-            dependencies: std::collections::HashMap::new(),
-            dependents: std::collections::HashMap::new(),
-            is_trg: std::collections::HashSet::new(),
-            all_vars: std::collections::HashSet::new(),
-        });
+    let empty_dependency_graph = || crate::analysis::dependency_graph::DependencyGraph {
+        topo_order: Vec::new(),
+        bit_index: std::collections::HashMap::new(),
+        dependencies: std::collections::HashMap::new(),
+        dependents: std::collections::HashMap::new(),
+        is_trg: std::collections::HashSet::new(),
+        all_vars: std::collections::HashSet::new(),
+    };
+    // 2026-11-10 (H5 port): variable dependency graph from typed HIR by
+    // default; the AST result is the fallback and the debug oracle.
+    let dependency_graph = if hir_emit_enabled() {
+        let ast = crate::analysis::dependency_graph::DependencyGraph::build(items)
+            .unwrap_or_else(|_| empty_dependency_graph());
+        let h = crate::hir::dependency_graph::build(&hir)
+            .unwrap_or_else(|_| empty_dependency_graph());
+        debug_assert_eq!(h, ast, "HIR/AST dependency-graph drift");
+        h
+    } else {
+        crate::analysis::dependency_graph::DependencyGraph::build(items)
+            .unwrap_or_else(|_| empty_dependency_graph())
+    };
     // 2026-11-05 (H4 slice A): loop shapes come from typed HIR under the
     // flag — LoopShape is AST-free, so this is a direct consumer flip with a
     // debug equality cross-check.

@@ -157,7 +157,8 @@ impl<'a> Builder<'a> {
     }
 
     fn index_txn(&mut self, c: &'a HirCallable) {
-        self.txns.entry(c.name.clone()).or_insert(&c.body.statements);
+        // AST parity: Transaction items use `insert` (LAST wins), not or_insert.
+        self.txns.insert(c.name.clone(), &c.body.statements);
         self.index_contract(c);
         if let Some(owner) = &c.owner {
             self.type_members
@@ -182,7 +183,8 @@ impl<'a> Builder<'a> {
     }
 
     fn index_defn(&mut self, c: &'a HirCallable) {
-        self.defns.entry(c.name.clone()).or_insert(&c.body.statements);
+        // AST parity: Definition items use `insert` (LAST wins), not or_insert.
+        self.defns.insert(c.name.clone(), &c.body.statements);
         self.index_contract(c);
         if let Some(owner) = &c.owner {
             self.type_members

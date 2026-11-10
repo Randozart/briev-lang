@@ -272,3 +272,19 @@ currently NON-DETERMINISTIC: `topological_sort` seeds its Kahn queue from a
 seed order and dependent lists (house determinism rule), add a two-process
 order test, THEN port to HIR and flip with an equality oracle. TriggerBinding
 needs a HIR fidelity field (names) at the same time.
+
+**dependency_graph port (2026-11-10).** New `hir::dependency_graph` returns
+the AST result struct (same `DependencyGraph`), fed by state globals, trigger
+names, the new `HirProgram.trigger_bindings`, and bare transaction read edges;
+backend consumer flipped with a debug equality oracle. Two parity bugs surfaced
+and fixed en route:
+
+- `defn_liveness` used first-wins for `defns`/`txns`; the AST index is
+  last-wins, so duplicate std definitions (`when_hi`/`contains` across
+  cast lanes) rooted different bodies. HIR now inserts (last wins).
+- `dependency_graph::topological_sort` was process-order dependent (HashSet
+  seed, HashMap dependents); sorted seed + dependent order, plus a
+  4-process `.ll` determinism test.
+
+Gates: lib 3587; daily_use 41; sweep 143/0 (147 files); A/B byte-identical;
+quick gate 30/30.
