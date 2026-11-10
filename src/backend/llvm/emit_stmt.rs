@@ -3118,61 +3118,19 @@ pub(crate) fn emit_let_statement(
                     backend.emit_expr(out, &crate::ast::Expr::Identifier(alias.clone()), indent)
                 }
                 Some(crate::ast::Expr::Lambda(params, body)) => {
-                    // 2026-08-06 (fix): escaping closures. The binding value is
-                    // a heap env block `[fn_ptr, cap1..capN]`; calls go indirect
-                    // through the stored fn_ptr, and the value can be passed
-                    // around (a closure is a real first-class value now).
-                    let free_vars =
-                        crate::backend::llvm::context::collect_free_vars(body, &params);
-                    let symbol =
-                        format!("briev_closure_{}", backend.ctx.pending_closures.len());
-                    backend
-                        .fun
-                        .closure_lets
-                        .insert(name.to_string(), crate::backend::llvm::context::ClosureDef {
+                    // 2026-11-09 (H5 seam refactor): the binding registers the
+                    // closure definition and shares the HIR value emitter.
+                    let hir_body = crate::hir::lower_standalone_expr(body);
+                    let free_vars = crate::hir::free_vars::collect_free_vars(&hir_body, &params);
+                    backend.fun.closure_lets.insert(
+                        name.to_string(),
+                        crate::backend::llvm::context::ClosureDef {
                             params: params.clone(),
-                            body: body.clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    backend
-                        .ctx
-                        .pending_closures
-                        .push(crate::backend::llvm::context::PendingClosure {
-                            symbol: symbol.clone(),
-                            params: params.clone(),
-                            body: (**body).clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    // Env block: [fn_ptr][cap1..capN], 8 bytes per slot.
-                    let env_size = 8 * (1 + free_vars.len());
-                    let alloc = backend.fun.gen_reg();
-                    writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
-                    writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
-                    let env_p = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
-                    let fn_reg = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
-                    for (j, var) in free_vars.iter().enumerate() {
-                        let cap = backend
-                            .emit_expr(out, &crate::ast::Expr::Identifier(var.clone()), indent);
-                        // 2026-11-03 (Proof 3 condition 2): a captured enum must
-                        // own its image; the closure (heap env) can outlive the
-                        // frame that produced the captured image. The `let g =
-                        // x => …` path constructs its own env here, separate
-                        // from the Expr::Lambda arm — both must own. No-op for
-                        // non-enum captures.
-                        let cap = backend.own_enum_value(out, indent, &cap);
-                        let slot = backend.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr i64, ptr {}, i64 {}",
-                            indent, slot, env_p, 1 + j
-                        )
-                        .ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
-                    }
-                    TypedRegister { name: alloc, ty: Type::int() }
+                            body: hir_body.clone(),
+                            free_vars,
+                        },
+                    );
+                    backend.emit_lambda_value(out, indent, &params, &hir_body)
                 }
                 Some(e) => {
                     // 2026-08-01 (E): `vol let x = <rhs>` — loads inside the

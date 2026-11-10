@@ -2711,7 +2711,7 @@ impl LlvmBackend {
         out: &mut String,
         indent: &str,
         base: &str,
-        args: &[Expr],
+        args: &crate::backend::llvm::emit_expr::SpawnArgs<'_>,
         row_reg: &str,
     ) {
         // 2026-08-26 (async Phase D): port WIRING runs FIRST and INDEPENDENT
@@ -2742,9 +2742,8 @@ impl LlvmBackend {
                 writeln!(out, "{indent}store i64 {id}, ptr {row_ptr}").ok();
             }
             for (i, pname) in ports_in.iter().enumerate() {
-                if let Some(a) = args.get(i) {
-                    let tmp = self.fun.gen_reg();
-                    let vr = self.emit_expr_inner(out, &tmp, a, indent);
+                if i < args.len() {
+                    let vr = args.emit_arg(self, out, indent, i);
                     let val = self.adapt_to_i64(out, indent, &vr);
                     let slot_idx = match self.ctx.field_index_map.get(&format!("{base}.{pname}")) {
                         Some(&ix) => ix,
@@ -2771,9 +2770,8 @@ impl LlvmBackend {
             .cloned();
         let Some(member) = member else { return; };
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        for a in args {
-            let tmp = self.fun.gen_reg();
-            let vr = self.emit_expr_inner(out, &tmp, a, indent);
+        for i in 0..args.len() {
+            let vr = args.emit_arg(self, out, indent, i);
             arg_regs.push((vr.name, vr.ty));
         }
         let out_tmp = self.fun.gen_reg();
@@ -2796,7 +2794,7 @@ impl LlvmBackend {
         out: &mut String,
         indent: &str,
         base: &str,
-        args: &[Expr],
+        args: &crate::backend::llvm::emit_expr::SpawnArgs<'_>,
     ) -> crate::backend::llvm::TypedRegister {
         let mut members: Vec<(String, crate::ast::Type)> = Vec::new();
         if let Some(fields) = self.ctx.struct_types.get(base).cloned() {

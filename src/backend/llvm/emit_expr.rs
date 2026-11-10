@@ -164,6 +164,63 @@ pub(crate) enum MatchArms<'a> {
 }
 
 
+/// 2026-11-09 (H5 seam refactor): spawn arguments by index. The helpers below
+/// evaluate args at the same points as before; HIR args prefer the operand
+/// path and fall back to the reconstructed AST leaf.
+pub(crate) enum SpawnArgs<'a> {
+    Ast(&'a [Expr]),
+    Hir(&'a [crate::hir::expr::HirExpr]),
+}
+
+pub(crate) struct SpawnCtx<'a> {
+    pub type_name: &'a str,
+    pub storage: crate::ast::SpawnStorage,
+    pub args: &'a SpawnArgs<'a>,
+}
+
+impl SpawnArgs<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            SpawnArgs::Ast(args) => args.len(),
+            SpawnArgs::Hir(args) => args.len(),
+        }
+    }
+
+    pub(crate) fn emit_arg(
+        &self,
+        backend: &mut LlvmBackend,
+        out: &mut String,
+        indent: &str,
+        index: usize,
+    ) -> TypedRegister {
+        match self {
+            SpawnArgs::Ast(args) => backend.emit_expr(out, &args[index], indent),
+            SpawnArgs::Hir(args) => backend.emit_hir_operand(out, &args[index], indent)
+                .unwrap_or_else(|| {
+                    let ast = crate::hir::to_ast::expr(&args[index]).expect("reconstructible spawn arg");
+                    backend.emit_expr(out, &ast, indent)
+                }),
+        }
+    }
+
+    pub(crate) fn ident_name(&self, index: usize) -> Option<&str> {
+        match self {
+            SpawnArgs::Ast(args) => args[index].as_var_name(),
+            SpawnArgs::Hir(args) => match &args[index].kind {
+                crate::hir::expr::HirExprKind::Identifier(name) => Some(name),
+                _ => None,
+            },
+        }
+    }
+
+    pub(crate) fn is_field(&self, index: usize) -> bool {
+        match self {
+            SpawnArgs::Ast(args) => matches!(args[index], Expr::Field(..)),
+            SpawnArgs::Hir(args) => matches!(args[index].kind, crate::hir::expr::HirExprKind::Field { .. }),
+        }
+    }
+}
+
 impl LlvmBackend {
     /// Emit LLVM IR for an expression. Returns the result register and type.
     /// This is the entry point for all expression codegen.
@@ -468,6 +525,17 @@ impl LlvmBackend {
                     &MatchArms::Hir(arms, &ast_arms),
                     indent,
                 )
+            }
+            HirExprKind::Lambda { params, body } => {
+                return Some(self.emit_lambda_value(out, indent, params, body))
+            }
+            HirExprKind::Spawn { type_name, args, storage } => {
+                let spawn = SpawnCtx {
+                    type_name,
+                    storage: *storage,
+                    args: &SpawnArgs::Hir(args),
+                };
+                return Some(self.emit_spawn_value(out, indent, &spawn))
             }
             HirExprKind::Block(children) => {
                 // 2026-11-05 (H4 slice D): children recurse through the
@@ -1878,41 +1946,10 @@ impl LlvmBackend {
             // an i64 handle like other boxed values; the defn-call path
             // inttoptrs it when the callee's param is `Type::Function` (ptr).
             Expr::Lambda(params, body) => {
-                let free_vars = crate::backend::llvm::context::collect_free_vars(body, params);
-                let symbol = format!("briev_closure_{}", self.ctx.pending_closures.len());
-                self.ctx.pending_closures.push(
-                    crate::backend::llvm::context::PendingClosure {
-                        symbol: symbol.clone(),
-                        params: params.clone(),
-                        body: (**body).clone(),
-                        free_vars: free_vars.clone(),
-                    },
-                );
-                let env_size = 8 * (1 + free_vars.len());
-                let alloc = self.fun.gen_reg();
-                writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
-                writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
-                let env_p = self.fun.gen_reg();
-                writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
-                let fn_reg = self.fun.gen_reg();
-                writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
-                writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
-                for (j, var) in free_vars.iter().enumerate() {
-                    let cap = self.emit_expr(out, &Expr::Identifier(var.clone()), indent);
-                    // 2026-11-03 (Proof 3 condition 2): a captured enum must own
-                    // its image; the closure (heap env) can outlive the frame
-                    // that produced the captured image. No-op for non-enums.
-                    let cap = self.own_enum_value(out, indent, &cap);
-                    let slot = self.fun.gen_reg();
-                    writeln!(
-                        out,
-                        "{}{} = getelementptr i64, ptr {}, i64 {}",
-                        indent, slot, env_p, 1 + j
-                    )
-                    .ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
-                }
-                TypedRegister { name: alloc, ty: Type::int() }
+                // 2026-11-09 (H5 seam refactor): the AST lambda lowers its
+                // body to HIR and shares the value emitter with the HIR arm.
+                let hir_body = crate::hir::lower_standalone_expr(body);
+                return self.emit_lambda_value(out, indent, params, &hir_body);
             }
 
             // ── Address-of ────────────────────────────────────────────
@@ -1983,38 +2020,12 @@ impl LlvmBackend {
             // Init member at that row, increment the counter, and return the
             // row as the linear handle.
             Expr::Spawn { type_name, args, storage } => {
-                // 2026-08-09 (Phase 10): `spawn defn(args)` is a TASK spawn —
-                // the handle is the defn's result (SPEC §12.2). The reference
-                // semantic scheduler is deterministic: a spawned task runs to
-                // completion inline, and `await` reads the stored result. A
-                // defn name is distinguishable from an obj base by the
-                // defn_params/defn_return_types registration.
-                if self.ctx.defn_params.contains_key(type_name.as_str()) {
-                    return self.emit_task_spawn(out, indent, type_name, args);
-                }
-                if *storage != crate::ast::SpawnStorage::Pooled {
-                    // 2026-08-09 (Phase 5): `box`/`spill` spawns are NOT pooled
-                    // rows — box is a per-instance heap allocation, spill a
-                    // growable buffer. The spawn pool analysis rejects them
-                    // from the static/dependent column path; the emission for
-                    // each storage class is handled by the storage emitter.
-                    return self.emit_spawn_storage(out, indent, type_name, args);
-                }
-                let counter_name = format!("__spawn_next_{}", type_name);
-                let Some(&counter_idx) = self.ctx.field_index_map.get(&counter_name) else {
-                    panic!("spawn of '{}' with no registered instance pool", type_name);
+                let spawn = SpawnCtx {
+                    type_name,
+                    storage: *storage,
+                    args: &SpawnArgs::Ast(args.as_slice()),
                 };
-                let counter = self.emit_state_gep(out, indent, "sp", "%state", counter_idx);
-                let cur = self.fun.gen_reg();
-                writeln!(out, "{}{} = load i64, ptr {}", indent, cur, counter).ok();
-                self.emit_spawn_init(out, indent, type_name.as_str(), args.as_slice(), &cur);
-                let next = self.fun.gen_reg();
-                writeln!(out, "{}{} = add i64 {}, 1", indent, next, cur).ok();
-                writeln!(out, "{}store i64 {}, ptr {}", indent, next, counter).ok();
-                TypedRegister {
-                    name: cur,
-                    ty: Type::Custom(type_name.clone()),
-                }
+                return self.emit_spawn_value(out, indent, &spawn);
             }
             Expr::UnitLiteral { value, unit } => {
                 // 2026-10-05 (Phase 0.6b): quantity literals lower EXACTLY
@@ -6272,12 +6283,84 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
     /// its result register IS the linear handle. `await`/`free`/`keep` then
     /// operate on that handle (the handle's liveness is checked by the
     /// typechecker/ownership analysis — a silently dropped live handle errors).
+    /// 2026-11-09 (H5 seam refactor): spawn arguments addressed by index,
+    /// emitted through the HIR operand path or the AST leaf path. Shape probes
+    /// (`ident_name`, `is_field`) answer the same questions the AST arm did.
+    pub(super) fn emit_spawn_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        spawn: &SpawnCtx<'_>,
+    ) -> TypedRegister {
+        let SpawnCtx { type_name, storage, args } = *spawn;
+        if self.ctx.defn_params.contains_key(type_name) {
+            return self.emit_task_spawn(out, indent, type_name, args);
+        }
+        if storage != crate::ast::SpawnStorage::Pooled {
+            return self.emit_spawn_storage(out, indent, type_name, args);
+        }
+        let counter_name = format!("__spawn_next_{}", type_name);
+        let Some(&counter_idx) = self.ctx.field_index_map.get(&counter_name) else {
+            panic!("spawn of '{}' with no registered instance pool", type_name);
+        };
+        let counter = self.emit_state_gep(out, indent, "sp", "%state", counter_idx);
+        let cur = self.fun.gen_reg();
+        writeln!(out, "{}{} = load i64, ptr {}", indent, cur, counter).ok();
+        self.emit_spawn_init(out, indent, type_name, args, &cur);
+        let next = self.fun.gen_reg();
+        writeln!(out, "{}{} = add i64 {}, 1", indent, next, cur).ok();
+        writeln!(out, "{}store i64 {}, ptr {}", indent, next, counter).ok();
+        TypedRegister { name: cur, ty: Type::Custom(type_name.to_string()) }
+    }
+
+    /// 2026-11-09 (H5 seam refactor): first-class closure value — heap env
+    /// `[fn_ptr, cap1..capN]` plus a queued `briev_closure_N` function. The
+    /// body is HIR; free vars come from the HIR walker (same order as the AST
+    /// walker did).
+    pub(super) fn emit_lambda_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        params: &[String],
+        body: &crate::hir::expr::HirExpr,
+    ) -> TypedRegister {
+        let free_vars = crate::hir::free_vars::collect_free_vars(body, params);
+        let symbol = format!("briev_closure_{}", self.ctx.pending_closures.len());
+        self.ctx.pending_closures.push(
+            crate::backend::llvm::context::PendingClosure {
+                symbol: symbol.clone(),
+                params: params.to_vec(),
+                body: body.clone(),
+                free_vars: free_vars.clone(),
+            },
+        );
+        let env_size = 8 * (1 + free_vars.len());
+        let alloc = self.fun.gen_reg();
+        writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
+        writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
+        let env_p = self.fun.gen_reg();
+        writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
+        let fn_reg = self.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
+        writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
+        for (j, var) in free_vars.iter().enumerate() {
+            let cap = self.emit_expr(out, &Expr::Identifier(var.clone()), indent);
+            // 2026-11-03 (Proof 3 condition 2): a captured enum must own its
+            // image (the env can outlive the producing frame). No-op otherwise.
+            let cap = self.own_enum_value(out, indent, &cap);
+            let slot = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, slot, env_p, 1 + j).ok();
+            writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
+        }
+        TypedRegister { name: alloc, ty: Type::int() }
+    }
+
     pub(super) fn emit_task_spawn(
         &mut self,
         out: &mut String,
         indent: &str,
         name: &str,
-        args: &[Expr],
+        args: &SpawnArgs<'_>,
     ) -> TypedRegister {
         // 2026-08-26 (async Phase C): the task registers with the C scheduler
         // as a segmented continuation — argv block + segment-table pointer.
@@ -6300,51 +6383,41 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             .unwrap_or_default();
         let argv = self.fun.gen_reg();
         writeln!(out, "{indent}{argv} = alloca [8 x i64], align 8").ok();
-        for (i, a) in args.iter().enumerate() {
+        for i in 0..args.len() {
             let wants_wire = param_types
                 .get(i)
                 .map(|t| crate::backend::llvm::emit_stmt::is_event_type(t))
                 .unwrap_or(false);
             let val = if wants_wire {
-                match a {
-                    Expr::Identifier(src) if self
-                        .fun
-                        .let_original_types
-                        .get(src)
-                        .or_else(|| self.fun.let_binding_types.get(src))
-                        .map(|t| crate::backend::llvm::emit_stmt::is_event_type(t))
-                        .unwrap_or(false) =>
-                    {
-                        // Already a wire binding.
-                        let r = self.emit_expr(out, a, indent);
-                        self.adapt_to_i64(out, indent, &r)
-                    }
-                    Expr::Field(inst, _) => {
-                        // Instance port projection: the loaded column value
-                        // IS the wire id. Emitting the field read normally
-                        // requires the receiver NOT to be Event-typed, which
-                        // holds here (the instance isn't a wire).
-                        let r = self.emit_expr(out, a, indent);
-                        self.adapt_to_i64(out, indent, &r)
-                    }
-                    _ => {
-                        // Wrap: fresh slot fired with the value now.
-                        let id = self.fun.gen_reg();
-                        let events_i = self.fun.gen_reg();
-                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        let st = if self.ctx.defn_takes_state("briev_event_alloc_impl") { "ptr %state, " } else { "" };
-                        writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl({st}i64 {events_i})").ok();
-                        let vr = self.emit_expr(out, a, indent);
-                        let payload = self.adapt_to_i64(out, indent, &vr);
-                        let st = if self.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
-                        writeln!(out,
-                            "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id}, i64 {payload})")
-                        .ok();
-                        id
-                    }
+                let wire_binding = args.ident_name(i).is_some_and(|src| self
+                    .fun
+                    .let_original_types
+                    .get(src)
+                    .or_else(|| self.fun.let_binding_types.get(src))
+                    .map(|t| crate::backend::llvm::emit_stmt::is_event_type(t))
+                    .unwrap_or(false));
+                if wire_binding || args.is_field(i) {
+                    // A wire binding passes through; an instance port
+                    // projection's loaded column IS the wire id.
+                    let r = args.emit_arg(self, out, indent, i);
+                    self.adapt_to_i64(out, indent, &r)
+                } else {
+                    // Wrap: fresh slot fired with the value now.
+                    let id = self.fun.gen_reg();
+                    let events_i = self.fun.gen_reg();
+                    writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+                    let st = if self.ctx.defn_takes_state("briev_event_alloc_impl") { "ptr %state, " } else { "" };
+                    writeln!(out, "{indent}{id} = call i64 @briev_event_alloc_impl({st}i64 {events_i})").ok();
+                    let vr = args.emit_arg(self, out, indent, i);
+                    let payload = self.adapt_to_i64(out, indent, &vr);
+                    let st = if self.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
+                    writeln!(out,
+                        "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id}, i64 {payload})")
+                    .ok();
+                    id
                 }
             } else {
-                let reg = self.emit_expr(out, a, indent);
+                let reg = args.emit_arg(self, out, indent, i);
                 self.adapt_to_i64(out, indent, &reg)
             };
             let slot = self.fun.gen_reg();

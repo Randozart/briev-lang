@@ -808,7 +808,8 @@ impl CompilerContext {
 #[derive(Debug, Clone)]
 pub struct ClosureDef {
     pub params: Vec<String>,
-    pub body: Box<crate::ast::Expr>,
+    /// 2026-11-09 (H5 seam refactor): closure bodies are HIR.
+    pub body: crate::hir::expr::HirExpr,
     /// Free variables of the body (idents not bound by params/lets) captured
     /// by value into the env block at creation.
     pub free_vars: Vec<String>,
@@ -821,7 +822,8 @@ pub struct ClosureDef {
 pub struct PendingClosure {
     pub symbol: String,
     pub params: Vec<String>,
-    pub body: crate::ast::Expr,
+    /// 2026-11-09 (H5 seam refactor): closure bodies are HIR.
+    pub body: crate::hir::expr::HirExpr,
     pub free_vars: Vec<String>,
 }
 

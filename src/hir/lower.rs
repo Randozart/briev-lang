@@ -727,6 +727,13 @@ fn lower_stmt_match_arm(arm: &StmtMatchArm, ids: &mut IdSupply) -> HirStmtMatchA
     }
 }
 
+/// Lower one standalone expression (closure bodies registered from the AST
+/// path). Fresh ids; deterministic order.
+pub fn lower_standalone_expr(expr: &Expr) -> HirExpr {
+    let mut ids = IdSupply::default();
+    lower_expr(expr, &mut ids)
+}
+
 fn lower_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
     let (ty, kind) = match expr {
         Expr::Quoted(bytes) => (Some(Type::Custom("String".into())), HirExprKind::Literal(HirLiteral::Bytes(bytes.clone()))),
