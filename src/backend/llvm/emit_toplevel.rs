@@ -437,7 +437,15 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let var_name = t.as_var_name()?;
+        self.find_insert_strategy_name(t.as_var_name()?)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based insert strategy for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn find_insert_strategy_name(
+        &self,
+        var_name: &str,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let type_name = self.lookup_strategy_type_name(var_name)?;
         self.ctx.operator_defs.get(&type_name)?
             .iter().find(|d| d.op == "InsertAt")
@@ -484,7 +492,12 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let name = t.as_var_name()?;
+        self.insert_element_type_name(t.as_var_name()?)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based element type for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn insert_element_type_name(&self, name: &str) -> Option<crate::ast::Type> {
         let full_ty = self.resolve_id_type(name)?;
         let (base, args) = match &full_ty {
             crate::ast::Type::Custom(n) => (n.clone(), Vec::new()),
@@ -698,13 +711,27 @@ impl LlvmBackend {
         target: &crate::ast::Expr,
         consume: bool,
     ) -> Option<&crate::ast::top::OperatorDef> {
+        let mut t = target;
+        while let crate::ast::Expr::AddrOf(inner) = t {
+            t = inner;
+        }
+        self.find_extract_strategy_for_arrow_name(t.as_var_name()?, consume)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based extract strategy for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn find_extract_strategy_for_arrow_name(
+        &self,
+        var_name: &str,
+        consume: bool,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let (first, second) = if consume {
             ("ExtractFrom", "CopyFrom")
         } else {
             ("CopyFrom", "ExtractFrom")
         };
-        self.find_extract_strategy_op(target, first)
-            .or_else(|| self.find_extract_strategy_op(target, second))
+        self.find_extract_strategy_op_name(var_name, first)
+            .or_else(|| self.find_extract_strategy_op_name(var_name, second))
     }
 
     pub(super) fn find_extract_strategy(&self, target: &crate::ast::Expr) -> Option<&crate::ast::top::OperatorDef> {
@@ -723,7 +750,16 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let var_name = t.as_var_name()?;
+        self.find_extract_strategy_op_name(t.as_var_name()?, op)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based extract lookup shared by the
+    /// AST and HIR arrow paths.
+    fn find_extract_strategy_op_name(
+        &self,
+        var_name: &str,
+        op: &str,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let type_name = self.lookup_strategy_type_name(var_name)?;
         let def = self.ctx.operator_defs.get(&type_name)?
             .iter().find(|d| d.op == op)?;

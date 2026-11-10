@@ -64,7 +64,7 @@ flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 - Two-run byte determinism is the gate; snapshots complement (not replace)
   `ll_determinism_check`.
 
-## Seam refactors (third, Defer DONE 2026-11-09)
+## Seam refactors (third, Defer + ArrowAssign DONE 2026-11-09)
 
 1. **Defer**: `defer_bodies: Vec<Vec<HirStmt>>` on the backend;
    `flush_defer_cleanup` walks the statement seam. Delete the AST-body queue.
@@ -149,3 +149,19 @@ node firing that ends by **fallthrough** (no explicit `term`/`rollback` in the
 emitted body) never flushed its defer stack; the SSA loop now flushes before
 its per-firing exit checks. New coverage: `tests/directives/defer_cleanup.bv`
 (stdout `1\n7\n`) and a `defer` HIR snapshot fixture.
+
+**Seam refactor 2 — ArrowAssign (2026-11-09, DONE).** The arrow dispatch no
+longer reads AST shapes: `ArrowOperand` exposes only `name()` (AddrOf-peeled
+identifier), `declared_type()` (identifier binding or tuple element types) and
+`emit()` (HIR operand first, lossless AST fallback for an uncovered leaf).
+`find_insert_strategy_name`, `find_extract_strategy_for_arrow_name`,
+`insert_element_type_name`, `emit_strategy_{member,fn}_call_name`,
+`emit_arrow_store_name`, and `emit_destroy_consumed_name` are the name-based
+equivalents (AST variants delegate). The function is split into
+wire/stream/insert/extract/plain-copy helpers, each returning `Option` so the
+main path is a flat dispatch. The only remaining AST construction is the
+`Print#` call for `#StdOut` (reuses the print dispatcher). Gates: arrow suite
+24; lib 3573; sweep 139/0; A/B byte-identical; all-tests 3620; Praetor clean
+on the new code.
+
+Next: Lambda/Spawn seam refactor.

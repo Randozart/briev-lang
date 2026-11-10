@@ -160,21 +160,19 @@ fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirS
     // the dual-fueled value path. Reconstructibility checked BEFORE any
     // emission (wire-fire and stream paths emit immediately).
     if let HirStmtKind::ArrowAssign { target, value, consume } = &stmt.kind {
-        let Some(ast_target) = target.as_ref().and_then(crate::hir::to_ast::expr) else {
+        // 2026-11-09 (H5 seam refactor): dispatch by name/type; the AST is only
+        // a lossless fallback for an uncovered value leaf. Check that fallback
+        // exists before any emission (wire/stream paths emit immediately).
+        if crate::hir::to_ast::expr(value).is_none() {
             return None;
+        }
+        let ctx = super::emit_stmt::ArrowAssignCtx {
+            target: target.as_ref().map(super::emit_stmt::ArrowOperand::Hir),
+            value: super::emit_stmt::ArrowOperand::Hir(value),
+            consume: *consume,
         };
-        let Some(ast_value) = crate::hir::to_ast::expr(value) else {
-            return None;
-        };
-        let boxed_target = Box::new(ast_target);
-        let boxed_value = Box::new(ast_value);
         return Some(super::emit_stmt::emit_arrow_assign_statement(
-            backend,
-            out,
-            indent,
-            &Some(boxed_target),
-            &super::emit_stmt::ArrowAssignValue::Hir(value, &boxed_value),
-            consume,
+            backend, out, indent, &ctx,
         ));
     }
     // 2026-11-05 (H4 slice D): native Let — the binding dispatch reads the
