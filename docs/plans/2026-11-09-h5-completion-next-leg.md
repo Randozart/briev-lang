@@ -288,3 +288,10 @@ and fixed en route:
 
 Gates: lib 3587; daily_use 41; sweep 143/0 (147 files); A/B byte-identical;
 quick gate 30/30.
+
+**casing port (2026-11-10).** `hir::casing` mirrors the advisories over HIR;
+`HirProgram` gained `type_names`/`static_struct_names`/`trait_names`/
+`cell_names` so `type` vs `struct`/`trait`/`cell` origins match the AST walker.
+`analysis::casing::check_name` is shared (one convention table), and
+`analyze_dual` flips the compile/pipeline call sites with a debug oracle.
+Gates: lib 3589; sweep 143/0; quick gate 30/30.

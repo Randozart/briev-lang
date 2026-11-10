@@ -11,6 +11,7 @@ pub mod cast_paths;
 pub mod constructors;
 pub mod coll_length;
 pub mod defn_liveness;
+pub mod casing;
 pub mod dependency_graph;
 pub mod density;
 pub mod dyn_concrete_sets;

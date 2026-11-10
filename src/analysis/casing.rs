@@ -26,30 +26,43 @@
 use crate::ast::TopLevel;
 
 /// One advisory line per violating declared name.
+/// 2026-11-10 (H5 port): HIR-first surface for the two pipeline call sites.
+/// AST result remains the fallback and the debug oracle.
+pub fn analyze_dual(items: &[TopLevel]) -> Vec<String> {
+    let ast = analyze(items);
+    if !crate::backend::hir_emit_enabled() {
+        return ast;
+    }
+    let program = crate::hir::lower_program(items);
+    let hir = crate::hir::casing::analyze(&program);
+    debug_assert_eq!(hir, ast, "HIR/AST casing drift");
+    hir
+}
+
 pub fn analyze(items: &[TopLevel]) -> Vec<String> {
     let mut out = Vec::new();
     for item in items {
         match item {
             // Functions/txns are snake_case ("functions" category).
             TopLevel::Definition(d) => {
-                check(&mut out, "functions", &d.name, false);
+                check_name(&mut out, "functions", &d.name, false);
             }
             TopLevel::Transaction(t) => {
-                check(&mut out, "functions", &t.name, false);
+                check_name(&mut out, "functions", &t.name, false);
             }
             // Types/structs/enums/objs share one convention: PascalCase.
             // `struct` declarations parse to TopLevel::StaticStruct.
             TopLevel::TypeDef(td) => {
-                check(&mut out, "types", &td.name, true);
+                check_name(&mut out, "types", &td.name, true);
             }
             TopLevel::StaticStruct(s) => {
-                check(&mut out, "structs", &s.name, true);
+                check_name(&mut out, "structs", &s.name, true);
             }
             TopLevel::Trait(t) => {
-                check(&mut out, "traits", &t.name, true);
+                check_name(&mut out, "traits", &t.name, true);
             }
             TopLevel::Cell(c) => {
-                check(&mut out, "cells", &c.name, true);
+                check_name(&mut out, "cells", &c.name, true);
             }
             _ => {}
         }
@@ -59,7 +72,7 @@ pub fn analyze(items: &[TopLevel]) -> Vec<String> {
     out
 }
 
-fn check(out: &mut Vec<String>, category: &str, name: &str, expect_pascal: bool) {
+pub(crate) fn check_name(out: &mut Vec<String>, category: &str, name: &str, expect_pascal: bool) {
     if name.is_empty() {
         return;
     }

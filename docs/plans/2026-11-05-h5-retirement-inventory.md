@@ -208,3 +208,12 @@ cover empty/trg-only/chains/cycles. Prerequisite fixed first: the AST graph's
 Kahn queue was seeded from a `HashSet` and iterated `HashMap` dependents, so
 trg bit assignments varied per process — both are sorted now
 (`tests/dependency_graph_determinism.rs`, 4 separate compiles).
+
+**Ported + consumer flipped (2026-11-10):** `casing` — `src/hir/casing.rs`
+mirrors the identifier-casing advisories (functions snake_case; types,
+structs, traits, cells PascalCase) over `HirProgram` declared-name surfaces.
+New fidelity fields preserve the AST's origin distinction:
+`type_names`/`static_struct_names`/`trait_names`/`cell_names`. The shared
+`check_name` helper backs both implementations; `analyze_dual` flips the two
+pipeline call sites with a debug equality oracle. Tests: conforming-silent and
+each-category parity.

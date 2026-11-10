@@ -1303,7 +1303,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     }
     // 2026-08-22 (spec-conformance plan Phase 2): casing advisory — `check`
     // reports the same advisories as `build` so the two paths never diverge.
-    for w in crate::analysis::casing::analyze(&items) {
+    for w in crate::analysis::casing::analyze_dual(&items) {
         eprintln!("warning: {w}");
     }
     // 2026-08-22 (Phase 9): `.s` strict gate in `check` too — acceptance

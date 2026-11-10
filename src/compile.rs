@@ -497,7 +497,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     }
     // 2026-08-22 (spec-conformance plan Phase 2): identifier casing advisory
     // (SPEC §4.1 — user-declared violations warn, never error).
-    for w in briev_compiler::analysis::casing::analyze(&items) {
+    for w in briev_compiler::analysis::casing::analyze_dual(&items) {
         eprintln!("warning: {w}");
     }
     // 2026-10-16 (term-semantics plan step 7): the state-purity probe —

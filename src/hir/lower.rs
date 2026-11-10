@@ -31,6 +31,10 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut protocol_binding_fns = Vec::new();
     let mut trigger_names = Vec::new();
     let mut trigger_bindings = Vec::new();
+    let mut type_names = Vec::new();
+    let mut static_struct_names = Vec::new();
+    let mut trait_names = Vec::new();
+    let mut cell_names = Vec::new();
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
     let has_triggers;
     {
@@ -46,6 +50,10 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             protocol_binding_fns: &mut protocol_binding_fns,
             trigger_names: &mut trigger_names,
             trigger_bindings: &mut trigger_bindings,
+            type_names: &mut type_names,
+            static_struct_names: &mut static_struct_names,
+            trait_names: &mut trait_names,
+            cell_names: &mut cell_names,
             trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
             has_triggers: false,
@@ -67,6 +75,10 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         protocol_binding_fns,
         trigger_names,
         trigger_bindings,
+        type_names,
+        static_struct_names,
+        trait_names,
+        cell_names,
         trait_functions,
         always_stateful,
         has_triggers,
@@ -85,6 +97,10 @@ struct LowerOutputs<'a> {
     protocol_binding_fns: &'a mut Vec<String>,
     trigger_names: &'a mut Vec<String>,
     trigger_bindings: &'a mut Vec<String>,
+    type_names: &'a mut Vec<String>,
+    static_struct_names: &'a mut Vec<String>,
+    trait_names: &'a mut Vec<String>,
+    cell_names: &'a mut Vec<String>,
     trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
     has_triggers: bool,
@@ -299,6 +315,9 @@ fn lower_item(
                 out.trigger_names.push(trg.name.clone());
             }
         }
+        TopLevel::Cell(c) => {
+            out.cell_names.push(c.name.clone());
+        }
         TopLevel::TriggerBinding { name, .. } => {
             if !out.trigger_bindings.contains(name) {
                 out.trigger_bindings.push(name.clone());
@@ -316,13 +335,19 @@ fn lower_item(
             let ctx = SyncGroupCtx { item, domains, exported, export_symbol };
             lower_sync_group(&ctx, ids, out);
         }
-        TopLevel::TypeDef(td) => lower_typedef_item(td, ids, out),
+        TopLevel::TypeDef(td) => {
+            out.type_names.push(td.name.clone());
+            lower_typedef_item(td, ids, out)
+        }
         // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
         // the keys the needs_state fixpoint and type_stateful_members use.
         TopLevel::Impl(imp) => lower_impl_item(imp, ids, out),
         // Trait defaults are indexed by BARE name (no type qualification), so a
         // default shared by stateful and stateless conformers stays one node.
-        TopLevel::Trait(tr) => lower_trait_item(tr, ids, out),
+        TopLevel::Trait(tr) => {
+            out.trait_names.push(tr.name.clone());
+            lower_trait_item(tr, ids, out)
+        }
         TopLevel::IsrHandler(h) => out.callables.push(lower_isr_handler(h, ids)),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
@@ -353,7 +378,10 @@ fn lower_item(
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
         TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
         TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
-        TopLevel::StaticStruct(def) => out.types.push(lower_struct(def, ids)),
+        TopLevel::StaticStruct(def) => {
+            out.static_struct_names.push(def.name.clone());
+            out.types.push(lower_struct(def, ids))
+        }
         _ => {}
     }
 }
