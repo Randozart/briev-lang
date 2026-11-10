@@ -36,6 +36,14 @@ fn unit_suffix_token(tok: &Token) -> Option<String> {
 impl<'a> Parser<'a> {
     /// Entry point: parse an expression at any precedence level.
     pub fn parse_expression(&mut self) -> Result<Expr, SyntaxError> {
+        self.enter_parse_depth()?;
+        let result = self.parse_expression_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expression_inner(&mut self) -> Result<Expr, SyntaxError> {
+        self.charge_parse_step()?;
         self.parse_assignment()
     }
 

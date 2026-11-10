@@ -157,6 +157,31 @@ All four findings: `docs/reports/2026-11-09-deterministic-transition-campaign.md
 Synthetic corruption was disabled; this investigation records defects without
 changing compiler semantics or weakening contracts.
 
+## Parser DoS: exponential backtracking + stack overflow on nested input — FIXED 2026-11-10
+
+Found by the frontend fuzz campaign (`docs/plans/2026-11-10-exhaustive-defect-campaign.md`).
+The statement/tail-expression speculative parse (`parse_block_expr`,
+`parse_tail_body`) re-parses the same span on failure, so malformed deeply
+nested input was exponential in nesting depth: an 88-byte input took ~20 s
+(five libFuzzer `slow-unit`s). Separately, ~1000 nested `{` (or 300 nested `(`)
+exhausted the native stack and ABORTED the compiler
+(`fatal runtime error: stack overflow`).
+
+**Fix:** `src/parser/helpers.rs` adds a parse-step budget linear in the token
+count (`steps_remaining`) and a recursion-depth cap (`MAX_PARSE_DEPTH = 24`,
+chosen to fit a 2 MiB thread stack even with debug frames). Exceeding either
+returns `SyntaxError::BacktrackLimit` (house-style diagnostic). The whole
+conformance sweep parses within the cap. Regression:
+`tests/fuzz_frontend.rs::test_pathological_nesting_is_bounded`,
+`::test_deep_nesting_does_not_overflow_stack`,
+`::test_deep_expression_reports_complexity_limit`; replay case
+`fuzz/cases/pathological-nesting.input`.
+
+**Follow-up (not a patch):** the depth cap is a compromise forced by ~64 KiB
+debug frames per nesting level; the ideal fix removes the re-parse (packrat
+memoization or an iterative block-item parse) and/or grows the stack on demand,
+then the cap can be raised.
+
 ## LLVM fixture gate used protocol proofs for node transitions — FIX IMPLEMENTED 2026-11-08
 
 With Z3 installed, 78 LLVM fixtures fail before emission, including ordinary

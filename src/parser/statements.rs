@@ -18,6 +18,14 @@ pub(crate) struct InstanceDim {
 impl<'a> Parser<'a> {
     /// Parse a single statement.
     pub fn parse_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.enter_parse_depth()?;
+        let result = self.parse_statement_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<Statement, SyntaxError> {
+        self.charge_parse_step()?;
         match self.peek() {
             Some(Token::Let) => self.parse_let_statement(),
             // 2026-09-22 (order-free-modifiers plan): `vol`/`out`/`mem`/
