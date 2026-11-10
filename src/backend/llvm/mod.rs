@@ -6717,7 +6717,15 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.let_binding_types.insert(v.clone(), Type::int());
             self.fun.let_original_types.insert(v.clone(), Type::int());
         }
-        let result = self.emit_expr(out, &c.body, "  ");
+        // 2026-11-09 (H5 seam refactor): closure bodies emit through the HIR
+        // operand path, with the reconstructed AST as the lossless fallback.
+        let result = match self.emit_hir_operand(out, &c.body, "  ") {
+            Some(reg) => reg,
+            None => {
+                let ast = crate::hir::to_ast::expr(&c.body).expect("reconstructible closure body");
+                self.emit_expr(out, &ast, "  ")
+            }
+        };
         // 2026-08-14 (stdlib-cleanup): the closure ABI boxes every return to
         // i64 (params/env slots are i64 too). A Bool predicate body emits an
         // i8 register (`x % 2 == 0`) — zext it to i64 so `ret i64` stays valid.

@@ -454,7 +454,15 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let var_name = t.as_var_name()?;
+        self.find_insert_strategy_name(t.as_var_name()?)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based insert strategy for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn find_insert_strategy_name(
+        &self,
+        var_name: &str,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let type_name = self.lookup_strategy_type_name(var_name)?;
         self.ctx.operator_defs.get(&type_name)?
             .iter().find(|d| d.op == "InsertAt")
@@ -501,7 +509,12 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let name = t.as_var_name()?;
+        self.insert_element_type_name(t.as_var_name()?)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based element type for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn insert_element_type_name(&self, name: &str) -> Option<crate::ast::Type> {
         let full_ty = self.resolve_id_type(name)?;
         let (base, args) = match &full_ty {
             crate::ast::Type::Custom(n) => (n.clone(), Vec::new()),
@@ -715,13 +728,27 @@ impl LlvmBackend {
         target: &crate::ast::Expr,
         consume: bool,
     ) -> Option<&crate::ast::top::OperatorDef> {
+        let mut t = target;
+        while let crate::ast::Expr::AddrOf(inner) = t {
+            t = inner;
+        }
+        self.find_extract_strategy_for_arrow_name(t.as_var_name()?, consume)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based extract strategy for the HIR
+    /// arrow path (the AST variant delegates here).
+    pub(super) fn find_extract_strategy_for_arrow_name(
+        &self,
+        var_name: &str,
+        consume: bool,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let (first, second) = if consume {
             ("ExtractFrom", "CopyFrom")
         } else {
             ("CopyFrom", "ExtractFrom")
         };
-        self.find_extract_strategy_op(target, first)
-            .or_else(|| self.find_extract_strategy_op(target, second))
+        self.find_extract_strategy_op_name(var_name, first)
+            .or_else(|| self.find_extract_strategy_op_name(var_name, second))
     }
 
     pub(super) fn find_extract_strategy(&self, target: &crate::ast::Expr) -> Option<&crate::ast::top::OperatorDef> {
@@ -740,7 +767,16 @@ impl LlvmBackend {
         while let crate::ast::Expr::AddrOf(inner) = t {
             t = inner;
         }
-        let var_name = t.as_var_name()?;
+        self.find_extract_strategy_op_name(t.as_var_name()?, op)
+    }
+
+    /// 2026-11-09 (H5 seam refactor): name-based extract lookup shared by the
+    /// AST and HIR arrow paths.
+    fn find_extract_strategy_op_name(
+        &self,
+        var_name: &str,
+        op: &str,
+    ) -> Option<&crate::ast::top::OperatorDef> {
         let type_name = self.lookup_strategy_type_name(var_name)?;
         let def = self.ctx.operator_defs.get(&type_name)?
             .iter().find(|d| d.op == op)?;
@@ -2692,7 +2728,7 @@ impl LlvmBackend {
         out: &mut String,
         indent: &str,
         base: &str,
-        args: &[Expr],
+        args: &crate::backend::llvm::emit_expr::SpawnArgs<'_>,
         row_reg: &str,
     ) {
         // 2026-08-26 (async Phase D): port WIRING runs FIRST and INDEPENDENT
@@ -2723,9 +2759,8 @@ impl LlvmBackend {
                 writeln!(out, "{indent}store i64 {id}, ptr {row_ptr}").ok();
             }
             for (i, pname) in ports_in.iter().enumerate() {
-                if let Some(a) = args.get(i) {
-                    let tmp = self.fun.gen_reg();
-                    let vr = self.emit_expr_inner(out, &tmp, a, indent);
+                if i < args.len() {
+                    let vr = args.emit_arg(self, out, indent, i);
                     let val = self.adapt_to_i64(out, indent, &vr);
                     let slot_idx = match self.ctx.field_index_map.get(&format!("{base}.{pname}")) {
                         Some(&ix) => ix,
@@ -2752,9 +2787,8 @@ impl LlvmBackend {
             .cloned();
         let Some(member) = member else { return; };
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        for a in args {
-            let tmp = self.fun.gen_reg();
-            let vr = self.emit_expr_inner(out, &tmp, a, indent);
+        for i in 0..args.len() {
+            let vr = args.emit_arg(self, out, indent, i);
             arg_regs.push((vr.name, vr.ty));
         }
         let out_tmp = self.fun.gen_reg();
@@ -2777,7 +2811,7 @@ impl LlvmBackend {
         out: &mut String,
         indent: &str,
         base: &str,
-        args: &[Expr],
+        args: &crate::backend::llvm::emit_expr::SpawnArgs<'_>,
     ) -> crate::backend::llvm::TypedRegister {
         let mut members: Vec<(String, crate::ast::Type)> = Vec::new();
         if let Some(fields) = self.ctx.struct_types.get(base).cloned() {

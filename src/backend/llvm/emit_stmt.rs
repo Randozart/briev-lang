@@ -444,14 +444,12 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         Statement::ArrowAssign { target, value, consume } => {
-            emit_arrow_assign_statement(
-                backend,
-                out,
-                indent,
-                target,
-                &ArrowAssignValue::Ast(value),
-                consume,
-            )
+            let ctx = ArrowAssignCtx {
+                target: target.as_ref().map(|t| ArrowOperand::Ast(t.as_ref())),
+                value: ArrowOperand::Ast(value.as_ref()),
+                consume: *consume,
+            };
+            emit_arrow_assign_statement(backend, out, indent, &ctx)
         }
         // 2026-10-16 (tails plan §2): a defn-body tail is an
         // UNCONDITIONAL value return — `term <value>` emission (the P-gate
@@ -1001,6 +999,13 @@ pub(super) fn emit_array_state_store(
 /// (`op InsertAt: push(#Lh, #Rh)` on an obj). Emits a self-bound member call
 /// (receiver + value register) instead of the free-function marker dispatch.
 /// Flat guard clauses; returns false when the pattern does not apply.
+/// 2026-11-09 (H5 seam refactor): name-based strategy call description.
+pub(super) struct StrategyCall<'a> {
+    pub recv: &'a str,
+    pub op: &'a crate::ast::top::OperatorDef,
+    pub value: Option<&'a str>,
+}
+
 pub(super) fn emit_strategy_member_call(
     backend: &mut LlvmBackend,
     out: &mut String,
@@ -1009,6 +1014,22 @@ pub(super) fn emit_strategy_member_call(
     op_def: &crate::ast::top::OperatorDef,
     value: Option<&str>,
 ) -> Option<String> {
+    let recv = match target {
+        Expr::AddrOf(inner) => (**inner).clone(),
+        _ => target.clone(),
+    };
+    let Expr::Identifier(recv_name) = &recv else { return None; };
+    emit_strategy_member_call_name(backend, out, indent, &StrategyCall { recv: recv_name, op: op_def, value })
+}
+
+/// 2026-11-09 (H5 seam refactor): name-based member dispatch (HIR arrow path).
+fn emit_strategy_member_call_name(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    call: &StrategyCall<'_>,
+) -> Option<String> {
+    let StrategyCall { recv: recv_name, op: op_def, value } = *call;
     let fn_name = match op_def.impl_args.as_ref() {
         Some(crate::ast::PropertyValue::Identifier(s)) => s.clone(),
         Some(crate::ast::PropertyValue::List(items)) => match items.first() {
@@ -1017,11 +1038,6 @@ pub(super) fn emit_strategy_member_call(
         },
         _ => return None,
     };
-    let recv = match target {
-        Expr::AddrOf(inner) => (**inner).clone(),
-        _ => target.clone(),
-    };
-    let Expr::Identifier(recv_name) = &recv else { return None; };
     // 2026-08-12 (Iterable protocol): a LOCAL collection receiver
     // (`let ys: List<Int> = []; &ys <- 10`) resolves its type from the local
     // binding, not just a state field. 2026-08-18 (Phase C): a pooled
@@ -1048,7 +1064,7 @@ pub(super) fn emit_strategy_member_call(
                 .unwrap_or_else(|| prefix.clone())),
         }
     } else {
-        backend.emit_expr_inner(out, &recv_tmp, &recv, indent)
+        backend.emit_expr_inner(out, &recv_tmp, &Expr::Identifier(recv_name.to_string()), indent)
     };
     let mut arg_regs: Vec<(String, Type)> = Vec::new();
     if let Some(vreg) = value {
@@ -1081,6 +1097,13 @@ pub(super) fn emit_strategy_member_call(
 ///   explicit marker-based dispatch like InsertAt <~ ring_push(#Lh, #Rh).
 pub(super) fn emit_strategy_fn_call(backend: &mut LlvmBackend, out: &mut String, indent: &str,
     target: &Expr, op_def: &crate::ast::top::OperatorDef, value: Option<&str>) -> Option<String> {
+    emit_strategy_fn_call_name(backend, out, indent, &StrategyCall { recv: target.as_var_name()?, op: op_def, value })
+}
+
+/// 2026-11-09 (H5 seam refactor): name-based free-function dispatch.
+fn emit_strategy_fn_call_name(backend: &mut LlvmBackend, out: &mut String, indent: &str,
+    call: &StrategyCall<'_>) -> Option<String> {
+    let StrategyCall { recv: var_name, op: op_def, value } = *call;
     let pv = op_def.impl_args.as_ref()?;
     let (fn_name, markers): (&str, &[crate::ast::PropertyValue]) = match pv {
         crate::ast::PropertyValue::Identifier(s) => {
@@ -1096,7 +1119,6 @@ pub(super) fn emit_strategy_fn_call(backend: &mut LlvmBackend, out: &mut String,
         }
         _ => return None,
     };
-    let var_name = target.as_var_name()?;
 
     // 2026-07-20: Compute handle as ptrtoint of the variable's storage location.
     // Derive the handle from the state field or let-binding alloca.
@@ -1156,6 +1178,11 @@ fn emit_arrow_store(
     result: &str,
 ) {
     let crate::ast::Expr::Identifier(name) = target else { return };
+    emit_arrow_store_name(backend, out, indent, name, result);
+}
+
+/// 2026-11-09 (H5 seam refactor): store by target name (HIR arrow path).
+fn emit_arrow_store_name(backend: &mut LlvmBackend, out: &mut String, indent: &str, name: &str, result: &str) {
     if let Some(reg) = backend.fun.let_bindings.get(name) {
         // 2026-08-18 (Phase D, PiggyBank): a local bound to a VALUE register
         // (`let all: List<Int> = []; all ~<- piggy`) must REBIND to the extract
@@ -1165,7 +1192,7 @@ fn emit_arrow_store(
         if is_persistent_slot(backend, reg) {
             writeln!(out, "{}store i64 {}, ptr {}", indent, result, reg).ok();
         } else {
-            backend.fun.let_bindings.insert(name.clone(), result.to_string());
+            backend.fun.let_bindings.insert(name.to_string(), result.to_string());
         }
         return;
     }
@@ -1964,327 +1991,330 @@ fn emit_assign_value(
 }
 
 
-/// 2026-11-05 (H4 slice D): dual-fueled ArrowAssign value — `Ast` keeps the
-/// legacy path; `Hir` emits covered leaves natively through
-/// `emit_hir_operand` (uncovered leaves convert per-element). The dispatch
-/// still reads the AST target/value shapes (wire-fire, streams, insert/
-/// extract strategies, provenance), which drive arrow semantics.
-pub(crate) enum ArrowAssignValue<'a> {
-    Ast(&'a Box<Expr>),
-    Hir(&'a crate::hir::expr::HirExpr, &'a Box<Expr>),
+/// 2026-11-09 (H5 seam refactor): an arrow operand addressed by NAME/TYPE,
+/// not by AST shape. `name()` peels `AddrOf` layers to the identifier (the
+/// strategy lookup and stores only ever need the variable); `emit()` prefers
+/// the HIR operand and falls back losslessly to the reconstructed AST leaf.
+pub(crate) enum ArrowOperand<'a> {
+    Ast(&'a crate::ast::Expr),
+    Hir(&'a crate::hir::expr::HirExpr),
 }
 
-fn emit_arrow_value(
-    backend: &mut LlvmBackend,
-    out: &mut String,
-    indent: &str,
-    value: &ArrowAssignValue<'_>,
-) -> TypedRegister {
-    match value {
-        ArrowAssignValue::Ast(rhs) => backend.emit_expr(out, rhs, indent),
-        ArrowAssignValue::Hir(hir, ast) => {
-            if crate::backend::hir_emit_enabled() {
-                if let Some(reg) = backend.emit_hir_operand(out, hir, indent) {
-                    return reg;
+impl ArrowOperand<'_> {
+    fn name(&self) -> Option<&str> {
+        match self {
+            ArrowOperand::Ast(expr) => {
+                let mut t = *expr;
+                while let crate::ast::Expr::AddrOf(inner) = t {
+                    t = inner;
                 }
+                t.as_var_name()
             }
-            backend.emit_expr(out, ast, indent)
+            ArrowOperand::Hir(expr) => hir_addr_of_name(expr),
         }
     }
+
+    fn emit(&self, backend: &mut LlvmBackend, out: &mut String, indent: &str) -> TypedRegister {
+        match self {
+            ArrowOperand::Ast(expr) => backend.emit_expr(out, expr, indent),
+            ArrowOperand::Hir(expr) => backend.emit_hir_operand(out, expr, indent).unwrap_or_else(|| {
+                let ast = crate::hir::to_ast::expr(expr).expect("reconstructible arrow value");
+                backend.emit_expr(out, &ast, indent)
+            }),
+        }
+    }
+
+    fn to_ast(&self) -> Option<crate::ast::Expr> {
+        match self {
+            ArrowOperand::Ast(expr) => Some((*expr).clone()),
+            ArrowOperand::Hir(expr) => crate::hir::to_ast::expr(expr),
+        }
+    }
+
+    /// The value's declared type where the emitted register would lose it: an
+    /// identifier's binding type, or a tuple literal's element types. `None`
+    /// means "use the emitted register's type".
+    fn declared_type(&self, backend: &LlvmBackend) -> Option<crate::ast::Type> {
+        match self {
+            ArrowOperand::Ast(crate::ast::Expr::Identifier(n)) => backend.resolve_id_type(n),
+            ArrowOperand::Ast(crate::ast::Expr::Tuple(elems)) => Some(crate::ast::Type::Tuple(
+                elems.iter().map(|e| e.as_var_name()
+                    .and_then(|n| backend.resolve_id_type(n))
+                    .unwrap_or_else(crate::ast::Type::int)).collect(),
+            )),
+            ArrowOperand::Hir(expr) => hir_declared_value_type(expr, backend),
+            _ => None,
+        }
+    }
+}
+
+fn hir_addr_of_name(expr: &crate::hir::expr::HirExpr) -> Option<&str> {
+    use crate::hir::expr::{HirExpr, HirExprKind};
+    let mut cur: &HirExpr = expr;
+    while let HirExprKind::AddrOf(inner) = &cur.kind {
+        cur = inner;
+    }
+    match &cur.kind {
+        HirExprKind::Identifier(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn hir_declared_value_type(
+    expr: &crate::hir::expr::HirExpr,
+    backend: &LlvmBackend,
+) -> Option<crate::ast::Type> {
+    use crate::hir::expr::HirExprKind;
+    match &expr.kind {
+        HirExprKind::Identifier(name) => backend.resolve_id_type(name),
+        HirExprKind::Tuple(items) => Some(crate::ast::Type::Tuple(
+            items.iter().map(|item| match &item.kind {
+                HirExprKind::Identifier(name) => backend
+                    .resolve_id_type(name)
+                    .unwrap_or_else(crate::ast::Type::int),
+                _ => crate::ast::Type::int(),
+            }).collect(),
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) struct ArrowAssignCtx<'a> {
+    pub target: Option<ArrowOperand<'a>>,
+    pub value: ArrowOperand<'a>,
+    pub consume: bool,
 }
 
 pub(crate) fn emit_arrow_assign_statement(
     backend: &mut LlvmBackend,
     out: &mut String,
     indent: &str,
-    target: &Option<Box<Expr>>,
-    value_enum: &ArrowAssignValue<'_>,
-    consume: &bool,
+    ctx: &ArrowAssignCtx<'_>,
 ) -> TypedRegister {
-    let value_dual = value_enum;
-    let value = match value_enum {
-        ArrowAssignValue::Ast(a) => a,
-        ArrowAssignValue::Hir(_, a) => a,
+    if let Some(done) = arrow_fire_wire(backend, out, indent, ctx) {
+        return done;
+    }
+    if let Some(done) = arrow_stream_write(backend, out, indent, ctx) {
+        return done;
+    }
+    if let Some(done) = arrow_insert(backend, out, indent, ctx) {
+        return done;
+    }
+    if let Some(done) = arrow_extract(backend, out, indent, ctx) {
+        return done;
+    }
+    arrow_plain_copy(backend, out, indent, ctx);
+    if ctx.consume {
+        destroy_operand(backend, out, indent, &ctx.value);
+    }
+    TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
+}
+
+/// `w <- v` where `w` binds an `Event<_>` (an i64 wire id).
+fn arrow_fire_wire(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    ctx: &ArrowAssignCtx<'_>,
+) -> Option<TypedRegister> {
+    let wname = ctx.target.as_ref().and_then(ArrowOperand::name)?;
+    if !is_event_wire(backend, wname) {
+        return None;
+    }
+    let mut id_reg = backend.fun.let_bindings.get(wname).cloned()?;
+    if backend.fun.native_parameter_slots.contains(&id_reg) {
+        let loaded = backend.fun.gen_reg();
+        writeln!(out, "{indent}{loaded} = load i64, ptr {id_reg}").ok();
+        id_reg = loaded;
+    }
+    let val = ctx.value.emit(backend, out, indent);
+    let boxed = backend.adapt_to_i64(out, indent, &val);
+    let events_i = backend.fun.gen_reg();
+    writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
+    let st = if backend.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
+    writeln!(out, "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() })
+}
+
+/// `#StdOut <- v` / `#StdErr <- v`.
+fn arrow_stream_write(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    ctx: &ArrowAssignCtx<'_>,
+) -> Option<TypedRegister> {
+    let Some(name) = ctx.target.as_ref().and_then(ArrowOperand::name) else {
+        return None;
     };
-            // 2026-08-26 (async Phase D): FIRING an event wire — `w <- v;`
-            // where w binds an Event<_> (the i64 slot id). The compiled twin
-            // of the interpreter's Phase B fire: payload stored + waiters
-            // woken inside briev_event_fire.
-            if let Some(Expr::Identifier(wname)) = target.as_ref().map(|t| t.as_ref()) {
-                let is_wire = backend
-                    .fun
-                    .let_original_types
-                    .get(wname)
-                    .or_else(|| backend.fun.let_binding_types.get(wname))
-                    .map(is_event_type)
-                    .unwrap_or(false);
-                if is_wire {
-                    if let Some(mut id_reg) = backend.fun.let_bindings.get(wname).cloned() {
-                        // 2026-10-25: a reassigned Event parameter is bound to a
-                        // native parameter slot. The wire id is the loaded i64,
-                        // not the alloca address; passing the slot produced a
-                        // ptr-vs-i64 verifier error in async compiled events.
-                        if backend.fun.native_parameter_slots.contains(&id_reg) {
-                            let loaded = backend.fun.gen_reg();
-                            writeln!(out, "{indent}{loaded} = load i64, ptr {id_reg}").ok();
-                            id_reg = loaded;
-                        }
-                        let val = emit_arrow_value(backend, out, indent, value_dual);
-                        let boxed = backend.adapt_to_i64(out, indent, &val);
-                        let events_i = backend.fun.gen_reg();
-                        writeln!(out, "{indent}{events_i} = ptrtoint ptr @__briev_events to i64").ok();
-                        let st = if backend.ctx.defn_takes_state("briev_event_fire_impl") { "ptr %state, " } else { "" };
-                        writeln!(out, "{indent}call i64 @briev_event_fire_impl({st}i64 {events_i}, i64 {id_reg}, i64 {boxed})").ok();
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            // 2026-08-01 (Phase 3): the arrow — find the collection by the op
-            // binding on each side:
-            //   - the TARGET is a stream symbol (#StdOut/#StdErr) → a write;
-            //   - the TARGET has an InsertAt binding → INSERT (push): emit the
-            //     member/fn insert call with the value;
-            //   - the VALUE has an ExtractFrom/CopyFrom binding → READ/EXTRACT
-            //     (pop): emit the extract and store the result into the target
-            //     (or discard it when target is None);
-            //   - otherwise → a plain copy store into the target.
-            if let Some(t) = target.as_ref() {
-                if let Expr::Identifier(name) = t.as_ref() {
-                    if name == "#StdOut" || name == "#StdErr" {
-                        // 2026-08-01 (Phase 4): a stream write. `#StdOut` lowers
-                        // to the generic Print# (any type); `#StdErr` writes a
-                        // String via the stderr printer.
-                        if name == "#StdOut" {
-                            let call = Expr::Call("Print#".to_string(), vec![value.as_ref().clone()], None);
-                            backend.emit_expr(out, &call, indent);
-                        } else {
-                            let v = emit_arrow_value(backend, out, indent, value_dual);
-                            let reg = backend.fun.gen_reg();
-                            // 2026-09-08 (anti-pattern audit): stderr printer
-                            // resolves to the pure-Briev `eprint_str` defn
-                            // when present (stateful call below), else the
-                            // frgn_map/C fallback (frgn__eprint_str → C).
-                            // 2026-10-15 (core-usable purge): plain helper name.
-                            let sym = if backend.ctx.defn_params.contains_key("eprint_str") {
-                                "eprint_str".to_string()
-                            } else {
-                                backend.ctx.frgn_map.get("frgn__eprint_str")
-                                    .map(|sig| sig.name.clone())
-                                    .unwrap_or_else(|| "__eprint_str".to_string())
-                            };
-                            let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
-                            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
-                        }
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            if let Some(t) = target.as_ref() {
-                if let Some(op_def) = backend.find_insert_strategy(t).cloned() {
-                    // 2026-08-18 (Phase D, PiggyBank): only PUSH when the value
-                    // actually matches the target's element type (mirrors the
-                    // typechecker's arrow_ok). `all ~<- piggy` — target
-                    // `all: List<Int>`, value a PiggyBank — must fall through to
-                    // the EXTRACT (smash), not push the jar handle as an i64.
-                    // The value is emitted into a scratch buffer and only spliced
-                    // in when the push actually fires (a type-mismatched value
-                    // would otherwise leave dead IR behind).
-                    let mut val_buf = String::new();
-                    let val = {
-                        let out2 = &mut val_buf;
-                        emit_arrow_value(backend, out2, indent, value_dual)
-                    };
-                    let elem_ty = backend.insert_element_type(t);
-                    // 2026-08-18: an identifier VALUE that is a pooled instance
-                    // (`all ~<- piggy`) emits with the scalar Int FALLBACK type —
-                    // resolve its DECLARED type so the insert gate rejects the
-                    // push and falls through to the extract.
-                    // 2026-09-07 (tuple-literal push): a STRUCT LITERAL value
-                    // (`(keys[i], vals[i])`) also emits with the fallback Int
-                    // type — the emitted register carries no tuple info. When
-                    // the value is a Tuple expr, resolve its element types from
-                    // the sub-expressions so the push gate sees the real type.
-                    let val_ty = match value.as_ref() {
-                        crate::ast::Expr::Identifier(n) => {
-                            backend.resolve_id_type(n).unwrap_or_else(|| val.ty.clone())
-                        }
-                        crate::ast::Expr::Tuple(elems) => {
-                            let etys = elems.iter().map(|e| {
-                                match e {
-                                    crate::ast::Expr::Identifier(n) => {
-                                        backend.resolve_id_type(n)
-                                            .unwrap_or_else(|| crate::ast::Type::int())
-                                    }
-                                    _ => crate::ast::Type::int(),
-                                }
-                            }).collect();
-                            crate::ast::Type::Tuple(etys)
-                        }
-                        _ => val.ty.clone(),
-                    };
-                    // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1): a
-                    // CONCRETE value into a dyn-element collection — the
-                    // typechecker admits it (structural conformance); the
-                    // push site boxes it below. Without this admission the
-                    // gate rejects, the push silently falls through, and the
-                    // list stays empty (the read is garbage).
-                    let dyn_push: Option<(String, String)> =
-                        elem_ty.as_ref().and_then(|et| match et {
-                            crate::ast::Type::Dyn(t) => match (t.as_ref(), &val_ty) {
-                                (crate::ast::Type::Custom(tr), crate::ast::Type::Custom(c)) if c != tr => {
-                                    Some((tr.clone(), c.clone()))
-                                }
-                                _ => None,
-                            },
-                            _ => None,
-                        });
-                    let matches = elem_ty.as_ref().map_or(true, |et| {
-                        // 2026-08-18 (Phase D): a BARE generic param (`K` in
-                        // `PiggyBank<K>` — the backend instance type carries no
-                        // concrete args) can't be compared — allow the push (the
-                        // typechecker already validated it; the member body is
-                        // type-agnostic, storing i64 handles). Only a CONCRETE
-                        // mismatch (`List<Int>` target vs a PiggyBank value) must
-                        // fall through to the extract.
-                        let bare_generic = matches!(et, crate::ast::Type::Custom(n)
-                            if n.len() == 1 && n.chars().next().unwrap().is_uppercase());
-                        // 2026-09-07 (tuple-literal push): a Tuple element type
-                        // with generic params (e.g. `(K, V)`) matches a concrete
-                        // tuple of the same arity — the generic params are
-                        // instantiated to the element types at the use site.
-                        let tuple_arity_match = matches!((et, &val_ty),
-                            (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b))
-                                if a.len() == b.len());
-                        // 2026-10-05 (json.bv): an enum CONSTRUCTOR value
-                        // (`IntVal(5)`) reports `Type::int()` (the i64 handle)
-                        // while the declared element type is the enum
-                        // (`JsonValue`). Both are the same handle — a bare
-                        // `*et == val_ty` rejected the push and the arrow fell
-                        // through to a plain rebind (the list never grew).
-                        let enum_handle_ok = is_enum_handle_type(backend, et)
-                            && (is_enum_handle_type(backend, &val_ty)
-                                || matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"));
-                        bare_generic
-                            || *et == val_ty
-                            || enum_handle_ok
-                            || tuple_arity_match
-                            || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
-                                && matches!(&val_ty, crate::ast::Type::Custom(n) if n == "Int"))
-                            // 2026-10-14 (tier2 phase 1, ADDENDUM 3 hole 1):
-                            // a CONCRETE value into a dyn-element collection —
-                            // the typechecker admits it (structural
-                            // conformance); the push site boxes it below.
-                            || dyn_push.is_some()
-                    });
-                    let matches = matches || dyn_push.is_some();
-                    if matches {
-                        out.push_str(&val_buf);
-                        // 2026-10-14 (tier2 phase 1, coll-element-size
-                        // ADDENDUM 3 hole 1): a CONCRETE value pushed into a
-                        // dyn-element collection is BOXED at the push site
-                        // (tag + fat pointer, the same box the let-coercion
-                        // emits) — the raw concrete handle stored into a dyn
-                        // list reads garbage at dispatch. To undo: delete
-                        // this coercion; the push stores raw again.
-                        // The concrete name comes from val_ty (the RESOLVED
-                        // value type — a struct literal's register carries no
-                        // type info); val.name is the data handle either way.
-                        let push_val = if let Some((trait_name, concrete)) = &dyn_push {
-                            let tag = backend
-                                .ctx
-                                .dyn_concrete_tag_of
-                                .get(&format!("{trait_name}::{concrete}"))
-                                .copied()
-                                .unwrap_or(0);
-                            Some(backend.coerce_to_dyn(
-                                out,
-                                &val.name,
-                                &val.name,
-                                trait_name,
-                                concrete,
-                                tag,
-                                indent,
-                            ))
-                        } else {
-                            None
-                        };
-                        // 2026-11-02 (enum value model): a pushed enum is an
-                        // OWNING collection element. Call results may point at
-                        // a caller-owned `%esrt` stack image; copy it to owned
-                        // storage before publishing the handle into the list.
-                        let owned_enum = if elem_ty
-                            .as_ref()
-                            .is_some_and(|et| is_enum_handle_type(backend, et))
-                        {
-                            let mut enum_val = val.clone();
-                            if let Some(et) = &elem_ty {
-                                enum_val.ty = et.clone();
-                            }
-                            backend.own_enum_value(out, indent, &enum_val)
-                        } else {
-                            val.clone()
-                        };
-                        let pushed = push_val.as_ref().unwrap_or(&owned_enum);
-                        if emit_strategy_member_call(backend, out, indent, t, &op_def, Some(&pushed.name)).is_none() {
-                            emit_strategy_fn_call(backend, out, indent, t, &op_def, Some(&pushed.name));
-                        }
-                        return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
-                    }
-                }
-            }
-            if let Some(op_def) = backend.find_extract_strategy_for_arrow(value, *consume).cloned() {
-                // EXTRACT — the value is the collection. Member-bound
-                // ExtractFrom (e.g. the Stack's self-bound `pop`) dispatches to
-                // the member call, which returns the popped value; the
-                // free-function convention is the fallback. The result is
-                // stored into the target (or discarded). 2026-08-18 (Phase D):
-                // the CONSUME flag picks CopyFrom (`<-`) vs ExtractFrom (`~<-`).
-                let result = match emit_strategy_member_call(backend, out, indent, value, &op_def, None) {
-                    Some(r) => r,
-                    None => match emit_strategy_fn_call(backend, out, indent, value, &op_def, None) {
-                        Some(r) => r,
-                        None => return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() },
-                    },
-                };
-                if let Some(t) = target.as_ref() {
-                    emit_arrow_store(backend, out, indent, t, &result);
-                }
-                if *consume {
-                    // 2026-08-01 (Phase 3): a destructive extract also destroys
-                    // the consumed collection's backing (strategy-aware free).
-                    emit_destroy_consumed(backend, out, indent, value);
-                }
-                return TypedRegister { name: result, ty: Type::int() };
-            }
-            // Plain copy — the arrow as a normal assignment, emitted only when
-            // the target is a resolvable local/state field. When nothing
-            // resolves, the statement is a no-op — matching the pre-Phase-3
-            // behavior where the unresolvable `<-` fell through silently.
-            if let Some(t) = target.as_ref() {
-                if let Expr::Identifier(name) = t.as_ref() {
-                    // 2026-08-18 (Phase C): a pooled member-field target
-                    // (`items` → `p.items`) is resolvable too — the bare name
-                    // falls through to the instance column, else the plain
-                    // copy would be a silently-dropped no-op.
-                    let slot = backend
-                        .fun
-                        .self_prefix
-                        .as_ref()
-                        .map(|(prefix, _)| format!("{}.{}", prefix, name))
-                        .filter(|s| backend.ctx.field_index_map.contains_key(s));
-                    let resolvable = backend.fun.let_bindings.contains_key(name)
-                        || backend.ctx.field_index_map.contains_key(name)
-                        || slot.is_some();
-                    if resolvable {
-                        let val = emit_arrow_value(backend, out, indent, value_dual);
-                        emit_arrow_store_local(backend, out, indent, name, &val);
-                    }
-                }
-            }
-            if *consume {
-                emit_destroy_consumed(backend, out, indent, value);
-            }
-            TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
+    match name {
+        "#StdOut" => {
+            let ast = ctx.value.to_ast()?;
+            backend.emit_expr(out, &Expr::Call("Print#".to_string(), vec![ast], None), indent);
+        }
+        "#StdErr" => {
+            let v = ctx.value.emit(backend, out, indent);
+            let reg = backend.fun.gen_reg();
+            let sym = if backend.ctx.defn_params.contains_key("eprint_str") {
+                "eprint_str".to_string()
+            } else {
+                backend.ctx.frgn_map.get("frgn__eprint_str")
+                    .map(|sig| sig.name.clone())
+                    .unwrap_or_else(|| "__eprint_str".to_string())
+            };
+            let st = if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" };
+            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, reg, sym, st, v.name).ok();
+        }
+        _ => return None,
+    }
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() })
+}
+
+/// `&coll <- v` / `coll ~<- v` where the target declares `InsertAt`.
+fn arrow_insert(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    ctx: &ArrowAssignCtx<'_>,
+) -> Option<TypedRegister> {
+    let tname = ctx.target.as_ref().and_then(ArrowOperand::name)?;
+    let op_def = backend.find_insert_strategy_name(tname).cloned()?;
+    let mut val_buf = String::new();
+    let val = ctx.value.emit(backend, &mut val_buf, indent);
+    let elem_ty = backend.insert_element_type_name(tname);
+    let val_ty = ctx.value.declared_type(backend).unwrap_or_else(|| val.ty.clone());
+    let dyn_push = dyn_push_pair(elem_ty.as_ref(), &val_ty);
+    if !insert_matches(backend, elem_ty.as_ref(), &val_ty, &dyn_push) {
+        return None;
+    }
+    out.push_str(&val_buf);
+    let push_val = if let Some((trait_name, concrete)) = &dyn_push {
+        let tag = backend.ctx.dyn_concrete_tag_of
+            .get(&format!("{trait_name}::{concrete}"))
+            .copied().unwrap_or(0);
+        Some(backend.coerce_to_dyn(out, &val.name, &val.name, trait_name, concrete, tag, indent))
+    } else {
+        None
+    };
+    let owned_enum = if elem_ty.as_ref().is_some_and(|et| is_enum_handle_type(backend, et)) {
+        let mut enum_val = val.clone();
+        if let Some(et) = &elem_ty {
+            enum_val.ty = et.clone();
+        }
+        backend.own_enum_value(out, indent, &enum_val)
+    } else {
+        val.clone()
+    };
+    let pushed = push_val.as_ref().unwrap_or(&owned_enum);
+    let call = StrategyCall { recv: tname, op: &op_def, value: Some(&pushed.name) };
+    if emit_strategy_member_call_name(backend, out, indent, &call).is_none() {
+        emit_strategy_fn_call_name(backend, out, indent, &call);
+    }
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() })
+}
+
+/// `x <- coll` / `x ~<- coll` where the value declares `ExtractFrom`/
+/// `CopyFrom` (consume picks the order).
+fn arrow_extract(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    ctx: &ArrowAssignCtx<'_>,
+) -> Option<TypedRegister> {
+    let vname = ctx.value.name()?;
+    let op_def = backend.find_extract_strategy_for_arrow_name(vname, ctx.consume).cloned()?;
+    let call = StrategyCall { recv: vname, op: &op_def, value: None };
+    let result = emit_strategy_member_call_name(backend, out, indent, &call)
+        .or_else(|| emit_strategy_fn_call_name(backend, out, indent, &call))?;
+    if let Some(tname) = ctx.target.as_ref().and_then(ArrowOperand::name) {
+        emit_arrow_store_name(backend, out, indent, tname, &result);
+    }
+    if ctx.consume {
+        emit_destroy_consumed_name(backend, out, indent, vname);
+    }
+    Some(TypedRegister { name: result, ty: Type::int() })
+}
+
+/// Plain copy into a resolvable local/state field; unresolvable targets are a
+/// silent no-op (pre-Phase-3 behavior).
+fn arrow_plain_copy(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    ctx: &ArrowAssignCtx<'_>,
+) {
+    let Some(tname) = ctx.target.as_ref().and_then(ArrowOperand::name) else {
+        return;
+    };
+    let slot = backend.fun.self_prefix.as_ref()
+        .map(|(prefix, _)| format!("{}.{}", prefix, tname))
+        .filter(|s| backend.ctx.field_index_map.contains_key(s));
+    let resolvable = backend.fun.let_bindings.contains_key(tname)
+        || backend.ctx.field_index_map.contains_key(tname)
+        || slot.is_some();
+    if !resolvable {
+        return;
+    }
+    let val = ctx.value.emit(backend, out, indent);
+    emit_arrow_store_local(backend, out, indent, tname, &val);
+}
+
+fn is_event_wire(backend: &LlvmBackend, name: &str) -> bool {
+    backend.fun.let_original_types.get(name)
+        .or_else(|| backend.fun.let_binding_types.get(name))
+        .map(is_event_type)
+        .unwrap_or(false)
+}
+
+fn dyn_push_pair(
+    elem_ty: Option<&crate::ast::Type>,
+    val_ty: &crate::ast::Type,
+) -> Option<(String, String)> {
+    let et = elem_ty?;
+    let crate::ast::Type::Dyn(t) = et else { return None };
+    match (t.as_ref(), val_ty) {
+        (crate::ast::Type::Custom(tr), crate::ast::Type::Custom(c)) if c != tr => {
+            Some((tr.clone(), c.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn insert_matches(
+    backend: &LlvmBackend,
+    elem_ty: Option<&crate::ast::Type>,
+    val_ty: &crate::ast::Type,
+    dyn_push: &Option<(String, String)>,
+) -> bool {
+    let Some(et) = elem_ty else { return true };
+    let bare_generic = matches!(et, crate::ast::Type::Custom(n)
+        if n.len() == 1 && n.chars().next().unwrap().is_uppercase());
+    let tuple_arity_match = matches!((et, val_ty),
+        (crate::ast::Type::Tuple(a), crate::ast::Type::Tuple(b)) if a.len() == b.len());
+    let enum_handle_ok = is_enum_handle_type(backend, et)
+        && (is_enum_handle_type(backend, val_ty)
+            || matches!(val_ty, crate::ast::Type::Custom(n) if n == "Int"));
+    bare_generic
+        || et == val_ty
+        || enum_handle_ok
+        || tuple_arity_match
+        || (matches!(et, crate::ast::Type::Custom(n) if n == "Int")
+            && matches!(val_ty, crate::ast::Type::Custom(n) if n == "Int"))
+        || dyn_push.is_some()
+}
+
+fn destroy_operand(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    operand: &ArrowOperand<'_>,
+) {
+    match operand.name() {
+        Some(name) => emit_destroy_consumed_name(backend, out, indent, name),
+        None => {
+            let reg = operand.emit(backend, out, indent);
+            emit_destroy_register(backend, out, indent, &reg.name);
+        }
+    }
 }
 
 pub(crate) fn emit_assign_statement(
@@ -3088,61 +3118,19 @@ pub(crate) fn emit_let_statement(
                     backend.emit_expr(out, &crate::ast::Expr::Identifier(alias.clone()), indent)
                 }
                 Some(crate::ast::Expr::Lambda(params, body)) => {
-                    // 2026-08-06 (fix): escaping closures. The binding value is
-                    // a heap env block `[fn_ptr, cap1..capN]`; calls go indirect
-                    // through the stored fn_ptr, and the value can be passed
-                    // around (a closure is a real first-class value now).
-                    let free_vars =
-                        crate::backend::llvm::context::collect_free_vars(body, &params);
-                    let symbol =
-                        format!("briev_closure_{}", backend.ctx.pending_closures.len());
-                    backend
-                        .fun
-                        .closure_lets
-                        .insert(name.to_string(), crate::backend::llvm::context::ClosureDef {
+                    // 2026-11-09 (H5 seam refactor): the binding registers the
+                    // closure definition and shares the HIR value emitter.
+                    let hir_body = crate::hir::lower_standalone_expr(body);
+                    let free_vars = crate::hir::free_vars::collect_free_vars(&hir_body, &params);
+                    backend.fun.closure_lets.insert(
+                        name.to_string(),
+                        crate::backend::llvm::context::ClosureDef {
                             params: params.clone(),
-                            body: body.clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    backend
-                        .ctx
-                        .pending_closures
-                        .push(crate::backend::llvm::context::PendingClosure {
-                            symbol: symbol.clone(),
-                            params: params.clone(),
-                            body: (**body).clone(),
-                            free_vars: free_vars.clone(),
-                        });
-                    // Env block: [fn_ptr][cap1..capN], 8 bytes per slot.
-                    let env_size = 8 * (1 + free_vars.len());
-                    let alloc = backend.fun.gen_reg();
-                    writeln!(out, "{}{}_p = call ptr @malloc(i64 {})", indent, alloc, env_size).ok();
-                    writeln!(out, "{}{} = ptrtoint ptr {}_p to i64", indent, alloc, alloc).ok();
-                    let env_p = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, env_p, alloc).ok();
-                    let fn_reg = backend.fun.gen_reg();
-                    writeln!(out, "{}{} = ptrtoint ptr @{} to i64", indent, fn_reg, symbol).ok();
-                    writeln!(out, "{}store i64 {}, ptr {}", indent, fn_reg, env_p).ok();
-                    for (j, var) in free_vars.iter().enumerate() {
-                        let cap = backend
-                            .emit_expr(out, &crate::ast::Expr::Identifier(var.clone()), indent);
-                        // 2026-11-03 (Proof 3 condition 2): a captured enum must
-                        // own its image; the closure (heap env) can outlive the
-                        // frame that produced the captured image. The `let g =
-                        // x => …` path constructs its own env here, separate
-                        // from the Expr::Lambda arm — both must own. No-op for
-                        // non-enum captures.
-                        let cap = backend.own_enum_value(out, indent, &cap);
-                        let slot = backend.fun.gen_reg();
-                        writeln!(
-                            out,
-                            "{}{} = getelementptr i64, ptr {}, i64 {}",
-                            indent, slot, env_p, 1 + j
-                        )
-                        .ok();
-                        writeln!(out, "{}store i64 {}, ptr {}", indent, cap.name, slot).ok();
-                    }
-                    TypedRegister { name: alloc, ty: Type::int() }
+                            body: hir_body.clone(),
+                            free_vars,
+                        },
+                    );
+                    backend.emit_lambda_value(out, indent, &params, &hir_body)
                 }
                 Some(e) => {
                     // 2026-08-01 (E): `vol let x = <rhs>` — loads inside the
@@ -3549,14 +3537,24 @@ pub(crate) fn emit_destroy_consumed(
     value: &crate::ast::Expr,
 ) {
     if let crate::ast::Expr::Identifier(name) = value {
-        let resolvable = backend.fun.let_bindings.contains_key(name)
-            || backend.ctx.field_index_map.contains_key(name)
-            || backend.fun.param_slots.values().any(|s| s == name);
-        if !resolvable {
-            return;
-        }
+        emit_destroy_consumed_name(backend, out, indent, name);
+        return;
     }
     let reg = backend.emit_expr(out, value, indent);
+    emit_destroy_register(backend, out, indent, &reg.name);
+}
+
+/// 2026-11-09 (H5 seam refactor): destroy a consumed collection addressed by
+/// name (the HIR arrow path). Unresolvable names are a no-op, matching the AST
+/// path; the handle is loaded through the ordinary identifier emission.
+fn emit_destroy_consumed_name(backend: &mut LlvmBackend, out: &mut String, indent: &str, name: &str) {
+    let resolvable = backend.fun.let_bindings.contains_key(name)
+        || backend.ctx.field_index_map.contains_key(name)
+        || backend.fun.param_slots.values().any(|s| s == name);
+    if !resolvable {
+        return;
+    }
+    let reg = backend.emit_expr(out, &crate::ast::Expr::Identifier(name.to_string()), indent);
     emit_destroy_register(backend, out, indent, &reg.name);
 }
 
