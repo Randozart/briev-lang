@@ -1,3 +1,18 @@
+## Interpreter negated a Float literal to Int(0) — FIXED 2026-11-10
+
+**Symptom:** `let x: Float = -1.5;` evaluated to `Int(0)`, while
+`(0.0 - 1.5)` evaluated correctly to `Float(-1.5)`. Found by the well-typed
+program generator (`src/typed_program.rs`), which flagged the
+interpreter/model disagreement.
+
+**Root cause:** `eval_unary_op`'s `UnaryOpKind::Neg` used
+`val.as_i64().unwrap_or(0)`. `as_i64()` returns `None` for a `Float`
+(an `Atom::Float`), so a negated float silently collapsed to `Int(0)`.
+
+**Fix:** negate an `Atom::Float` as a float (`Value::float(-f)`); non-float
+operands keep the integer path. Regression:
+`typed_program::tests::negative_float_literal_is_a_float`.
+
 ## Interpreter Int↔Float casts were identity — FIXED 2026-11-10
 
 **Symptom:** `7 as Float` stayed `Int(7)` and `2.75 as Int` stayed

@@ -31,3 +31,11 @@ pub fn typecheck(data: &[u8]) {
     };
     let _ = briev_compiler::library::parse_and_check("fuzz-input.bv", source);
 }
+
+/// 2026-11-10: grammar-aware generation of WELL-TYPED programs with a semantic
+/// oracle. Unlike the byte-oriented `frontend` target, this reaches the
+/// typechecker and interpreter deeply and asserts agreement — see
+/// `briev_compiler::typed_program`.
+pub fn welltyped(data: &[u8]) {
+    briev_compiler::typed_program::check(data);
+}

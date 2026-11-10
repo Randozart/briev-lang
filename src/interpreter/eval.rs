@@ -2219,6 +2219,12 @@ fn eval_unary_op(
     let val = eval_expr(expr, heap, bindings, functions)?;
     match kind {
         UnaryOpKind::Neg => {
+            // 2026-11-10 (fuzz finding): a Float must negate to a Float.
+            // `as_i64()` returns None for a Float, so the old `unwrap_or(0)`
+            // silently collapsed `-1.5` to `Int(0)`.
+            if let Value::Atom(Atom::Float(f)) = &val {
+                return Ok(Value::float(-f));
+            }
             let n = val.as_i64().unwrap_or(0);
             Ok(i64_to_bits(n.wrapping_neg()))
         }
