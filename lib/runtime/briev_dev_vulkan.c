@@ -252,6 +252,10 @@ static uint32_t vk_queue_family_index = 0;
 static uint64_t vk_queue = 0;
 static uint32_t vk_host_visible_type = 0;
 static uint32_t vk_timestamp_valid_bits = 0;
+// 2026-11-09 (lane ceilings): Vulkan timestamps are TICKS, converted to ns by
+// VkPhysicalDeviceLimits::timestampPeriod (52.0833 ns on B390). Treating the
+// raw delta as ns under-reported every kernel by ~52x.
+static double vk_timestamp_period = 1.0;
 
 static int (*vkCreateInstance)(const void*, const void*, VkInstance*) = NULL;
 static void (*vkDestroyInstance)(VkInstance, const void*) = NULL;
@@ -565,7 +569,17 @@ static int briev_dev_vulkan_init(void) {
         // driverVersion, vendorID, deviceID, deviceType).
         unsigned char props[4096];
         memset(props, 0, sizeof(props));
+        *(uint32_t*)props = 0; // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2? plain props starts at 0
+        memset(props, 0, sizeof(props));
         vkGetPhysicalDeviceProperties(vk_physical_device, props);
+        {
+            float period = 0.0f;
+            memcpy(&period, props + 720 /* offsetof(limits.timestampPeriod) */, 4);
+            if (period > 0.0f) {
+                vk_timestamp_period = (double)period;
+                if (verbose) fprintf(stderr, "[briev_accel/vulkan] timestampPeriod=%.4f ns/tick\n", period);
+            }
+        }
         memcpy(vk_device_name, props + 20, sizeof(vk_device_name) - 1);
         vk_device_name[sizeof(vk_device_name) - 1] = '\0';
         if (verbose) fprintf(stderr, "[briev_accel/vulkan] device: %s\n", vk_device_name);
@@ -1156,7 +1170,7 @@ static int briev_dev_vulkan_launch(void* handle, const void* proj, size_t proj_b
                                            1 /* VK_QUERY_RESULT_64_BIT */);
             if (verbose) fprintf(stderr, "[briev_accel/vulkan] queryResults res=%d ts[0]=%lu ts[1]=%lu\n", qr, (unsigned long)ts[0], (unsigned long)ts[1]);
             if (qr == VK_SUCCESS && ts[1] > ts[0]) {
-                double gpu_ns = (double)(ts[1] - ts[0]);
+                double gpu_ns = (double)(ts[1] - ts[0]) * vk_timestamp_period;
                 fprintf(stderr, "# gpu_time: %.3f ms\n", gpu_ns / 1e6);
             } else {
                 fprintf(stderr, "# gpu_time: N/A (res=%d)\n", qr);
@@ -1518,7 +1532,7 @@ ts_read:
                                        sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
         if (verbose) fprintf(stderr, "[briev_accel/vulkan] queryResults res=%d ts[0]=%lu ts[1]=%lu\n", qr, (unsigned long)ts[0], (unsigned long)ts[1]);
         if (qr == VK_SUCCESS && ts[1] > ts[0]) {
-            fprintf(stderr, "# gpu_time: %.3f ms\n", (double)(ts[1] - ts[0]) / 1e6);
+            fprintf(stderr, "# gpu_time: %.3f ms\n", (double)(ts[1] - ts[0]) * vk_timestamp_period / 1e6);
         } else {
             fprintf(stderr, "# gpu_time: N/A (res=%d)\n", qr);
         }

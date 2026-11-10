@@ -173,3 +173,41 @@ and marked provisional. Briev GEMM 4096 f16 wall (460 ms) vs device-timestamp
 Next: fix Vulkan timestamp measurement; then attribute the L0 ~2× elementwise
 gap (byte-offset state addressing / index math) and the f16-GEMM
 tensor-lowering gap; implement residency for L0/NEO (wall → device).
+
+## W2d CORRECTED — Vulkan ticks fixed (2026-11-09)
+
+Vulkan timestamps are device TICKS; the driver treated them as ns. Now scaled
+by `VkPhysicalDeviceLimits::timestampPeriod` (**52.0833 ns/tick** on B390).
+Device times are credible and consistent with wall for large kernels.
+
+| shape | ceiling (CL C) | Briev-Vulkan | Briev-L0 | Briev-NEO | ratio Vk / L0 / NEO vs ceiling |
+|---|---|---|---|---|---|
+| elem 1Mi f32 | 0.080 | **0.076** | 0.205 | **0.025** | 0.95x / 2.6x / 0.31x |
+| elem 1Mi f16 native | 0.047 | **0.046** | 0.104 | **0.019** | 0.98x / 2.2x / 0.40x |
+| reduce 4096×1024 f32 | 0.173 | 0.353 | **0.166** | (flaky) | 2.0x / 0.96x / — |
+| reduce 4096×1024 f16 | 0.097 | 0.232 | 0.133 | **0.029** | 2.4x / 1.4x / 0.30x |
+| GEMM 512³ f32 | 0.421 | **0.123** | CPU fallback | CPU fallback | **0.29x** / — / — |
+| GEMM 512³ f16 | 0.233 | 0.957 | 0.516 | 0.563 | 4.1x / 2.2x / 2.4x |
+| GEMM 4096³ f32 | 94.2 | **39.7** | CPU fallback | CPU fallback | **0.42x** / — / — |
+| GEMM 4096³ f16 | 84.4 | 459.6 | 983.6 | 115.2 | 5.4x / 11.7x / 1.36x |
+
+Attribution:
+- **Vulkan f32 GEMM beats the hand OpenCL C reference** at both 512³ (0.29x)
+  and 4096³ (0.42x): the derived tensor/vec4 path works; the C reference is a
+  simple 64×64 scalar-accumulate kernel, so the lane's real ceiling is above
+  it (a GLSL/XMX reference is W2c).
+- **Elementwise f32/f16: Vulkan at parity with the C ceiling**; L0 ~2–2.6x
+  slower (byte-offset state addressing / index math / no vec4); NEO **~2.5–5x
+  faster** than the simple C reference (its compiler vectorizes the same
+  source form; the reference is the weak link, not the lane).
+- **f16 GEMM is the outlier**: Vulkan 4–5x, L0 11.7x, NEO 1.4x off. The
+  `matmul_f16!` body (explicit casts, f32 accumulate) does not reach the
+  tensor/coopmat lowering; it takes the general kernel. Highest-value W3 item.
+- f32 GEMM on Intel lanes remains the documented Vulkan-only boundary.
+- Wall in `.bv` paths is dominated by the full-copy launch (e.g. g0_elem
+  8 ms wall vs 0.028 ms device): L0/NEO residency is the other W3 item.
+- Remaining timing caveat: NEO occasionally hangs/times out on a gate
+  (BUGS.md exact-fold hang); a NA row means the run did not return.
+
+INDEX: matrix now usable for f32/f16 elem, reduce, f16 GEMM, Vulkan f32 GEMM.
+Next: f16 GEMM tensor path, L0/NEO residency, and the GLSL ceiling reference.
