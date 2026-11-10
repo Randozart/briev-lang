@@ -42,6 +42,8 @@ a tolerance-aware trace channel. Recorded as an OPEN finding in `BUGS.md`.
 - `cargo test --lib` — see below
 - `memory_campaign` families 5/6/7 — 6 cases each, clean under Valgrind + ASan
 - cast regression tests — `interpreter::eval::tests::test_cast_*`
+- **broad sweep** (families 0,2,3,4,5,6,7 × seeds 11,22 × 10 cases = 140
+  programs) — all clean under Valgrind + ASan; zero findings
 
 ## Follow-ups
 
