@@ -113,6 +113,7 @@ static int (*zeEventDestroy)(lz_handle) = NULL;
 static int (*zeEventPoolDestroy)(lz_handle) = NULL;
 static int (*zeEventHostSynchronize)(lz_handle, uint64_t) = NULL;
 static int (*zeEventQueryKernelTimestamp)(lz_handle, lz_kernel_ts*) = NULL;
+static int (*zeEventHostReset)(lz_handle) = NULL;
 
 static int load_l0_symbols(void) {
     lz_lib = dlopen("libze_loader.so.1", RTLD_LAZY | RTLD_LOCAL);
@@ -152,6 +153,7 @@ static int load_l0_symbols(void) {
     LOAD(zeEventPoolDestroy);
     LOAD(zeEventHostSynchronize);
     LOAD(zeEventQueryKernelTimestamp);
+    LOAD(zeEventHostReset);
 #undef LOAD
     return 1;
 }
@@ -279,6 +281,10 @@ typedef struct {
     size_t bytes;      // staging capacity
     void* staging;     // host-USM staging (device-accessible on iGPU)
     uint32_t local_x;
+    // 2026-11-09: ONE reusable timestamp event per kernel — per-dispatch pool
+    // creation cost ~2 ms on L0 and masked the residency win.
+    lz_handle ev_pool;
+    lz_handle ev;
 } BrievLzKernel;
 
 static int briev_dev_levelzero_create_kernel(const uint8_t* spirv, size_t size, void** out) {
@@ -401,30 +407,10 @@ static int briev_dev_levelzero_create_kernel(const uint8_t* spirv, size_t size, 
     return 1;
 }
 
-static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t proj_bytes,
-                                      size_t global_n, void* proj_out) {
-    BrievLzKernel* k = (BrievLzKernel*)handle;
-    // Grow the host-USM staging to the projection extent (first launch —
-    // projections are fixed per program once the bound is known).
-    if (!k->staging || k->bytes < proj_bytes) {
-        if (k->staging) {
-            zeMemFree(lz_ctx, k->staging);
-            k->staging = NULL;
-        }
-        lz_host_mem_desc hd = {0};
-        hd.stype = ZE_ST_HOST_MEM_ALLOC_DESC;
-        hd.flags = 0;
-        int res = zeMemAllocHost(lz_ctx, &hd, proj_bytes, 64, &k->staging);
-        if (res != ZE_SUCCESS) {
-            if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] zeMemAllocHost failed res=%d bytes=%zu\n",
-                                   res, proj_bytes);
-            k->staging = NULL;
-            return 0;
-        }
-        k->bytes = proj_bytes;
-        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] staging %zu bytes (host USM) n=%llu\n", proj_bytes, (unsigned long long)global_n);
-    }
-    memcpy(k->staging, proj, proj_bytes);
+/// 2026-11-09 (lane ceilings / W3 residency): dispatch the kernel against the
+/// PERSISTENT host-USM staging — no host copies, no download. Timestamp and
+/// verbose prints preserved for the measurement lane.
+static int lz_dispatch(BrievLzKernel* k, size_t global_n) {
     // Kernel signature: main(ptr %state, i64 %n) — arg values are copied by
     // zeKernelSetArgumentValue at set time.
     void* sp = k->staging;
@@ -438,7 +424,6 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
         return 0;
     }
     if (global_n == 0) {
-        memcpy(proj_out, k->staging, proj_bytes);
         return 1;
     }
     uint32_t local = k->local_x ? k->local_x : 256;
@@ -449,19 +434,25 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
     // 2026-11-09 (lane ceilings): timestamp event for device-time reporting.
     lz_event_pool_desc pd = { 0x10 /* EVENT_POOL_DESC */, NULL, 4 /* KERNEL_TIMESTAMP */, 1 };
     lz_event_desc ed = { 0x11 /* EVENT_DESC */, NULL, 0, 4 /* HOST scope */, 0 };
-    lz_handle pool = NULL, event = NULL;
-    int ev_res = zeEventPoolCreate(lz_ctx, &pd, 0, NULL, &pool);
-    if (ev_res != ZE_SUCCESS) {
-        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] event pool failed res=%d\n", ev_res);
-    }
-    int have_ev = 0;
-    if (ev_res == ZE_SUCCESS) {
-        ev_res = zeEventCreate(pool, &ed, &event);
-        if (ev_res != ZE_SUCCESS) {
-            if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] event create failed res=%d\n", ev_res);
-        } else {
-            have_ev = 1;
+    lz_handle pool = k->ev_pool, event = k->ev;
+    int have_ev = event != NULL;
+    if (!have_ev && g_verbose) {
+        int ev_res = zeEventPoolCreate(lz_ctx, &pd, 0, NULL, &pool);
+        if (ev_res == ZE_SUCCESS) {
+            ev_res = zeEventCreate(pool, &ed, &event);
+            if (ev_res == ZE_SUCCESS) {
+                k->ev_pool = pool;
+                k->ev = event;
+                have_ev = 1;
+            } else if (g_verbose) {
+                fprintf(stderr, "[briev_accel/levelzero] event create failed res=%d\n", ev_res);
+            }
+        } else if (g_verbose) {
+            fprintf(stderr, "[briev_accel/levelzero] event pool failed res=%d\n", ev_res);
         }
+    }
+    if (have_ev) {
+        zeEventHostReset(event);
     }
     res = zeCommandListAppendLaunchKernel(lz_cmd_list, k->kernel, &gc,
                                           have_ev ? event : NULL, 0, NULL);
@@ -499,11 +490,59 @@ static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t pro
             }
             fprintf(stderr, "# gpu_time: %.3f ms\n", ms);
         }
-        zeEventDestroy(event);
-        zeEventPoolDestroy(pool);
+    }
+    return 1;
+}
+
+static int briev_dev_levelzero_launch(void* handle, const void* proj, size_t proj_bytes,
+                                      size_t global_n, void* proj_out) {
+    BrievLzKernel* k = (BrievLzKernel*)handle;
+    // Grow the host-USM staging to the projection extent (first launch —
+    // projections are fixed per program once the bound is known).
+    if (!k->staging || k->bytes < proj_bytes) {
+        if (k->staging) {
+            zeMemFree(lz_ctx, k->staging);
+            k->staging = NULL;
+        }
+        lz_host_mem_desc hd = {0};
+        hd.stype = ZE_ST_HOST_MEM_ALLOC_DESC;
+        hd.flags = 0;
+        int res = zeMemAllocHost(lz_ctx, &hd, proj_bytes, 64, &k->staging);
+        if (res != ZE_SUCCESS) {
+            if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] zeMemAllocHost failed res=%d bytes=%zu\n",
+                                   res, proj_bytes);
+            k->staging = NULL;
+            return 0;
+        }
+        k->bytes = proj_bytes;
+        if (g_verbose) fprintf(stderr, "[briev_accel/levelzero] staging %zu bytes (host USM) n=%llu\n", proj_bytes, (unsigned long long)global_n);
+    }
+    memcpy(k->staging, proj, proj_bytes);
+    memcpy(k->staging, proj, proj_bytes);
+    if (!lz_dispatch(k, global_n)) {
+        return 0;
     }
     memcpy(proj_out, k->staging, proj_bytes);
     return 1;
+}
+
+static void* briev_dev_levelzero_mapped(void* handle) {
+    BrievLzKernel* k = (BrievLzKernel*)handle;
+    return k ? k->staging : NULL;
+}
+
+/// Resident flat dispatch: the runtime owns the staging bytes (host USM is
+/// device-visible), so nothing crosses the bus.
+static int briev_dev_levelzero_launch_dev(void* handle, size_t global_n) {
+    BrievLzKernel* k = (BrievLzKernel*)handle;
+    return k ? lz_dispatch(k, global_n) : 0;
+}
+
+static int briev_dev_levelzero_launch_dev2d(void* handle, size_t nx, size_t ny,
+                                            int full_sync, const size_t* dirty,
+                                            uint32_t n_dirty) {
+    (void)full_sync; (void)dirty; (void)n_dirty;  // shared staging: no copies
+    return briev_dev_levelzero_launch_dev(handle, nx * ny);
 }
 
 static void briev_dev_levelzero_destroy_kernel(void* handle) {
@@ -513,6 +552,12 @@ static void briev_dev_levelzero_destroy_kernel(void* handle) {
     }
     if (k->staging) {
         zeMemFree(lz_ctx, k->staging);
+    }
+    if (k->ev) {
+        zeEventDestroy(k->ev);
+    }
+    if (k->ev_pool) {
+        zeEventPoolDestroy(k->ev_pool);
     }
     zeKernelDestroy(k->kernel);
     zeModuleDestroy(k->module);
@@ -536,12 +581,17 @@ static void briev_dev_levelzero_shutdown(void) {
 }
 
 BrievDeviceDriver briev_dev_levelzero = {
-    "levelzero",
-    0,  // capabilities: no zero-copy (staging memcpy) until device USM lands
-    briev_dev_levelzero_available,
-    briev_dev_levelzero_init,
-    briev_dev_levelzero_create_kernel,
-    briev_dev_levelzero_launch,
-    briev_dev_levelzero_destroy_kernel,
-    briev_dev_levelzero_shutdown,
+    // 2026-11-09 (W3 residency): host-USM staging IS the device working set —
+    // expose it as mapped and dispatch without copies.
+    .name = "levelzero",
+    .capabilities = 0,
+    .available = briev_dev_levelzero_available,
+    .init = briev_dev_levelzero_init,
+    .create_kernel = briev_dev_levelzero_create_kernel,
+    .launch = briev_dev_levelzero_launch,
+    .destroy_kernel = briev_dev_levelzero_destroy_kernel,
+    .shutdown = briev_dev_levelzero_shutdown,
+    .mapped = briev_dev_levelzero_mapped,
+    .launch_dev = briev_dev_levelzero_launch_dev,
+    .launch_dev2d = briev_dev_levelzero_launch_dev2d,
 };

@@ -261,3 +261,27 @@ documented Vulkan-only boundary) instead of running a general f16 kernel.
 
 Tracked as W3: (1) f16 tiled microkernel with vec4/v4half staging and f32
 accumulation; (2) strategy-fact coopmat selection; (3) re-run the f16 GEMM row.
+
+## W3 — Level Zero residency (2026-11-09)
+
+L0's staging is host-USM (device-visible), so residency is free: exposed
+`mapped` (the staging pointer), `launch_dev`, `launch_dev2d` (dispatch only,
+no copies), and reused ONE timestamp event per kernel (per-dispatch event-pool
+creation cost ~2 ms and masked the win).
+
+Effect (device gpu_time / launch wall, BRIEV_ACCEL_BENCH_ITERS=20):
+
+| shape (L0) | device | wall before | wall after |
+|---|---|---|---|
+| elem 1Mi f32 | 0.122 ms | 1.56 ms | **0.143 ms** |
+| elem 1Mi f16 | 0.100 ms | 1.02 ms | **0.113 ms** |
+| reduce 4096×1024 f32 | 0.159 ms | 1.83 ms | **0.166 ms** |
+| reduce 4096×1024 f16 | 0.134 ms | 1.78 ms | **0.140 ms** |
+
+With residency L0 elementwise is 1.5x the CL-C ceiling (0.122 vs 0.080) and
+reduce **beats** the simple C reference (0.159 vs 0.173). `.bv` gates whose
+host nodes touch arrays still take the full-copy path by design (residency
+requires kernel-pinned fields), so their wall remains copy-bound.
+
+OpenCL/NEO still full-copies (persistent buffer + map is the remaining W3
+item). f16 GEMM on L0/NEO remains the documented CPU-fallback boundary.
