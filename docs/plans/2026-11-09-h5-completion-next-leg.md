@@ -76,7 +76,7 @@ flag on; HIR-emit A/B; termination/watchdog module parity tests; Praetor on
 
 Each refactor: A/B byte-identical, sweep, affected runtime fixtures, Praetor.
 
-## A2 typing + `emit_match` bodies (fourth)
+## A2 typing + `emit_match` bodies (fourth, Field/Index DONE 2026-11-09)
 
 - Extend `hir::typing` for `Field`/`Index` from `hir::type_facts`, then
   `MethodCall`/`Reflect` from trait/protocol tables (one dyn-dispatch worked
@@ -182,3 +182,18 @@ the new code.
 
 All three seam refactors are complete; the H5 flip precondition list now
 depends only on `emit_match` bodies and the owner sign-off.
+
+**A2 slice — Field/Index typing (2026-11-09, DONE).** `hir::typing` builds a
+struct/object field table from `HirTypeDefKind` (generic parameter lists kept)
+and fills `HirExpr.ty` for `Field` (with substitution at the use site) and
+`Index` (`List<T>`/`Array<T>`/`Vector` element). Cast paths now resolve for
+field- and index-sourced casts. MethodCall/Reflect result typing remains (the
+dyn-dispatch authority question from the scoping doc).
+
+**`emit_match` bodies (verified 2026-11-09).** Expression bodies already
+dual-fuel (`MatchArms::Hir`, `emit_match_arm_dual`), statement arm bodies emit
+children HIR-first with per-child AST fallback, and HIR Match arms are passed
+through. The remaining AST body is the collection-witness `List` arm (needs
+the declared result type to construct through `Init`/`InsertAt`) — an accepted
+constructor exception, same category as the `#StdOut` `Print#` call. The H5
+flip's match precondition is therefore satisfied.

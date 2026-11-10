@@ -87,6 +87,10 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   not only generated families.
 - Cross-backend corpus gate (wasm32 vs native) over the eligible subset.
 - Acceptance: zero divergence on eligible set; quick mode < ~5 min.
+  *2026-11-09:* full matrix passes locally in ~4 min with one documented skip
+  (`mixed_effect_shape`: idle equilibrium, no self-terminating exit) and the
+  nightly workflow (`.github/workflows/verification-nightly.yml`) now runs it.
+  Remaining: interpreter-over-corpus and wasm cross-backend gates.
 
 ### P4 — Structured program fuzzing — PARTIAL (PR #80 landing, 2026-11-09)
 
