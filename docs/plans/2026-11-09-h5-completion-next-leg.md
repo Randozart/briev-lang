@@ -245,3 +245,53 @@ Validation at the flip:
 
 Next: H5 ports (reclamation parity first) and family-by-family AST-arm
 deletion; keep the tripwire and opt-out until a clean release cycle passes.
+
+**Plugin/emission audit (2026-11-10).** Audited the plugin system against the
+HIR flip and fixed two gaps:
+
+- `StageBlockPlugin::on_ir` was a no-op, so documented `$(Generated)` /
+  `$(Optimized)` `Find$`/`ReplaceWith$` chains silently did nothing. New
+  `macros::ir_eval` implements the IR text surface (Find/ReplaceWith/
+  InsertBefore/InsertAfter/Delete/First/Last/Nth/Count/Text, `let` bindings,
+  `Ir$.` prefix) and ERRORS on unsupported statements. Tests:
+  `tests/plugin_pipeline.rs` (live-AST stage + IR mutation + loud error).
+- `--emit-beast codegen|optimize` labelled `.ir` but serialized the AST. Those
+  stages now write the real backend IR text; `--emit-hir` writes canonical HIR
+  at Typed/Provenanced. Tests: `tests/emitted_artifacts.rs`.
+- Decision record: `docs/architecture/ir-layers-and-naming.md` (HIR is the IR;
+  BEAST remains AST visualization/pattern/distribution; BIRD reserved for a
+  round-trippable serialized HIR with adoption gates).
+
+Gates: quick gate + focused suites; emitted-artifact and plugin tests green.
+
+**Next port note (2026-11-10).** `dependency_graph::build` is the next small
+HIR candidate (state decls, trigger names/bindings, bare txn body reads) but is
+currently NON-DETERMINISTIC: `topological_sort` seeds its Kahn queue from a
+`HashSet` and iterates `HashMap` dependents, so `topo_order`/`bit_index`
+(and thus trg dirty-flag bit assignment) vary per process. Fix first: sort the
+seed order and dependent lists (house determinism rule), add a two-process
+order test, THEN port to HIR and flip with an equality oracle. TriggerBinding
+needs a HIR fidelity field (names) at the same time.
+
+**dependency_graph port (2026-11-10).** New `hir::dependency_graph` returns
+the AST result struct (same `DependencyGraph`), fed by state globals, trigger
+names, the new `HirProgram.trigger_bindings`, and bare transaction read edges;
+backend consumer flipped with a debug equality oracle. Two parity bugs surfaced
+and fixed en route:
+
+- `defn_liveness` used first-wins for `defns`/`txns`; the AST index is
+  last-wins, so duplicate std definitions (`when_hi`/`contains` across
+  cast lanes) rooted different bodies. HIR now inserts (last wins).
+- `dependency_graph::topological_sort` was process-order dependent (HashSet
+  seed, HashMap dependents); sorted seed + dependent order, plus a
+  4-process `.ll` determinism test.
+
+Gates: lib 3587; daily_use 41; sweep 143/0 (147 files); A/B byte-identical;
+quick gate 30/30.
+
+**casing port (2026-11-10).** `hir::casing` mirrors the advisories over HIR;
+`HirProgram` gained `type_names`/`static_struct_names`/`trait_names`/
+`cell_names` so `type` vs `struct`/`trait`/`cell` origins match the AST walker.
+`analysis::casing::check_name` is shared (one convention table), and
+`analyze_dual` flips the compile/pipeline call sites with a debug oracle.
+Gates: lib 3589; sweep 143/0; quick gate 30/30.

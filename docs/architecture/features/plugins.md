@@ -61,7 +61,7 @@ Tag$("import") .First$() .Before$() .Insert$(Import$("std/x.bv"))
 | `$(Verified)` | `plugins/verified/` | AST | Protocol round-trip verified |
 | `$(Allocated)` | `plugins/allocated/` | AST | Allocation strategies assigned |
 | `$(Provenanced)` | `plugins/provenanced/` | AST | Pointer provenance validated |
-| `$(Generated)` | `plugins/generated/` | IR text (`Ir$`) | Emitted backend IR (`.ll`, `.mlir`, `.ts`) |
+| `$(Generated)` | `plugins/generated/` | IR text (`Ir$`, live) | Emitted backend IR; `Find$`/`ReplaceWith$`/`InsertBefore$`/`InsertAfter$`/`Delete$`/queries operate on the text |
 | `$(Optimized)` | `plugins/optimized/` | IR text (`Ir$`) | Optimized IR |
 | `$(Linked)` | `plugins/linked/` | Binary path (`Bin$`) | Compiled binary |
 
@@ -537,7 +537,11 @@ briev build file.bv --emit-beast all       # all stages
 
 `.beast` snapshots show the AST exactly as the navigation DSL sees it at
 each stage.  This helps when writing `Tag$`, `Pattern$`, and `Named$`
-selectors.  Plugins never read `.beast` text — they operate on the live AST.
+selectors.  `--emit-beast codegen|optimize` writes the REAL backend IR as
+`.ir`; `--emit-hir` writes canonical HIR at Typed/Provenanced. Plugins never
+read `.beast` text — AST-stage plugins operate on the live AST and IR-stage
+plugins receive the live IR text (unsupported IR statements are errors, not
+silent no-ops).
 
 ---
 

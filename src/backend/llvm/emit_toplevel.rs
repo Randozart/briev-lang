@@ -3796,7 +3796,7 @@ impl LlvmBackend {
         d: &crate::ast::Definition,
         needs_state: bool,
     ) {
-        // 2026-11-05 (H4.2): under BRIEV_HIR_EMIT=1 the body comes from typed
+        // 2026-11-05 (H4.2): by default (BRIEV_HIR_EMIT=0 opts out) the body comes from typed
         // HIR (reconstructed losslessly). Debug builds pin it equal to the
         // AST body; names without a converted body fall back here.
         let hir_subst;

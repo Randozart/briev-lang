@@ -197,3 +197,23 @@ Typed-HIR emission is the default (`hir_emit_enabled()` true unless
 suites both 3624/0, sweep 139/0, A/B byte-identical, runtime benchmarks MATCH.
 AST arms remain for one release as the opt-out path; ports and family-by-family
 deletion continue.
+
+**Ported + consumer flipped (2026-11-10):** `dependency_graph` —
+`src/hir/dependency_graph.rs` mirrors the AST variable graph (state decls,
+trigger names, `TriggerBinding` names via the new
+`HirProgram.trigger_bindings` fidelity field, bare-txn read edges, Kahn topo
+order + bit indices) and returns the same result struct. The backend consumer
+flips under `BRIEV_HIR_EMIT` with a `debug_assert_eq!` oracle. Parity tests
+cover empty/trg-only/chains/cycles. Prerequisite fixed first: the AST graph's
+Kahn queue was seeded from a `HashSet` and iterated `HashMap` dependents, so
+trg bit assignments varied per process — both are sorted now
+(`tests/dependency_graph_determinism.rs`, 4 separate compiles).
+
+**Ported + consumer flipped (2026-11-10):** `casing` — `src/hir/casing.rs`
+mirrors the identifier-casing advisories (functions snake_case; types,
+structs, traits, cells PascalCase) over `HirProgram` declared-name surfaces.
+New fidelity fields preserve the AST's origin distinction:
+`type_names`/`static_struct_names`/`trait_names`/`cell_names`. The shared
+`check_name` helper backs both implementations; `analyze_dual` flips the two
+pipeline call sites with a debug equality oracle. Tests: conforming-silent and
+each-category parity.

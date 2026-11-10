@@ -49,6 +49,13 @@ all-three seam refactors (Defer, ArrowAssign, Lambda/Spawn) → A2 typing +
 (reclamation parity first, then electronics/accel/gpu_schedule) → default
 flip with owner sign-off. Nightly verification workflow lands with P3.
 
+**IR layers + BIRD naming decision (2026-11-10):**
+`docs/architecture/ir-layers-and-naming.md` — HIR is the in-memory IR;
+BEAST stays the AST snapshot/pattern/distribution format; BIRD is reserved for
+a round-trippable serialized HIR (adoption gates listed). Also records the
+plugin-system intent (live AST; real IR text at Generated/Optimized) and the
+cleanliness exit criteria.
+
 **Verification program (2026-11-09, umbrella):**
 `docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
 verification hardening (typed + structure invariants, always-on in debug,

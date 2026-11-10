@@ -3371,7 +3371,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .collect();
         // 2026-11-05 (H4.1): tail plans are name-keyed and order-independent,
         // so the HIR plan (built from the analysis run's HIR) is directly
-        // consumable by the backend. With BRIEV_HIR_EMIT=1 use it; debug
+        // consumable by the backend. By default use it (BRIEV_HIR_EMIT=0 opts out); debug
         // builds assert equality against the AST plan on the reordered items.
         let (tail_plan, tail_loop) = if crate::backend::hir_emit_enabled() {
             let ast_tail =
@@ -5049,7 +5049,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // for ALL programs (not just wake-triggered ones) whenever every reactive
         // txn is foldable and no explicit exit condition exists.
         let explicit_exit = self.ctx.exit_condition.clone();
-        // 2026-11-05 (H4 slice A): under BRIEV_HIR_EMIT=1 the program-level
+        // 2026-11-05 (H4 slice A): by default (BRIEV_HIR_EMIT=0 opts out) the program-level
         // convergence comes from typed HIR; debug builds assert exact AST
         // equality before the synthetic exit is synthesized from it.
         let program_conv = if crate::backend::hir_emit_enabled() {

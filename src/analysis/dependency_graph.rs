@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// A variable-level dependency graph built from the program's top-level
 /// declarations and transactions. Used by the `trg` reactive dirty-flag
 /// system to topologically order variables and assign bit indices.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DependencyGraph {
     /// Variables in topological order (trg inputs first, then dependents).
     pub topo_order: Vec<String>,
@@ -166,11 +166,16 @@ impl DependencyGraph {
             }
         }
 
-        // Kahn's algorithm: start with vars that have in-degree 0 (trg inputs, independent vars)
+        // Kahn's algorithm: start with vars that have in-degree 0 (trg inputs,
+        // independent vars). 2026-11-10: iterate in SORTED order — HashSet
+        // iteration is process-seeded, which made topo_order/bit_index (and
+        // the trg dirty-flag bit assignment) vary between compiles.
+        let mut vars: Vec<&str> = self.all_vars.iter().map(String::as_str).collect();
+        vars.sort_unstable();
         let mut queue: VecDeque<&str> = VecDeque::new();
-        for var in &self.all_vars {
-            if *in_degree2.get(var.as_str()).unwrap_or(&0) == 0 {
-                queue.push_back(var.as_str());
+        for var in vars {
+            if *in_degree2.get(var).unwrap_or(&0) == 0 {
+                queue.push_back(var);
             }
         }
 
@@ -180,11 +185,14 @@ impl DependencyGraph {
         while let Some(var) = queue.pop_front() {
             sorted.push(var.to_string());
 
-            // Decrease in-degree for all dependents
+            // Decrease in-degree for all dependents. Sorted iteration keeps
+            // the queue order (and therefore bit indices) deterministic.
             if let Some(deps) = self.dependents.get(var) {
-                for dep in deps {
+                let mut ordered: Vec<&String> = deps.iter().collect();
+                ordered.sort();
+                for dep in ordered {
                     if let Some(deg) = in_deg.get_mut(dep.as_str()) {
-                        *deg -= 1;
+                        *deg = deg.saturating_sub(1);
                         if *deg == 0 {
                             queue.push_back(dep.as_str());
                         }
@@ -195,11 +203,12 @@ impl DependencyGraph {
 
         if sorted.len() != self.all_vars.len() {
             // Find the cycle members
-            let unsorted: Vec<String> = self
+            let mut unsorted: Vec<String> = self
                 .all_vars
                 .difference(&sorted.iter().cloned().collect())
                 .cloned()
                 .collect();
+            unsorted.sort();
             return Err(DependencyError { cycle: unsorted });
         }
 
@@ -465,4 +474,16 @@ mod tests {
         ]).unwrap();
         assert_eq!(graph.topo_order.len(), 2);
     }
+    #[test]
+    fn topo_order_is_sorted_for_independent_triggers() {
+        // Two trg inputs and no edges: Kahn's seed order must be sorted, not
+        // process-seeded HashSet order.
+        let items = vec![
+            make_trigger("zeta", Type::int()),
+            make_trigger("alpha", Type::int()),
+        ];
+        let graph = DependencyGraph::build(&items).unwrap();
+        assert_eq!(graph.topo_order, vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+
 }

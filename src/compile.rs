@@ -497,7 +497,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     }
     // 2026-08-22 (spec-conformance plan Phase 2): identifier casing advisory
     // (SPEC §4.1 — user-declared violations warn, never error).
-    for w in briev_compiler::analysis::casing::analyze(&items) {
+    for w in briev_compiler::analysis::casing::analyze_dual(&items) {
         eprintln!("warning: {w}");
     }
     // 2026-10-16 (term-semantics plan step 7): the state-purity probe —
@@ -624,6 +624,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::Before, &items, &universe, opts)?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
     emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::After, &items, &universe, opts)?;
+    emit_hir_snapshot(file_path, "typed", &items, opts)?;
 
     // ── Normalizer pass ───────────────────────────────────────────────
     // 2026-07-29: Pass int_bits for protocol-driven llvm_type resolution.
@@ -797,6 +798,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::Before, &items, &universe, opts)?;
     pm.run_ast(StageKind::Provenanced, &mut items, &mut universe)?;
     emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::After, &items, &universe, opts)?;
+    emit_hir_snapshot(file_path, "prov", &items, opts)?;
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
     // for linking into the final binary. 2026-09-22: a `bootstrap node`/
@@ -991,8 +993,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         }
     }
 
-    // BEAST/IR snapshot at Codegen stage
-    emit_beast_snapshot(file_path, BeastStage::Codegen, BeastPosition::After, &items, &universe, opts)?;
+    // Codegen-stage IR snapshot: the real backend text.
+    emit_ir_snapshot(file_path, BeastStage::Codegen, BeastPosition::After, &codegen_output, opts)?;
 
     // ── Generated stage: IR text manipulation ──────────────────────────
     let mut output = codegen_output;
@@ -1020,7 +1022,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // ── Optimized stage: final IR validation ──────────────────────────
     pm.run_ir(StageKind::Optimized, &mut output)?;
-    emit_beast_snapshot(file_path, BeastStage::Optimize, BeastPosition::After, &items, &universe, opts)?;
+    emit_ir_snapshot(file_path, BeastStage::Optimize, BeastPosition::After, &output, opts)?;
 
     // 2026-09-21: Compile `bad fn` bodies through the bad backend and
     // collect their .o files for linking. Each bad fn body is a standalone
@@ -2513,6 +2515,18 @@ fn codegen(
 }
 
 /// Write a BEAST snapshot at the given pipeline stage and position.
+/// Is this (stage, position) pair requested by `--emit-beast`?
+fn beast_requested(opts: &BuildOptions, stage: BeastStage, position: BeastPosition) -> bool {
+    opts.emit_beast_stages
+        .iter()
+        .any(|f| f.stage == stage && (f.position.is_none() || f.position == Some(position)))
+}
+
+fn snapshot_base(file_path: &str) -> &str {
+    file_path.strip_suffix(".bv").unwrap_or(file_path)
+}
+
+/// AST-stage snapshot: `.beast` S-expression text (human/debug artifact).
 fn emit_beast_snapshot(
     file_path: &str,
     stage: BeastStage,
@@ -2521,32 +2535,82 @@ fn emit_beast_snapshot(
     universe: &TypeUniverse,
     opts: &BuildOptions,
 ) -> Result<(), String> {
-    // Check if this (stage, position) pair is requested
-    let is_requested = opts.emit_beast_stages.iter().any(|f| {
-        f.stage == stage && (f.position.is_none() || f.position == Some(position))
-    });
-    if !is_requested {
+    if !beast_requested(opts, stage, position) {
         return Ok(());
     }
-    let (stage_name, is_ast) = match stage {
-        BeastStage::Parse => ("parse", true),
-        BeastStage::Resolve => ("resolve", true),
-        BeastStage::TypeCheck => ("types", true),
-        BeastStage::Normalize => ("normal", true),
-        BeastStage::Verify => ("verify", true),
-        BeastStage::Alloc => ("alloc", true),
-        BeastStage::Provenance => ("prov", true),
-        BeastStage::Codegen => ("codegen", false),
-        BeastStage::Optimize => ("opt", false),
+    // 2026-11-10: AST stages only. Codegen/Optimize are IR stages and go
+    // through emit_ir_snapshot — this function used to serialize the AST
+    // into a file labelled `.ir`, which was misleading.
+    let stage_name = match stage {
+        BeastStage::Parse => "parse",
+        BeastStage::Resolve => "resolve",
+        BeastStage::TypeCheck => "types",
+        BeastStage::Normalize => "normal",
+        BeastStage::Verify => "verify",
+        BeastStage::Alloc => "alloc",
+        BeastStage::Provenance => "prov",
+        other => {
+            return Err(format!(
+                "internal: AST snapshot requested for IR stage {other:?}"
+            ))
+        }
     };
-    let ext = if is_ast { "beast" } else { "ir" };
     let data = briev_compiler::beast::to_beast(items, universe);
-    let base = file_path.strip_suffix(".bv").unwrap_or(file_path);
-    let priority = position.priority();
-    let path = format!("{}.{}.{:03}.{}", base, stage_name, priority, ext);
+    let path = format!(
+        "{}.{}.{:03}.beast",
+        snapshot_base(file_path),
+        stage_name,
+        position.priority()
+    );
     std::fs::write(&path, &data)
         .map_err(|e| format!("cannot write '{}': {}", path, e))?;
-    eprintln!("wrote {} snapshot: {}", ext, path);
+    eprintln!("wrote beast snapshot: {}", path);
+    Ok(())
+}
+
+/// IR-stage snapshot: the REAL backend IR text, written as `.ir`.
+fn emit_ir_snapshot(
+    file_path: &str,
+    stage: BeastStage,
+    position: BeastPosition,
+    ir: &str,
+    opts: &BuildOptions,
+) -> Result<(), String> {
+    if !beast_requested(opts, stage, position) {
+        return Ok(());
+    }
+    let stage_name = match stage {
+        BeastStage::Codegen => "codegen",
+        BeastStage::Optimize => "opt",
+        other => return Err(format!("internal: IR snapshot requested for AST stage {other:?}")),
+    };
+    let path = format!(
+        "{}.{}.{:03}.ir",
+        snapshot_base(file_path),
+        stage_name,
+        position.priority()
+    );
+    std::fs::write(&path, ir).map_err(|e| format!("cannot write '{}': {}", path, e))?;
+    eprintln!("wrote ir snapshot: {}", path);
+    Ok(())
+}
+
+/// 2026-11-10: canonical HIR text at the Typed and Provenanced stages
+/// (`--emit-hir`). Debug/tooling artifact; never parsed back.
+fn emit_hir_snapshot(
+    file_path: &str,
+    label: &str,
+    items: &[briev_compiler::ast::TopLevel],
+    opts: &BuildOptions,
+) -> Result<(), String> {
+    if !opts.emit_hir {
+        return Ok(());
+    }
+    let program = briev_compiler::hir::lower_program(items);
+    let text = briev_compiler::hir::render_program(&program);
+    let path = format!("{}.{}.hir", snapshot_base(file_path), label);
+    std::fs::write(&path, &text).map_err(|e| format!("cannot write '{}': {}", path, e))?;
+    eprintln!("wrote hir snapshot: {}", path);
     Ok(())
 }
 
@@ -3360,6 +3424,7 @@ node go [done == false][done == true] {
             out_dir: None,
             optimize_budget: 256,
             emit_beast_stages: vec![],
+            emit_hir: false,
             backend: BackendKind::Webstack,
             no_stdlib: false,
             stdlib_path: None,

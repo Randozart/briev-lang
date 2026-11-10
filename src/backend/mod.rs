@@ -160,7 +160,7 @@ pub struct AnalysisResults {
     pub dyn_collection_info:
         std::collections::HashMap<String, crate::analysis::dyn_concrete_sets::DynCollectionInfo>,
     /// 2026-11-05 (H4.1): the typed HIR for the post-desugar program. Built
-    /// once here; `BRIEV_HIR_EMIT=1` verifies it and (in later H4 slices)
+    /// once here; the default path verifies it and (in later H4 slices)
     /// selects the HIR-driven emission family. Inert until then: emission
     /// still walks the AST, so IR is byte-identical either way.
     pub hir: crate::hir::HirProgram,
@@ -258,15 +258,27 @@ pub fn analyze_program(
     let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
         items, &None, &vec![],
     );
-    let dependency_graph = crate::analysis::dependency_graph::DependencyGraph::build(items)
-        .unwrap_or_else(|_| crate::analysis::dependency_graph::DependencyGraph {
-            topo_order: Vec::new(),
-            bit_index: std::collections::HashMap::new(),
-            dependencies: std::collections::HashMap::new(),
-            dependents: std::collections::HashMap::new(),
-            is_trg: std::collections::HashSet::new(),
-            all_vars: std::collections::HashSet::new(),
-        });
+    let empty_dependency_graph = || crate::analysis::dependency_graph::DependencyGraph {
+        topo_order: Vec::new(),
+        bit_index: std::collections::HashMap::new(),
+        dependencies: std::collections::HashMap::new(),
+        dependents: std::collections::HashMap::new(),
+        is_trg: std::collections::HashSet::new(),
+        all_vars: std::collections::HashSet::new(),
+    };
+    // 2026-11-10 (H5 port): variable dependency graph from typed HIR by
+    // default; the AST result is the fallback and the debug oracle.
+    let dependency_graph = if hir_emit_enabled() {
+        let ast = crate::analysis::dependency_graph::DependencyGraph::build(items)
+            .unwrap_or_else(|_| empty_dependency_graph());
+        let h = crate::hir::dependency_graph::build(&hir)
+            .unwrap_or_else(|_| empty_dependency_graph());
+        debug_assert_eq!(h, ast, "HIR/AST dependency-graph drift");
+        h
+    } else {
+        crate::analysis::dependency_graph::DependencyGraph::build(items)
+            .unwrap_or_else(|_| empty_dependency_graph())
+    };
     // 2026-11-05 (H4 slice A): loop shapes come from typed HIR under the
     // flag — LoopShape is AST-free, so this is a direct consumer flip with a
     // debug equality cross-check.
@@ -369,7 +381,7 @@ pub fn analyze_program(
         crate::analysis::global_lifetime::analyze(items, &field_inits, &node_order, &foldable)
     };
     let observable_names = collect_observable_names(items);
-    // 2026-11-05 (H4.1): first consumer flip. With BRIEV_HIR_EMIT=1 the coll
+    // 2026-11-05 (H4.1): first consumer flip. By default (BRIEV_HIR_EMIT=0 opts out) the coll
     // grow-guard / pre-grow proofs come from typed HIR; the AST proofs are
     // still computed in debug builds and must agree exactly (parity suites
     // pin this over the corpus). Emission is unchanged, so IR must stay
@@ -516,7 +528,7 @@ pub fn analyze_program(
     // lto/wasm_import when it consumes the result.
     // 2026-11-05 (H4.1): second and third consumer flips. HIR and AST produce
     // the same consumer-facing types for boundary ownership and defn
-    // liveness; with BRIEV_HIR_EMIT=1 the HIR result is used, and debug
+    // liveness; the HIR result is used by default (BRIEV_HIR_EMIT=0 opts out), and debug
     // builds still assert exact AST equality. The reclamation plan shares the
     // same liveness set (one source of truth per run).
     let defn_liveness = if hir_emit_enabled() {
@@ -608,7 +620,7 @@ pub fn analyze_program(
 }
 
 /// 2026-11-05 (H4.1): lower the post-desugar AST to typed HIR exactly once per
-/// analysis run. `BRIEV_HIR_EMIT=1` additionally verifies the id/export
+/// analysis run. The default path additionally verifies the id/export
 /// invariants so a future HIR-driven family cannot consume a malformed tree;
 /// the flag never changes emitted IR yet.
 fn build_hir(
