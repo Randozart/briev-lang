@@ -95,7 +95,7 @@ reference-verified, AST-only), then `electronics`, `dependency_graph` +
 Each: named consumer, parity tests, flip under the flag with a debug equality
 assert, inventory row updated.
 
-## H5 default flip (sixth, gated)
+## H5 default flip (sixth, DONE 2026-11-09 — owner sign-off)
 
 Preconditions: match bodies; three seam refactors; structural families native;
 tripwire clean across consecutive landings; `daily_use_smoke` + benchmark
@@ -224,3 +224,24 @@ benchmarks/build_and_bench.sh --runtime --correctness`: every runtime
 benchmark MATCH (one PASS for bridge_multi, whose reference also PASSes).
 Combined with the byte-identical `.ll` gates, timing parity follows from IR
 identity. Every flip precondition is met except owner sign-off.
+
+**H5 default flip (2026-11-09, DONE).** Owner sign-off received.
+`hir_emit_enabled()` now defaults to **true**; `BRIEV_HIR_EMIT=0|false|off|no`
+opts out for one release (all other values keep HIR on). The AST arms remain
+until they are deleted family-by-family; the opt-out is the escape hatch for
+any regression the tripwire misses.
+
+Validation at the flip:
+- default (HIR) `cargo test --all`: 3624/0; opt-out (AST) `cargo test --all`:
+  3624/0.
+- Corpus sweep (AST vs HIR `.ll`, 139 programs): 139/0 mismatch.
+- `benchmarks/hir_emit_ab.sh --quick`: byte-identical.
+- `BRIEV_HIR_EMIT=1 benchmarks/build_and_bench.sh --runtime --correctness`:
+  every benchmark MATCH.
+- Test harnesses that deliberately compared modes now set `BRIEV_HIR_EMIT=0`
+  for the AST arm instead of unsetting it (field_receiver_once,
+  mixed_integer_operands, nested_object_storage, deterministic_transitions,
+  `hir_emit_ab.sh`).
+
+Next: H5 ports (reclamation parity first) and family-by-family AST-arm
+deletion; keep the tripwire and opt-out until a clean release cycle passes.

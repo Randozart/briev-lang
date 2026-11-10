@@ -352,7 +352,8 @@ contracts.
 
 ## Commands
 
-- **Build**: `cargo build` · **Test**: `cargo test --lib`
+- **Build**: `cargo build` · **Test**: `cargo test --lib` (default emission is
+  typed HIR since 2026-11-09; `BRIEV_HIR_EMIT=0` opts back to the AST path)
 - **Test backend registry**: `cargo test --lib -- backend::tests`
 - **Compile RBV**: `./target/release/brievc rbv <file.rbv>`
 - **Benchmark**: `bash benchmarks/build_and_bench.sh` — always use this harness.

@@ -261,7 +261,7 @@ fn compare(case: &Case, directory: &Path) -> Result<(), String> {
             .arg(env!("CARGO_BIN_EXE_brievc"))
             .current_dir(root)
             .env("BRIEV_HOME", root)
-            .env_remove("BRIEV_HIR_EMIT")
+            .env("BRIEV_HIR_EMIT", "0")
             .arg("build")
             .arg(&path)
             .args(["--stdlib-path", "lib", "--config-dir", "config", "--out"])
