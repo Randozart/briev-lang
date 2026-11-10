@@ -44,6 +44,9 @@ import "std/net/bytes.bv";
 // connection-oriented byte stream (TCP). The third socket(2) argument
 // (protocol) is 0 - "the default protocol for this family+type", i.e. TCP.
 const AF_INET:     Int = 2;
+// 2026-11-10 (kiosk native program W1): Unix-domain sockets for the local
+// ML-daemon RPC surface (length-prefixed JSON over SOCK_STREAM).
+const AF_UNIX:     Int = 1;
 const SOCK_STREAM: Int = 1;
 const IPPROTO_TCP: Int = 0;
 
@@ -359,6 +362,59 @@ defn sock_set_recv_timeout(s: Socket, seconds: Int)
     let rc: Int = syscall(54, s.fd, SOL_SOCKET, SO_RCVTIMEO, opt.ptr, 16);
     Free#(opt.ptr as Ptr);
     term rc;
+};
+
+// ── Unix-domain sockets (2026-11-10, kiosk W1) ─────────────────────────────
+// sockaddr_un is a 2-byte little-endian family followed by a NUL-terminated
+// path (sun_path is 108 bytes). The kernel receives family + path + NUL.
+
+defn sock_unix() [true][term.fd >= -4096] -> Socket {
+    let fd: Int = syscall(41, AF_UNIX, SOCK_STREAM, 0);
+    term Socket { fd: fd };
+};
+
+// make_sockaddr_un - build family + NUL-terminated path in one buffer.
+// The logical length (`len`) is the address length passed to bind/connect.
+defn make_sockaddr_un(path: String)
+    [path.^Length > 0 && path.^Length < 108]
+    [term.len >= 3 && term.len <= 110]
+    -> ByteBuf
+{
+    let b0: ByteBuf = buf_new(110);
+    let b1: ByteBuf = b0.put_u8(AF_UNIX & 255);
+    let b2: ByteBuf = b1.put_u8((AF_UNIX >> 8) & 255);
+    term b2.put_cstr(path);
+};
+
+// sock_connect_unix - connect(2) to a Unix-domain path.
+defn sock_connect_unix(s: Socket, path: String)
+    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108]
+    [term >= -4096]
+    -> Int
+{
+    let sa: ByteBuf = make_sockaddr_un(path);
+    let rc: Int = syscall(42, s.fd, sa.ptr, sa.len);
+    sockaddr_free(sa);
+    term rc;
+};
+
+// sock_bind_listen_unix - bind(2)+listen(2) on a Unix path. A stale socket
+// file from a previous process is unlinked first (unlink(2), path data at
+// String+8); bind then creates the node. Returns 0 or -errno.
+defn sock_bind_listen_unix(s: Socket, path: String, backlog: Int)
+    [s.fd >= -4096 && path.^Length > 0 && path.^Length < 108 && backlog >= 0]
+    [term >= -4096]
+    -> Int
+{
+    let path_addr: Int = (path as Data) as Int + 8;
+    let _unlink: Int = syscall(87, path_addr);
+    let sa: ByteBuf = make_sockaddr_un(path);
+    let brc: Int = syscall(49, s.fd, sa.ptr, sa.len);
+    sockaddr_free(sa);
+    when brc < 0 {
+        term brc;
+    };
+    term syscall(50, s.fd, backlog);
 };
 
 // ── 1.7  server side: bind + listen + accept ────────────────────────────────

@@ -1,0 +1,44 @@
+// unix socket loopback — end-to-end gate (kiosk W1, 2026-11-10).
+//
+// lib/std/net/socket.bv gained Unix-domain support for the local ML-daemon
+// RPC surface (sock_unix / sock_bind_listen_unix / sock_connect_unix). This
+// fixture pins bind+listen (with stale-path unlink), connect, accept, send,
+// recv in one process — no network, CI-safe.
+//
+// Golden: five ok-flags + the received byte (65 = 'A') + whole-trip flag
+// → "11111651".
+import "std/net/socket.bv";
+import "std/net/bytes.bv";
+
+const SOCK: String = "/tmp/briev_unix_smoke.sock";
+
+node entry [beginprogram][true] {
+    let server: Socket = sock_unix();
+    let lrc: Int = sock_bind_listen_unix(server, SOCK, 4);
+    Print#((lrc == 0) as Int);
+
+    let client: Socket = sock_unix();
+    let crc: Int = sock_connect_unix(client, SOCK);
+    Print#((crc == 0) as Int);
+
+    let conn: Socket = sock_accept(server);
+    Print#((conn.fd >= 0) as Int);
+
+    let sbuf0: ByteBuf = buf_new(1);
+    let sbuf: ByteBuf = sbuf0.put_u8(65);
+    let nsent: Int = sock_send(client, sbuf, 1);
+    Print#((nsent == 1) as Int);
+
+    let rbuf: ByteBuf = buf_new(1);
+    let nrecv: Int = sock_recv(conn, rbuf, 1);
+    Print#((nrecv == 1) as Int);
+    Print#(get_u8(rbuf, 0));
+
+    let ok: Int = (lrc == 0 && crc == 0 && conn.fd >= 0 && nsent == 1 && nrecv == 1) as Int;
+    Print#(ok);
+    sock_close(conn);
+    sock_close(client);
+    sock_close(server);
+    buf_free(sbuf);
+    buf_free(rbuf);
+};

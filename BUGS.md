@@ -1,3 +1,46 @@
+## Returning a String from a `match` arm on `Result<T,String>` miscompiles — OPEN 2026-11-10
+
+**Symptom:** a function that returns a `String` bound in a `match` arm over
+`Result<String,String>` crashes (SIGILL/SIGSEGV) as soon as the returned string
+is used. Found while writing the kiosk native ML daemon (S1): the RPC
+dispatcher used `match json_get(..) { Ok(name) => dispatch(name), .. }` and
+segfaulted on the first request; the same code inline in the caller works.
+
+**Minimal repro (standalone binary):**
+
+```briev
+import "std/json.bv";
+defn g(v: JsonValue) -> String {
+    let m: Result<String,String> = json_get(v,"method");
+    match m { Ok(name) => name, Err(_) => "err", };
+};
+node entry [beginprogram][true] {
+    let x: String = g(json_parse("{\"method\":\"health\"}").unwrap());
+    Print#(x);
+    term;
+};
+```
+
+Returning from a `when` guard (no `match`) works; returning an Int from the
+same match shape works in stdlib. Suspect String move/reclamation across the
+match-arm return (Result payload dropped while the returned handle is used).
+
+**Workaround (verified):** use `Result` predicates and a single return:
+
+```briev
+let m = json_get(v, "method");
+when is_err(m) { term "..."; };
+let name: String = unwrap(m);
+term dispatch(name);
+```
+
+**Impact:** kiosk `briev/service/daemon.bv` uses the workaround; the compiler
+bug is a landing blocker for idiomatic `match`-based service dispatch.
+
+**Next:** reproduce under ASan/LSan, inspect HIR/LLVM for double-free or a
+dangling String pointer across the match arm, and fix reclamation/ABI. Add a
+tier-1 regression once fixed. Tracked by the kiosk program W1/W3.
+
 ## Driver .c edits may not rebuild the linked GPU runtime — OPEN 2026-11-09
 
 **Symptom:** editing `lib/runtime/briev_dev_*.c` and running `cargo build`
