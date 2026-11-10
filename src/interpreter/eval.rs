@@ -122,11 +122,18 @@ pub fn eval_expr(
                 "Int" => match v {
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Int(if b { 1 } else { 0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Int(c as i64))),
+                    // 2026-11-10 (fuzz finding): `f as Int` must TRUNCATE a
+                    // Float (LLVM fptosi), not fall through to identity — the
+                    // backend converts, so the reference must too (Rule 5).
+                    Value::Atom(Atom::Float(f)) => Ok(Value::Atom(Atom::Int(f as i64))),
                     _ => Ok(v),
                 },
                 "Float" => match v {
                     Value::Atom(Atom::Bool(b)) => Ok(Value::Atom(Atom::Float(if b { 1.0 } else { 0.0 }))),
                     Value::Atom(Atom::Char(c)) => Ok(Value::Atom(Atom::Float(c as i64 as f64))),
+                    // 2026-11-10 (fuzz finding): `n as Float` must CONVERT an
+                    // Int (LLVM sitofp), not fall through to identity.
+                    Value::Atom(Atom::Int(n)) => Ok(Value::Atom(Atom::Float(n as f64))),
                     _ => Ok(v),
                 },
                 "Char" => match v {
@@ -3031,8 +3038,32 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_int_to_char_builds_character() {
+    fn test_cast_int_to_float_converts() {
+        // 2026-11-10 (fuzz finding): `n as Float` used to fall through to
+        // identity, leaving an Int where the backend produces a Float.
         assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Decimal(7)), Type::float())),
+            Value::Atom(Atom::Float(7.0))
+        );
+    }
+
+    #[test]
+    fn test_cast_float_to_int_truncates_toward_zero() {
+        // 2026-11-10 (fuzz finding): `f as Int` used to fall through to
+        // identity (returning the Float). The backend emits fptosi; the
+        // reference must truncate toward zero.
+        assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Float(2.75)), Type::int())),
+            Value::Atom(Atom::Int(2))
+        );
+        assert_eq!(
+            eval1(&Expr::Cast(Box::new(Expr::Float(-2.75)), Type::int())),
+            Value::Atom(Atom::Int(-2))
+        );
+    }
+
+    #[test]
+    fn test_cast_int_to_char_builds_character() {        assert_eq!(
             eval1(&Expr::Cast(Box::new(Expr::Decimal(65)), Type::char_())),
             Value::Atom(Atom::Char('A'))
         );
