@@ -1742,10 +1742,16 @@ impl<'a> FnLowerer<'a> {
     fn load_widened(&mut self, ptr: Word, ty: Type) -> Result<(Word, Type), String> {
         let tid = self.type_id(&ty)?;
         let loaded = self.builder.load(tid, ptr);
+        // 2026-11-09 (float-formats plan): arithmetic happens at the TYPE's
+        // width. The OpenCL flavor declares Float16/Float16Buffer, so a
+        // 16-bit load stays 16-bit and `a + b` lowers to OpFAdd %half (native
+        // on NEO). Vulkan still widens to f32 (shaderFloat16 wiring is a
+        // later stage); storage stays 16-bit either way.
+        let opencl_native_f16 = self.builder.is_opencl();
         if matches!(
             self.builder.shape_of(&ty)?,
             crate::casting::graph::SpirvShape::Float { bits: 16 }
-        ) {
+        ) && !opencl_native_f16 {
             let dst = Type::float();
             let dst_id = self.type_id(&dst)?;
             let res = self.builder.gen_id();

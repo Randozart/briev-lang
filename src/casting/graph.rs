@@ -1107,6 +1107,42 @@ impl CastingGraph {
         self.protocol_spirv_types.get(&(category.to_string(), variant.to_string()))
     }
 
+    /// 2026-11-09 (float-formats plan): width facts with BASE-CHAIN
+    /// INHERITANCE. Own `bits` → `maxbits` → `minbits`; else follow the
+    /// declared base (`type MyF16: Half;` inherits 16; an override on the
+    /// derived type wins). Cycle-guarded. `None` = no fact (caller defaults).
+    /// Never matches type names: the walk is over universe entries.
+    pub fn compute_bits(&self, universe: &TypeUniverse, ty: &Type) -> Option<u64> {
+        let key = ty.universe_key()?;
+        let mut current = universe.get(key)?;
+        for _ in 0..64 {
+            for prop in ["bits", "maxbits", "minbits"] {
+                if let Some(crate::ast::PropertyValue::Int(n)) = current.properties.get(prop) {
+                    if *n > 0 {
+                        return Some(*n as u64);
+                    }
+                }
+            }
+            let (category, _variant) = Self::parse_protocol_base(&current.base)?;
+            current = universe.get(&category)?;
+        }
+        None
+    }
+
+    /// 2026-11-09: `disamb` fact with base-chain inheritance (Half vs BFloat).
+    pub fn compute_disamb(&self, universe: &TypeUniverse, ty: &Type) -> Option<String> {
+        let key = ty.universe_key()?;
+        let mut current = universe.get(key)?;
+        for _ in 0..64 {
+            if let Some(crate::ast::PropertyValue::String(s)) = current.properties.get("disamb") {
+                return Some(s.clone());
+            }
+            let (category, _variant) = Self::parse_protocol_base(&current.base)?;
+            current = universe.get(&category)?;
+        }
+        None
+    }
+
     /// Resolve a Briev type to its SPIR-V scalar shape from
     /// (protocol, metadata) — the kernel-surface twin of resolve_llvm_type.
     ///
@@ -1149,20 +1185,11 @@ impl CastingGraph {
                 ty, category
             ));
         };
-        let bits_of = |keys: &[&str]| -> Option<u64> {
-            let key = effective.universe_key().and_then(|k| universe.get(k));
-            keys.iter().find_map(|k| {
-                key.and_then(|rt| rt.properties.get(*k)).and_then(|pv| match pv {
-                    PropertyValue::Int(n) if *n > 0 => Some(*n as u64),
-                    _ => None,
-                })
-            })
-        };
+        let bits_of = |_: &[&str]| -> Option<u64> { self.compute_bits(universe, effective) };
         Ok(match resolver {
             SpirvTypeResolver::IntWidth(signed) => {
                 let signed = *signed;
-                let bits = bits_of(&["bits", "maxbits", "minbits"])
-                    .unwrap_or(default_int_bits);
+                let bits = bits_of(&[]).unwrap_or(default_int_bits);
                 // Shader capability integer widths (SPV 1.x, no Int8 short form):
                 // 8 needs the Int8 capability AND storage-only use; kernels are
                 // compute surfaces, so the honest floor is 16.
@@ -1176,7 +1203,7 @@ impl CastingGraph {
                 }
             }
             SpirvTypeResolver::FloatWidth => {
-                let bits = bits_of(&["bits", "maxbits", "minbits"]).unwrap_or(32);
+                let bits = bits_of(&[]).unwrap_or(32);
                 // 2026-09-01 (M2.2, plan 2026-09-01-m2-tensor-cores): 16-bit
                 // floats joined the kernel surface — SSBO storage via
                 // StorageBuffer16BitAccess, tensor fragments via
@@ -1233,17 +1260,7 @@ impl CastingGraph {
             Some(LlvmTypeResolver::Fixed(ty_str)) => return ty_str.to_string(),
             Some(LlvmTypeResolver::WidthParametric) => {
                 // Check metadata from universe entry
-                let key = ty.universe_key().and_then(|k| universe.get(k));
-                let bits = key.and_then(|rt| {
-                    // Priority: bits → maxbits → minbits
-                    rt.properties.get("bits")
-                        .or_else(|| rt.properties.get("maxbits"))
-                        .or_else(|| rt.properties.get("minbits"))
-                        .and_then(|pv| match pv {
-                            PropertyValue::Int(n) => Some(*n as u64),
-                            _ => None,
-                        })
-                }).unwrap_or(int_bits);
+                let bits = self.compute_bits(universe, ty).unwrap_or(int_bits);
                 return format!("i{}", bits);
             }
             Some(LlvmTypeResolver::FloatWidth) => {
@@ -1251,24 +1268,12 @@ impl CastingGraph {
                 // derive the LLVM type from the type's `bits` metadata.
                 // 16-bit is half/bfloat (via disamb); 32→float, 64→double,
                 // 80→x86_fp80, 128→fp128, default→float. No type names.
-                let key = ty.universe_key().and_then(|k| universe.get(k));
-                let bits = key.and_then(|rt| {
-                    rt.properties.get("bits")
-                        .or_else(|| rt.properties.get("maxbits"))
-                        .or_else(|| rt.properties.get("minbits"))
-                        .and_then(|pv| match pv {
-                            PropertyValue::Int(n) => Some(*n as u64),
-                            _ => None,
-                        })
-                });
+                let bits = self.compute_bits(universe, ty);
                 let float_ty = match bits {
                     Some(16) => {
                         // Half vs BFloat are both 2-byte Float variants,
-                        // distinguished by the `disamb` metadata value.
-                        let disamb = key.and_then(|rt| match rt.properties.get("disamb") {
-                            Some(PropertyValue::String(s)) => Some(s.clone()),
-                            _ => None,
-                        });
+                        // distinguished by the inherited `disamb` fact.
+                        let disamb = self.compute_disamb(universe, ty);
                         if disamb.as_deref() == Some("bfloat") {
                             "bfloat".to_string()
                         } else {

@@ -136,17 +136,32 @@ pub fn protocol_category(universe: &TypeUniverse, ty: &Type) -> Option<String> {
             return Some(cat.to_string());
         }
     }
-    // base-chain fallback (the normalizer no longer injects Cast. for
-    // subtypes) — `type Latin1String: String` ⇒ base "String".
-    // 2026-08-15 (fundamentals): Data is the universal parent — a type whose
-    // base is Data resolves to Data; Bit is the leaf bit type.
-    let base = rt.base.trim_start_matches('#');
-    match base {
-        "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob"
-        | "Data" | "Bit" => {
-            Some(base.to_string())
+    // 2026-11-09 (float-formats plan): BASE-CHAIN walk, at every hop, like
+    // CastingGraph::type_to_protocol. A derived type (`type Float16: Half;`)
+    // must resolve through `Half` (Cast.Float) to Float. The old single-level
+    // base read returned None for primordial parents, which made Float16 fail
+    // the flat-scalar kernel gate (Rule 15/19: no name matching).
+    let mut current = rt;
+    let mut visited: Vec<String> = Vec::new();
+    loop {
+        for (prop, cat) in crate::type_universe::CAST_CATEGORY_PROPS {
+            if current.properties.contains_key(*prop) {
+                return Some(cat.to_string());
+            }
         }
-        _ => None,
+        let base = current.base.trim_start_matches('#');
+        match base {
+            "Float" | "UInt" | "Int" | "String" | "Bool" | "Char" | "Blob"
+            | "Data" | "Bit" => return Some(base.to_string()),
+            "" => return None,
+            _ => {}
+        }
+        let (cat, _var) = crate::casting::graph::CastingGraph::parse_protocol_base(base)?;
+        if cat == current.name || visited.contains(&cat) {
+            return None;
+        }
+        visited.push(cat.clone());
+        current = universe.get(&cat)?;
     }
 }
 

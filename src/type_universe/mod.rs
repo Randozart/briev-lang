@@ -212,7 +212,13 @@ impl TypeUniverse {
             // Floating-point types — bit-width is accuracy, not maximum storage.
             // Each float type carries an explicit bits property for the normalizer.
             ("Half",   2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16")]),
-            ("BFloat", 2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16")]),
+            // 2026-11-09 (float-formats plan): `Half` is canonical (LLVM-
+            // matching); `Float16` is the ergonomic ALIAS, registered here as
+            // the hardware-format fact row so every consumer (typechecker's
+            // fresh universe, parser, backends) sees it without an import.
+            // The parent extra keeps ONE width/format fact on Half.
+            ("Float16",2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("parent", "Half")]),
+            ("BFloat", 2, 16, 16, 2, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "16"), ("disamb", "bfloat")]),
             ("Float",  4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),
             ("Float32",4, 32, 32, 4, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "32")]),
             ("Float64",8, 64, 64, 8, &[("Cast.Float", "true"), ("Cast.Bit", "true"), ("bits", "64")]),
@@ -232,7 +238,14 @@ impl TypeUniverse {
         for &(name, bytes, min_bits, max_bits, alignment, extras) in PRIMORDIALS {
             let mut properties = std::collections::HashMap::new();
             properties.insert("alignment".into(), crate::ast::PropertyValue::Int(alignment as i64));
+            // 2026-11-09: a `("parent", Name)` extra makes the row an ALIAS of
+            // another fact (Float16 -> Half) instead of a Data child.
+            let mut parent: Option<String> = None;
             for &(k, v) in extras {
+                if k == "parent" {
+                    parent = Some(v.to_string());
+                    continue;
+                }
                 // 2026-07-30: Numeric extras (bits, maxbits) are stored as Int so
                 if let Ok(n) = v.parse::<i64>() {
                     properties.insert(k.to_string(), crate::ast::PropertyValue::Int(n));
@@ -245,8 +258,9 @@ impl TypeUniverse {
 
                 name: name.to_string(),
                 // 2026-08-15 (fundamentals): every type refines through Data
-                // (the universal parent / raw storage root).
-                base: "Data".to_string(),
+                // (the universal parent / raw storage root), unless the row
+                // declares a `parent` alias (Float16 -> Half).
+                base: parent.clone().unwrap_or_else(|| "Data".to_string()),
                 bytes,
                 min_bits,
                 max_bits,

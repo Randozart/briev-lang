@@ -6,19 +6,13 @@
 //
 // 2026-07-26: Updated to new op syntax — no more -> or =.
 
-// 16-bit half-precision float (hardware on some GPUs).
-// 2026-09-02 (plan fundamental-parent-membership): the bare fundamental
-// parent is the whole join — the parent chain reaches the `Float`
-// fundamental, so Float membership, its protocol op bindings, cast paths,
-// and the width ladder all DERIVE (`spec MaxBits: 16` selects the f16
-// kernel shape). No hashword restatement, no width-suffixed arithmetic
-// intrinsics: `+`/`-`/`*` authorize through the Float category and lower
-// shape-driven (`fadd half` — the operand type carries the precision).
-type Float16 : Float {
-    spec MaxBits: 16;
-    spec Alignment: 2;
-    attr<llvm> tbaa: "FloatNode";
-};
+// 16-bit half-precision float — `Half` is the canonical format name
+// (LLVM-matching) and `Float16` is its alias, both registered as compiler
+// format FACTS (type_universe PRIMORDIALS): bits=16, Cast.Float,
+// Float16 -> parent Half. No stdlib declaration is needed (an import must not
+// gate a hardware format), and arithmetic happens at the type's width; f32
+// accumulation is a separate TYPE (`Float`) chosen by the composite's
+// accumulator parameter, never a hidden mode.
 
 // 4-lane SIMD float vector
 type Float4 : Bits {

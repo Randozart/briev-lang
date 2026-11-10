@@ -346,9 +346,29 @@ impl<'a> TypecheckContext<'a> {
         let mut visited: Vec<String> = Vec::new();
         loop {
             if let Some(p) = self.type_protocols.get(current) {
-                return Some(
-                    Self::protocol_category_of(p).to_string(),
-                );
+                let cat = Self::protocol_category_of(p);
+                // 2026-11-09 (float-formats plan): a recorded protocol that is
+                // itself a NAMED type (`Float16: Half;` records "Half") is a
+                // parent, not a category. Consult the universe at that hop and
+                // keep walking; only fundamentals terminate the walk.
+                if crate::type_universe::FUNDAMENTAL_TYPES.contains(&cat) {
+                    return Some(cat.to_string());
+                }
+                if let Some(rt) = self.universe.get(cat) {
+                    for (prop, cat2) in crate::type_universe::CAST_CATEGORY_PROPS {
+                        if rt.properties.contains_key(*prop) {
+                            return Some(cat2.to_string());
+                        }
+                    }
+                    if rt.base == *cat {
+                        return Some(cat.to_string());
+                    }
+                }
+                if !visited.iter().any(|v| v == cat) {
+                    visited.push(current.to_string());
+                    current = cat;
+                    continue;
+                }
             }
             // Fundamental ancestor? Its universe entry carries the category
             // (Cast.Float on the `Float` primordial, Cast.Int on `Int`, …).
@@ -3170,12 +3190,37 @@ fn float_literal_fits(
     // the fresh typecheck universe fall back to the typechecker's collected
     // `spec Bits`/`MaxBits` map — the gate must not silently admit every
     // literal just because the universe cannot see the type.
-    let bits = ty.universe_key().and_then(|k| universe.get(k)).and_then(|rt| {
+    // 2026-11-09 (float-formats plan): width facts inherit through the base
+    // chain (`type Float16: Half;` has no own bits but resolves 16).
+    let own = ty.universe_key().and_then(|k| universe.get(k));
+    let bits = own.and_then(|rt| {
         rt.properties.iter().find_map(|(k, pv)| match (k.as_str(), pv) {
             ("bits", crate::ast::PropertyValue::Int(n))
             | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u32),
             _ => None,
         })
+    }).or_else(|| {
+        // Walk bases: `Float16 -> Half -> (bits 16)`.
+        let mut current = own;
+        for _ in 0..64 {
+            let rt = current?;
+            let base = rt.base.trim_start_matches('#');
+            let key = crate::casting::graph::CastingGraph::parse_protocol_base(base)?.0;
+            if key == rt.name {
+                return None;
+            }
+            current = universe.get(&key);
+            if let Some(rt) = current {
+                if let Some(n) = rt.properties.iter().find_map(|(k, pv)| match (k.as_str(), pv) {
+                    ("bits", crate::ast::PropertyValue::Int(n))
+                    | ("maxbits", crate::ast::PropertyValue::Int(n)) => Some(*n as u32),
+                    _ => None,
+                }) {
+                    return Some(n);
+                }
+            }
+        }
+        None
     }).or_else(|| {
         ty.universe_key().and_then(|k| type_max_bits.get(k)).map(|b| *b as u32)
     });

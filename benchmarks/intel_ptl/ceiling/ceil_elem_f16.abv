@@ -7,7 +7,7 @@ let b: Float16[N];
 let y: Float16[N];
 
 async accel node elem [i < N][i == N] {
-    y[i] = (a[i] as Float + b[i] as Float) as Float16;
+    y[i] = a[i] + b[i];  // native half arithmetic (compute at the type's width)
     i = i + 1;
     term;
 };

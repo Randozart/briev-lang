@@ -9,6 +9,10 @@ $(Parsed @ highest) {
     when anchor.Count$() > 0 {
         anchor.Before$().Insert$(
             Import$("std/types/bootstrap.bv"),
+            // 2026-11-09 (float-formats plan): `Float16` is the stdlib alias
+            // of the `Half` primordial; every unit that can write a float
+            // type needs it. float.bv is small and type-only.
+            Import$("std/types/float.bv"),
             // 2026-08-14 (slice-6 unblock): collections.bv declares the
             // iteration ops (`obj List<T>` op Count/op At). Without it the
             // typechecker's name-fallback lets `List<T>` typecheck but the
@@ -38,13 +42,19 @@ $(Parsed @ highest) {
     // 2026-07-21: No imports — insert before the first txn.
     // 2026-07-23: Check Count$() before Before$() to avoid error on empty selection.
     when anchor.Count$() == 0 {
-        let txn_anchor = Tag$("txn").First$();
-        when txn_anchor.Count$() > 0 {
-            txn_anchor.Before$().Insert$(
+        // 2026-11-09: a root with NODES but no import/txn (a standalone .abv
+        // kernel file) previously got no prelude at all, so stdlib types
+        // (Float16, List, ...) were unregistered and lowered to `Data`.
+        // Anchor on the first node; the txn branch below covers txn-only roots.
+        let node_anchor = Tag$("node").First$();
+        when node_anchor.Count$() > 0 {
+            node_anchor.Before$().Insert$(
                 Import$("std/types/bootstrap.bv"),
-                // 2026-08-14 (slice-6 unblock): see the anchor branch note.
+                // 2026-11-09 (float-formats plan): `Float16` is the stdlib
+                // alias of the `Half` primordial; every unit needs it.
+                Import$("std/types/float.bv"),
                 Import$("std/collections.bv"),
-                    Import$("std/os/net.bv"),
+                Import$("std/os/net.bv"),
                 Import$("std/os/signal.bv"),
                 Import$("std/os/ipc.bv"),
                 Import$("std/os/thread.bv"),
@@ -53,10 +63,31 @@ $(Parsed @ highest) {
                 Import$("std/os/atomic.bv"),
                 Import$("std/env.bv"),
                 Import$("std/io.bv"),
-                // 2026-09-09 (Family A): see the anchor branch note above.
                 Import$("std/cast_lanes.bv"),
                 Import$("std/float_fmt.bv")
             );
+        };
+        // 2026-11-09: a node exists but no txn? covered above. Txn-only roots:
+        let txn_anchor = Tag$("txn").First$();
+        when node_anchor.Count$() == 0 {
+            when txn_anchor.Count$() > 0 {
+                txn_anchor.Before$().Insert$(
+                    Import$("std/types/bootstrap.bv"),
+                    Import$("std/types/float.bv"),
+                    Import$("std/collections.bv"),
+                    Import$("std/os/net.bv"),
+                    Import$("std/os/signal.bv"),
+                    Import$("std/os/ipc.bv"),
+                    Import$("std/os/thread.bv"),
+                    Import$("std/os/user.bv"),
+                    Import$("std/os/mem.bv"),
+                    Import$("std/os/atomic.bv"),
+                    Import$("std/env.bv"),
+                    Import$("std/io.bv"),
+                    Import$("std/cast_lanes.bv"),
+                    Import$("std/float_fmt.bv")
+                );
+            };
         };
     };
 };
