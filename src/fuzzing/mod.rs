@@ -18,3 +18,4 @@
 
 pub mod ast_generator;
 pub mod concolic;
+pub mod typed_program;

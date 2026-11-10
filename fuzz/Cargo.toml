@@ -34,3 +34,10 @@ path = "fuzz_targets/interpreter.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "welltyped"
+path = "fuzz_targets/welltyped.rs"
+test = false
+doc = false
+bench = false
