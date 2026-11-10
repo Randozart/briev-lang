@@ -34,3 +34,10 @@ path = "fuzz_targets/interpreter.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "typecheck"
+path = "fuzz_targets/typecheck.rs"
+test = false
+doc = false
+bench = false
