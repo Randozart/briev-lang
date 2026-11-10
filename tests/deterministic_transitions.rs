@@ -123,6 +123,7 @@ fn reference_enum_construction_and_match_trace() {
         threshold: 0,
         bias: 3,
         events: vec![0, 2, -4, 1],
+        operations: vec![],
     };
     assert_eq!(reference(&case).unwrap(), vec![7, 9, 5, 6]);
 }
