@@ -1,0 +1,41 @@
+name: Verification nightly
+
+# 2026-11-09 (verification program P3): the full differential matrix that is
+# too slow for the 45-minute PR gate. PR-time CI keeps the quick subset; this
+# workflow runs every program-surface tier1 fixture at -O0/-O2/-O3 (the top arm
+# uses the harness -O3 -flto pipeline) and compares stdout/exit against -O0.
+#
+# Queued for later nightly expansion (harnesses not yet written):
+#   - interpreter-over-corpus differential (the generated-transition harness
+#     from PR #80 covers generated families only)
+#   - wasm32 cross-backend corpus gate
+# Both are tracked in docs/plans/2026-11-09-compiler-verification-program.md.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  full-opt-matrix:
+    name: Full tier1 optimization matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM + clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld llvm build-essential
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Full optimization-level differential
+        env:
+          OPT_MATRIX_FULL: "1"
+        run: cargo test --release --test opt_level_parity -- --nocapture
