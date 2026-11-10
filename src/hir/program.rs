@@ -11,6 +11,9 @@ use crate::ast::Type;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirCallableKind {
+    /// 2026-11-09: `isr handler` declaration (vector-table rooted, not a
+    /// reactor transaction — mirrors the AST's separate TopLevel arm).
+    IsrHandler,
     Defn,
     Transaction,
     MemberDefn,
@@ -103,6 +106,10 @@ pub struct HirCallable {
     /// True when this callable came from an `impl` block (distinguishes the
     /// on-fire callable set from type-member declarations).
     pub is_impl_fn: bool,
+    /// 2026-11-09 (H5 flip gate): an `isr<mech> handler @ vec: name(...)`
+    /// declaration. The vector table roots it like the AST IsrHandler arm;
+    /// the body still walks for callee edges.
+    pub is_isr: bool,
     pub params: Vec<HirParam>,
     /// Generic type-parameter names.
     pub type_params: Vec<String>,

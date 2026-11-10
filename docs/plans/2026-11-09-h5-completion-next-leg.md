@@ -199,3 +199,22 @@ through. The remaining AST body is the collection-witness `List` arm (needs
 the declared result type to construct through `Init`/`InsertAt`) — an accepted
 constructor exception, same category as the `#StdOut` `Print#` call. The H5
 flip's match precondition is therefore satisfied.
+
+**H5 flip readiness probe (2026-11-09).** First full `BRIEV_HIR_EMIT=1
+cargo test --all` found nine HIR-only failures, all real fidelity gaps now
+fixed:
+
+- `defn_liveness` indexed `impl` member bodies the AST never sees (the
+  pipeline erases/merges impls; dyn thunks and member dispatch inline them),
+  so `mark("greet")` over-rooted a body. Impl callables (`is_impl_fn`) are
+  now skipped, mirroring the AST index.
+- ISR handlers were dropped by HIR lowering, so liveness lost their callee
+  edges (`{"tick"}` vs `{}`). They now lower as
+  `HirCallableKind::IsrHandler` with `is_isr`, rooted by liveness and excluded
+  from bare-transaction consumers (swan-song, needs-state) exactly like the
+  AST's separate `TopLevel::IsrHandler` arm.
+
+With both fixes: HIR-flag `cargo test --all` 3624/0 and normal `cargo test
+--all` 3624/0; sweep 139/0; release A/B byte-identical. Remaining before the
+default flip: benchmarks under the flag, then owner sign-off (the flip keeps
+`BRIEV_HIR_EMIT` as the opt-out).

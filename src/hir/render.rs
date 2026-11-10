@@ -47,7 +47,7 @@ pub fn render_callable(out: &mut String, c: &HirCallable) {
         out,
         1,
         &format!(
-            "callable {} kind={:?} owner={:?} exported={} symbol={:?} result={:?} type_params={:?} variadic={} sync={:?} trait_default={} impl_fn={} outputs={:?}",
+            "callable {} kind={:?} owner={:?} exported={} symbol={:?} result={:?} type_params={:?} variadic={} sync={:?} trait_default={} impl_fn={} isr={} outputs={:?}",
             c.name,
             c.kind,
             c.owner,
@@ -59,6 +59,7 @@ pub fn render_callable(out: &mut String, c: &HirCallable) {
             c.sync_domains,
             c.trait_default,
             c.is_impl_fn,
+            c.is_isr,
             c.output_list,
         ),
     );
