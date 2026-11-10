@@ -1,0 +1,16 @@
+// Expression-bodied defn returning a String from a match — 2026-11-10.
+// Regression: the defn fallthrough returned `null` for ptr-typed last
+// expressions (the match result was dropped: `ret ptr null`), discovered by
+// the kiosk native RPC dispatcher (BUGS.md). Golden: both arm strings.
+defn pick(x: Int) -> String {
+    match x {
+        1 => "{\"a\":1}",
+        _ => "{\"b\":1}",
+    };
+};
+
+node entry [beginprogram][true] {
+    Print#(pick(1));
+    Print#(pick(2));
+    term;
+};

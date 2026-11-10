@@ -410,6 +410,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                 // `ret`. Without the capture the tail emitted `ret 0` — every
                 // shim in kernel_rv64 returned zero (addresses, mepc, cause).
                 backend.fun.last_expr_reg = Some(reg.name.clone());
+                backend.fun.last_expr_ty = Some(reg.ty.clone());
                 reg
             }
         }

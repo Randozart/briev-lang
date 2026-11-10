@@ -731,6 +731,22 @@ fn socket_loopback_golden_output() {
 /// (sock_unix / sock_bind_listen_unix / sock_connect_unix + stale-path unlink)
 /// end to end in one process. Golden matches the TCP loopback: five ok-flags,
 /// the received byte, and the whole-trip verdict ("11111651").
+/// 2026-11-10 (kiosk S1): an expression-bodied defn returning a String from
+/// a match must return the merged arm value, not null. Regression for the
+/// backend fallthrough that hardcoded `ret ptr null`.
+#[test]
+fn expr_body_match_string_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("expr_body_match_string", "golden", &[]);
+    assert_eq!(
+        out, "{\"a\":1}{\"b\":1}",
+        "expression-body match String golden drifted: {out:?}"
+    );
+}
+
 #[test]
 fn unix_socket_loopback_golden_output() {
     if !has("clang") {

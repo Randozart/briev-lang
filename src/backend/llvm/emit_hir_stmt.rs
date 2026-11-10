@@ -70,6 +70,7 @@ fn emit_expr_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirSt
         if call_native || super::emit_expr::hir_expr_family_covered(e) {
             if let Some(reg) = backend.emit_hir_expr(out, e, indent) {
                 backend.fun.last_expr_reg = Some(reg.name.clone());
+                backend.fun.last_expr_ty = Some(reg.ty.clone());
                 return Some(reg);
             }
         }

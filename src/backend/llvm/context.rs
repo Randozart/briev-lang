@@ -1177,6 +1177,10 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// register — an expression-bodied defn (no `term`) returns it on
     /// fallthrough instead of the literal zero.
     pub last_expr_reg: Option<String>,
+    /// The LLVM/Briev type of `last_expr_reg` (2026-11-10 fallthrough fix) —
+    /// the return path needs it to convert to the declared return type
+    /// (ptr/i64/float) instead of hardcoding zero/null.
+    pub last_expr_ty: Option<Type>,
     pub callable_txn_result: Option<String>,
     pub callable_txn_post_label: Option<String>,
     /// 2026-07-26: Target label for [expr]; convergence gates.
@@ -1513,6 +1517,7 @@ impl FunctionContext {
             in_inline_member: false,
             inline_member_exit: None,
             last_expr_reg: None,
+            last_expr_ty: None,
             callable_txn_result: None,
             callable_txn_post_label: None,
             convergence_target: None,

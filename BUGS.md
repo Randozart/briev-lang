@@ -1,4 +1,4 @@
-## Returning a String from a `match` arm on `Result<T,String>` miscompiles — OPEN 2026-11-10
+## Returning a String from a `match` arm on `Result<T,String>` miscompiles — FIXED 2026-11-10
 
 **Symptom:** a function that returns a `String` bound in a `match` arm over
 `Result<String,String>` crashes (SIGILL/SIGSEGV) as soon as the returned string
@@ -37,9 +37,14 @@ term dispatch(name);
 **Impact:** kiosk `briev/service/daemon.bv` uses the workaround; the compiler
 bug is a landing blocker for idiomatic `match`-based service dispatch.
 
-**Next:** reproduce under ASan/LSan, inspect HIR/LLVM for double-free or a
-dangling String pointer across the match arm, and fix reclamation/ABI. Add a
-tier-1 regression once fixed. Tracked by the kiosk program W1/W3.
+**FIX (2026-11-10):** not reclamation — the defn fallthrough return. The
+expression-bodied return path used `last_expr_reg` only when the declared
+return type was `i64`; for `ptr` (String) it emitted `ret ptr null`, dropping
+the match phi (`%t0`). `FunctionContext` now records `last_expr_ty` and the
+fallthrough converts the last expression to the declared return type
+(i64↔ptr, float, ptr) instead of hardcoding zero/null. Regression:
+`tests/tier1/expr_body_match_string.bv` + daily smoke; the kiosk daemon now
+uses idiomatic `match` dispatch again.
 
 ## Driver .c edits may not rebuild the linked GPU runtime — OPEN 2026-11-09
 

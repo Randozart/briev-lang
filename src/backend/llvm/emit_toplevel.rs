@@ -4116,6 +4116,7 @@ impl LlvmBackend {
         // `term`) returns its body's value on fallthrough — the tail reads
         // this register. Reset per-defn so stale values never leak.
         self.fun.last_expr_reg = None;
+        self.fun.last_expr_ty = None;
         // 2026-08-04 (compiler-in-Briev): pre-declare entry-block allocas for
         // top-level lets that are reassigned inside a guard/loop — the
         // reassignment must NOT demote to an alloca at the assignment site
@@ -4259,6 +4260,7 @@ impl LlvmBackend {
                 if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
                     let reg = self.emit_expr(out, e, "  ");
                     self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
                     continue;
                 }
             }
@@ -4274,6 +4276,7 @@ impl LlvmBackend {
                             super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
                         {
                             self.fun.last_expr_reg = Some(reg.name);
+                            self.fun.last_expr_ty = Some(reg.ty.clone());
                             continue;
                         }
                     }
@@ -4303,17 +4306,32 @@ impl LlvmBackend {
                 // `ret void 0`, rejected by clang).
                 if ll_ret_ty == "void" {
                     writeln!(out, "  ret void").ok();
-                } else if ll_ret_ty == "i64" {
+                } else if let Some(reg) = self.fun.last_expr_reg.clone() {
                     // 2026-09-14 (machine-entry plan): an expression-bodied
-                    // defn returns its body's value — the shim
-                    // `defn f() -> Int { Asm#(…); }` computed %t0 then
-                    // returned literal 0 (every kernel shim returned zero:
-                    // frame addresses, mepc, cause — the machine freeze).
-                    if let Some(reg) = &self.fun.last_expr_reg {
-                        writeln!(out, "  ret i64 {}", reg).ok();
+                    // defn returns its body's value. 2026-11-10 (kiosk S1):
+                    // generalized beyond i64 — the previous ptr branch
+                    // returned null, so an expression-bodied `-> String` defn
+                    // dropped its match result (`ret ptr null`).
+                    let val_ty = self
+                        .fun
+                        .last_expr_ty
+                        .as_ref()
+                        .map(|t| self.llvm_type(t))
+                        .unwrap_or_else(|| ll_ret_ty.clone());
+                    let converted = if val_ty == ll_ret_ty {
+                        reg.clone()
+                    } else if val_ty == "i64" && ll_ret_ty == "ptr" {
+                        let c = self.fun.gen_reg();
+                        writeln!(out, "  {} = inttoptr i64 {} to ptr", c, reg).ok();
+                        c
+                    } else if val_ty == "ptr" && ll_ret_ty == "i64" {
+                        let c = self.fun.gen_reg();
+                        writeln!(out, "  {} = ptrtoint ptr {} to i64", c, reg).ok();
+                        c
                     } else {
-                        writeln!(out, "  ret i64 0").ok();
-                    }
+                        reg.clone()
+                    };
+                    writeln!(out, "  ret {} {}", ll_ret_ty, converted).ok();
                 } else {
                     let zero_val = match ll_ret_ty.as_str() {
                         "ptr" => "null",
@@ -5054,6 +5072,7 @@ pub(crate) fn definition_touches_raw_memory(stmts: &[Statement]) -> bool {
                             super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
                         {
                             self.fun.last_expr_reg = Some(reg.name);
+                            self.fun.last_expr_ty = Some(reg.ty.clone());
                             continue;
                         }
                     }
