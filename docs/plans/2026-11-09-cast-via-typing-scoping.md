@@ -155,3 +155,10 @@ populated in production for the first time. `target/debug` sweep: 139/0;
 
 Still open: A2 (Field/Index/MethodCall/Reflect typing from type facts +
 trait/protocol tables) and the unresolved-cast audit proposed above.
+
+**A2 slice (2026-11-09).** Field and Index annotations landed: a field table
+built from `HirTypeDefKind` (generic params retained) types `receiver.field`
+with use-site substitution, and `List<T>`/`Array<T>`/`Vector` indexing types
+the element. Explicit casts through field/index sources now resolve `via`.
+Two focused tests plus a cast-path test; gates: lib 3576, sweep 139/0, A/B
+byte-identical, all-tests 3623. MethodCall/Reflect remain.
