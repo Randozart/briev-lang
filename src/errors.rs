@@ -717,6 +717,13 @@ pub enum SyntaxError {
         keyword: String,
         span: Span,
     },
+    /// 2026-11-10 (fuzz finding): the parser's backtracking budget was
+    /// exhausted. Malformed, deeply nested input drives the speculative
+    /// statement/tail-expression parse into super-linear work; the budget is
+    /// linear in token count, so this fires only on pathological input.
+    BacktrackLimit {
+        span: Span,
+    },
 }
 
 /// One-line meaning for each reserved keyword, surfaced in the
@@ -765,6 +772,7 @@ impl fmt::Display for SyntaxError {
             SyntaxError::InvalidType { span, .. } => format!(" at {}", span),
             SyntaxError::StagedFeature { span, .. } => format!(" at {}", span),
             SyntaxError::ReservedKeyword { span, .. } => format!(" at {}", span),
+            SyntaxError::BacktrackLimit { span } => format!(" at {}", span),
             _ => String::new(),
         };
 
@@ -809,6 +817,13 @@ impl fmt::Display for SyntaxError {
                     f,
                     "feature '{}' is specified in the language but not yet implemented in this build{}",
                     feature, span_str
+                )
+            }
+            SyntaxError::BacktrackLimit { .. } => {
+                write!(
+                    f,
+                    "the input is too deeply nested or too complex to parse (parser complexity limit reached) — fix: reduce the nesting depth or simplify the malformed syntax{}",
+                    span_str
                 )
             }
             _ => Ok(()),
