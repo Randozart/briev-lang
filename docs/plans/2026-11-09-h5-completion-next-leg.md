@@ -263,3 +263,12 @@ HIR flip and fixed two gaps:
   round-trippable serialized HIR with adoption gates).
 
 Gates: quick gate + focused suites; emitted-artifact and plugin tests green.
+
+**Next port note (2026-11-10).** `dependency_graph::build` is the next small
+HIR candidate (state decls, trigger names/bindings, bare txn body reads) but is
+currently NON-DETERMINISTIC: `topological_sort` seeds its Kahn queue from a
+`HashSet` and iterates `HashMap` dependents, so `topo_order`/`bit_index`
+(and thus trg dirty-flag bit assignment) vary per process. Fix first: sort the
+seed order and dependent lists (house determinism rule), add a two-process
+order test, THEN port to HIR and flip with an equality oracle. TriggerBinding
+needs a HIR fidelity field (names) at the same time.

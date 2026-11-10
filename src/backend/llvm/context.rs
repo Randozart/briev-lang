@@ -255,7 +255,7 @@ pub struct CompilerContext {
     /// here, substituting the type params, and emitting a specialized symbol.
     pub generic_defns: HashMap<String, crate::ast::top::Definition>,
     /// 2026-11-05 (H3.6): base HIR callables for generic defns, keyed by base
-    /// name. Present only under `BRIEV_HIR_EMIT=1`; the specialization site
+    /// name. Populated by default since the 2026-11-09 flip (`BRIEV_HIR_EMIT=0` opts out); the specialization site
     /// substitutes via `hir::specialize` and feeds the statement seam.
     pub generic_hir: HashMap<String, crate::hir::HirCallable>,
     /// 2026-10-13 (S6): type-param names per generic defn (`bump_twice` →
