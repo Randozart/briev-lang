@@ -108,3 +108,22 @@ This is the slow, high-fidelity half of the defect-discovery stack. For the
 fast, branch-coverage-driven half — in-process `cargo-fuzz` targets that
 rediscover the same defects from raw bytes — see
 `docs/guides/coverage-guided-fuzzing.md`.
+# Composed integer discovery (2026-11-10)
+
+Family 13 generates sequences of 1–8 additions, bias subtractions,
+state-dependent guarded subtractions, and signed remainders. It compares the
+interpreter with an independent Rust model before comparing native execution
+at `-O0` and `-O3`. Inputs are supplied at runtime. This exercises compositions
+inside a transition; it does not yet generate multi-node reactor schedules.
+
+```sh
+BRIEV_SIM_FAMILY=13 BRIEV_SIM_CASES=100 BRIEV_SIM_SEED=1 cargo test --test deterministic_transitions scripted_integer_transitions -- --nocapture
+```
+
+Replay JSON now includes `operations` (0=add event, 1=subtract bias,
+2=subtract event when state exceeds threshold, 3=remainder by abs(bias)+1).
+Older fixtures default to an empty sequence. Sequences and inputs shrink through
+the existing artifact/replay machinery. At most 16 events × 8 operations, with
+event magnitude ≤20 and initial magnitude ≤100, keep arithmetic far from
+overflow; divisors are strictly positive. Floating-point, memory, and concurrency
+semantics are outside this generator's current coverage.
