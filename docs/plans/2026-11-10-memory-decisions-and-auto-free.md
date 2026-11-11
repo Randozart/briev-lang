@@ -427,3 +427,19 @@ Conclusion unchanged and sharper: allocation interception needs the compiler
 to carry allocation **base + size + owner class** per pointer through String/
 List/object representations. The next attempt starts with that metadata (or a
 typed owned-handle), not with hooks keyed on address ranges.
+
+### 10.5 Scoped object-image arena — safe but no RSS gain
+
+Third attempt: request-scoped arena for **struct-literal object images only**
+(marker `; BRIEV_REQ_OBJECT`; hook `briev_req_object`, range-checked free).
+No String/List realloc interception, so the previous overlap failure is gone.
+
+- Daemon ran 200 detect calls with no crash.
+- RSS was unchanged: 144→188 MB (~0.22 MB/call), same as before.
+- IR confirmed 56 object sites hooked.
+
+Conclusion: object images are not the residual. The growth is in List headers/
+backing, String results, Result/enum temporaries, and their allocator
+reuse/fragmentation. The next slice must own **List/String temporaries**:
+fixed-capacity executor env (no per-node List copy) and arena-backed response
+building, before another compiler-wide allocator attempt.
