@@ -12,6 +12,7 @@ use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
+mod closed;
 mod socket_effects;
 mod node_set;
 use node_set::NodeSet;
@@ -30,6 +31,10 @@ pub struct ReclamationPlan {
     pub mutating: BTreeSet<String>,
     pub regions: BTreeSet<String>,
     pub barriers: BTreeSet<String>,
+    /// 2026-11-11: regions whose complete call closure (including barrier
+    /// callees) cannot escape the region, so its frame may own allocations made
+    /// beneath those barriers. Always a subset of `regions`.
+    pub closed_regions: BTreeSet<String>,
     pub reasons: BTreeMap<String, String>,
     /// 2026-11-09: barriers derived from escape/unsupported, kept separate so a
     /// proven-safe publisher can be reclassified without weakening them.
@@ -100,6 +105,15 @@ struct Graph {
     /// 2026-11-09: publisher -> (caller owner, receiver argument local node).
     /// `None` records a receiver argument that is not a bare caller local.
     publish_call_args: BTreeMap<String, Vec<(String, Option<Node>)>>,
+    /// 2026-11-11: callables that invoke an intrinsic whose backend-inserted
+    /// helper body is unavailable, so the helper's allocation effects cannot be
+    /// proven non-escaping. Rejects closed-call ownership (ordinary proofs are
+    /// unaffected).
+    unmodeled_helpers: BTreeSet<String>,
+    /// 2026-11-11: callables that grow a collection (`<-`). Their runtime
+    /// lowering calls the resize helper, which is a barrier that suspends the
+    /// enclosing region; a closed region must therefore own across it.
+    growers: BTreeSet<String>,
 }
 
 impl Default for Graph {
@@ -107,7 +121,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new(), unmodeled_helpers: BTreeSet::new(), growers: BTreeSet::new() }
     }
 }
 
@@ -273,6 +287,7 @@ impl Graph {
             self.classify(name, callable, &mut plan);
         }
         plan.publish_sites = self.publish_safety();
+        plan.closed_regions = self.closed_regions(&plan);
         plan
     }
 
@@ -380,6 +395,8 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
     }
     accumulator.reclassify_safe_publishers(&mut result);
     result.regions.retain(|owner| !result.barriers.contains(owner));
+    result.closed_regions = std::mem::take(&mut accumulator.closed_regions);
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     // Main also executes global initialization. Until those allocations have
     // explicit global lifetime facts, only closed scalar initializers license
     // an entry scope. Helper proofs remain independent of this fallback.
@@ -400,6 +417,7 @@ struct Accumulator {
     publish_only: BTreeSet<String>,
     escape_barriers: BTreeSet<String>,
     publish_sites: BTreeMap<String, Vec<bool>>,
+    closed_regions: BTreeSet<String>,
 }
 
 impl Accumulator {
@@ -408,6 +426,7 @@ impl Accumulator {
         record_dependencies(graph, &mut self.dependencies);
         if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, unsupported={:?}", plan.barriers, graph.unsupported); }
         if plan.regions.contains(owner) { result.regions.insert(owner.to_string()); }
+        if plan.closed_regions.contains(owner) { self.closed_regions.insert(owner.to_string()); }
         result.barriers.extend(plan.barriers.iter().cloned());
         self.publish_only.extend(plan.publish_only.iter().cloned());
         self.escape_barriers.extend(plan.escape_barriers.iter().cloned());

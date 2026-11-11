@@ -27,6 +27,7 @@
         }
         extern void __briev_region_finish(void);
         extern void __briev_region_enter(void *);
+        extern void __briev_region_enter_closed(void *, void *);
         extern void __briev_region_leave(void *);
         extern void *__briev_region_suspend(void);
         extern void __briev_region_restore(void *);
@@ -34,6 +35,54 @@
         extern void *__briev_region_adopt(void *);
         extern void *__briev_region_realloc(void *, uint64_t);
         extern void __briev_region_free(void *);
+        /* 2026-11-11: closed-owner chain. A closed scope owns allocations made
+           beneath an ordinary barrier; nested scopes adopt into it; an
+           independently closed child becomes the nearest owner; both normal
+           exit and program-end unwind pop closed records. */
+        static int closed_scopes(void) {
+            void *outer[3], *inner[3], *nested[3], *outer_closed[2], *inner_closed[2];
+            __briev_region_enter_closed(outer, outer_closed);
+            void *saved = __briev_region_suspend();
+            __briev_region_enter(nested);
+            char *published = __briev_region_malloc(32);
+            published[0] = 73;
+            __briev_region_leave(nested);
+            if (live != 2 || published[0] != 73) return 10;
+            __briev_region_enter_closed(inner, inner_closed);
+            char *local = __briev_region_malloc(16);
+            local[0] = 42;
+            __briev_region_enter(nested);
+            __briev_region_malloc(8);
+            __briev_region_leave(nested);
+            if (live != 6 || local[0] != 42) return 11;
+            __briev_region_leave(inner);
+            if (live != 2 || published[0] != 73) return 12;
+            published = __briev_region_realloc(published, 20000);
+            if (!published || published[0] != 73) return 13;
+            __briev_region_free(published);
+            if (live != 0) return 14;
+            __briev_region_malloc(8);
+            __briev_region_restore(saved);
+            __briev_region_leave(outer);
+            if (live != 0) return 15;
+            __briev_region_enter_closed(outer, outer_closed);
+            __briev_region_malloc(8);
+            __briev_region_suspend();
+            __briev_region_enter_closed(inner, inner_closed);
+            __briev_region_malloc(16);
+            __briev_region_enter(nested);
+            __briev_region_malloc(32);
+            __briev_region_finish();
+            if (live != 0) return 16;
+            char *unowned = __briev_region_malloc(8);
+            unowned[0] = 19;
+            __briev_region_enter(nested);
+            __briev_region_malloc(8);
+            __briev_region_leave(nested);
+            if (live != 1 || unowned[0] != 19) return 17;
+            __briev_region_free(unowned);
+            return live != 0;
+        }
         int main(void) {
             void *outer[3], *inner[3], *nested[3];
             char *borrowed = __briev_region_malloc(32);
@@ -73,6 +122,7 @@
             __briev_region_finish();
             if (borrowed[0] != 42) return 3;
             __briev_region_free(borrowed);
-            return live != 0;
+            if (live != 0) return 8;
+            return closed_scopes();
         }
     

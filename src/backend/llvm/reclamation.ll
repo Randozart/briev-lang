@@ -4,6 +4,55 @@
 ; Private compiler implementation. Strip these source comments from output.
 @__briev_region_current = internal thread_local global ptr null
 @__briev_region_active = internal thread_local global ptr null
+; 2026-11-11: a whole-call proof owns across descendant barriers. Ordinary
+; children adopt into this owner, never reclaiming its published payload early.
+; An independently closed child becomes the nearest owner until its exit.
+; Remove with the closed-region frontend proof; ordinary frame layout and
+; suspend/restore behavior stay unchanged.
+@__briev_region_closed = internal thread_local global ptr null
+
+define internal void @__briev_region_enter_closed(ptr %frame, ptr %closed) {
+entry:
+  call void @__briev_region_enter(ptr %frame)
+  %previous = load ptr, ptr @__briev_region_closed
+  store ptr %previous, ptr %closed
+  %owner = getelementptr { ptr, ptr }, ptr %closed, i32 0, i32 1
+  store ptr %frame, ptr %owner
+  store ptr %closed, ptr @__briev_region_closed
+  ret void
+}
+
+define internal ptr @__briev_region_owner() {
+entry:
+  %closed = load ptr, ptr @__briev_region_closed
+  %ordinary = icmp eq ptr %closed, null
+  br i1 %ordinary, label %current, label %enclosing
+current:
+  %frame = load ptr, ptr @__briev_region_current
+  ret ptr %frame
+enclosing:
+  %slot = getelementptr { ptr, ptr }, ptr %closed, i32 0, i32 1
+  %owner = load ptr, ptr %slot
+  ret ptr %owner
+}
+
+define internal void @__briev_region_pop_closed(ptr %frame) {
+entry:
+  %closed = load ptr, ptr @__briev_region_closed
+  %empty = icmp eq ptr %closed, null
+  br i1 %empty, label %done, label %compare
+compare:
+  %slot = getelementptr { ptr, ptr }, ptr %closed, i32 0, i32 1
+  %owner = load ptr, ptr %slot
+  %matches = icmp eq ptr %owner, %frame
+  br i1 %matches, label %pop, label %done
+pop:
+  %previous = load ptr, ptr %closed
+  store ptr %previous, ptr @__briev_region_closed
+  br label %done
+done:
+  ret void
+}
 
 define internal void @__briev_region_enter(ptr %frame) {
 entry:
@@ -41,7 +90,7 @@ entry:
 
 define internal ptr @__briev_region_adopt(ptr %data) {
 entry:
-  %frame = load ptr, ptr @__briev_region_current
+  %frame = call ptr @__briev_region_owner()
   %inactive = icmp eq ptr %frame, null
   %failed = icmp eq ptr %data, null
   %skip = or i1 %inactive, %failed
@@ -104,6 +153,14 @@ release:
 
 define internal ptr @__briev_region_realloc(ptr %data, i64 %size) {
 entry:
+  ; 2026-11-11: release zero-sized resizes through the tracked free path so the
+  ; result never depends on libc's implementation-defined realloc(p, 0).
+  %zero_size = icmp eq i64 %size, 0
+  br i1 %zero_size, label %release_zero, label %nonzero
+release_zero:
+  call void @__briev_region_free(ptr %data)
+  ret ptr null
+nonzero:
   %empty = icmp eq ptr %data, null
   br i1 %empty, label %allocate, label %resize
 allocate:
@@ -151,6 +208,7 @@ done:
 
 define internal void @__briev_region_leave(ptr %frame) {
 entry:
+  call void @__briev_region_pop_closed(ptr %frame)
   %head = getelementptr { ptr, ptr }, ptr %frame, i32 0, i32 1
   %initial = load ptr, ptr %head
   br label %records
