@@ -97,6 +97,41 @@ fn reg_defined_in_fn(out: &str, reg: &str) -> bool {
     out[current..].contains(&format!("{} = ", reg))
 }
 
+/// Parameters of an exported definition that are function-typed, with their
+/// arity. The host passes a flat C function pointer for each of these, which
+/// the export wrapper must adapt to Briev's closure-slot convention.
+/// 2026-11-12 (FFI callback ABI).
+fn callback_params(d: &crate::ast::Definition) -> Vec<(usize, usize)> {
+    d.parameters
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, ty))| match ty {
+            crate::ast::Type::Function(params, _) => Some((i, params.len())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The trampoline symbol bridging one callback parameter of an export.
+fn callback_symbol(export_name: &str, index: usize) -> String {
+    format!("{export_name}__c_cb{index}")
+}
+
+/// Resolve the boundary LLVM type for parameter `index`: the frontend's
+/// boundary table when it has one, else the declared type's LLVM spelling.
+fn boundary_type(
+    types: &Option<Vec<String>>,
+    index: usize,
+    fallback_ty: &crate::ast::Type,
+    backend: &LlvmBackend,
+) -> String {
+    types
+        .as_ref()
+        .and_then(|entries| entries.get(index))
+        .cloned()
+        .unwrap_or_else(|| backend.llvm_type(fallback_ty))
+}
+
 /// Byte size of an LLVM `[N x T]` aggregate type string, recursing into
 /// nested arrays. `None` for anything this conservative parser cannot size
 /// exactly (structs — padding makes their size layout-dependent — and
@@ -8658,6 +8693,16 @@ impl LlvmBackend {
             return;
         };
         let boundary_types = self.export_boundary_parameter_types(&d.name, &d.parameters);
+        // 2026-11-12 (FFI callback ABI): a fn-typed parameter of an EXPORTED
+        // function arrives as a flat C function pointer, but Briev's internal
+        // values are closure slots `[fn_ptr, caps..]` called as `(slot, args)`.
+        // Adapting here — instead of changing the internal convention — lets a
+        // host callback work while internal Briev closures keep their
+        // semantics unchanged.
+        let callbacks = callback_params(d);
+        for (index, arity) in &callbacks {
+            Self::emit_c_callback_trampoline(out, &callback_symbol(&export_name, *index), *arity);
+        }
         writeln!(out, "define dso_local {} @{}(", spec.ll_ret_ty, export_name).ok();
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
@@ -8666,14 +8711,32 @@ impl LlvmBackend {
             if spec.needs_state || i > 0 {
                 write!(out, ", ").ok();
             }
-            let ty = boundary_types
-                .as_ref()
-                .and_then(|types| types.get(i))
-                .cloned()
-                .unwrap_or_else(|| self.llvm_type(fallback_ty));
+            let ty = boundary_type(&boundary_types, i, fallback_ty, self);
             write!(out, "{} %arg{}", ty, i).ok();
         }
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        // Materialise one closure slot per callback parameter: slot[0] is the
+        // Briev-ABI trampoline, slot[1] is the host's C pointer.
+        for (index, _) in &callbacks {
+            let slot = format!("%cb{}", index);
+            writeln!(out, "  {} = alloca [2 x i64], align 8", slot).ok();
+            let slot_p = self.fun.gen_reg();
+            writeln!(out, "  {} = getelementptr i64, ptr {}, i64 0", slot_p, slot).ok();
+            let tramp = self.fun.gen_reg();
+            writeln!(
+                out,
+                "  {} = ptrtoint ptr @{} to i64",
+                tramp,
+                callback_symbol(&export_name, *index)
+            )
+            .ok();
+            writeln!(out, "  store i64 {}, ptr {}, align 8", tramp, slot_p).ok();
+            let host_p = self.fun.gen_reg();
+            writeln!(out, "  {} = getelementptr i64, ptr {}, i64 1", host_p, slot).ok();
+            let host = self.fun.gen_reg();
+            writeln!(out, "  {} = ptrtoint ptr %arg{} to i64", host, index).ok();
+            writeln!(out, "  store i64 {}, ptr {}, align 8", host, host_p).ok();
+        }
         write!(out, "  %res = call {} @{}(", spec.ll_ret_ty, spec.ll_name).ok();
         if spec.needs_state {
             write!(out, "ptr %state").ok();
@@ -8682,15 +8745,44 @@ impl LlvmBackend {
             if spec.needs_state || i > 0 {
                 write!(out, ", ").ok();
             }
-            let ty = boundary_types
-                .as_ref()
-                .and_then(|types| types.get(i))
-                .cloned()
-                .unwrap_or_else(|| self.llvm_type(fallback_ty));
-            write!(out, "{} %arg{}", ty, i).ok();
+            let ty = boundary_type(&boundary_types, i, fallback_ty, self);
+            let value = if callbacks.iter().any(|(index, _)| *index == i) {
+                format!("ptr %cb{}", i)
+            } else {
+                format!("%arg{}", i)
+            };
+            write!(out, "{} {}", ty, value).ok();
         }
         writeln!(out, ")").ok();
         writeln!(out, "  ret {} %res", spec.ll_ret_ty).ok();
+        writeln!(out, "}}").ok();
+    }
+
+    /// Emit the bridge between Briev's closure ABI and a host C callback.
+    ///
+    /// Signature `(ptr %env, i64 a0..aN) -> i64` matches how Briev calls a
+    /// closure value (env first, i64 arguments, i64 result). The host pointer
+    /// lives at `env[1]`, so the trampoline loads it and makes a FLAT C call —
+    /// exactly the `int64_t (*)(int64_t)` shape the binding generators
+    /// advertise.
+    fn emit_c_callback_trampoline(out: &mut String, symbol: &str, arity: usize) {
+        write!(out, "define internal i64 @{}(ptr %env", symbol).ok();
+        for i in 0..arity {
+            write!(out, ", i64 %a{}", i).ok();
+        }
+        writeln!(out, ") {{").ok();
+        writeln!(out, "  %pp = getelementptr i64, ptr %env, i64 1").ok();
+        writeln!(out, "  %fp = load i64, ptr %pp, align 8").ok();
+        writeln!(out, "  %fn = inttoptr i64 %fp to ptr").ok();
+        write!(out, "  %r = call i64 %fn(").ok();
+        for i in 0..arity {
+            if i > 0 {
+                write!(out, ", ").ok();
+            }
+            write!(out, "i64 %a{}", i).ok();
+        }
+        writeln!(out, ")").ok();
+        writeln!(out, "  ret i64 %r").ok();
         writeln!(out, "}}").ok();
     }
 
