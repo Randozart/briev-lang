@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [frontend, arithmetic, interpreter, typecheck]
+        target: [frontend, arithmetic, interpreter, typecheck, welltyped]
     steps:
       - uses: actions/checkout@v4
 
@@ -116,6 +116,19 @@ jobs:
         run: |
           mkdir -p fuzz/corpus/${{ matrix.target }}
           cp -n fuzz/seeds/${{ matrix.target }}/* fuzz/corpus/${{ matrix.target }}/ || true
+          # P4 (2026-11-11): real tier1 programs as seeds for the source-parsing
+          # targets. libFuzzer mutates them, so one small valid program is a
+          # high-value starting point the byte fuzzer rarely synthesises.
+          case "${{ matrix.target }}" in
+            frontend|typecheck|welltyped)
+              i=0
+              for src in tests/tier1/*.bv; do
+                [ -f "$src" ] || continue
+                cp -n "$src" "fuzz/corpus/${{ matrix.target }}/tier1_$i" || true
+                i=$((i + 1))
+              done
+              ;;
+          esac
 
       - name: Fuzz
         id: run
