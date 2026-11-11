@@ -1,0 +1,7 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// 2026-11-11: foreign declarations for the vendored image decoder belong in
+// the interop lane (core-usable policy). Retire with a native Briev decoder.
+frgn stbi_load_from_memory(data: Int, length: Int, width_out: Int, height_out: Int, channels_out: Int, desired: Int) -> Int from "std/c/stb_image/stb_image.c";
+frgn stbi_image_free(data: Int) -> Void from "std/c/stb_image/stb_image.c";

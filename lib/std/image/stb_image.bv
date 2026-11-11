@@ -5,9 +5,9 @@
 // 8-bit RGB buffer; callers convert to their own layout.
 
 import "std/result.bv";
-
-frgn stbi_load_from_memory(data: Int, length: Int, width_out: Int, height_out: Int, channels_out: Int, desired: Int) -> Int from "std/c/stb_image/stb_image.c";
-frgn stbi_image_free(data: Int) -> Void from "std/c/stb_image/stb_image.c";
+// 2026-11-11: keep the vendored C boundary in the explicit interop lane;
+// the public image module retains its existing API and import path.
+import "glue/stb_image.bv";
 
 obj DecodedImage {
     width: Int;

@@ -158,12 +158,20 @@ A pre-codegen pass builds a dataflow DAG for each txn/defn body:
 
 ```
 Node types: Alloc, Assign, Return, StateWrite, Call
-Edges: via variable names (producer → consumer)
+Edges: via possible value aliases (producer → consumer)
 
 Forward trace: from each Alloc node through all consumer edges.
   If any reachable node is Return / StateWrite / Call → ESCAPED → Malloc
   If no escape path → default scope strategy (Arena / Alloca / Inline)
 ```
+
+As of 2026-11-11, local bindings, assignments, returns, and escaping call
+arguments share the same value-alias traversal. Reading a scalar with `Load#`
+does not make that scalar alias the allocation containing it. Calls are also
+walked independently for side effects; callee parameter-escape summaries
+decide which argument positions need escape edges, with unknown callees
+remaining conservative. This keeps `let n = Load#(p); term n` consistent with
+`term Load#(p)` while `let q = p; term q` still escapes `p`.
 
 Three pillars:
 1. **Draw predictable paths** — DAG builder traces every dataflow edge

@@ -24,4 +24,4 @@ txn reset_items [items.Count#() > 0][items.Count#() == 0] {
   <ul><li b-each:item="items" b-key="item"><span b-text="item"></span></li></ul>
   <ul><li b-each:item="empty_items" b-key="item"><span b-text="item"></span></li></ul>
 </view>
-when true { reside; };
+hold true { reside; };

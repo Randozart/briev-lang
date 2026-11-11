@@ -4,7 +4,7 @@
 // Builds a throwaway suite (passing + golden-pinned + failing) and drives
 // the subcommand end-to-end. Pins the runner contract: PASS = the entry
 // node fired + exit 0 (+ byte-equal stdout when a .golden exists); a
-// violated postcondition traps (232) → FAIL; any failure → runner exit 1.
+// violated postcondition exits nonzero → FAIL; any failure → runner exit 1.
 
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ node main [done == false][done == true] {
     .unwrap();
     fs::write(suite.join("ok_two.golden"), "2\n").unwrap();
 
-    // FAIL: the entry fires but violates its postcondition → trap (232).
+    // FAIL: the entry fires but violates its postcondition → nonzero exit.
     fs::write(
         suite.join("bad_postcondition.bv"),
         r#"
@@ -77,7 +77,11 @@ node main [done == false][done == true] {
         .expect("spawn brievc test");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
-        stdout.contains("FAIL ok_two") && stdout.contains("golden mismatch"),
+        stdout.contains("FAIL ok_two") && stdout.contains("stdout mismatch"),
         "golden mismatch must FAIL: {stdout}"
     );
+    assert!(stdout.contains("expected: \"2\\n\""), "{stdout}");
+    assert!(stdout.contains("got:      \"3\\n\""), "{stdout}");
+    assert!(stdout.contains("0/2 passed"), "{stdout}");
+    assert!(!out.status.success(), "golden mismatch → non-zero runner exit");
 }

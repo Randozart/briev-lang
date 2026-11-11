@@ -565,56 +565,13 @@ impl<'a> DagBuilder<'a> {
         }
     }
 
-    fn collect_var_names(&self, expr: &Expr) -> Vec<String> {
-        let mut vars = vec![];
-        self.collect_var_names_rec(expr, &mut vars);
-        vars
-    }
-
-    fn collect_var_names_rec(&self, expr: &Expr, vars: &mut Vec<String>) {
-        match expr {
-            Expr::Identifier(name) => vars.push(name.clone()),
-            Expr::BinaryOp(_, l, r) => {
-                self.collect_var_names_rec(l, vars);
-                self.collect_var_names_rec(r, vars);
-            }
-            Expr::UnaryOp(_, e) => self.collect_var_names_rec(e, vars),
-            Expr::Field(e, _) => self.collect_var_names_rec(e, vars),
-            Expr::Index(e, i) => {
-                self.collect_var_names_rec(e, vars);
-                self.collect_var_names_rec(i, vars);
-            }
-            Expr::Cast(e, _)
-            | Expr::IsType(e, _)
-            | Expr::Deref(e)
-            | Expr::AddrOf(e)
-            | Expr::Consume(e)
-            | Expr::Await(e) => self.collect_var_names_rec(e, vars),
-            Expr::Call(_, args, _) => {
-                for a in args {
-                    self.collect_var_names_rec(a, vars);
-                }
-            }
-            Expr::Tuple(elems) | Expr::List(elems) => {
-                for e in elems {
-                    self.collect_var_names_rec(e, vars);
-                }
-            }
-            Expr::If(cond, then, else_) => {
-                self.collect_var_names_rec(cond, vars);
-                self.collect_var_names_rec(then, vars);
-                if let Some(e) = else_ {
-                    self.collect_var_names_rec(e, vars);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Variables whose allocation the *return value* aliases. Unlike
-    /// `collect_var_names`, an identifier used only as a non-escaping call
-    /// argument does not make the result alias it (`term read_at(p)` returns a
-    /// scalar; `term pass(p)` returns p because pass's parameter escapes).
+    /// Variables whose allocation the expression's value may alias. An
+    /// identifier used only as a non-escaping call argument does not make the
+    /// result alias it (`term read_at(p)` returns a scalar; `term pass(p)`
+    /// returns p because pass's parameter escapes).
+    /// 2026-11-11: use this same relation at assignments and call arguments,
+    /// not syntactic identifier collection: `let n = Load#(p); term n` must
+    /// agree with `term Load#(p)`. Calls are separately walked for escapes.
     fn return_alias_vars(&self, expr: &Expr) -> Vec<String> {
         match expr {
             Expr::Identifier(n) => vec![n.clone()],
@@ -821,7 +778,7 @@ impl<'a> DagBuilder<'a> {
                     ..
                 } => {
                     self.walk_expr(e);
-                    let mut srcs = self.collect_var_names(e);
+                    let mut srcs = self.return_alias_vars(e);
                     let is_alloc = Self::expr_contains_alloc(e);
                     if is_alloc {
                         for &nid in &self.graph.alloc_nodes {
@@ -846,7 +803,7 @@ impl<'a> DagBuilder<'a> {
                 }
                 Statement::Assign(lhs, rhs) => {
                     self.walk_expr(rhs);
-                    let rhs_vars = self.collect_var_names(rhs);
+                    let rhs_vars = self.return_alias_vars(rhs);
                     let lhs_expr: &Expr = lhs;
                     match lhs_expr {
                         Expr::Identifier(name) => {
@@ -944,13 +901,13 @@ impl<'a> DagBuilder<'a> {
                         Some(summary) => {
                             for (i, a) in args.iter().enumerate() {
                                 if summary.get(i).copied().unwrap_or(true) {
-                                    escaped_vars.extend(self.collect_var_names(a));
+                                    escaped_vars.extend(self.return_alias_vars(a));
                                 }
                             }
                         }
                         None => {
                             for a in args.iter() {
-                                escaped_vars.extend(self.collect_var_names(a));
+                                escaped_vars.extend(self.return_alias_vars(a));
                             }
                         }
                     }
@@ -1139,6 +1096,52 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
     crate::analysis::call_graph::propagate_arena_need(&direct_needs, &cg)
 }
 
+#[cfg(all(feature = "kani", feature = "kani_full"))]
+mod kani_full_tests {
+    use super::*;
+
+    // 2026-11-11: pointer aliases must still force heap lifetime through
+    // either local-binding form and either escape sink after scalar reads
+    // stop propagating their input buffer's provenance.
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn pointer_alias_escape_survives_value_flow() {
+        let assign: bool = kani::any();
+        let call: bool = kani::any();
+        let mut counter = 0;
+        let mut result = HashMap::new();
+        let summaries = HashMap::new();
+        let mut builder = DagBuilder::new(
+            &mut counter, &mut result, true, false, &summaries, false,
+        );
+        let binding = |name: &str, expr: Expr| Statement::Let {
+            names: vec![], name: name.into(), ty: None,
+            expr: Some(expr), modifiers: vec![],
+        };
+        let source = Expr::Cast(Box::new(Expr::Identifier("p".into())), Type::int());
+        let alias = if assign {
+            Statement::Assign(Expr::Identifier("q".into()), source)
+        } else {
+            binding("q", source)
+        };
+        let sink = if call {
+            Statement::Expression(Expr::Call(
+                "unknown".into(), vec![Expr::Identifier("q".into())], None,
+            ))
+        } else {
+            Statement::Term(Some(Expr::Identifier("q".into())))
+        };
+        let mut body = vec![
+            binding("p", Expr::Call("Alloc#".into(), vec![Expr::Decimal(64)], None)),
+            alias,
+            sink,
+        ];
+        builder.walk_stmts(&mut body);
+        builder.compute_reaching_allocs();
+        assert_eq!(builder.result.get(&0), Some(&AllocStrategy::Malloc));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1245,6 +1248,47 @@ txn make(n: Int) [n > 0][n > 0] -> Int {
 node entry [beginprogram][true] { Print#(make(16)); endprogram; };
 "#;
         assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
+    }
+
+    #[test]
+    fn borrowed_read_results_do_not_escape_the_source_allocation() {
+        // 2026-11-11: retain the same alias distinction through locals,
+        // assignments, and call arguments as through a direct `term`.
+        for result in [
+            "let value: Int = Load#(p, 8); term value;",
+            "let value: Int = 0; value = Load#(p, 8) + 1; term value;",
+            "term pass(Load#(p, 8));",
+            "let value: Int = read_at(p); term value;",
+        ] {
+            let src = format!(r#"
+defn pass(value: Int) -> Int {{ term value; }};
+defn read_at(p: Int) -> Int {{ term Load#(p, 8); }};
+txn make(n: Int) [n > 0][n > 0] -> Int {{
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 42, 8);
+    {result}
+}};
+"#);
+            assert_eq!(strategies(&src), vec![AllocStrategy::Arena], "{result}");
+        }
+    }
+
+    #[test]
+    fn pointer_aliases_still_escape_through_locals_and_assignments() {
+        for result in [
+            "let q: Int = p; term q;",
+            "let q: Int = 0; q = p + 8; term q;",
+            "term pass(p);",
+        ] {
+            let src = format!(r#"
+defn pass(value: Int) -> Int {{ term value; }};
+txn make(n: Int) [n > 0][n > 0] -> Int {{
+    let p: Int = Alloc#(n) as Int;
+    {result}
+}};
+"#);
+            assert_eq!(strategies(&src), vec![AllocStrategy::Malloc], "{result}");
+        }
     }
 
 

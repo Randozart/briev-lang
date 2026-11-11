@@ -1,3 +1,33 @@
+## Main CI: scalar loads falsely escaped their source allocation — FIXED 2026-11-11
+
+**Symptom:** `daily_use_smoke::arena_folded_loop_uses_arena` produced the
+correct sum but emitted malloc instead of the required tick arena. A minimal
+analysis regression, `let value = Load#(p, 8); term value`, selected Malloc
+while the equivalent direct return selected Arena.
+
+**Root cause:** assignment and call-argument DAG edges collected every
+syntactically referenced identifier. Loading a number therefore propagated
+the buffer's provenance into the number; later printing/returning it falsely
+escaped the buffer. Direct returns already used value-alias facts.
+
+**Fix:** use the existing value-alias traversal consistently for local
+bindings, assignments, returns, and escaping call arguments. Independently
+walk calls to retain their side-effect escapes. Regressions cover local and
+assigned scalar results, borrowed helper results, nested calls, and pointer
+aliases that must still select Malloc. A Kani harness checks pointer escape
+through both binding forms and both return/unknown-call sinks.
+
+**Other failures in the same upstream run:** stb_image's foreign declarations
+were outside the explicit interop lane (moved to `lib/glue/stb_image.bv`,
+retaining the public wrapper), and the test-runner smoke expected obsolete
+`golden mismatch` wording instead of `stdout mismatch` (updated while adding
+expected/actual output, summary, and nonzero-exit assertions). No gate disabled.
+
+**Previously skipped downstream gate:** the browser collection snapshot
+fixture used retired top-level `when true { reside; }`. Migrated it to
+`hold true { reside; }`; the existing WASM test passes initial Unicode values,
+1,100-item growth, independent empty snapshots, and reset.
+
 ## Interpreter negated a Float literal to Int(0) — FIXED 2026-11-10
 
 **Symptom:** `let x: Float = -1.5;` evaluated to `Int(0)`, while
