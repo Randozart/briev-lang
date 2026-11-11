@@ -46,7 +46,12 @@ pub fn analyze_coalescing(
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut reported: std::collections::HashSet<(String, String)> = Default::default();
-    for (name, entry) in entries {
+    // 2026-11-11: deterministic order — HashMap iteration is process-seeded;
+    // diagnostics must match the HIR port (name-sorted) and stay stable.
+    let mut names: Vec<&String> = entries.keys().collect();
+    names.sort();
+    for name in names {
+        let entry = &entries[name];
         let shape = &entry.shape;
         if shape.index_var.is_empty() {
             continue;
@@ -357,6 +362,36 @@ impl CoeffEnv<'_> {
             _ => Coeff::Unknown("unmodeled expression form"),
         }
     }
+}
+
+/// Test-only deterministic dump: sorted, fully-rendered diagnostics keyed by
+/// their rank so duplicate codes never collide.
+#[cfg(test)]
+pub(crate) fn canonical_diagnostics(
+    diagnostics: &[Diagnostic],
+) -> std::collections::BTreeMap<String, String> {
+    let mut rows: Vec<String> = diagnostics
+        .iter()
+        .map(|d| {
+            format!(
+                "{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                d.code,
+                d.severity,
+                d.title,
+                d.span,
+                d.explanation,
+                d.proof_chain,
+                d.examples,
+                d.hints,
+                d.notes
+            )
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| (format!("{i:04}"), row))
+        .collect()
 }
 
 #[cfg(test)]

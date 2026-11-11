@@ -48,6 +48,7 @@ pub(super) struct Graph {
     pub(super) unsupported: BTreeSet<String>,
     pub(super) incoming_store_owners: BTreeSet<String>,
     pub(super) unmodeled_helpers: BTreeSet<String>,
+    pub(super) growers: BTreeSet<String>,
     pub(super) publish_receiver_param: BTreeMap<String, String>,
     pub(super) publish_call_args: BTreeMap<String, Vec<(String, Option<Node>)>>,
 }
@@ -82,6 +83,7 @@ impl Default for Graph {
             unsupported: BTreeSet::new(),
             incoming_store_owners: BTreeSet::new(),
             unmodeled_helpers: BTreeSet::new(),
+            growers: BTreeSet::new(),
             publish_receiver_param: BTreeMap::new(),
             publish_call_args: BTreeMap::new(),
         }
@@ -112,6 +114,13 @@ impl Graph {
         let node = self.node();
         self.inexact_constants.insert(node);
         node
+    }
+
+    pub(super) fn seed_incoming_storage(&mut self, owner: &str) {
+        for param in self.callables[owner].params.clone() {
+            self.memory[param].insert(param);
+            self.inexact_constants.insert(param);
+        }
     }
 
     pub(super) fn allocation(&mut self, owner: &str) -> Node {
@@ -286,7 +295,47 @@ impl Graph {
             self.classify(name, callable, &mut plan);
         }
         plan.publish_sites = self.publish_safety();
+        plan.closed_regions = self.closed_regions(&plan);
         plan
+    }
+
+    fn closed_regions(&self, plan: &ReclamationPlan) -> BTreeSet<String> {
+        plan.regions
+            .iter()
+            .filter(|name| self.is_closed_region(name, plan))
+            .cloned()
+            .collect()
+    }
+
+    /// A region is closed when every allocation owned by its complete call
+    /// closure is unreachable from its return/incoming/global/external roots;
+    /// the closure must include a barrier or a grower.
+    fn is_closed_region(&self, name: &str, plan: &ReclamationPlan) -> bool {
+        let closure = self.call_closure(name, &BTreeSet::new());
+        if closure.is_disjoint(&plan.barriers) && closure.is_disjoint(&self.growers) {
+            return false;
+        }
+        if !closure.is_disjoint(&self.unmodeled_helpers) {
+            return false;
+        }
+        let allocations: BTreeSet<_> = self
+            .allocation_owner
+            .iter()
+            .filter(|(_, owner)| closure.contains(*owner))
+            .map(|(root, _)| *root)
+            .collect();
+        if allocations.is_empty() {
+            return false;
+        }
+        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
+        if !allocations.is_disjoint(&escaped) {
+            return false;
+        }
+        let callable = &self.callables[name];
+        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
+        let roots = incoming.chain(self.points[callable.result].iter());
+        self.reachable(roots).is_disjoint(&allocations)
     }
 
     fn publish_safety(&self) -> BTreeMap<String, Vec<bool>> {

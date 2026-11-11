@@ -123,8 +123,21 @@ ledger. Rides on:
    HIR-derived and an unrepresentable payload marks the kernel ineligible.
    `HirCallable.modifiers` fidelity added. The backend consumes HIR accel
    entries by default with a deterministic canonical-entry debug oracle
-   (8 parity tests). Remaining in this family: `coalescing`, `image_storage`,
-   `gpu_schedule` (their own AST scans), then `region`, `electronics`.
+   (8 parity tests).
+3. **GPU family satellites — DONE (2026-11-11).** `hir::image_storage`,
+   `hir::coalescing`, `hir::gpu_schedule` mirror their AST analyses
+   (HIR-native scans; AST-shaped payload only at result boundaries), with
+   canonical parity suites (7/4/6). All three backend consumers flip under
+   `BRIEV_HIR_EMIT` with `PartialEq` debug oracles. Coalescing diagnostics are
+   name-sorted on both paths (HashMap order was process-seeded; the Intel
+   g0_minmax fixture exposed it). Remaining GPU-family work: `region`,
+   `electronics`.
+
+**Reclamation parity catch-up (2026-11-11).** Main gained two AST facts after
+the R4 flip: `seed_incoming_storage` (incoming parameter storage is
+external/inexact at build time) and `closed_regions` (whole-call closure proof
+with `growers`/`unmodeled_helpers`). Both are now in the HIR Graph/analyze
+accumulator; `publish_reclamation` and the corpus oracle are green again.
 3. Debt meters: `to_ast::` and `hir_emit_enabled()` may only shrink after the
    opt-out release; AST arms deleted family-by-family.
 

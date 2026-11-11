@@ -375,6 +375,7 @@ impl Builder<'_> {
                 if let Some(target) = target {
                     let target = self.expression(target);
                     let backing = self.graph.allocation(self.owner);
+                    self.graph.growers.insert(self.owner.into());
                     self.graph.constraints.push(Constraint::Store(target, backing));
                     self.graph.constraints.push(Constraint::Store(target, value));
                 }

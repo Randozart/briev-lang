@@ -19,7 +19,7 @@ use crate::ast::top::{Statement, TopLevel, Transaction};
 use crate::ast::BinaryOpKind;
 
 /// The scheduling DAG computed from the program's node read/write sets.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GpuSchedule {
     /// Node names in producer-before-consumer topological order.
     pub order: Vec<String>,
@@ -88,7 +88,7 @@ pub fn reuse_map(&self) -> HashMap<String, String> {
 
 /// A producer→consumer epilogue fusion: the consumer's elementwise scale
 /// is applied by the producer's kernel, and the consumer node is dropped.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fusion {
     pub producer: String,
     pub consumer: String,
@@ -117,7 +117,7 @@ pub enum EdgeKind {
 /// Topology ONLY — the GEMM operands (q, kt, v, o) are derived at codegen
 /// from the producer/consumer shapes. Any such chain qualifies, not a
 /// named pattern (the analysis must never name specific fields).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChainFusion {
     /// The producer node (GEMM-1: writes `mid_in`).
     pub producer: String,
@@ -760,6 +760,37 @@ fn module_consts(program: &[TopLevel]) -> HashMap<String, f64> {
     }
     m
 }
+/// Test-only deterministic dump of the whole schedule. HashMap fields render
+/// through a sorted view so process seed order never leaks into a verdict.
+#[cfg(test)]
+pub(crate) fn canonical_schedule(s: &GpuSchedule) -> BTreeMap<String, String> {
+    let sorted_map = |m: &HashMap<String, String>| {
+        let b: BTreeMap<&String, &String> = m.iter().collect();
+        format!("{b:?}")
+    };
+    let mut out = BTreeMap::new();
+    out.insert("order".to_string(), format!("{:?}", s.order));
+    out.insert("independent".to_string(), format!("{:?}", s.independent));
+    out.insert("edges".to_string(), format!("{:?}", s.edges));
+    out.insert("reads".to_string(), format!("{:?}", s.reads));
+    out.insert("writes".to_string(), format!("{:?}", s.writes));
+    out.insert("fusions".to_string(), format!("{:?}", s.fusions));
+    out.insert(
+        "array_last_use".to_string(),
+        sorted_map(&s.array_last_use),
+    );
+    out.insert(
+        "array_first_use".to_string(),
+        sorted_map(&s.array_first_use),
+    );
+    out.insert(
+        "reuse_opportunities".to_string(),
+        format!("{:?}", s.reuse_opportunities),
+    );
+    out.insert("chain_fusion".to_string(), format!("{:?}", s.chain_fusion));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
