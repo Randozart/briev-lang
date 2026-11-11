@@ -389,3 +389,21 @@ This is the first concrete target for the auto-free/decision pass: free
 non-escaping object/Result/List allocations at the request/txn boundary (or
 region-allocate the request). Manual frees in the executor are not the fix —
 the allocator sites are compiler-generated and interprocedural.
+
+### 10.3 Request-allocator trial — rejected (2026-11-11)
+
+Tried a linker-level request region: IR rewrite of `@malloc`/`@free`/`@realloc`
+to `briev_req_*` wrappers with begin/end around each request.
+
+- `onnx_smoke`/tiny and YuNet, VAD under the wrappers: tiny models passed.
+- Daemon: crashed/hung once compression/response paths entered the request.
+  Wrappers see pointers from the compiler arena/region and from libc in the
+  same free/realloc stream; without provenance, a request bump allocator
+  cannot distinguish “bump-owned” from “compiler-owned”, and deferring all
+  frees during a request corrupted later paths.
+- VAD similarly faulted with the wrappers, despite passing without them.
+
+Reverted completely. Conclusion: allocation interception is not a substitute
+for provenance. The auto-free/decision pass must operate on allocation sites
+with ownership classes (Malloc vs compiler arena/region vs borrowed), not on
+the `@malloc` symbol. This negative result is the gate for the next attempt.
