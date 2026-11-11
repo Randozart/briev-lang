@@ -98,4 +98,17 @@ mod tests {
         graph.callables.get_mut("grow").unwrap().calls.insert("outer".into());
         assert!(!graph.plan().closed_regions.contains("outer"));
     }
+
+    #[test]
+    fn publication_through_nested_incoming_storage_cannot_close_the_caller() {
+        let (mut graph, incoming, _, payload) = local_publication();
+        graph.external_storage(incoming);
+        let member = graph.node();
+        let address = graph.node();
+        graph.constraints.push(Constraint::FieldLoad(incoming, "storage".into(), member));
+        graph.constraints.push(Constraint::Load(member, address));
+        graph.constraints.push(Constraint::Store(address, payload));
+        graph.solve();
+        assert!(!graph.plan().closed_regions.contains("outer"));
+    }
 }

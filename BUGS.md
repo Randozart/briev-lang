@@ -15,7 +15,16 @@ before the strategy call (Bool/Char/Float; Int is already i64). Regression:
 
 **Status.** Fixed 2026-11-10.
 
-## Collection-growth buffers beneath a resize barrier leaked — FIXED 2026-11-11
+## Collection-growth buffers beneath a resize barrier leaked — REOPENED 2026-11-11
+
+**Correction:** PR #90 was withdrawn after the authenticated server exposed a
+double free. The earlier catalogue gate was insufficient. Nested incoming
+storage was modeled as empty: `envelope.storage.address` lost boundary
+provenance, so a payload stored through that address was incorrectly reclaimed
+by the enclosing closed region. `reclamation_incoming_storage.bv` reproduces
+the premature free and subsequent double free under Valgrind. Repair and full
+verification are in progress; see
+`docs/plans/2026-11-11-closed-region-ownership-repair.md`.
 
 **Symptom:** the load harness's scalar catalogue validator lost ~32.3 MB per
 call. Repeating the captured 1,682-item response 4/16 times lost 129 MB/509 MB;

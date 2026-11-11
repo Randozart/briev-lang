@@ -1,0 +1,34 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj Storage { address: Int; };
+obj Envelope { storage: Storage; };
+
+defn publish_storage(destination: Int) -> Bool {
+    let payload: Ptr<Bit<8>> = Malloc#(32);
+    Store#(payload,73,8);
+    Store#(destination,payload as Int,8);
+    term true;
+};
+
+defn publish_nested(envelope: Envelope) -> Bool {
+    let scratch: List<Int> = [];
+    scratch <- 7;
+    publish_storage(envelope.storage.address);
+    term scratch[0] == 7;
+};
+
+let done: Bool = false;
+node run [!done][done] {
+    let slot: Ptr<Bit<8>> = Malloc#(8);
+    Store#(slot,0,8);
+    let envelope: Envelope = Envelope { storage: Storage { address: slot as Int } };
+    let valid: Bool = publish_nested(envelope);
+    let payload: Ptr<Bit<8>> = Load#(slot,8) as Ptr<Bit<8>>;
+    when !valid || Load#(payload,8) != 73 { trap; };
+    Free#(payload);
+    Free#(slot);
+    println!("incoming_storage_ok");
+    done = true;
+    term;
+};

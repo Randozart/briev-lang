@@ -1247,6 +1247,15 @@ rules alone are not a claim that the application memory gate passes.
 
 ### Closed-call ownership (2026-11-11)
 
+Boundary storage is not empty: each root analysis seeds its incoming parameters
+and globals with an external-heap summary self-edge. Any chain of field/raw
+loads retains that boundary provenance, so publication through a nested incoming
+handle cannot license reclamation on return. Local allocations have no such
+self-edge and keep precise field maps. This distinction corrects the withdrawn
+PR #90's premature-free proof; see `reclamation_incoming_storage.bv`.
+Source entry-node names are removed from `closed_regions` along with ordinary
+callable regions; the existing separate main-entry proof controls initialization.
+
 `ReclamationPlan.closed_regions` strengthens an existing nonrecursive region
 proof. Its allocation set follows the complete call closure, including barrier
 callees, and none of those identities may reach the region's return, incoming

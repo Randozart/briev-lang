@@ -1,0 +1,53 @@
+name: Closed region ownership proof
+
+on:
+  push:
+    branches: [fix/closed-region-ownership]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: closed-region-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup
+      - name: Check ownership invariant with bounded resources
+        shell: bash
+        run: |
+          mkdir -p proof-results
+          git rev-parse HEAD > proof-results/commit.txt
+          cargo kani --version > proof-results/version.txt
+          # 2026-11-11: the whole-graph proof exhausted the developer machine.
+          # Bound virtual memory and wall time; exhaustion must fail, never pass.
+          # Keep these limits even if a smaller equivalent proof replaces it.
+          ulimit -v 5242880
+          set +e
+          timeout --signal=TERM --kill-after=30s 35m \
+            cargo kani --features kani,kani_full \
+              --harness external_storage_publication_remains_boundary_reachable \
+              > proof-results/kani.log 2>&1
+          status=$?
+          printf '%s\n' "$status" > proof-results/exit-code.txt
+          tail -80 proof-results/kani.log
+          exit "$status"
+      - name: Upload proof evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: closed-region-proof-${{ github.sha }}
+          path: proof-results/
+          retention-days: 14

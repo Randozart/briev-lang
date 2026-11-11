@@ -151,6 +151,22 @@ impl Graph {
         node
     }
 
+    /// 2026-11-11: an externally supplied root summarizes arbitrary reachable
+    /// storage, not an empty allocation. Its self-edge preserves provenance
+    /// through any number of field/raw loads before publication. Only boundary
+    /// roots get this summary; local allocations retain field precision. Retire
+    /// with an equally conservative typed external-heap summary.
+    fn external_storage(&mut self, root: Node) {
+        self.memory[root].insert(root);
+    }
+
+    fn seed_incoming_storage(&mut self, owner: &str) {
+        for param in self.callables[owner].params.clone() {
+            self.external_storage(param);
+            self.inexact_constants.insert(param);
+        }
+    }
+
     fn allocation(&mut self, owner: &str) -> Node {
         let root = self.root();
         self.allocation_owner.insert(root, owner.into());
@@ -164,6 +180,7 @@ impl Graph {
     fn global(&mut self, name: &str) -> Node {
         if let Some(node) = self.globals.get(name) { return *node; }
         let node = self.root();
+        self.external_storage(node);
         self.inexact_constants.insert(node);
         self.globals.insert(name.into(), node);
         node
@@ -387,7 +404,7 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
     let mut accumulator = Accumulator::default();
     for owner in owners {
         let mut graph = index.clone();
-        graph.inexact_constants.extend(graph.callables[&owner].params.iter().copied());
+        graph.seed_incoming_storage(&owner);
         walk::build_owner(&mut graph, &owner);
         graph.solve();
         let plan = graph.plan();
@@ -405,6 +422,9 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         result.entry_region = result.regions.contains(owner);
     }
     result.regions.retain(|owner| !index.entry_nodes.contains(owner));
+    // Entry-node names are not callable ABI names. Main's existing entry proof
+    // remains authoritative until it has a separate closed-initializer proof.
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     accumulator.finish_mutating(&mut result);
     result
 }
@@ -473,6 +493,26 @@ mod kani_full_tests {
 
     #[kani::proof]
     #[kani::unwind(256)]
+    fn external_storage_publication_remains_boundary_reachable() {
+        let mut graph = Graph::default();
+        let incoming = graph.root();
+        graph.external_storage(incoming);
+        let member = graph.node();
+        let address = graph.node();
+        let payload = graph.allocation("publish");
+        if kani::any::<bool>() {
+            graph.constraints.push(Constraint::FieldLoad(incoming, "member".into(), member));
+        } else {
+            graph.constraints.push(Constraint::Load(incoming, member));
+        }
+        graph.constraints.push(Constraint::Load(member, address));
+        graph.constraints.push(Constraint::Store(address, payload));
+        graph.solve();
+        assert!(graph.reachable([incoming]).contains(&payload));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(256)]
     fn escaped_aliases_never_license_reclamation() {
         let mut graph = Graph::default();
         let incoming = graph.root();
@@ -506,6 +546,14 @@ mod kani_full_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_incoming_publication_is_not_a_closed_region() {
+        let plan = derive(include_str!("../../tests/fixtures/load/reclamation_incoming_storage.bv"));
+        assert!(!plan.closed_regions.contains("publish_nested"), "{plan:?}");
+        assert!(plan.barriers.contains("publish_storage"), "{plan:?}");
+        assert!(plan.closed_regions.is_subset(&plan.regions));
+    }
 
     #[test]
     fn unclassified_global_initialization_prevents_an_entry_region() {
