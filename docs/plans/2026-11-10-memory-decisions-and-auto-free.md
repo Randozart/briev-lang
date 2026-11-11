@@ -563,3 +563,30 @@ from VmRSS 144→187 MB (~0.21 MB/call) to a flat 172 MB (peak 228 MB) over
 per-request growth. Remaining unowned storage is Tensor object/List metadata;
 the owned List/String handle (base+cap+len+owner) is still required for the
 full plateau/explicit-free proof.
+
+## 15. HIR-owned String locals — first slice (2026-11-12)
+
+`src/hir/owned_strings.rs` adds the first body-derived ownership facts over
+typed HIR:
+
+- Fresh-return summaries are derived from bodies, not names: String
+  concatenation, Data->String copies, and calls to another fresh callable.
+  The fixed point runs over the callable graph.
+- Parameter modes come from the existing escape summaries plus body-derived
+  consume facts (`Free#`/`Consume` on a parameter).
+- A local owns its String when initialized/reassigned from a fresh expression.
+  Ownership is dropped (leak, never unsound free) on aliases, field/list/state
+  stores, escaping or consuming call arguments, and unknown calls.
+- `keep` suppresses; explicit `Free#`/`free` marks the value consumed.
+- Releases (`Free#`) are inserted at reassignment of a dead old value and at
+  function exit before a value-returning `term`/`tail`/`endprogram` when the
+  local is not transferred or mentioned by the return expression.
+
+The pass runs only on the HIR emission path, after the HIR/AST parity analyses
+have completed, so canonical plans stay identical. AST opt-out emission is
+unchanged. It is conservative: a local used inside a returned expression is
+not freed (future temp-transfer lowering), and List destruction is not yet
+covered (needs a coll destroy intrinsic/owner slot).
+
+Verification: `cargo test --lib` 3661 pass; kiosk native health/sentiment/face
+smoke and 150-call daemon soak remain output-stable at VmRSS 172 MB plateau.

@@ -254,7 +254,7 @@ pub fn analyze_program(
 ) -> AnalysisResults {
     // 2026-11-05 (H4.1): one typed-HIR lowering per analysis run. The HIR
     // consumer flip below and every later family reads this tree.
-    let hir = build_hir(items, type_universe);
+    let mut hir = build_hir(items, type_universe);
     let transition_graph = crate::analysis::transition_graph::ReactorTransitionGraph::build(
         items, &None, &vec![],
     );
@@ -616,6 +616,10 @@ pub fn analyze_program(
     } else {
         crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe)
     };
+    if hir_emit_enabled() {
+        let escapes = crate::analysis::allocation::summarize_escapes(items);
+        crate::hir::owned_strings::insert_releases(&mut hir, &escapes);
+    }
     let mut destination_ownership =
         crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the

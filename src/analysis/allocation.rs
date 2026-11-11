@@ -380,7 +380,7 @@ fn stmt_aliases(
     }
 }
 
-fn summarize_escapes(items: &[TopLevel]) -> HashMap<String, Vec<bool>> {
+pub(crate) fn summarize_escapes(items: &[TopLevel]) -> HashMap<String, Vec<bool>> {
     let bodies = collect_escape_bodies(items);
     let state_fields = state_field_names(items);
     let mut summaries: HashMap<String, Vec<bool>> = bodies
