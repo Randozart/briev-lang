@@ -345,3 +345,20 @@ Fix protocol:
 3. Fix the ABI (state pointer must be the stable first argument; object
    returns use the same sret/handle convention regardless of state), add a
    regression, then re-enable plain `Alloc#` for the tensor arena block.
+
+### 11.1 Resolution — parser metadata descent, not object-return ABI
+
+The reduction changed the diagnosis. A stateful function returning an object is
+fine in isolation; the corruption came from `parse_value_name_loop` continuing
+past the ValueInfo type and walking `metadata_props` (`field 4`). Under the
+arena/stateful layout that skip path descended into nested entries, so a
+metadata key became the input name. `parse_value_name_loop` now terminates
+after the type and graph strings are owned copies (`owned_string`), so graph
+names no longer alias the model buffer.
+
+Regression: `tests/ml/parser_arena.bv` allocates a node-body `Alloc#` and
+asserts the graph input name is `x`; `harness/ml_smoke.sh` runs it. The tensor
+arena block now uses plain `Alloc#()` and the compiler selects the tick arena.
+Daemon RSS still grows because parser List/graph allocations are not all
+arena-backed and the graph is reparsed per request; that is the next runtime
+work, not an ABI blocker.
