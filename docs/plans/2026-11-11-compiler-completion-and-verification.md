@@ -80,10 +80,14 @@ ledger. Rides on:
   exit behaviour.
 - Skip list with reasons + coverage ratchet; quick subset per commit.
 
-### V2. wasm32 corpus gate (P3)
+### V2. wasm32 corpus gate (P3) — BLOCKED 2026-11-11
 - Eligible tier1 subset compiled to wasm32, executed with node (or the
   existing wasm test harness), outputs compared with native.
 - Explicit skip list for host-only fixtures (sockets, MMIO, process spawn).
+  *2026-11-11: blocked.* `.bv` wasm32 emission rejects the stdlib prelude
+  (`i64` inttoptr where wasm32 wants `i32`), identical with the AST opt-out —
+  a pre-existing target-width bug recorded in BUGS.md. `.rbv` wasm tests pass.
+  Gate resumes after the `.bv` prelude width audit.
 
 ### V3. P4 seeds/growth
 - Feed tier1 sources into the structured fuzzer as seeds; grow generator
@@ -103,9 +107,13 @@ ledger. Rides on:
 
 ## Workstream H — H5 ports after reclamation
 
-1. `batch_shape` — decide the swan-song consumer type: move
-   `AnalysisResults.swan_songs` to HIR (preferred) or keep the `to_ast`
-   boundary and port detection over converted AST (document the exception).
+1. **`batch_shape` — DONE (2026-11-11).** `hir::batch_shape` mirrors
+   node-decomposition segmentation + batch detection over raw HIR swan-song
+   bodies; the result keeps the AST `BatchShape` type (crosses `to_ast` once
+   at construction; unreconstructible nodes fall back to the AST result). The
+   backend computes HIR shapes by default with a `debug_assert_eq!` plan
+   oracle. Parity: post-increment and rejected-shape fixtures; sweep 143/0
+   with the oracle; A/B byte-identical; determinism clean.
 2. `accel` → `coalescing` + `image_storage`; `gpu_schedule`; `region`;
    `electronics` (largest; follow the same parity-then-flip recipe).
 3. Debt meters: `to_ast::` and `hir_emit_enabled()` may only shrink after the
@@ -217,6 +225,15 @@ user calls + recursion, generics, explicit/free-receiver methods, blocks,
 user operators, nested field stores, publish propagation, casts. Praetor
 clean after splitting registration/expression/expression_type helpers.
 
-**Next R slice:** plan-level parity (run the HIR Graph `solve/plan` and compare
-`ReclamationPlan` with the AST result on the same fixtures) and then flip the
-`analyze_program` consumer under `BRIEV_HIR_EMIT` with a debug oracle.
+**2026-11-11 — R4 (plan parity + consumer flip) DONE.**
+`hir::reclamation::analyze` mirrors the AST analyze loop (register, per-owner
+clone/build/solve/plan, accumulator absorb, safe-publisher reclassification,
+entry-region rule, mutating set). Plan parity tests compare full
+`ReclamationPlan` equality on scalars/allocations/returns and a combined
+publish/method/generic fixture. The backend consumer is flipped under
+`BRIEV_HIR_EMIT` with `debug_assert_eq!`; the AST plan remains the opt-out path
+and oracle. Gates: reclamation 65; quick 39/39; corpus sweep 143/0 with the
+oracle armed; release A/B byte-identical; determinism clean.
+
+**R is complete.** Next: V2 wasm corpus gate, P4 seeds, P6 cvise wrapper, P7
+additions; then the large H5 ports.

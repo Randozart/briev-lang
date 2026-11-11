@@ -1,3 +1,23 @@
+## 2026-11-11 — `.bv` wasm32 emission rejects the stdlib prelude (i64 vs i32)
+
+**Symptom.** `brievc build <prog>.bv --triple wasm32-unknown-wasi --split`
+writes a `.ll` that `llc` rejects: `'%t33' defined with type 'i64' but expected
+'i32'` at `inttoptr i32 %t33 to ptr` (line 254, stdlib prelude). Reproduced
+with the curated `algo_gcd` program; identical with `BRIEV_HIR_EMIT=0`, so this
+is NOT an HIR-flip regression.
+
+**Impact.** P3's wasm32 corpus gate cannot run over tier1 `.bv` programs yet.
+The existing `.rbv` wasm tests still pass (`rbv_list_each_wasm`,
+`rbv_obj_init_wasm32`), so the `.rbv`/webstack pipeline is unaffected.
+
+**Status.** OPEN. V2 is blocked on this. An attempted local fix (narrow cast
+paths to `ctx.int_bits`, inttoptr at the cast) is INSUFFICIENT: Ptr-typed
+`TypedRegister`s conventionally carry i64 handles that consumers (e.g.
+`emit_free`) inttoptr at use time, so changing one cast broke native
+`free(ptr <i64>)`. The real fix is a unified physical-width convention for Ptr
+handles (or `TypedRegister` carrying its LLVM type) plus an audit of every
+`inttoptr`/`ptrtoint` site. Reverted the local attempt; native gates green.
+
 ## 2026-11-11 — Bool plain-global literal emitted `true`/`false` into an i8
 
 **Symptom.** `let done: Bool = false;` with the global otherwise unused emitted

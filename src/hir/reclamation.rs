@@ -106,6 +106,118 @@ fn dump_constraints(
     dumped
 }
 
+/// HIR mirror of `analysis::reclamation::analyze`: register, build each body
+/// owner on a fresh graph clone, solve, absorb into one plan.
+pub fn analyze(
+    program: &HirProgram,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> crate::analysis::reclamation::ReclamationPlan {
+    let mut index = graph::Graph::default();
+    if let Some(universe) = universe {
+        index.universe = universe.clone();
+    }
+    walk::register(&mut index, program);
+    let owners: Vec<_> = index.bodies.keys().cloned().collect();
+    let mut result = crate::analysis::reclamation::ReclamationPlan::default();
+    let mut accumulator = Accumulator::default();
+    for owner in owners {
+        let mut graph = index.clone();
+        graph
+            .inexact_constants
+            .extend(graph.callables[&owner].params.iter().copied());
+        walk::build_owner(&mut graph, &owner);
+        graph.solve();
+        let plan = graph.plan();
+        accumulator.absorb(&owner, &graph, &plan, &mut result);
+    }
+    accumulator.reclassify_safe_publishers(&mut result);
+    result.regions.retain(|owner| !result.barriers.contains(owner));
+    if index.entry_nodes.len() == 1 && closed_initializers(program) {
+        let owner = index.entry_nodes.iter().next().unwrap();
+        result.entry_region = result.regions.contains(owner);
+    }
+    result.regions.retain(|owner| !index.entry_nodes.contains(owner));
+    accumulator.finish_mutating(&mut result);
+    result
+}
+
+#[derive(Default)]
+struct Accumulator {
+    dependencies: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    allocating: std::collections::BTreeSet<String>,
+    publish_only: std::collections::BTreeSet<String>,
+    escape_barriers: std::collections::BTreeSet<String>,
+    publish_sites: std::collections::BTreeMap<String, Vec<bool>>,
+}
+
+impl Accumulator {
+    fn absorb(
+        &mut self,
+        owner: &str,
+        graph: &graph::Graph,
+        plan: &crate::analysis::reclamation::ReclamationPlan,
+        result: &mut crate::analysis::reclamation::ReclamationPlan,
+    ) {
+        self.allocating
+            .extend(graph.allocation_owner.values().cloned());
+        for built in &graph.built {
+            self.dependencies
+                .entry(built.clone())
+                .or_default()
+                .extend(graph.call_closure(built, &std::collections::BTreeSet::new()));
+        }
+        if plan.regions.contains(owner) {
+            result.regions.insert(owner.to_string());
+        }
+        result.barriers.extend(plan.barriers.iter().cloned());
+        self.publish_only.extend(plan.publish_only.iter().cloned());
+        self.escape_barriers
+            .extend(plan.escape_barriers.iter().cloned());
+        for (publisher, sites) in &plan.publish_sites {
+            self.publish_sites
+                .entry(publisher.clone())
+                .or_default()
+                .extend(sites.iter().copied());
+        }
+        result.known.extend(plan.known.iter().cloned());
+        result
+            .default_encoding_targets
+            .extend(graph.default_encoding_targets.iter().cloned());
+        if let Some(reason) = plan.reasons.get(owner) {
+            result.reasons.insert(owner.to_string(), reason.clone());
+        }
+    }
+
+    fn reclassify_safe_publishers(
+        &self,
+        result: &mut crate::analysis::reclamation::ReclamationPlan,
+    ) {
+        let safe: std::collections::BTreeSet<String> = self
+            .publish_sites
+            .iter()
+            .filter(|(_, sites)| !sites.is_empty() && sites.iter().all(|safe| *safe))
+            .map(|(publisher, _)| publisher.clone())
+            .collect();
+        result.barriers.retain(|name| {
+            !(safe.contains(name)
+                && self.publish_only.contains(name)
+                && !self.escape_barriers.contains(name))
+        });
+    }
+
+    fn finish_mutating(self, result: &mut crate::analysis::reclamation::ReclamationPlan) {
+        let mut allocating = self.allocating;
+        allocating.extend(result.regions.iter().cloned());
+        allocating.extend(result.barriers.iter().cloned());
+        result.mutating = self
+            .dependencies
+            .into_iter()
+            .filter(|(_, calls)| !calls.is_disjoint(&allocating))
+            .map(|(owner, _)| owner)
+            .collect();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +317,67 @@ mod tests {
         assert_eq!(
             actual, expected,
             "constraint drift:\n{src}\n--- AST ---\n{expected:#?}\n--- HIR ---\n{actual:#?}"
+        );
+    }
+
+    fn plan_parity(src: &str) {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let items = parser.parse_program().expect("parse");
+        let live: std::collections::HashSet<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ast::TopLevel::Definition(d) => Some(d.name.clone()),
+                crate::ast::TopLevel::Transaction(t) => Some(t.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let expected =
+            crate::analysis::reclamation::analyze(&items, &live, None);
+        let actual = analyze(&crate::hir::lower_program(&items), None);
+        assert_eq!(actual, expected, "plan drift:\n{src}");
+    }
+
+    #[test]
+    fn plan_matches_ast_for_scalars_and_allocations() {
+        plan_parity(
+            "defn scalar() -> Int { let x: Int = 1; term x; };\n\
+             defn allocate() -> Bool {\n\
+                 let p: Ptr = Malloc#(32);\n\
+                 Store#(p,42,8);\n\
+                 term Load#(p,8) == 42;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn plan_matches_ast_for_returns_and_publish() {
+        plan_parity(
+            "defn escape() -> Ptr { term Malloc#(8); };\n\
+             defn local() -> Bool {\n\
+                 let p: Ptr = Malloc#(8);\n\
+                 Store#(p,1,8);\n\
+                 term Load#(p,8) == 1;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn plan_matches_ast_for_publish_methods_and_generics() {
+        plan_parity(
+            "obj T { key: String; flag: Int; };\n\
+             defn enc(n: Int) -> String { term \"a\" + n as String; };\n\
+             defn begin(t: T) -> Int { t.key = \"\"; t.flag = 1; term 0; };\n\
+             defn upgrade(t: T, port: Int) -> Int {\n\
+                 let key: String = enc(port);\n\
+                 let started: Int = begin(t);\n\
+                 t.key = key;\n\
+                 term started;\n\
+             };\n\
+             obj Packet { storage: Ptr; defn read(packet: Packet) -> Int { term Load#(packet.storage,8); }; };\n\
+             defn inspect() -> Int { let p: Packet = Packet { storage: Malloc#(8) }; term p.read(); };\n\
+             defn identity<T>(value: T) -> T { term value; };\n\
+             defn use_generic() -> Int { let q: Ptr = Malloc#(8); let alias: Ptr = identity(q); term Load#(alias,8); };",
         );
     }
 
