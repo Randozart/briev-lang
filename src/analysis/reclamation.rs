@@ -561,7 +561,7 @@ impl Accumulator {
     fn absorb(&mut self, owner: &str, graph: &Graph, plan: &ReclamationPlan, result: &mut ReclamationPlan) {
         self.allocating.extend(graph.allocation_owner.values().cloned());
         record_dependencies(graph, &mut self.dependencies);
-        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, unsupported={:?}", plan.barriers, graph.unsupported); }
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, closed={:?}, regions={:?}, reasons={:?}, unsupported={:?}", plan.barriers, plan.closed_regions, plan.regions, plan.reasons, graph.unsupported); }
         if plan.regions.contains(owner) { result.regions.insert(owner.to_string()); }
         if plan.closed_regions.contains(owner) { self.closed_regions.insert(owner.to_string()); }
         result.barriers.extend(plan.barriers.iter().cloned());

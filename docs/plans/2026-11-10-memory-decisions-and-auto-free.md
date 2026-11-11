@@ -477,3 +477,23 @@ This closes the application-level options: per-node env cannot be made
 copy-free with the current List representation, and allocation hooks lack
 base/size provenance. The next slice is compiler-owned storage for
 List/String (owned handle with base+cap+len), not another executor workaround.
+
+## 12. Closed-region request reclamation — feasibility result (2026-11-11)
+
+Added a `BRIEV_DIAG_RECLAMATION` closed/reason dump and probed the shape:
+
+- A function with List growth and a **scalar** result is both `regions` and
+  `closed_regions` (`compute: closed={"compute"}`).
+- Returning a **scalar-field object** makes the object image caller-owned:
+  `compute: "result image or payload can be caller-owned"`; no closed region.
+- Returning a List/String likewise puts an allocation on the returned value
+  and rejects the closed proof.
+
+Consequence: closed regions can only output scalars/void. Face detection needs
+multiple boxes/scores, so a closed call cannot carry the response without
+publishing into incoming storage or globals (both rejected). The closed-region
+route is **not applicable** to the request output path as designed.
+
+This leaves owned `List`/`String` storage (base + cap + len + owner) as the
+remaining correct route to the RSS plateau; alternative is to accept the
+residual and move to the NPU/VAD capability work.
