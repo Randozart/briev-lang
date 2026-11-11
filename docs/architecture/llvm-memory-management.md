@@ -1256,6 +1256,12 @@ PR #90's premature-free proof; see `reclamation_incoming_storage.bv`.
 Source entry-node names are removed from `closed_regions` along with ordinary
 callable regions; the existing separate main-entry proof controls initialization.
 
+Memory-fact primitives live in `analysis/reclamation/storage.rs`; both the graph
+solver and the Kani harness use them. The compositional proof checks the external
+self-edge, either field/raw projection, another load and payload publication on
+a two-root heap. It is not a proof of the entire fixed-point scheduler or type
+registry. Full graph integration is covered by frontend/native regressions.
+
 `ReclamationPlan.closed_regions` strengthens an existing nonrecursive region
 proof. Its allocation set follows the complete call closure, including barrier
 callees, and none of those identities may reach the region's return, incoming
