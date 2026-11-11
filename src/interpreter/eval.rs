@@ -2485,6 +2485,16 @@ pub fn eval_statement(
         // 2026-08-22 (Phase 8): yield; is a no-op in the eager reference
         // scheduler — the concurrent scheduler's future suspension point.
         Statement::Yield => Ok(Value::Void),
+        // 2026-11-10 (SPEC §8.11): `expect <bool>;` — a test assertion; the
+        // reference interpreter is the v1 engine and reports the expression.
+        Statement::Expect(expr) => {
+            let value = eval_expr(expr, heap, bindings, functions)?;
+            if value.is_true() {
+                Ok(Value::Void)
+            } else {
+                Err(RuntimeError::ExpectationFailed(expr.to_string()))
+            }
+        }
         // 2026-10-20 (ruling ii — plan 2026-10-19-contract-tiers-and-
         // regularity.md): check is STATIC-ONLY — a proof dialogue with the
         // typechecker, fully consumed at compile time. There is nothing to

@@ -287,7 +287,9 @@ impl Reactor {
             | Statement::Yield
             // 2026-08-23 (SPEC §10.x): check is a runtime assertion handled
             // in eval, not by the reactor's dirty tracking.
-            | Statement::Check(_) => {
+            | Statement::Check(_)
+            // 2026-11-10 (SPEC §8.11): test-only assertion; not reacted.
+            | Statement::Expect(_) => {
                 interp.exec_stmt(stmt)?;
                 Ok(StmtResult::Continue)
             }

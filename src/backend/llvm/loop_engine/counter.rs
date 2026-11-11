@@ -2001,6 +2001,8 @@ impl LlvmBackend {
         while i < body.len() {
             let stmt = &body[i];
             match stmt {
+                // 2026-11-10 (SPEC §8.11): tests never reach the loop engine.
+                Statement::Expect(_) => { i += 1; continue; }
                 Statement::Let { name, expr: Some(e), ty, .. } => {
                     let reg = self.emit_expr(out, e, "  ");
                     // 2026-10-08 (stabilise-for-use T1, Phase 5c): a `dyn <Trait>`

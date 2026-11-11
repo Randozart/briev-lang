@@ -126,6 +126,8 @@ impl<'a> Parser<'a> {
             Some(Token::LBracket) => self.parse_guard_statement_bracket(),
             Some(Token::When) => self.parse_guard_statement_when(),
             Some(Token::Hold) => self.parse_hold_statement(),
+            // 2026-11-10 (SPEC §8.11): `expect <bool>;`
+            Some(Token::Expect) => self.parse_expect_statement(),
             Some(Token::Semicolon) => {
                 self.pos += 1;
                 Ok(Statement::Expression(crate::ast::Expr::Decimal(0)))
@@ -599,6 +601,14 @@ impl<'a> Parser<'a> {
         // 2026-07-17: Same trailing semicolon fix as bracket guard.
         self.expect(Token::Semicolon)?;
         Ok(Statement::Guarded(cond, body))
+    }
+
+    /// expect <bool-expression>;
+    fn parse_expect_statement(&mut self) -> Result<Statement, SyntaxError> {
+        self.pos += 1; // consume 'expect'
+        let expr = self.parse_expression()?;
+        self.expect(Token::Semicolon)?;
+        Ok(Statement::Expect(expr))
     }
 
     /// hold condition { body } through Type;

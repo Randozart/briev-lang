@@ -211,6 +211,9 @@ impl LanguageVocab {
                 // 2026-11-09: `hold` is the static obligation law head
                 // (`hold G { facts }`); `when` remains the runtime guard.
                 kw("hold", VocabStatus::Canonical, KeywordContext::Declaration),
+                // 2026-11-10 (SPEC §8.11): test blocks + expectations.
+                kw("test", VocabStatus::Canonical, KeywordContext::Declaration),
+                kw("expect", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("when", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("foreach", VocabStatus::Canonical, KeywordContext::Statement),
                 kw("break", VocabStatus::Canonical, KeywordContext::Statement),

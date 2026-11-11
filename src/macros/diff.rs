@@ -25,6 +25,7 @@ fn item_key(tl: &TopLevel) -> String {
         Definition(d) => format!("defn:{}", d.name),
         TypeDefOperator(d) => format!("op:{}", d.name),
         Transaction(t) => format!("txn:{}", t.name),
+        TestBlock(t) => format!("test:{}", t.domain),
         Budget(b) => format!("budget@{:?}", b.span),
         // 2026-09-22 (Slice B): participation facts.
         Unpop(d) => format!("unpop:{}", d.instance),
@@ -77,6 +78,7 @@ pub fn item_summary(tl: &TopLevel) -> String {
         Definition(d) => format!("defn {}", d.name),
         TypeDefOperator(d) => format!("op {}", d.name),
         Transaction(t) => format!("txn {}", t.name),
+        TestBlock(t) => format!("test {} ({} statements)", t.domain, t.body.len()),
         Budget(_) => "budget <source-pin limit>".to_string(),
         // 2026-09-22 (Slice B): participation facts.
         Unpop(d) => format!("unpop {}", d.instance),

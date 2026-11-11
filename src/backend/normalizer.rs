@@ -168,6 +168,9 @@ fn collect_definitions<'a>(
 ) {
     for item in items {
         match item {
+        // 2026-11-10 (SPEC §8.11): test blocks are typecheck-only; the
+        // reference interpreter runs them. Never normalized/emitted.
+        TopLevel::TestBlock(_) => {}
             TopLevel::Definition(d) | TopLevel::TypeDefOperator(d)
             | TopLevel::CompileTimeDefn(d) => {
                 out.entry(d.name.as_str()).or_default().push(d);
@@ -255,6 +258,8 @@ fn seed_toplevel<'a>(item: &'a TopLevel, work: &mut Vec<Seed<'a>>) {
         TopLevel::Statement(s) => work.push(Seed::Stmt(s)),
         TopLevel::Constant(c) => work.push(Seed::Expr(&c.expr)),
         TopLevel::Export(e) => seed_toplevel(&e.inner, work),
+        // 2026-11-10 (SPEC §8.11): test blocks are typecheck-only.
+        TopLevel::TestBlock(_) => {}
         TopLevel::Trigger(t) => work.push(Seed::Expr(&t.instance)),
         TopLevel::TriggerBinding { instance, .. } => work.push(Seed::Expr(instance)),
         TopLevel::Budget(b) => work.push(Seed::Expr(&b.contract)),

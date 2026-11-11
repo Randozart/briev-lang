@@ -742,6 +742,7 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
         // (SPEC §8.8). `@llvm.trap` is declared in emit_declares; the
         // `unreachable` terminator marks the rest of the block dead so later
         // statements (which LLVM verifies unreachable) are not emitted.
+        Statement::Expect(_) => TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() },
         Statement::Trap => {
             writeln!(out, "{}call void @llvm.trap()", indent).ok();
             writeln!(out, "{}unreachable", indent).ok();

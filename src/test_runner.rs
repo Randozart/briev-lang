@@ -140,7 +140,7 @@ fn link_and_run(scratch: &Path, name: &str) -> Result<(String, i32), String> {
     ))
 }
 
-fn run_one(exe: &Path, bv: &Path, root: &Path) -> TestOutcome {
+fn run_one(exe: &Path, bv: &Path, root: &Path, args: &TestArgs) -> TestOutcome {
     let name = bv
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -155,6 +155,56 @@ fn run_one(exe: &Path, bv: &Path, root: &Path) -> TestOutcome {
         Err(e) => return TestOutcome { name, passed: false, detail: format!("read: {e}") },
     };
     let dirs = parse_directives(&src);
+
+    // ── SPEC §8.11 test blocks (reference interpreter) ────────────────
+    if briev_compiler::test_engine::source_has_tests(&src) {
+        let reports = match briev_compiler::test_engine::run_tests(
+            &bv.to_string_lossy(),
+            &src,
+            args.domain.as_deref(),
+        ) {
+            Ok(reports) => reports,
+            Err(e) => {
+                return TestOutcome {
+                    name,
+                    passed: false,
+                    detail: format!("test compile failed:\n{e}"),
+                }
+            }
+        };
+        if args.list_tests {
+            for report in &reports {
+                println!("{}", report.label);
+            }
+            return TestOutcome { name, passed: true, detail: String::new() };
+        }
+        if !reports.is_empty() {
+            let mut failures = Vec::new();
+            for report in &reports {
+                if report.passed {
+                    println!("TEST {} PASS", report.label);
+                } else {
+                    println!("TEST {} FAIL — {}", report.label, report.detail);
+                    failures.push(format!("{}: {}", report.label, report.detail));
+                }
+            }
+            if !failures.is_empty() {
+                return TestOutcome {
+                    name,
+                    passed: false,
+                    detail: failures.join("\n"),
+                };
+            }
+            if args.tests_only {
+                return TestOutcome { name, passed: true, detail: String::new() };
+            }
+        } else if args.tests_only {
+            return TestOutcome { name, passed: true, detail: "no test blocks".to_string() };
+        }
+    } else if args.tests_only {
+        return TestOutcome { name, passed: true, detail: "no test blocks".to_string() };
+    }
+
     let build = match spawn_build(exe, bv, &scratch, &dirs.run_args) {
         Ok(b) => b,
         Err(e) => return TestOutcome { name, passed: false, detail: e },
@@ -243,11 +293,21 @@ fn run_program(name: String, bv: &Path, dirs: &Directives, scratch: &Path) -> Te
 struct TestArgs {
     target: PathBuf,
     out_dir: PathBuf,
+    /// 2026-11-10 (SPEC §8.11): run only `test` blocks (skip the file-as-
+    /// program check).
+    tests_only: bool,
+    /// Print `domain#n` labels and run nothing else.
+    list_tests: bool,
+    /// Exact domain filter.
+    domain: Option<String>,
 }
 
 fn parse_test_args(args: &[String]) -> Result<TestArgs, String> {
     let mut target: Option<PathBuf> = None;
     let mut out_dir = PathBuf::from("target/briev_test");
+    let mut tests_only = false;
+    let mut list_tests = false;
+    let mut domain = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -256,6 +316,11 @@ fn parse_test_args(args: &[String]) -> Result<TestArgs, String> {
                     it.next().ok_or("--out needs a directory argument")?,
                 );
             }
+            "--tests-only" => tests_only = true,
+            "--list-tests" => list_tests = true,
+            "--domain" => {
+                domain = Some(it.next().ok_or("--domain needs a name")?.clone());
+            }
             other if target.is_none() => target = Some(PathBuf::from(other)),
             other => return Err(format!("unexpected argument '{other}'")),
         }
@@ -263,7 +328,7 @@ fn parse_test_args(args: &[String]) -> Result<TestArgs, String> {
     let target = target.ok_or(
         "specify a test file or a directory of *.bv tests — e.g. `brievc test tests/`",
     )?;
-    Ok(TestArgs { target, out_dir })
+    Ok(TestArgs { target, out_dir, tests_only, list_tests, domain })
 }
 
 fn collect_test_files(target: &Path) -> Result<Vec<PathBuf>, String> {
@@ -292,7 +357,9 @@ fn collect_test_files(target: &Path) -> Result<Vec<PathBuf>, String> {
 /// `brievc test <file.bv | dir> [--out <dir>]`. Returns the process exit
 /// code (0 = all passed).
 pub fn run_test_mode(args: &[String]) -> Result<(), String> {
-    let TestArgs { target, out_dir } = parse_test_args(args)?;
+    let parsed = parse_test_args(args)?;
+    let target = parsed.target.clone();
+    let out_dir = parsed.out_dir.clone();
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let files = collect_test_files(&target)?;
     if files.is_empty() {
@@ -302,7 +369,7 @@ pub fn run_test_mode(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("out dir: {e}"))?;
     let mut failed = 0usize;
     for bv in &files {
-        let outcome = run_one(&exe, bv, &out_dir);
+        let outcome = run_one(&exe, bv, &out_dir, &parsed);
         if outcome.passed {
             println!("PASS {}", outcome.name);
         } else {

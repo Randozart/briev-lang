@@ -101,6 +101,8 @@ Lexed as dedicated tokens (`src/lexer.rs:44-311`). Cannot be user identifiers.
 | `foreach` | Iteration — paren form `foreach (x in list)` deprecated (§13) |
 | `break` | Exit nearest foreach |
 | `hold` | Static obligation law (`hold G { facts }`); `obj`/`type` bodies and top level; `hold G { … } through Type;` for a conditional mechanism |
+| `test` | Top-level test block: `test domain { … };` (typecheck-only; reference interpreter runs it) |
+| `expect` | Test assertion inside a test block: `expect <bool>;` |
 | `when` | Runtime guarded block |
 
 ### Literals & units
