@@ -540,3 +540,26 @@ residual and move to the NPU/VAD capability work.
 This is a compiler+stdlib ownership change (M2), not another executor
 workaround. It is the only route to the RSS plateau; alternatively accept the
 ~0.2 MB/call residual and move to VAD/NPU.
+
+## 14. String-ownership results (2026-11-11)
+
+The first ownership slice landed at allocation sites rather than as general
+auto-free:
+
+- `read_whole` releases the file-sized Data buffer after the Data->String copy
+  (`lib/std/os/fs.bv`); the kiosk image path dropped ~0.14 MB/call by itself.
+- The stdlib Data->String lanes (`char_to_str`, `briev_str_substr`, getenv,
+  lower/upper, CLI/OpenVINO, HTTP/PG slices) release their intermediate blocks
+  after the copy.
+- `strip_frac_zeros` takes ownership of its input slice (every call site passes
+  a disposable copy), closing the `%g` formatter's per-format string stream.
+- Kiosk response builder is the owned-output pilot: fresh heap strings,
+  superseded intermediates freed, final `detect_faces` response freed by the
+  daemon after send.
+
+Measured on the daemon (single connection, JPEG face frame): 200 calls went
+from VmRSS 144→187 MB (~0.21 MB/call) to a flat 172 MB (peak 228 MB) over
+150–200 calls. The flat steady number is allocator-retained freed blocks, not
+per-request growth. Remaining unowned storage is Tensor object/List metadata;
+the owned List/String handle (base+cap+len+owner) is still required for the
+full plateau/explicit-free proof.
