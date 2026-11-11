@@ -323,7 +323,20 @@ pub fn analyze_program(
     // 2026-07-31: Batch-loop decomposition derived from the swan-song-stripped
     // bodies (what the backend emits). The io boundary is the guard's
     // `count % N == 0` precondition interval.
-    let batch_shapes = crate::analysis::batch_shape::detect_batch_shapes(&swan_songs);
+    let batch_shapes = if hir_emit_enabled() {
+        let ast = crate::analysis::batch_shape::detect_batch_shapes(&swan_songs);
+        match hir_raw_swan_songs(&hir, items)
+            .and_then(|raw| crate::hir::batch_shape::detect_batch_shapes(&raw))
+        {
+            Some(h) => {
+                debug_assert_eq!(h, ast, "HIR/AST batch-shape drift");
+                h
+            }
+            None => ast,
+        }
+    } else {
+        crate::analysis::batch_shape::detect_batch_shapes(&swan_songs)
+    };
     // 2026-08-01 (D2): garbage scheduling — prove each heap-backed field's
     // reactor-ordered last consumer. Field initializers come from StateDecl +
     // top-level `let f: T = expr` (mirrors build_field_index); the node order
@@ -823,6 +836,28 @@ fn ast_swan_songs(
 
 /// `None` when any hoisted body contains a node the boundary cannot
 /// reconstruct (`Other`).
+/// Raw (HIR) swan-song bodies for analyses that consume HIR statements
+/// directly (batch-shape detection). Same txn filter as the AST build.
+fn hir_raw_swan_songs(
+    program: &crate::hir::HirProgram,
+    items: &[TopLevel],
+) -> Option<HashMap<String, (Vec<crate::hir::stmt::HirStmt>, Vec<Vec<crate::hir::stmt::HirStmt>>)>> {
+    let state_fields = crate::analysis::loop_shape::collect_state_fields(items);
+    let mut songs = HashMap::new();
+    for c in program.callables.iter().filter(|c| {
+        matches!(c.kind, crate::hir::HirCallableKind::Transaction)
+            && c.owner.is_none()
+            && !c.exported
+            && c.sync_domains.is_empty()
+    }) {
+        songs.insert(
+            c.name.clone(),
+            crate::hir::swan_song::hoist_swan_song(&c.body.statements, &state_fields),
+        );
+    }
+    Some(songs)
+}
+
 fn hir_swan_songs(
     program: &crate::hir::HirProgram,
     state_fields: &std::collections::HashSet<String>,

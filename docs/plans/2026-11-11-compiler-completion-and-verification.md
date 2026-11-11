@@ -107,9 +107,13 @@ ledger. Rides on:
 
 ## Workstream H — H5 ports after reclamation
 
-1. `batch_shape` — decide the swan-song consumer type: move
-   `AnalysisResults.swan_songs` to HIR (preferred) or keep the `to_ast`
-   boundary and port detection over converted AST (document the exception).
+1. **`batch_shape` — DONE (2026-11-11).** `hir::batch_shape` mirrors
+   node-decomposition segmentation + batch detection over raw HIR swan-song
+   bodies; the result keeps the AST `BatchShape` type (crosses `to_ast` once
+   at construction; unreconstructible nodes fall back to the AST result). The
+   backend computes HIR shapes by default with a `debug_assert_eq!` plan
+   oracle. Parity: post-increment and rejected-shape fixtures; sweep 143/0
+   with the oracle; A/B byte-identical; determinism clean.
 2. `accel` → `coalescing` + `image_storage`; `gpu_schedule`; `region`;
    `electronics` (largest; follow the same parity-then-flip recipe).
 3. Debt meters: `to_ast::` and `hir_emit_enabled()` may only shrink after the

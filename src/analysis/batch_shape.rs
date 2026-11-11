@@ -18,7 +18,7 @@ use crate::ast::{BinaryOpKind, Expr, Statement};
 use std::collections::HashMap;
 
 /// A batch-loop decomposition of a reactive txn.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BatchShape {
     /// The transaction that owns this batch loop. Used by the effect-shape
     /// selector to require that every carry-selected loop is actually emitted
