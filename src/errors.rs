@@ -77,7 +77,7 @@ impl fmt::Display for Span {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Diagnostic {
     pub code: String,
     pub severity: Severity,

@@ -125,6 +125,7 @@ pub fn analyze(
         graph
             .inexact_constants
             .extend(graph.callables[&owner].params.iter().copied());
+        graph.seed_incoming_storage(&owner);
         walk::build_owner(&mut graph, &owner);
         graph.solve();
         let plan = graph.plan();
@@ -132,11 +133,14 @@ pub fn analyze(
     }
     accumulator.reclassify_safe_publishers(&mut result);
     result.regions.retain(|owner| !result.barriers.contains(owner));
+    result.closed_regions = std::mem::take(&mut accumulator.closed_regions);
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     if index.entry_nodes.len() == 1 && closed_initializers(program) {
         let owner = index.entry_nodes.iter().next().unwrap();
         result.entry_region = result.regions.contains(owner);
     }
     result.regions.retain(|owner| !index.entry_nodes.contains(owner));
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     accumulator.finish_mutating(&mut result);
     result
 }
@@ -148,6 +152,7 @@ struct Accumulator {
     publish_only: std::collections::BTreeSet<String>,
     escape_barriers: std::collections::BTreeSet<String>,
     publish_sites: std::collections::BTreeMap<String, Vec<bool>>,
+    closed_regions: std::collections::BTreeSet<String>,
 }
 
 impl Accumulator {
@@ -168,6 +173,9 @@ impl Accumulator {
         }
         if plan.regions.contains(owner) {
             result.regions.insert(owner.to_string());
+        }
+        if plan.closed_regions.contains(owner) {
+            self.closed_regions.insert(owner.to_string());
         }
         result.barriers.extend(plan.barriers.iter().cloned());
         self.publish_only.extend(plan.publish_only.iter().cloned());

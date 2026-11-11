@@ -19,7 +19,7 @@ use crate::ast::top::{Statement, TopLevel, Transaction};
 use crate::ast::BinaryOpKind;
 
 /// The scheduling DAG computed from the program's node read/write sets.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GpuSchedule {
     /// Node names in producer-before-consumer topological order.
     pub order: Vec<String>,
@@ -88,7 +88,7 @@ pub fn reuse_map(&self) -> HashMap<String, String> {
 
 /// A producer→consumer epilogue fusion: the consumer's elementwise scale
 /// is applied by the producer's kernel, and the consumer node is dropped.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fusion {
     pub producer: String,
     pub consumer: String,
@@ -117,7 +117,7 @@ pub enum EdgeKind {
 /// Topology ONLY — the GEMM operands (q, kt, v, o) are derived at codegen
 /// from the producer/consumer shapes. Any such chain qualifies, not a
 /// named pattern (the analysis must never name specific fields).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChainFusion {
     /// The producer node (GEMM-1: writes `mid_in`).
     pub producer: String,

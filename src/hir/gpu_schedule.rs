@@ -127,16 +127,22 @@ fn expr_ids(e: &HirExpr, out: &mut BTreeSet<String>) {
                 expr_ids(e2, out);
             }
         }
-        HirExprKind::Match { scrutinee, arms } => {
-            expr_ids(scrutinee, out);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    expr_ids(g, out);
-                }
-                expr_ids(&arm.body, out);
-            }
-        }
+        HirExprKind::Match { scrutinee, arms } => expr_ids_match(scrutinee, arms, out),
         _ => {}
+    }
+}
+
+fn expr_ids_match(
+    scrutinee: &HirExpr,
+    arms: &[crate::hir::expr::HirMatchArm],
+    out: &mut BTreeSet<String>,
+) {
+    expr_ids(scrutinee, out);
+    for arm in arms {
+        if let Some(g) = &arm.guard {
+            expr_ids(g, out);
+        }
+        expr_ids(&arm.body, out);
     }
 }
 
@@ -270,10 +276,19 @@ fn compute_independence(names: &[String], sched: &mut GpuSchedule) {
         }
     }
     for i in 0..names.len() {
-        for j in i + 1..names.len() {
-            if !has_edge[i][j] && !has_edge[j][i] {
-                sched.independent.push((names[i].clone(), names[j].clone()));
-            }
+        push_independent(i, names, &has_edge, &mut sched.independent);
+    }
+}
+
+fn push_independent(
+    i: usize,
+    names: &[String],
+    has_edge: &[Vec<bool>],
+    independent: &mut Vec<(String, String)>,
+) {
+    for j in i + 1..names.len() {
+        if !has_edge[i][j] && !has_edge[j][i] {
+            independent.push((names[i].clone(), names[j].clone()));
         }
     }
 }
@@ -305,17 +320,21 @@ fn topo_order(
     let mut ordered: Vec<usize> = Vec::new();
     while let Some(u) = q.pop_front() {
         ordered.push(u);
-        for &v in &adj[u] {
-            indeg[v] -= 1;
-            if indeg[v] == 0 {
-                q.push_back(v);
-            }
-        }
+        relax_neighbors(u, &adj, &mut indeg, &mut q);
     }
     if ordered.len() == nodes.len() {
         ordered.iter().map(|&i| names[i].clone()).collect()
     } else {
         names
+    }
+}
+
+fn relax_neighbors(u: usize, adj: &[Vec<usize>], indeg: &mut [usize], q: &mut VecDeque<usize>) {
+    for &v in &adj[u] {
+        indeg[v] -= 1;
+        if indeg[v] == 0 {
+            q.push_back(v);
+        }
     }
 }
 
@@ -527,21 +546,28 @@ fn txn_writes_array(sched: &GpuSchedule, n: &str, arr: &str) -> bool {
         .map_or(false, |(_, bs)| bs.iter().any(|b| b == arr))
 }
 
+fn arrays_touched(sched: &GpuSchedule, txn: &str) -> BTreeSet<String> {
+    sched
+        .reads
+        .iter()
+        .chain(sched.writes.iter())
+        .filter(|(nm, _)| nm == txn)
+        .flat_map(|(_, bs)| bs.iter().cloned())
+        .collect()
+}
+
 fn compute_array_first_use(sched: &GpuSchedule) -> HashMap<String, String> {
     let mut first_use: HashMap<String, String> = HashMap::new();
     for n in &sched.order {
-        let arrays_here: BTreeSet<String> = sched
-            .reads
-            .iter()
-            .chain(sched.writes.iter())
-            .filter(|(nm, _)| nm == n)
-            .flat_map(|(_, bs)| bs.iter().cloned())
-            .collect();
-        for arr in arrays_here {
-            first_use.entry(arr).or_insert_with(|| n.clone());
-        }
+        record_first_use(sched, n, &mut first_use);
     }
     first_use
+}
+
+fn record_first_use(sched: &GpuSchedule, txn: &str, first_use: &mut HashMap<String, String>) {
+    for arr in arrays_touched(sched, txn) {
+        first_use.entry(arr).or_insert_with(|| txn.to_string());
+    }
 }
 
 /// Tightest free slot: largest last-use still before `first_use`, same size.

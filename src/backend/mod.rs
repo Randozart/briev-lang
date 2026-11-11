@@ -492,7 +492,15 @@ pub fn analyze_program(
     // mechanical fix; the author decides.
     if !accel.is_empty() {
         let consts = crate::backend::ptx::module_expr_consts(items);
-        for d in crate::analysis::coalescing::analyze_coalescing(items, &accel, &consts) {
+        let coalescing = if hir_emit_enabled() {
+            let ast = crate::analysis::coalescing::analyze_coalescing(items, &accel, &consts);
+            let h = crate::hir::coalescing::analyze(&hir, &accel);
+            debug_assert_eq!(h, ast, "HIR/AST coalescing diagnostic drift");
+            h
+        } else {
+            crate::analysis::coalescing::analyze_coalescing(items, &accel, &consts)
+        };
+        for d in coalescing {
             eprintln!("warning: [{}] {}", d.code, d.title);
             for e in &d.explanation {
                 eprintln!("  {e}");
@@ -530,22 +538,38 @@ pub fn analyze_program(
             })
             .collect()
     };
-    let gpu_schedule = crate::analysis::gpu_schedule::build_schedule(
-        items,
-        &accel,
-        &array_meta,
-        crate::config_tuning::ir_lowering().ptx_tensor_f16acc,
-    );
+    let gpu_schedule = if hir_emit_enabled() {
+        let f16_acc = crate::config_tuning::ir_lowering().ptx_tensor_f16acc;
+        let ast = crate::analysis::gpu_schedule::build_schedule(items, &accel, &array_meta, f16_acc);
+        let h = crate::hir::gpu_schedule::build_schedule(&hir, &accel, &array_meta, f16_acc);
+        debug_assert_eq!(h, ast, "HIR/AST GPU schedule drift");
+        h
+    } else {
+        crate::analysis::gpu_schedule::build_schedule(
+            items,
+            &accel,
+            &array_meta,
+            crate::config_tuning::ir_lowering().ptx_tensor_f16acc,
+        )
+    };
     // 2026-09-02 (plan 2026-09-02-image-and-dehashtag, revised): image
     // storage strategy — the frontend's storage decision for texel-formatted
     // write buffers. Opt-in until measured (the coopmat precedent; promote
     // on ledger evidence).
-    let image_storage = crate::analysis::image_storage::detect(
-        items,
-        &accel,
-        type_universe,
-        crate::config_tuning::ir_lowering().spirv_image_storage,
-    );
+    let image_storage = if hir_emit_enabled() {
+        let enabled = crate::config_tuning::ir_lowering().spirv_image_storage;
+        let ast = crate::analysis::image_storage::detect(items, &accel, type_universe, enabled);
+        let h = crate::hir::image_storage::detect(&hir, &accel, type_universe, enabled);
+        debug_assert_eq!(h, ast, "HIR/AST image-storage drift");
+        h
+    } else {
+        crate::analysis::image_storage::detect(
+            items,
+            &accel,
+            type_universe,
+            crate::config_tuning::ir_lowering().spirv_image_storage,
+        )
+    };
     // 2026-08-31 (boundary ownership plan): classify every export/frgn
     // parameter and return. The calling convention is defaulted to c_abi here
     // (the glue config lives in compile.rs); the GLUE wiring refines

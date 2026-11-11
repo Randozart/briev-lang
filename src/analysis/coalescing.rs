@@ -46,7 +46,12 @@ pub fn analyze_coalescing(
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let mut reported: std::collections::HashSet<(String, String)> = Default::default();
-    for (name, entry) in entries {
+    // 2026-11-11: deterministic order — HashMap iteration is process-seeded;
+    // diagnostics must match the HIR port (name-sorted) and stay stable.
+    let mut names: Vec<&String> = entries.keys().collect();
+    names.sort();
+    for name in names {
+        let entry = &entries[name];
         let shape = &entry.shape;
         if shape.index_var.is_empty() {
             continue;
