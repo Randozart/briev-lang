@@ -8,6 +8,9 @@
 
 use super::program::HirProgram;
 
+mod graph;
+mod walk;
+
 /// True when every top-level initializer is a closed (literal/absent) value:
 /// no state declaration and no non-literal top-level `let` initializer.
 ///
@@ -44,6 +47,63 @@ fn uses_implicit_receiver(callable: &super::program::HirCallable, field_names: &
         }
     });
     implicit
+}
+
+/// 2026-11-12: HIR parity dump. Mirrors the AST helper: register, then build
+/// each body owner in a fresh clone, rendering ordered constraints with node
+/// identities canonicalised by first appearance, plus sorted call edges.
+#[cfg(test)]
+pub(crate) fn constraints_for_test(
+    program: &HirProgram,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+    casts: Option<&crate::casting::graph::CastingGraph>,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut index = graph::Graph::default();
+    if let Some(universe) = universe {
+        index.universe = universe.clone();
+    }
+    if let Some(casts) = casts {
+        index.casts = casts.clone();
+    }
+    walk::register(&mut index, program);
+    dump_constraints(&index)
+}
+
+#[cfg(test)]
+fn dump_constraints(
+    index: &graph::Graph,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let owners: Vec<_> = index.bodies.keys().cloned().collect();
+    let mut dumped = std::collections::BTreeMap::new();
+    for owner in &owners {
+        if !index.callables.contains_key(owner) {
+            continue;
+        }
+        let mut graph = index.clone();
+        graph
+            .inexact_constants
+            .extend(graph.callables[owner].params.iter().copied());
+        walk::build_owner(&mut graph, owner);
+        dumped.insert(
+            owner.clone(),
+            crate::analysis::reclamation::render_constraints_for_test(&graph.constraints),
+        );
+    }
+    let mut calls_graph = index.clone();
+    for owner in &owners {
+        if !index.callables.contains_key(owner) {
+            continue;
+        }
+        calls_graph
+            .inexact_constants
+            .extend(calls_graph.callables[owner].params.iter().copied());
+        walk::build_owner(&mut calls_graph, owner);
+    }
+    for (name, callable) in &calls_graph.callables {
+        let calls = callable.calls.iter().cloned().collect();
+        dumped.insert(format!("calls:{name}"), calls);
+    }
+    dumped
 }
 
 #[cfg(test)]
@@ -128,6 +188,206 @@ mod tests {
     #[test]
     fn no_globals_is_closed() {
         parity("defn f() -> Int { term 1; };\n");
+    }
+
+    fn constraint_parity(src: &str) {
+        let tokens = crate::lexer::tokenize(src).expect("tokenize");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let items = parser.parse_program().expect("parse");
+        let mut casts = crate::casting::graph::CastingGraph::new();
+        for item in &items {
+            if let crate::ast::TopLevel::ProtocolDef(protocol) = item {
+                casts.register_protocol_def(protocol);
+            }
+        }
+        let expected = crate::analysis::reclamation::constraints_for_test(&items, None);
+        let actual = constraints_for_test(&crate::hir::lower_program(&items), None, Some(&casts));
+        assert_eq!(
+            actual, expected,
+            "constraint drift:\n{src}\n--- AST ---\n{expected:#?}\n--- HIR ---\n{actual:#?}"
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_scalars() {
+        constraint_parity(
+            "defn scalars(a: Int) -> Int {\n\
+                 let x: Int = a + 1;\n\
+                 x = x * 2;\n\
+                 term x;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_allocations() {
+        constraint_parity(
+            "defn allocate() -> Bool {\n\
+                 let pointer: Ptr = Malloc#(32);\n\
+                 Store#(pointer,42,8);\n\
+                 let other: Ptr = Alloc#(16);\n\
+                 Free#(other);\n\
+                 term Load#(pointer,8) == 42;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_structures_and_slices() {
+        constraint_parity(
+            "obj Record { buffer: Ptr; count: Int; };\n\
+             defn structured() -> Bool {\n\
+                 let pointer: Ptr = Malloc#(32);\n\
+                 let record: Record = Record { buffer: pointer, count: 7 };\n\
+                 let list: List<Int> = [1,2,3];\n\
+                 let pair = (pointer,7);\n\
+                 let first = pair.0;\n\
+                 let sliced = list[0:2];\n\
+                 let indexed = list[0];\n\
+                 Store#(record.buffer,42,8);\n\
+                 term Load#(pointer,8) == 42;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_print_capture() {
+        constraint_parity(
+            "defn show() -> Void {\n\
+                 let pointer: Ptr = Malloc#(32);\n\
+                 Print#(pointer);\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_branches_and_matches() {
+        constraint_parity(
+            "enum Tagged { Reference(Ptr), Count(Int) };\n\
+             defn branch(value: Tagged) -> Int {\n\
+                 let pointer: Ptr = Malloc#(8);\n\
+                 let loaded: Int = match true { true => Load#(pointer,8), false => 0, };\n\
+                 when loaded == 0 { Store#(pointer,1,8); };\n\
+                 term match value { Reference(held) => held as Int, Count(number) => number, };\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_user_calls_and_recursion() {
+        constraint_parity(
+            "defn create(depth: Int) -> Ptr {\n\
+                 when depth == 0 { term Malloc#(32); };\n\
+                 term create(depth-1);\n\
+             };\n\
+             defn inspect() -> Bool {\n\
+                 let value: Ptr = create(3);\n\
+                 Store#(value,42,8);\n\
+                 term Load#(value,8) == 42;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_generics() {
+        constraint_parity(
+            "defn identity<T>(value: T) -> T { term value; };\n\
+             defn use_generic() -> Int {\n\
+                 let pointer: Ptr = Malloc#(32);\n\
+                 let alias: Ptr = identity(pointer);\n\
+                 Store#(alias,1,8);\n\
+                 term Load#(pointer,8);\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_explicit_receiver_methods() {
+        constraint_parity(
+            "obj Packet {\n\
+                 storage: Ptr;\n\
+                 defn read(packet: Packet) -> Int { term Load#(packet.storage,8); };\n\
+             };\n\
+             defn inspect() -> Int {\n\
+                 let packet: Packet = Packet { storage: Malloc#(8) };\n\
+                 term packet.read();\n\
+             };\n\
+             defn free_call() -> Int {\n\
+                 let packet: Packet = Packet { storage: Malloc#(8) };\n\
+                 term read(packet);\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_blocks() {
+        constraint_parity(
+            "defn blocked() -> Int {\n\
+                 let pointer: Ptr = Malloc#(8);\n\
+                 { let alias: Ptr = pointer; Store#(alias,1,8); };\n\
+                 term Load#(pointer,8);\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_user_operators() {
+        constraint_parity(
+            "defn add_impl(a: Int, b: Int) -> Int { term a + b; };\n\
+             obj Boxed { value: Int; op Add: add_impl(#Lh, #Rh); };\n\
+             defn combine(a: Boxed, b: Boxed) -> Int { term a + b; };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_nested_field_stores() {
+        constraint_parity(
+            "obj Inner { fd: Int; };\n\
+             obj Mid { a: Int; inner: Inner; b: Int; };\n\
+             obj Wrap { marker: Int; mid: Mid; };\n\
+             defn assign(w: Wrap) -> Void {\n\
+                 w.mid.inner = Inner { fd: 3 };\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_publish_propagation() {
+        constraint_parity(
+            "obj T { key: String; flag: Int; };\n\
+             obj W { t: T; n: Int; };\n\
+             defn enc(n: Int) -> String { term \"a\" + n as String; };\n\
+             defn begin(t: T, req: String) -> Int {\n\
+                 t.key = \"\";\n\
+                 t.flag = 1;\n\
+                 term req .^Length;\n\
+             };\n\
+             defn upgrade(t: T, port: Int) -> Int {\n\
+                 let key: String = enc(port);\n\
+                 let request: String = \"GET \" + key + \" HTTP/1.1\";\n\
+                 let started: Int = begin(t, request);\n\
+                 t.key = key;\n\
+                 term started;\n\
+             };\n\
+             defn start_upgrade(w: W, port: Int) -> Void {\n\
+                 let ignored: Int = upgrade(w.t, port);\n\
+             };\n\
+             defn poll(w: W, port: Int) -> Int {\n\
+                 start_upgrade(w, port);\n\
+                 term w.t.key .^Length;\n\
+             };",
+        );
+    }
+
+    #[test]
+    fn constraints_match_ast_for_casts() {
+        constraint_parity(
+            "defn casting() -> Int {\n\
+                 let pointer: Ptr = Malloc#(32);\n\
+                 let address: Int = pointer as Int;\n\
+                 term address;\n\
+             };",
+        );
     }
 }
 

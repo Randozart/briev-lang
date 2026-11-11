@@ -48,8 +48,8 @@ struct Callable {
     calls: BTreeSet<String>,
 }
 
-#[derive(Clone)]
-enum Constraint {
+#[derive(Clone, Debug)]
+pub(crate) enum Constraint {
     Bitwise(crate::ast::BinaryOpKind, Node, Node, Node),
     Copy(Node, Node),
     Load(Node, Node),
@@ -391,6 +391,103 @@ pub(crate) fn registration_facts_for_test(
 #[cfg(test)]
 pub(crate) fn closed_initializers_for_test(items: &[TopLevel]) -> bool {
     walk::closed_initializers(items)
+}
+
+/// 2026-11-12: parity harness dump. Runs registration plus one `build_owner`
+/// per body owner (mirroring `analyze`), then renders each ordered constraint
+/// list with node identities canonicalised by first appearance. Raw node ids
+/// are allocation-order artifacts; the structural dump is what HIR must match.
+#[cfg(test)]
+pub(crate) fn constraints_for_test(
+    items: &[TopLevel],
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> BTreeMap<String, Vec<String>> {
+    let mut index = Graph::default();
+    if let Some(universe) = universe {
+        index.universe = universe.clone();
+    }
+    for item in items {
+        if let TopLevel::ProtocolDef(protocol) = item {
+            index.casts.register_protocol_def(protocol);
+        }
+    }
+    walk::register(&mut index, items, &std::collections::HashSet::new());
+    dump_constraints(&index)
+}
+
+#[cfg(test)]
+fn dump_constraints(index: &Graph) -> BTreeMap<String, Vec<String>> {
+    let owners: Vec<_> = index.bodies.keys().cloned().collect();
+    let mut dumped = BTreeMap::new();
+    for owner in &owners {
+        if !index.callables.contains_key(owner) {
+            continue;
+        }
+        let mut graph = index.clone();
+        graph
+            .inexact_constants
+            .extend(graph.callables[owner].params.iter().copied());
+        walk::build_owner(&mut graph, owner);
+        dumped.insert(owner.clone(), render_constraints_for_test(&graph.constraints));
+    }
+    let mut calls_graph = index.clone();
+    for owner in &owners {
+        if !index.callables.contains_key(owner) {
+            continue;
+        }
+        calls_graph
+            .inexact_constants
+            .extend(calls_graph.callables[owner].params.iter().copied());
+        walk::build_owner(&mut calls_graph, owner);
+    }
+    for (name, callable) in &calls_graph.callables {
+        let calls = callable.calls.iter().cloned().collect();
+        dumped.insert(format!("calls:{name}"), calls);
+    }
+    dumped
+}
+
+#[cfg(test)]
+pub(crate) fn render_constraints_for_test(constraints: &[Constraint]) -> Vec<String> {
+    let mut names = BTreeMap::new();
+    constraints
+        .iter()
+        .map(|constraint| render_constraint(constraint, &mut names))
+        .collect()
+}
+
+#[cfg(test)]
+fn render_constraint(constraint: &Constraint, names: &mut BTreeMap<Node, usize>) -> String {
+    let mut node = |value: Node| -> String {
+        let next = names.len();
+        let id = *names.entry(value).or_insert(next);
+        format!("n{id}")
+    };
+    match constraint {
+        Constraint::Bitwise(operator, left, right, result) => format!(
+            "bitwise {operator:?} {} {} -> {}",
+            node(*left),
+            node(*right),
+            node(*result)
+        ),
+        Constraint::Copy(source, target) => format!("copy {} {}", node(*source), node(*target)),
+        Constraint::Load(base, result) => format!("load {} {}", node(*base), node(*result)),
+        Constraint::Store(base, value) => format!("store {} {}", node(*base), node(*value)),
+        Constraint::CopyMemory(source, target) => {
+            format!("copy-memory {} {}", node(*source), node(*target))
+        }
+        Constraint::Syscall(number, args) => {
+            let args: Vec<_> = args.iter().map(|arg| node(*arg)).collect();
+            format!("syscall {} [{}]", node(*number), args.join(", "))
+        }
+        Constraint::EscapeContents(value) => format!("escape-contents {}", node(*value)),
+        Constraint::FieldLoad(base, field, target) => {
+            format!("field-load {} {field:?} {}", node(*base), node(*target))
+        }
+        Constraint::FieldStore(base, field, value) => {
+            format!("field-store {} {field:?} {}", node(*base), node(*value))
+        }
+    }
 }
 
 pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, universe: Option<&crate::type_universe::TypeUniverse>) -> ReclamationPlan {
