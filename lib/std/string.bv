@@ -405,7 +405,9 @@ defn to_lower_str(s: String) [true][term .^Length == s .^Length] -> String {
     Store#(dstp, n, 8);
     fold_lower_copy((s as Data) as Int + 8, dstp + 8, 0, n);
     Store#(dstp + 8 + n, 0, 1);
-    term (dstp as Data) as String;
+    let owned: String = (dstp as Data) as String;
+    Free#(dstp as Ptr<Bit<8>>);
+    term owned;
 };
 
 defn to_upper_str(s: String) [true][term .^Length == s .^Length] -> String {
@@ -415,7 +417,9 @@ defn to_upper_str(s: String) [true][term .^Length == s .^Length] -> String {
     Store#(dstp, n, 8);
     fold_upper_copy((s as Data) as Int + 8, dstp + 8, 0, n);
     Store#(dstp + 8 + n, 0, 1);
-    term (dstp as Data) as String;
+    let owned: String = (dstp as Data) as String;
+    Free#(dstp as Ptr<Bit<8>>);
+    term owned;
 };
 
 // 2026-08-13: the found-index case clamps the loop bound (`lim`/`lo`) to the
