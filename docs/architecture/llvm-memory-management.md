@@ -1259,8 +1259,12 @@ callable regions; the existing separate main-entry proof controls initialization
 Memory-fact primitives live in `analysis/reclamation/storage.rs`; both the graph
 solver and the Kani harness use them. The compositional proof checks the external
 self-edge, either field/raw projection, another load and payload publication on
-a two-root heap. It is not a proof of the entire fixed-point scheduler or type
-registry. Full graph integration is covered by frontend/native regressions.
+a two-root heap. The storage rules are generic over an exact-set interface:
+production uses NodeSet, while the bounded proof uses one word with the same
+production word-union and iteration primitives. It does not formally verify
+the B-tree backing NodeSet, the fixed-point scheduler or type registry. Sparse
+set refinement is covered by differential tests, and full graph integration
+by frontend/native regressions.
 
 `ReclamationPlan.closed_regions` strengthens an existing nonrecursive region
 proof. Its allocation set follows the complete call closure, including barrier
