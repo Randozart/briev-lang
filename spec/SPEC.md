@@ -839,6 +839,7 @@ item             ::= import_decl
                    | asm_decl
                    | trigger_decl
                    | render_decl
+                   | test_decl
                    | compile_time_item
 
 identifier       ::= user_identifier
@@ -1704,6 +1705,50 @@ coll struct Fixed<T, N> {
 - **No `.^Capacity` reflection** — capacity is operational (the Grow/Shrink
   control knob), so it is an intrinsic (`Capacity#`), never a reflection
   target (§17 boundary rule).
+
+### 8.11 `test` blocks (2026-11-10)
+
+```briev
+test arithmetic {
+    expect add(1, 2) == 3;
+    expect gcd(84, 36) == 12;
+};
+
+test collections {
+    let xs: List<Int> = [3, 1, 2];
+    bubble(xs);
+    expect xs[0] == 1 && xs[2] == 3;
+};
+```
+
+```ebnf
+test_decl   ::= "test" identifier "{" statement* "}" ";"
+expect_stmt ::= "expect" expression ";"
+```
+
+- `test` is a top-level declaration. `domain` is a bare identifier — a
+  declaration label, not a value; one domain per block. `brievc test` groups
+  and filters by exact domain (`--domain <name>`; `--list-tests`).
+- Bodies are ordinary statements (`let`, `when`, `foreach`, `match`, calls)
+  plus `expect`. They may reference top-level declarations, imports, and the
+  prelude. `expect` requires a `Bool` expression; a false value fails the test
+  and the diagnostic reports the domain, source line, rendered expression, and
+  evaluated value.
+- **Reactive constructs are not permitted inside a test** (`node`, `txn`,
+  `endprogram`, `reside`, `term`, `tail`); the diagnostic names the fix.
+- **Isolation.** Each test runs with a fresh interpreter and fresh `init`
+  seeding; program globals/imports are shared read-only. Failures never leak
+  state into the next test. Order is source order.
+- **No emission.** Test blocks are typechecked but excluded from analyses,
+  HIR lowering, liveness, and codegen; compiling a program with a test block
+  emits exactly the same IR as compiling it without one.
+- `:=` is unchanged (compile-time derivation/reference implementation,
+  §18); expectations never overload it.
+
+The reference interpreter is the v1 engine (`brievc test`); backend
+differential execution and effect expectations (`expect_trap`, `expect_exit`,
+`expect_stdout`) are follow-ups. Existing `brievc test` behavior — compiling
+and running the file as a program, `.golden`/comment directives — is retained.
 
 ## 9. Functions, transactions, nodes, objects, and cells
 
