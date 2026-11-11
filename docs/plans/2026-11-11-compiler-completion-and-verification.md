@@ -164,7 +164,17 @@ Added to the quick gate (~16 s).
   globals closed; state and non-literal globals open; no globals closed).
   The test-only AST wrapper lives in `analysis::reclamation`.
 
-**Next R slices:** port `walk::register` facts (bodies, generics, results,
-methods, entry nodes, default-encoding targets, globals/enums/typedefs), then
-constraints/build_owner, solver, plan absorption; flip the consumer only when
-the whole plan compares equal.
+**2026-11-11 — R2 (registration facts) DONE for the structural subset.**
+`hir::reclamation::registration_facts` mirrors `walk::register` for bodies
+(names, params, txn +2 for pre/post), generics (generic defns stay out of
+bodies), return types, entry nodes (`is_reactive`), async-unsupported, and
+globals/types (lets, `state`, constants). A test-only AST snapshot in
+`analysis::reclamation` proves equality on callable and global fixtures
+(plain/exported/generic defns, reactive node, async txn; let/state/const).
+Still to port before constraints: constructors (`__variant_*` slots), user
+operators (op-binding intrinsic test), default-encoding targets, and the
+method alias map (explicit-receiver synthetic names).
+
+**Next R slices:** constraints/`build_owner` (the ~700-line AST expression
+walker), solver, plan absorption; flip the consumer only when the whole plan
+compares equal.

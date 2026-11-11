@@ -362,6 +362,30 @@ fn extend<T: Ord>(target: &mut BTreeSet<T>, values: impl IntoIterator<Item = T>)
 }
 
 #[cfg(test)]
+pub(crate) fn registration_facts_for_test(
+    items: &[TopLevel],
+) -> crate::hir::reclamation::RegistrationFacts {
+    let mut graph = Graph::default();
+    let live = std::collections::HashSet::new();
+    walk::register(&mut graph, items, &live);
+    let bodies = graph
+        .bodies
+        .iter()
+        .map(|(name, (params, body))| (name.clone(), (params.clone(), body.len())))
+        .collect();
+    let unsupported = graph.unsupported.clone();
+    crate::hir::reclamation::RegistrationFacts {
+        bodies,
+        generics: graph.generics.keys().cloned().collect(),
+        return_types: graph.return_types.clone(),
+        entry_nodes: graph.entry_nodes.clone(),
+        unsupported,
+        globals: graph.global_types.keys().cloned().collect(),
+        global_types: graph.global_types.clone(),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn closed_initializers_for_test(items: &[TopLevel]) -> bool {
     walk::closed_initializers(items)
 }
