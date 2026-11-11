@@ -3155,7 +3155,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // runtime loop. If FFI exists, warn that compile-time eval is blocked.
 
         let precomputed_final_values = if analysis.region_analyzer.is_fully_precomputable(self.ctx.optimize_budget) {
-            analysis.region_analyzer.collect_final_values(&items)
+            analysis.region_analyzer.collect_final_values(&analysis.hir)
         } else if !analysis.region_analyzer.composed_chains.is_empty() {
             // A002 already covers empty-chains case: no precomputable program.
             // Only emit A001 when chains exist but budget/FFI prevents evaluation.

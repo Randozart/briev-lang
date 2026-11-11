@@ -1123,6 +1123,24 @@ fn drain_n(results: &mut Vec<HirExpr>, n: usize) -> Vec<HirExpr> {
 // ── Chain composition ───────────────────────────────────────────────────
 
 impl RegionAnalyzer {
+
+    /// 2026-11-11: deterministic fingerprint of the consumer-visible facts —
+    /// the debug oracle for the HIR consumer flip (HashMaps are sorted).
+    pub fn consumer_fingerprint(&self) -> String {
+        let mut regions = self.regions.clone();
+        regions.sort();
+        let mut chains = self.linear_chains.clone();
+        chains.sort();
+        let mut triggers: Vec<&String> = self.trigger_vars.iter().collect();
+        triggers.sort();
+        let bounds: std::collections::BTreeMap<&str, u64> =
+            self.iter_bounds.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        format!(
+            "{regions:?}|{chains:?}|{triggers:?}|{bounds:?}|{:?}|{:?}|{:?}",
+            self.region_scores, self.budget_plan, self.composed_chains
+        )
+    }
+
     pub fn compose_chains(&mut self) {
         self.composed_chains.clear();
         self.composed_body_hir.clear();

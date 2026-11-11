@@ -130,8 +130,8 @@ ledger. Rides on:
    canonical parity suites (7/4/6). All three backend consumers flip under
    `BRIEV_HIR_EMIT` with `PartialEq` debug oracles. Coalescing diagnostics are
    name-sorted on both paths (HashMap order was process-seeded; the Intel
-   g0_minmax fixture exposed it). Remaining GPU-family work: `region`,
-   `electronics`.
+   g0_minmax fixture exposed it). Remaining H5: `electronics` (11k), then
+   AST-arm deletion after the opt-out release.
 
 **Reclamation parity catch-up (2026-11-11).** Main gained two AST facts after
 the R4 flip: `seed_incoming_storage` (incoming parameter storage is
@@ -269,10 +269,13 @@ value precomputation. AST-vs-HIR parity: 16 tests. `compute_link_vars` now
 sorts shared write candidates (the AST path previously chose by HashSet
 order, so composed-body substitution could vary per process).
 
-The consumer is NOT flipped yet: `AnalysisResults.region_analyzer` is typed
-as the AST analyzer and the LLVM backend calls `collect_final_values(&items)`;
-the flip needs the HIR program threaded through `AnalysisResults` and the
-`collect_final_values` call site. That is the next region slice.
+**Consumer flip (2026-11-11).** `AnalysisResults.region_analyzer` is now the
+HIR analyzer (the only implementation; the AST analyzer remains the debug
+oracle while `BRIEV_HIR_EMIT` is on). `AnalysisResults` already carried the HIR
+program, so `collect_final_values` takes `&analysis.hir`. The oracle compares a
+deterministic consumer fingerprint (regions, chains, triggers, iteration
+bounds, scores, budget plan, composed chains); `quick`/sweep/release A-B and
+determinism are green.
 
 **Parallel-work checkpoint (2026-11-11).** Committed the in-progress
 body-verification lane (`analysis/verify_bodies.rs` + plan) and its analysis
