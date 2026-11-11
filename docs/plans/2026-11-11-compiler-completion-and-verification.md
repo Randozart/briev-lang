@@ -217,6 +217,15 @@ user calls + recursion, generics, explicit/free-receiver methods, blocks,
 user operators, nested field stores, publish propagation, casts. Praetor
 clean after splitting registration/expression/expression_type helpers.
 
-**Next R slice:** plan-level parity (run the HIR Graph `solve/plan` and compare
-`ReclamationPlan` with the AST result on the same fixtures) and then flip the
-`analyze_program` consumer under `BRIEV_HIR_EMIT` with a debug oracle.
+**2026-11-11 — R4 (plan parity + consumer flip) DONE.**
+`hir::reclamation::analyze` mirrors the AST analyze loop (register, per-owner
+clone/build/solve/plan, accumulator absorb, safe-publisher reclassification,
+entry-region rule, mutating set). Plan parity tests compare full
+`ReclamationPlan` equality on scalars/allocations/returns and a combined
+publish/method/generic fixture. The backend consumer is flipped under
+`BRIEV_HIR_EMIT` with `debug_assert_eq!`; the AST plan remains the opt-out path
+and oracle. Gates: reclamation 65; quick 39/39; corpus sweep 143/0 with the
+oracle armed; release A/B byte-identical; determinism clean.
+
+**R is complete.** Next: V2 wasm corpus gate, P4 seeds, P6 cvise wrapper, P7
+additions; then the large H5 ports.

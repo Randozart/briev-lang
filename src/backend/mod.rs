@@ -560,7 +560,14 @@ pub fn analyze_program(
             &|_| None,
         )
     };
-    let reclamation = crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe);
+    let reclamation = if hir_emit_enabled() {
+        let ast = crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe);
+        let h = crate::hir::reclamation::analyze(&hir, type_universe);
+        debug_assert_eq!(h, ast, "HIR/AST reclamation-plan drift");
+        h
+    } else {
+        crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe)
+    };
     let mut destination_ownership =
         crate::analysis::destination_ownership::analyze(items);
     // D6: LoopShape.local_fields is the canonical Local proof and joins the

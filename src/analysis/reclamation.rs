@@ -22,7 +22,7 @@ mod solver_tests;
 
 type Node = usize;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReclamationPlan {
     pub entry_region: bool,
     pub default_encoding_targets: BTreeSet<String>,
