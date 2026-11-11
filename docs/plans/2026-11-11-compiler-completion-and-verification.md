@@ -177,6 +177,33 @@ enum constructors; user-operator types via the new
 constraints: default-encoding targets (populated during the AST cast walk, so
 they move with the constraint port).
 
+**Next R slices (constraints port checklist).** The registration facts are
+done; this is the ordered map for `walk::Builder` → HIR:
+
+1. **Graph API to mirror**: `node/root/unknown_value/global/allocation/copy/
+   load/constructor_key`, `constraints`, `points/constants/inexact_constants`,
+   `memory`, `callables/bodies`, `generics` + `specialize/mangle`, `methods` +
+   `method_target`, user-operator/encoding sets, publish fields
+   (`incoming_store_owners`, `publish_receiver_param`, `publish_call_args`),
+   `unsupported`/`capture`, and the casting lanes
+   (`casts.type_to_protocol/find_path/LaneKind`).
+2. **Builder methods in order**: `statement` (Let/Assign/Term/Tail/Expression/
+   Check/Gate/Guarded/Block/SyncBlock/Mutex/Defer/Foreach/Match/ArrowAssign/
+   EndProgram/Rollback/KeepHint), `statement_match/pattern*`, `assign*` +
+   `record_incoming_store`, `expression` (all AST variants incl.
+   StructLiteral/List/Tuple/Slice/Index/Field/Deref/Cast/MethodCall/Consume/
+   AddrOf/IsType/Unary/Binary/Reflect/If/Match/Block/Range), `call/
+   method_call/call_nodes/intrinsic_or_unknown/cast/cast_lane/binary/unary/
+   generic_result/specialize/free_member_target/method_target`, and
+   `value_allocates/alloc_bindings`, `propagate_incoming_store`,
+   `record_publish_call`, `projection_root_and_path`, `expression_allocates`.
+3. **Parity harness first**: a test-only AST dump of per-owner constraints
+   (ordered `Constraint` debug strings) + callable-call sets, compared against
+   the HIR walk on fixtures that grow from scalars → allocations → publishes →
+   casts → generics → methods. Only then port `solve()`/`plan()` absorption.
+4. **Consumer flip** (`analyze_program` reclamation) only when the full plan
+   compares equal under `BRIEV_HIR_EMIT`, with the AST plan as the oracle.
+
 **Next R slices:** constraints/`build_owner` (the ~700-line AST expression
 walker), solver, plan absorption; flip the consumer only when the whole plan
 compares equal.
