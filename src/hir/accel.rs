@@ -302,6 +302,25 @@ struct PartitionOut {
     locals: HashSet<String>,
 }
 
+/// The HIR statements the accel partition classifies as kernel-safe, in
+/// source order. Sibling GPU-family ports (image storage, coalescing,
+/// scheduling) scan HIR directly; routing them through this helper keeps the
+/// kernel/host split in ONE place instead of re-deriving it per consumer.
+pub(crate) fn kernel_statements(
+    program: &HirProgram,
+    callable: &HirCallable,
+    index_var: &str,
+) -> Vec<HirStmt> {
+    let info = HirProgramInfo::build(program);
+    let mut reasons = Vec::new();
+    let mut ctx = KernelCtx {
+        index_var,
+        info: &info,
+        reasons: &mut reasons,
+    };
+    partition(&callable.body.statements, &mut ctx).kernel
+}
+
 fn partition(body: &[HirStmt], ctx: &mut KernelCtx<'_>) -> PartitionOut {
     let mut out = PartitionOut {
         kernel: Vec::new(),

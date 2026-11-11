@@ -359,6 +359,36 @@ impl CoeffEnv<'_> {
     }
 }
 
+/// Test-only deterministic dump: sorted, fully-rendered diagnostics keyed by
+/// their rank so duplicate codes never collide.
+#[cfg(test)]
+pub(crate) fn canonical_diagnostics(
+    diagnostics: &[Diagnostic],
+) -> std::collections::BTreeMap<String, String> {
+    let mut rows: Vec<String> = diagnostics
+        .iter()
+        .map(|d| {
+            format!(
+                "{}|{:?}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+                d.code,
+                d.severity,
+                d.title,
+                d.span,
+                d.explanation,
+                d.proof_chain,
+                d.examples,
+                d.hints,
+                d.notes
+            )
+        })
+        .collect();
+    rows.sort();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| (format!("{i:04}"), row))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

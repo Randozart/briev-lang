@@ -760,6 +760,37 @@ fn module_consts(program: &[TopLevel]) -> HashMap<String, f64> {
     }
     m
 }
+/// Test-only deterministic dump of the whole schedule. HashMap fields render
+/// through a sorted view so process seed order never leaks into a verdict.
+#[cfg(test)]
+pub(crate) fn canonical_schedule(s: &GpuSchedule) -> BTreeMap<String, String> {
+    let sorted_map = |m: &HashMap<String, String>| {
+        let b: BTreeMap<&String, &String> = m.iter().collect();
+        format!("{b:?}")
+    };
+    let mut out = BTreeMap::new();
+    out.insert("order".to_string(), format!("{:?}", s.order));
+    out.insert("independent".to_string(), format!("{:?}", s.independent));
+    out.insert("edges".to_string(), format!("{:?}", s.edges));
+    out.insert("reads".to_string(), format!("{:?}", s.reads));
+    out.insert("writes".to_string(), format!("{:?}", s.writes));
+    out.insert("fusions".to_string(), format!("{:?}", s.fusions));
+    out.insert(
+        "array_last_use".to_string(),
+        sorted_map(&s.array_last_use),
+    );
+    out.insert(
+        "array_first_use".to_string(),
+        sorted_map(&s.array_first_use),
+    );
+    out.insert(
+        "reuse_opportunities".to_string(),
+        format!("{:?}", s.reuse_opportunities),
+    );
+    out.insert("chain_fusion".to_string(), format!("{:?}", s.chain_fusion));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

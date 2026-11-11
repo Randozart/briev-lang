@@ -242,6 +242,24 @@ fn state_arrays(items: &[TopLevel]) -> HashMap<String, (Type, i64)> {
     out
 }
 
+/// Test-only deterministic dump: transaction → its plans in array order.
+#[cfg(test)]
+pub(crate) fn canonical_plans(
+    plans: &HashMap<String, Vec<ImageStoragePlan>>,
+) -> std::collections::BTreeMap<String, String> {
+    plans
+        .iter()
+        .map(|(txn, ps)| {
+            let mut items: Vec<String> = ps
+                .iter()
+                .map(|p| format!("{}:{}x{}:{}", p.array, p.width, p.height, p.format))
+                .collect();
+            items.sort();
+            (txn.clone(), items.join(";"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
