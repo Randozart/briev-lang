@@ -1074,6 +1074,12 @@ defn slice_f32_strided_copy(data: Int, obuf: Int, l: Int, s: Int, len: Int, i: I
     term slice_f32_strided_copy(data, obuf, l, s, len, i + 1);
 };
 
+// request-scoped coll backing arena (generic coll storage policy)
+frgn coll_arena_begin(bytes: Int) -> Void from "std/c/coll_arena.c";
+frgn coll_arena_reset() -> Void from "std/c/coll_arena.c";
+frgn coll_arena_end() -> Void from "std/c/coll_arena.c";
+frgn coll_alloc(bytes: Int) -> Int from "std/c/coll_arena.c";
+
 // coll_resize — grow a coll handle's [data, cap, len] block to
 // new_cap word-elements. Arena semantics: the old buffer is NOT freed
 // (retired until arena reset); new_cap == 0 just clears the fields.
@@ -1092,7 +1098,7 @@ out defn coll_resize(handle: Int, new_cap: Int)
         Store#(handle + 8, 0, 8);
         term 0;
     };
-    let nd: Int = Alloc#(8 * new_cap) as Int;
+    let nd: Int = coll_alloc(8 * new_cap);
     let copy_n: Int = coll_min(old_cap, new_cap);
     when copy_n > 0 {
         Copy#(nd, old_data, 8 * copy_n);
