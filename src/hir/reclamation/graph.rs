@@ -47,6 +47,7 @@ pub(super) struct Graph {
     pub(super) escaped: BTreeSet<Node>,
     pub(super) unsupported: BTreeSet<String>,
     pub(super) incoming_store_owners: BTreeSet<String>,
+    pub(super) unmodeled_helpers: BTreeSet<String>,
     pub(super) publish_receiver_param: BTreeMap<String, String>,
     pub(super) publish_call_args: BTreeMap<String, Vec<(String, Option<Node>)>>,
 }
@@ -80,6 +81,7 @@ impl Default for Graph {
             escaped: BTreeSet::new(),
             unsupported: BTreeSet::new(),
             incoming_store_owners: BTreeSet::new(),
+            unmodeled_helpers: BTreeSet::new(),
             publish_receiver_param: BTreeMap::new(),
             publish_call_args: BTreeMap::new(),
         }

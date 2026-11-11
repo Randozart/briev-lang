@@ -374,6 +374,8 @@ impl Builder<'_> {
                 let value = self.expression(value);
                 if let Some(target) = target {
                     let target = self.expression(target);
+                    let backing = self.graph.allocation(self.owner);
+                    self.graph.constraints.push(Constraint::Store(target, backing));
                     self.graph.constraints.push(Constraint::Store(target, value));
                 }
             }
@@ -1258,6 +1260,25 @@ impl Builder<'_> {
         result
     }
 
+    fn intrinsic_helper_effects(&mut self, intrinsic: &str, args: &[Node], result: Node) {
+        let helpers = crate::analysis::defn_liveness::intrinsic_helpers(intrinsic);
+        if helpers.is_empty() { return; }
+        let arguments = self.graph.unknown_value();
+        for arg in args { self.graph.copy(*arg, arguments); }
+        for helper in helpers { self.record_helper_effect(helper, arguments, result); }
+    }
+
+    fn record_helper_effect(&mut self, helper: &str, arguments: Node, result: Node) {
+        let Some(callable) = self.graph.callables.get(helper).cloned() else {
+            self.graph.unmodeled_helpers.insert(self.owner.into());
+            return;
+        };
+        self.graph.callables.get_mut(self.owner).unwrap().calls.insert(helper.into());
+        for param in callable.params { self.graph.copy(arguments, param); }
+        self.graph.copy(callable.result, result);
+        build_owner(self.graph, helper);
+    }
+
     fn record_publish_call(&mut self, target: &str, arguments: &[HirExpr]) {
         let Some(receiver) = self.graph.publish_receiver_param.get(target).cloned() else { return };
         let Some(index) = self.graph.bodies.get(target).and_then(|(params, _)| {
@@ -1396,6 +1417,7 @@ impl Builder<'_> {
 
     fn intrinsic_or_unknown(&mut self, name: &str, args: &[Node]) -> Node {
         let result = self.graph.unknown_value();
+        self.intrinsic_helper_effects(name, args, result);
         match name {
             "Alloc#" | "Malloc#" => {
                 if args.len() != 1 {
