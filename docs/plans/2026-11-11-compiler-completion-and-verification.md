@@ -259,3 +259,26 @@ oracle armed; release A/B byte-identical; determinism clean.
 
 **R is complete.** Next: V2 wasm corpus gate, P4 seeds, P6 cvise wrapper, P7
 additions; then the large H5 ports.
+
+**Region HIR port (2026-11-11, port DONE; consumer flip pending).**
+`src/hir/region.rs` is an HIR-native port of the reactive-region analysis:
+declarations/constants/triggers, dependence + rev-dependence, frontier
+classification, regions/components, value-set sizing, linear chains,
+iteration bounds, region scoring, budget planning, chain composition, final
+value precomputation. AST-vs-HIR parity: 16 tests. `compute_link_vars` now
+sorts shared write candidates (the AST path previously chose by HashSet
+order, so composed-body substitution could vary per process).
+
+The consumer is NOT flipped yet: `AnalysisResults.region_analyzer` is typed
+as the AST analyzer and the LLVM backend calls `collect_final_values(&items)`;
+the flip needs the HIR program threaded through `AnalysisResults` and the
+`collect_final_values` call site. That is the next region slice.
+
+**Parallel-work checkpoint (2026-11-11).** Committed the in-progress
+body-verification lane (`analysis/verify_bodies.rs` + plan) and its analysis
+refactors on owner instruction. The checkpoint did not build: it called
+`combine_and`/`combine_or` before defining them. Added the Kleene helpers
+(violated conjunct refutes; one proven disjunct proves; otherwise undecided).
+Region was then integrated on top with a single `compute_link_vars` conflict
+resolved to the deterministic version. Gates: quick 41/41; region 16; sweep
+143/0; release A/B byte-identical.
