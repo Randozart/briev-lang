@@ -318,3 +318,30 @@ aggregate-returning helpers.
   emitted (undefined `@face_cached`/`@empty_xs`), so the daemon reparses per
   request and RSS still grows. Next: cache the parsed graph without relying
   on unsupported globals, or make parser graph/list allocations arena-backed.
+
+## 11. Stateful object-return ABI — the active fix (2026-11-11)
+
+Evidence: adding a node-body `Alloc#` (arena block) to the ONNX test/daemon
+makes stateful parser helpers return a corrupted `OnnxValue`: the input name
+reads as `pkg.torch.onnx.original_node_name` (a metadata key) instead of `x`,
+and models with initializers fail with “node input not found”. Removing the
+node `Alloc#` restores `x`. The corruption happens before execution, at
+`parse_model_at` output, so it is the stateful object-return path, not tensor
+math.
+
+Constraints:
+- Plain stateful functions returning scalar-field objects work.
+- Stateful functions returning objects with String/List fields work at small
+  `%State` sizes.
+- The failure appears when the program also allocates an arena block in the
+  node body (larger `%State`, extra stateful helpers).
+
+Fix protocol:
+1. Reduce to a minimal stateful function returning a String/List object plus a
+   node-body `Alloc#`; confirm corruption.
+2. Inspect emitted signatures and call sites for `%state`/sret ordering,
+   especially stateful defns with object returns and callers that are
+   themselves stateful/stateless.
+3. Fix the ABI (state pointer must be the stable first argument; object
+   returns use the same sret/handle convention regardless of state), add a
+   regression, then re-enable plain `Alloc#` for the tensor arena block.
