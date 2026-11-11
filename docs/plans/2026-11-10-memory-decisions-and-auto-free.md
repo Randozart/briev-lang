@@ -443,3 +443,20 @@ backing, String results, Result/enum temporaries, and their allocator
 reuse/fragmentation. The next slice must own **List/String temporaries**:
 fixed-capacity executor env (no per-node List copy) and arena-backed response
 building, before another compiler-wide allocator attempt.
+
+### 10.6 Fixed-capacity executor Env — blocked by generic-field typing
+
+Attempted the next slice: `Env { items: List<Tensor>; count }` pre-sized to
+512 `tensor_empty()` entries, append by index, no per-node List copy.
+
+The typechecker rejected the shape before codegen:
+
+- `items <- tensor_empty()` inside the constructor reported
+  “expected Env for arrow assignment, found Tensor”;
+- `env_find(env, …)` then saw a `List<Tensor>` instead of `Env`.
+
+This is a generic-field/type-inference failure for object fields holding
+parameterized containers, not a runtime issue. Reverted; no kiosk change.
+Next prerequisite: make the typechecker carry the field's declared
+`List<Tensor>`/`Stack<Tensor,N>` type through construction and arrows, then
+retry the fixed Env and the RSS soak.
