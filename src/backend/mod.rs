@@ -472,7 +472,18 @@ pub fn analyze_program(
         ast_task_segments(items, &spawn_targets)
     };
     let module_metadata = collect_module_metadata(items);
-    let accel = crate::analysis::accel::analyze(items, type_universe, accel_mode);
+    let accel = if hir_emit_enabled() {
+        let ast = crate::analysis::accel::analyze(items, type_universe, accel_mode);
+        let h = crate::hir::accel::analyze(&hir, type_universe, accel_mode);
+        debug_assert_eq!(
+            crate::analysis::accel::canonical_entries(&h),
+            crate::analysis::accel::canonical_entries(&ast),
+            "HIR/AST accel-entry drift"
+        );
+        h
+    } else {
+        crate::analysis::accel::analyze(items, type_universe, accel_mode)
+    };
     // 2026-09-18 (M3.5, plan coalesced-kv-memory-path): the coalescing
     // analysis — under the analysis-transparency doctrine the compiler
     // must show what the fastest code would be. Advisory only: layout is

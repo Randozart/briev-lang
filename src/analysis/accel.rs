@@ -1997,6 +1997,16 @@ pub(crate) fn canonical_entry(entry: &AccelEntry) -> String {
     format!("{entry:#?}")
 }
 
+/// Deterministic whole-map canonicalisation for the HIR consumer oracle.
+pub(crate) fn canonical_entries(
+    entries: &HashMap<String, AccelEntry>,
+) -> std::collections::BTreeMap<String, String> {
+    entries
+        .iter()
+        .map(|(name, entry)| (name.clone(), canonical_entry(entry)))
+        .collect()
+}
+
 /// Test-only AST dump: analyze `items`, then canonicalize by transaction name.
 #[cfg(test)]
 pub(crate) fn entries_for_test(
