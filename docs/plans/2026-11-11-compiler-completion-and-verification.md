@@ -164,7 +164,59 @@ Added to the quick gate (~16 s).
   globals closed; state and non-literal globals open; no globals closed).
   The test-only AST wrapper lives in `analysis::reclamation`.
 
-**Next R slices:** port `walk::register` facts (bodies, generics, results,
-methods, entry nodes, default-encoding targets, globals/enums/typedefs), then
-constraints/build_owner, solver, plan absorption; flip the consumer only when
-the whole plan compares equal.
+**2026-11-11 — R2 (registration facts) DONE for the structural subset.**
+`hir::reclamation::registration_facts` mirrors `walk::register` for bodies
+(names, params, txn +2 for pre/post), generics (generic defns stay out of
+bodies), return types, entry nodes (`is_reactive`), async-unsupported, and
+globals/types (lets, `state`, constants). A test-only AST snapshot in
+`analysis::reclamation` proves equality on callable and global fixtures
+(plain/exported/generic defns, reactive node, async txn; let/state/const;
+enum constructors; user-operator types via the new
+`HirTypeDef.has_user_operators`; the method alias map, including synthetic
+`Owner::member` bodies/return types for explicit receivers). Remaining before
+constraints: default-encoding targets (populated during the AST cast walk, so
+they move with the constraint port).
+
+**Next R slices (constraints port checklist).** The registration facts are
+done; this is the ordered map for `walk::Builder` → HIR:
+
+1. **Graph API to mirror**: `node/root/unknown_value/global/allocation/copy/
+   load/constructor_key`, `constraints`, `points/constants/inexact_constants`,
+   `memory`, `callables/bodies`, `generics` + `specialize/mangle`, `methods` +
+   `method_target`, user-operator/encoding sets, publish fields
+   (`incoming_store_owners`, `publish_receiver_param`, `publish_call_args`),
+   `unsupported`/`capture`, and the casting lanes
+   (`casts.type_to_protocol/find_path/LaneKind`).
+2. **Builder methods in order**: `statement` (Let/Assign/Term/Tail/Expression/
+   Check/Gate/Guarded/Block/SyncBlock/Mutex/Defer/Foreach/Match/ArrowAssign/
+   EndProgram/Rollback/KeepHint), `statement_match/pattern*`, `assign*` +
+   `record_incoming_store`, `expression` (all AST variants incl.
+   StructLiteral/List/Tuple/Slice/Index/Field/Deref/Cast/MethodCall/Consume/
+   AddrOf/IsType/Unary/Binary/Reflect/If/Match/Block/Range), `call/
+   method_call/call_nodes/intrinsic_or_unknown/cast/cast_lane/binary/unary/
+   generic_result/specialize/free_member_target/method_target`, and
+   `value_allocates/alloc_bindings`, `propagate_incoming_store`,
+   `record_publish_call`, `projection_root_and_path`, `expression_allocates`.
+3. **Parity harness first**: a test-only AST dump of per-owner constraints
+   (ordered `Constraint` debug strings) + callable-call sets, compared against
+   the HIR walk on fixtures that grow from scalars → allocations → publishes →
+   casts → generics → methods. Only then port `solve()`/`plan()` absorption.
+4. **Consumer flip** (`analyze_program` reclamation) only when the full plan
+   compares equal under `BRIEV_HIR_EMIT`, with the AST plan as the oracle.
+
+**2026-11-11 — R3 (constraints + Graph/solver) LANDED.**
+`src/hir/reclamation/graph.rs` mirrors the AST Graph (nodes/points/constants/
+memory, callables, constraints, publish fields, casting lanes, specialisation,
+solver, plan). `src/hir/reclamation/walk.rs` ports `Builder` (statements,
+patterns, assign/projection stores, publish recording/propagation,
+alloc_bindings, calls/intrinsics, casts, generics, methods). A test-only AST
+constraint dump (`analysis::reclamation::constraints_for_test`) proves ordered
+constraint + call-edge equality on 13 fixtures: scalars, allocations,
+struct/list/tuple/slice/index/field, Print# capture, branches/matches,
+user calls + recursion, generics, explicit/free-receiver methods, blocks,
+user operators, nested field stores, publish propagation, casts. Praetor
+clean after splitting registration/expression/expression_type helpers.
+
+**Next R slice:** plan-level parity (run the HIR Graph `solve/plan` and compare
+`ReclamationPlan` with the AST result on the same fixtures) and then flip the
+`analyze_program` consumer under `BRIEV_HIR_EMIT` with a debug oracle.
