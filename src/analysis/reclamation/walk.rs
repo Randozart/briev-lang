@@ -257,6 +257,15 @@ impl Builder<'_> {
                 let value = self.expression(value);
                 if let Some(target) = target {
                     let target = self.expression(target);
+                    // 2026-11-11: `<-` on a collection grows its backing store
+                    // through the backend's resize helper (a barrier). Model the
+                    // fresh backing store as an allocation of this callable and
+                    // store it through the handle, so its escape behavior matches
+                    // the helper's without importing the helper's copy of the old
+                    // contents (which would alias unrelated local payloads).
+                    let backing = self.graph.allocation(self.owner);
+                    self.graph.growers.insert(self.owner.into());
+                    self.graph.constraints.push(Constraint::Store(target, backing));
                     self.graph.constraints.push(Constraint::Store(target, value));
                 }
             }
@@ -861,6 +870,7 @@ impl Builder<'_> {
 
     fn intrinsic_or_unknown(&mut self, name: &str, args: &[Node]) -> Node {
         let result = self.graph.unknown_value();
+        self.intrinsic_helper_effects(name, args, Some(result));
         match name {
             "Alloc#" | "Malloc#" => {
                 if args.len() != 1 { self.unsupported(); }
@@ -888,6 +898,30 @@ impl Builder<'_> {
             }
         }
         result
+    }
+
+    /// 2026-11-11: include backend-inserted helper effects from the shared
+    /// intrinsic-helper registry. That registry carries no positional ABI
+    /// mapping, so a union of the intrinsic's arguments conservatively feeds
+    /// every helper parameter and the helper result feeds the intrinsic result.
+    /// A helper whose body is unavailable rejects closed-call ownership.
+    fn intrinsic_helper_effects(&mut self, intrinsic: &str, args: &[Node], result: Option<Node>) {
+        let helpers = crate::analysis::defn_liveness::intrinsic_helpers(intrinsic);
+        if helpers.is_empty() { return; }
+        let arguments = self.graph.unknown_value();
+        for arg in args { self.graph.copy(*arg, arguments); }
+        for helper in helpers { self.record_helper_effect(helper, arguments, result); }
+    }
+
+    fn record_helper_effect(&mut self, helper: &str, arguments: Node, result: Option<Node>) {
+        let Some(callable) = self.graph.callables.get(helper).cloned() else {
+            self.graph.unmodeled_helpers.insert(self.owner.into());
+            return;
+        };
+        self.graph.callables.get_mut(self.owner).unwrap().calls.insert(helper.into());
+        for param in callable.params { self.graph.copy(arguments, param); }
+        if let Some(result) = result { self.graph.copy(callable.result, result); }
+        build_owner(self.graph, helper);
     }
 
     fn capture(&mut self, args: &[Node]) {
