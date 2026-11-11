@@ -170,17 +170,7 @@ pub struct CastingGraph {
 impl CastingGraph {
     /// Create a new casting graph seeded with all base protocol lanes.
     pub fn new() -> Self {
-        let mut graph = CastingGraph {
-            base_lanes: HashMap::new(),
-            variant_edges: HashMap::new(),
-            variant_reverse: HashMap::new(),
-            defaults: HashMap::new(),
-            cast_from_bit_overrides: HashMap::new(),
-            protocol_llvm_types: HashMap::new(),
-            protocol_spirv_types: HashMap::new(),
-            inverse_pairs: HashSet::new(),
-            variant_cross_ops: HashMap::new(),
-        };
+        let mut graph = Self::unseeded();
         graph.seed_base_lanes();
         graph.seed_defaults();
         graph.seed_protocol_llvm_types();
@@ -192,6 +182,21 @@ impl CastingGraph {
         graph.set_spirv_type("Float", "", SpirvTypeResolver::FloatWidth);
         graph.set_spirv_type("Bool", "", SpirvTypeResolver::Fixed(SpirvScalar::Bool));
         graph
+    }
+
+    /// Empty metadata for constraint-only proofs; normal compilation uses new().
+    pub(crate) fn unseeded() -> Self {
+        CastingGraph {
+            base_lanes: HashMap::new(),
+            variant_edges: HashMap::new(),
+            variant_reverse: HashMap::new(),
+            defaults: HashMap::new(),
+            cast_from_bit_overrides: HashMap::new(),
+            protocol_llvm_types: HashMap::new(),
+            protocol_spirv_types: HashMap::new(),
+            inverse_pairs: HashSet::new(),
+            variant_cross_ops: HashMap::new(),
+        }
     }
 
     /// Seed all 64 base protocol → base protocol lanes.

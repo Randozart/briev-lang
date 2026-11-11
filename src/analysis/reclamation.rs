@@ -118,7 +118,13 @@ struct Graph {
 
 impl Default for Graph {
     fn default() -> Self {
-        Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
+        Self::with_metadata(crate::type_universe::TypeUniverse::new(), crate::casting::graph::CastingGraph::new())
+    }
+}
+
+impl Graph {
+    fn with_metadata(universe: crate::type_universe::TypeUniverse, casts: crate::casting::graph::CastingGraph) -> Self {
+        Self { universe, casts,
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
             globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new(), unmodeled_helpers: BTreeSet::new(), growers: BTreeSet::new() }
@@ -494,7 +500,14 @@ mod kani_full_tests {
     #[kani::proof]
     #[kani::unwind(256)]
     fn external_storage_publication_remains_boundary_reachable() {
-        let mut graph = Graph::default();
+        // 2026-11-11: this invariant concerns memory constraints, not metadata
+        // registration. Avoid expanding unrelated registry hashing/config I/O
+        // into CBMC; all propagation and reachability below are production code.
+        let universe = crate::type_universe::TypeUniverse {
+            types: Default::default(), warnings: Vec::new(),
+            pending_member_errors: Default::default(),
+        };
+        let mut graph = Graph::with_metadata(universe, crate::casting::graph::CastingGraph::unseeded());
         let incoming = graph.root();
         graph.external_storage(incoming);
         let member = graph.node();

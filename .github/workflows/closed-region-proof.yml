@@ -13,6 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm lld spirv-tools valgrind
+          mkdir -p /tmp/opencode
+      - uses: Swatinem/rust-cache@v2
+      - name: Library and ownership regressions
+        run: cargo test --lib --test reclamation_runtime -- --test-threads=2
   proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
