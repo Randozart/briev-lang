@@ -460,3 +460,20 @@ parameterized containers, not a runtime issue. Reverted; no kiosk change.
 Next prerequisite: make the typechecker carry the field's declared
 `List<Tensor>`/`Stack<Tensor,N>` type through construction and arrows, then
 retry the fixed Env and the RSS soak.
+
+### 10.7 Fixed Env via List prefill — compiled, but slower leak
+
+Fixed the earlier typechecker report (it was our stale `env <- y` in
+`split_into`, not a generic-field bug). `MlEnv { entries: List<Tensor>;
+count }` with 512 prefilled empty tensors compiled and passed tiny-model
+parity.
+
+Soak was **worse**: 144→220 MB over 200 calls (~0.5 MB/call vs ~0.22).
+List index assignment/arrow on the field appears to copy/reallocate the
+512-slot backing per node, multiplying the copies the List design already
+did. Reverted.
+
+This closes the application-level options: per-node env cannot be made
+copy-free with the current List representation, and allocation hooks lack
+base/size provenance. The next slice is compiler-owned storage for
+List/String (owned handle with base+cap+len), not another executor workaround.
