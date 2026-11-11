@@ -114,8 +114,17 @@ ledger. Rides on:
    backend computes HIR shapes by default with a `debug_assert_eq!` plan
    oracle. Parity: post-increment and rejected-shape fixtures; sweep 143/0
    with the oracle; A/B byte-identical; determinism clean.
-2. `accel` → `coalescing` + `image_storage`; `gpu_schedule`; `region`;
-   `electronics` (largest; follow the same parity-then-flip recipe).
+2. **`accel` HIR port — DONE (2026-11-11).** `src/hir/accel.rs` mirrors the
+   shape analysis (bound proof, partition, buffer contracts, flat-type proof,
+   launch geometry, reductions, Dot/Sum/Product/Min/Max folds, softmax rows,
+   deferred normalize, const extraction, mode/decision) over HIR. Payload
+   fields (`kernel_stmts`, `host_stmts`, `count_expr`, reduction/normalize
+   ends) cross `to_ast` once at the result boundary; every shape fact is
+   HIR-derived and an unrepresentable payload marks the kernel ineligible.
+   `HirCallable.modifiers` fidelity added. The backend consumes HIR accel
+   entries by default with a deterministic canonical-entry debug oracle
+   (8 parity tests). Remaining in this family: `coalescing`, `image_storage`,
+   `gpu_schedule` (their own AST scans), then `region`, `electronics`.
 3. Debt meters: `to_ast::` and `hir_emit_enabled()` may only shrink after the
    opt-out release; AST arms deleted family-by-family.
 
