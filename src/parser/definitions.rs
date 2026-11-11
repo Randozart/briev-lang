@@ -120,6 +120,8 @@ impl<'a> Parser<'a> {
             // law — `G ⟹ facts`, the compiler makes it so. (Inside a
             // defn/node/txn body, `when` stays the runtime guard.)
             Some(Token::Hold) => self.parse_top_level_hold_law(),
+            // 2026-11-10 (SPEC §8.11): `test domain { … };`
+            Some(Token::Test) => self.parse_test_block(),
             // Hard cut: the law head is `hold`; top-level `when` is a
             // wrong-keyword error with the fix.
             Some(Token::When) => self.error_at_current(
@@ -2388,6 +2390,20 @@ impl<'a> Parser<'a> {
     /// new grammar); the arm is stripped out of `facts` so the fact-law
     /// consumers see an empty list. A lifecycle law carries EXACTLY ONE arm
     /// — anything else is a fact law (unchanged path).
+    /// `test domain { statement* };` (SPEC §8.11). The domain is a bare
+    /// identifier label; the body is typechecked but never emitted.
+    fn parse_test_block(&mut self) -> Result<TopLevel, SyntaxError> {
+        self.pos += 1; // consume 'test'
+        let domain = self.expect_identifier()?;
+        let body = self.parse_block()?;
+        self.eat(&Token::Semicolon);
+        Ok(TopLevel::TestBlock(crate::ast::top::TestBlock {
+            domain,
+            body,
+            span: None,
+        }))
+    }
+
     fn parse_top_level_hold_law(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'hold'
         let guard = self.parse_expression()?;

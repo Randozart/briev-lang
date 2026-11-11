@@ -83,16 +83,16 @@ and compare with the interpreter, P3), `expect_trap { … }`,
 
 ## Phases
 
-1. **Surface** — `Token::Test`, `Token::Expect`; `TopLevel::TestBlock
+1. **Surface — DONE (2026-11-10)** — `Token::Test`, `Token::Expect`; `TopLevel::TestBlock
    { domain, body, span }`; `Statement::Expect(Expr)`; parser; Display/
    canonical/visitors/diff arms; vocab ledger + version; highlighter; SPEC
    (done in this commit).
-2. **Typecheck** — non-reactive test scope, Bool `expect`, reject forbidden
+2. **Typecheck — DONE (2026-11-10)** — non-reactive test scope, Bool `expect`, reject forbidden
    forms; explicit skip arms in HIR lowering and every analysis; liveness must
    ignore tests.
-3. **Engine + CLI** — `src/test_engine.rs`, `brievc test` integration,
+3. **Engine + CLI — DONE (2026-11-10)** — `src/test_engine.rs`, `brievc test` integration,
    `--domain`/`--list-tests`, isolation, reporting.
-4. **Verification** — parser/typecheck negatives; engine pass/fail/isolation;
+4. **Verification — DONE (2026-11-10)** — parser/typecheck negatives; engine pass/fail/isolation;
    CLI golden; IR-equality-with/without-tests gate; no-liveness-delta gate.
 5. **Docs** — `learn-briev` testing guide, `docs/guides/`, INDEX entry.
 
@@ -101,3 +101,19 @@ and compare with the interpreter, P3), `expect_trap { … }`,
 `scripts/gate.sh quick`; `cargo test --all`; IR-equality (`.ll` with vs
 without the test block); determinism of report order; Praetor on changed
 dirs; docs in the same commits.
+
+## Execution record (2026-11-10)
+
+- Surface: `Token::{Test,Expect}`; `TopLevel::TestBlock`; `Statement::Expect`;
+  parser (`test domain { … }`, `expect expr;`); Display/canonical/visitors/
+  diff/annotator arms; vocab + highlighter + MASTER-SYNTAX-REFERENCE.
+- Typecheck: test bodies typecheck in global scope; `expect` must be Bool;
+  `term`/`tail`/`endprogram` are rejected with `MisplacedInTest`. Tests are
+  skipped by normalizer, analyses, HIR lowering, and emission.
+- Engine: `src/test_engine.rs` compiles to typed AST, strips tests for
+  seeding, runs each block in a fresh interpreter (`--domain` filter,
+  `domain#n` labels). `brievc test` flags: `--tests-only`, `--list-tests`,
+  `--domain`; existing program checks are preserved otherwise.
+- Verification: `tests/unit_test_blocks.rs` (pass/fail/exit, isolation,
+  filter/list, non-Bool rejection, reactive rejection, `:=` untouched) plus an
+  IR-equality gate: a program with a test block emits byte-identical `.ll`.

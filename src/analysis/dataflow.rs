@@ -174,6 +174,7 @@ impl<'a> DataflowAnalyzer<'a> {
     fn extract_ids_from_statement(&self, stmt: &Statement, ids: &mut HashSet<String>) {
         match stmt {
             Statement::Yield => {}
+            Statement::Expect(e) => self.extract_ids_recursive(e, ids),
             Statement::Check(e) => {
                 if let crate::ast::Expr::Identifier(n) = e {
                     ids.insert(n.clone());

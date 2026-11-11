@@ -411,6 +411,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             is_coll: def.coll,
             traits: def.traits.clone(),
             op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        has_user_operators: has_user_operators(def),
             binding_fns: binding_fns(def),
             span: def.span,
         });
@@ -438,8 +439,18 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         is_coll: def.coll,
         traits: def.traits.clone(),
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
         span: def.span,
+    })
+}
+
+/// Mirrors `analysis::reclamation::walk::register_typedef`: an op binding is a
+/// user operator when its expression is not a call to a known intrinsic.
+fn has_user_operators(def: &crate::ast::TypeDef) -> bool {
+    def.body.op_bindings.iter().any(|binding| {
+        !matches!(&binding.expr, Expr::Call(name, _, _)
+            if crate::intrinsic_signatures::get_intrinsic_signature(name).is_some())
     })
 }
 
@@ -467,6 +478,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         is_coll: def.coll,
         traits: def.traits.clone(),
         op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
         span: def.span,
     }
@@ -501,6 +513,7 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         kind: HirTypeDefKind::Enum { variants },
         protocol: None,
         is_coll: false,
+        has_user_operators: false,
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
@@ -526,6 +539,7 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         },
         protocol: None,
         is_coll: false,
+        has_user_operators: false,
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
@@ -551,6 +565,7 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         },
         protocol: None,
         is_coll: false,
+        has_user_operators: false,
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),

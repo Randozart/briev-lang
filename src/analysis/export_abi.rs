@@ -506,6 +506,7 @@ fn stmt_needs_state(
     // Every expression-bearing variant must be visited, not just the body.
     let any_expr = |e: &Expr| expr_needs_state(e, regular, txns, state_fields, always_stateful, locals, needs);
     match stmt {
+        Statement::Expect(e) => any_expr(e),
         Statement::Term(opt)
         | Statement::EndProgram(opt)
         | Statement::Rollback(opt) => {

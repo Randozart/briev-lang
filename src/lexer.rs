@@ -345,6 +345,13 @@ pub enum Token {
     #[token("when")]
     When,
 
+    /// 2026-11-10: `test domain { expect <bool>; … };` — a top-level
+    /// test declaration (SPEC §8.11). `expect` is its assertion statement.
+    #[token("test")]
+    Test,
+    #[token("expect")]
+    Expect,
+
     /// 2026-11-09: static obligation law head — `hold G { facts }` at top
     /// level and in obj/type bodies; `hold cond { … } through Type;` for an
     /// electronics mechanism. `when` keeps the runtime-guard meaning.
@@ -725,6 +732,8 @@ impl std::fmt::Display for Token {
             Token::Input => write!(f, "input"),
             Token::Output => write!(f, "output"),
             Token::When => write!(f, "when"),
+            Token::Test => write!(f, "test"),
+            Token::Expect => write!(f, "expect"),
             Token::Hold => write!(f, "hold"),
             Token::FatArrow => write!(f, "=>"),
             Token::Eq => write!(f, "="),

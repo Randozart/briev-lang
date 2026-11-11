@@ -441,6 +441,7 @@ pub fn stmt_tag(stmt: &Statement) -> &str {
     match stmt {
         Statement::Yield => "yield",
         Statement::Check(_) => "check",
+        Statement::Expect(_) => "expect",
         Statement::Let { .. } => "let",
         Statement::Assign(_, _) => "assign",
         Statement::ArrowAssign { .. } => "arrow",

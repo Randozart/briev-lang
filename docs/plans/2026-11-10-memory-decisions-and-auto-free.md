@@ -318,3 +318,47 @@ aggregate-returning helpers.
   emitted (undefined `@face_cached`/`@empty_xs`), so the daemon reparses per
   request and RSS still grows. Next: cache the parsed graph without relying
   on unsupported globals, or make parser graph/list allocations arena-backed.
+
+## 11. Stateful object-return ABI — the active fix (2026-11-11)
+
+Evidence: adding a node-body `Alloc#` (arena block) to the ONNX test/daemon
+makes stateful parser helpers return a corrupted `OnnxValue`: the input name
+reads as `pkg.torch.onnx.original_node_name` (a metadata key) instead of `x`,
+and models with initializers fail with “node input not found”. Removing the
+node `Alloc#` restores `x`. The corruption happens before execution, at
+`parse_model_at` output, so it is the stateful object-return path, not tensor
+math.
+
+Constraints:
+- Plain stateful functions returning scalar-field objects work.
+- Stateful functions returning objects with String/List fields work at small
+  `%State` sizes.
+- The failure appears when the program also allocates an arena block in the
+  node body (larger `%State`, extra stateful helpers).
+
+Fix protocol:
+1. Reduce to a minimal stateful function returning a String/List object plus a
+   node-body `Alloc#`; confirm corruption.
+2. Inspect emitted signatures and call sites for `%state`/sret ordering,
+   especially stateful defns with object returns and callers that are
+   themselves stateful/stateless.
+3. Fix the ABI (state pointer must be the stable first argument; object
+   returns use the same sret/handle convention regardless of state), add a
+   regression, then re-enable plain `Alloc#` for the tensor arena block.
+
+### 11.1 Resolution — parser metadata descent, not object-return ABI
+
+The reduction changed the diagnosis. A stateful function returning an object is
+fine in isolation; the corruption came from `parse_value_name_loop` continuing
+past the ValueInfo type and walking `metadata_props` (`field 4`). Under the
+arena/stateful layout that skip path descended into nested entries, so a
+metadata key became the input name. `parse_value_name_loop` now terminates
+after the type and graph strings are owned copies (`owned_string`), so graph
+names no longer alias the model buffer.
+
+Regression: `tests/ml/parser_arena.bv` allocates a node-body `Alloc#` and
+asserts the graph input name is `x`; `harness/ml_smoke.sh` runs it. The tensor
+arena block now uses plain `Alloc#()` and the compiler selects the tick arena.
+Daemon RSS still grows because parser List/graph allocations are not all
+arena-backed and the graph is reparsed per request; that is the next runtime
+work, not an ABI blocker.

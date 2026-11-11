@@ -913,6 +913,8 @@ impl<'a> Parser<'a> {
             Token::Sync => "sync".into(),
             Token::Underscore => "_".into(),
             Token::When => "when".into(),
+            Token::Test => "test".into(),
+            Token::Expect => "expect".into(),
             Token::Hold => "hold".into(),
             Token::Cyc => "cyc".into(),
             Token::Ms => "ms".into(),

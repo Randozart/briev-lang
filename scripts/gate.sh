@@ -28,7 +28,7 @@ case "$mode" in
     if [ "$have_nextest" = 1 ]; then
       cargo nextest run --lib -j 4 -E 'not test(conformance_sweep)'
       cargo nextest run -j 4 -E \
-        'binary(diagnostics) | binary(hir_snapshots) | binary(hold_law) | binary(publish_reclamation) | binary(deterministic_transitions)'
+        'binary(diagnostics) | binary(hir_snapshots) | binary(hold_law) | binary(publish_reclamation) | binary(deterministic_transitions) | binary(unit_test_blocks) | binary(interpreter_corpus_parity) | binary(hir_reclamation_parity)'
     else
       cargo test --lib -- --skip conformance_sweep
       cargo test --test diagnostics --test hir_snapshots --test hold_law \

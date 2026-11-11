@@ -1013,6 +1013,7 @@ fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String
     for stmt in stmts {
         match stmt {
             Statement::Expression(expr)
+            | Statement::Expect(expr)
             | Statement::Let { expr: Some(expr), .. } => {
                 collect_state_identifiers(expr, state_fields, out);
             }

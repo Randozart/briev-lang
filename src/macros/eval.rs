@@ -2104,6 +2104,7 @@ fn nav_value_to_expr(val: &NavValue) -> Result<Expr, String> {
 fn resolve_dollar_refs_in_stmt(stmt: &mut Statement, scope: &Scope) -> Result<(), String> {
     match stmt {
         Statement::Yield => Ok(()),
+        Statement::Expect(e) => resolve_dollar_refs_in_expr(e, scope),
         Statement::Check(_) => Ok(()),
         Statement::Let { expr, .. } => {
             if let Some(e) = expr {
@@ -2217,6 +2218,12 @@ fn resolve_dollar_refs_in_type(ty: &mut Type, scope: &Scope) -> Result<(), Strin
 fn resolve_dollar_refs_in_toplevel(tl: &mut TopLevel, scope: &Scope) -> Result<(), String> {
     match tl {
         TopLevel::Statement(stmt) => resolve_dollar_refs_in_stmt(stmt, scope),
+        TopLevel::TestBlock(t) => {
+            for stmt in &mut t.body {
+                resolve_dollar_refs_in_stmt(stmt, scope)?;
+            }
+            Ok(())
+        }
         TopLevel::StaticStruct(_) | TopLevel::Trait(_) | TopLevel::Impl(_) => Ok(()),
         // 2026-09-21 (E7): electronics-surface statement — no $-refs to
         // resolve (same conservative skip as Trigger).

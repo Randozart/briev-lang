@@ -234,6 +234,7 @@ impl LlvmBackend {
     pub(super) fn rewrite_cell_stmt_identifiers(stmt: &Statement, cell_name: &str) -> Statement {
         match stmt {
             Statement::Yield => stmt.clone(),
+            Statement::Expect(e) => Statement::Expect(Self::rewrite_cell_identifiers(e, cell_name)),
             Statement::Check(_) => stmt.clone(),
             Statement::Assign(lhs, expr) => Statement::Assign(
                 Self::rewrite_cell_identifiers(lhs, cell_name),

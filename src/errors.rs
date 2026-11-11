@@ -349,6 +349,9 @@ pub enum TypeError {
     BreakOutsideLoop {
         span: Span,
     },
+    /// 2026-11-10 (SPEC §8.11): a reactive/terminating construct inside a
+    /// `test` block. Tests are straight-line statements; call a defn instead.
+    MisplacedInTest { construct: String },
     /// 2026-11-09: `hold` in a reactive body. A `hold` body declares facts
     /// under a condition by obligation; the software pipeline only enforces
     /// laws at top level or in obj/type bodies.
@@ -397,6 +400,9 @@ impl fmt::Display for TypeError {
             }
             TypeError::MissingContract { declaration } => {
                 write!(f, "'{}' must declare a contract with pre and post conditions so the compiler can prove and classify the transition", declaration)
+            }
+            TypeError::MisplacedInTest { construct } => {
+                write!(f, "`{construct}` is not allowed inside a `test` block; a test runs as straight-line statements — call a defn for reusable behaviour")
             }
             TypeError::HoldOutsideLawContext => {
                 write!(f, "`hold` declares a static law; inside a reactive defn/node/txn body use `when` for a runtime guard (laws live at top level or in an obj/type body)")
@@ -1213,6 +1219,9 @@ pub enum RuntimeError {
     /// stops iterating (does NOT propagate outward), so it is internally
     /// swallowed; the variant exists as the escape signal.
     Break,
+    /// 2026-11-10 (SPEC §8.11): `expect` evaluated to a non-true value in a
+    /// test block. Carries the source expression for the failure report.
+    ExpectationFailed(String),
     /// 2026-08-06 (endprogram plan): `endprogram` evaluated — the process
     /// boundary (SPEC §11.5). Carries the exit code value. The reactor stops
     /// on this, unlike TermReturn (which ends the transaction only).
@@ -1270,6 +1279,9 @@ impl fmt::Display for RuntimeError {
             }
             RuntimeError::ImmutableInit(name) => {
                 write!(f, "cannot modify '{}': an init is seeded once before beginprogram and is immutable for the run", name)
+            }
+            RuntimeError::ExpectationFailed(expr) => {
+                write!(f, "expectation failed: `expect {expr}` evaluated to false")
             }
             RuntimeError::Trap => {
                 write!(f, "trap: the program executed a hardware abort (SPEC §8.8)")

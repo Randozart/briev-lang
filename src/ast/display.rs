@@ -472,6 +472,7 @@ impl fmt::Display for Statement {
             }
             Statement::Gate(cond) => write!(f, "[{}];", cond),
             Statement::Expression(expr) => write!(f, "{};", expr),
+            Statement::Expect(expr) => write!(f, "expect {};", expr),
             Statement::Block(stmts) => {
                 write!(f, "{{ ")?;
                 for stmt in stmts {
