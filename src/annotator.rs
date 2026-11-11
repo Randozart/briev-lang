@@ -55,6 +55,7 @@ impl Annotator {
                 Statement::Yield => {}
                 Statement::Check(_) => {}
                 Statement::Expression(expr) => self.collect_calls_from_expr(expr, calls),
+                Statement::Expect(expr) => self.collect_calls_from_expr(expr, calls),
                 Statement::Assign(lhs, expr) => {
                     self.collect_calls_from_expr(lhs, calls);
                     self.collect_calls_from_expr(expr, calls);
@@ -410,6 +411,7 @@ impl Annotator {
             Statement::Yield => format!("{}yield;\n", spaces),
             Statement::Check(e) => format!("{}check {};\n", spaces, self.format_expr(e)),
             Statement::Expression(expr) => format!("{}{};\n", spaces, self.format_expr(expr)),
+            Statement::Expect(expr) => format!("{}expect {};\n", spaces, self.format_expr(expr)),
             Statement::Assign(lhs, expr) => {
                 format!(
                     "{}{} = {};\n",

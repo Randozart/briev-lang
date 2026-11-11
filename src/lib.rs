@@ -84,6 +84,7 @@ pub mod proof_engine;
 pub mod protocol_verify;
 pub mod rbv;
 pub mod reactor;
+pub mod test_engine;
 pub mod resolver;
 pub mod scheduler;
 pub mod signal_graph;

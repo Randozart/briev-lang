@@ -4622,6 +4622,18 @@ pub fn infer_statement(stmt: &Statement, ctx: &mut TypecheckContext) -> Result<(
             }
             Ok(())
         }
+        Statement::Expect(expr) => {
+            // 2026-11-10 (SPEC §8.11): `expect <bool>;` inside a test block.
+            let ty = infer_type_only(expr, ctx)?;
+            if !types_compatible(&Type::Custom("Bool".to_string()), &ty, ctx) {
+                return Err(crate::errors::TypeError::TypeMismatch {
+                    expected: "Bool".to_string(),
+                    found: format!("{ty}"),
+                    context: "expect assertion".to_string(),
+                });
+            }
+            Ok(())
+        }
         Statement::Expression(expr) => {
             // 2026-09-23 (E14b slice 1): a declarative voltage obligation —
             // `inst.pin.voltage >= 3.3V;` in a node body is a physics fact
@@ -7107,6 +7119,38 @@ fn lower_guards(
     }
 }
 
+/// 2026-11-10 (SPEC §8.11): tests are straight-line; no reactive or
+/// terminating constructs.
+fn validate_test_stmt(stmt: &Statement) -> Result<(), TypeError> {
+    match stmt {
+        Statement::Term(_) => Err(TypeError::MisplacedInTest { construct: "term".into() }),
+        Statement::Tail(_) => Err(TypeError::MisplacedInTest { construct: "tail".into() }),
+        Statement::EndProgram(_) => {
+            Err(TypeError::MisplacedInTest { construct: "endprogram".into() })
+        }
+        Statement::Guarded(_, body)
+        | Statement::Block(body)
+        | Statement::SyncBlock(body)
+        | Statement::Defer(body)
+        | Statement::Mutex(body)
+        | Statement::Foreach { body, .. } => {
+            for s in body {
+                validate_test_stmt(s)?;
+            }
+            Ok(())
+        }
+        Statement::Match { arms, .. } => {
+            for arm in arms {
+                for s in &arm.body {
+                    validate_test_stmt(s)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn check_top_level<'a>(
     item: &TopLevel,
     universe: &'a TypeUniverse,
@@ -7180,6 +7224,18 @@ fn check_top_level<'a>(
             ctx.param_names = txn.parameters.iter().map(|(n, _)| n.clone()).collect();
             ctx.local_shadows.clear();
             for stmt in &txn.body {
+                infer_statement(stmt, &mut ctx)?;
+            }
+            Ok(())
+        }
+        // 2026-11-10 (SPEC §8.11): test bodies typecheck as straight-line
+        // statements in the global scope; reactive/terminating forms are
+        // rejected. Tests are never lowered or emitted.
+        TopLevel::TestBlock(t) => {
+            ctx.current_output_type = None;
+            ctx.in_defn = false;
+            for stmt in &t.body {
+                validate_test_stmt(stmt)?;
                 infer_statement(stmt, &mut ctx)?;
             }
             Ok(())

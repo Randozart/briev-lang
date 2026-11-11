@@ -57,6 +57,9 @@ pub fn format_item(item: &TopLevel) -> String {
 
 fn format_item_into(item: &TopLevel, out: &mut String, level: usize) {
     match item {
+        TopLevel::TestBlock(t) => {
+            format_braced(out, level, &format!("test {} {{", t.domain), &t.body)
+        }
         TopLevel::Import(import) => format_import_into(import, out, level),
         TopLevel::Export(export) => {
             indent(out, level);

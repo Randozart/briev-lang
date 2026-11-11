@@ -147,7 +147,7 @@ pub fn walk_stmts<F: FnMut(&Expr)>(stmts: &[Statement], f: &mut F) {
                 walk_expr(cond, f);
                 walk_stmts(body, f);
             }
-            Statement::Expression(e) => walk_expr(e, f),
+            Statement::Expression(e) | Statement::Expect(e) => walk_expr(e, f),
             Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Defer(body)
@@ -190,6 +190,7 @@ pub fn walk_assign_pairs<F: FnMut(&Expr, &Expr)>(stmts: &[Statement], f: &mut F)
     for stmt in stmts {
         match stmt {
             Statement::Assign(lhs, rhs) => f(lhs, rhs),
+            Statement::Expect(_) => {}
             Statement::ArrowAssign {
                 target: Some(t),
                 value,
@@ -299,6 +300,7 @@ pub fn walk_toplevel<F: FnMut(&Expr)>(item: &TopLevel, f: &mut F) {
         TopLevel::Definition(d) | TopLevel::CompileTimeDefn(d) => walk_definition(d, f),
         TopLevel::TypeDefOperator(d) => walk_definition(d, f),
         TopLevel::Transaction(t) | TopLevel::CompileTimeTxn(t) => walk_transaction(t, f),
+        TopLevel::TestBlock(t) => walk_stmts(&t.body, f),
         TopLevel::TypeDef(td) => walk_type_body(td, f),
         TopLevel::Obj(sd) => {
             for t in &sd.transactions {

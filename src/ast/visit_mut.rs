@@ -139,7 +139,7 @@ pub fn walk_stmts<F: FnMut(&mut Expr)>(stmts: &mut [Statement], f: &mut F) {
                 walk_expr(cond, f);
                 walk_stmts(body, f);
             }
-            Statement::Expression(e) => walk_expr(e, f),
+            Statement::Expression(e) | Statement::Expect(e) => walk_expr(e, f),
             Statement::Block(body)
             | Statement::SyncBlock(body)
             | Statement::Defer(body)
@@ -226,6 +226,7 @@ pub fn walk_toplevel<F: FnMut(&mut Expr)>(item: &mut TopLevel, f: &mut F) {
         TopLevel::Definition(d) | TopLevel::CompileTimeDefn(d) => walk_definition(d, f),
         TopLevel::TypeDefOperator(d) => walk_definition(d, f),
         TopLevel::Transaction(t) | TopLevel::CompileTimeTxn(t) => walk_transaction(t, f),
+        TopLevel::TestBlock(t) => walk_stmts(&mut t.body, f),
         TopLevel::TypeDef(td) => walk_type_body(td, f),
         TopLevel::Obj(sd) => {
             for t in &mut sd.transactions {

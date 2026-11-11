@@ -55,6 +55,8 @@ pub enum TopLevel {
     /// in-force fact under a satisfiable guard. "Make it so" is propagate +
     /// verify, never synthesis (the solver adds no parts).
     HoldLaw(HoldLawDecl),
+    /// 2026-11-10: test declaration (SPEC §8.11).
+    TestBlock(TestBlock),
     Cell(CellDef),
     Import(Import),
     Export(Export),
@@ -454,6 +456,9 @@ pub enum Statement {
     Gate(Expr),
     /// expr;
     Expression(Expr),
+    /// 2026-11-10 (SPEC §8.11): `expect <bool>;` — a test assertion. Only
+    /// legal inside a `test` body; typechecks to Bool and never emits.
+    Expect(Expr),
     /// { ... }
     Block(Vec<Statement>),
     /// key <~ value;
@@ -1337,6 +1342,16 @@ pub struct ParticipationDecl {
 /// implies. Position decides semantics: top level / obj / type → static
 /// forced fact (this struct); defn/node/txn → runtime guard (`when`,
 /// Statement::Guarded, unchanged).
+/// 2026-11-10 (SPEC §8.11): `test domain { … };` — a top-level test block.
+/// Typechecked but never lowered/emitted; the reference interpreter runs the
+/// body. `domain` groups tests and is a declaration label, not a value.
+#[derive(Debug, Clone)]
+pub struct TestBlock {
+    pub domain: String,
+    pub body: Vec<Statement>,
+    pub span: Option<Span>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HoldLawDecl {
     pub guard: Expr,
