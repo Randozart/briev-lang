@@ -1,0 +1,27 @@
+// P7 curated semantic corpus (2026-11-10): deterministic bounded algorithm.
+// EXPECT-STDOUT: 19
+// EXPECT-STDOUT: 22
+// EXPECT-STDOUT: 43
+// EXPECT-STDOUT: 50
+let done: Bool = false;
+defn matmul(a: List<Int>, b: List<Int>) -> List<Int> {
+    let result: List<Int> = [0, 0, 0, 0];
+    foreach i in 0..2 {
+        foreach j in 0..2 {
+            let s: Int = 0;
+            foreach k in 0..2 {
+                s = s + a[i * 2 + k] * b[k * 2 + j];
+            };
+            result[i * 2 + j] = s;
+        };
+    };
+    term result;
+};
+node main [done == false][done] {
+    let a: List<Int> = [1, 2, 3, 4];
+    let b: List<Int> = [5, 6, 7, 8];
+    let c: List<Int> = matmul(a, b);
+    foreach v in c { Print#(v); Print#('\n'); };
+    done = true;
+    term;
+};
