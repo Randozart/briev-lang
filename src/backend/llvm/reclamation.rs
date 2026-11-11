@@ -37,7 +37,7 @@ fn definition_header<'a>(first: &'a str, lines: &mut std::str::Lines<'a>) -> Opt
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode { Region, Barrier, Inherit }
+enum Mode { Region, ClosedRegion, Barrier, Inherit }
 
 struct ModuleLowering<'a> {
     plan: &'a ReclamationPlan,
@@ -63,7 +63,7 @@ impl ModuleLowering<'_> {
         self.mode = name.map(|name| mode_for(self.plan, name));
         self.entry = self.mode.is_some_and(|mode| mode != Mode::Inherit);
         let changes_effects = self.entry || name.is_some_and(|name| self.plan.mutating.contains(name));
-        let scoped = self.mode == Some(Mode::Region);
+        let scoped = matches!(self.mode, Some(Mode::Region | Mode::ClosedRegion));
         let line = if scoped { strip_inline_attributes(line) } else { line.into() };
         let mut line = if changes_effects { self.groups.rewrite_reference(&line, scoped) } else { line };
         if scoped && !attribute_pattern().captures_iter(&line).any(|capture| capture.get(1).is_some()) {
@@ -87,6 +87,7 @@ impl ModuleLowering<'_> {
 
 fn mode_for(plan: &ReclamationPlan, name: &str) -> Mode {
     // `main` is the compiler-owned process driver, not a source node name.
+    if plan.closed_regions.contains(name) { return Mode::ClosedRegion; }
     if name == "main" && plan.entry_region { return Mode::Region; }
     if plan.regions.contains(name) { return Mode::Region; }
     if plan.barriers.contains(name) || !plan.known.contains(name) { return Mode::Barrier; }
@@ -222,6 +223,11 @@ fn emit_entry(output: &mut String, mode: Mode) {
             writeln!(output, "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8").ok();
             writeln!(output, "  call void @__briev_region_enter(ptr %briev.region.frame)").ok();
         }
+        Mode::ClosedRegion => {
+            writeln!(output, "  %briev.region.frame = alloca {{ ptr, ptr, ptr }}, align 8").ok();
+            writeln!(output, "  %briev.region.closed = alloca {{ ptr, ptr }}, align 8").ok();
+            writeln!(output, "  call void @__briev_region_enter_closed(ptr %briev.region.frame, ptr %briev.region.closed)").ok();
+        }
         Mode::Barrier => { writeln!(output, "  %briev.region.saved = call ptr @__briev_region_suspend()").ok(); }
         Mode::Inherit => {}
     }
@@ -229,7 +235,7 @@ fn emit_entry(output: &mut String, mode: Mode) {
 
 fn emit_exit(output: &mut String, mode: Mode) {
     match mode {
-        Mode::Region => { writeln!(output, "  call void @__briev_region_leave(ptr %briev.region.frame)").ok(); }
+        Mode::Region | Mode::ClosedRegion => { writeln!(output, "  call void @__briev_region_leave(ptr %briev.region.frame)").ok(); }
         Mode::Barrier => { writeln!(output, "  call void @__briev_region_restore(ptr %briev.region.saved)").ok(); }
         Mode::Inherit => {}
     }
@@ -269,6 +275,20 @@ pub(super) fn permits_raw_memory(ir: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_proof_adds_an_owner_without_removing_helper_barriers() {
+        let module = "declare ptr @malloc(i64)\ndefine void @outer() {\nentry:\n  call void @publish()\n  ret void\n}\ndefine void @publish() {\nentry:\n  %value = call ptr @malloc(i64 32)\n  ret void\n}\n";
+        let mut plan = ReclamationPlan::default();
+        plan.regions.insert("outer".into());
+        plan.closed_regions.insert("outer".into());
+        plan.barriers.insert("publish".into());
+        let ir = lower(module.into(), &plan);
+        assert!(ir.contains("call void @__briev_region_enter_closed(ptr %briev.region.frame, ptr %briev.region.closed)"));
+        assert!(ir.contains("%briev.region.saved = call ptr @__briev_region_suspend()"));
+        assert!(ir.contains("call void @__briev_region_restore(ptr %briev.region.saved)"));
+        assert!(ir.contains("define void @outer() noinline"));
+    }
 
     #[test]
     fn multiline_signature_preserves_the_aggregate_return_and_starts_tracking_in_the_body() {

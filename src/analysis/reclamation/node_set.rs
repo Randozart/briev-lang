@@ -49,13 +49,13 @@ impl NodeSet {
     }
 }
 
-fn merge_word(target: &mut u64, source: u64) -> usize {
+pub(super) fn merge_word(target: &mut u64, source: u64) -> usize {
     let added = (source & !*target).count_ones() as usize;
     *target |= source;
     added
 }
 
-struct WordNodes { base: usize, bits: u64 }
+pub(super) struct WordNodes { pub(super) base: usize, pub(super) bits: u64 }
 
 impl Iterator for WordNodes {
     type Item = usize;
