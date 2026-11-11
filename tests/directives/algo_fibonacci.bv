@@ -1,0 +1,20 @@
+// P7 curated semantic corpus (2026-11-10): deterministic bounded algorithm.
+// EXPECT-STDOUT: 55
+// EXPECT-STDOUT: 6765
+let done: Bool = false;
+defn fib(n: Int) -> Int {
+    let a: Int = 0;
+    let b: Int = 1;
+    foreach _step in 0..n {
+        let t: Int = a + b;
+        a = b;
+        b = t;
+    };
+    term a;
+};
+node main [done == false][done] {
+    Print#(fib(10)); Print#('\n');
+    Print#(fib(20)); Print#('\n');
+    done = true;
+    term;
+};

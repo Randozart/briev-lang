@@ -1,0 +1,14 @@
+// P7 curated semantic corpus (2026-11-10): deterministic bounded algorithm.
+// EXPECT-STDOUT: 12
+// EXPECT-STDOUT: 21
+let done: Bool = false;
+defn gcd(a: Int, b: Int) -> Int {
+    when b == 0 { term a; };
+    term gcd(b, a % b);
+};
+node main [done == false][done] {
+    Print#(gcd(84, 36)); Print#('\n');
+    Print#(gcd(1071, 462)); Print#('\n');
+    done = true;
+    term;
+};

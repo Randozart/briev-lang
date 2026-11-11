@@ -124,10 +124,14 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   artifacts in both campaigns (the cvise/creduce wrapper from this phase
   remains queued).
 
-### P7 — Curated semantic corpus — TODO (incremental, per-commit)
+### P7 — Curated semantic corpus — ACTIVE (first 5 landed 2026-11-10)
 
 - 10–15 deterministic bounded tasks with goldens (sort/search, hash map,
   matrix ops, tree traversal, coroutine pipeline).
+  *2026-11-10 (first 5):* `tests/directives/algo_{bubble_sort,binary_search,
+  gcd,matrix_mul,fibonacci}.bv` with inline stdout pins, run through the P2
+  directive runner (compile+link+run in the diagnostics suite). Exercises
+  nested `foreach`, list indexing/mutation, recursion, and list construction.
 - Acceptance: every entry runs in the tier1 E2E gate; no overlap with perf
   benchmarks; goldens captured from the reference path.
 
