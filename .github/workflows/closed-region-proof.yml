@@ -34,7 +34,9 @@ jobs:
       - name: Library and ownership regressions
         run: cargo test --lib --test reclamation_runtime -- --test-threads=2
       - name: Full integration gate after upstream reconciliation
-        run: bash scripts/gate.sh full
+        run: |
+          cargo build --release --bin brievc
+          bash scripts/gate.sh full
   proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
