@@ -765,7 +765,8 @@ impl<'a> DagBuilder<'a> {
                     // Aggregate/Result/String returns can carry the allocation
                     // out (read_file's growing buffer), and treating them as
                     // tick-local corrupts live pointers.
-                    self.arena_context = false;
+                    self.arena_context = self.arena_context_set.contains(&defn.name)
+                        && arena_leaf_safe(defn);
                     self.in_txn = self.arena_context;
                     self.in_bounded = false;
                     self.walk_stmts(&mut defn.body);
@@ -1123,7 +1124,8 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
                 builder.walk_stmts(&mut txn.body);
             }
             TopLevel::Definition(defn) => {
-                builder.arena_context = false;
+                builder.arena_context = arena_defns.contains(&defn.name)
+                    && arena_leaf_safe(defn);
                 builder.in_txn = builder.arena_context;
                 builder.in_bounded = false;
                 builder.walk_stmts(&mut defn.body);
@@ -1243,6 +1245,33 @@ txn make(n: Int) [n > 0][n > 0] -> Int {
     term read_at(p);
 };
 node entry [beginprogram][true] { Print#(make(16)); endprogram; };
+"#;
+        assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
+    }
+
+    #[test]
+    fn helper_alloc_called_from_txn_uses_arena() {
+        let src = r#"
+defn helper(n: Int) -> Int {
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 42, 8);
+    term Load#(p, 8);
+};
+txn make(n: Int) [n > 0][n > 0] -> Int { term helper(n); };
+node entry [beginprogram][true] { Print#(make(16)); endprogram; };
+"#;
+        assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
+    }
+
+    #[test]
+    fn helper_alloc_called_from_node_uses_arena() {
+        let src = r#"
+defn helper(n: Int) -> Int {
+    let p: Int = Alloc#(n) as Int;
+    Store#(p, 42, 8);
+    term Load#(p, 8);
+};
+node entry [beginprogram][true] { Print#(helper(16)); endprogram; };
 "#;
         assert_eq!(strategies(src), vec![AllocStrategy::Arena]);
     }

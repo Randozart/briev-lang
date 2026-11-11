@@ -32,12 +32,25 @@ use std::collections::{HashMap, HashSet};
 ///   - export ABI (`compute_export_needs_state` — the subset for exports)
 ///   - regular-defn emission (backend emits `%state` iff needs it)
 pub fn compute_defn_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> HashMap<String, bool> {
+    compute_defn_needs_state_with_arena(items, plain, &HashSet::new())
+}
+
+/// 2026-11-10 (plain Alloc#): arena-requiring defns are stateful leaves so
+/// callers and helpers thread `%state` to them. Propagating only the exact
+/// names after the fixpoint left stateless callers emitting `ptr %state`
+/// references (`print_bits -> print_int`).
+pub fn compute_defn_needs_state_with_arena(
+    items: &[TopLevel],
+    plain: &HashSet<String>,
+    arena_defns: &HashSet<String>,
+) -> HashMap<String, bool> {
     // 2026-10-17 (plain storage): plain lets are NOT machine state — a defn
     // touching only plain lets stays stateless (the print chain drops
     // `ptr %state`, unblocking SROA promotion of %State in printing loops).
     // Excluded at the index so the least fixpoint never sees them as
     // stateful leaves.
-    let (regular, txns, state_fields, always_stateful) = index_program(items, plain);
+    let (regular, txns, state_fields, mut always_stateful) = index_program(items, plain);
+    always_stateful.extend(arena_defns.iter().cloned());
     // 2026-09-23 (stateless-defn mechanism): LEAST FIXPOINT, not DFS. The old
     // memoized-DFS `visiting ⇒ true` cycle rule marked self-recursive
     // STATELESS defns (cstr_len `1 + cstr_len(p+1)`, bytes_equal_at recursion)
@@ -50,6 +63,13 @@ pub fn compute_defn_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> 
     // its body references state. Cycles resolve correctly because no cycle
     // ever flips a member on its own.
     let mut needs: HashMap<String, bool> = regular.keys().map(|k| (k.clone(), false)).collect();
+    // 2026-11-10: always-stateful leaves (asm/bad and arena-requiring defns)
+    // must be seeded themselves, not only consulted when a *caller* names
+    // them. Without this, an arena helper stayed stateless and Alloc# fell
+    // back to @malloc inside it.
+    for name in &always_stateful {
+        if let Some(v) = needs.get_mut(name) { *v = true; }
+    }
     let mut changed = true;
     while changed {
         changed = false;

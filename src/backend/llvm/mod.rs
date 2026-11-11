@@ -3108,15 +3108,12 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // (ALL defns, not just exports) drives regular-defn emission — pure
         // helpers emit without `%state`, keeping GLUE exports on a clean C
         // ABI. Computed here once; the backend only consumes the decision.
+        // 2026-11-10: arena-requiring defns (plain Alloc# reachable from a
+        // txn/node) are stateful leaves; the fixpoint propagates %state to
+        // every caller, not just the defn itself.
         self.ctx.defn_needs_state =
-            crate::analysis::export_abi::compute_defn_needs_state(items, &plain_lets);
-        // 2026-11-10: plain Alloc# in a helper reachable from a transaction
-        // uses the tick arena (`%State`), so that helper must receive state.
-        for name in self.ctx.needs_arena.clone() {
-            if let Some(v) = self.ctx.defn_needs_state.get_mut(&name) {
-                *v = true;
-            }
-        }
+            crate::analysis::export_abi::compute_defn_needs_state_with_arena(
+                items, &plain_lets, &self.ctx.needs_arena);
         self.ctx.defn_needs_plain =
             crate::analysis::export_abi::compute_defn_needs_plain(items, &plain_lets);
         // 2026-10-20 (BUGS.md "string concat miscompiles at -O2"): the
@@ -3371,7 +3368,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             .collect();
         // 2026-11-05 (H4.1): tail plans are name-keyed and order-independent,
         // so the HIR plan (built from the analysis run's HIR) is directly
-        // consumable by the backend. By default use it (BRIEV_HIR_EMIT=0 opts out); debug
+        // consumable by the backend. With BRIEV_HIR_EMIT=1 use it; debug
         // builds assert equality against the AST plan on the reordered items.
         let (tail_plan, tail_loop) = if crate::backend::hir_emit_enabled() {
             let ast_tail =
@@ -5049,7 +5046,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // for ALL programs (not just wake-triggered ones) whenever every reactive
         // txn is foldable and no explicit exit condition exists.
         let explicit_exit = self.ctx.exit_condition.clone();
-        // 2026-11-05 (H4 slice A): by default (BRIEV_HIR_EMIT=0 opts out) the program-level
+        // 2026-11-05 (H4 slice A): under BRIEV_HIR_EMIT=1 the program-level
         // convergence comes from typed HIR; debug builds assert exact AST
         // equality before the synthetic exit is synthesized from it.
         let program_conv = if crate::backend::hir_emit_enabled() {
