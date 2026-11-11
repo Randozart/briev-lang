@@ -381,6 +381,8 @@ pub(crate) fn registration_facts_for_test(
         entry_nodes: graph.entry_nodes.clone(),
         unsupported,
         constructors: graph.constructors.clone(),
+        user_operators: graph.user_operators.clone(),
+        methods: graph.methods.clone(),
         globals: graph.global_types.keys().cloned().collect(),
         global_types: graph.global_types.clone(),
     }

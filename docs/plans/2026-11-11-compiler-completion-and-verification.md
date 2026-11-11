@@ -171,9 +171,11 @@ bodies), return types, entry nodes (`is_reactive`), async-unsupported, and
 globals/types (lets, `state`, constants). A test-only AST snapshot in
 `analysis::reclamation` proves equality on callable and global fixtures
 (plain/exported/generic defns, reactive node, async txn; let/state/const;
-enum constructors). Still to port before constraints: user operators
-(op-binding intrinsic test), default-encoding targets, and the method alias
-map (explicit-receiver synthetic names).
+enum constructors; user-operator types via the new
+`HirTypeDef.has_user_operators`; the method alias map, including synthetic
+`Owner::member` bodies/return types for explicit receivers). Remaining before
+constraints: default-encoding targets (populated during the AST cast walk, so
+they move with the constraint port).
 
 **Next R slices:** constraints/`build_owner` (the ~700-line AST expression
 walker), solver, plan absorption; flip the consumer only when the whole plan

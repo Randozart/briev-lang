@@ -173,6 +173,10 @@ pub struct HirTypeDef {
     pub traits: Vec<String>,
     /// Declared op-binding names (`op Grow: ...`).
     pub op_bindings: Vec<String>,
+    /// 2026-11-11 (reclamation port): at least one op binding is a
+    /// user-supplied implementation rather than an intrinsic call. The AST
+    /// reclamation graph treats such types as user operators (barrier).
+    pub has_user_operators: bool,
     /// Op-binding implementation fn names (`op Add: cstring_concat`).
     pub binding_fns: Vec<String>,
     pub span: Option<Span>,

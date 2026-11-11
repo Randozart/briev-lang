@@ -34,6 +34,18 @@ pub fn closed_initializers(program: &HirProgram) -> bool {
     })
 }
 
+/// AST parity: a member uses an implicit receiver when its body mentions
+/// `self` or any declaring-type slot name.
+fn uses_implicit_receiver(callable: &super::program::HirCallable, field_names: &[String]) -> bool {
+    let mut implicit = false;
+    crate::hir::expr_walk::walk_stmts(&callable.body.statements, &mut |e| {
+        if let super::expr::HirExprKind::Identifier(name) = &e.kind {
+            implicit |= name == "self" || field_names.iter().any(|f| f == name);
+        }
+    });
+    implicit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +109,15 @@ mod tests {
     }
 
     #[test]
+    fn registration_matches_ast_for_methods_and_user_operators() {
+        parity_facts(
+            "defn add_impl(a: Int, b: Int) -> Int { term a + b; };\n\
+             obj Box { value: Int; defn get(b: Box) -> Int { term b.value; };\n\
+                        op Add: add_impl(#Lh, #Rh); };",
+        );
+    }
+
+    #[test]
     fn registration_matches_ast_for_globals() {
         parity_facts(
             "let a: Int = 1;\nstate let n: Int = 0;\nconst C: Int = 3;\n\
@@ -123,6 +144,11 @@ pub struct RegistrationFacts {
     pub unsupported: std::collections::BTreeSet<String>,
     /// Enum variant names (constructor keys).
     pub constructors: std::collections::BTreeSet<String>,
+    /// Types with a non-intrinsic op binding (user operator barrier).
+    pub user_operators: std::collections::BTreeSet<String>,
+    /// (owner, member) → synthetic `Owner::member` callable when the receiver
+    /// is explicit; `None` shadows transactions and implicit-receiver methods.
+    pub methods: std::collections::BTreeMap<(String, String), Option<String>>,
     pub globals: std::collections::BTreeSet<String>,
     pub global_types: std::collections::BTreeMap<String, crate::ast::Type>,
 }
@@ -138,6 +164,8 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
         entry_nodes: Default::default(),
         unsupported: Default::default(),
         constructors: Default::default(),
+        user_operators: Default::default(),
+        methods: Default::default(),
         globals: Default::default(),
         global_types: Default::default(),
     };
@@ -160,6 +188,68 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
                     | super::program::HirEnumVariant::Struct(n, _) => n,
                 };
                 facts.constructors.insert(name.clone());
+            }
+        }
+    }
+    for def in &program.type_defs {
+        if def.has_user_operators {
+            facts.user_operators.insert(def.name.clone());
+        }
+    }
+    // Explicit-receiver methods register as `Owner::method` synthetic
+    // callables; implicit-receiver members only shadow the key (AST parity).
+    for def in &program.type_defs {
+        if !matches!(
+            def.kind,
+            super::program::HirTypeDefKind::Object { .. }
+                | super::program::HirTypeDefKind::Struct { .. }
+        ) {
+            continue;
+        }
+        let field_names: Vec<String> = match &def.kind {
+            super::program::HirTypeDefKind::Object { fields }
+            | super::program::HirTypeDefKind::Struct { fields } => {
+                fields.iter().map(|f| f.name.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        for callable in program.callables.iter().filter(|c| {
+            c.owner.as_deref() == Some(def.name.as_str())
+                && !c.is_impl_fn
+                && !c.trait_default
+                && matches!(
+                    c.kind,
+                    super::program::HirCallableKind::MemberDefn
+                        | super::program::HirCallableKind::MemberTransaction
+                )
+        }) {
+            let key = (def.name.clone(), callable.name.clone());
+            facts.methods.insert(key.clone(), None);
+            if callable.kind != super::program::HirCallableKind::MemberDefn {
+                continue;
+            }
+            if !def.type_params.is_empty() || !callable.type_params.is_empty() {
+                continue;
+            }
+            if uses_implicit_receiver(callable, &field_names) {
+                continue;
+            }
+            let Some(first) = callable.params.first() else { continue };
+            if first.ty.universe_key() != Some(def.name.as_str()) {
+                continue;
+            }
+            let synthetic = format!("{}::{}", def.name, callable.name);
+            facts.methods.insert(key, Some(synthetic.clone()));
+            let params = callable
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect();
+            facts
+                .bodies
+                .insert(synthetic.clone(), (params, callable.body.statements.len()));
+            if let Some(ty) = &callable.result {
+                facts.return_types.insert(synthetic, ty.clone());
             }
         }
     }
