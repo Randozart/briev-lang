@@ -337,7 +337,12 @@ defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
     };
     let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
     when last == 0 {
-        term strip_frac_zeros(frac[0:frac .^Length - 1]);
+        // 2026-11-11 (string ownership): every call site hands this helper a
+        // freshly allocated digit slice. Take ownership: the shorter slice is
+        // a copy, so the input can be released before recursing.
+        let trimmed: String = frac[0:frac .^Length - 1];
+        Free#(frac as Ptr<Bit<8>>);
+        term strip_frac_zeros(trimmed);
     };
     term frac;
 };
