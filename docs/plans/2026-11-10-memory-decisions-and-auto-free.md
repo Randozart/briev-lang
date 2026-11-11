@@ -407,3 +407,23 @@ Reverted completely. Conclusion: allocation interception is not a substitute
 for provenance. The auto-free/decision pass must operate on allocation sites
 with ownership classes (Malloc vs compiler arena/region vs borrowed), not on
 the `@malloc` symbol. This negative result is the gate for the next attempt.
+
+### 10.4 Allocation-site hook trial — rejected on string realloc/overlap
+
+Second attempt: mark node-reachable defns in IR (`; BRIEV_REQ_ALLOC`) and
+rewrite only malloc/free/realloc inside those blocks to request hooks; graph
+parsed per request; no graph cache.
+
+- Tiny models passed with the hooks.
+- Daemon aborted in `concat` with ASan `memcpy-param-overlap`; both ranges
+  were inside the request block, with a corrupted/oversized copy length. The
+  hook’s bump header does not match every pointer Briev passes to
+  realloc/free (String data vs allocation base / interior pointers), so the
+  request arena cannot safely service realloc without matching the runtime’s
+  actual allocation layout/provenance.
+- Reverted completely; no pin change.
+
+Conclusion unchanged and sharper: allocation interception needs the compiler
+to carry allocation **base + size + owner class** per pointer through String/
+List/object representations. The next attempt starts with that metadata (or a
+typed owned-handle), not with hooks keyed on address ranges.
