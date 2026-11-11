@@ -4665,7 +4665,9 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let literal = match init {
                 Some(Expr::Decimal(n)) => Some(n.to_string()),
                 Some(Expr::Float(f)) => Some(float_to_llvm_str(*f, &llvm_ty)),
-                Some(Expr::Bool(b)) => Some((if *b { "true" } else { "false" }).to_string()),
+                // 2026-11-11: Bool storage is i8, not i1 — `true`/`false`
+                // constants are invalid in an i8 global declaration.
+                Some(Expr::Bool(b)) => Some((if *b { "1" } else { "0" }).to_string()),
                 _ => None,
             };
             let val_str = literal.unwrap_or_else(|| zero.to_string());

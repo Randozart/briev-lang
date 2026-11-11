@@ -144,4 +144,14 @@ P7 heading says six; INDEX suite counts refreshed; AGENTS per-commit
 checklist now names `scripts/gate.sh`; H5 inventory records the
 no-runtime-consumer decisions.
 
-**Next: R (reclamation HIR parity).**
+**2026-11-11 — V1 (interpreter-over-corpus) DONE ahead of R.** Six curated
+programs (`tests/interpreter_corpus_parity.rs`) end with `endprogram <value>`;
+the native exit code and the reference interpreter's `ProgramExit` value must
+agree. Covers recursion, nested foreach, list read/write, Bool flags, and
+matrix ops. Found a real bug: unused Bool plain globals emitted
+`global i8 false` (i1 constant) — fixed to `1`/`0` and recorded in BUGS.md.
+Added to the quick gate (~16 s).
+
+**Next: R (reclamation HIR parity).** First slice remains: read the AST
+analyzer + #79/#81 changes, define the HIR fact set, write parity fixtures
+before the port.

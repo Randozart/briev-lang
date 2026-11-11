@@ -90,7 +90,12 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   *2026-11-09:* full matrix passes locally in ~4 min with one documented skip
   (`mixed_effect_shape`: idle equilibrium, no self-terminating exit) and the
   nightly workflow (`.github/workflows/verification-nightly.yml`) now runs it.
-  Remaining: interpreter-over-corpus and wasm cross-backend gates.
+  *2026-11-11:* interpreter-over-corpus landed
+  (`tests/interpreter_corpus_parity.rs`): six curated programs compare the
+  native exit code with the interpreter's `ProgramExit` value (no stdout
+  capture needed), exercising recursion, nested foreach, list mutation, Bool
+  flags, and 2x2 matrix ops. It found and pinned the i8 Bool-global literal
+  bug. Remaining: wasm32 cross-backend gate.
 
 ### P4 — Structured program fuzzing — PARTIAL (PR #80 landing, 2026-11-09)
 
