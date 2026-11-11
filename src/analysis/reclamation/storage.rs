@@ -44,7 +44,9 @@ mod proofs {
     use super::*;
 
     #[kani::proof]
-    #[kani::unwind(16)]
+    // Two roots, one bitset word, and no named fields need only short loops.
+    // Unwinding assertions remain enabled: an insufficient bound is a failure.
+    #[kani::unwind(4)]
     fn external_storage_publication_remains_boundary_reachable() {
         let mut memory = vec![NodeSet::new(); 2];
         let named = BTreeMap::new();
@@ -52,7 +54,7 @@ mod proofs {
         incoming.insert(0);
         seed_external(&mut memory, 0);
         let member = if kani::any::<bool>() {
-            field_contents(&incoming, &memory, &named, "slot")
+            field_contents(&incoming, &memory, &named, "x")
         } else {
             contents(&incoming, &memory, &named)
         };
