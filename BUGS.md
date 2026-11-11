@@ -1,3 +1,20 @@
+## 2026-11-10 — Bool list pushes emitted an i8 element into an i64 payload
+
+**Symptom.** `let flags: List<Bool> = []; foreach i in 0..N { flags <- true; }`
+emitted `%t = add i8 0, 1` followed by `trunc i64 %t to i8`; clang rejected the
+module ("defined with type i8 but expected i64"). Runtime never started, so the
+sieve-style programs failed at link.
+
+**Cause.** List elements are boxed i64 words, but a scalar literal
+(Bool/Char/Float) emits a native-width register. The HIR arrow insert path fed
+that register to the InsertAt strategy without boxing (the AST path adapted it).
+
+**Fix.** `arrow_insert` boxes scalar element literals with `adapt_to_i64`
+before the strategy call (Bool/Char/Float; Int is already i64). Regression:
+`tests/directives/list_bool_push.bv` (EXPECT-STDOUT 3).
+
+**Status.** Fixed 2026-11-10.
+
 ## Main CI: scalar loads falsely escaped their source allocation — FIXED 2026-11-11
 
 **Symptom:** `daily_use_smoke::arena_folded_loop_uses_arena` produced the

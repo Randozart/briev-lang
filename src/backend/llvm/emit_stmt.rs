@@ -2188,6 +2188,21 @@ fn arrow_insert(
     let val = ctx.value.emit(backend, &mut val_buf, indent);
     let elem_ty = backend.insert_element_type_name(tname);
     let val_ty = ctx.value.declared_type(backend).unwrap_or_else(|| val.ty.clone());
+    // 2026-11-10 (BUGS: bool list push): list elements are boxes (i64 words),
+    // but a scalar literal (Bool/Char/Float) emits a native-width register.
+    // Box it before the InsertAt strategy consumes the element, or clang sees
+    // an i8 value where an i64 payload is expected.
+    let box_scalar = elem_ty.as_ref().is_some_and(|et| {
+        backend.is_protocol_member(et, "Bool")
+            || backend.is_protocol_member(et, "Char")
+            || backend.is_protocol_member(et, "Float")
+    }) && !backend.is_protocol_member(&val.ty, "Int");
+    let val = if box_scalar {
+        let name = backend.adapt_to_i64(&mut val_buf, indent, &val);
+        TypedRegister { name, ty: Type::int() }
+    } else {
+        val
+    };
     let dyn_push = dyn_push_pair(elem_ty.as_ref(), &val_ty);
     if !insert_matches(backend, elem_ty.as_ref(), &val_ty, &dyn_push) {
         return None;
