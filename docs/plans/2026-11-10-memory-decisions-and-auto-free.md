@@ -497,3 +497,46 @@ route is **not applicable** to the request output path as designed.
 This leaves owned `List`/`String` storage (base + cap + len + owner) as the
 remaining correct route to the RSS plateau; alternative is to accept the
 residual and move to the NPU/VAD capability work.
+
+## 13. Owned List/String route — investigation (2026-11-11)
+
+### Current representation
+- `List<T>` is already a compiler-owned `coll obj`: `ListBuffer<T> { data: Ptr<T> }` plus hidden `cap`/`len` slots appended by the scaffold
+  (`lib/std/collections.bv`, `src/backend/llvm/coll_scaffold.rs`). Growth is
+  `op Grow` doubling the block; push writes `data[len]` then increments.
+- `String` is `[len][bytes]` (`string.bv`/runtime); slices are pointer views
+  into the same bytes.
+- Neither carries an **owner identity**, so returned List/String values cannot
+  be provably freed by the caller, and closed regions reject any allocation
+  reachable from the returned value.
+
+### Options examined
+1. Closed-region request: rejected for multi-box output; a closed call may
+   only return scalars/void. Detection must return multiple boxes, so it would
+   publish into incoming/global storage, which the closed proof rejects.
+2. Raw pointer Env (`Ptr<Int>` tensor handles): compiler object-handle casts
+   do not round-trip (`(t as Data) as Int` → `as T` loses fields); unsupported.
+3. Request allocator interception: rejected (no base/size provenance;
+   realloc/string overlap).
+4. **Owned List/String with destination ownership** remains correct.
+
+### Required design
+- Add an owner/lifetime fact to heap List/String storage. Because String data
+  may be reallocated and sliced, encode the owning base + capacity in a side
+  allocation record or a header word; never infer ownership from an interior
+  pointer.
+- Allocation sites choose storage from lifetime/escape facts (existing
+  `analyze_alloc_strategies` + new List/String site analysis). No new
+  user-facing keyword; `free`/`keep`/consume are the decisions.
+- On return, ownership transfers to the caller; compiler inserts a free at the
+  caller's last use when proven dead, or requires `free`/`keep` otherwise.
+  Slices/aliases keep the base alive (borrow), so destructor must be
+  base-identified and refcount-free.
+- HIR/AST reclamation storage facts learn the List/String owner; closed-region
+  output rule stays unchanged (allocations never escape a closed call).
+- First pilot: response String + Env List only (the request boundary), then
+  generalize to all List/String allocations.
+
+This is a compiler+stdlib ownership change (M2), not another executor
+workaround. It is the only route to the RSS plateau; alternatively accept the
+~0.2 MB/call residual and move to VAD/NPU.
