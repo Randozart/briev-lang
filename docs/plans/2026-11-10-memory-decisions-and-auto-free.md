@@ -362,3 +362,11 @@ arena block now uses plain `Alloc#()` and the compiler selects the tick arena.
 Daemon RSS still grows because parser List/graph allocations are not all
 arena-backed and the graph is reparsed per request; that is the next runtime
 work, not an ABI blocker.
+
+### 10.1 Face graph cache + residual RSS
+
+The daemon caches list handles in `Int` globals and reconstructs `OnnxGraph`
+per request; weights are owned tensors, activations use the tick arena.
+60-call JPEG soak: ~3.2 MB/call → ~0.3 MB/call (167 → ~217 MB), first calls
+dominate. Residual is per-request object/string heap, not model parsing;
+full plateau remains open (compiler auto-free/decision pass is the next lever).
