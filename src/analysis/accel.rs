@@ -317,7 +317,7 @@ impl ProgramInfo {
 /// `Char`. `String`/`Blob` and pointers are not flat and reject the kernel.
 /// Resolved through the TypeUniverse (`protocol_category`), never by matching
 /// type names (rules 14/18). `Bits(n)` is the sole physical primitive.
-fn is_flat_scalar(universe: &TypeUniverse, ty: &Type) -> bool {
+pub(crate) fn is_flat_scalar(universe: &TypeUniverse, ty: &Type) -> bool {
     match ty {
         Type::Bits(_) => true,
         Type::Vector(inner, _) => is_flat_scalar(universe, inner),
@@ -1988,6 +1988,35 @@ pub fn analyze(
         );
     }
     out
+}
+
+/// Canonical, deterministic rendering of one entry. The parity harness
+/// compares this string between the AST and HIR analyses; BTreeMap key order
+/// keeps the map side deterministic.
+pub(crate) fn canonical_entry(entry: &AccelEntry) -> String {
+    format!("{entry:#?}")
+}
+
+/// Test-only AST dump: analyze `items`, then canonicalize by transaction name.
+#[cfg(test)]
+pub(crate) fn entries_for_test(
+    items: &[TopLevel],
+    universe: &TypeUniverse,
+) -> std::collections::BTreeMap<String, String> {
+    entries_for_test_mode(items, universe, None)
+}
+
+/// Mode-explicit variant of [`entries_for_test`].
+#[cfg(test)]
+pub(crate) fn entries_for_test_mode(
+    items: &[TopLevel],
+    universe: &TypeUniverse,
+    mode: Option<AccelMode>,
+) -> std::collections::BTreeMap<String, String> {
+    analyze(items, Some(universe), mode)
+        .iter()
+        .map(|(name, entry)| (name.clone(), canonical_entry(entry)))
+        .collect()
 }
 
 #[cfg(test)]

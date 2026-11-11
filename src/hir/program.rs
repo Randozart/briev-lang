@@ -117,6 +117,11 @@ pub struct HirCallable {
     pub variadic: bool,
     /// `sync<domains>` wrapping this txn; empty for unwrapped callables.
     pub sync_domains: Vec<String>,
+    /// Declared callable modifiers (`accel`, `approx`, `exact`, …), by name.
+    /// 2026-11-11 (H5 accel port): the offload analysis reads the same
+    /// modifiers the AST `Transaction`/`Definition` carries; names only
+    /// because every policy keyword here is value-less.
+    pub modifiers: Vec<String>,
     pub result: Option<Type>,
     /// Explicit multi-output list (`defn f() -> A, B`), if any.
     pub output_list: Vec<Type>,
