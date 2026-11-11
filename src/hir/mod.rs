@@ -6,6 +6,7 @@
 //! slice assigns stable IDs, normalizes export wrappers, and verifies the
 //! callable surface. No consumer uses it yet.
 
+pub mod accel;
 pub mod boundary_ownership;
 pub mod cast_paths;
 pub mod constructors;

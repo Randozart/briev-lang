@@ -169,6 +169,7 @@ fn lower_isr_handler(h: &crate::ast::top::IsrHandler, ids: &mut IdSupply) -> Hir
             span: Some(h.span),
             exported: false,
             export_symbol: None,
+            modifiers: Vec::new(),
         },
     );
     c.is_isr = true;
@@ -599,6 +600,7 @@ fn lower_definition(
             span: d.span,
             exported,
             export_symbol,
+            modifiers: d.modifiers.iter().map(|m| m.name.clone()).collect(),
         },
     )
 }
@@ -629,6 +631,7 @@ fn lower_transaction(
             span: t.span,
             exported,
             export_symbol,
+            modifiers: t.modifiers.iter().map(|m| m.name.clone()).collect(),
         },
     )
 }
@@ -649,6 +652,7 @@ struct CallableLowerSpec<'a> {
     span: Option<Span>,
     exported: bool,
     export_symbol: Option<String>,
+    modifiers: Vec<String>,
 }
 
 fn lower_output(o: &OutputType) -> HirOutput {
@@ -707,6 +711,7 @@ fn lower_callable(ids: &mut IdSupply, spec: CallableLowerSpec<'_>) -> HirCallabl
         is_impl_fn: false,
         is_isr: false,
         sync_domains: Vec::new(),
+        modifiers: spec.modifiers,
         result: spec.result,
         output_list: spec.output_list,
         outputs: spec.outputs,
