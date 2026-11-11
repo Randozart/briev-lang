@@ -1,7 +1,28 @@
 # Briev `--verify-bodies` — prove body ⇒ postcondition
 
 **Date:** 2026-11-11
-**Status:** Active (BUILD); plan adopted by the language owner.
+**Status:** DONE (2026-11-11). Implemented and verified:
+
+- `verify_bodies: bool` on `BuildOptions`; `--verify-bodies` CLI flag (build
+  route); bounty site stays `false`.
+- Pass: `src/analysis/verify_bodies.rs` — worklist path walker with guard
+  fall-through, `term`/`Tail` output binding, `Gate`/`Check` recorded as
+  facts, interval-bounds verdicts with Kleene and/or/not, `BodyReport`
+  three-way aggregation (proven / unproven / violated).
+- Wiring: `compile.rs` consumes the report — `violated` fails the build,
+  `unproven` is an advisory warning, supported-but-unproven never rejects.
+- **Empirical success criteria 1–3 met:** `defn lies_about_post [a>=0][term==0]
+  { term 5; }` → exit 1 with `a path returns term = 5, which contradicts the
+  contract` under `--verify-bodies`; compiles clean (exit 0) without the flag;
+  honest body proven silently; stdlib undecided bodies are warnings only.
+  Full `cargo test --lib` green flag-off (3679 passed); 6 unit tests in-module.
+- Soundness notes: `Unknown` never equals anything (structural_eq excluded);
+  `!(a == b)` is a disjunction and contributes NO interval fact
+  (`negated_comparison` returns None); bodies outside the pure-integer
+  surface are skipped, never proven, never rejected.
+
+Success criterion 4 (Counsel Phase-4 valve) remains future work in the
+Counsel repo.
 
 ## Why
 

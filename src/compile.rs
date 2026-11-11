@@ -834,12 +834,14 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // is opt-in and off by default, so the historical consistency-only
     // behaviour is unchanged without the flag.
     if opts.verify_bodies {
-        if let Err(a_errs) = briev_compiler::analysis::verify_bodies::verify_bodies(&items) {
-            return Err(format!(
-                "--verify-bodies:
-{}",
-                a_errs.join("\n")
-            ));
+        let report = briev_compiler::analysis::verify_bodies::verify_bodies(&items);
+        // Advisory: supported bodies the prover could not decide. Never a
+        // failure — only concrete counterexamples fail the build.
+        for line in &report.unproven {
+            eprintln!("warning: --verify-bodies could not prove: {line}");
+        }
+        if !report.violated.is_empty() {
+            return Err(format!("--verify-bodies:\n{}", report.violated.join("\n")));
         }
     }
 
