@@ -41,6 +41,21 @@ struct Purity {
 
 /// Warn for every called, effective-Void defn/txn with no observable
 /// effect. Insertion order (AST order) — deterministic output.
+/// 2026-11-10 (H5 port): HIR-first surface for the compile call site. The
+/// AST result remains the fallback and the debug oracle (rendered comparison:
+/// warning order is item order).
+pub fn analyze_dual(items: &[TopLevel]) -> Vec<Block> {
+    let ast = analyze(items);
+    if !crate::backend::hir_emit_enabled() {
+        return ast;
+    }
+    let program = crate::hir::lower_program(items);
+    let hir = crate::hir::purity::analyze(&program);
+    let rendered = |blocks: &[Block]| blocks.iter().map(Block::render).collect::<Vec<_>>();
+    debug_assert_eq!(rendered(&hir), rendered(&ast), "HIR/AST purity drift");
+    hir
+}
+
 pub fn analyze(items: &[TopLevel]) -> Vec<Block> {
     let callables = collect_callables(items);
     let user_names: HashSet<String> = callables.keys().cloned().collect();

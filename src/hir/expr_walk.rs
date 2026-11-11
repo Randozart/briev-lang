@@ -5,6 +5,11 @@
 use super::expr::{HirExpr, HirExprKind};
 use super::stmt::{HirStmt, HirStmtKind};
 
+/// Visit one expression tree (mirrors AST `visit::walk_expr`).
+pub(crate) fn walk_expr_pub(expr: &HirExpr, f: &mut dyn FnMut(&HirExpr)) {
+    walk_expr(expr, f);
+}
+
 /// Visit every expression in a statement tree (mirrors AST `visit::walk_stmts`).
 pub(crate) fn walk_stmts(stmts: &[HirStmt], f: &mut dyn FnMut(&HirExpr)) {
     for s in stmts {

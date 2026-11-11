@@ -13,6 +13,7 @@ pub mod coll_length;
 pub mod defn_liveness;
 pub mod casing;
 pub mod dependency_graph;
+pub mod purity;
 pub mod density;
 pub mod dyn_concrete_sets;
 pub mod enum_repr;

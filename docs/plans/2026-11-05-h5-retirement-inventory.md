@@ -217,3 +217,10 @@ New fidelity fields preserve the AST's origin distinction:
 `check_name` helper backs both implementations; `analyze_dual` flips the two
 pipeline call sites with a debug equality oracle. Tests: conforming-silent and
 each-category parity.
+
+**Ported + consumer flipped (2026-11-10):** `purity` — `src/hir/purity.rs`
+mirrors the state-purity advisory (effective-Void, called, no observable
+effect; conservative call-graph fixpoint over raw-effect statements and
+Call/Spawn edges). `analyze_dual` flips the compile.rs call site with a
+rendered-warning debug oracle. Parity tests cover effectless/printing/
+transitive/uncalled/value-output/spawn shapes.

@@ -295,3 +295,9 @@ quick gate 30/30.
 `analysis::casing::check_name` is shared (one convention table), and
 `analyze_dual` flips the compile/pipeline call sites with a debug oracle.
 Gates: lib 3589; sweep 143/0; quick gate 30/30.
+
+**purity port (2026-11-10).** `hir::purity` mirrors the advisory including the
+effect fixpoint, raw-effect statement set, and called-name scan (top-level
+callables + global initializer exprs, AST parity). `analyze_dual` flips
+compile.rs with rendered-warning equality; four parity tests. Gates: lib 3597;
+sweep 143/0; quick gate 30/30.
