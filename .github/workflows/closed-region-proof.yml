@@ -32,12 +32,18 @@ jobs:
           git rev-parse HEAD > proof-results/commit.txt
           cargo kani --version > proof-results/version.txt
           # 2026-11-11: the whole-graph proof exhausted the developer machine.
-          # Bound virtual memory and wall time; exhaustion must fail, never pass.
+          # Bound resident memory and wall time; exhaustion must fail, never pass.
           # Keep these limits even if a smaller equivalent proof replaces it.
-          ulimit -v 5242880
+          # RLIMIT_AS rejected compiler address mappings before proof checking.
+          # A cgroup bounds actual memory across the entire process tree instead.
           set +e
-          timeout --signal=TERM --kill-after=30s 35m \
-            cargo kani --features kani,kani_full \
+          sudo systemd-run --wait --pipe --collect --service-type=exec \
+            --property="User=$(id -un)" --property="WorkingDirectory=$PWD" \
+            --property=MemoryMax=5G --property=MemorySwapMax=0 \
+            /usr/bin/env "HOME=$HOME" "PATH=$PATH" CARGO_BUILD_JOBS=1 \
+            CARGO_PROFILE_DEV_DEBUG=0 \
+            timeout --signal=TERM --kill-after=30s 35m \
+            cargo kani --lib --features kani,kani_full \
               --harness external_storage_publication_remains_boundary_reachable \
               > proof-results/kani.log 2>&1
           status=$?
