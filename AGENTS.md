@@ -318,7 +318,8 @@ contracts.
 - **Continuous commits** — commit after each logical step; auto-commit when a
   step is complete and tests pass (do not ask). `git add` only intended files;
   never amend; never use `git checkout --`/`git restore`.
-- **Per-commit checklist**: `cargo test --lib` green; `cargo build` no new
+- **Per-commit checklist**: `bash scripts/gate.sh quick` green (nextest;
+  ~100 s warm), with `full` before pushes that touch shared analysis; `cargo build` no new
   warnings; Praetor on changed files (complexity ≤ 15, lines ≤ 100, params ≤ 6;
   `praetor validate --warn --target <dir>` per changed directory — **`--target`
   takes a DIRECTORY, never a file**); Kani harnesses for safety-critical code;

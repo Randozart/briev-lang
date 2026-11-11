@@ -3,7 +3,7 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 3571 green (2026-11-10); daily corpus 29 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
+**Suite state:** `cargo test --lib` 3601 green (2026-11-11); daily corpus 41 green; quick gate 36 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
@@ -55,6 +55,19 @@ BEAST stays the AST snapshot/pattern/distribution format; BIRD is reserved for
 a round-trippable serialized HIR (adoption gates listed). Also records the
 plugin-system intent (live AST; real IR text at Generated/Optimized) and the
 cleanliness exit criteria.
+
+**Unit test blocks (2026-11-10, LANDED):**
+`docs/plans/2026-11-10-ergonomic-unit-tests.md` + `docs/guides/unit-test-blocks.md`
+— `test domain { expect <bool>; };` (SPEC §8.11), reference-interpreter
+runner, `--tests-only`/`--list-tests`/`--domain`, isolation and no-emission
+guarantees; follow-ups in the completion plan below.
+
+**Compiler completion + verification (2026-11-11, ACTIVE):**
+`docs/plans/2026-11-11-compiler-completion-and-verification.md` — ordered
+ledger: test-block polish → reclamation HIR parity → interpreter/wasm corpus
+gates → batch_shape → large H5 ports; no-runtime-consumer decisions for
+range/dataflow/destination_ownership; AST-arm deletion after the opt-out
+release.
 
 **Verification program (2026-11-09, umbrella):**
 `docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
