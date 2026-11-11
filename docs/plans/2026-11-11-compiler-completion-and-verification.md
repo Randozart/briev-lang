@@ -80,10 +80,14 @@ ledger. Rides on:
   exit behaviour.
 - Skip list with reasons + coverage ratchet; quick subset per commit.
 
-### V2. wasm32 corpus gate (P3)
+### V2. wasm32 corpus gate (P3) — BLOCKED 2026-11-11
 - Eligible tier1 subset compiled to wasm32, executed with node (or the
   existing wasm test harness), outputs compared with native.
 - Explicit skip list for host-only fixtures (sockets, MMIO, process spawn).
+  *2026-11-11: blocked.* `.bv` wasm32 emission rejects the stdlib prelude
+  (`i64` inttoptr where wasm32 wants `i32`), identical with the AST opt-out —
+  a pre-existing target-width bug recorded in BUGS.md. `.rbv` wasm tests pass.
+  Gate resumes after the `.bv` prelude width audit.
 
 ### V3. P4 seeds/growth
 - Feed tier1 sources into the structured fuzzer as seeds; grow generator

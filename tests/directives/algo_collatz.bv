@@ -1,0 +1,21 @@
+// P7 curated semantic corpus (2026-11-11): Collatz step counts.
+// EXPECT-STDOUT: 71
+// EXPECT-STDOUT: 76
+let done: Bool = false;
+defn steps(n: Int) -> Int {
+    let x: Int = n;
+    let count: Int = 0;
+    foreach _step in 0..1000 {
+        when x == 1 { term count; };
+        when x % 2 == 0 { x = x / 2; };
+        when x % 2 == 1 && x != 1 { x = 3 * x + 1; };
+        count = count + 1;
+    };
+    term count;
+};
+node main [done == false][done] {
+    Print#(steps(27)); Print#('\n');
+    Print#(steps(97)); Print#('\n');
+    done = true;
+    term;
+};
