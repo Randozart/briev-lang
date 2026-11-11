@@ -60,6 +60,6 @@ mod proofs {
         let mut payload = NodeSet::new();
         payload.insert(1);
         store(&address, &mut memory, &payload);
-        assert!(root_contents(&memory, &named, 0).contains(&1));
+        assert!(root_contents(&memory, &named, 0).iter().any(|root| root == 1));
     }
 }
