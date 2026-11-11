@@ -380,6 +380,7 @@ pub(crate) fn registration_facts_for_test(
         return_types: graph.return_types.clone(),
         entry_nodes: graph.entry_nodes.clone(),
         unsupported,
+        constructors: graph.constructors.clone(),
         globals: graph.global_types.keys().cloned().collect(),
         global_types: graph.global_types.clone(),
     }

@@ -170,10 +170,10 @@ Added to the quick gate (~16 s).
 bodies), return types, entry nodes (`is_reactive`), async-unsupported, and
 globals/types (lets, `state`, constants). A test-only AST snapshot in
 `analysis::reclamation` proves equality on callable and global fixtures
-(plain/exported/generic defns, reactive node, async txn; let/state/const).
-Still to port before constraints: constructors (`__variant_*` slots), user
-operators (op-binding intrinsic test), default-encoding targets, and the
-method alias map (explicit-receiver synthetic names).
+(plain/exported/generic defns, reactive node, async txn; let/state/const;
+enum constructors). Still to port before constraints: user operators
+(op-binding intrinsic test), default-encoding targets, and the method alias
+map (explicit-receiver synthetic names).
 
 **Next R slices:** constraints/`build_owner` (the ~700-line AST expression
 walker), solver, plan absorption; flip the consumer only when the whole plan

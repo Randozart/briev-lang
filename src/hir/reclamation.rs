@@ -92,6 +92,11 @@ mod tests {
     }
 
     #[test]
+    fn registration_matches_ast_for_enum_constructors() {
+        parity_facts("enum Mode { Active(Int), Idle };");
+    }
+
+    #[test]
     fn registration_matches_ast_for_globals() {
         parity_facts(
             "let a: Int = 1;\nstate let n: Int = 0;\nconst C: Int = 3;\n\
@@ -116,6 +121,8 @@ pub struct RegistrationFacts {
     pub return_types: std::collections::BTreeMap<String, crate::ast::Type>,
     pub entry_nodes: std::collections::BTreeSet<String>,
     pub unsupported: std::collections::BTreeSet<String>,
+    /// Enum variant names (constructor keys).
+    pub constructors: std::collections::BTreeSet<String>,
     pub globals: std::collections::BTreeSet<String>,
     pub global_types: std::collections::BTreeMap<String, crate::ast::Type>,
 }
@@ -130,6 +137,7 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
         return_types: Default::default(),
         entry_nodes: Default::default(),
         unsupported: Default::default(),
+        constructors: Default::default(),
         globals: Default::default(),
         global_types: Default::default(),
     };
@@ -142,6 +150,18 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
     for (name, ty) in &program.const_types {
         facts.globals.insert(name.clone());
         facts.global_types.insert(name.clone(), ty.clone());
+    }
+    for def in &program.type_defs {
+        if let super::program::HirTypeDefKind::Enum { variants } = &def.kind {
+            for variant in variants {
+                let name = match variant {
+                    super::program::HirEnumVariant::Unit(n)
+                    | super::program::HirEnumVariant::Tuple(n, _)
+                    | super::program::HirEnumVariant::Struct(n, _) => n,
+                };
+                facts.constructors.insert(name.clone());
+            }
+        }
     }
     for callable in &program.callables {
         if callable.owner.is_some() || callable.is_isr || callable.trait_default
