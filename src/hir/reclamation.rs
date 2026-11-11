@@ -416,7 +416,6 @@ pub struct RegistrationFacts {
 /// Mirror of `analysis::reclamation::walk::register` for the structural fields
 /// above (AST parity is asserted in tests).
 pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
-    use super::program::HirCallableKind;
     let mut facts = RegistrationFacts {
         bodies: Default::default(),
         generics: Default::default(),
@@ -429,6 +428,23 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
         globals: Default::default(),
         global_types: Default::default(),
     };
+    register_global_facts(program, &mut facts);
+    register_enum_facts(program, &mut facts);
+    for def in &program.type_defs {
+        if def.has_user_operators {
+            facts.user_operators.insert(def.name.clone());
+        }
+    }
+    for def in &program.type_defs {
+        register_type_methods(def, program, &mut facts);
+    }
+    for callable in &program.callables {
+        register_callable_fact(callable, &mut facts);
+    }
+    facts
+}
+
+fn register_global_facts(program: &HirProgram, facts: &mut RegistrationFacts) {
     for global in &program.globals {
         facts.globals.insert(global.name.clone());
         if let Some(ty) = &global.ty {
@@ -439,117 +455,138 @@ pub fn registration_facts(program: &HirProgram) -> RegistrationFacts {
         facts.globals.insert(name.clone());
         facts.global_types.insert(name.clone(), ty.clone());
     }
+}
+
+fn register_enum_facts(program: &HirProgram, facts: &mut RegistrationFacts) {
     for def in &program.type_defs {
-        if let super::program::HirTypeDefKind::Enum { variants } = &def.kind {
-            for variant in variants {
-                let name = match variant {
-                    super::program::HirEnumVariant::Unit(n)
-                    | super::program::HirEnumVariant::Tuple(n, _)
-                    | super::program::HirEnumVariant::Struct(n, _) => n,
-                };
-                facts.constructors.insert(name.clone());
-            }
-        }
+        register_enum(def, facts);
     }
-    for def in &program.type_defs {
-        if def.has_user_operators {
-            facts.user_operators.insert(def.name.clone());
-        }
-    }
-    // Explicit-receiver methods register as `Owner::method` synthetic
-    // callables; implicit-receiver members only shadow the key (AST parity).
-    for def in &program.type_defs {
-        if !matches!(
-            def.kind,
-            super::program::HirTypeDefKind::Object { .. }
-                | super::program::HirTypeDefKind::Struct { .. }
-        ) {
-            continue;
-        }
-        let field_names: Vec<String> = match &def.kind {
-            super::program::HirTypeDefKind::Object { fields }
-            | super::program::HirTypeDefKind::Struct { fields } => {
-                fields.iter().map(|f| f.name.clone()).collect()
-            }
-            _ => Vec::new(),
+}
+
+fn register_enum(def: &super::program::HirTypeDef, facts: &mut RegistrationFacts) {
+    let super::program::HirTypeDefKind::Enum { variants } = &def.kind else {
+        return;
+    };
+    for variant in variants {
+        let name = match variant {
+            super::program::HirEnumVariant::Unit(n)
+            | super::program::HirEnumVariant::Tuple(n, _)
+            | super::program::HirEnumVariant::Struct(n, _) => n,
         };
-        for callable in program.callables.iter().filter(|c| {
-            c.owner.as_deref() == Some(def.name.as_str())
-                && !c.is_impl_fn
-                && !c.trait_default
-                && matches!(
-                    c.kind,
-                    super::program::HirCallableKind::MemberDefn
-                        | super::program::HirCallableKind::MemberTransaction
-                )
-        }) {
-            let key = (def.name.clone(), callable.name.clone());
-            facts.methods.insert(key.clone(), None);
-            if callable.kind != super::program::HirCallableKind::MemberDefn {
-                continue;
-            }
-            if !def.type_params.is_empty() || !callable.type_params.is_empty() {
-                continue;
-            }
-            if uses_implicit_receiver(callable, &field_names) {
-                continue;
-            }
-            let Some(first) = callable.params.first() else { continue };
-            if first.ty.universe_key() != Some(def.name.as_str()) {
-                continue;
-            }
-            let synthetic = format!("{}::{}", def.name, callable.name);
-            facts.methods.insert(key, Some(synthetic.clone()));
-            let params = callable
-                .params
-                .iter()
-                .map(|p| (p.name.clone(), p.ty.clone()))
-                .collect();
-            facts
-                .bodies
-                .insert(synthetic.clone(), (params, callable.body.statements.len()));
-            if let Some(ty) = &callable.result {
-                facts.return_types.insert(synthetic, ty.clone());
-            }
-        }
+        facts.constructors.insert(name.clone());
     }
-    for callable in &program.callables {
-        if callable.owner.is_some() || callable.is_isr || callable.trait_default
-            || callable.is_impl_fn
-        {
+}
+
+fn member_callable(c: &super::program::HirCallable) -> bool {
+    !c.is_impl_fn
+        && !c.trait_default
+        && matches!(
+            c.kind,
+            super::program::HirCallableKind::MemberDefn
+                | super::program::HirCallableKind::MemberTransaction
+        )
+}
+
+/// Explicit-receiver methods register as `Owner::method` synthetic callables;
+/// implicit-receiver members only shadow the key (AST parity).
+fn register_type_methods(
+    def: &super::program::HirTypeDef,
+    program: &HirProgram,
+    facts: &mut RegistrationFacts,
+) {
+    let fields = match &def.kind {
+        super::program::HirTypeDefKind::Object { fields }
+        | super::program::HirTypeDefKind::Struct { fields } => fields,
+        super::program::HirTypeDefKind::Enum { .. } => return,
+    };
+    let field_names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+    let members = program
+        .callables
+        .iter()
+        .filter(|c| c.owner.as_deref() == Some(def.name.as_str()) && member_callable(c));
+    for callable in members {
+        let key = (def.name.clone(), callable.name.clone());
+        facts.methods.insert(key.clone(), None);
+        if !synthetic_method(def, callable, &field_names) {
             continue;
         }
-        let is_defn = callable.kind == HirCallableKind::Defn;
-        if is_defn && !callable.type_params.is_empty() {
-            facts.generics.insert(callable.name.clone());
-            continue;
-        }
-        if !matches!(
-            callable.kind,
-            HirCallableKind::Defn | HirCallableKind::Transaction
-        ) {
-            continue;
-        }
-        let params: Vec<(String, crate::ast::Type)> = callable
+        let synthetic = format!("{}::{}", def.name, callable.name);
+        facts.methods.insert(key, Some(synthetic.clone()));
+        let params = callable
             .params
             .iter()
             .map(|p| (p.name.clone(), p.ty.clone()))
             .collect();
-        let mut len = callable.body.statements.len();
-        if callable.kind == HirCallableKind::Transaction && callable.contract.is_some() {
-            // AST register_transaction appends pre/post condition expressions.
-            len += 2;
-        }
-        facts.bodies.insert(callable.name.clone(), (params, len));
+        facts
+            .bodies
+            .insert(synthetic.clone(), (params, callable.body.statements.len()));
         if let Some(ty) = &callable.result {
-            facts.return_types.insert(callable.name.clone(), ty.clone());
-        }
-        if callable.is_reactive {
-            facts.entry_nodes.insert(callable.name.clone());
-        }
-        if callable.is_async {
-            facts.unsupported.insert(callable.name.clone());
+            facts.return_types.insert(synthetic, ty.clone());
         }
     }
-    facts
+}
+
+fn synthetic_method(
+    def: &super::program::HirTypeDef,
+    callable: &super::program::HirCallable,
+    field_names: &[String],
+) -> bool {
+    if callable.kind != super::program::HirCallableKind::MemberDefn
+        || !def.type_params.is_empty()
+        || !callable.type_params.is_empty()
+        || uses_implicit_receiver(callable, field_names)
+    {
+        return false;
+    }
+    callable
+        .params
+        .first()
+        .is_some_and(|first| first.ty.universe_key() == Some(def.name.as_str()))
+}
+
+fn register_callable_fact(
+    callable: &super::program::HirCallable,
+    facts: &mut RegistrationFacts,
+) {
+    use super::program::HirCallableKind;
+    if callable.owner.is_some() || callable.is_isr || callable.trait_default || callable.is_impl_fn {
+        return;
+    }
+    if callable.kind == HirCallableKind::Defn && !callable.type_params.is_empty() {
+        facts.generics.insert(callable.name.clone());
+        return;
+    }
+    match callable.kind {
+        HirCallableKind::Defn => register_plain_callable(callable, facts, 0),
+        HirCallableKind::Transaction => {
+            let contract = usize::from(callable.contract.is_some()) * 2;
+            register_plain_callable(callable, facts, contract);
+            if callable.is_reactive {
+                facts.entry_nodes.insert(callable.name.clone());
+            }
+            if callable.is_async {
+                facts.unsupported.insert(callable.name.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn register_plain_callable(
+    callable: &super::program::HirCallable,
+    facts: &mut RegistrationFacts,
+    extra_statements: usize,
+) {
+    let params = callable
+        .params
+        .iter()
+        .map(|p| (p.name.clone(), p.ty.clone()))
+        .collect();
+    facts.bodies.insert(
+        callable.name.clone(),
+        (params, callable.body.statements.len() + extra_statements),
+    );
+    if let Some(ty) = &callable.result {
+        facts.return_types.insert(callable.name.clone(), ty.clone());
+    }
 }

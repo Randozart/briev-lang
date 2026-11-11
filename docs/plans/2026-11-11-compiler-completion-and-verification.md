@@ -204,6 +204,19 @@ done; this is the ordered map for `walk::Builder` → HIR:
 4. **Consumer flip** (`analyze_program` reclamation) only when the full plan
    compares equal under `BRIEV_HIR_EMIT`, with the AST plan as the oracle.
 
-**Next R slices:** constraints/`build_owner` (the ~700-line AST expression
-walker), solver, plan absorption; flip the consumer only when the whole plan
-compares equal.
+**2026-11-11 — R3 (constraints + Graph/solver) LANDED.**
+`src/hir/reclamation/graph.rs` mirrors the AST Graph (nodes/points/constants/
+memory, callables, constraints, publish fields, casting lanes, specialisation,
+solver, plan). `src/hir/reclamation/walk.rs` ports `Builder` (statements,
+patterns, assign/projection stores, publish recording/propagation,
+alloc_bindings, calls/intrinsics, casts, generics, methods). A test-only AST
+constraint dump (`analysis::reclamation::constraints_for_test`) proves ordered
+constraint + call-edge equality on 13 fixtures: scalars, allocations,
+struct/list/tuple/slice/index/field, Print# capture, branches/matches,
+user calls + recursion, generics, explicit/free-receiver methods, blocks,
+user operators, nested field stores, publish propagation, casts. Praetor
+clean after splitting registration/expression/expression_type helpers.
+
+**Next R slice:** plan-level parity (run the HIR Graph `solve/plan` and compare
+`ReclamationPlan` with the AST result on the same fixtures) and then flip the
+`analyze_program` consumer under `BRIEV_HIR_EMIT` with a debug oracle.

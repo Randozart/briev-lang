@@ -77,13 +77,8 @@ fn variant_fields(variant: &HirEnumVariant) -> (String, Vec<Type>) {
 }
 
 fn register_methods(graph: &mut Graph, definition: &HirTypeDef, program: &HirProgram) {
-    let field_names: Vec<String> = match &definition.kind {
-        HirTypeDefKind::Object { fields } | HirTypeDefKind::Struct { fields } => {
-            fields.iter().map(|field| field.name.clone()).collect()
-        }
-        HirTypeDefKind::Enum { .. } => Vec::new(),
-    };
-    for callable in program.callables.iter().filter(|callable| {
+    let field_names = member_field_names(definition);
+    let members = program.callables.iter().filter(|callable| {
         callable.owner.as_deref() == Some(definition.name.as_str())
             && !callable.is_impl_fn
             && !callable.trait_default
@@ -91,27 +86,54 @@ fn register_methods(graph: &mut Graph, definition: &HirTypeDef, program: &HirPro
                 callable.kind,
                 HirCallableKind::MemberDefn | HirCallableKind::MemberTransaction
             )
-    }) {
-        let key = (definition.name.clone(), callable.name.clone());
-        graph.methods.insert(key.clone(), None);
-        if callable.kind != HirCallableKind::MemberDefn {
-            continue;
-        }
-        if !definition.type_params.is_empty() || !callable.type_params.is_empty() {
-            continue;
-        }
-        if super::uses_implicit_receiver(callable, &field_names) {
-            continue;
-        }
-        let Some(receiver) = callable.params.first() else { continue };
-        if receiver.ty.universe_key() != Some(definition.name.as_str()) {
-            continue;
-        }
-        let mut synthetic = callable.clone();
-        synthetic.name = format!("{}::{}", definition.name, callable.name);
-        register_definition(graph, &synthetic);
-        graph.methods.insert(key, Some(synthetic.name));
+    });
+    for callable in members {
+        register_method(graph, definition, callable, &field_names);
     }
+}
+
+fn member_field_names(definition: &HirTypeDef) -> Vec<String> {
+    match &definition.kind {
+        HirTypeDefKind::Object { fields } | HirTypeDefKind::Struct { fields } => {
+            fields.iter().map(|field| field.name.clone()).collect()
+        }
+        HirTypeDefKind::Enum { .. } => Vec::new(),
+    }
+}
+
+fn register_method(
+    graph: &mut Graph,
+    definition: &HirTypeDef,
+    callable: &HirCallable,
+    field_names: &[String],
+) {
+    let key = (definition.name.clone(), callable.name.clone());
+    graph.methods.insert(key.clone(), None);
+    if !explicit_receiver(definition, callable, field_names) {
+        return;
+    }
+    let mut synthetic = callable.clone();
+    synthetic.name = format!("{}::{}", definition.name, callable.name);
+    register_definition(graph, &synthetic);
+    graph.methods.insert(key, Some(synthetic.name));
+}
+
+fn explicit_receiver(
+    definition: &HirTypeDef,
+    callable: &HirCallable,
+    field_names: &[String],
+) -> bool {
+    if callable.kind != HirCallableKind::MemberDefn
+        || !definition.type_params.is_empty()
+        || !callable.type_params.is_empty()
+        || super::uses_implicit_receiver(callable, field_names)
+    {
+        return false;
+    }
+    callable
+        .params
+        .first()
+        .is_some_and(|receiver| receiver.ty.universe_key() == Some(definition.name.as_str()))
 }
 
 fn register_free(graph: &mut Graph, callable: &HirCallable) {
@@ -377,11 +399,15 @@ impl Builder<'_> {
         let value = self.expression(expression);
         let ty = self.expression_type(expression);
         for arm in arms {
-            for pattern in &arm.patterns {
-                self.pattern_types(pattern, ty.as_ref());
-            }
-            self.statement_arm(value, arm);
+            self.statement_arm_typed(arm, value, ty.as_ref());
         }
+    }
+
+    fn statement_arm_typed(&mut self, arm: &HirStmtMatchArm, value: Node, ty: Option<&Type>) {
+        for pattern in &arm.patterns {
+            self.pattern_types(pattern, ty);
+        }
+        self.statement_arm(value, arm);
     }
 
     fn bind_types(
@@ -621,6 +647,88 @@ impl Builder<'_> {
             }
             HirExprKind::Literal(HirLiteral::Bytes(_)) => self.graph.root(),
             HirExprKind::Call { callee, args, .. } => self.call(callee, args),
+            other => self.expression_structural(expression, other),
+        }
+    }
+
+    fn expression_structural(&mut self, expression: &HirExpr, kind: &HirExprKind) -> Node {
+        match kind {
+            HirExprKind::StructLiteral { .. }
+            | HirExprKind::List(_)
+            | HirExprKind::Tuple(_)
+            | HirExprKind::Slice { .. }
+            | HirExprKind::Index(..)
+            | HirExprKind::Field { .. }
+            | HirExprKind::Deref(_)
+            | HirExprKind::Cast { .. }
+            | HirExprKind::MethodCall { .. }
+            | HirExprKind::Consume(_)
+            | HirExprKind::AddrOf(_)
+            | HirExprKind::IsType { .. } => self.expression_composite(expression, kind),
+            HirExprKind::Unary { op, inner } => self.unary(*op, inner),
+            HirExprKind::Binary { op, left, right } => self.binary(*op, left, right),
+            HirExprKind::Reflect { receiver, name, .. } => {
+                let value = self.expression(receiver);
+                if matches!(
+                    name.as_str(),
+                    "Length" | "Size" | "Count" | "Bytes" | "Bits" | "Capacity" | "Alignment"
+                ) {
+                    return self.graph.unknown_value();
+                }
+                if !matches!(name.as_str(), "Ptr" | "Data" | "Address") {
+                    self.unsupported();
+                    self.capture(&[value]);
+                }
+                value
+            }
+            HirExprKind::If { condition, then_branch, else_branch } => {
+                self.expression(condition);
+                let result = self.graph.unknown_value();
+                let yes = self.expression(then_branch);
+                self.graph.copy(yes, result);
+                if let Some(no) = else_branch {
+                    let value = self.expression(no);
+                    self.graph.copy(value, result);
+                }
+                result
+            }
+            HirExprKind::Match { scrutinee, arms } => {
+                let ty = self.expression_type(scrutinee);
+                let value = self.expression(scrutinee);
+                let result = self.graph.node();
+                for arm in arms {
+                    self.pattern_types(&arm.pattern, ty.as_ref());
+                    self.expression_arm(value, result, arm);
+                }
+                result
+            }
+            HirExprKind::Block(statements) => self.block(statements),
+            HirExprKind::Range { start, end, .. } => {
+                self.expression(start);
+                self.expression(end);
+                self.graph.node()
+            }
+            HirExprKind::Literal(
+                HirLiteral::Bool(_)
+                | HirLiteral::Char(_)
+                | HirLiteral::Float(_)
+                | HirLiteral::BeginProgram,
+            )
+            | HirExprKind::UnitLiteral { .. }
+            | HirExprKind::Other("formatting-annotation")
+            | HirExprKind::Other("exists") => self.graph.node(),
+            _ => {
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+                    eprintln!("reclamation HIR unsupported expression in {}: {expression:?}", self.owner);
+                }
+                self.unsupported();
+                self.graph.root()
+            }
+        }
+    }
+
+    fn expression_composite(&mut self, expression: &HirExpr, kind: &HirExprKind) -> Node {
+        match kind {
             HirExprKind::StructLiteral { fields, specs, .. } => {
                 let root = self.graph.allocation(self.owner);
                 for (field, value) in fields.iter().chain(specs) {
@@ -699,62 +807,7 @@ impl Builder<'_> {
                 self.expression(inner);
                 self.graph.node()
             }
-            HirExprKind::Unary { op, inner } => self.unary(*op, inner),
-            HirExprKind::Binary { op, left, right } => self.binary(*op, left, right),
-            HirExprKind::Reflect { receiver, name, .. } => {
-                let value = self.expression(receiver);
-                if matches!(
-                    name.as_str(),
-                    "Length" | "Size" | "Count" | "Bytes" | "Bits" | "Capacity" | "Alignment"
-                ) {
-                    return self.graph.unknown_value();
-                }
-                if !matches!(name.as_str(), "Ptr" | "Data" | "Address") {
-                    self.unsupported();
-                    self.capture(&[value]);
-                }
-                value
-            }
-            HirExprKind::If { condition, then_branch, else_branch } => {
-                self.expression(condition);
-                let result = self.graph.unknown_value();
-                let yes = self.expression(then_branch);
-                self.graph.copy(yes, result);
-                if let Some(no) = else_branch {
-                    let value = self.expression(no);
-                    self.graph.copy(value, result);
-                }
-                result
-            }
-            HirExprKind::Match { scrutinee, arms } => {
-                let ty = self.expression_type(scrutinee);
-                let value = self.expression(scrutinee);
-                let result = self.graph.node();
-                for arm in arms {
-                    self.pattern_types(&arm.pattern, ty.as_ref());
-                    self.expression_arm(value, result, arm);
-                }
-                result
-            }
-            HirExprKind::Block(statements) => self.block(statements),
-            HirExprKind::Range { start, end, .. } => {
-                self.expression(start);
-                self.expression(end);
-                self.graph.node()
-            }
-            HirExprKind::Literal(
-                HirLiteral::Bool(_)
-                | HirLiteral::Char(_)
-                | HirLiteral::Float(_)
-                | HirLiteral::BeginProgram,
-            )
-            | HirExprKind::UnitLiteral { .. }
-            | HirExprKind::Other("formatting-annotation")
-            | HirExprKind::Other("exists") => self.graph.node(),
             _ => {
-                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
-                    eprintln!("reclamation HIR unsupported expression in {}: {expression:?}", self.owner);
-                }
                 self.unsupported();
                 self.graph.root()
             }
@@ -898,6 +951,64 @@ impl Builder<'_> {
         result
     }
 
+    fn method_expression_type(
+        &self,
+        receiver: &HirExpr,
+        name: &str,
+        args: &[HirExpr],
+        analysis_id: Option<usize>,
+    ) -> Option<Type> {
+        {
+                if analysis_id.is_some() {
+                    return None;
+                }
+                let intrinsic = crate::intrinsic_signatures::get_intrinsic_signature(name)
+                    .and_then(|signature| match signature.return_kind {
+                        crate::intrinsic_signatures::ReturnKind::Native(category) => {
+                            Some(Some(Type::Custom(category.into())))
+                        }
+                        crate::intrinsic_signatures::ReturnKind::Exact(ty) => Some(Some(ty)),
+                        _ => None,
+                    });
+                match intrinsic {
+                    Some(ty) => ty,
+                    None => {
+                        let target = self.method_target(receiver, name, args.len())?;
+                        let mut arguments = vec![receiver.clone()];
+                        arguments.extend_from_slice(args);
+                        self.graph
+                            .return_types
+                            .get(&target)
+                            .cloned()
+                            .or_else(|| self.generic_result(&target, &arguments))
+                    }
+                }
+            }
+    }
+
+    fn call_expression_type(&self, callee: &str, args: &[HirExpr]) -> Option<Type> {
+        self
+                .graph
+                .return_types
+                .get(callee)
+                .cloned()
+                .or_else(|| self.generic_result(callee, args))
+                .or_else(|| {
+                    let target = self.free_member_target(callee, args)?;
+                    self.graph.return_types.get(&target).cloned()
+                })
+                .or_else(|| {
+                    use crate::intrinsic_signatures::ReturnKind;
+                    match crate::intrinsic_signatures::get_intrinsic_signature(callee)?
+                        .return_kind
+                    {
+                        ReturnKind::Exact(ty) => Some(ty),
+                        ReturnKind::Native(category) => Some(Type::Custom(category.into())),
+                        _ => None,
+                    }
+                })
+    }
+
     fn has_user_operators(&self, ty: &Type) -> bool {
         let Some(mut key) = ty.universe_key() else { return false };
         let mut visited = BTreeSet::new();
@@ -932,51 +1043,9 @@ impl Builder<'_> {
                 .map(Type::Tuple),
             HirExprKind::Cast { to, .. } => Some(to.clone()),
             HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
-                if analysis_id.is_some() {
-                    return None;
-                }
-                let intrinsic = crate::intrinsic_signatures::get_intrinsic_signature(name)
-                    .and_then(|signature| match signature.return_kind {
-                        crate::intrinsic_signatures::ReturnKind::Native(category) => {
-                            Some(Some(Type::Custom(category.into())))
-                        }
-                        crate::intrinsic_signatures::ReturnKind::Exact(ty) => Some(Some(ty)),
-                        _ => None,
-                    });
-                match intrinsic {
-                    Some(ty) => ty,
-                    None => {
-                        let target = self.method_target(receiver, name, args.len())?;
-                        let mut arguments = vec![(**receiver).clone()];
-                        arguments.extend_from_slice(args);
-                        self.graph
-                            .return_types
-                            .get(&target)
-                            .cloned()
-                            .or_else(|| self.generic_result(&target, &arguments))
-                    }
-                }
+                self.method_expression_type(receiver, name, args, *analysis_id)
             }
-            HirExprKind::Call { callee, args, .. } => self
-                .graph
-                .return_types
-                .get(callee)
-                .cloned()
-                .or_else(|| self.generic_result(callee, args))
-                .or_else(|| {
-                    let target = self.free_member_target(callee, args)?;
-                    self.graph.return_types.get(&target).cloned()
-                })
-                .or_else(|| {
-                    use crate::intrinsic_signatures::ReturnKind;
-                    match crate::intrinsic_signatures::get_intrinsic_signature(callee)?
-                        .return_kind
-                    {
-                        ReturnKind::Exact(ty) => Some(ty),
-                        ReturnKind::Native(category) => Some(Type::Custom(category.into())),
-                        _ => None,
-                    }
-                }),
+            HirExprKind::Call { callee, args, .. } => self.call_expression_type(callee, args),
             HirExprKind::Unary { inner, .. } | HirExprKind::Consume(inner) => {
                 self.expression_type(inner)
             }
