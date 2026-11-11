@@ -1468,13 +1468,14 @@ impl RegionAnalyzer {
         for i in 0..chain.len().saturating_sub(1) {
             let a = &chain[i];
             let b = &chain[i + 1];
-            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b))
-            {
-                for w in writes_a {
-                    if reads_b.contains(w) {
-                        links.push(w.clone());
-                        break;
-                    }
+            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b)) {
+                // Deterministic choice: a write set is unordered, and the link
+                // variable feeds visible composed-body substitution.
+                let mut shared: Vec<&String> =
+                    writes_a.iter().filter(|w| reads_b.contains(*w)).collect();
+                shared.sort();
+                if let Some(w) = shared.first() {
+                    links.push((*w).clone());
                 }
             }
         }
@@ -2077,6 +2078,267 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
     }
 
     results.pop().expect("substitute_expr: no result")
+}
+
+/// Test-only canonical dump shared by the AST and HIR parity harnesses.
+///
+/// Region ids are canonicalised from the sorted member sets (the analysis
+/// assigns them from `HashMap` order), map-keyed data is emitted in sorted
+/// order, and tie-ordered lists are sorted. Everything semantically relevant
+/// — membership, classification, intervals, value-set sizes, iteration
+/// bounds, scores, budgets, and composed bodies — is compared exactly.
+#[cfg(test)]
+pub(crate) struct CanonicalParts<'a> {
+    pub var_info: &'a HashMap<String, VarInfo>,
+    pub trigger_vars: &'a HashSet<String>,
+    pub regions: &'a [Vec<String>],
+    pub linear_chains: &'a [Vec<String>],
+    pub iter_bounds: &'a HashMap<String, u64>,
+    pub region_scores: &'a [RegionScore],
+    pub budget_plan: &'a Option<BudgetPlan>,
+    pub composed_chains: &'a [ComposedChain],
+}
+
+#[cfg(test)]
+pub(crate) fn canonical_dump_parts(
+    parts: CanonicalParts<'_>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::BTreeMap;
+
+    let (canon_regions, canon_var, rid_map) = canonical_regions(parts.regions);
+    let mut out = BTreeMap::new();
+    dump_variables(&mut out, parts.var_info, &canon_var);
+    dump_trigger_names(&mut out, parts.trigger_vars);
+    dump_regions(&mut out, &canon_regions);
+    dump_linear_chains(&mut out, parts.linear_chains);
+    dump_iter_bounds(&mut out, parts.iter_bounds);
+    dump_scores(&mut out, parts.region_scores, &rid_map);
+    dump_budget(&mut out, parts.budget_plan, &rid_map);
+    dump_composed(&mut out, parts.composed_chains);
+    out
+}
+
+#[cfg(test)]
+fn dump_variables(
+    out: &mut std::collections::BTreeMap<String, String>,
+    var_info: &HashMap<String, VarInfo>,
+    canon_var: &HashMap<String, usize>,
+) {
+    let mut names: Vec<&String> = var_info.keys().collect();
+    names.sort();
+    for name in names {
+        let info = &var_info[name];
+        let region = if info.classification == VarClass::Pure {
+            0
+        } else {
+            *canon_var.get(name).unwrap_or(&0)
+        };
+        out.insert(
+            format!("var.{name}"),
+            format!(
+                "class={:?}|interval={:?}|vset={:?}|region={region}",
+                info.classification, info.interval, info.value_set_size
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn dump_trigger_names(
+    out: &mut std::collections::BTreeMap<String, String>,
+    trigger_vars: &HashSet<String>,
+) {
+    let mut triggers: Vec<&String> = trigger_vars.iter().collect();
+    triggers.sort();
+    out.insert(
+        "triggers".to_string(),
+        triggers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+    );
+}
+
+#[cfg(test)]
+fn dump_regions(
+    out: &mut std::collections::BTreeMap<String, String>,
+    regions: &[Vec<String>],
+) {
+    for (i, region) in regions.iter().enumerate() {
+        out.insert(format!("region.{}", i + 1), region.join(","));
+    }
+}
+
+#[cfg(test)]
+fn dump_linear_chains(
+    out: &mut std::collections::BTreeMap<String, String>,
+    chains: &[Vec<String>],
+) {
+    let mut chains = chains.to_vec();
+    chains.sort();
+    for (i, chain) in chains.iter().enumerate() {
+        out.insert(format!("linear.{i}"), chain.join("->"));
+    }
+}
+
+#[cfg(test)]
+fn dump_iter_bounds(
+    out: &mut std::collections::BTreeMap<String, String>,
+    iter_bounds: &HashMap<String, u64>,
+) {
+    let mut bounds: Vec<(&String, &u64)> = iter_bounds.iter().collect();
+    bounds.sort_by_key(|(name, _)| (*name).clone());
+    for (name, value) in bounds {
+        out.insert(format!("iter.{name}"), value.to_string());
+    }
+}
+
+#[cfg(test)]
+fn dump_scores(
+    out: &mut std::collections::BTreeMap<String, String>,
+    scores: &[RegionScore],
+    rid_map: &HashMap<usize, usize>,
+) {
+    let mut sorted: Vec<&RegionScore> = scores.iter().collect();
+    sorted.sort_by_key(|s| sorted_txns(&s.txn_names).join("+"));
+    for score in sorted {
+        let txns = sorted_txns(&score.txn_names);
+        let region = canonical_rid(score.region_id, rid_map);
+        out.insert(
+            format!("score.{}", txns.join("+")),
+            format!(
+                "region={region}|txns={}|class={:?}|weight={}|iter={}|vset={:?}|opt={:.6}|composed={}|gpu={}",
+                txns.join(","),
+                score.complexity,
+                score.body_weight,
+                score.iteration_count,
+                score.value_set_size,
+                score.optimization_score,
+                score.chain_composed,
+                score.gpu_eligible
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn dump_budget(
+    out: &mut std::collections::BTreeMap<String, String>,
+    plan: &Option<BudgetPlan>,
+    rid_map: &HashMap<usize, usize>,
+) {
+    let Some(plan) = plan else { return };
+    out.insert("budget.total".to_string(), plan.total_budget.to_string());
+    out.insert("budget.residual".to_string(), plan.residual_budget.to_string());
+    let mut allocated: Vec<String> = plan
+        .allocated
+        .iter()
+        .map(|(rid, class, cost, score)| {
+            format!("{}:{class:?}:{cost}:{score:.6}", canonical_rid(*rid, rid_map))
+        })
+        .collect();
+    allocated.sort();
+    out.insert("budget.allocated".to_string(), allocated.join("|"));
+    let mut skipped: Vec<String> = plan
+        .skipped
+        .iter()
+        .map(|(rid, class, cost)| format!("{}:{class:?}:{cost}", canonical_rid(*rid, rid_map)))
+        .collect();
+    skipped.sort();
+    out.insert("budget.skipped".to_string(), skipped.join("|"));
+}
+
+#[cfg(test)]
+fn dump_composed(
+    out: &mut std::collections::BTreeMap<String, String>,
+    composed_chains: &[ComposedChain],
+) {
+    let mut composed: Vec<&ComposedChain> = composed_chains.iter().collect();
+    composed.sort_by_key(|cc| {
+        (
+            cc.chain.join("->"),
+            format!("{:?}", cc.trigger_values),
+            cc.link_vars.join(","),
+        )
+    });
+    for (i, cc) in composed.iter().enumerate() {
+        let mut roots = cc.root_triggers.clone();
+        roots.sort();
+        let mut links = cc.link_vars.clone();
+        links.sort();
+        out.insert(
+            format!("composed.{i}"),
+            format!(
+                "chain={}|links={}|roots={}|body={:#?}|counter={:?}|weight={}|trigvals={:?}|internal={}",
+                cc.chain.join("->"),
+                links.join(","),
+                roots.join(","),
+                cc.composed_body,
+                cc.counter_var,
+                cc.fused_weight,
+                cc.trigger_values,
+                cc.all_internal
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn canonical_regions(
+    regions: &[Vec<String>],
+) -> (Vec<Vec<String>>, HashMap<String, usize>, HashMap<usize, usize>) {
+    let mut entries: Vec<(usize, Vec<String>)> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, region)| {
+            let mut members = region.clone();
+            members.sort();
+            (i + 1, members)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut canon = Vec::new();
+    let mut var_map = HashMap::new();
+    let mut rid_map = HashMap::new();
+    for (new_idx, (old_rid, members)) in entries.into_iter().enumerate() {
+        for name in &members {
+            var_map.insert(name.clone(), new_idx + 1);
+        }
+        rid_map.insert(old_rid, new_idx + 1);
+        canon.push(members);
+    }
+    (canon, var_map, rid_map)
+}
+
+#[cfg(test)]
+fn canonical_rid(rid: usize, rid_map: &HashMap<usize, usize>) -> usize {
+    if rid == 0 {
+        0
+    } else {
+        *rid_map.get(&rid).unwrap_or(&rid)
+    }
+}
+
+#[cfg(test)]
+fn sorted_txns(txns: &[String]) -> Vec<String> {
+    let mut sorted = txns.to_vec();
+    sorted.sort();
+    sorted
+}
+
+/// Test-only AST dump (mirrors `hir::region::canonical_dump`).
+#[cfg(test)]
+pub(crate) fn canonical_dump(
+    analyzer: &RegionAnalyzer,
+) -> std::collections::BTreeMap<String, String> {
+    canonical_dump_parts(CanonicalParts {
+        var_info: &analyzer.var_info,
+        trigger_vars: &analyzer.trigger_vars,
+        regions: &analyzer.regions,
+        linear_chains: &analyzer.linear_chains,
+        iter_bounds: &analyzer.iter_bounds,
+        region_scores: &analyzer.region_scores,
+        budget_plan: &analyzer.budget_plan,
+        composed_chains: &analyzer.composed_chains,
+    })
 }
 
 #[cfg(test)]
