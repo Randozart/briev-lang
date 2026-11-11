@@ -28,6 +28,15 @@ pub struct TestOutcome {
     pub name: String,
     pub passed: bool,
     pub detail: String,
+    /// SPEC §8.11 test-block counts for this file (0 when it has no blocks).
+    pub tests_run: usize,
+    pub tests_failed: usize,
+}
+
+impl TestOutcome {
+    fn new(name: String, passed: bool, detail: String) -> Self {
+        TestOutcome { name, passed, detail, tests_run: 0, tests_failed: 0 }
+    }
 }
 
 struct BuildOutcome {
@@ -148,85 +157,107 @@ fn run_one(exe: &Path, bv: &Path, root: &Path, args: &TestArgs) -> TestOutcome {
     let scratch = root.join(&name);
     let _ = std::fs::remove_dir_all(&scratch);
     if let Err(e) = std::fs::create_dir_all(&scratch) {
-        return TestOutcome { name, passed: false, detail: format!("scratch dir: {e}") };
+        return TestOutcome::new(name, false, format!("scratch dir: {e}"));
     }
     let src = match std::fs::read_to_string(bv) {
         Ok(s) => s,
-        Err(e) => return TestOutcome { name, passed: false, detail: format!("read: {e}") },
+        Err(e) => return TestOutcome::new(name, false, format!("read: {e}")),
     };
     let dirs = parse_directives(&src);
 
     // ── SPEC §8.11 test blocks (reference interpreter) ────────────────
     if briev_compiler::test_engine::source_has_tests(&src) {
-        let reports = match briev_compiler::test_engine::run_tests(
+        let run = match briev_compiler::test_engine::run_tests(
             &bv.to_string_lossy(),
             &src,
             args.domain.as_deref(),
         ) {
-            Ok(reports) => reports,
-            Err(e) => {
-                return TestOutcome {
-                    name,
-                    passed: false,
-                    detail: format!("test compile failed:\n{e}"),
+            Ok(Some(run)) => run,
+            Ok(None) => {
+                if args.tests_only {
+                    return TestOutcome::new(name, true, "no test blocks".to_string());
                 }
+                return run_program_file(exe, bv, name, &dirs, &scratch);
+            }
+            Err(e) => {
+                return TestOutcome::new(name, false, format!("test compile failed:\n{e}"))
             }
         };
+        if run.reports.is_empty() {
+            return TestOutcome::new(
+                name,
+                false,
+                format!(
+                    "no test blocks in domain '{}'; available domains: {}",
+                    args.domain.as_deref().unwrap_or(""),
+                    run.domains.join(", ")
+                ),
+            );
+        }
         if args.list_tests {
-            for report in &reports {
+            for report in &run.reports {
                 println!("{}", report.label);
             }
-            return TestOutcome { name, passed: true, detail: String::new() };
+            return TestOutcome::new(name, true, String::new());
         }
-        if !reports.is_empty() {
-            let mut failures = Vec::new();
-            for report in &reports {
-                if report.passed {
-                    println!("TEST {} PASS", report.label);
-                } else {
-                    println!("TEST {} FAIL — {}", report.label, report.detail);
-                    failures.push(format!("{}: {}", report.label, report.detail));
-                }
+        let tests_run = run.reports.len();
+        let tests_failed = run.reports.iter().filter(|r| !r.passed).count();
+        let mut failures = Vec::new();
+        for report in &run.reports {
+            if report.passed {
+                println!("TEST {} PASS", report.label);
+            } else {
+                println!("TEST {} FAIL — {}", report.label, report.detail);
+                failures.push(format!("{}: {}", report.label, report.detail));
             }
-            if !failures.is_empty() {
-                return TestOutcome {
-                    name,
-                    passed: false,
-                    detail: failures.join("\n"),
-                };
-            }
-            if args.tests_only {
-                return TestOutcome { name, passed: true, detail: String::new() };
-            }
-        } else if args.tests_only {
-            return TestOutcome { name, passed: true, detail: "no test blocks".to_string() };
         }
+        if !failures.is_empty() {
+            return TestOutcome {
+                tests_run,
+                tests_failed,
+                name,
+                passed: false,
+                detail: failures.join("\n"),
+            };
+        }
+        if args.tests_only {
+            return TestOutcome { tests_run, tests_failed, name, passed: true, detail: String::new() };
+        }
+        let mut outcome = run_program_file(exe, bv, name, &dirs, &scratch);
+        outcome.tests_run = tests_run;
+        outcome.tests_failed = tests_failed;
+        return outcome;
     } else if args.tests_only {
-        return TestOutcome { name, passed: true, detail: "no test blocks".to_string() };
+        return TestOutcome::new(name, true, "no test blocks".to_string());
     }
 
-    let build = match spawn_build(exe, bv, &scratch, &dirs.run_args) {
+    run_program_file(exe, bv, name, &dirs, &scratch)
+}
+
+/// Build + link + run the file as a program (the pre-test-block path).
+fn run_program_file(exe: &Path, bv: &Path, name: String, dirs: &Directives, scratch: &Path) -> TestOutcome {
+    let build = match spawn_build(exe, bv, scratch, &dirs.run_args) {
         Ok(b) => b,
-        Err(e) => return TestOutcome { name, passed: false, detail: e },
+        Err(e) => return TestOutcome::new(name, false, e),
     };
     if !dirs.expect_errors.is_empty() {
-        return check_compile_fail(name, &dirs, &build);
+        return check_compile_fail(name, dirs, &build);
     }
     if !build.success {
-        return TestOutcome { name, passed: false, detail: format!("build failed:\n{}", build.output) };
+        return TestOutcome::new(name, false, format!("build failed:\n{}", build.output));
     }
-    run_program(name, bv, &dirs, &scratch)
+    run_program(name, bv, dirs, scratch)
 }
 
 /// A compile-fail case: the build must fail and every expected substring must
 /// appear in the combined compiler output.
 fn check_compile_fail(name: String, dirs: &Directives, build: &BuildOutcome) -> TestOutcome {
     if build.success {
-        return TestOutcome {
+        return TestOutcome::new(
             name,
-            passed: false,
-            detail: "expected a compile failure, but the build succeeded".to_string(),
-        };
+            false,
+            "expected a compile failure, but the build succeeded".to_string(),
+        );
     }
     let missing: Vec<&String> = dirs
         .expect_errors
@@ -234,16 +265,16 @@ fn check_compile_fail(name: String, dirs: &Directives, build: &BuildOutcome) -> 
         .filter(|needle| !build.output.contains(needle.as_str()))
         .collect();
     if !missing.is_empty() {
-        return TestOutcome {
+        return TestOutcome::new(
             name,
-            passed: false,
-            detail: format!(
+            false,
+            format!(
                 "missing expected diagnostic(s) {missing:?}; compiler output:\n{}",
                 build.output.trim()
             ),
-        };
+        );
     }
-    TestOutcome { name, passed: true, detail: String::new() }
+    TestOutcome::new(name, true, String::new())
 }
 
 /// A run-pass case: link, run, then check exit code and stdout (inline
@@ -251,43 +282,41 @@ fn check_compile_fail(name: String, dirs: &Directives, build: &BuildOutcome) -> 
 fn run_program(name: String, bv: &Path, dirs: &Directives, scratch: &Path) -> TestOutcome {
     let (stdout, code) = match link_and_run(scratch, &name) {
         Ok(r) => r,
-        Err(e) => return TestOutcome { name, passed: false, detail: e },
+        Err(e) => return TestOutcome::new(name, false, e),
     };
     if code != dirs.expect_exit {
-        return TestOutcome {
+        return TestOutcome::new(
             name,
-            passed: false,
-            detail: format!("exit code {code} (expected {})", dirs.expect_exit),
-        };
+            false,
+            format!("exit code {code} (expected {})", dirs.expect_exit),
+        );
     }
     let golden_path = bv.with_extension("golden");
     let expected = match &dirs.expect_stdout {
         Some(inline) => {
             if golden_path.exists() {
-                return TestOutcome {
+                return TestOutcome::new(
                     name,
-                    passed: false,
-                    detail: "both EXPECT-STDOUT and a .golden file are present; pick one".to_string(),
-                };
+                    false,
+                    "both EXPECT-STDOUT and a .golden file are present; pick one".to_string(),
+                );
             }
             inline.clone()
         }
         None if golden_path.exists() => match std::fs::read_to_string(&golden_path) {
             Ok(text) => text,
-            Err(e) => {
-                return TestOutcome { name, passed: false, detail: format!("golden read: {e}") }
-            }
+            Err(e) => return TestOutcome::new(name, false, format!("golden read: {e}")),
         },
-        None => return TestOutcome { name, passed: true, detail: String::new() },
+        None => return TestOutcome::new(name, true, String::new()),
     };
     if stdout != expected {
-        return TestOutcome {
+        return TestOutcome::new(
             name,
-            passed: false,
-            detail: format!("stdout mismatch:\n  expected: {expected:?}\n  got:      {stdout:?}"),
-        };
+            false,
+            format!("stdout mismatch:\n  expected: {expected:?}\n  got:      {stdout:?}"),
+        );
     }
-    TestOutcome { name, passed: true, detail: String::new() }
+    TestOutcome::new(name, true, String::new())
 }
 
 struct TestArgs {
@@ -368,8 +397,12 @@ pub fn run_test_mode(args: &[String]) -> Result<(), String> {
 
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("out dir: {e}"))?;
     let mut failed = 0usize;
+    let mut tests_run = 0usize;
+    let mut tests_failed = 0usize;
     for bv in &files {
         let outcome = run_one(&exe, bv, &out_dir, &parsed);
+        tests_run += outcome.tests_run;
+        tests_failed += outcome.tests_failed;
         if outcome.passed {
             println!("PASS {}", outcome.name);
         } else {
@@ -377,9 +410,19 @@ pub fn run_test_mode(args: &[String]) -> Result<(), String> {
             println!("FAIL {} — {}", outcome.name, outcome.detail);
         }
     }
-    println!("{}/{} passed", files.len() - failed, files.len());
+    if tests_run > 0 {
+        println!(
+            "{}/{} tests passed; {}/{} files passed",
+            tests_run - tests_failed,
+            tests_run,
+            files.len() - failed,
+            files.len()
+        );
+    } else {
+        println!("{}/{} passed", files.len() - failed, files.len());
+    }
     if failed > 0 {
-        Err(format!("{failed} test(s) failed"))
+        Err(format!("{failed} file(s) failed ({tests_failed} test(s))"))
     } else {
         Ok(())
     }

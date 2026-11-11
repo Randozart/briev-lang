@@ -1,3 +1,16 @@
+## 2026-11-10 — Interpreter executes the authored body of `:=` derived defns
+
+**Symptom.** `defn f(x: Int) -> Int := ref;` typechecks and the backend uses
+the reference body, but the reference interpreter executes the (empty)
+authored body: `f(2)` returns Void/0 instead of `ref(2)`.
+
+**Cause.** The derivation suffix lands as an empty body plus a reference; the
+interpreter's function registration does not resolve the reference.
+
+**Status.** OPEN (pre-existing; found while writing `test` blocks — the test
+suite avoids exercising derived defns). Fix by resolving the derivation target
+on load, matching the backend.
+
 ## 2026-11-10 — Bool list pushes emitted an i8 element into an i64 payload
 
 **Symptom.** `let flags: List<Bool> = []; foreach i in 0..N { flags <- true; }`

@@ -106,7 +106,7 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   artifacts, nightly `Fuzz`/`Memory` workflows. Remaining: corpus seeds from
   tier1, growth slices, and folding generated families into P3's corpus gate.
 
-### P5 — Pass-level snapshots — TODO (per-commit, small set)
+### P5 — Pass-level snapshots — DONE (per-commit; see 2026-11-09-h5-completion-next-leg.md)
 
 - `hir::render` canonical text; snapshots per representative fixture after
   lower, specialize, and each consumer flip. In-repo `.snap` files,
@@ -124,7 +124,7 @@ Status: `TODO` / `ACTIVE` / `DONE`. Cost: `per-commit` / `nightly`.
   artifacts in both campaigns (the cvise/creduce wrapper from this phase
   remains queued).
 
-### P7 — Curated semantic corpus — ACTIVE (first 5 landed 2026-11-10)
+### P7 — Curated semantic corpus — ACTIVE (first 6 landed 2026-11-10)
 
 - 10–15 deterministic bounded tasks with goldens (sort/search, hash map,
   matrix ops, tree traversal, coroutine pipeline).

@@ -224,3 +224,10 @@ effect; conservative call-graph fixpoint over raw-effect statements and
 Call/Spawn edges). `analyze_dual` flips the compile.rs call site with a
 rendered-warning debug oracle. Parity tests cover effectless/printing/
 transitive/uncalled/value-output/spawn shapes.
+
+**No-runtime-consumer decisions (2026-11-11).** `range`
+(`AnalysisResults.param_ranges` is always empty) and `dataflow`
+(`dataflow_errors` is always empty) keep their analysis code but are NOT H5
+port targets until a consumer is designed. `destination_ownership` is
+analysis-only by its own header comment (no backend lowering consumes it) and
+is deferred the same way. H5 effort goes to analyses with live consumers.

@@ -32,12 +32,19 @@ test wrong { expect add(1, 2) == 4; };
     let (ok, log) = suite(&[("math.bv", src)], &["--domain", "arithmetic"]);
     assert!(ok, "--domain filter selects only the passing test:\n{log}");
     assert!(log.contains("TEST arithmetic#1 PASS"), "{log}");
+    assert!(log.contains("1/1 tests passed"), "{log}");
 
     let (ok, log) = suite(&[("math.bv", src)], &[]);
     assert!(!ok, "a failing expectation exits nonzero:\n{log}");
     assert!(log.contains("TEST arithmetic#1 PASS"), "{log}");
     assert!(log.contains("TEST wrong#1 FAIL"), "{log}");
     assert!(log.contains("expect (add(1, 2) == 4)"), "{log}");
+    assert!(log.contains("1/2 tests passed"), "{log}");
+
+    let (ok, log) = suite(&[("math.bv", src)], &["--domain", "missing"]);
+    assert!(!ok, "an unmatched domain is an error:\n{log}");
+    assert!(log.contains("no test blocks in domain 'missing'"), "{log}");
+    assert!(log.contains("arithmetic, wrong"), "lists available domains:\n{log}");
 }
 
 #[test]
