@@ -1,0 +1,34 @@
+// P7 curated semantic corpus (2026-11-10): sieve of Eratosthenes.
+// EXPECT-STDOUT: 2
+// EXPECT-STDOUT: 3
+// EXPECT-STDOUT: 5
+// EXPECT-STDOUT: 7
+// EXPECT-STDOUT: 11
+// EXPECT-STDOUT: 13
+// EXPECT-STDOUT: 17
+// EXPECT-STDOUT: 19
+// EXPECT-STDOUT: 23
+// EXPECT-STDOUT: 29
+let done: Bool = false;
+defn primes(limit: Int) -> List<Int> {
+    let flags: List<Bool> = [];
+    foreach i in 0..limit { flags <- true; };
+    let result: List<Int> = [];
+    let p: Int = 2;
+    foreach p in 0..limit {
+        when p >= 2 && flags[p] {
+            result <- p;
+            let m: Int = p * p;
+            foreach m in 0..limit {
+                when m >= p * p && m % p == 0 { flags[m] = false; };
+            };
+        };
+    };
+    term result;
+};
+node main [done == false][done] {
+    let ps: List<Int> = primes(30);
+    foreach v in ps { Print#(v); Print#('\n'); };
+    done = true;
+    term;
+};

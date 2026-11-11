@@ -1,0 +1,17 @@
+// 2026-11-10 regression: pushing a Bool literal boxes it as an i64 list
+// element (previously emitted i8 into an i64 payload slot; clang rejected).
+// EXPECT-STDOUT: 3
+defn count_true() -> Int {
+    let flags: List<Bool> = [];
+    foreach i in 0..4 { flags <- true; };
+    flags[2] = false;
+    let c: Int = 0;
+    foreach i in 0..4 { when flags[i] { c = c + 1; }; };
+    term c;
+};
+let done: Bool = false;
+node main [done == false][done] {
+    Print#(count_true()); Print#('\n');
+    done = true;
+    term;
+};
