@@ -44,6 +44,43 @@ before the strategy call (Bool/Char/Float; Int is already i64). Regression:
 
 **Status.** Fixed 2026-11-10.
 
+## Collection-growth buffers beneath a resize barrier leaked — REOPENED 2026-11-11
+
+**Correction:** PR #90 was withdrawn after the authenticated server exposed a
+double free. The earlier catalogue gate was insufficient. Nested incoming
+storage was modeled as empty: `envelope.storage.address` lost boundary
+provenance, so a payload stored through that address was incorrectly reclaimed
+by the enclosing closed region. `reclamation_incoming_storage.bv` reproduces
+the premature free and subsequent double free under Valgrind. Repair and full
+verification are in progress; see
+`docs/plans/2026-11-11-closed-region-ownership-repair.md`.
+
+**Symptom:** the load harness's scalar catalogue validator lost ~32.3 MB per
+call. Repeating the captured 1,682-item response 4/16 times lost 129 MB/509 MB;
+peak live heap grew 37 MB → 134 MB → 522 MB.
+
+**Root cause:** `List<T> + List<T>` (`entries + added` in the recursive
+`json_array_entries`/`json_object_entries`) elaborates to `iter_chain` →
+`iter_chain_loop`, whose `<-` lowers to the `coll_resize` barrier. The
+reclamation walk modelled `<-` as a plain store, so the growth allocation was
+absent from `catalogue_valid`'s closure; and because `coll_resize` is a barrier,
+the runtime suspended the region and left its `malloc` untracked. The region
+proof excluded barrier-callee allocations, so it could not own them.
+
+**Fix:** a stronger frontend `closed_regions` proof — an existing region whose
+complete call closure (barriers included) cannot escape it — consumed by a
+runtime closed-owner chain that adopts allocations across descendant barriers.
+The walk models `<-` growth as a fresh backing store and pulls intrinsic-helper
+effects in through the shared `intrinsic_helpers` registry (missing bodies reject
+closed ownership). Files: `analysis/reclamation.rs`,
+`analysis/reclamation/closed.rs`, `analysis/reclamation/walk.rs`,
+`backend/llvm/reclamation.rs`, `backend/llvm/reclamation.ll`. Plan:
+`docs/plans/2026-11-11-closed-call-regions.md`.
+
+**Verification:** captured catalogue 1/4/16 → 0 definitely/indirectly/possibly
+lost bytes, peak live heap flat at 37,164,092 B; only the 65,536-byte stdout
+buffer remains reachable. Native alias fixtures Valgrind-clean at O0/O3/LTO.
+
 ## Main CI: scalar loads falsely escaped their source allocation — FIXED 2026-11-11
 
 **Symptom:** `daily_use_smoke::arena_folded_loop_uses_arena` produced the

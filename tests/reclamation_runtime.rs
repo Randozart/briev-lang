@@ -20,11 +20,7 @@ fn region_records_follow_explicit_free_growth_and_suspension() {
         assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
         let run = Command::new(&binary).output().unwrap();
         assert!(run.status.success(), "region allocation counts: {:?}", run.status);
-        if Command::new("valgrind").arg("--version").output().is_ok() {
-            let checked = Command::new("valgrind").args(["--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=91"])
-                .arg(&binary).output().unwrap();
-            assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
-        }
+        assert_memcheck_if_available(&binary);
     }
 }
 
@@ -32,17 +28,28 @@ fn region_records_follow_explicit_free_growth_and_suspension() {
 fn native_aliases_borrowed_payloads_and_nested_returns_are_memory_safe() {
     let (_directory, binary) = build_native_fixture("reclamation_aliases");
     assert_native_output(&binary, b"reclamation_ok\n");
-    if Command::new("valgrind").arg("--version").output().is_ok() {
-        let checked = Command::new("valgrind").args(["--leak-check=full", "--errors-for-leak-kinds=definite,indirect", "--error-exitcode=91"])
-            .arg(binary).output().unwrap();
-        assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
-    }
+    assert_memcheck_if_available(&binary);
 }
 
 #[test]
 fn repeated_scopes_preserve_bounded_tail_execution() {
     let (_directory, binary) = build_native_fixture("reclamation_bounded");
     assert_native_output(&binary, b"bounded_regions_ok\n");
+}
+
+#[test]
+fn nested_incoming_storage_survives_the_publishing_call() {
+    let (_directory, binary) = build_native_fixture("reclamation_incoming_storage");
+    assert_native_output(&binary, b"incoming_storage_ok\n");
+    assert_memcheck_if_available(&binary);
+}
+
+fn assert_memcheck_if_available(binary: &std::path::Path) {
+    if Command::new("valgrind").arg("--version").output().is_err() { return; }
+    let checked = Command::new("valgrind")
+        .args(["--leak-check=full", "--errors-for-leak-kinds=definite,indirect,possible", "--error-exitcode=91"])
+        .arg(binary).output().unwrap();
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
 }
 
 fn build_native_fixture(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {

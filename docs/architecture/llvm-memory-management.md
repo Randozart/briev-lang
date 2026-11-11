@@ -1245,6 +1245,57 @@ Runtime bookkeeping is independently checked under Valgrind at O0 and O3/LTO.
 Collector memory readiness is a separate required gate; these architectural
 rules alone are not a claim that the application memory gate passes.
 
+### Closed-call ownership (2026-11-11)
+
+Boundary storage is not empty: each root analysis seeds its incoming parameters
+and globals with an external-heap summary self-edge. Any chain of field/raw
+loads retains that boundary provenance, so publication through a nested incoming
+handle cannot license reclamation on return. Local allocations have no such
+self-edge and keep precise field maps. This distinction corrects the withdrawn
+PR #90's premature-free proof; see `reclamation_incoming_storage.bv`.
+Source entry-node names are removed from `closed_regions` along with ordinary
+callable regions; the existing separate main-entry proof controls initialization.
+
+Memory-fact primitives live in `analysis/reclamation/storage.rs`; both the graph
+solver and the Kani harness use them. The compositional proof checks the external
+self-edge, either field/raw projection, another load and payload publication on
+a two-root heap. The storage rules are generic over an exact-set interface:
+production uses NodeSet, while the bounded proof uses one word with the same
+production word-union and iteration primitives. It does not formally verify
+the B-tree backing NodeSet, the fixed-point scheduler or type registry. Sparse
+set refinement is covered by differential tests, and full graph integration
+by frontend/native regressions.
+
+`ReclamationPlan.closed_regions` strengthens an existing nonrecursive region
+proof. Its allocation set follows the complete call closure, including barrier
+callees, and none of those identities may reach the region's return, incoming
+storage, globals or external escape roots. A region whose closure performs no
+collection growth and reaches no barrier is not marked closed (the ordinary
+proof already suffices). Callables that grow a collection (`<-`) are tracked so
+their runtime resize helper — a barrier that suspends the enclosing region — is
+accounted for.
+
+Two frontend gaps are closed so the proof is sound. `<-` models its fresh
+backing store as an allocation of the current callable, stored through the
+handle (matching the helper's escape behavior without importing the helper's
+copy of the old contents). Intrinsic helper effects enter the graph through the
+shared `intrinsic_helpers` registry: a union of the intrinsic's arguments
+conservatively feeds every helper parameter and the helper result feeds the
+intrinsic result. A helper whose body is unavailable rejects closed ownership.
+This also models persistent output-buffer publication, so a region that prints
+is not closed.
+
+The LLVM consumer pushes a separate private closed-owner record beside the
+ordinary three-pointer frame. Allocation adoption selects the nearest closed
+owner even while ordinary inheritance is suspended, so barrier-descendant
+allocations and retired intermediates are owned and freed at the closed region's
+exit. Ordinary nested scopes also adopt into the closed owner; an independently
+closed child becomes the nearest owner until its exit. Explicit free/realloc
+still search the active frame chain. Both normal exit and program-end unwind pop
+closed records before their stack storage expires. Ordinary frame layout and
+suspend/restore behavior are unchanged. Removing closed-region selection
+restores ordinary conservative region behavior.
+
 Field constraints keep independent object members and enum variant payloads
 separate. Runtime reflection evaluates its receiver, so definition liveness must
 include calls beneath that receiver before deriving ownership. Syscall borrowing

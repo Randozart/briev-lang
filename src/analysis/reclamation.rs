@@ -12,6 +12,8 @@ use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod walk;
+mod closed;
+mod storage;
 mod socket_effects;
 mod node_set;
 use node_set::NodeSet;
@@ -30,6 +32,10 @@ pub struct ReclamationPlan {
     pub mutating: BTreeSet<String>,
     pub regions: BTreeSet<String>,
     pub barriers: BTreeSet<String>,
+    /// 2026-11-11: regions whose complete call closure (including barrier
+    /// callees) cannot escape the region, so its frame may own allocations made
+    /// beneath those barriers. Always a subset of `regions`.
+    pub closed_regions: BTreeSet<String>,
     pub reasons: BTreeMap<String, String>,
     /// 2026-11-09: barriers derived from escape/unsupported, kept separate so a
     /// proven-safe publisher can be reclassified without weakening them.
@@ -100,6 +106,15 @@ struct Graph {
     /// 2026-11-09: publisher -> (caller owner, receiver argument local node).
     /// `None` records a receiver argument that is not a bare caller local.
     publish_call_args: BTreeMap<String, Vec<(String, Option<Node>)>>,
+    /// 2026-11-11: callables that invoke an intrinsic whose backend-inserted
+    /// helper body is unavailable, so the helper's allocation effects cannot be
+    /// proven non-escaping. Rejects closed-call ownership (ordinary proofs are
+    /// unaffected).
+    unmodeled_helpers: BTreeSet<String>,
+    /// 2026-11-11: callables that grow a collection (`<-`). Their runtime
+    /// lowering calls the resize helper, which is a barrier that suspends the
+    /// enclosing region; a closed region must therefore own across it.
+    growers: BTreeSet<String>,
 }
 
 impl Default for Graph {
@@ -107,7 +122,7 @@ impl Default for Graph {
         Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
             return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
             inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new() }
+            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new(), unmodeled_helpers: BTreeSet::new(), growers: BTreeSet::new() }
     }
 }
 
@@ -137,6 +152,22 @@ impl Graph {
         node
     }
 
+    /// 2026-11-11: an externally supplied root summarizes arbitrary reachable
+    /// storage, not an empty allocation. Its self-edge preserves provenance
+    /// through any number of field/raw loads before publication. Only boundary
+    /// roots get this summary; local allocations retain field precision. Retire
+    /// with an equally conservative typed external-heap summary.
+    fn external_storage(&mut self, root: Node) {
+        storage::seed_external(&mut self.memory, root);
+    }
+
+    fn seed_incoming_storage(&mut self, owner: &str) {
+        for param in self.callables[owner].params.clone() {
+            self.external_storage(param);
+            self.inexact_constants.insert(param);
+        }
+    }
+
     fn allocation(&mut self, owner: &str) -> Node {
         let root = self.root();
         self.allocation_owner.insert(root, owner.into());
@@ -150,6 +181,7 @@ impl Graph {
     fn global(&mut self, name: &str) -> Node {
         if let Some(node) = self.globals.get(name) { return *node; }
         let node = self.root();
+        self.external_storage(node);
         self.inexact_constants.insert(node);
         self.globals.insert(name.into(), node);
         node
@@ -203,32 +235,19 @@ impl Graph {
     }
 
     fn contents(&self, base: Node) -> NodeSet {
-        let mut refs = NodeSet::new();
-        for root in self.points[base].iter() { refs.union_with(&self.root_contents(root)); }
-        refs
+        storage::contents(&self.points[base], &self.memory, &self.named_memory)
     }
 
     fn root_contents(&self, root: Node) -> NodeSet {
-        let mut refs = self.memory[root].clone();
-        for ((owner, _), values) in &self.named_memory { if *owner == root { refs.union_with(values); } }
-        refs
+        storage::root_contents(&self.memory, &self.named_memory, root)
     }
 
     fn field_contents(&self, base: Node, field: &str) -> NodeSet {
-        let mut refs = NodeSet::new();
-        for root in self.points[base].iter() {
-            refs.union_with(&self.memory[root]);
-            if let Some(values) = self.named_memory.get(&(root, field.into())) { refs.union_with(values); }
-        }
-        refs
+        storage::field_contents(&self.points[base], &self.memory, &self.named_memory, field)
     }
 
     fn store(&mut self, base: Node, refs: NodeSet) -> bool {
-        let mut changed = false;
-        for root in self.points[base].clone().iter() {
-            changed |= self.memory[root].union_with(&refs);
-        }
-        changed
+        storage::store(&self.points[base], &mut self.memory, &refs)
     }
 
     fn syscall(&mut self, number: Node, args: &[Node]) -> bool {
@@ -273,6 +292,7 @@ impl Graph {
             self.classify(name, callable, &mut plan);
         }
         plan.publish_sites = self.publish_safety();
+        plan.closed_regions = self.closed_regions(&plan);
         plan
     }
 
@@ -501,7 +521,7 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
     let mut accumulator = Accumulator::default();
     for owner in owners {
         let mut graph = index.clone();
-        graph.inexact_constants.extend(graph.callables[&owner].params.iter().copied());
+        graph.seed_incoming_storage(&owner);
         walk::build_owner(&mut graph, &owner);
         graph.solve();
         let plan = graph.plan();
@@ -509,6 +529,8 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
     }
     accumulator.reclassify_safe_publishers(&mut result);
     result.regions.retain(|owner| !result.barriers.contains(owner));
+    result.closed_regions = std::mem::take(&mut accumulator.closed_regions);
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     // Main also executes global initialization. Until those allocations have
     // explicit global lifetime facts, only closed scalar initializers license
     // an entry scope. Helper proofs remain independent of this fallback.
@@ -517,6 +539,9 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         result.entry_region = result.regions.contains(owner);
     }
     result.regions.retain(|owner| !index.entry_nodes.contains(owner));
+    // Entry-node names are not callable ABI names. Main's existing entry proof
+    // remains authoritative until it has a separate closed-initializer proof.
+    result.closed_regions.retain(|owner| result.regions.contains(owner));
     accumulator.finish_mutating(&mut result);
     result
 }
@@ -529,6 +554,7 @@ struct Accumulator {
     publish_only: BTreeSet<String>,
     escape_barriers: BTreeSet<String>,
     publish_sites: BTreeMap<String, Vec<bool>>,
+    closed_regions: BTreeSet<String>,
 }
 
 impl Accumulator {
@@ -537,6 +563,7 @@ impl Accumulator {
         record_dependencies(graph, &mut self.dependencies);
         if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, unsupported={:?}", plan.barriers, graph.unsupported); }
         if plan.regions.contains(owner) { result.regions.insert(owner.to_string()); }
+        if plan.closed_regions.contains(owner) { self.closed_regions.insert(owner.to_string()); }
         result.barriers.extend(plan.barriers.iter().cloned());
         self.publish_only.extend(plan.publish_only.iter().cloned());
         self.escape_barriers.extend(plan.escape_barriers.iter().cloned());
@@ -616,6 +643,14 @@ mod kani_full_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_incoming_publication_is_not_a_closed_region() {
+        let plan = derive(include_str!("../../tests/fixtures/load/reclamation_incoming_storage.bv"));
+        assert!(!plan.closed_regions.contains("publish_nested"), "{plan:?}");
+        assert!(plan.barriers.contains("publish_storage"), "{plan:?}");
+        assert!(plan.closed_regions.is_subset(&plan.regions));
+    }
 
     #[test]
     fn unclassified_global_initialization_prevents_an_entry_region() {
