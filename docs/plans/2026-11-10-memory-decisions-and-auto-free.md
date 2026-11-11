@@ -370,3 +370,22 @@ per request; weights are owned tensors, activations use the tick arena.
 60-call JPEG soak: ~3.2 MB/call → ~0.3 MB/call (167 → ~217 MB), first calls
 dominate. Residual is per-request object/string heap, not model parsing;
 full plateau remains open (compiler auto-free/decision pass is the next lever).
+
+### 10.2 Residual RSS attribution (2026-11-11)
+
+With the graph cache and tick arena in place, a 200-call JPEG detect soak still
+grows ~0.2–0.3 MB/call (VmRSS 144→189 MB). Stage isolation:
+
+- frame-only (image decode + input tensor + reset): ~0.15 MB/call;
+- execute-only (graph run + reset, no detection decode): ~0.2 MB/call.
+
+So the residual is small per-request heap objects (Tensor/Result/env-list/
+string), not model parsing or tensor data. Moving conv patch buffers into the
+arena was tried and **rejected**: baseline RSS rose to ~399 MB and growth did
+not stop (the patches are large and short-lived; Malloc/free reuses them).
+Patch buffers therefore stay owned.
+
+This is the first concrete target for the auto-free/decision pass: free
+non-escaping object/Result/List allocations at the request/txn boundary (or
+region-allocate the request). Manual frees in the executor are not the fix —
+the allocator sites are compiler-generated and interprocedural.
