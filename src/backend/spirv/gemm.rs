@@ -278,7 +278,13 @@ fn ssbo_scalar_ptr(
 }
 
 /// i64 arithmetic over the builder.
-fn i64_binop(builder: &mut super::SpirvBuilder, op: spirv::Op, int_ty: Word, a: Word, b: Word) -> Word {
+fn i64_binop(
+    builder: &mut super::SpirvBuilder,
+    op: spirv::Op,
+    int_ty: Word,
+    a: Word,
+    b: Word,
+) -> Word {
     let id = builder.gen_id();
     builder.emit(Instruction::new(
         op,
@@ -296,7 +302,12 @@ fn i64_const(builder: &mut super::SpirvBuilder, int_ty: Word, v: u64) -> Word {
 /// 2026-09-01: shared-memory addressing uses u32 — real shaders index
 /// workgroup arrays with 32-bit ids, and the i64 variant is both slower
 /// and (observed on device) unreliable through this driver.
-pub(crate) fn u32_binop(builder: &mut super::SpirvBuilder, op: spirv::Op, a: Word, b: Word) -> Word {
+pub(crate) fn u32_binop(
+    builder: &mut super::SpirvBuilder,
+    op: spirv::Op,
+    a: Word,
+    b: Word,
+) -> Word {
     let ty = builder.u32_type();
     let id = builder.gen_id();
     builder.emit(Instruction::new(
@@ -385,12 +396,7 @@ fn builtin_comp_u(builder: &mut super::SpirvBuilder, builtin: Word, c: u32) -> W
 }
 
 /// Component `c` of a uvec3 Input builtin, widened u32 → i64.
-fn builtin_comp(
-    builder: &mut super::SpirvBuilder,
-    builtin: Word,
-    c: u32,
-    int_ty: Word,
-) -> Word {
+fn builtin_comp(builder: &mut super::SpirvBuilder, builtin: Word, c: u32, int_ty: Word) -> Word {
     let u32_ty = builder.u32_type();
     let ptr = builder.ptr_class(StorageClass::Input, u32_ty);
     let ci = builder.u32_const(c);
@@ -507,7 +513,9 @@ pub(crate) fn emit_tiled(
     // body-block definitions — they do not dominate the merge block).
     let mut acc_live: Vec<Word> = acc_phi_ids.clone();
 
-    emit_panel_loads(builder, plan, ctx, tid, kt_phi, tile_m, tile_n, int_ty, f32_ty)?;
+    emit_panel_loads(
+        builder, plan, ctx, tid, kt_phi, tile_m, tile_n, int_ty, f32_ty,
+    )?;
 
     // Panel-visibility barrier: SequentiallyConsistent | UniformMemory (0x108),
     // scope Workgroup for both execution and memory.
@@ -576,7 +584,13 @@ pub(crate) fn emit_tiled(
                 } else {
                     builder.gen_id()
                 };
-                builder.glsl_fma_with_id(out, f32_ty, a_r[u as usize], b_r[v as usize], acc_live[i]);
+                builder.glsl_fma_with_id(
+                    out,
+                    f32_ty,
+                    a_r[u as usize],
+                    b_r[v as usize],
+                    acc_live[i],
+                );
                 next.push(out);
             }
         }
@@ -727,10 +741,29 @@ mod tests {
             // acc = acc + a[m*K + k] * b[k*N + n];
             Statement::Assign(
                 idx("acc"),
-                bin(BinaryOpKind::Add, idx("acc"),
-                    bin(BinaryOpKind::Mul,
-                        index(idx("a"), bin(BinaryOpKind::Add, bin(BinaryOpKind::Mul, idx("m"), num(k)), idx("k"))),
-                        index(idx("b"), bin(BinaryOpKind::Add, bin(BinaryOpKind::Mul, idx("k"), num(n)), idx("n"))))),
+                bin(
+                    BinaryOpKind::Add,
+                    idx("acc"),
+                    bin(
+                        BinaryOpKind::Mul,
+                        index(
+                            idx("a"),
+                            bin(
+                                BinaryOpKind::Add,
+                                bin(BinaryOpKind::Mul, idx("m"), num(k)),
+                                idx("k"),
+                            ),
+                        ),
+                        index(
+                            idx("b"),
+                            bin(
+                                BinaryOpKind::Add,
+                                bin(BinaryOpKind::Mul, idx("k"), num(n)),
+                                idx("n"),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         ];
 
@@ -772,7 +805,7 @@ mod tests {
                     inclusive: false,
                 }),
                 body,
-            modifiers: vec![],
+                modifiers: vec![],
             },
             // y[i] = acc;
             Statement::Assign(index(idx("y"), idx("i")), idx("acc")),
@@ -801,8 +834,7 @@ mod tests {
     #[test]
     fn gemm_plan_matches_canonical_body() {
         let (shape, items) = gemm_shape(64, 64, 64);
-        let plan = GemmPlan::match_stmts(&shape, &items)
-            .expect("canonical body must match");
+        let plan = GemmPlan::match_stmts(&shape, &items).expect("canonical body must match");
         assert_eq!((plan.m, plan.n, plan.k), (64, 64, 64));
         assert_eq!(plan.a_field, "a");
         assert_eq!(plan.b_field, "b");
@@ -813,11 +845,15 @@ mod tests {
     fn gemm_plan_requires_tile_divisibility() {
         // 60 is not divisible by the 64-tile → flat fallback.
         let (shape, items) = gemm_shape(60, 64, 64);
-        assert!(GemmPlan::match_stmts(&shape, &items).is_none(),
-            "non-tile-divisible M must fall back to the flat kernel");
+        assert!(
+            GemmPlan::match_stmts(&shape, &items).is_none(),
+            "non-tile-divisible M must fall back to the flat kernel"
+        );
         let (shape, items) = gemm_shape(64, 64, 60);
-        assert!(GemmPlan::match_stmts(&shape, &items).is_none(),
-            "non-tile-divisible K must fall back to the flat kernel");
+        assert!(
+            GemmPlan::match_stmts(&shape, &items).is_none(),
+            "non-tile-divisible K must fall back to the flat kernel"
+        );
     }
 
     /// Walk every expression (including foreach bodies — the reduction
@@ -883,8 +919,7 @@ mod tests {
             rewrite_stmt_b_stride(stmt);
         }
         let r = GemmPlan::match_stmts(&shape, &items);
-        assert!(r.is_none(),
-            "b stride != N must not match the tiled plan");
+        assert!(r.is_none(), "b stride != N must not match the tiled plan");
     }
 
     #[test]
@@ -894,10 +929,7 @@ mod tests {
         let (mut shape, items) = gemm_shape(64, 64, 64);
         shape.kernel_stmts.insert(
             0,
-            Statement::Assign(
-                Expr::Identifier("i".into()),
-                Expr::Decimal(0),
-            ),
+            Statement::Assign(Expr::Identifier("i".into()), Expr::Decimal(0)),
         );
         assert!(GemmPlan::match_stmts(&shape, &items).is_some());
     }
@@ -932,8 +964,7 @@ mod tests {
         for f16acc in [true, false] {
             let binary = build_mma_ceiling(f16acc).expect("ceiling build");
             let tag = if f16acc { "f16acc" } else { "f32acc" };
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("target/spirv");
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/spirv");
             std::fs::create_dir_all(&dir).unwrap();
             let spv = dir.join(format!("mma_ceiling_{}.spv", tag));
             std::fs::write(&spv, &binary).unwrap();
@@ -968,13 +999,17 @@ mod tests {
         // to pair with the VulkanMemoryModel capability.
         builder.builder.capability(Capability::CooperativeMatrixKHR);
         builder.builder.capability(Capability::VulkanMemoryModel);
-        builder.builder.capability(Capability::StorageBuffer16BitAccess);
+        builder
+            .builder
+            .capability(Capability::StorageBuffer16BitAccess);
         builder.builder.capability(Capability::Float16);
         builder.builder.extension("SPV_KHR_cooperative_matrix");
         builder.builder.extension("SPV_KHR_vulkan_memory_model");
         builder.builder.extension("SPV_KHR_16bit_storage");
         builder.builder.module_mut().memory_model = Some(rspirv::dr::Instruction::new(
-            spirv::Op::MemoryModel, None, None,
+            spirv::Op::MemoryModel,
+            None,
+            None,
             vec![
                 Operand::LiteralBit32(spirv::AddressingModel::Logical as u32),
                 Operand::LiteralBit32(spirv::MemoryModel::Vulkan as u32),
@@ -1020,7 +1055,9 @@ mod tests {
         let y_arr = builder.builder.type_array(f16_ty, y_len);
         let ssbo_struct = builder.builder.type_struct(vec![half_arr, int_ty, y_arr]);
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(ssbo_struct),
                 Operand::Decoration(spirv::Decoration::Block),
@@ -1028,7 +1065,9 @@ mod tests {
         ));
         for (member, offset) in [(0u32, 0u32), (1, 33_554_432), (2, 33_554_440)] {
             builder.emit_global(Instruction::new(
-                spirv::Op::MemberDecorate, None, None,
+                spirv::Op::MemberDecorate,
+                None,
+                None,
                 vec![
                     Operand::IdRef(ssbo_struct),
                     Operand::LiteralBit32(member),
@@ -1038,7 +1077,9 @@ mod tests {
             ));
         }
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(half_arr),
                 Operand::Decoration(spirv::Decoration::ArrayStride),
@@ -1046,7 +1087,9 @@ mod tests {
             ],
         ));
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(y_arr),
                 Operand::Decoration(spirv::Decoration::ArrayStride),
@@ -1069,7 +1112,9 @@ mod tests {
         // decorations the dispatch reads an unbound descriptor (device
         // fault, fence timeout). Mirrors setup_state_buffer.
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(ssbo),
                 Operand::Decoration(spirv::Decoration::DescriptorSet),
@@ -1077,7 +1122,9 @@ mod tests {
             ],
         ));
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(ssbo),
                 Operand::Decoration(spirv::Decoration::Binding),
@@ -1098,7 +1145,9 @@ mod tests {
                 vec![Operand::StorageClass(StorageClass::Input)],
             ));
             builder.emit_global(Instruction::new(
-                spirv::Op::Decorate, None, None,
+                spirv::Op::Decorate,
+                None,
+                None,
                 vec![
                     Operand::IdRef(var),
                     Operand::Decoration(spirv::Decoration::BuiltIn),
@@ -1118,10 +1167,12 @@ mod tests {
         let use_a = u32_const(&mut builder, 0);
         let use_b = u32_const(&mut builder, 1);
         let use_c = u32_const(&mut builder, 2);
-        let cm_a =
-            builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_a);
-        let cm_b =
-            builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_b);
+        let cm_a = builder
+            .builder
+            .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_a);
+        let cm_b = builder
+            .builder
+            .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_b);
         let acc_elem = if f16acc { f16_ty } else { f32_ty };
         let cm_acc = builder
             .builder
@@ -1251,11 +1302,7 @@ mod tests {
                 spirv::Op::AccessChain,
                 Some(a_elem_ptr),
                 Some(a_ptr),
-                vec![
-                    Operand::IdRef(ssbo),
-                    Operand::IdRef(c0),
-                    Operand::IdRef(c0),
-                ],
+                vec![Operand::IdRef(ssbo), Operand::IdRef(c0), Operand::IdRef(c0)],
             ));
             let load_stride = u32_const(&mut builder, 4096);
             let fa = builder.gen_id();
@@ -1333,8 +1380,9 @@ mod tests {
             let cond_next = builder.gen_id();
             let loop_be = builder.gen_id();
             // CHAINS×B_FRAGS independent accumulator back-edges.
-            let acc_be: Vec<Word> =
-                (0..CEILING_CHAINS * CEILING_B_FRAGS).map(|_| builder.gen_id()).collect();
+            let acc_be: Vec<Word> = (0..CEILING_CHAINS * CEILING_B_FRAGS)
+                .map(|_| builder.gen_id())
+                .collect();
 
             builder.builder.branch(preheader_bb);
             builder.begin_block(Some(preheader_bb));
@@ -1349,11 +1397,19 @@ mod tests {
             builder.begin_block(Some(header_bb));
             let it = builder
                 .builder
-                .phi(int_ty, None, [(zero64, preheader_bb), (loop_be, continue_bb)])
+                .phi(
+                    int_ty,
+                    None,
+                    [(zero64, preheader_bb), (loop_be, continue_bb)],
+                )
                 .map_err(|e| format!("it phi: {:?}", e))?;
             let cond_hdr = builder
                 .builder
-                .phi(bool_ty, None, [(cond0, preheader_bb), (cond_next, continue_bb)])
+                .phi(
+                    bool_ty,
+                    None,
+                    [(cond0, preheader_bb), (cond_next, continue_bb)],
+                )
                 .map_err(|e| format!("cond phi: {:?}", e))?;
             let acc_phis: Vec<Word> = (0..CEILING_CHAINS * CEILING_B_FRAGS)
                 .map(|j| {
@@ -1362,7 +1418,11 @@ mod tests {
                     // cond_next); the body defines them into acc_be[j].
                     builder
                         .builder
-                        .phi(cm_acc, None, [(acc_init, preheader_bb), (acc_be[j], continue_bb)])
+                        .phi(
+                            cm_acc,
+                            None,
+                            [(acc_init, preheader_bb), (acc_be[j], continue_bb)],
+                        )
                         .expect("acc phi")
                 })
                 .collect();
@@ -1372,9 +1432,9 @@ mod tests {
                 rspirv::spirv::LoopControl::NONE,
                 [] as [Operand; 0],
             );
-            builder.builder.branch_conditional(
-                cond_hdr, body_bb, merge_bb, [] as [u32; 0],
-            );
+            builder
+                .builder
+                .branch_conditional(cond_hdr, body_bb, merge_bb, [] as [u32; 0]);
             builder.begin_block(Some(body_bb));
 
             let (chain_a, chain_b) = if a_loads_in_loop {
@@ -1508,7 +1568,9 @@ mod tests {
                         ));
                         // NoContraction: forbid fusing this mul+add pair.
                         builder.emit_global(Instruction::new(
-                            spirv::Op::Decorate, None, None,
+                            spirv::Op::Decorate,
+                            None,
+                            None,
                             vec![
                                 Operand::IdRef(res),
                                 Operand::Decoration(spirv::Decoration::NoContraction),
@@ -1617,7 +1679,9 @@ mod tests {
 
 /// The loop condition compares i64s — Bits(1) through the type lowering.
 fn bool_ty_for(builder: &mut super::SpirvBuilder) -> Word {
-    builder.lower_type(&crate::ast::Type::Bits(1)).expect("bool type")
+    builder
+        .lower_type(&crate::ast::Type::Bits(1))
+        .expect("bool type")
 }
 
 /// Tensor-operand detection: all three GEMM fields are 16-bit float arrays
@@ -1675,7 +1739,6 @@ pub struct CoopMatIo {
     /// Subgroup-local lane ID (u32, gl_LocalInvocationID.x).
     pub lane_id: Word,
 }
-
 
 /// Parameters for the smem fill (avoids closure borrow issues).
 struct SmemFillParams {
@@ -1775,7 +1838,9 @@ fn emit_smem_fill(
             let elem256 = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                    spirv::Op::BitwiseAnd,
+                    Some(p.u32_ty),
+                    Some(id),
                     vec![Operand::IdRef(flat), Operand::IdRef(c255)],
                 ));
                 id
@@ -1784,7 +1849,9 @@ fn emit_smem_fill(
             let col_in = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                    spirv::Op::BitwiseAnd,
+                    Some(p.u32_ty),
+                    Some(id),
                     vec![Operand::IdRef(elem256), Operand::IdRef(c15)],
                 ));
                 id
@@ -1801,15 +1868,23 @@ fn emit_smem_fill(
             let a_dram = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(p.f16_ssbo_ptr), Some(id),
-                    vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.a_member_c), Operand::IdRef(a_src)],
+                    spirv::Op::AccessChain,
+                    Some(p.f16_ssbo_ptr),
+                    Some(id),
+                    vec![
+                        Operand::IdRef(p.ssbo),
+                        Operand::IdRef(p.a_member_c),
+                        Operand::IdRef(a_src),
+                    ],
                 ));
                 id
             };
             let val = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::Load, Some(p.f16_ty), Some(id),
+                    spirv::Op::Load,
+                    Some(p.f16_ty),
+                    Some(id),
                     vec![Operand::IdRef(a_dram)],
                 ));
                 id
@@ -1818,20 +1893,24 @@ fn emit_smem_fill(
             let a_ptr = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(p.f16_wg_ptr), Some(id),
+                    spirv::Op::AccessChain,
+                    Some(p.f16_wg_ptr),
+                    Some(id),
                     vec![Operand::IdRef(p.smem_a), Operand::IdRef(smem_idx)],
                 ));
                 id
             };
             builder.emit(Instruction::new(
-                spirv::Op::Store, None, None,
+                spirv::Op::Store,
+                None,
+                None,
                 vec![Operand::IdRef(a_ptr), Operand::IdRef(val)],
             ));
         }
 
         // Phase 2: fill B (per-subgroup, each fills its own B slice)
         // flat_b = local_lane + u * 32, total = b_stage_elems / 32
-        let b_elems_per_lane = p.b_stage_elems / 32;  // per subgroup
+        let b_elems_per_lane = p.b_stage_elems / 32; // per subgroup
         let c32 = u32_const(builder, 32);
         for u in 0..b_elems_per_lane as usize {
             let flat_b = {
@@ -1843,7 +1922,9 @@ fn emit_smem_fill(
             let elem256 = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                    spirv::Op::BitwiseAnd,
+                    Some(p.u32_ty),
+                    Some(id),
                     vec![Operand::IdRef(flat_b), Operand::IdRef(c255)],
                 ));
                 id
@@ -1852,7 +1933,9 @@ fn emit_smem_fill(
             let col_in = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                    spirv::Op::BitwiseAnd,
+                    Some(p.u32_ty),
+                    Some(id),
                     vec![Operand::IdRef(elem256), Operand::IdRef(c15)],
                 ));
                 id
@@ -1870,15 +1953,23 @@ fn emit_smem_fill(
             let b_dram = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(p.f16_ssbo_ptr), Some(id),
-                    vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.b_member_c), Operand::IdRef(b_src)],
+                    spirv::Op::AccessChain,
+                    Some(p.f16_ssbo_ptr),
+                    Some(id),
+                    vec![
+                        Operand::IdRef(p.ssbo),
+                        Operand::IdRef(p.b_member_c),
+                        Operand::IdRef(b_src),
+                    ],
                 ));
                 id
             };
             let val = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::Load, Some(p.f16_ty), Some(id),
+                    spirv::Op::Load,
+                    Some(p.f16_ty),
+                    Some(id),
                     vec![Operand::IdRef(b_dram)],
                 ));
                 id
@@ -1888,13 +1979,17 @@ fn emit_smem_fill(
             let b_ptr = {
                 let id = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(p.f16_wg_ptr), Some(id),
+                    spirv::Op::AccessChain,
+                    Some(p.f16_wg_ptr),
+                    Some(id),
                     vec![Operand::IdRef(p.smem_b), Operand::IdRef(smem_idx)],
                 ));
                 id
             };
             builder.emit(Instruction::new(
-                spirv::Op::Store, None, None,
+                spirv::Op::Store,
+                None,
+                None,
                 vec![Operand::IdRef(b_ptr), Operand::IdRef(val)],
             ));
         }
@@ -1911,7 +2006,9 @@ fn emit_smem_fill(
         let in_a = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::ULessThan, Some(p.bool_ty), Some(id),
+                spirv::Op::ULessThan,
+                Some(p.bool_ty),
+                Some(id),
                 vec![Operand::IdRef(flat), Operand::IdRef(p.a_stage_elems_c)],
             ));
             id
@@ -1920,7 +2017,9 @@ fn emit_smem_fill(
         let elem256 = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                spirv::Op::BitwiseAnd,
+                Some(p.u32_ty),
+                Some(id),
                 vec![Operand::IdRef(flat), Operand::IdRef(c255)],
             ));
             id
@@ -1929,7 +2028,9 @@ fn emit_smem_fill(
         let col_in = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                spirv::Op::BitwiseAnd,
+                Some(p.u32_ty),
+                Some(id),
                 vec![Operand::IdRef(elem256), Operand::IdRef(c15)],
             ));
             id
@@ -1967,31 +2068,51 @@ fn emit_smem_fill(
         let a_dram = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::AccessChain, Some(p.f16_ssbo_ptr), Some(id),
-                vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.a_member_c), Operand::IdRef(a_src)],
+                spirv::Op::AccessChain,
+                Some(p.f16_ssbo_ptr),
+                Some(id),
+                vec![
+                    Operand::IdRef(p.ssbo),
+                    Operand::IdRef(p.a_member_c),
+                    Operand::IdRef(a_src),
+                ],
             ));
             id
         };
         let b_dram = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::AccessChain, Some(p.f16_ssbo_ptr), Some(id),
-                vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.b_member_c), Operand::IdRef(b_src)],
+                spirv::Op::AccessChain,
+                Some(p.f16_ssbo_ptr),
+                Some(id),
+                vec![
+                    Operand::IdRef(p.ssbo),
+                    Operand::IdRef(p.b_member_c),
+                    Operand::IdRef(b_src),
+                ],
             ));
             id
         };
         let dram_ptr = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::Select, Some(p.f16_ssbo_ptr), Some(id),
-                vec![Operand::IdRef(in_a), Operand::IdRef(a_dram), Operand::IdRef(b_dram)],
+                spirv::Op::Select,
+                Some(p.f16_ssbo_ptr),
+                Some(id),
+                vec![
+                    Operand::IdRef(in_a),
+                    Operand::IdRef(a_dram),
+                    Operand::IdRef(b_dram),
+                ],
             ));
             id
         };
         let val = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::Load, Some(p.f16_ty), Some(id),
+                spirv::Op::Load,
+                Some(p.f16_ty),
+                Some(id),
                 vec![Operand::IdRef(dram_ptr)],
             ));
             id
@@ -1999,16 +2120,28 @@ fn emit_smem_fill(
         let idx = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::Select, Some(p.u32_ty), Some(id),
-                vec![Operand::IdRef(in_a), Operand::IdRef(flat), Operand::IdRef(b_flat_within)],
+                spirv::Op::Select,
+                Some(p.u32_ty),
+                Some(id),
+                vec![
+                    Operand::IdRef(in_a),
+                    Operand::IdRef(flat),
+                    Operand::IdRef(b_flat_within),
+                ],
             ));
             id
         };
         let base = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::Select, Some(p.u32_ty), Some(id),
-                vec![Operand::IdRef(in_a), Operand::IdRef(a_off), Operand::IdRef(b_off)],
+                spirv::Op::Select,
+                Some(p.u32_ty),
+                Some(id),
+                vec![
+                    Operand::IdRef(in_a),
+                    Operand::IdRef(a_off),
+                    Operand::IdRef(b_off),
+                ],
             ));
             id
         };
@@ -2016,7 +2149,9 @@ fn emit_smem_fill(
         let a_ptr = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::AccessChain, Some(p.f16_wg_ptr), Some(id),
+                spirv::Op::AccessChain,
+                Some(p.f16_wg_ptr),
+                Some(id),
                 vec![Operand::IdRef(p.smem_a), Operand::IdRef(smem_idx)],
             ));
             id
@@ -2024,7 +2159,9 @@ fn emit_smem_fill(
         let b_ptr = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::AccessChain, Some(p.f16_wg_ptr), Some(id),
+                spirv::Op::AccessChain,
+                Some(p.f16_wg_ptr),
+                Some(id),
                 vec![Operand::IdRef(p.smem_b), Operand::IdRef(smem_idx)],
             ));
             id
@@ -2032,13 +2169,21 @@ fn emit_smem_fill(
         let dest = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::Select, Some(p.f16_wg_ptr), Some(id),
-                vec![Operand::IdRef(in_a), Operand::IdRef(a_ptr), Operand::IdRef(b_ptr)],
+                spirv::Op::Select,
+                Some(p.f16_wg_ptr),
+                Some(id),
+                vec![
+                    Operand::IdRef(in_a),
+                    Operand::IdRef(a_ptr),
+                    Operand::IdRef(b_ptr),
+                ],
             ));
             id
         };
         builder.emit(Instruction::new(
-            spirv::Op::Store, None, None,
+            spirv::Op::Store,
+            None,
+            None,
             vec![Operand::IdRef(dest), Operand::IdRef(val)],
         ));
     }
@@ -2148,7 +2293,9 @@ fn emit_fill_pair_dram(
     let in_a = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::ULessThan, Some(p.bool_ty), Some(id),
+            spirv::Op::ULessThan,
+            Some(p.bool_ty),
+            Some(id),
             vec![Operand::IdRef(flat2), Operand::IdRef(p.a_stage_elems_c)],
         ));
         id
@@ -2157,7 +2304,9 @@ fn emit_fill_pair_dram(
     let elem256 = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+            spirv::Op::BitwiseAnd,
+            Some(p.u32_ty),
+            Some(id),
             vec![Operand::IdRef(flat2), Operand::IdRef(c255)],
         ));
         id
@@ -2168,7 +2317,9 @@ fn emit_fill_pair_dram(
         let c14v = {
             let id = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+                spirv::Op::BitwiseAnd,
+                Some(p.u32_ty),
+                Some(id),
                 vec![Operand::IdRef(elem256), Operand::IdRef(c14)],
             ));
             id
@@ -2213,31 +2364,51 @@ fn emit_fill_pair_dram(
     let a_dram = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v2_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.a_member_c), Operand::IdRef(a_src)],
+            spirv::Op::AccessChain,
+            Some(p.v2_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(p.ssbo),
+                Operand::IdRef(p.a_member_c),
+                Operand::IdRef(a_src),
+            ],
         ));
         id
     };
     let b_dram = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v2_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.b_member_c), Operand::IdRef(b_src)],
+            spirv::Op::AccessChain,
+            Some(p.v2_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(p.ssbo),
+                Operand::IdRef(p.b_member_c),
+                Operand::IdRef(b_src),
+            ],
         ));
         id
     };
     let dram_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.v2_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_dram), Operand::IdRef(b_dram)],
+            spirv::Op::Select,
+            Some(p.v2_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_dram),
+                Operand::IdRef(b_dram),
+            ],
         ));
         id
     };
     let val = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Load, Some(p.v2_f16_ty), Some(id),
+            spirv::Op::Load,
+            Some(p.v2_f16_ty),
+            Some(id),
             vec![Operand::IdRef(dram_ptr)],
         ));
         id
@@ -2262,7 +2433,9 @@ fn emit_fill_pair_smem(
     let in_a = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::ULessThan, Some(p.bool_ty), Some(id),
+            spirv::Op::ULessThan,
+            Some(p.bool_ty),
+            Some(id),
             vec![Operand::IdRef(flat2), Operand::IdRef(p.a_stage_elems_c)],
         ));
         id
@@ -2276,16 +2449,28 @@ fn emit_fill_pair_smem(
     let idx = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.u32_ty), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(flat2), Operand::IdRef(b_flat_within)],
+            spirv::Op::Select,
+            Some(p.u32_ty),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(flat2),
+                Operand::IdRef(b_flat_within),
+            ],
         ));
         id
     };
     let base = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.u32_ty), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_off), Operand::IdRef(b_off)],
+            spirv::Op::Select,
+            Some(p.u32_ty),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_off),
+                Operand::IdRef(b_off),
+            ],
         ));
         id
     };
@@ -2294,7 +2479,9 @@ fn emit_fill_pair_smem(
     let a_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v2_wg_ptr), Some(id),
+            spirv::Op::AccessChain,
+            Some(p.v2_wg_ptr),
+            Some(id),
             vec![Operand::IdRef(p.smem_a), Operand::IdRef(smem_pair_idx)],
         ));
         id
@@ -2302,7 +2489,9 @@ fn emit_fill_pair_smem(
     let b_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v2_wg_ptr), Some(id),
+            spirv::Op::AccessChain,
+            Some(p.v2_wg_ptr),
+            Some(id),
             vec![Operand::IdRef(p.smem_b), Operand::IdRef(smem_pair_idx)],
         ));
         id
@@ -2310,13 +2499,21 @@ fn emit_fill_pair_smem(
     let dest = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.v2_wg_ptr), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_ptr), Operand::IdRef(b_ptr)],
+            spirv::Op::Select,
+            Some(p.v2_wg_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_ptr),
+                Operand::IdRef(b_ptr),
+            ],
         ));
         id
     };
     builder.emit(Instruction::new(
-        spirv::Op::Store, None, None,
+        spirv::Op::Store,
+        None,
+        None,
         vec![Operand::IdRef(dest), Operand::IdRef(val)],
     ));
 }
@@ -2356,7 +2553,9 @@ fn emit_fill_quad_dram(
     let in_a = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::ULessThan, Some(p.bool_ty), Some(id),
+            spirv::Op::ULessThan,
+            Some(p.bool_ty),
+            Some(id),
             vec![Operand::IdRef(flat4), Operand::IdRef(p.a_stage_elems_c)],
         ));
         id
@@ -2365,7 +2564,9 @@ fn emit_fill_quad_dram(
     let elem256 = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+            spirv::Op::BitwiseAnd,
+            Some(p.u32_ty),
+            Some(id),
             vec![Operand::IdRef(flat4), Operand::IdRef(c255)],
         ));
         id
@@ -2375,7 +2576,9 @@ fn emit_fill_quad_dram(
     let col4 = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::BitwiseAnd, Some(p.u32_ty), Some(id),
+            spirv::Op::BitwiseAnd,
+            Some(p.u32_ty),
+            Some(id),
             vec![Operand::IdRef(elem256), Operand::IdRef(c15)],
         ));
         id
@@ -2410,31 +2613,51 @@ fn emit_fill_quad_dram(
     let a_dram = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v4_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.a_member_c), Operand::IdRef(a_src)],
+            spirv::Op::AccessChain,
+            Some(p.v4_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(p.ssbo),
+                Operand::IdRef(p.a_member_c),
+                Operand::IdRef(a_src),
+            ],
         ));
         id
     };
     let b_dram = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v4_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(p.ssbo), Operand::IdRef(p.b_member_c), Operand::IdRef(b_src)],
+            spirv::Op::AccessChain,
+            Some(p.v4_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(p.ssbo),
+                Operand::IdRef(p.b_member_c),
+                Operand::IdRef(b_src),
+            ],
         ));
         id
     };
     let dram_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.v4_ssbo_ptr), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_dram), Operand::IdRef(b_dram)],
+            spirv::Op::Select,
+            Some(p.v4_ssbo_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_dram),
+                Operand::IdRef(b_dram),
+            ],
         ));
         id
     };
     let val = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Load, Some(p.v4_f16_ty), Some(id),
+            spirv::Op::Load,
+            Some(p.v4_f16_ty),
+            Some(id),
             vec![Operand::IdRef(dram_ptr)],
         ));
         id
@@ -2460,7 +2683,9 @@ fn emit_fill_quad_smem(
     let in_a = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::ULessThan, Some(p.bool_ty), Some(id),
+            spirv::Op::ULessThan,
+            Some(p.bool_ty),
+            Some(id),
             vec![Operand::IdRef(flat4), Operand::IdRef(p.a_stage_elems_c)],
         ));
         id
@@ -2473,16 +2698,28 @@ fn emit_fill_quad_smem(
     let idx = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.u32_ty), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(flat4), Operand::IdRef(b_flat4_within)],
+            spirv::Op::Select,
+            Some(p.u32_ty),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(flat4),
+                Operand::IdRef(b_flat4_within),
+            ],
         ));
         id
     };
     let base = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.u32_ty), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_off), Operand::IdRef(b_off)],
+            spirv::Op::Select,
+            Some(p.u32_ty),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_off),
+                Operand::IdRef(b_off),
+            ],
         ));
         id
     };
@@ -2491,7 +2728,9 @@ fn emit_fill_quad_smem(
     let a_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v4_wg_ptr), Some(id),
+            spirv::Op::AccessChain,
+            Some(p.v4_wg_ptr),
+            Some(id),
             vec![Operand::IdRef(p.smem_a), Operand::IdRef(smem_quad_idx)],
         ));
         id
@@ -2499,7 +2738,9 @@ fn emit_fill_quad_smem(
     let b_ptr = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::AccessChain, Some(p.v4_wg_ptr), Some(id),
+            spirv::Op::AccessChain,
+            Some(p.v4_wg_ptr),
+            Some(id),
             vec![Operand::IdRef(p.smem_b), Operand::IdRef(smem_quad_idx)],
         ));
         id
@@ -2507,13 +2748,21 @@ fn emit_fill_quad_smem(
     let dest = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::Select, Some(p.v4_wg_ptr), Some(id),
-            vec![Operand::IdRef(in_a), Operand::IdRef(a_ptr), Operand::IdRef(b_ptr)],
+            spirv::Op::Select,
+            Some(p.v4_wg_ptr),
+            Some(id),
+            vec![
+                Operand::IdRef(in_a),
+                Operand::IdRef(a_ptr),
+                Operand::IdRef(b_ptr),
+            ],
         ));
         id
     };
     builder.emit(Instruction::new(
-        spirv::Op::Store, None, None,
+        spirv::Op::Store,
+        None,
+        None,
         vec![Operand::IdRef(dest), Operand::IdRef(val)],
     ));
 }
@@ -2679,8 +2928,14 @@ fn emit_wg_barrier(builder: &mut super::SpirvBuilder) {
     let scope = builder.u32_const(2);
     let sem = builder.u32_const(0x508);
     builder.emit(Instruction::new(
-        spirv::Op::ControlBarrier, None, None,
-        vec![Operand::IdRef(scope), Operand::IdRef(scope), Operand::IdRef(sem)],
+        spirv::Op::ControlBarrier,
+        None,
+        None,
+        vec![
+            Operand::IdRef(scope),
+            Operand::IdRef(scope),
+            Operand::IdRef(sem),
+        ],
     ));
 }
 
@@ -2699,7 +2954,9 @@ fn emit_coopmat_smem(
     // Module preamble.
     builder.builder.capability(Capability::CooperativeMatrixKHR);
     builder.builder.capability(Capability::VulkanMemoryModel);
-    builder.builder.capability(Capability::StorageBuffer16BitAccess);
+    builder
+        .builder
+        .capability(Capability::StorageBuffer16BitAccess);
     builder.builder.capability(Capability::Float16);
     builder.builder.capability(Capability::VariablePointers);
     builder.builder.extension("SPV_KHR_variable_pointers");
@@ -2707,7 +2964,9 @@ fn emit_coopmat_smem(
     builder.builder.extension("SPV_KHR_vulkan_memory_model");
     builder.builder.extension("SPV_KHR_16bit_storage");
     builder.builder.module_mut().memory_model = Some(rspirv::dr::Instruction::new(
-        spirv::Op::MemoryModel, None, None,
+        spirv::Op::MemoryModel,
+        None,
+        None,
         vec![
             Operand::LiteralBit32(spirv::AddressingModel::Logical as u32),
             Operand::LiteralBit32(spirv::MemoryModel::Vulkan as u32),
@@ -2725,11 +2984,19 @@ fn emit_coopmat_smem(
     let use_b = u32_const(builder, 1);
     let use_c = u32_const(builder, 2);
     let dim16 = u32_const(builder, 16);
-    let cm_a16 = builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_a);
-    let cm_b16 = builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_b);
+    let cm_a16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_a);
+    let cm_b16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_b);
     let f16acc = GemmPlan::coopmat_f16acc();
-    let cm_c16 = builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_c);
-    let cm_c32 = builder.builder.type_cooperative_matrix_khr(f32_ty, scope_sub, dim16, dim16, use_c);
+    let cm_c16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_c);
+    let cm_c32 = builder
+        .builder
+        .type_cooperative_matrix_khr(f32_ty, scope_sub, dim16, dim16, use_c);
     let acc_cm = if f16acc { cm_c16 } else { cm_c32 };
 
     let layout_row = builder.u32_const(0);
@@ -2770,7 +3037,8 @@ fn emit_coopmat_smem(
     let acc_backedges: Vec<Word> = (0..acc_count).map(|_| builder.gen_id()).collect();
     let acc_inits: Vec<Word> = (0..acc_count).map(|_| acc_zero).collect();
     let acc_phis: Vec<(Word, Word, Word)> = acc_backedges
-        .iter().zip(acc_inits.iter())
+        .iter()
+        .zip(acc_inits.iter())
         .map(|(&be, &init)| (acc_cm, init, be))
         .collect();
 
@@ -2785,7 +3053,7 @@ fn emit_coopmat_smem(
     let a_stage_elems_c = u32_const(builder, a_stage_elems);
     let subgroups = GemmPlan::coopmat_subgroups();
     let b_stage_elems = pps * 4 * 256; // one subgroup's B per stage
-    // D4: total fill elements = A + S × B (each subgroup fills its own B slice)
+                                       // D4: total fill elements = A + S × B (each subgroup fills its own B slice)
     let total_elems = a_stage_elems + subgroups * b_stage_elems;
     let pairs = GemmPlan::coopmat_fill_pairs();
     // Pairs mode: the SSBO members AND the smem arrays are retyped
@@ -2839,13 +3107,36 @@ fn emit_coopmat_smem(
     let b_stage_elems_c = u32_const(builder, b_stage_elems);
     let b_stage_elems_mask = u32_const(builder, b_stage_elems - 1);
     let fill_params = SmemFillParams {
-        smem_a, smem_b, f16_wg_ptr, f16_ssbo_ptr,
-        a_stage_elems_c, a_member_c, b_member_c,
-        nk, n_stride, nk_half, n_half, band_m16, tn64, s16c,
-        f16_ty, bool_ty, u32_ty, lane, ssbo, elems_per_lane,
-        v2_ssbo_ptr, v2_wg_ptr, v2_f16_ty,
-        v4_ssbo_ptr, v4_wg_ptr, v4_f16_ty, k4, n4,
-        pairs, quad,
+        smem_a,
+        smem_b,
+        f16_wg_ptr,
+        f16_ssbo_ptr,
+        a_stage_elems_c,
+        a_member_c,
+        b_member_c,
+        nk,
+        n_stride,
+        nk_half,
+        n_half,
+        band_m16,
+        tn64,
+        s16c,
+        f16_ty,
+        bool_ty,
+        u32_ty,
+        lane,
+        ssbo,
+        elems_per_lane,
+        v2_ssbo_ptr,
+        v2_wg_ptr,
+        v2_f16_ty,
+        v4_ssbo_ptr,
+        v4_wg_ptr,
+        v4_f16_ty,
+        k4,
+        n4,
+        pairs,
+        quad,
         sub_id: io.sub_id,
         tiles_x_c: tiles_x_c.clone(),
         b_stage_elems_c,
@@ -2885,7 +3176,7 @@ fn emit_coopmat_smem(
     let b_stage_elems = pps * 4 * 256;
     let stages = GemmPlan::coopmat_stages();
     let sub_b_base_elems = stages * b_stage_elems; // all stages per subgroup
-    // sub_b_offset = sub_id × sub_b_base_elems (runtime — different per subgroup)
+                                                   // sub_b_offset = sub_id × sub_b_base_elems (runtime — different per subgroup)
     let sub_b_offset = if subgroups > 1 {
         let sub_b_elems_c = u32_const(builder, sub_b_base_elems);
         u32_binop(builder, spirv::Op::IMul, io.sub_id, sub_b_elems_c)
@@ -2911,7 +3202,9 @@ fn emit_coopmat_smem(
                 let over = {
                     let id = builder.gen_id();
                     builder.emit(Instruction::new(
-                        spirv::Op::UGreaterThan, Some(bool_ty), Some(id),
+                        spirv::Op::UGreaterThan,
+                        Some(bool_ty),
+                        Some(id),
                         vec![Operand::IdRef(raw), Operand::IdRef(last_panel_c)],
                     ));
                     id
@@ -2919,8 +3212,14 @@ fn emit_coopmat_smem(
                 {
                     let id = builder.gen_id();
                     builder.emit(Instruction::new(
-                        spirv::Op::Select, Some(u32_ty), Some(id),
-                        vec![Operand::IdRef(over), Operand::IdRef(last_panel_c), Operand::IdRef(raw)],
+                        spirv::Op::Select,
+                        Some(u32_ty),
+                        Some(id),
+                        vec![
+                            Operand::IdRef(over),
+                            Operand::IdRef(last_panel_c),
+                            Operand::IdRef(raw),
+                        ],
                     ));
                     id
                 }
@@ -2943,7 +3242,9 @@ fn emit_coopmat_smem(
     let kt_u = {
         let id = builder.gen_id();
         builder.emit(Instruction::new(
-            spirv::Op::UConvert, Some(u32_ty), Some(id),
+            spirv::Op::UConvert,
+            Some(u32_ty),
+            Some(id),
             vec![Operand::IdRef(kt_phi)],
         ));
         id
@@ -2993,19 +3294,33 @@ fn emit_coopmat_smem(
                 let unit_base = u32_binop(builder, spirv::Op::UDiv, base, vw_c);
                 let half_ptr = builder.ptr_class(StorageClass::Workgroup, f16_ty);
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(half_ptr), Some(ptr),
-                    vec![Operand::IdRef(smem_a), Operand::IdRef(unit_base), Operand::IdRef(c0)],
+                    spirv::Op::AccessChain,
+                    Some(half_ptr),
+                    Some(ptr),
+                    vec![
+                        Operand::IdRef(smem_a),
+                        Operand::IdRef(unit_base),
+                        Operand::IdRef(c0),
+                    ],
                 ));
             } else {
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(f16_wg_ptr), Some(ptr),
+                    spirv::Op::AccessChain,
+                    Some(f16_wg_ptr),
+                    Some(ptr),
                     vec![Operand::IdRef(smem_a), Operand::IdRef(base)],
                 ));
             }
             let frag = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::CooperativeMatrixLoadKHR, Some(cm_a16), Some(frag),
-                vec![Operand::IdRef(ptr), Operand::IdRef(layout_row), Operand::IdRef(s16c)],
+                spirv::Op::CooperativeMatrixLoadKHR,
+                Some(cm_a16),
+                Some(frag),
+                vec![
+                    Operand::IdRef(ptr),
+                    Operand::IdRef(layout_row),
+                    Operand::IdRef(s16c),
+                ],
             ));
             frag_as.push(frag);
         }
@@ -3029,7 +3344,8 @@ fn emit_coopmat_smem(
     // Anti-WAR refill B offset: write the OTHER stage (1-s) — see the A
     // refill comment above.
     let stage_off_b_refill_raw = u32_binop(builder, spirv::Op::IMul, refill_stage, c_b_ss);
-    let stage_off_b_refill = u32_binop(builder, spirv::Op::IAdd, sub_b_base, stage_off_b_refill_raw);
+    let stage_off_b_refill =
+        u32_binop(builder, spirv::Op::IAdd, sub_b_base, stage_off_b_refill_raw);
     let mut frag_bs: Vec<Word> = Vec::new();
     for pi in 0..pps as usize {
         let pi_c = u32_const(builder, (pi * 4 * 256) as u32);
@@ -3047,19 +3363,33 @@ fn emit_coopmat_smem(
                 let unit_base = u32_binop(builder, spirv::Op::UDiv, base, vw_c);
                 let half_ptr = builder.ptr_class(StorageClass::Workgroup, f16_ty);
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(half_ptr), Some(ptr),
-                    vec![Operand::IdRef(smem_b), Operand::IdRef(unit_base), Operand::IdRef(c0)],
+                    spirv::Op::AccessChain,
+                    Some(half_ptr),
+                    Some(ptr),
+                    vec![
+                        Operand::IdRef(smem_b),
+                        Operand::IdRef(unit_base),
+                        Operand::IdRef(c0),
+                    ],
                 ));
             } else {
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(f16_wg_ptr), Some(ptr),
+                    spirv::Op::AccessChain,
+                    Some(f16_wg_ptr),
+                    Some(ptr),
                     vec![Operand::IdRef(smem_b), Operand::IdRef(base)],
                 ));
             }
             let frag = builder.gen_id();
             builder.emit(Instruction::new(
-                spirv::Op::CooperativeMatrixLoadKHR, Some(cm_b16), Some(frag),
-                vec![Operand::IdRef(ptr), Operand::IdRef(layout_row), Operand::IdRef(s16c)],
+                spirv::Op::CooperativeMatrixLoadKHR,
+                Some(cm_b16),
+                Some(frag),
+                vec![
+                    Operand::IdRef(ptr),
+                    Operand::IdRef(layout_row),
+                    Operand::IdRef(s16c),
+                ],
             ));
             frag_bs.push(frag);
         }
@@ -3137,7 +3467,8 @@ fn emit_coopmat_smem(
                 let frag_a = frag_as[pi * tile_rows as usize + r];
                 let frag_b = frag_bs[pi * 4 + j];
                 builder.emit(Instruction::new(
-                    spirv::Op::CooperativeMatrixMulAddKHR, Some(acc_cm),
+                    spirv::Op::CooperativeMatrixMulAddKHR,
+                    Some(acc_cm),
                     Some(res),
                     vec![
                         Operand::IdRef(frag_a),
@@ -3190,10 +3521,14 @@ fn emit_coopmat_smem(
         let c_row = u32_binop(builder, spirv::Op::IMul, row, n_stride);
         for j in 0..4 {
             let phi = acc_phis_live[r * 4 + j];
-            let frag_out = if f16acc { phi } else {
+            let frag_out = if f16acc {
+                phi
+            } else {
                 let fo = builder.gen_id();
                 builder.emit(Instruction::new(
-                    spirv::Op::FConvert, Some(cm_c16), Some(fo),
+                    spirv::Op::FConvert,
+                    Some(cm_c16),
+                    Some(fo),
                     vec![Operand::IdRef(phi)],
                 ));
                 fo
@@ -3212,20 +3547,38 @@ fn emit_coopmat_smem(
                 let v2_half_ptr = builder.ptr_class(StorageClass::StorageBuffer, f16_ty);
                 let pair_idx = u32_shr(builder, c_off, 1);
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(v2_half_ptr), Some(y_ptr),
-                    vec![Operand::IdRef(ssbo), Operand::IdRef(y_member_c),
-                         Operand::IdRef(pair_idx), Operand::IdRef(c0)],
+                    spirv::Op::AccessChain,
+                    Some(v2_half_ptr),
+                    Some(y_ptr),
+                    vec![
+                        Operand::IdRef(ssbo),
+                        Operand::IdRef(y_member_c),
+                        Operand::IdRef(pair_idx),
+                        Operand::IdRef(c0),
+                    ],
                 ));
             } else {
                 builder.emit(Instruction::new(
-                    spirv::Op::AccessChain, Some(y_elem_ptr), Some(y_ptr),
-                    vec![Operand::IdRef(ssbo), Operand::IdRef(y_member_c), Operand::IdRef(c_off)],
+                    spirv::Op::AccessChain,
+                    Some(y_elem_ptr),
+                    Some(y_ptr),
+                    vec![
+                        Operand::IdRef(ssbo),
+                        Operand::IdRef(y_member_c),
+                        Operand::IdRef(c_off),
+                    ],
                 ));
             }
             builder.emit(Instruction::new(
-                spirv::Op::CooperativeMatrixStoreKHR, None, None,
-                vec![Operand::IdRef(y_ptr), Operand::IdRef(frag_out),
-                     Operand::IdRef(layout_row), Operand::IdRef(n_stride)],
+                spirv::Op::CooperativeMatrixStoreKHR,
+                None,
+                None,
+                vec![
+                    Operand::IdRef(y_ptr),
+                    Operand::IdRef(frag_out),
+                    Operand::IdRef(layout_row),
+                    Operand::IdRef(n_stride),
+                ],
             ));
         }
     }
@@ -3241,8 +3594,13 @@ pub(crate) fn emit_coopmat(
     exit_bb: Word,
 ) -> Result<(), String> {
     if io.shared_a.is_some() && io.shared_b.is_some() {
-        return emit_coopmat_smem(builder, plan, io,
-            GemmPlan::coopmat_tile_rows(plan.m), exit_bb);
+        return emit_coopmat_smem(
+            builder,
+            plan,
+            io,
+            GemmPlan::coopmat_tile_rows(plan.m),
+            exit_bb,
+        );
     }
     use rspirv::spirv::Capability;
     let (ssbo, wgid, a_member, b_member, y_member) =
@@ -3252,7 +3610,9 @@ pub(crate) fn emit_coopmat(
     // (Shader is already declared by SpirvBuilder::new.)
     builder.builder.capability(Capability::CooperativeMatrixKHR);
     builder.builder.capability(Capability::VulkanMemoryModel);
-    builder.builder.capability(Capability::StorageBuffer16BitAccess);
+    builder
+        .builder
+        .capability(Capability::StorageBuffer16BitAccess);
     // The mma is ARITHMETIC over f16 fragments — shaderFloat16 surface.
     // (Storage alone would only need 16bit_storage.)
     builder.builder.capability(Capability::Float16);
@@ -3284,21 +3644,30 @@ pub(crate) fn emit_coopmat(
     let use_b = u32_const(builder, 1);
     let use_c = u32_const(builder, 2);
     let dim16 = u32_const(builder, 16);
-    let cm_a16 = builder.builder.type_cooperative_matrix_khr(
-        f16_ty, scope_sub, dim16, dim16, use_a);
-    let cm_b16 = builder.builder.type_cooperative_matrix_khr(
-        f16_ty, scope_sub, dim16, dim16, use_b);
-    let cm_c32 = builder.builder.type_cooperative_matrix_khr(
-        f32_ty, scope_sub, dim16, dim16, use_c);
-    let cm_c16 = builder.builder.type_cooperative_matrix_khr(
-        f16_ty, scope_sub, dim16, dim16, use_c);
+    let cm_a16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_a);
+    let cm_b16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_b);
+    let cm_c32 = builder
+        .builder
+        .type_cooperative_matrix_khr(f32_ty, scope_sub, dim16, dim16, use_c);
+    let cm_c16 = builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_c);
     // 2026-09-02 (B3): the f16-acc tier accumulates IN f16 — the mma runs
     // double-pumped on Ampere and the store needs no OpFConvert (the field
     // is f16 already). The f32-acc path is byte-identical to before.
     let f16acc = GemmPlan::coopmat_f16acc();
     let sub_check = GemmPlan::coopmat_subgroups();
-    eprintln!("DBG knobs: f16acc={} subgroups={} pps={} pairs={}", f16acc, sub_check,
-        GemmPlan::coopmat_panels_per_stage(plan.k), GemmPlan::coopmat_fill_pairs());
+    eprintln!(
+        "DBG knobs: f16acc={} subgroups={} pps={} pairs={}",
+        f16acc,
+        sub_check,
+        GemmPlan::coopmat_panels_per_stage(plan.k),
+        GemmPlan::coopmat_fill_pairs()
+    );
     let acc_cm = if f16acc { cm_c16 } else { cm_c32 };
 
     // Memory layout constant: RowMajorKHR = 0.
@@ -3556,5 +3925,7 @@ fn cm_c16_probe(
     dim16: Word,
     use_c: Word,
 ) -> Word {
-    builder.builder.type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_c)
+    builder
+        .builder
+        .type_cooperative_matrix_khr(f16_ty, scope_sub, dim16, dim16, use_c)
 }

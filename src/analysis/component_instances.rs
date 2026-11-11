@@ -125,10 +125,8 @@ pub fn expand_component_instances(
     // plain top-level obj var (no `render` block) whose view `b-trigger` fires
     // a member txn. The member txn gets emitted as a top-level variant
     // (`@go_<var>`) and the view's bare `b-trigger` is rewritten to it.
-    let view_txn_names: std::collections::HashSet<String> =
-        collect_fragment_refs(view_html).txns;
-    let instance_infos =
-        collect_instance_lets(items, &render_blocks, &obj_defs, &view_txn_names)?;
+    let view_txn_names: std::collections::HashSet<String> = collect_fragment_refs(view_html).txns;
+    let instance_infos = collect_instance_lets(items, &render_blocks, &obj_defs, &view_txn_names)?;
     let mut pending_resets: Vec<(String, HashMap<String, Type>)> = Vec::new();
     for (component, fragment_html) in &render_blocks {
         let refs = collect_fragment_refs(fragment_html);
@@ -172,7 +170,14 @@ pub fn expand_component_instances(
     }
     // Briev-side instances: their specs (slots + variants, routed to the
     // instance-name prefix) are added to the plan after the pool pass.
-    apply_instance_specs(items, &instance_infos, &obj_defs, &render_blocks, view_html, &mut plan)?;
+    apply_instance_specs(
+        items,
+        &instance_infos,
+        &obj_defs,
+        &render_blocks,
+        view_html,
+        &mut plan,
+    )?;
     Ok(plan)
 }
 
@@ -182,14 +187,21 @@ pub fn expand_component_instances(
 /// rewrite.
 fn apply_instance_specs(
     items: &mut Vec<TopLevel>,
-    instance_infos: &[(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)],
+    instance_infos: &[(
+        String,
+        String,
+        Option<HashMap<String, Expr>>,
+        Option<Box<Expr>>,
+    )],
     obj_defs: &HashMap<String, ObjInfo>,
     render_blocks: &std::collections::BTreeMap<String, String>,
     view_html: &str,
     plan: &mut ComponentInstancePlan,
 ) -> Result<(), String> {
     for (var_name, component, literal, init_expr) in instance_infos {
-        let Some(obj) = obj_defs.get(component) else { continue };
+        let Some(obj) = obj_defs.get(component) else {
+            continue;
+        };
         // 2026-10-07 (member-txn-on-plain-obj-var): the consumed `let` is
         // removed from `items` before liveness indexes it — re-root its
         // initializer's callees (e.g. `current_path`) or the emitted init
@@ -253,7 +265,8 @@ fn build_plain_var_instance(
     // `go_<var>`. The view compiler rewrites the top-level view's directive
     // values to the variant (no mount tag to splice through).
     for (orig, variant) in &variant_txns {
-        plan.top_level_variants.insert(orig.clone(), variant.clone());
+        plan.top_level_variants
+            .insert(orig.clone(), variant.clone());
     }
     // Record the instance spec (no fragment, no marker — the plain var is not
     // a mounted component; the view binds directly).
@@ -512,9 +525,11 @@ fn emit_reset_txn(
         ));
     }
     body.push(Statement::Term(None));
-    let post = conjuncts.into_iter().rev().reduce(|acc, c| {
-        Expr::BinaryOp(BinaryOpKind::And, Box::new(c), Box::new(acc))
-    }).unwrap_or(Expr::Bool(true));
+    let post = conjuncts
+        .into_iter()
+        .rev()
+        .reduce(|acc, c| Expr::BinaryOp(BinaryOpKind::And, Box::new(c), Box::new(acc)))
+        .unwrap_or(Expr::Bool(true));
     items.push(TopLevel::Transaction(Transaction {
         name: format!("__reset_{}", marker),
         is_reactive: false,
@@ -559,23 +574,27 @@ fn reset_value_for_slot(
     Err(format!(
         "component slot '{}' has no seed and no type default — it cannot be \
          reset on unmount; seed the instance (`let {}: … = … {{ {}: value }}`)",
-        slot, prefix_for_error(slot), slot
+        slot,
+        prefix_for_error(slot),
+        slot
     ))
 }
 
 /// The instance prefix (everything before the last `.field`) for an error
 /// message — `c1.count` → `c1`, `Counter.0.count` → `Counter.0`.
 fn prefix_for_error(slot: &str) -> String {
-    slot.rfind('.').map(|i| slot[..i].to_string()).unwrap_or_else(|| slot.to_string())
+    slot.rfind('.')
+        .map(|i| slot[..i].to_string())
+        .unwrap_or_else(|| slot.to_string())
 }
 
 /// The HTML element names reserved against Briev instance vars — an instance
 /// named `div` mounted as `<div />` would silently shadow the HTML element,
 /// so such a name is a compile error (the namespaces stay separated).
 const RESERVED_TAG_NAMES: &[&str] = &[
-    "a", "button", "div", "form", "h1", "h2", "h3", "h4", "h5", "h6", "img",
-    "input", "label", "li", "ol", "p", "select", "span", "table", "tbody",
-    "td", "textarea", "th", "thead", "tr", "ul",
+    "a", "button", "div", "form", "h1", "h2", "h3", "h4", "h5", "h6", "img", "input", "label",
+    "li", "ol", "p", "select", "span", "table", "tbody", "td", "textarea", "th", "thead", "tr",
+    "ul",
 ];
 
 /// Collect Briev-side component instances: top-level `let <name>: <Obj> =
@@ -591,27 +610,42 @@ fn collect_instance_lets(
     render_blocks: &std::collections::BTreeMap<String, String>,
     obj_defs: &HashMap<String, ObjInfo>,
     view_txn_names: &std::collections::HashSet<String>,
-) -> Result<Vec<(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)>, String> {
-    let mut infos: Vec<(String, String, Option<HashMap<String, Expr>>, Option<Box<Expr>>)> =
-        Vec::new();
+) -> Result<
+    Vec<(
+        String,
+        String,
+        Option<HashMap<String, Expr>>,
+        Option<Box<Expr>>,
+    )>,
+    String,
+> {
+    let mut infos: Vec<(
+        String,
+        String,
+        Option<HashMap<String, Expr>>,
+        Option<Box<Expr>>,
+    )> = Vec::new();
     let mut to_remove: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for item in items.iter() {
-        let TopLevel::Statement(stmt) = item else { continue };
+        let TopLevel::Statement(stmt) = item else {
+            continue;
+        };
         let crate::ast::Statement::Let { name, ty, expr, .. } = stmt.as_ref() else {
             continue;
         };
-        let Some(Type::Custom(base)) = ty else { continue };
-        let Some(obj) = obj_defs.get(base) else { continue };
+        let Some(Type::Custom(base)) = ty else {
+            continue;
+        };
+        let Some(obj) = obj_defs.get(base) else {
+            continue;
+        };
         // A `let` is a component instance when the obj has a render block,
         // OR (2026-10-07) when the view references one of the obj's member
         // txns by bare name (a plain top-level obj var whose view `b-trigger`
         // fires a member txn).
         let has_render = render_blocks.contains_key(base);
-        let view_refs_member_txn = obj
-            .member_txns
-            .keys()
-            .any(|t| view_txn_names.contains(t));
+        let view_refs_member_txn = obj.member_txns.keys().any(|t| view_txn_names.contains(t));
         if !has_render && !view_refs_member_txn {
             continue;
         }
@@ -636,7 +670,11 @@ fn collect_instance_lets(
             ));
         }
         let literal_fields = match expr {
-            Some(Expr::StructLiteral { type_name, fields, specs }) => {
+            Some(Expr::StructLiteral {
+                type_name,
+                fields,
+                specs,
+            }) => {
                 if type_name != base {
                     return Err(format!(
                         "component instance '{}' is typed '{}' but constructed as '{}'",
@@ -655,12 +693,19 @@ fn collect_instance_lets(
             }
             None => None,
         };
-        infos.push((name.clone(), base.clone(), literal_fields, expr.as_ref().cloned().map(Box::new)));
+        infos.push((
+            name.clone(),
+            base.clone(),
+            literal_fields,
+            expr.as_ref().cloned().map(Box::new),
+        ));
         to_remove.push(name.clone());
     }
     if !to_remove.is_empty() {
         items.retain(|item| {
-            let TopLevel::Statement(stmt) = item else { return true };
+            let TopLevel::Statement(stmt) = item else {
+                return true;
+            };
             let crate::ast::Statement::Let { name, .. } = stmt.as_ref() else {
                 return true;
             };
@@ -881,7 +926,9 @@ fn build_txn_variants(
     for (name, mut t) in members {
         let variant_name = format!("{}_{}", name, suffix);
         // for_each keeps the body-rewrite single-level for Praetor.
-        t.body.iter_mut().for_each(|stmt| rewrite_stmt(stmt, qualifier));
+        t.body
+            .iter_mut()
+            .for_each(|stmt| rewrite_stmt(stmt, qualifier));
         let pre = rewrite_expr(&t.contract.pre_condition, qualifier);
         let post = rewrite_expr(&t.contract.post_condition, qualifier);
         // 2026-08-12 (2b3): preserve the member's signature — a member with
@@ -963,9 +1010,10 @@ fn stmt_vars(stmt: &Statement, out: &mut std::collections::HashSet<String>) {
             }
         }
         Statement::Expression(e) => expr_vars(e, out),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
-            expr_vars(e, out)
-        }
+        Statement::Term(Some(e))
+        | Statement::EndProgram(Some(e))
+        | Statement::Rollback(Some(e))
+        | Statement::Tail(e) => expr_vars(e, out),
         _ => {}
     }
 }
@@ -1002,9 +1050,11 @@ fn expr_vars(e: &Expr, out: &mut std::collections::HashSet<String>) {
                 expr_vars(x, out);
             }
         }
-        Expr::AddrOf(i) | Expr::Deref(i) | Expr::Consume(i) | Expr::Await(i) | Expr::Within(i, _) => {
-            expr_vars(i, out)
-        }
+        Expr::AddrOf(i)
+        | Expr::Deref(i)
+        | Expr::Consume(i)
+        | Expr::Await(i)
+        | Expr::Within(i, _) => expr_vars(i, out),
         Expr::Block(ss) => {
             for s in ss.iter() {
                 stmt_vars(s, out);
@@ -1073,9 +1123,10 @@ fn rewrite_stmt(stmt: &mut Statement, qualifier: &dyn Fn(&str) -> Option<String>
             }
         }
         Statement::Expression(e) => rewrite_expr_mut(e, qualifier),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
-            rewrite_expr_mut(e, qualifier)
-        }
+        Statement::Term(Some(e))
+        | Statement::EndProgram(Some(e))
+        | Statement::Rollback(Some(e))
+        | Statement::Tail(e) => rewrite_expr_mut(e, qualifier),
         _ => {}
     }
 }
@@ -1114,9 +1165,11 @@ fn rewrite_expr_mut(e: &mut Expr, qualifier: &dyn Fn(&str) -> Option<String>) {
                 rewrite_expr_mut(x, qualifier);
             }
         }
-        Expr::AddrOf(i) | Expr::Deref(i) | Expr::Consume(i) | Expr::Await(i) | Expr::Within(i, _) => {
-            rewrite_expr_mut(i, qualifier)
-        }
+        Expr::AddrOf(i)
+        | Expr::Deref(i)
+        | Expr::Consume(i)
+        | Expr::Await(i)
+        | Expr::Within(i, _) => rewrite_expr_mut(i, qualifier),
         Expr::Block(ss) => {
             for s in ss.iter_mut() {
                 rewrite_stmt(s, qualifier);
@@ -1186,8 +1239,13 @@ fn collect_init_call_names(expr: &Expr, out: &mut HashSet<String>) {
             collect_init_call_names(r, out);
         }
         Expr::UnaryOp(_, i) => collect_init_call_names(i, out),
-        Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
-        | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _) => {
+        Expr::Field(o, _)
+        | Expr::Deref(o)
+        | Expr::AddrOf(o)
+        | Expr::Consume(o)
+        | Expr::Await(o)
+        | Expr::IsType(o, _)
+        | Expr::Cast(o, _) => {
             collect_init_call_names(o, out);
         }
         Expr::Index(o, i) => {
@@ -1227,11 +1285,18 @@ fn collect_init_call_names_stmt(stmt: &Statement, out: &mut HashSet<String>) {
             collect_init_call_names(l, out);
             collect_init_call_names(r, out);
         }
-        Statement::ArrowAssign { target: Some(l), value: r, .. } => {
+        Statement::ArrowAssign {
+            target: Some(l),
+            value: r,
+            ..
+        } => {
             collect_init_call_names(l, out);
             collect_init_call_names(r, out);
         }
-        Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Expression(e)
+        Statement::Term(Some(e))
+        | Statement::Tail(e)
+        | Statement::Check(e)
+        | Statement::Expression(e)
         | Statement::Gate(e) => {
             collect_init_call_names(e, out);
         }
@@ -1306,11 +1371,14 @@ render Root {
             Some("increment_1"),
             "mount 1 txn variant"
         );
-        let names: Vec<String> = items.iter().filter_map(|item| match item {
-            TopLevel::StateDecl(sd) => Some(sd.name.clone()),
-            TopLevel::Transaction(t) => Some(format!("txn:{}", t.name)),
-            _ => None,
-        }).collect();
+        let names: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::StateDecl(sd) => Some(sd.name.clone()),
+                TopLevel::Transaction(t) => Some(format!("txn:{}", t.name)),
+                _ => None,
+            })
+            .collect();
         assert!(names.contains(&"Counter.0.count".to_string()), "{names:?}");
         assert!(names.contains(&"Counter.1.count".to_string()), "{names:?}");
         assert!(names.contains(&"txn:increment_0".to_string()), "{names:?}");
@@ -1338,20 +1406,30 @@ render Root {
 };
 "#;
         let (items, _plan) = check(src).unwrap();
-        let states: Vec<(String, Type)> = items.iter().filter_map(|item| match item {
-            TopLevel::StateDecl(sd) => Some((sd.name.clone(), sd.ty.clone())),
-            _ => None,
-        }).collect();
+        let states: Vec<(String, Type)> = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::StateDecl(sd) => Some((sd.name.clone(), sd.ty.clone())),
+                _ => None,
+            })
+            .collect();
         assert!(
-            states.iter().any(|(n, t)| n == "Panel.0.show" && *t == Type::bool_()),
+            states
+                .iter()
+                .any(|(n, t)| n == "Panel.0.show" && *t == Type::bool_()),
             "instance slot keeps the obj's Bool type: {states:?}"
         );
-        let txns: Vec<String> = items.iter().filter_map(|item| match item {
-            TopLevel::Transaction(t) => Some(t.name.clone()),
-            _ => None,
-        }).collect();
-        assert!(txns.contains(&"toggle_0".to_string()) && txns.contains(&"toggle_1".to_string()),
-            "write-consumed member gets per-mount variants: {txns:?}");
+        let txns: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::Transaction(t) => Some(t.name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            txns.contains(&"toggle_0".to_string()) && txns.contains(&"toggle_1".to_string()),
+            "write-consumed member gets per-mount variants: {txns:?}"
+        );
     }
 
     /// `render Name` requires `obj Name` — a fragment without its obj is a
@@ -1429,7 +1507,11 @@ render Root {
 };
 "#;
         let (_items, plan) = check(src).unwrap();
-        assert!(plan.initializers.is_empty(), "no Rust-invented seeds: {:?}", plan.initializers);
+        assert!(
+            plan.initializers.is_empty(),
+            "no Rust-invented seeds: {:?}",
+            plan.initializers
+        );
         assert_eq!(
             plan.mounts.get("Counter").map(|s| s.len()).unwrap_or(0),
             2,
@@ -1461,7 +1543,10 @@ render Root {
 "#;
         let (items, plan) = check(src).unwrap();
         let spec = plan.instance_specs.get("c1").expect("c1 spec");
-        assert_eq!(spec.marker, "c1", "data-instance marker is the instance name");
+        assert_eq!(
+            spec.marker, "c1",
+            "data-instance marker is the instance name"
+        );
         assert_eq!(
             spec.fields,
             vec![("count".to_string(), "c1.count".to_string())],
@@ -1477,23 +1562,34 @@ render Root {
             Some(&Expr::Decimal(5)),
             "seed is the Briev literal"
         );
-        let states: Vec<String> = items.iter().filter_map(|item| match item {
-            TopLevel::StateDecl(sd) => Some(sd.name.clone()),
-            _ => None,
-        }).collect();
+        let states: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::StateDecl(sd) => Some(sd.name.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(states.contains(&"c1.count".to_string()), "{states:?}");
-        let txns: Vec<String> = items.iter().filter_map(|item| match item {
-            TopLevel::Transaction(t) => Some(t.name.clone()),
-            _ => None,
-        }).collect();
+        let txns: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::Transaction(t) => Some(t.name.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(txns.contains(&"increment_c1".to_string()), "{txns:?}");
         assert!(
-            !items.iter().any(|item| matches!(item, TopLevel::Statement(s) if matches!(
+            !items
+                .iter()
+                .any(|item| matches!(item, TopLevel::Statement(s) if matches!(
                 s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "c1"))),
             "the consumed let is removed (its state became the c1.* slots)"
         );
         assert!(
-            plan.mounts.get("Counter").map(|s| s.is_empty()).unwrap_or(true),
+            plan.mounts
+                .get("Counter")
+                .map(|s| s.is_empty())
+                .unwrap_or(true),
             "no spurious HTML-side pool mount"
         );
     }
@@ -1615,14 +1711,21 @@ render Root {
 };
 "#;
         let (items, _plan) = check(src).unwrap();
-        let reset = items.iter().find_map(|item| match item {
-            TopLevel::Transaction(t) if t.name == "__reset_c1" => Some(t),
-            _ => None,
-        }).expect("reset txn __reset_c1");
-        let writes: Vec<String> = reset.body.iter().filter_map(|s| match s {
-            Statement::Assign(l, _) => Some(format!("{:?}", l)),
-            _ => None,
-        }).collect();
+        let reset = items
+            .iter()
+            .find_map(|item| match item {
+                TopLevel::Transaction(t) if t.name == "__reset_c1" => Some(t),
+                _ => None,
+            })
+            .expect("reset txn __reset_c1");
+        let writes: Vec<String> = reset
+            .body
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Assign(l, _) => Some(format!("{:?}", l)),
+                _ => None,
+            })
+            .collect();
         assert!(
             writes.iter().any(|w| w.contains("c1.count")),
             "reset writes the seeded slot: {writes:?}"
@@ -1632,7 +1735,10 @@ render Root {
             "reset carries a non-trivial post (not [true][true]): {:?}",
             reset.contract.post_condition
         );
-        assert!(!reset.is_reactive, "reset is callable-only (no tick livelock)");
+        assert!(
+            !reset.is_reactive,
+            "reset is callable-only (no tick livelock)"
+        );
     }
 
     /// 2026-08-12 (2b3 slice 3): an HTML-side spawn's reset re-applies the
@@ -1656,12 +1762,18 @@ render Root {
 };
 "#;
         let (items, _plan) = check(src).unwrap();
-        let reset = items.iter().find_map(|item| match item {
-            TopLevel::Transaction(t) if t.name == "__reset_Counter_0" => Some(t),
-            _ => None,
-        }).expect("reset txn __reset_Counter_0");
+        let reset = items
+            .iter()
+            .find_map(|item| match item {
+                TopLevel::Transaction(t) if t.name == "__reset_Counter_0" => Some(t),
+                _ => None,
+            })
+            .expect("reset txn __reset_Counter_0");
         assert!(
-            reset.body.iter().any(|s| matches!(s, Statement::Assign(l, v)
+            reset
+                .body
+                .iter()
+                .any(|s| matches!(s, Statement::Assign(l, v)
                 if format!("{:?}", l).contains("Counter.0.count")
                     && matches!(v, Expr::Decimal(0)))),
             "HTML-side reset writes the zero default: {:?}",
@@ -1756,16 +1868,23 @@ let router: Router = Router { path: "/" };
             "the consumed let must be removed from items"
         );
         // The member txn variant is emitted as a top-level txn.
-        let names: Vec<String> = items.iter().filter_map(|i| match i {
-            TopLevel::Transaction(t) => Some(t.name.clone()),
-            _ => None,
-        }).collect();
-        assert!(names.contains(&"go_router".to_string()), "go_router variant missing: {names:?}");
+        let names: Vec<String> = items
+            .iter()
+            .filter_map(|i| match i {
+                TopLevel::Transaction(t) => Some(t.name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            names.contains(&"go_router".to_string()),
+            "go_router variant missing: {names:?}"
+        );
         // The view's bare-name rewrite is recorded for the view compiler.
         assert_eq!(
             plan.top_level_variants.get("go").map(|v| v.as_str()),
             Some("go_router"),
-            "view bare-name rewrite: {:#?}", plan.top_level_variants
+            "view bare-name rewrite: {:#?}",
+            plan.top_level_variants
         );
         // The instance spec is registered (keyed by the var name).
         assert!(plan.instance_specs.contains_key("router"));
@@ -1791,7 +1910,8 @@ let router: Router = Router { path: current_path() };
         let plan = expand_component_instances(&mut items, &view_html).unwrap();
         assert!(
             plan.init_roots.contains("current_path"),
-            "current_path must be re-rooted: {:#?}", plan.init_roots
+            "current_path must be re-rooted: {:#?}",
+            plan.init_roots
         );
     }
 }

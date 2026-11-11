@@ -4,7 +4,8 @@
 use super::*;
 
 fn plan(body: &str) -> ReclamationPlan {
-    let source = format!(r#"
+    let source = format!(
+        r#"
         defn inspect() -> Int {{
             let inner: Ptr = Malloc#(8);
             let carrying: Ptr = Malloc#(8);
@@ -13,9 +14,12 @@ fn plan(body: &str) -> ReclamationPlan {
             let pair: (Ptr,Ptr) = (clean,carrying);
             {body}
         }};
-    "#);
+    "#
+    );
     let tokens = crate::lexer::tokenize(&source).unwrap();
-    let items = crate::parser::Parser::new(tokens, &source).parse_program().unwrap();
+    let items = crate::parser::Parser::new(tokens, &source)
+        .parse_program()
+        .unwrap();
     crate::analysis::reclamation::analyze(&items, &Default::default(), None)
 }
 

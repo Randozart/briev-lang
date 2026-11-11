@@ -1,11 +1,11 @@
-use crate::ast::{TopLevel};
+use crate::ast::TopLevel;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AddressSpace {
-    Ddr4,           // 0x00000000 - 0xFFFFFFFF: CPU accessible main memory
-    Mmio(u64),      // MMIO range, CPU accessible via bus
-    FpgaInternal,   // 0x40A80000+: FPGA internal BRAM/URAM, NOT CPU accessible
+    Ddr4,         // 0x00000000 - 0xFFFFFFFF: CPU accessible main memory
+    Mmio(u64),    // MMIO range, CPU accessible via bus
+    FpgaInternal, // 0x40A80000+: FPGA internal BRAM/URAM, NOT CPU accessible
     Unknown,
 }
 
@@ -34,14 +34,12 @@ impl AddressSpaceAnalyzer {
         // MMIO ranges (common for AXI4-Lite)
         // 0x4000A000 - 0x4000AFFF (first AXI slave)
         // 0x8000A000 - 0x8000AFFF (second AXI slave - KV260)
-        if (0x4000A000..=0x4000AFFF).contains(&addr) || 
-           (0x8000A000..=0x8000AFFF).contains(&addr) {
+        if (0x4000A000..=0x4000AFFF).contains(&addr) || (0x8000A000..=0x8000AFFF).contains(&addr) {
             return AddressSpace::Mmio(addr);
         }
 
         // Other MMIO ranges
-        if (0x40000000..=0x4FFFFFFF).contains(&addr) ||
-           (0x80000000..=0x8FFFFFFF).contains(&addr) {
+        if (0x40000000..=0x4FFFFFFF).contains(&addr) || (0x80000000..=0x8FFFFFFF).contains(&addr) {
             return AddressSpace::Mmio(addr);
         }
 
@@ -50,7 +48,8 @@ impl AddressSpaceAnalyzer {
     }
 
     pub fn classify(&self, addr_str: &str) -> AddressSpace {
-        self.address_spaces.get(addr_str)
+        self.address_spaces
+            .get(addr_str)
             .cloned()
             .unwrap_or(AddressSpace::Unknown)
     }
@@ -82,8 +81,11 @@ pub struct AddressValidationError {
 
 impl std::fmt::Display for AddressValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Address violation for '{}' at {}: {}", 
-               self.variable, self.address, self.message)
+        write!(
+            f,
+            "Address violation for '{}' at {}: {}",
+            self.variable, self.address, self.message
+        )
     }
 }
 

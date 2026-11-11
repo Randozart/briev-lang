@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::analysis::accel::AccelEntry;
-use crate::ast::Expr;
 use crate::ast::top::{Statement, TopLevel, Transaction};
 use crate::ast::BinaryOpKind;
+use crate::ast::Expr;
 
 /// The scheduling DAG computed from the program's node read/write sets.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -54,36 +54,37 @@ pub struct GpuSchedule {
     /// with dead intermediates, when detected — the PTX backend emits ONE
     /// fused kernel (the intermediates stay on-chip) over the epilogue
     /// fusion (two kernels). Topology only; operands derived at codegen.
-    pub chain_fusion: Option<ChainFusion>,}
+    pub chain_fusion: Option<ChainFusion>,
+}
 
 impl GpuSchedule {
-/// Phase 3 — convert reuse opportunities to a mapping: aliased field →
-/// target field (the one whose device slot is reused). For `projection_offsets`
-/// and the kernel's SSBO struct.
-///
-/// Chains are resolved transitively (B→A, C→B ⇒ C→A) so a field's offset
-/// equals the slot's ORIGINAL owner regardless of the order
-/// `projection_offsets` walks the fields.
-pub fn reuse_map(&self) -> HashMap<String, String> {
-    let direct: HashMap<String, String> = self
-        .reuse_opportunities
-        .iter()
-        .map(|(dead, new, _)| (new.clone(), dead.clone()))
-        .collect();
-    let mut out: HashMap<String, String> = HashMap::new();
-    for (new, dead) in &direct {
-        let mut target = dead.clone();
-        let mut seen = std::collections::HashSet::new();
-        while let Some(next) = direct.get(&target) {
-            if !seen.insert(target.clone()) {
-                break; // cycle guard (should not happen)
+    /// Phase 3 — convert reuse opportunities to a mapping: aliased field →
+    /// target field (the one whose device slot is reused). For `projection_offsets`
+    /// and the kernel's SSBO struct.
+    ///
+    /// Chains are resolved transitively (B→A, C→B ⇒ C→A) so a field's offset
+    /// equals the slot's ORIGINAL owner regardless of the order
+    /// `projection_offsets` walks the fields.
+    pub fn reuse_map(&self) -> HashMap<String, String> {
+        let direct: HashMap<String, String> = self
+            .reuse_opportunities
+            .iter()
+            .map(|(dead, new, _)| (new.clone(), dead.clone()))
+            .collect();
+        let mut out: HashMap<String, String> = HashMap::new();
+        for (new, dead) in &direct {
+            let mut target = dead.clone();
+            let mut seen = std::collections::HashSet::new();
+            while let Some(next) = direct.get(&target) {
+                if !seen.insert(target.clone()) {
+                    break; // cycle guard (should not happen)
+                }
+                target = next.clone();
             }
-            target = next.clone();
+            out.insert(new.clone(), target);
         }
-        out.insert(new.clone(), target);
+        out
     }
-    out
-}
 }
 
 /// A producer→consumer epilogue fusion: the consumer's elementwise scale
@@ -240,11 +241,7 @@ fn expr_ids(e: &Expr, out: &mut BTreeSet<String>) {
 /// (read-only scalars/consts) + the index counter's pre read.
 /// Host nodes: the identifiers in the pre-condition (the phase/counters
 /// that gate this node).
-fn txn_reads(
-    t: &Transaction,
-    accel: &HashMap<String, AccelEntry>,
-    out: &mut BTreeSet<String>,
-) {
+fn txn_reads(t: &Transaction, accel: &HashMap<String, AccelEntry>, out: &mut BTreeSet<String>) {
     if let Some(e) = accel.get(&t.name) {
         if e.shape.eligible {
             for f in &e.shape.read_buffers {
@@ -263,11 +260,7 @@ fn txn_reads(
 /// Kernel nodes: the accel shape's `write_buffers` (arrays) + the index
 /// counter (the runner fast-forwards it to N). Host nodes: the scalar
 /// identifiers assigned in the body.
-fn txn_writes(
-    t: &Transaction,
-    accel: &HashMap<String, AccelEntry>,
-    out: &mut BTreeSet<String>,
-) {
+fn txn_writes(t: &Transaction, accel: &HashMap<String, AccelEntry>, out: &mut BTreeSet<String>) {
     if let Some(e) = accel.get(&t.name) {
         if e.shape.eligible {
             for f in &e.shape.write_buffers {
@@ -487,7 +480,6 @@ pub fn build_schedule(
     // is a terminal array. Topology only — operands derived at codegen.
     sched.chain_fusion = detect_chain_fusion(&sched, &sched.fusions, array_meta);
 
-
     // 2026-09-14 (Phase 3 — buffer reuse): per-array last-use + reuse
     // opportunities. An array is dead after its last-use txn completes; its
     // slot may be reused by a later array of matching size/type.
@@ -679,14 +671,16 @@ fn compute_reuse_opportunities(sched: &mut GpuSchedule, array_meta: &HashMap<Str
                     .get(&owner)
                     .cloned()
                     .unwrap_or_default();
-                sched
-                    .reuse_opportunities
-                    .push((owner, name.clone(), after));
+                sched.reuse_opportunities.push((owner, name.clone(), after));
                 slot_owner[pos] = (name.clone(), *li, size);
                 continue;
             }
         }
-        slot_owner.push((name.clone(), *li, array_meta.get(name).map(|m| m.bytes).unwrap_or(0)));
+        slot_owner.push((
+            name.clone(),
+            *li,
+            array_meta.get(name).map(|m| m.bytes).unwrap_or(0),
+        ));
     }
 }
 
@@ -775,10 +769,7 @@ pub(crate) fn canonical_schedule(s: &GpuSchedule) -> BTreeMap<String, String> {
     out.insert("reads".to_string(), format!("{:?}", s.reads));
     out.insert("writes".to_string(), format!("{:?}", s.writes));
     out.insert("fusions".to_string(), format!("{:?}", s.fusions));
-    out.insert(
-        "array_last_use".to_string(),
-        sorted_map(&s.array_last_use),
-    );
+    out.insert("array_last_use".to_string(), sorted_map(&s.array_last_use));
     out.insert(
         "array_first_use".to_string(),
         sorted_map(&s.array_first_use),
@@ -799,7 +790,15 @@ mod tests {
     fn sizes(pairs: &[(&str, u64, u64)]) -> HashMap<String, ArrayMeta> {
         pairs
             .iter()
-            .map(|(n, b, e)| (n.to_string(), ArrayMeta { bytes: *b, elem: *e }))
+            .map(|(n, b, e)| {
+                (
+                    n.to_string(),
+                    ArrayMeta {
+                        bytes: *b,
+                        elem: *e,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -825,9 +824,9 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                    idiom_lane: false,
+                    approx_declared: false,
+                    exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -866,7 +865,11 @@ mod tests {
         let gemm1_pos = sched.order.iter().position(|n| n == "gemm1");
         let gemm2_pos = sched.order.iter().position(|n| n == "gemm2");
         assert!(gemm1_pos.is_some() && gemm2_pos.is_some());
-        assert!(gemm1_pos.unwrap() < gemm2_pos.unwrap(), "producer must fire first: {:?}", sched.order);
+        assert!(
+            gemm1_pos.unwrap() < gemm2_pos.unwrap(),
+            "producer must fire first: {:?}",
+            sched.order
+        );
         assert!(!sched.independent.is_empty() == false || sched.independent.is_empty());
     }
 
@@ -904,10 +907,16 @@ mod tests {
         );
         // scale: kernel_stmts = [d[i] = c[i] * 2.0]
         let scale_stmt = Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("d".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(Expr::Identifier("d".into())),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::BinaryOp(
                 BinaryOpKind::Mul,
-                Box::new(Expr::Index(Box::new(Expr::Identifier("c".into())), Box::new(Expr::Identifier("i".into())))),
+                Box::new(Expr::Index(
+                    Box::new(Expr::Identifier("c".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                )),
                 Box::new(Expr::Decimal(2)),
             ),
         );
@@ -929,9 +938,9 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                    idiom_lane: false,
+                    approx_declared: false,
+                    exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             },
@@ -973,7 +982,7 @@ mod tests {
         assert_eq!(f.out_field, "d");
         assert_eq!(f.in_field, "c");
         assert!((f.scale - 2.0).abs() < 1e-9);
-// 2026-09-15: an Int (elem 8) in_field must NOT fuse — the runner
+        // 2026-09-15: an Int (elem 8) in_field must NOT fuse — the runner
         // only applies f32 epilogue fusion, and excluding a still-running
         // consumer from last-use would corrupt the reuse analysis.
         let sz_int = sizes(&[("c", 8, 8), ("d", 8, 8)]);
@@ -984,7 +993,11 @@ mod tests {
         // would silently drop the scale — so it stays a separate kernel.
         let sz16 = sizes(&[("c", 2, 2), ("d", 2, 2)]);
         let sched16_off = build_schedule(&program, &accel, &sz16, false);
-        assert_eq!(sched16_off.fusions.len(), 0, "f16 must not fuse without f16acc");
+        assert_eq!(
+            sched16_off.fusions.len(),
+            0,
+            "f16 must not fuse without f16acc"
+        );
         let sched16_on = build_schedule(&program, &accel, &sz16, true);
         assert_eq!(sched16_on.fusions.len(), 1, "f16 fuses under f16acc");
     }
@@ -1012,9 +1025,9 @@ mod tests {
                     work_cols: None,
                     reduction: None,
                     deferred_normalize: None,
-            idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                    idiom_lane: false,
+                    approx_declared: false,
+                    exact_declared: false,
                 },
                 decision: crate::analysis::accel::AccelDecision::Gpu,
             }
@@ -1051,41 +1064,93 @@ mod tests {
         let program = vec![txn("qk", "i"), txn("scale", "j"), txn("pv", "k")];
         // q, kt, s, s2, o are arrays (65536 bytes each); i/j/k are scalars.
         let sz = sizes(&[
-            ("q", 65536, 4), ("kt", 65536, 4), ("s", 65536, 4), ("s2", 65536, 4), ("o", 65536, 4),
-            ("i", 8, 8), ("j", 8, 8), ("k", 8, 8),
+            ("q", 65536, 4),
+            ("kt", 65536, 4),
+            ("s", 65536, 4),
+            ("s2", 65536, 4),
+            ("o", 65536, 4),
+            ("i", 8, 8),
+            ("j", 8, 8),
+            ("k", 8, 8),
         ]);
         let sched = build_schedule(&program, &accel, &sz, false);
         // qk fires first, then scale, then pv.
         assert_eq!(sched.order, vec!["qk", "scale", "pv"]);
         // s is last used by scale (qk writes it, scale reads it).
-        assert_eq!(sched.array_last_use.get("s").map(|s| s.as_str()), Some("scale"));
+        assert_eq!(
+            sched.array_last_use.get("s").map(|s| s.as_str()),
+            Some("scale")
+        );
         // s2 is last used by pv.
-        assert_eq!(sched.array_last_use.get("s2").map(|s| s.as_str()), Some("pv"));
+        assert_eq!(
+            sched.array_last_use.get("s2").map(|s| s.as_str()),
+            Some("pv")
+        );
         // q is last used by qk.
-        assert_eq!(sched.array_last_use.get("q").map(|s| s.as_str()), Some("qk"));
+        assert_eq!(
+            sched.array_last_use.get("q").map(|s| s.as_str()),
+            Some("qk")
+        );
         // kt is last used by pv.
-        assert_eq!(sched.array_last_use.get("kt").map(|s| s.as_str()), Some("pv"));
+        assert_eq!(
+            sched.array_last_use.get("kt").map(|s| s.as_str()),
+            Some("pv")
+        );
         // o is last used by pv.
-        assert_eq!(sched.array_last_use.get("o").map(|s| s.as_str()), Some("pv"));
+        assert_eq!(
+            sched.array_last_use.get("o").map(|s| s.as_str()),
+            Some("pv")
+        );
         // First use: q/kt/s start at qk, s2 at scale, o at pv.
-        assert_eq!(sched.array_first_use.get("q").map(|s| s.as_str()), Some("qk"));
-        assert_eq!(sched.array_first_use.get("kt").map(|s| s.as_str()), Some("qk"));
-        assert_eq!(sched.array_first_use.get("s").map(|s| s.as_str()), Some("qk"));
-        assert_eq!(sched.array_first_use.get("s2").map(|s| s.as_str()), Some("scale"));
-        assert_eq!(sched.array_first_use.get("o").map(|s| s.as_str()), Some("pv"));
+        assert_eq!(
+            sched.array_first_use.get("q").map(|s| s.as_str()),
+            Some("qk")
+        );
+        assert_eq!(
+            sched.array_first_use.get("kt").map(|s| s.as_str()),
+            Some("qk")
+        );
+        assert_eq!(
+            sched.array_first_use.get("s").map(|s| s.as_str()),
+            Some("qk")
+        );
+        assert_eq!(
+            sched.array_first_use.get("s2").map(|s| s.as_str()),
+            Some("scale")
+        );
+        assert_eq!(
+            sched.array_first_use.get("o").map(|s| s.as_str()),
+            Some("pv")
+        );
 
         // Reuse opportunities (greedy interval allocation, write-first targets):
         // q (dead after qk) is reused by s2 (first used at scale, write-first).
         // s (dead after scale) is reused by o (first used at pv, write-first).
         // Slots are exclusive: q's slot cannot also serve o (o would be
         // live alongside s2).
-        assert!(sched.reuse_opportunities.iter().any(|(d, n, _)| d == "q" && n == "s2"),
-            "q slot reused by s2: {:?}", sched.reuse_opportunities);
-        assert!(sched.reuse_opportunities.iter().any(|(d, n, _)| d == "s" && n == "o"),
-            "s slot reused by o: {:?}", sched.reuse_opportunities);
+        assert!(
+            sched
+                .reuse_opportunities
+                .iter()
+                .any(|(d, n, _)| d == "q" && n == "s2"),
+            "q slot reused by s2: {:?}",
+            sched.reuse_opportunities
+        );
+        assert!(
+            sched
+                .reuse_opportunities
+                .iter()
+                .any(|(d, n, _)| d == "s" && n == "o"),
+            "s slot reused by o: {:?}",
+            sched.reuse_opportunities
+        );
         // A dead slot serves at most one later array.
-        let q_targets: Vec<&str> = sched.reuse_opportunities.iter()
-            .filter(|(d, _, _)| d == "q").map(|(_, n, _)| n.as_str()).collect();
+        let q_targets: Vec<&str> = sched
+            .reuse_opportunities
+            .iter()
+            .filter(|(d, _, _)| d == "q")
+            .map(|(_, n, _)| n.as_str())
+            .collect();
         assert_eq!(q_targets, vec!["s2"], "q's slot must be reused once");
     }
 
@@ -1110,9 +1175,9 @@ mod tests {
                 work_cols: None,
                 reduction: None,
                 deferred_normalize: None,
-            idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                idiom_lane: false,
+                approx_declared: false,
+                exact_declared: false,
             }
         };
         let entry = |shape: crate::analysis::accel::KernelShape| AccelEntry {
@@ -1123,14 +1188,23 @@ mod tests {
         };
         accel.insert("qk".into(), entry(mk_shape(&["q", "kt"], &["s"], vec![])));
         let scale_stmt = Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("s2".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(Expr::Identifier("s2".into())),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::BinaryOp(
                 BinaryOpKind::Mul,
-                Box::new(Expr::Index(Box::new(Expr::Identifier("s".into())), Box::new(Expr::Identifier("i".into())))),
+                Box::new(Expr::Index(
+                    Box::new(Expr::Identifier("s".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                )),
                 Box::new(Expr::Decimal(2)),
             ),
         );
-        accel.insert("scale".into(), entry(mk_shape(&["s"], &["s2"], vec![scale_stmt])));
+        accel.insert(
+            "scale".into(),
+            entry(mk_shape(&["s"], &["s2"], vec![scale_stmt])),
+        );
         accel.insert("pv".into(), entry(mk_shape(&["s2", "v"], &["o"], vec![])));
         let txn = |name: &str, pre: &str| -> TopLevel {
             TopLevel::Transaction(Transaction {
@@ -1160,8 +1234,15 @@ mod tests {
         };
         let program = vec![txn("qk", "i"), txn("scale", "j"), txn("pv", "k")];
         let sz = sizes(&[
-            ("q", 65536, 4), ("kt", 65536, 4), ("s", 65536, 4), ("s2", 65536, 4),
-            ("v", 65536, 4), ("o", 65536, 4), ("i", 8, 8), ("j", 8, 8), ("k", 8, 8),
+            ("q", 65536, 4),
+            ("kt", 65536, 4),
+            ("s", 65536, 4),
+            ("s2", 65536, 4),
+            ("v", 65536, 4),
+            ("o", 65536, 4),
+            ("i", 8, 8),
+            ("j", 8, 8),
+            ("k", 8, 8),
         ]);
         let sched = build_schedule(&program, &accel, &sz, true);
         let cf = sched.chain_fusion.expect("chain fusion detected");

@@ -16,7 +16,11 @@ pub fn find_defn_param_body<'a>(name: &str, items: &'a [TopLevel]) -> Option<(St
     for item in items {
         if let TopLevel::Definition(d) = item {
             if d.name == name {
-                let param = d.parameters.first().map(|(p, _)| p.clone()).unwrap_or_else(|| "#Lh".to_string());
+                let param = d
+                    .parameters
+                    .first()
+                    .map(|(p, _)| p.clone())
+                    .unwrap_or_else(|| "#Lh".to_string());
                 for stmt in &d.body {
                     if let Statement::Term(val) = stmt {
                         if let Some(expr) = val {
@@ -90,20 +94,30 @@ pub fn find_inverse_pairs(items: &[TopLevel]) -> Vec<(String, String, String)> {
             if a.category != b.category {
                 continue;
             }
-            let a_to = a.cast_edges.iter().find(|e| {
-                matches!(e.direction, CastDirection::CastTo) && e.binding.is_some()
-            });
-            let b_from = b.cast_edges.iter().find(|e| {
-                matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some()
-            });
-            let (Some(at), Some(bf)) = (a_to, b_from) else { continue };
+            let a_to = a
+                .cast_edges
+                .iter()
+                .find(|e| matches!(e.direction, CastDirection::CastTo) && e.binding.is_some());
+            let b_from = b
+                .cast_edges
+                .iter()
+                .find(|e| matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some());
+            let (Some(at), Some(bf)) = (a_to, b_from) else {
+                continue;
+            };
             if at.target_category != bf.target_category || at.target_variant != bf.target_variant {
                 continue;
             }
-            let Some(at_fn) = at.binding.as_ref().map(|x| &x.fn_name) else { continue };
-            let Some(bf_fn) = bf.binding.as_ref().map(|x| &x.fn_name) else { continue };
-            let (Some((param, fwd)), Some((_, inv))) =
-                (find_defn_param_body(at_fn, items), find_defn_param_body(bf_fn, items)) else {
+            let Some(at_fn) = at.binding.as_ref().map(|x| &x.fn_name) else {
+                continue;
+            };
+            let Some(bf_fn) = bf.binding.as_ref().map(|x| &x.fn_name) else {
+                continue;
+            };
+            let (Some((param, fwd)), Some((_, inv))) = (
+                find_defn_param_body(at_fn, items),
+                find_defn_param_body(bf_fn, items),
+            ) else {
                 continue;
             };
             if prove_composition_inverse(&param, fwd, inv) {
@@ -117,16 +131,15 @@ pub fn find_inverse_pairs(items: &[TopLevel]) -> Vec<(String, String, String)> {
 /// Verify round-trip identity for a protocol declaration.
 /// For matching CastTo/CastFrom pairs, proves that
 /// CastFrom(CastTo(x)) == x via symbolic evaluation or SMT.
-pub fn verify_protocol_roundtrip(
-    pd: &ProtocolDef,
-    items: &[TopLevel],
-) -> Result<(), String> {
-    let to = pd.cast_edges.iter().find(|e| {
-        matches!(e.direction, CastDirection::CastTo) && e.binding.is_some()
-    });
-    let from = pd.cast_edges.iter().find(|e| {
-        matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some()
-    });
+pub fn verify_protocol_roundtrip(pd: &ProtocolDef, items: &[TopLevel]) -> Result<(), String> {
+    let to = pd
+        .cast_edges
+        .iter()
+        .find(|e| matches!(e.direction, CastDirection::CastTo) && e.binding.is_some());
+    let from = pd
+        .cast_edges
+        .iter()
+        .find(|e| matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some());
 
     let (to_edge, from_edge) = match (to, from) {
         (Some(t), Some(f)) if t.target_category == f.target_category => (t, f),
@@ -152,7 +165,10 @@ pub fn verify_protocol_roundtrip(
         (Some(fwd), Some(inv)) => {
             let sym_input = {
                 let mut m = std::collections::HashMap::new();
-                m.insert("#Lh".to_string(), crate::symbolic::SymbolicValue::Identifier("__x".into()));
+                m.insert(
+                    "#Lh".to_string(),
+                    crate::symbolic::SymbolicValue::Identifier("__x".into()),
+                );
                 m
             };
 
@@ -161,11 +177,17 @@ pub fn verify_protocol_roundtrip(
             inv_input.insert("#Lh".to_string(), mid.clone());
             let output = crate::symbolic::eval_symbolic_expr(inv, &inv_input);
 
-            if symbolic_deep_equals(&output, &crate::symbolic::SymbolicValue::Identifier("__x".into())) {
+            if symbolic_deep_equals(
+                &output,
+                &crate::symbolic::SymbolicValue::Identifier("__x".into()),
+            ) {
                 return Ok(());
             }
 
-            eprintln!("warning: symbolic round-trip inconclusive for '{}', trying SMT", pd.name);
+            eprintln!(
+                "warning: symbolic round-trip inconclusive for '{}', trying SMT",
+                pd.name
+            );
             let formula = build_roundtrip_smt(fwd, inv);
             let result = crate::proof_engine::smt::prove_smt_formula(&formula, 1000);
             match result {
@@ -182,8 +204,12 @@ pub fn verify_protocol_roundtrip(
             // warning+Ok shipped unprovable conversions to every consumer.
             // The round-trip gate only has teeth when both functions exist.
             let missing = [
-                find_defn_body(to_fn, items).is_none().then(|| to_fn.clone()),
-                find_defn_body(from_fn, items).is_none().then(|| from_fn.clone()),
+                find_defn_body(to_fn, items)
+                    .is_none()
+                    .then(|| to_fn.clone()),
+                find_defn_body(from_fn, items)
+                    .is_none()
+                    .then(|| from_fn.clone()),
             ]
             .into_iter()
             .flatten()
@@ -196,10 +222,7 @@ pub fn verify_protocol_roundtrip(
                  silently corrupt data\n  fix: define {} in this module (or a \
                  module it imports), or remove the corresponding CastTo/CastFrom \
                  binding from 'proto {}'",
-                pd.name,
-                missing,
-                missing,
-                pd.name
+                pd.name, missing, missing, pd.name
             ))
         }
     }
@@ -208,16 +231,15 @@ pub fn verify_protocol_roundtrip(
 /// Verify cross-op equivalence for a protocol declaration.
 /// For each cross-op override, proves that the custom implementation
 /// matches the default CastTo -> op -> CastFrom round-trip.
-pub fn verify_crossop_equivalence(
-    pd: &ProtocolDef,
-    items: &[TopLevel],
-) -> Result<(), String> {
-    let to = pd.cast_edges.iter().find(|e| {
-        matches!(e.direction, CastDirection::CastTo) && e.binding.is_some()
-    });
-    let from = pd.cast_edges.iter().find(|e| {
-        matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some()
-    });
+pub fn verify_crossop_equivalence(pd: &ProtocolDef, items: &[TopLevel]) -> Result<(), String> {
+    let to = pd
+        .cast_edges
+        .iter()
+        .find(|e| matches!(e.direction, CastDirection::CastTo) && e.binding.is_some());
+    let from = pd
+        .cast_edges
+        .iter()
+        .find(|e| matches!(e.direction, CastDirection::CastFrom) && e.binding.is_some());
 
     let (to_edge, from_edge) = match (to, from) {
         (Some(t), Some(f)) => (t, f),
@@ -225,18 +247,27 @@ pub fn verify_crossop_equivalence(
     };
 
     for op in &pd.cross_ops {
-        let Some(ref impl_args) = op.impl_args else { continue };
+        let Some(ref impl_args) = op.impl_args else {
+            continue;
+        };
 
         let custom_fn = format!("{:?}", impl_args);
         let Some(custom_body) = find_defn_body(&custom_fn.trim_matches('"'), items) else {
-            eprintln!("warning: cross-op '{}' body not found, skipping equivalence check", custom_fn);
+            eprintln!(
+                "warning: cross-op '{}' body not found, skipping equivalence check",
+                custom_fn
+            );
             continue;
         };
 
         let to_fn = to_edge.binding.as_ref().map(|b| &b.fn_name).unwrap();
         let from_fn = from_edge.binding.as_ref().map(|b| &b.fn_name).unwrap();
-        let Some(forward_body) = find_defn_body(to_fn, items) else { continue; };
-        let Some(inverse_body) = find_defn_body(from_fn, items) else { continue; };
+        let Some(forward_body) = find_defn_body(to_fn, items) else {
+            continue;
+        };
+        let Some(inverse_body) = find_defn_body(from_fn, items) else {
+            continue;
+        };
 
         let formula = build_crossop_smt(forward_body, inverse_body, custom_body);
         let result = crate::proof_engine::smt::prove_smt_formula(&formula, 1000);
@@ -288,7 +319,10 @@ fn build_crossop_smt(forward: &Expr, inverse: &Expr, custom: &Expr) -> String {
 }
 
 /// Simple symbolic comparison (deep equals).
-fn symbolic_deep_equals(a: &crate::symbolic::SymbolicValue, b: &crate::symbolic::SymbolicValue) -> bool {
+fn symbolic_deep_equals(
+    a: &crate::symbolic::SymbolicValue,
+    b: &crate::symbolic::SymbolicValue,
+) -> bool {
     use crate::symbolic::SymbolicValue;
     match (a, b) {
         (SymbolicValue::Identifier(an), SymbolicValue::Identifier(bn)) => an == bn,
@@ -326,8 +360,7 @@ mod tests {
     #[test]
     fn test_roundtrip_missing_bodies_is_hard_error() {
         let to = proto_with_binding("Test", CastDirection::CastTo, "test_to_utf8");
-        let from =
-            proto_with_binding("Test", CastDirection::CastFrom, "utf8_to_test");
+        let from = proto_with_binding("Test", CastDirection::CastFrom, "utf8_to_test");
         // The declaring proto carries BOTH edges (the helpers above each
         // model ONE edge for the pair-proving path; round-trip needs both).
         let mut pd = match &to {
@@ -366,7 +399,7 @@ mod tests {
     fn shift_defn(name: &str, op: crate::ast::BinaryOpKind) -> TopLevel {
         use crate::ast::Definition;
         TopLevel::Definition(Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![("x".to_string(), crate::ast::Type::int())],
@@ -378,7 +411,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(Some(Expr::BinaryOp(
                 op,
                 Box::new(Expr::Identifier("x".to_string())),
@@ -406,7 +440,8 @@ mod tests {
                     fn_name: fn_name.to_string(),
                     param: "#Lh".to_string(),
                 }),
-            trusted_axiom: false}],
+                trusted_axiom: false,
+            }],
             cross_ops: vec![],
             span: None,
         })
@@ -428,7 +463,9 @@ mod tests {
         ];
         let pairs = find_inverse_pairs(&items);
         assert!(
-            pairs.iter().any(|(cat, a, b)| cat == "String" && a == "A" && b == "B"),
+            pairs
+                .iter()
+                .any(|(cat, a, b)| cat == "String" && a == "A" && b == "B"),
             "add/sub pair should be proven inverse, got {:?}",
             pairs
         );

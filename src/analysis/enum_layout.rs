@@ -68,7 +68,13 @@ impl EnumLayoutPlanner {
             collect_declaration(item, &mut enums, &mut objects);
         }
         let boundary_enums = collect_boundary_enums(items, &enums);
-        Self { enums, objects, boundary_enums, max_depth, object_bytes: None }
+        Self {
+            enums,
+            objects,
+            boundary_enums,
+            max_depth,
+            object_bytes: None,
+        }
     }
 
     /// 2026-11-01: object payload capacity must use the same resolved byte
@@ -78,10 +84,14 @@ impl EnumLayoutPlanner {
         mut self,
         universe: Option<&crate::type_universe::TypeUniverse>,
     ) -> Self {
-        self.object_bytes = universe.map(|universe| universe.types.iter()
-            .filter(|(_, resolved)| resolved.bytes > 0)
-            .map(|(name, resolved)| (name.clone(), resolved.bytes))
-            .collect());
+        self.object_bytes = universe.map(|universe| {
+            universe
+                .types
+                .iter()
+                .filter(|(_, resolved)| resolved.bytes > 0)
+                .map(|(name, resolved)| (name.clone(), resolved.bytes))
+                .collect()
+        });
         self
     }
 
@@ -115,8 +125,7 @@ impl EnumLayoutPlanner {
                 crate::typechecker::substitute_type(payload, &subst)
             };
             let inline_enum = self.is_inline_enum(&concrete, depth + 1);
-            let inline_object =
-                allow_object_inline && self.is_inline_object(&concrete, depth + 1);
+            let inline_object = allow_object_inline && self.is_inline_object(&concrete, depth + 1);
             variant_payload_inline.push(inline_enum);
             variant_payload_inline_object.push(inline_object);
             let words = if inline_object {
@@ -126,7 +135,12 @@ impl EnumLayoutPlanner {
             };
             variant_payload_words.push(words);
         }
-        let payload_words = variant_payload_words.iter().copied().max().unwrap_or(0).max(1);
+        let payload_words = variant_payload_words
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(1);
         Some(EnumLayout {
             image_words: 1 + payload_words,
             variant_payload_words,
@@ -188,11 +202,21 @@ impl EnumLayoutPlanner {
             Type::Void => Some(0),
             Type::Bits(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
             Type::Width(bits) => Some(((*bits as usize).saturating_add(63) / 64).max(1)),
-            Type::Custom(_) | Type::Applied(_, _) | Type::Ptr(_) | Type::PtrConst(_)
-            | Type::LayoutPtr(_) | Type::Number(_) => Some(1),
-            Type::Generic(_, _) | Type::TypeVar(_) | Type::Constrained(_, _)
-            | Type::Vector(_, _) | Type::Tuple(_) | Type::Union(_)
-            | Type::Function(_, _) | Type::Dyn(_) | Type::Task(_) => None,
+            Type::Custom(_)
+            | Type::Applied(_, _)
+            | Type::Ptr(_)
+            | Type::PtrConst(_)
+            | Type::LayoutPtr(_)
+            | Type::Number(_) => Some(1),
+            Type::Generic(_, _)
+            | Type::TypeVar(_)
+            | Type::Constrained(_, _)
+            | Type::Vector(_, _)
+            | Type::Tuple(_)
+            | Type::Union(_)
+            | Type::Function(_, _)
+            | Type::Dyn(_)
+            | Type::Task(_) => None,
         }
     }
 
@@ -281,7 +305,13 @@ fn collect_typedef(
         .map(|slot| (slot.name.clone(), slot.ty.clone()))
         .collect();
     if plain_object && !fields.is_empty() {
-        objects.insert(td.name.clone(), EnumDef { params, variants: fields });
+        objects.insert(
+            td.name.clone(),
+            EnumDef {
+                params,
+                variants: fields,
+            },
+        );
     }
 }
 
@@ -314,10 +344,7 @@ fn collect_ast_enum(e: &crate::ast::EnumDefinition, enums: &mut HashMap<String, 
     );
 }
 
-fn collect_boundary_enums(
-    items: &[TopLevel],
-    enums: &HashMap<String, EnumDef>,
-) -> HashSet<String> {
+fn collect_boundary_enums(items: &[TopLevel], enums: &HashMap<String, EnumDef>) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in items {
         match item {
@@ -410,8 +437,9 @@ mod tests {
     }
 
     fn resolved_items(source: &str) -> (Vec<TopLevel>, crate::type_universe::TypeUniverse) {
-        let (items, mut universe) = crate::library::parse_and_check("scratch/enum_layout.bv", source)
-            .expect("checked layout source");
+        let (items, mut universe) =
+            crate::library::parse_and_check("scratch/enum_layout.bv", source)
+                .expect("checked layout source");
         crate::backend::register_types::register_typedefs(&items, &mut universe, 64)
             .expect("resolved object metadata");
         (items, universe)
@@ -437,7 +465,10 @@ mod tests {
         let layout = p
             .layout_for(&applied(
                 "Result",
-                vec![Type::Custom("TcpState".into()), Type::Custom("FsmError".into())],
+                vec![
+                    Type::Custom("TcpState".into()),
+                    Type::Custom("FsmError".into()),
+                ],
             ))
             .expect("layout");
         // TcpState image = 2, FsmError image = 2 -> Result image = 3.
@@ -453,7 +484,9 @@ mod tests {
              enum E { Wrap(P), Empty };\n",
         );
         let planner = EnumLayoutPlanner::new(&items, 2);
-        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        let layout = planner
+            .layout_for(&Type::Custom("E".to_string()))
+            .expect("layout");
         assert_eq!(layout.image_words, 3);
         assert_eq!(layout.variant_payload_inline_object, vec![true, false]);
         assert_eq!(layout.variant_payload_words, vec![2, 0]);
@@ -467,20 +500,29 @@ mod tests {
              defn take(e: E) -> Int { term 0; };\n",
         );
         let planner = EnumLayoutPlanner::new(&items, 2);
-        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        let layout = planner
+            .layout_for(&Type::Custom("E".to_string()))
+            .expect("layout");
         assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
     }
 
     #[test]
     fn resolved_nested_object_capacity_matches_its_byte_image() {
-        if !OBJECT_PAYLOAD_INLINE_ENABLED { return; }
+        if !OBJECT_PAYLOAD_INLINE_ENABLED {
+            return;
+        }
         let source = "obj Inner { first: Int; second: Int; third: Int; }; \
             obj Outer { inner: Inner; tail: Int; }; enum E { Wrap(Outer), Empty };";
         let (items, universe) = resolved_items(source);
         let bytes = universe.get("Outer").expect("resolved object").bytes;
-        assert!(bytes > 16, "nested fields must exercise the former underallocation");
+        assert!(
+            bytes > 16,
+            "nested fields must exercise the former underallocation"
+        );
         let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
-        let layout = planner.layout_for(&Type::Custom("E".into())).expect("layout");
+        let layout = planner
+            .layout_for(&Type::Custom("E".into()))
+            .expect("layout");
         assert_eq!(layout.variant_payload_words[0], bytes.div_ceil(8) as usize);
         assert!(layout.variant_payload_inline_object[0]);
     }
@@ -492,7 +534,9 @@ mod tests {
         for bytes in [0, (INLINE_OBJECT_MAX_WORDS as u64 + 1) * 8] {
             universe.types.get_mut("Item").expect("object").bytes = bytes;
             let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
-            let layout = planner.layout_for(&Type::Custom("E".into())).expect("layout");
+            let layout = planner
+                .layout_for(&Type::Custom("E".into()))
+                .expect("layout");
             assert!(!layout.variant_payload_inline_object[0]);
             assert_eq!(layout.variant_payload_words[0], 1);
         }
@@ -500,13 +544,19 @@ mod tests {
 
     #[test]
     fn nested_enum_keeps_its_object_payload_representation() {
-        if !OBJECT_PAYLOAD_INLINE_ENABLED { return; }
+        if !OBJECT_PAYLOAD_INLINE_ENABLED {
+            return;
+        }
         let source = "obj Payload { first: Int; second: Int; }; \
             enum Inner { Value(Payload), Empty }; enum Outer { Contained(Inner), Absent };";
         let (items, universe) = resolved_items(source);
         let planner = EnumLayoutPlanner::new(&items, 2).with_type_universe(Some(&universe));
-        let inner = planner.layout_for(&Type::Custom("Inner".into())).expect("inner layout");
-        let outer = planner.layout_for(&Type::Custom("Outer".into())).expect("outer layout");
+        let inner = planner
+            .layout_for(&Type::Custom("Inner".into()))
+            .expect("inner layout");
+        let outer = planner
+            .layout_for(&Type::Custom("Outer".into()))
+            .expect("outer layout");
         assert!(inner.variant_payload_inline_object[0]);
         assert!(outer.variant_payload_inline[0]);
         assert_eq!(outer.variant_payload_words[0], inner.image_words);
@@ -520,7 +570,9 @@ mod tests {
              export defn take(e: E) -> Int { term 0; };\n",
         );
         let planner = EnumLayoutPlanner::new(&items, 2);
-        let layout = planner.layout_for(&Type::Custom("E".to_string())).expect("layout");
+        let layout = planner
+            .layout_for(&Type::Custom("E".to_string()))
+            .expect("layout");
         assert_eq!(layout.image_words, 2);
         assert_eq!(layout.variant_payload_inline_object, vec![false, false]);
     }
@@ -547,16 +599,17 @@ mod tests {
         let p = planner();
         let nested = applied(
             "Result",
-            vec![Type::Custom("TcpState".into()), Type::Custom("FsmError".into())],
+            vec![
+                Type::Custom("TcpState".into()),
+                Type::Custom("FsmError".into()),
+            ],
         );
         assert_eq!(p.value_repr_for(&nested), Some(EnumValueRepr::PackedMemory));
     }
 
     #[test]
     fn oversized_layouts_are_owned_boxes() {
-        let items = parse(
-            "enum Big { Five(Int, Int, Int, Int, Int) };\n",
-        );
+        let items = parse("enum Big { Five(Int, Int, Int, Int, Int) };\n");
         let p = EnumLayoutPlanner::new(&items, 2);
         let big = Type::Custom("Big".into());
         let layout = p.layout_for(&big).expect("layout");
@@ -566,9 +619,7 @@ mod tests {
 
     #[test]
     fn depth_capped_nested_payload_does_not_box_the_outer_value() {
-        let shallow = parse(
-            "enum Result<T, E> { Ok(T), Err(E) };\n",
-        );
+        let shallow = parse("enum Result<T, E> { Ok(T), Err(E) };\n");
         let p = EnumLayoutPlanner::new(&shallow, 1);
         let deep = applied(
             "Result",
@@ -586,7 +637,10 @@ mod tests {
         let p = planner();
         let deep = applied(
             "Result",
-            vec![applied("Result", vec![Type::int(), Type::int()]), Type::int()],
+            vec![
+                applied("Result", vec![Type::int(), Type::int()]),
+                Type::int(),
+            ],
         );
         let layout = p.layout_for(&deep).expect("layout");
         // depth 0 Result: TcpState-like nested Result at depth 1 is inline
@@ -611,40 +665,38 @@ impl EnumLayoutPlanner {
     /// parameter consumed only by such a constructor is copied into the enum
     /// image, not retained by handle.
     pub fn object_payload_is_inline(&self, variant: &str, object: &str) -> bool {
-        self.enums
-            .iter()
-            .any(|(enum_name, def)| {
-                let Some(tag) = def.variants.iter().position(|(name, _)| name == variant) else {
+        self.enums.iter().any(|(enum_name, def)| {
+            let Some(tag) = def.variants.iter().position(|(name, _)| name == variant) else {
+                return false;
+            };
+            let Some(payload) = def.variants.get(tag).map(|(_, payload)| payload) else {
+                return false;
+            };
+            // A concrete object payload can be checked directly; a
+            // generic payload is checked at a concrete instantiation.
+            let ty = if payload.universe_key() == Some(object) {
+                Type::Custom(enum_name.clone())
+            } else {
+                let Some(target_param) = declared_generic_param(payload, &def.params) else {
                     return false;
                 };
-                let Some(payload) = def.variants.get(tag).map(|(_, payload)| payload) else {
-                    return false;
-                };
-                // A concrete object payload can be checked directly; a
-                // generic payload is checked at a concrete instantiation.
-                let ty = if payload.universe_key() == Some(object) {
-                    Type::Custom(enum_name.clone())
-                } else {
-                    let Some(target_param) = declared_generic_param(payload, &def.params) else {
-                        return false;
-                    };
-                    let args = def
-                        .params
-                        .iter()
-                        .map(|param| {
-                            if param == &target_param {
-                                Type::Custom(object.to_string())
-                            } else {
-                                Type::int()
-                            }
-                        })
-                        .collect();
-                    Type::Applied(enum_name.clone(), args)
-                };
-                self.layout_for(&ty)
-                    .and_then(|layout| layout.variant_payload_inline_object.get(tag).copied())
-                    .unwrap_or(false)
-            })
+                let args = def
+                    .params
+                    .iter()
+                    .map(|param| {
+                        if param == &target_param {
+                            Type::Custom(object.to_string())
+                        } else {
+                            Type::int()
+                        }
+                    })
+                    .collect();
+                Type::Applied(enum_name.clone(), args)
+            };
+            self.layout_for(&ty)
+                .and_then(|layout| layout.variant_payload_inline_object.get(tag).copied())
+                .unwrap_or(false)
+        })
     }
 }
 
@@ -657,8 +709,5 @@ fn declared_generic_param(ty: &Type, params: &[String]) -> Option<String> {
         Type::Custom(name) | Type::TypeVar(name) | Type::Generic(name, _) => name,
         _ => return None,
     };
-    params
-        .iter()
-        .find(|param| *param == name)
-        .cloned()
+    params.iter().find(|param| *param == name).cloned()
 }

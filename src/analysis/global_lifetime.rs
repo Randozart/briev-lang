@@ -99,7 +99,9 @@ pub fn analyze(
             let mut touches = HashSet::new();
             for stmt in &t.body {
                 crate::analysis::transition_graph::collect_statement_identifiers(
-                    stmt, &state_fields, &mut touches,
+                    stmt,
+                    &state_fields,
+                    &mut touches,
                 );
             }
             if !touches.is_empty() {
@@ -133,7 +135,10 @@ pub fn analyze(
             ));
             continue;
         }
-        free_after.entry((*last).clone()).or_default().push(field.clone());
+        free_after
+            .entry((*last).clone())
+            .or_default()
+            .push(field.clone());
     }
 
     // Sort for deterministic IR (SipHash order varies per process).
@@ -176,7 +181,10 @@ pub fn contains_heap_alloc(expr: &Expr) -> bool {
 /// The state field a manual `Free#(field)` targets, if the statement is one.
 /// 2026-08-01 (D2): a manually-freed field is user-managed — the scheduler
 /// must NOT also free it (a double-free).
-fn manual_free_target(stmt: &crate::ast::Statement, state_fields: &HashSet<String>) -> Option<String> {
+fn manual_free_target(
+    stmt: &crate::ast::Statement,
+    state_fields: &HashSet<String>,
+) -> Option<String> {
     fn walk_expr(e: &Expr, state_fields: &HashSet<String>) -> Option<String> {
         match e {
             Expr::Call(name, args, _) => {
@@ -204,12 +212,12 @@ fn manual_free_target(stmt: &crate::ast::Statement, state_fields: &HashSet<Strin
     }
     match stmt {
         crate::ast::Statement::Expression(e) => walk_expr(e, state_fields),
-        crate::ast::Statement::Guarded(_, body) => {
-            body.iter().find_map(|s| manual_free_target(s, state_fields))
-        }
-        crate::ast::Statement::Block(stmts) => {
-            stmts.iter().find_map(|s| manual_free_target(s, state_fields))
-        }
+        crate::ast::Statement::Guarded(_, body) => body
+            .iter()
+            .find_map(|s| manual_free_target(s, state_fields)),
+        crate::ast::Statement::Block(stmts) => stmts
+            .iter()
+            .find_map(|s| manual_free_target(s, state_fields)),
         crate::ast::Statement::FreeHint(name) => {
             // 2026-08-01 (Phase 5): `free x;` is a manual free — the scheduler
             // must not ALSO free x (a double-free).
@@ -250,9 +258,7 @@ mod tests {
     fn txn_body(reads: &[&str]) -> Vec<crate::ast::Statement> {
         reads
             .iter()
-            .map(|f| {
-                crate::ast::Statement::Expression(Expr::Identifier(f.to_string()))
-            })
+            .map(|f| crate::ast::Statement::Expression(Expr::Identifier(f.to_string())))
             .collect()
     }
 
@@ -273,7 +279,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: txn_body(&["buf"]),
             metadata: Default::default(),
             derivation: None,
@@ -282,8 +289,16 @@ mod tests {
             doc: None,
         })];
         let fields = HashMap::from([field("buf", true)]);
-        let gl = analyze(&items, &fields, &["life".to_string()], &["life".to_string()].iter().cloned().collect());
-        assert_eq!(gl.free_after.get("life").cloned(), Some(vec!["buf".to_string()]));
+        let gl = analyze(
+            &items,
+            &fields,
+            &["life".to_string()],
+            &["life".to_string()].iter().cloned().collect(),
+        );
+        assert_eq!(
+            gl.free_after.get("life").cloned(),
+            Some(vec!["buf".to_string()])
+        );
     }
 
     #[test]
@@ -303,7 +318,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: txn_body(&["plain"]),
             metadata: Default::default(),
             derivation: None,
@@ -312,7 +328,12 @@ mod tests {
             doc: None,
         })];
         let fields = HashMap::from([field("plain", false)]);
-        let gl = analyze(&items, &fields, &["life".to_string()], &["life".to_string()].iter().cloned().collect());
+        let gl = analyze(
+            &items,
+            &fields,
+            &["life".to_string()],
+            &["life".to_string()].iter().cloned().collect(),
+        );
         assert!(gl.free_after.is_empty());
     }
 
@@ -335,7 +356,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
                 crate::ast::Statement::Expression(Expr::Identifier("buf".to_string())),
                 crate::ast::Statement::Expression(Expr::Call(
@@ -354,8 +376,16 @@ mod tests {
             doc: None,
         })];
         let fields = HashMap::from([field("buf", true)]);
-        let gl = analyze(&items, &fields, &["life".to_string()], &["life".to_string()].iter().cloned().collect());
-        assert!(gl.free_after.is_empty(), "manually-freed field must be excluded");
+        let gl = analyze(
+            &items,
+            &fields,
+            &["life".to_string()],
+            &["life".to_string()].iter().cloned().collect(),
+        );
+        assert!(
+            gl.free_after.is_empty(),
+            "manually-freed field must be excluded"
+        );
     }
 
     #[test]
@@ -371,12 +401,13 @@ mod tests {
                 output_type: None,
                 outputs: vec![],
                 contract: crate::ast::top::Contract {
-                pre_condition: crate::ast::Expr::Bool(true),
-                post_condition: crate::ast::Expr::Bool(true),
-                watchdog: None,
-                span: None,
-                explicit: false,
-            post_authority: false},
+                    pre_condition: crate::ast::Expr::Bool(true),
+                    post_condition: crate::ast::Expr::Bool(true),
+                    watchdog: None,
+                    span: None,
+                    explicit: false,
+                    post_authority: false,
+                },
                 body,
                 metadata: Default::default(),
                 derivation: None,
@@ -391,9 +422,20 @@ mod tests {
         ];
         let fields = HashMap::from([field("buf", true)]);
         // Reactor order: first, second. The last consumer is `second`.
-        let gl = analyze(&items, &fields, &["first".to_string(), "second".to_string()], &["first".to_string(), "second".to_string()].iter().cloned().collect());
+        let gl = analyze(
+            &items,
+            &fields,
+            &["first".to_string(), "second".to_string()],
+            &["first".to_string(), "second".to_string()]
+                .iter()
+                .cloned()
+                .collect(),
+        );
         assert!(gl.free_after.get("first").is_none());
-        assert_eq!(gl.free_after.get("second").cloned(), Some(vec!["buf".to_string()]));
+        assert_eq!(
+            gl.free_after.get("second").cloned(),
+            Some(vec!["buf".to_string()])
+        );
     }
 
     /// 2026-08-06 (fix): a last consumer that is NOT foldable (no sound free
@@ -416,7 +458,8 @@ mod tests {
                     watchdog: None,
                     span: None,
                     explicit: false,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body,
                 metadata: Default::default(),
                 derivation: None,
@@ -428,7 +471,12 @@ mod tests {
         let items = vec![mk("life", txn_body(&["buf"]))];
         let fields = HashMap::from([field("buf", true)]);
         // `life` touches buf but is NOT foldable — the free must not be planned.
-        let gl = analyze(&items, &fields, &["life".to_string()], &std::collections::HashSet::new());
+        let gl = analyze(
+            &items,
+            &fields,
+            &["life".to_string()],
+            &std::collections::HashSet::new(),
+        );
         assert!(
             gl.free_after.is_empty(),
             "a non-foldable last consumer must not be scheduled for a free"

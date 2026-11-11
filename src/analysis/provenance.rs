@@ -112,12 +112,16 @@ pub fn build_dangling_warning(target: &Expr, source: &Expr) -> String {
 pub fn check_dangling_ptrs(body: &[Statement], local_names: &HashSet<String>) -> Vec<String> {
     let mut warnings = Vec::new();
     for stmt in body {
-        let Some((target, source)) = extract_ptr_assign(stmt) else { continue; };
+        let Some((target, source)) = extract_ptr_assign(stmt) else {
+            continue;
+        };
         // 2026-08-01 (D1): only an ADDRESS (`&local`) can dangle. A plain
         // value assignment (`x0 = nx0` where nx0 is a local Float) copies the
         // value, not a pointer — flagging it would reject every value-assign
         // from a local (the kalman family). The pointer escape is `&local`.
-        let Expr::AddrOf(inner) = source else { continue; };
+        let Expr::AddrOf(inner) = source else {
+            continue;
+        };
         let source_prov = infer_provenance(inner);
         if is_local_provenance(&source_prov, local_names) {
             warnings.push(build_dangling_warning(target, source));
@@ -140,8 +144,12 @@ fn collect_var_names(expr: &Expr) -> Vec<String> {
                 work.push(b);
                 work.push(a);
             }
-            Expr::Field(obj, _) | Expr::Index(obj, _) => { work.push(obj); }
-            Expr::Call(_, args, _) => { work.extend(args.iter().rev()); }
+            Expr::Field(obj, _) | Expr::Index(obj, _) => {
+                work.push(obj);
+            }
+            Expr::Call(_, args, _) => {
+                work.extend(args.iter().rev());
+            }
             Expr::If(cond, then, else_) => {
                 work.push(then);
                 work.push(cond);
@@ -156,8 +164,12 @@ fn collect_var_names(expr: &Expr) -> Vec<String> {
                     }
                 }
             }
-            Expr::Lambda(_, body) => { work.push(body); }
-            Expr::Within(inner, _) => { work.push(inner); }
+            Expr::Lambda(_, body) => {
+                work.push(body);
+            }
+            Expr::Within(inner, _) => {
+                work.push(inner);
+            }
             Expr::Tuple(elems) | Expr::List(elems) => {
                 work.extend(elems.iter().rev());
             }
@@ -178,7 +190,10 @@ fn collect_var_names(expr: &Expr) -> Vec<String> {
 /// Collect local variable names from a transaction's let-bindings and
 /// parameters. Used by check_dangling_ptrs to distinguish local variables
 /// from state fields.
-pub fn collect_local_names(body: &[Statement], params: &[(String, crate::ast::Type)]) -> HashSet<String> {
+pub fn collect_local_names(
+    body: &[Statement],
+    params: &[(String, crate::ast::Type)],
+) -> HashSet<String> {
     let mut locals: HashSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
     for stmt in body {
         if let Statement::Let { name, .. } = stmt {
@@ -223,8 +238,12 @@ pub fn check_convergence_safety(
     all_txns: &std::collections::HashMap<String, crate::ast::Transaction>,
 ) -> Vec<(&'static str, String)> {
     let mut results = Vec::new();
-    if !is_reactive { return results; }
-    if matches!(pre, Expr::Bool(true)) { return results; }
+    if !is_reactive {
+        return results;
+    }
+    if matches!(pre, Expr::Bool(true)) {
+        return results;
+    }
 
     let pre_vars = collect_var_names(pre);
     let write_vars = collect_write_vars(body);
@@ -282,12 +301,10 @@ mod tests {
         // 2026-08-01 (D1): `state_ptr = &local` is a dangling-pointer escape —
         // the provenance layer must flag it (the type system rejects it via
         // PtrConst; this is the defense-in-depth hard error).
-        let body = vec![
-            Statement::Assign(
-                Expr::Identifier("p".to_string()),
-                Expr::AddrOf(Box::new(Expr::Identifier("x".to_string()))),
-            ),
-        ];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("p".to_string()),
+            Expr::AddrOf(Box::new(Expr::Identifier("x".to_string()))),
+        )];
         let locals: HashSet<String> = ["x".to_string()].into_iter().collect();
         let warnings = check_dangling_ptrs(&body, &locals);
         assert_eq!(warnings.len(), 1, "&local escape must be flagged");
@@ -298,12 +315,10 @@ mod tests {
     fn test_check_dangling_ptrs_ignores_state_field() {
         // A pointer to a STATE field is not dangling (state lives for the
         // program duration).
-        let body = vec![
-            Statement::Assign(
-                Expr::Identifier("q".to_string()),
-                Expr::AddrOf(Box::new(Expr::Identifier("other".to_string()))),
-            ),
-        ];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("q".to_string()),
+            Expr::AddrOf(Box::new(Expr::Identifier("other".to_string()))),
+        )];
         let locals: HashSet<String> = ["x".to_string()].into_iter().collect();
         let warnings = check_dangling_ptrs(&body, &locals);
         assert_eq!(warnings.len(), 0, "&state-field must not be flagged");
@@ -316,10 +331,13 @@ mod tests {
             "field".to_string(),
         );
         let prov = infer_provenance(&expr);
-        assert_eq!(prov, Provenance::FieldAccess {
-            base: Box::new(Provenance::Known("obj".to_string())),
-            field: "field".to_string(),
-        });
+        assert_eq!(
+            prov,
+            Provenance::FieldAccess {
+                base: Box::new(Provenance::Known("obj".to_string())),
+                field: "field".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -329,15 +347,19 @@ mod tests {
             Box::new(Expr::Decimal(0)),
         );
         let prov = infer_provenance(&expr);
-        assert_eq!(prov, Provenance::Index {
-            base: Box::new(Provenance::Known("arr".to_string())),
-            index: Box::new(Provenance::Unknown),
-        });
+        assert_eq!(
+            prov,
+            Provenance::Index {
+                base: Box::new(Provenance::Known("arr".to_string())),
+                index: Box::new(Provenance::Unknown),
+            }
+        );
     }
 
     #[test]
     fn test_provenance_unknown() {
-        let expr = Expr::BinaryOp(BinaryOpKind::Add,
+        let expr = Expr::BinaryOp(
+            BinaryOpKind::Add,
             Box::new(Expr::Identifier("x".to_string())),
             Box::new(Expr::Decimal(1)),
         );
@@ -347,7 +369,10 @@ mod tests {
 
     #[test]
     fn test_extract_ptr_assign_simple() {
-        let stmt = Statement::Assign(Expr::Identifier("dst".to_string()), Expr::Identifier("src".to_string()));
+        let stmt = Statement::Assign(
+            Expr::Identifier("dst".to_string()),
+            Expr::Identifier("src".to_string()),
+        );
         let result = extract_ptr_assign(&stmt);
         assert!(result.is_some());
     }
@@ -370,9 +395,10 @@ mod tests {
 
     #[test]
     fn test_check_dangling_ptrs_no_warning_on_normal_assign() {
-        let body = vec![
-            Statement::Assign(Expr::Identifier("x".to_string()), Expr::Decimal(42)),
-        ];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("x".to_string()),
+            Expr::Decimal(42),
+        )];
         let local_names = HashSet::from(["x".to_string()]);
         let warnings = check_dangling_ptrs(&body, &local_names);
         assert!(warnings.is_empty());
@@ -381,8 +407,14 @@ mod tests {
     #[test]
     fn test_is_local_provenance_with_locals() {
         let local_names = HashSet::from(["temp".to_string()]);
-        assert!(is_local_provenance(&Provenance::Known("temp".to_string()), &local_names));
-        assert!(!is_local_provenance(&Provenance::Known("state_field".to_string()), &local_names));
+        assert!(is_local_provenance(
+            &Provenance::Known("temp".to_string()),
+            &local_names
+        ));
+        assert!(!is_local_provenance(
+            &Provenance::Known("state_field".to_string()),
+            &local_names
+        ));
     }
 
     #[test]
@@ -390,12 +422,10 @@ mod tests {
         // 2026-08-01 (D1): only an ADDRESS escape (`&local`) is a dangling
         // pointer — a plain value assign (`state_field = local_var`) copies
         // the value and is never flagged.
-        let body = vec![
-            Statement::Assign(
-                Expr::Identifier("state_field".to_string()),
-                Expr::AddrOf(Box::new(Expr::Identifier("local_var".to_string()))),
-            ),
-        ];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("state_field".to_string()),
+            Expr::AddrOf(Box::new(Expr::Identifier("local_var".to_string()))),
+        )];
         let local_names = HashSet::from(["local_var".to_string()]);
         let warnings = check_dangling_ptrs(&body, &local_names);
         assert_eq!(warnings.len(), 1);
@@ -406,12 +436,10 @@ mod tests {
     #[test]
     fn test_value_assign_from_local_not_flagged() {
         // `x0 = nx0` (nx0 a local value) is not a pointer escape.
-        let body = vec![
-            Statement::Assign(
-                Expr::Identifier("x0".to_string()),
-                Expr::Identifier("nx0".to_string()),
-            ),
-        ];
+        let body = vec![Statement::Assign(
+            Expr::Identifier("x0".to_string()),
+            Expr::Identifier("nx0".to_string()),
+        )];
         let local_names = HashSet::from(["nx0".to_string()]);
         let warnings = check_dangling_ptrs(&body, &local_names);
         assert_eq!(warnings.len(), 0);

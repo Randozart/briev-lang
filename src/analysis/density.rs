@@ -90,14 +90,23 @@ fn collect_program_float_bindings(items: &[TopLevel]) -> HashSet<String> {
 /// were excluded by the backend metric and are excluded here to keep the
 /// measurement identical. See emit_toplevel.rs:1832-1841.
 fn density_of_body(body: &[Statement], program_float: &HashSet<String>) -> ComputeDensity {
-    let top_lets: Vec<&Statement> = body.iter().filter(|s| matches!(s, Statement::Let { .. })).collect();
+    let top_lets: Vec<&Statement> = body
+        .iter()
+        .filter(|s| matches!(s, Statement::Let { .. }))
+        .collect();
     // Fixpoint: a top-level let is float if its RHS references a float
     // identifier or contains a float literal. Iterate until stable.
     let mut float_set: HashSet<String> = program_float.clone();
     loop {
         let before = float_set.len();
         for s in &top_lets {
-            if let Statement::Let { name, names, expr: Some(e), .. } = s {
+            if let Statement::Let {
+                name,
+                names,
+                expr: Some(e),
+                ..
+            } = s
+            {
                 if expr_is_float(e, &float_set) {
                     float_set.insert(name.clone());
                     for n in names {
@@ -172,7 +181,16 @@ pub fn is_float_type(ty: &Type) -> bool {
     match ty {
         Type::Custom(n) => matches!(
             n.as_str(),
-            "Float" | "Float32" | "Float64" | "Double" | "Half" | "BFloat" | "Bfloat16" | "FP16" | "FP32" | "FP64"
+            "Float"
+                | "Float32"
+                | "Float64"
+                | "Double"
+                | "Half"
+                | "BFloat"
+                | "Bfloat16"
+                | "FP16"
+                | "FP32"
+                | "FP64"
         ),
         Type::Constrained(inner, _) => is_float_type(inner),
         _ => false,
@@ -311,7 +329,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -328,77 +347,131 @@ mod tests {
         // Program-scope float bindings: state fields and consts referenced by
         // the txn lets (the real kalman declares all of them; the metric's
         // float set is built from program-scope float declarations).
-        let field = |name: &str| TopLevel::Statement(Box::new(Statement::Let {
-            name: name.to_string(),
-            names: Vec::new(),
-            ty: Some(Type::Custom("Float".into())),
-            expr: Some(float_expr(0.0)),
-            modifiers: Vec::new(),
-        }));
+        let field = |name: &str| {
+            TopLevel::Statement(Box::new(Statement::Let {
+                name: name.to_string(),
+                names: Vec::new(),
+                ty: Some(Type::Custom("Float".into())),
+                expr: Some(float_expr(0.0)),
+                modifiers: Vec::new(),
+            }))
+        };
         let items = vec![
-            field("x0"), field("x1"), field("x2"),
-            field("p00"), field("p10"), field("p20"),
+            field("x0"),
+            field("x1"),
+            field("x2"),
+            field("p00"),
+            field("p10"),
+            field("p20"),
             TopLevel::Constant(crate::ast::Constant {
-                name: "a00".into(), ty: Type::Custom("Float".into()), expr: float_expr(1.0),
+                name: "a00".into(),
+                ty: Type::Custom("Float".into()),
+                expr: float_expr(1.0),
                 section: None,
             }),
             TopLevel::Constant(crate::ast::Constant {
-                name: "a01".into(), ty: Type::Custom("Float".into()), expr: float_expr(0.01),
+                name: "a01".into(),
+                ty: Type::Custom("Float".into()),
+                expr: float_expr(0.01),
                 section: None,
             }),
             TopLevel::Constant(crate::ast::Constant {
-                name: "a02".into(), ty: Type::Custom("Float".into()), expr: float_expr(0.0),
+                name: "a02".into(),
+                ty: Type::Custom("Float".into()),
+                expr: float_expr(0.0),
                 section: None,
             }),
-            txn("propagate", vec![
-                let_stmt("nx0", Some(Type::Custom("Float".into())),
-                    add(add(mul(id("a00"), id("x0")), mul(id("a01"), id("x1"))), mul(id("a02"), id("x2")))),
-                let_stmt("ap00", Some(Type::Custom("Float".into())),
-                    add(add(mul(id("a00"), id("p00")), mul(id("a01"), id("p10"))), mul(id("a02"), id("p20")))),
-            ]),
+            txn(
+                "propagate",
+                vec![
+                    let_stmt(
+                        "nx0",
+                        Some(Type::Custom("Float".into())),
+                        add(
+                            add(mul(id("a00"), id("x0")), mul(id("a01"), id("x1"))),
+                            mul(id("a02"), id("x2")),
+                        ),
+                    ),
+                    let_stmt(
+                        "ap00",
+                        Some(Type::Custom("Float".into())),
+                        add(
+                            add(mul(id("a00"), id("p00")), mul(id("a01"), id("p10"))),
+                            mul(id("a02"), id("p20")),
+                        ),
+                    ),
+                ],
+            ),
         ];
         let mut d = compute_densities(&items);
         let dens = d.remove("propagate").unwrap();
         assert_eq!(dens.float_idents, 2);
         assert_eq!(dens.cross_ops, 10);
-        assert!(dens.per_field > 4.0, "dense txn must downgrade, got {}", dens.per_field);
+        assert!(
+            dens.per_field > 4.0,
+            "dense txn must downgrade, got {}",
+            dens.per_field
+        );
     }
 
     /// Nbody-style sparse txn: many simple lets (dx = bx0 - bx1).
     /// Must produce per_field ≤ 4.0 (no downgrade).
     #[test]
     fn sparse_nbody_style_keeps_11() {
-        let field = |name: &str| TopLevel::Statement(Box::new(Statement::Let {
-            name: name.to_string(),
-            names: Vec::new(),
-            ty: Some(Type::Custom("Float32".into())),
-            expr: Some(float_expr(0.0)),
-            modifiers: Vec::new(),
-        }));
+        let field = |name: &str| {
+            TopLevel::Statement(Box::new(Statement::Let {
+                name: name.to_string(),
+                names: Vec::new(),
+                ty: Some(Type::Custom("Float32".into())),
+                expr: Some(float_expr(0.0)),
+                modifiers: Vec::new(),
+            }))
+        };
         let items = vec![
             field("bx0"),
             field("bx1"),
             field("dy01"),
-            txn("simulate", vec![
-                let_stmt("dx01", Some(Type::Custom("Float32".into())), mul(id("bx0"), id("bx1"))),
-                let_stmt("dsq01", Some(Type::Custom("Float32".into())),
-                    add(mul(id("dx01"), id("dx01")), mul(id("dy01"), id("dy01")))),
-            ]),
-        ];        let mut d = compute_densities(&items);
+            txn(
+                "simulate",
+                vec![
+                    let_stmt(
+                        "dx01",
+                        Some(Type::Custom("Float32".into())),
+                        mul(id("bx0"), id("bx1")),
+                    ),
+                    let_stmt(
+                        "dsq01",
+                        Some(Type::Custom("Float32".into())),
+                        add(mul(id("dx01"), id("dx01")), mul(id("dy01"), id("dy01"))),
+                    ),
+                ],
+            ),
+        ];
+        let mut d = compute_densities(&items);
         let dens = d.remove("simulate").unwrap();
         assert_eq!(dens.float_idents, 2);
         assert_eq!(dens.cross_ops, 4);
-        assert!(dens.per_field <= 4.0, "sparse txn must keep #11, got {}", dens.per_field);
+        assert!(
+            dens.per_field <= 4.0,
+            "sparse txn must keep #11, got {}",
+            dens.per_field
+        );
     }
 
     /// Int-only txn (mandelbrot pattern): no float lets → no downgrade.
     #[test]
     fn int_only_txn_has_zero_density() {
         let body = vec![
-            let_stmt("ns1", Some(Type::Custom("Int".into())),
-                add(mul(id("seed"), id("IA")), id("IC"))),
-            let_stmt("nt1", Some(Type::Custom("Int".into())),
-                add(mul(id("zr"), id("ncr")), id("SCALE"))),
+            let_stmt(
+                "ns1",
+                Some(Type::Custom("Int".into())),
+                add(mul(id("seed"), id("IA")), id("IC")),
+            ),
+            let_stmt(
+                "nt1",
+                Some(Type::Custom("Int".into())),
+                add(mul(id("zr"), id("ncr")), id("SCALE")),
+            ),
         ];
         let items = vec![txn("mb", body)];
         let mut d = compute_densities(&items);
@@ -414,8 +487,11 @@ mod tests {
     fn guarded_lets_are_excluded() {
         let guarded = Statement::Guarded(
             Expr::Bool(true),
-            vec![let_stmt("energy", Some(Type::Custom("Float".into())),
-                add(mul(id("x0"), id("x0")), mul(id("p00"), id("p00"))))],
+            vec![let_stmt(
+                "energy",
+                Some(Type::Custom("Float".into())),
+                add(mul(id("x0"), id("x0")), mul(id("p00"), id("p00"))),
+            )],
         );
         let items = vec![txn("t", vec![guarded])];
         let mut d = compute_densities(&items);
@@ -430,9 +506,11 @@ mod tests {
         // Mixed: a float let and an int let referencing a float ident in an
         // int-only context would not be a well-typed program, so test the
         // pure int side: `i = i + 1` style int lets produce 0 float ops.
-        let body = vec![
-            let_stmt("acc", Some(Type::Custom("Int".into())), add(id("i"), id("j"))),
-        ];
+        let body = vec![let_stmt(
+            "acc",
+            Some(Type::Custom("Int".into())),
+            add(id("i"), id("j")),
+        )];
         let items = vec![txn("t", body)];
         let mut d = compute_densities(&items);
         let dens = d.remove("t").unwrap();

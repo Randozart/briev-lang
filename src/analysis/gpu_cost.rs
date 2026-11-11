@@ -7,11 +7,11 @@
 use crate::ast::*;
 
 /// Thresholds for GPU profitability.
-const MIN_ARITHMETIC_INTENSITY: f64 = 0.5;   // ops per byte — lower threshold
-const MIN_ITERATIONS: u64 = 10_000;           // minimum N to justify PCIe
-const PCIE_LATENCY_NS: f64 = 100_000.0;     // ~100µs host→device round trip
-const CPU_CYCLE_NS: f64 = 0.25;             // ~4 GHz = 0.25 ns/cycle
-const GPU_CYCLE_NS: f64 = 1.0;              // ~1 GHz GPU core clock
+const MIN_ARITHMETIC_INTENSITY: f64 = 0.5; // ops per byte — lower threshold
+const MIN_ITERATIONS: u64 = 10_000; // minimum N to justify PCIe
+const PCIE_LATENCY_NS: f64 = 100_000.0; // ~100µs host→device round trip
+const CPU_CYCLE_NS: f64 = 0.25; // ~4 GHz = 0.25 ns/cycle
+const GPU_CYCLE_NS: f64 = 1.0; // ~1 GHz GPU core clock
 
 /// Result of the GPU cost-benefit analysis.
 #[derive(Debug, Clone)]
@@ -129,26 +129,30 @@ fn count_stmt_ops(stmt: &Statement) -> u64 {
 
 fn count_expr_ops(expr: &Expr) -> u64 {
     match expr {
-        Expr::BinaryOp(BinaryOpKind::Add, l, r) | Expr::BinaryOp(BinaryOpKind::Sub, l, r) | Expr::BinaryOp(BinaryOpKind::Mul, l, r) | Expr::BinaryOp(BinaryOpKind::Div, l, r) | Expr::BinaryOp(BinaryOpKind::Mod, l, r) => {
-            1 + count_expr_ops(l) + count_expr_ops(r)
-        }
-        Expr::BinaryOp(BinaryOpKind::And, l, r) | Expr::BinaryOp(BinaryOpKind::Or, l, r) | Expr::BinaryOp(BinaryOpKind::Eq, l, r) | Expr::BinaryOp(BinaryOpKind::Neq, l, r)
-        | Expr::BinaryOp(BinaryOpKind::Lt, l, r) | Expr::BinaryOp(BinaryOpKind::Le, l, r) | Expr::BinaryOp(BinaryOpKind::Gt, l, r) | Expr::BinaryOp(BinaryOpKind::Ge, l, r) => {
-            1 + count_expr_ops(l) + count_expr_ops(r)
-        }
-        Expr::BinaryOp(BinaryOpKind::BitAnd, l, r) | Expr::BinaryOp(BinaryOpKind::BitOr, l, r) | Expr::BinaryOp(BinaryOpKind::BitXor, l, r) => {
-            1 + count_expr_ops(l) + count_expr_ops(r)
-        }
+        Expr::BinaryOp(BinaryOpKind::Add, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Sub, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Mul, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Div, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Mod, l, r) => 1 + count_expr_ops(l) + count_expr_ops(r),
+        Expr::BinaryOp(BinaryOpKind::And, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Or, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Eq, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Neq, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Lt, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Le, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Gt, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Ge, l, r) => 1 + count_expr_ops(l) + count_expr_ops(r),
+        Expr::BinaryOp(BinaryOpKind::BitAnd, l, r)
+        | Expr::BinaryOp(BinaryOpKind::BitOr, l, r)
+        | Expr::BinaryOp(BinaryOpKind::BitXor, l, r) => 1 + count_expr_ops(l) + count_expr_ops(r),
         Expr::BinaryOp(BinaryOpKind::Shl, l, r) | Expr::BinaryOp(BinaryOpKind::Shr, l, r) => {
             1 + count_expr_ops(l) + count_expr_ops(r)
         }
-        Expr::UnaryOp(UnaryOpKind::Not, e) | Expr::UnaryOp(UnaryOpKind::Neg, e) | Expr::UnaryOp(UnaryOpKind::BitNot, e) => {
-            1 + count_expr_ops(e)
-        }
+        Expr::UnaryOp(UnaryOpKind::Not, e)
+        | Expr::UnaryOp(UnaryOpKind::Neg, e)
+        | Expr::UnaryOp(UnaryOpKind::BitNot, e) => 1 + count_expr_ops(e),
         // Calls — recurse into args
-        Expr::Call(_, args, _) => {
-            args.iter().map(|a| count_expr_ops(a)).sum()
-        }
+        Expr::Call(_, args, _) => args.iter().map(|a| count_expr_ops(a)).sum(),
         _ => 0,
     }
 }
@@ -167,7 +171,9 @@ fn collect_field_refs(stmt: &Statement, fields: &mut Vec<String>) {
     match stmt {
         Statement::Assign(lhs, expr) => {
             if let Expr::Identifier(f) = lhs {
-                if !fields.contains(f) { fields.push(f.clone()); }
+                if !fields.contains(f) {
+                    fields.push(f.clone());
+                }
             }
             collect_expr_field_refs(expr, fields);
         }
@@ -184,17 +190,33 @@ fn collect_field_refs(stmt: &Statement, fields: &mut Vec<String>) {
 fn collect_expr_field_refs(expr: &Expr, fields: &mut Vec<String>) {
     match expr {
         Expr::Identifier(name) => {
-            if !fields.contains(name) { fields.push(name.clone()); }
+            if !fields.contains(name) {
+                fields.push(name.clone());
+            }
         }
-        Expr::BinaryOp(BinaryOpKind::Add, l, r) | Expr::BinaryOp(BinaryOpKind::Sub, l, r) | Expr::BinaryOp(BinaryOpKind::Mul, l, r) | Expr::BinaryOp(BinaryOpKind::Div, l, r)
-        | Expr::BinaryOp(BinaryOpKind::And, l, r) | Expr::BinaryOp(BinaryOpKind::Or, l, r) | Expr::BinaryOp(BinaryOpKind::Eq, l, r) | Expr::BinaryOp(BinaryOpKind::Neq, l, r)
-        | Expr::BinaryOp(BinaryOpKind::Lt, l, r) | Expr::BinaryOp(BinaryOpKind::Le, l, r) | Expr::BinaryOp(BinaryOpKind::Gt, l, r) | Expr::BinaryOp(BinaryOpKind::Ge, l, r)
-        | Expr::BinaryOp(BinaryOpKind::BitAnd, l, r) | Expr::BinaryOp(BinaryOpKind::BitOr, l, r) | Expr::BinaryOp(BinaryOpKind::BitXor, l, r)
-        | Expr::BinaryOp(BinaryOpKind::Shl, l, r) | Expr::BinaryOp(BinaryOpKind::Shr, l, r) => {
+        Expr::BinaryOp(BinaryOpKind::Add, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Sub, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Mul, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Div, l, r)
+        | Expr::BinaryOp(BinaryOpKind::And, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Or, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Eq, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Neq, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Lt, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Le, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Gt, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Ge, l, r)
+        | Expr::BinaryOp(BinaryOpKind::BitAnd, l, r)
+        | Expr::BinaryOp(BinaryOpKind::BitOr, l, r)
+        | Expr::BinaryOp(BinaryOpKind::BitXor, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Shl, l, r)
+        | Expr::BinaryOp(BinaryOpKind::Shr, l, r) => {
             collect_expr_field_refs(l, fields);
             collect_expr_field_refs(r, fields);
         }
-        Expr::UnaryOp(UnaryOpKind::Not, e) | Expr::UnaryOp(UnaryOpKind::Neg, e) | Expr::UnaryOp(UnaryOpKind::BitNot, e) => {
+        Expr::UnaryOp(UnaryOpKind::Not, e)
+        | Expr::UnaryOp(UnaryOpKind::Neg, e)
+        | Expr::UnaryOp(UnaryOpKind::BitNot, e) => {
             collect_expr_field_refs(e, fields);
         }
         _ => {}
@@ -212,47 +234,71 @@ mod tests {
     #[test]
     fn test_simple_add_is_low_intensity() {
         // data = data + 1 → 1 add op, 1 field read + 1 write = 16 bytes
-        let body = vec![assign("x", Expr::BinaryOp(BinaryOpKind::Add, 
-            Box::new(Expr::Identifier("x".to_string())),
-            Box::new(Expr::Decimal(1)),
-        ))];
+        let body = vec![assign(
+            "x",
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::Identifier("x".to_string())),
+                Box::new(Expr::Decimal(1)),
+            ),
+        )];
         let est = estimate(&body, 100);
-        assert!(est.arithmetic_intensity < 1.0, "1 op / 16 bytes should be < 1");
+        assert!(
+            est.arithmetic_intensity < 1.0,
+            "1 op / 16 bytes should be < 1"
+        );
         assert_eq!(est.recommended, OffloadDecision::Cpu);
     }
 
     #[test]
     fn test_heavy_math_is_high_intensity() {
         // x = x * y + z / w — 3 ops on 4 fields
-        let body = vec![assign("x", Expr::BinaryOp(BinaryOpKind::Add, 
-            Box::new(Expr::BinaryOp(BinaryOpKind::Mul, 
-                Box::new(Expr::Identifier("x".to_string())),
-                Box::new(Expr::Identifier("y".to_string())),
-            )),
-            Box::new(Expr::BinaryOp(BinaryOpKind::Div, 
-                Box::new(Expr::Identifier("z".to_string())),
-                Box::new(Expr::Identifier("w".to_string())),
-            )),
-        ))];
+        let body = vec![assign(
+            "x",
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mul,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Identifier("y".to_string())),
+                )),
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Div,
+                    Box::new(Expr::Identifier("z".to_string())),
+                    Box::new(Expr::Identifier("w".to_string())),
+                )),
+            ),
+        )];
         let est = estimate(&body, 100_000);
         // 4 fields * 8 * 2 = 64 bytes; 3 ops; intensity = 3/64 ≈ 0.047
         // Small loop body — still CPU for simple math
-        assert!(est.recommended == OffloadDecision::Cpu || est.recommended == OffloadDecision::Runtime,
-            "heavy math on 4 fields should not auto-offload without high N");
+        assert!(
+            est.recommended == OffloadDecision::Cpu || est.recommended == OffloadDecision::Runtime,
+            "heavy math on 4 fields should not auto-offload without high N"
+        );
     }
 
     #[test]
     fn test_large_n_recommends_gpu() {
-        let body = vec![assign("x", Expr::BinaryOp(BinaryOpKind::Add, 
-            Box::new(Expr::Identifier("x".to_string())),
-            Box::new(Expr::Decimal(1)),
-        ))];
+        let body = vec![assign(
+            "x",
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::Identifier("x".to_string())),
+                Box::new(Expr::Decimal(1)),
+            ),
+        )];
         // N = 10^8 — large enough to justify PCIe even for simple math
         let est = estimate(&body, 100_000_000);
-        assert_eq!(est.recommended, OffloadDecision::Gpu,
-            "large N should recommend GPU");
-        assert!(est.estimated_gpu_ns < est.estimated_cpu_ns,
-            "GPU should be faster than CPU at large N");
+        assert_eq!(
+            est.recommended,
+            OffloadDecision::Gpu,
+            "large N should recommend GPU"
+        );
+        assert!(
+            est.estimated_gpu_ns < est.estimated_cpu_ns,
+            "GPU should be faster than CPU at large N"
+        );
     }
 
     #[test]
@@ -264,10 +310,14 @@ mod tests {
 
     #[test]
     fn test_crossover_point_monotonic() {
-        let body = vec![assign("x", Expr::BinaryOp(BinaryOpKind::Add, 
-            Box::new(Expr::Identifier("x".to_string())),
-            Box::new(Expr::Decimal(1)),
-        ))];
+        let body = vec![assign(
+            "x",
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::Identifier("x".to_string())),
+                Box::new(Expr::Decimal(1)),
+            ),
+        )];
         let est = estimate(&body, 1_000_000_000);
         assert!(est.crossover_point > 0, "crossover should be positive");
         // At 1B iterations, GPU should be recommended

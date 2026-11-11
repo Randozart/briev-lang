@@ -89,7 +89,11 @@ pub(crate) fn collect_raw_idents(expr: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Lambda(_, body) => collect_raw_idents(body, out),
-        Expr::Range { start, end, inclusive: _ } => {
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
             collect_raw_idents(start, out);
             collect_raw_idents(end, out);
         }
@@ -200,7 +204,9 @@ fn body_written_names(items: &[TopLevel]) -> HashSet<String> {
                 Statement::Assign(Expr::Identifier(name), _) => {
                     out.insert(name.clone());
                 }
-                Statement::ArrowAssign { target: Some(t), .. } => {
+                Statement::ArrowAssign {
+                    target: Some(t), ..
+                } => {
                     if let Expr::Identifier(name) = t.as_ref() {
                         out.insert(name.clone());
                     }

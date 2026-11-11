@@ -1,3 +1,9 @@
+use crate::analysis::accel::KernelShape;
+use crate::ast::Statement;
+use crate::ast::{Expr, Type};
+use crate::backend::spirv::builder::SpirvBuilder;
+use crate::backend::spirv::gemm;
+use crate::backend::spirv::lower::{collect_locals, collect_state_fields, FnLowerer};
 /// SPIR-V kernel emission — frontend-driven work-item kernels.
 ///
 /// 2026-08-23 (plan §2.2): kernel selection and body content come from the
@@ -12,13 +18,7 @@
 /// induction loop — `index_var` binds to get_global_id(0) and the host
 /// sets dispatch dimensions from N.
 use rspirv::dr::{Instruction, Operand};
-use rspirv::spirv::{self, Word, ExecutionModel, StorageClass, FunctionControl};
-use crate::ast::{Expr, Type};
-use crate::backend::spirv::builder::SpirvBuilder;
-use crate::backend::spirv::lower::{collect_locals, collect_state_fields, FnLowerer};
-use crate::analysis::accel::KernelShape;
-use crate::backend::spirv::gemm;
-use crate::ast::Statement;
+use rspirv::spirv::{self, ExecutionModel, FunctionControl, StorageClass, Word};
 
 /// Local workgroup size — matches the WorkgroupSize# intrinsic constants.
 const LOCAL_SIZE_X: u32 = 256;
@@ -76,16 +76,12 @@ impl FoldCombine {
     fn combine(self, acc: &str, term: Expr) -> Expr {
         let a = Expr::Identifier(acc.into());
         match self {
-            FoldCombine::BinaryAdd => Expr::BinaryOp(
-                crate::ast::BinaryOpKind::Add,
-                Box::new(a),
-                Box::new(term),
-            ),
-            FoldCombine::BinaryMul => Expr::BinaryOp(
-                crate::ast::BinaryOpKind::Mul,
-                Box::new(a),
-                Box::new(term),
-            ),
+            FoldCombine::BinaryAdd => {
+                Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(a), Box::new(term))
+            }
+            FoldCombine::BinaryMul => {
+                Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, Box::new(a), Box::new(term))
+            }
             FoldCombine::CallMin => Expr::Call("Min#".into(), vec![a, term], None),
             FoldCombine::CallMax => Expr::Call("Max#".into(), vec![a, term], None),
         }
@@ -149,7 +145,11 @@ pub(crate) fn synthesize_reduce_stmts(
             Box::new(Expr::BinaryOp(
                 Add,
                 Box::new(lane.clone()),
-                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+                Box::new(Expr::BinaryOp(
+                    Mul,
+                    Box::new(t),
+                    Box::new(Expr::Decimal(32)),
+                )),
             )),
         )
     };
@@ -198,7 +198,7 @@ pub(crate) fn synthesize_reduce_stmts(
                     )),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         });
     }
     // Cross-lane reduce — uniform across the subgroup, so every lane stores
@@ -276,15 +276,23 @@ pub fn emit_kernel(
             other => Some(other.clone()),
         };
         if let Some(elem) = elem {
-            if let Ok(crate::casting::graph::SpirvShape::Float { bits: 16 }) = builder.shape_of(&elem) {
-                builder.builder.capability(rspirv::spirv::Capability::Float16);
+            if let Ok(crate::casting::graph::SpirvShape::Float { bits: 16 }) =
+                builder.shape_of(&elem)
+            {
+                builder
+                    .builder
+                    .capability(rspirv::spirv::Capability::Float16);
                 // 2026-11-09 (Stage F f16): OpenCL stores f16 through
                 // CrossWorkgroup pointers (Float16Buffer); Vulkan needs the
                 // Shader-only 16-bit storage capability.
                 if builder.is_opencl() {
-                    builder.builder.capability(rspirv::spirv::Capability::Float16Buffer);
+                    builder
+                        .builder
+                        .capability(rspirv::spirv::Capability::Float16Buffer);
                 } else {
-                    builder.builder.capability(rspirv::spirv::Capability::StorageBuffer16BitAccess);
+                    builder
+                        .builder
+                        .capability(rspirv::spirv::Capability::StorageBuffer16BitAccess);
                 }
                 break;
             }
@@ -303,13 +311,22 @@ pub fn emit_kernel(
                 && gemm::GemmPlan::coopmat_fill_pairs()
                 && {
                     let field_elem = |name: &str| -> Option<Type> {
-                        state_fields.iter().find(|f| f.name == name).and_then(|f| match &f.ty {
-                            Type::Vector(inner, _) => Some((**inner).clone()),
-                            other => Some(other.clone()),
-                        })
+                        state_fields
+                            .iter()
+                            .find(|f| f.name == name)
+                            .and_then(|f| match &f.ty {
+                                Type::Vector(inner, _) => Some((**inner).clone()),
+                                other => Some(other.clone()),
+                            })
                     };
-                    match (field_elem(&plan.a_field), field_elem(&plan.b_field), field_elem(&plan.y_field)) {
-                        (Some(ae), Some(be), Some(ye)) => gemm::fields_are_f16(builder, &ae, &be, &ye),
+                    match (
+                        field_elem(&plan.a_field),
+                        field_elem(&plan.b_field),
+                        field_elem(&plan.y_field),
+                    ) {
+                        (Some(ae), Some(be), Some(ye)) => {
+                            gemm::fields_are_f16(builder, &ae, &be, &ye)
+                        }
                         _ => false,
                     }
                 }
@@ -375,7 +392,18 @@ pub fn emit_kernel(
             ));
         }
     }
-    let (ssbo_var, state_offsets, global_id_var, local_id_var, workgroup_id_var, vec4_fields, state_fields_sorted, image_vars, image_types, alias_map) = {
+    let (
+        ssbo_var,
+        state_offsets,
+        global_id_var,
+        local_id_var,
+        workgroup_id_var,
+        vec4_fields,
+        state_fields_sorted,
+        image_vars,
+        image_types,
+        alias_map,
+    ) = {
         let mut warm = FnLowerer::new(builder, state_fields.clone());
         warm.set_image_plans(surface.images);
         warm.set_pair_view_fields(pair_view_fields);
@@ -410,16 +438,16 @@ pub fn emit_kernel(
     // else → the flat naive kernel. (Plan 2026-09-01-m2-tensor-cores.)
     let gemm_plan = gemm_plan_early;
     let field_elem = |name: &str| -> Option<Type> {
-        state_fields.iter().find(|f| f.name == name)
+        state_fields
+            .iter()
+            .find(|f| f.name == name)
             .and_then(|f| match &f.ty {
                 Type::Vector(inner, _) => Some((**inner).clone()),
                 other => Some(other.clone()),
             })
     };
     let gemm_tensor = gemm_plan.as_ref().map_or(false, |plan| {
-        crate::config_tuning::ir_lowering().spirv_coopmat
-            && plan.tensor_tier_eligible()
-            && {
+        crate::config_tuning::ir_lowering().spirv_coopmat && plan.tensor_tier_eligible() && {
             let (ae, be, ye) = (
                 field_elem(&plan.a_field),
                 field_elem(&plan.b_field),
@@ -434,15 +462,21 @@ pub fn emit_kernel(
         }
     });
     // Tiled needs vec4-eligible fields (wide shared-memory staging).
-    let gemm_tiled: Option<(gemm::GemmPlan, super::lower::Vec4Field, super::lower::Vec4Field, super::lower::Vec4Field)> =
-        if gemm_tensor { None } else {
+    let gemm_tiled: Option<(
+        gemm::GemmPlan,
+        super::lower::Vec4Field,
+        super::lower::Vec4Field,
+        super::lower::Vec4Field,
+    )> = if gemm_tensor {
+        None
+    } else {
         gemm_plan.clone().and_then(|plan| {
             let a_v4 = vec4_fields.get(&plan.a_field)?.clone();
             let b_v4 = vec4_fields.get(&plan.b_field)?.clone();
             let y_v4 = vec4_fields.get(&plan.y_field)?.clone();
             Some((plan, a_v4, b_v4, y_v4))
         })
-        };
+    };
     let (shared_a, shared_b) = if gemm_tiled.is_some() {
         let f32_ty = builder.lower_type(&gemm_tiled.as_ref().unwrap().1.elem)?;
         let len_c = builder.u32_const((gemm::TILE * gemm::TILE) as u32);
@@ -474,9 +508,7 @@ pub fn emit_kernel(
     // With the default R=4: 4096 + 4096 = 8192 halves = 16 KB — trivial.
     // Gated on `spirv_coopmat_smem` (2026-09-04): 0 = direct SSBO coopmat
     // loads — the knob existed in the dbvl but nothing read it.
-    let (coop_shared_a, coop_shared_b) = if gemm_tensor
-        && gemm::GemmPlan::coopmat_smem()
-    {
+    let (coop_shared_a, coop_shared_b) = if gemm_tensor && gemm::GemmPlan::coopmat_smem() {
         let plan = gemm_plan.as_ref().unwrap();
         let r = gemm::GemmPlan::coopmat_tile_rows(plan.m);
         let f16_ty = builder.builder.type_float(16);
@@ -505,9 +537,9 @@ pub fn emit_kernel(
         // is barrier-serialized with the mma regardless, so the double
         // buffer's spare stage buys no overlap — only smem it occupies.
         let stages = gemm::GemmPlan::coopmat_stages();
-        let a_elems = (stages * pps * r * 16 * 16) as u32;  // stages × pps panels × R strips × 256
-        let b_elems_one = (stages * pps * 4 * 16 * 16) as u32;  // one subgroup's B: stages × pps × 4 × 256
-        let b_elems = b_elems_one * subgroups;  // S subgroups each own a B slice
+        let a_elems = (stages * pps * r * 16 * 16) as u32; // stages × pps panels × R strips × 256
+        let b_elems_one = (stages * pps * 4 * 16 * 16) as u32; // one subgroup's B: stages × pps × 4 × 256
+        let b_elems = b_elems_one * subgroups; // S subgroups each own a B slice
         let (a_len, b_len) = if view_width > 0 {
             (
                 builder.u32_const(a_elems / view_width),
@@ -586,12 +618,7 @@ pub fn emit_kernel(
         let inner_len = match &red.inner {
             Expr::Identifier(name) => match consts.get(name) {
                 Some(Expr::Decimal(n)) => *n,
-                _ => {
-                    return Err(format!(
-                        "sum fold length '{}' is not a literal const",
-                        name
-                    ))
-                }
+                _ => return Err(format!("sum fold length '{}' is not a literal const", name)),
             },
             Expr::Decimal(n) => *n,
             other => {
@@ -607,15 +634,15 @@ pub fn emit_kernel(
                 inner_len
             ));
         }
-        let fold_is_float =
-            !crate::analysis::accel::fold_buffer_is_int(items, &red.row_buf);
+        let fold_is_float = !crate::analysis::accel::fold_buffer_is_int(items, &red.row_buf);
         shape_owned = synthesize_reduce_stmts(shape, red, inner_len as u64, fold_is_float);
         &shape_owned
     } else if cooperative
         && matches!(
             shape.reduction.as_ref().map(|r| &r.kind),
             Some(crate::analysis::accel::ReductionKind::Softmax)
-        ) {
+        )
+    {
         let red = shape.reduction.as_ref().unwrap();
         // Const resolution: the lowerer's const map is built later
         // (materialize_consts) — resolve here from the program's constants.
@@ -941,10 +968,7 @@ pub fn emit_kernel(
     let exit_bb = lower.builder.gen_id();
     if needs_guard {
         let body_bb = lower.builder.gen_id();
-        let bound_expr = shape
-            .count_expr
-            .clone()
-            .unwrap_or(Expr::Decimal(0));
+        let bound_expr = shape.count_expr.clone().unwrap_or(Expr::Decimal(0));
         let (bound, _bty) = lower.emit_expr(&bound_expr)?;
         let int_ty = lower.builder.lower_type(&Type::int())?;
         let gid_reg = lower.builder.gen_id();
@@ -1034,13 +1058,7 @@ pub fn emit_kernel(
     // Cooperative row kernels (plan 2026-09-01-cooperative-row-kernels):
     // ONE 32-lane workgroup per row — the subgroup IS the row's team.
     let local_x = if cooperative { 32 } else { LOCAL_SIZE_X };
-    builder.add_execution_mode(
-        func_id,
-        spirv::ExecutionMode::LocalSize,
-        local_x,
-        1,
-        1,
-    );
+    builder.add_execution_mode(func_id, spirv::ExecutionMode::LocalSize, local_x, 1, 1);
 
     Ok(func_id)
 }
@@ -1060,14 +1078,8 @@ pub(crate) fn synthesize_softmax_stmts(
 ) -> KernelShape {
     use crate::ast::BinaryOpKind::{Add, BitAnd, Div, Mul, Sub};
     let mut out = shape.clone();
-    let gid0 = || {
-        Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)
-    };
-    let lane = Expr::BinaryOp(
-        BitAnd,
-        Box::new(gid0()),
-        Box::new(Expr::Decimal(31)),
-    );
+    let gid0 = || Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None);
+    let lane = Expr::BinaryOp(BitAnd, Box::new(gid0()), Box::new(Expr::Decimal(31)));
     let base = Expr::BinaryOp(
         Mul,
         Box::new(Expr::Identifier(shape.index_var.clone())),
@@ -1081,7 +1093,11 @@ pub(crate) fn synthesize_softmax_stmts(
             Box::new(Expr::BinaryOp(
                 Add,
                 Box::new(lane.clone()),
-                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+                Box::new(Expr::BinaryOp(
+                    Mul,
+                    Box::new(t),
+                    Box::new(Expr::Decimal(32)),
+                )),
             )),
         )
     };
@@ -1130,12 +1146,9 @@ pub(crate) fn synthesize_softmax_stmts(
                 expr: Some(row_read(id(t))),
                 modifiers: vec![],
             },
-            Statement::Assign(
-                id(m),
-                Expr::Call("Max#".into(), vec![id(m), id(v)], None),
-            ),
+            Statement::Assign(id(m), Expr::Call("Max#".into(), vec![id(m), id(v)], None)),
         ],
-    modifiers: vec![],
+        modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(m),
@@ -1159,12 +1172,16 @@ pub(crate) fn synthesize_softmax_stmts(
                 Box::new(id(s)),
                 Box::new(Expr::Call(
                     "Exp#".into(),
-                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(t))), Box::new(id(m)))],
+                    vec![Expr::BinaryOp(
+                        Sub,
+                        Box::new(row_read(id(t))),
+                        Box::new(id(m)),
+                    )],
                     None,
                 )),
             ),
         )],
-    modifiers: vec![],
+        modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(s),
@@ -1180,13 +1197,17 @@ pub(crate) fn synthesize_softmax_stmts(
                 Div,
                 Box::new(Expr::Call(
                     "Exp#".into(),
-                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(t))), Box::new(id(m)))],
+                    vec![Expr::BinaryOp(
+                        Sub,
+                        Box::new(row_read(id(t))),
+                        Box::new(id(m)),
+                    )],
                     None,
                 )),
                 Box::new(id(s)),
             ),
         )],
-    modifiers: vec![],
+        modifiers: vec![],
     });
 
     out.kernel_stmts = stmts;
@@ -1247,7 +1268,11 @@ fn bind_work_item_row(lower: &mut FnLowerer, index_var: spirv::Word) -> Result<(
     // cooperative kernels (exact dispatch); this binding was never wrong.
     let (gid64, _t) = lower.emit_expr(&Expr::BinaryOp(
         crate::ast::BinaryOpKind::Shr,
-        Box::new(Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)),
+        Box::new(Expr::Call(
+            "GetGlobalId#".into(),
+            vec![Expr::Decimal(0)],
+            None,
+        )),
         Box::new(Expr::Decimal(5)),
     ))?;
     lower.builder.store(index_var, gid64);
@@ -1278,11 +1303,18 @@ fn collect_dedup_vec4_indices(
     for stmt in fbody {
         if let Statement::Assign(_, rhs) = stmt {
             crate::backend::spirv::lower::collect_vec4_indices(
-                rhs, &lower.vec4_fields, item, &lower.const_int_values, &mut indices,
+                rhs,
+                &lower.vec4_fields,
+                item,
+                &lower.const_int_values,
+                &mut indices,
             );
         }
     }
-    indices.sort_by(|a, b| a.0.cmp(&b.0).then(format!("{:?}", a.1).cmp(&format!("{:?}", b.1))));
+    indices.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+    });
     indices.dedup_by(|a, b| a.0 == b.0 && format!("{:?}", a.1) == format!("{:?}", b.1));
     indices
 }
@@ -1300,7 +1332,11 @@ fn split_at_foreach(stmts: &[Statement]) -> (Vec<&Statement>, Vec<&Statement>) {
             seen_foreach = true;
             continue;
         }
-        if seen_foreach { post.push(stmt); } else { pre.push(stmt); }
+        if seen_foreach {
+            post.push(stmt);
+        } else {
+            pre.push(stmt);
+        }
     }
     (pre, post)
 }
@@ -1352,7 +1388,10 @@ fn emit_vec4_load(
     ssbo: Word,
 ) -> Result<(Word, crate::backend::spirv::lower::Vec4Field), String> {
     let (vf, member_pos) = {
-        let (_, vf, mp) = ctx.field_data.iter().find(|(f, _, _)| f == fname)
+        let (_, vf, mp) = ctx
+            .field_data
+            .iter()
+            .find(|(f, _, _)| f == fname)
             .ok_or_else(|| format!("vec4 field '{}' not loaded", fname))?;
         (vf.clone(), *mp)
     };
@@ -1364,14 +1403,15 @@ fn emit_vec4_load(
     let two = lower.builder.builder.constant_bit64(int_ty, 2);
     let base = lower.builder.gen_id();
     lower.builder.emit(Instruction::new(
-        spirv::Op::ShiftRightArithmetic, Some(int_ty), Some(base),
+        spirv::Op::ShiftRightArithmetic,
+        Some(int_ty),
+        Some(base),
         vec![Operand::IdRef(scalar_id), Operand::IdRef(two)],
     ));
 
-    let v4_ptr = lower.builder.ptr_class(
-        rspirv::spirv::StorageClass::StorageBuffer,
-        vf.vector,
-    );
+    let v4_ptr = lower
+        .builder
+        .ptr_class(rspirv::spirv::StorageClass::StorageBuffer, vf.vector);
     let member = lower.builder.u32_const(member_pos as u32);
     let group = lower.builder.gen_id();
     lower.builder.emit(Instruction::new(
@@ -1409,7 +1449,9 @@ fn emit_vec4_field_loads(
                 vec![Operand::IdRef(v4_val), Operand::LiteralBit32(jj)],
             ));
             let synthetic_name = format!("__vec4_{}_{}", fname, jj);
-            lower.vec4_component_vars.insert(synthetic_name, (comp, vf.elem.clone()));
+            lower
+                .vec4_component_vars
+                .insert(synthetic_name, (comp, vf.elem.clone()));
         }
     }
     Ok(())
@@ -1418,11 +1460,7 @@ fn emit_vec4_field_loads(
 /// Emit the body once per vec4 component: fields read their synthetic
 /// component var; the scalar side substitutes the loop var with the FULL
 /// cooperative index `repl + j` (= lane*4 + t*stride + j after binding).
-fn emit_vec4_unrolled_body(
-    lower: &mut FnLowerer,
-    ctx: &Vec4LoopCtx,
-    j: u32,
-) -> Result<(), String> {
+fn emit_vec4_unrolled_body(lower: &mut FnLowerer, ctx: &Vec4LoopCtx, j: u32) -> Result<(), String> {
     let subst_j = Expr::BinaryOp(
         crate::ast::BinaryOpKind::Add,
         Box::new(ctx.repl.clone()),
@@ -1432,17 +1470,24 @@ fn emit_vec4_unrolled_body(
     for (fname, _, _) in ctx.field_data {
         let idx_expr = &ctx.all_indices.iter().find(|(f, _)| f == fname).unwrap().1;
         let lowered_idx = crate::backend::spirv::lower::subst_var_deep(
-            idx_expr, ctx.item, &crate::ast::Expr::Identifier(ctx.item.to_string()),
+            idx_expr,
+            ctx.item,
+            &crate::ast::Expr::Identifier(ctx.item.to_string()),
         );
         let synthetic_var = crate::ast::Expr::Identifier(format!("__vec4_{}_{}", fname, j));
         for stmt in &mut body_j {
             *stmt = crate::backend::spirv::lower::replace_index_in_stmt(
-                stmt, fname, &lowered_idx, &synthetic_var,
+                stmt,
+                fname,
+                &lowered_idx,
+                &synthetic_var,
             );
         }
     }
     for stmt in &body_j {
-        if lower.terminated { break; }
+        if lower.terminated {
+            break;
+        }
         let st = crate::backend::spirv::lower::subst_stmt_var(stmt, ctx.item, &subst_j);
         lower.emit_stmt(&st)?;
     }
@@ -1476,7 +1521,12 @@ pub(crate) fn begin_structured_loop(
     // accumulator; the body defines the back-edge value into that id.
     acc_phis: &[(Word, Word, Word)],
 ) -> Result<(CoopLoopBBs, Vec<Word>, Word, Word, Word, Word), String> {
-    let CoopLoopSig { int_ty, bool_ty, groups, .. } = *sig;
+    let CoopLoopSig {
+        int_ty,
+        bool_ty,
+        groups,
+        ..
+    } = *sig;
     let header_bb = builder.gen_id();
     let body_bb = builder.gen_id();
     let continue_bb = builder.gen_id();
@@ -1493,7 +1543,9 @@ pub(crate) fn begin_structured_loop(
     let emit_cond = |builder: &mut SpirvBuilder, cond_id: Word, cur: Word| -> Result<(), String> {
         let end_c = builder.builder.constant_bit64(int_ty, groups as u64);
         builder.emit(Instruction::new(
-            spirv::Op::SLessThan, Some(bool_ty), Some(cond_id),
+            spirv::Op::SLessThan,
+            Some(bool_ty),
+            Some(cond_id),
             vec![Operand::IdRef(cur), Operand::IdRef(end_c)],
         ));
         Ok(())
@@ -1505,16 +1557,22 @@ pub(crate) fn begin_structured_loop(
     builder.builder.branch(header_bb);
 
     builder.begin_block(Some(header_bb));
-    let loop_phi = builder.builder.phi(
-        int_ty,
-        None,
-        [(zero, preheader_bb), (loop_backedge, continue_bb)],
-    ).map_err(|e| format!("loop induction phi: {:?}", e))?;
-    let cond_hdr = builder.builder.phi(
-        bool_ty,
-        None,
-        [(cond0, preheader_bb), (cond_next, continue_bb)],
-    ).map_err(|e| format!("loop phi: {:?}", e))?;
+    let loop_phi = builder
+        .builder
+        .phi(
+            int_ty,
+            None,
+            [(zero, preheader_bb), (loop_backedge, continue_bb)],
+        )
+        .map_err(|e| format!("loop induction phi: {:?}", e))?;
+    let cond_hdr = builder
+        .builder
+        .phi(
+            bool_ty,
+            None,
+            [(cond0, preheader_bb), (cond_next, continue_bb)],
+        )
+        .map_err(|e| format!("loop phi: {:?}", e))?;
     // Loop-carried accumulators (e.g. the v4float FMA accumulator): one phi
     // each, (init, preheader) + (back-edge value, continue). Back-edge ids
     // are defined later in the body — the same forward reference the cond
@@ -1522,11 +1580,10 @@ pub(crate) fn begin_structured_loop(
     let acc_ids: Vec<Word> = acc_phis
         .iter()
         .map(|&(ty, init, backedge)| {
-            builder.builder.phi(
-                ty,
-                None,
-                [(init, preheader_bb), (backedge, continue_bb)],
-            ).expect("loop accumulator phi")
+            builder
+                .builder
+                .phi(ty, None, [(init, preheader_bb), (backedge, continue_bb)])
+                .expect("loop accumulator phi")
         })
         .collect();
     builder.builder.loop_merge(
@@ -1535,9 +1592,22 @@ pub(crate) fn begin_structured_loop(
         rspirv::spirv::LoopControl::NONE,
         [] as [rspirv::dr::Operand; 0],
     );
-    builder.builder.branch_conditional(cond_hdr, body_bb, merge_bb, [] as [u32; 0]);
+    builder
+        .builder
+        .branch_conditional(cond_hdr, body_bb, merge_bb, [] as [u32; 0]);
     builder.begin_block(Some(body_bb));
-    Ok((CoopLoopBBs { header_bb, continue_bb, merge_bb }, acc_ids, cond_next, cond0, loop_phi, loop_backedge))
+    Ok((
+        CoopLoopBBs {
+            header_bb,
+            continue_bb,
+            merge_bb,
+        },
+        acc_ids,
+        cond_next,
+        cond0,
+        loop_phi,
+        loop_backedge,
+    ))
 }
 
 /// Close the structured loop: continue block (increment + re-check), branch
@@ -1557,7 +1627,9 @@ pub(crate) fn end_structured_loop(
     // back-edge id; then the next iteration's condition.
     let one = builder.builder.constant_bit64(int_ty, 1);
     builder.emit(Instruction::new(
-        spirv::Op::IAdd, Some(int_ty), Some(loop_backedge),
+        spirv::Op::IAdd,
+        Some(int_ty),
+        Some(loop_backedge),
         vec![Operand::IdRef(loop_phi), Operand::IdRef(one)],
     ));
     let bool_ty = builder.lower_type(&crate::ast::Type::Bits(1))?;
@@ -1581,14 +1653,23 @@ fn collect_vec4_field_data(
 ) -> Result<Vec<(String, crate::backend::spirv::lower::Vec4Field, usize)>, String> {
     let mut field_data = Vec::new();
     for (fname, _) in all_indices {
-        let vf = lower.vec4_fields.get(fname)
+        let vf = lower
+            .vec4_fields
+            .get(fname)
             .ok_or_else(|| format!("vec4 field '{}' lost", fname))?
             .clone();
         // Phase 3 — buffer reuse: remap aliased fields to their target and
         // compute the correct SSBO struct member index (aliases are skipped
         // from the struct).
-        let effective_name = lower.alias_map.get(fname).cloned().unwrap_or_else(|| fname.clone());
-        let raw_pos = lower.state_fields.iter().position(|f| f.name == effective_name)
+        let effective_name = lower
+            .alias_map
+            .get(fname)
+            .cloned()
+            .unwrap_or_else(|| fname.clone());
+        let raw_pos = lower
+            .state_fields
+            .iter()
+            .position(|f| f.name == effective_name)
             .ok_or_else(|| format!("vec4 field '{}' not in state", fname))?;
         let member_pos = lower.struct_member_index(raw_pos) as usize;
         field_data.push((fname.clone(), vf, member_pos));
@@ -1617,7 +1698,9 @@ fn emit_cooperative_vec4(
     let field_data = collect_vec4_field_data(lower, &all_indices)?;
     let (pre_loop, post_loop) = split_at_foreach(&shape.kernel_stmts);
     for stmt in &pre_loop {
-        if lower.terminated { break; }
+        if lower.terminated {
+            break;
+        }
         lower.emit_stmt(stmt)?;
     }
 
@@ -1630,7 +1713,11 @@ fn emit_cooperative_vec4(
     // 4-aligned by construction → vec4 bases exact under >>2.
     let lane: Expr = Expr::BinaryOp(
         crate::ast::BinaryOpKind::BitAnd,
-        Box::new(Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)),
+        Box::new(Expr::Call(
+            "GetGlobalId#".into(),
+            vec![Expr::Decimal(0)],
+            None,
+        )),
         Box::new(Expr::Decimal(31)),
     );
     let repl = Expr::BinaryOp(
@@ -1672,7 +1759,9 @@ fn emit_cooperative_vec4(
         begin_structured_loop(lower.builder, &sig, &[])?;
 
     lower.const_vars.remove(item);
-    lower.value_vars.insert(item.to_string(), (loop_phi, crate::ast::Type::int()));
+    lower
+        .value_vars
+        .insert(item.to_string(), (loop_phi, crate::ast::Type::int()));
     let prev_terminated = lower.terminated;
     lower.terminated = false;
 
@@ -1681,7 +1770,14 @@ fn emit_cooperative_vec4(
         emit_vec4_unrolled_body(lower, &ctx, j)?;
     }
 
-    end_structured_loop(lower.builder, &sig, &bbs, loop_phi, loop_backedge, cond_next)?;
+    end_structured_loop(
+        lower.builder,
+        &sig,
+        &bbs,
+        loop_phi,
+        loop_backedge,
+        cond_next,
+    )?;
     lower.value_vars.remove(item);
     lower.terminated = prev_terminated;
 
@@ -1712,10 +1808,18 @@ fn match_vec4_vector_fma(
     // would be dropped).
     let mul = match (a.as_ref(), b.as_ref()) {
         (m @ Expr::BinaryOp(Mul, _, _), other) => {
-            if matches!(other, Expr::Identifier(n) if n == acc) { m } else { return None; }
+            if matches!(other, Expr::Identifier(n) if n == acc) {
+                m
+            } else {
+                return None;
+            }
         }
         (other, m @ Expr::BinaryOp(Mul, _, _)) => {
-            if matches!(other, Expr::Identifier(n) if n == acc) { m } else { return None; }
+            if matches!(other, Expr::Identifier(n) if n == acc) {
+                m
+            } else {
+                return None;
+            }
         }
         _ => return None,
     };
@@ -1724,8 +1828,13 @@ fn match_vec4_vector_fma(
     };
     let field_of = |e: &Expr| -> Option<String> {
         let Expr::Index(of, _) = e else { return None };
-        let Expr::Identifier(n) = of.as_ref() else { return None };
-        field_data.iter().find(|(f, _, _)| f == n).map(|(f, _, _)| f.clone())
+        let Expr::Identifier(n) = of.as_ref() else {
+            return None;
+        };
+        field_data
+            .iter()
+            .find(|(f, _, _)| f == n)
+            .map(|(f, _, _)| f.clone())
     };
     let lhs_field = field_of(left)?;
     let rhs_field = field_of(right)?;
@@ -1744,9 +1853,7 @@ fn emit_cooperative_vec4_fma(
     shape: &KernelShape,
     post_loop: &[&Statement],
 ) -> Result<bool, String> {
-    let Some((acc, lhs_field, rhs_field)) =
-        match_vec4_vector_fma(ctx.fbody, ctx.field_data)
-    else {
+    let Some((acc, lhs_field, rhs_field)) = match_vec4_vector_fma(ctx.fbody, ctx.field_data) else {
         return Ok(false);
     };
     let ssbo = lower.ssbo_var.ok_or("cooperative vec4 without SSBO")?;
@@ -1755,8 +1862,13 @@ fn emit_cooperative_vec4_fma(
         bool_ty: lower.builder.lower_type(&crate::ast::Type::Bits(1))?,
         groups: (ctx.inner_len / ctx.stride) as i64,
     };
-    let v4_ty = ctx.field_data.iter().find(|(f, _, _)| *f == lhs_field)
-        .ok_or("lhs vec4 field lost")?.1.vector;
+    let v4_ty = ctx
+        .field_data
+        .iter()
+        .find(|(f, _, _)| *f == lhs_field)
+        .ok_or("lhs vec4 field lost")?
+        .1
+        .vector;
 
     // Vector accumulator as a loop phi: zero on entry, the fused Fma value
     // on the back edge. No per-iteration accumulator load/store.
@@ -1766,29 +1878,47 @@ fn emit_cooperative_vec4_fma(
         begin_structured_loop(lower.builder, &sig, &[(v4_ty, acc_zero, acc_backedge)])?;
     let acc_phi = *acc_ids.first().ok_or("accumulator phi lost")?;
     lower.const_vars.remove(ctx.item);
-    lower.value_vars.insert(ctx.item.to_string(), (loop_phi, crate::ast::Type::int()));
+    lower
+        .value_vars
+        .insert(ctx.item.to_string(), (loop_phi, crate::ast::Type::int()));
     let prev_terminated = lower.terminated;
     lower.terminated = false;
 
     let (lhs_val, _) = emit_vec4_load(lower, ctx, &lhs_field, sig.int_ty, ssbo)?;
     let (rhs_val, _) = emit_vec4_load(lower, ctx, &rhs_field, sig.int_ty, ssbo)?;
-    lower.builder.glsl_fma_with_id(acc_backedge, v4_ty, lhs_val, rhs_val, acc_phi);
+    lower
+        .builder
+        .glsl_fma_with_id(acc_backedge, v4_ty, lhs_val, rhs_val, acc_phi);
 
-    end_structured_loop(lower.builder, &sig, &bbs, loop_phi, loop_backedge, cond_next)?;
+    end_structured_loop(
+        lower.builder,
+        &sig,
+        &bbs,
+        loop_phi,
+        loop_backedge,
+        cond_next,
+    )?;
     lower.value_vars.remove(ctx.item);
     lower.terminated = prev_terminated;
 
     // Fold the vector accumulator into the scalar accumulator the store
     // reads: acc = (e0 + e1) + (e2 + e3).
     let elem_ty = lower.builder.lower_type(
-        &ctx.field_data.iter().find(|(f, _, _)| *f == lhs_field)
-            .ok_or("lhs vec4 field lost")?.1.elem)?;
+        &ctx.field_data
+            .iter()
+            .find(|(f, _, _)| *f == lhs_field)
+            .ok_or("lhs vec4 field lost")?
+            .1
+            .elem,
+    )?;
     let acc_final = acc_phi;
     let mut comps = Vec::with_capacity(4);
     for jj in 0u32..4 {
         let comp = lower.builder.gen_id();
         lower.builder.emit(Instruction::new(
-            spirv::Op::CompositeExtract, Some(elem_ty), Some(comp),
+            spirv::Op::CompositeExtract,
+            Some(elem_ty),
+            Some(comp),
             vec![Operand::IdRef(acc_final), Operand::LiteralBit32(jj)],
         ));
         comps.push(comp);
@@ -1796,7 +1926,9 @@ fn emit_cooperative_vec4_fma(
     let add = |lower: &mut FnLowerer, a: Word, b: Word| -> Word {
         let id = lower.builder.gen_id();
         lower.builder.emit(Instruction::new(
-            spirv::Op::FAdd, Some(elem_ty), Some(id),
+            spirv::Op::FAdd,
+            Some(elem_ty),
+            Some(id),
             vec![Operand::IdRef(a), Operand::IdRef(b)],
         ));
         id
@@ -1804,7 +1936,10 @@ fn emit_cooperative_vec4_fma(
     let sum01 = add(lower, comps[0], comps[1]);
     let sum23 = add(lower, comps[2], comps[3]);
     let total = add(lower, sum01, sum23);
-    let acc_ptr = lower.vars.get(&acc).map(|(p, _)| *p)
+    let acc_ptr = lower
+        .vars
+        .get(&acc)
+        .map(|(p, _)| *p)
         .ok_or_else(|| format!("accumulator '{}' lost", acc))?;
     lower.builder.store(acc_ptr, total);
 
@@ -1822,7 +1957,8 @@ fn emit_cooperative_scalar(
     inner_len: u64,
     repl: &Expr,
 ) -> Result<(), String> {
-    let new_body: Vec<Statement> = fbody.iter()
+    let new_body: Vec<Statement> = fbody
+        .iter()
         .map(|st| crate::backend::spirv::lower::subst_stmt_var(st, item, repl))
         .collect();
     let groups = (inner_len / 32) as i64;
@@ -1834,11 +1970,13 @@ fn emit_cooperative_scalar(
             inclusive: false,
         }),
         body: new_body,
-    modifiers: vec![],
+        modifiers: vec![],
     };
     let (pre_loop, post_loop) = split_at_foreach(&shape.kernel_stmts);
     for stmt in &pre_loop {
-        if lower.terminated { break; }
+        if lower.terminated {
+            break;
+        }
         lower.emit_stmt(stmt)?;
     }
     lower.emit_stmt(&synthesized)?;
@@ -1889,7 +2027,11 @@ fn emit_cooperative_reduce(
     let vec4_indices = collect_dedup_vec4_indices(lower, &fbody, &item);
     let use_vec4 = !vec4_indices.is_empty()
         && vec4_indices.iter().all(|(fname, _)| {
-            lower.vec4_fields.get(fname).map(|vf| vf.elem_float).unwrap_or(false)
+            lower
+                .vec4_fields
+                .get(fname)
+                .map(|vf| vf.elem_float)
+                .unwrap_or(false)
         });
 
     if use_vec4 {
@@ -1902,7 +2044,11 @@ fn emit_cooperative_reduce(
     // inserts the replacement without re-processing it, so this is safe.
     let lane: Expr = Expr::BinaryOp(
         crate::ast::BinaryOpKind::BitAnd,
-        Box::new(Expr::Call("GetGlobalId#".into(), vec![Expr::Decimal(0)], None)),
+        Box::new(Expr::Call(
+            "GetGlobalId#".into(),
+            vec![Expr::Decimal(0)],
+            None,
+        )),
         Box::new(Expr::Decimal(31)),
     );
     let repl = Expr::BinaryOp(
@@ -1958,60 +2104,75 @@ mod decomposition_gate_tests {
                 name: "m".into(),
                 names: vec![],
                 ty: Some(Type::Custom("Int".into())),
-                expr: Some(Expr::BinaryOp(BinaryOpKind::Div, Box::new(id("i")), Box::new(id("N")))),
+                expr: Some(Expr::BinaryOp(
+                    BinaryOpKind::Div,
+                    Box::new(id("i")),
+                    Box::new(id("N")),
+                )),
                 modifiers: vec![],
             },
             Statement::Let {
                 name: "n".into(),
                 names: vec![],
                 ty: Some(Type::Custom("Int".into())),
-                expr: Some(Expr::BinaryOp(BinaryOpKind::Mod, Box::new(id("i")), Box::new(id("N")))),
+                expr: Some(Expr::BinaryOp(
+                    BinaryOpKind::Mod,
+                    Box::new(id("i")),
+                    Box::new(id("N")),
+                )),
                 modifiers: vec![],
             },
         ];
         let shape = shape_with(stmts);
-        assert!(kernel_stmts_decompose_counter(&shape),
-            "div/mod of the counter must reject the cooperative form");
+        assert!(
+            kernel_stmts_decompose_counter(&shape),
+            "div/mod of the counter must reject the cooperative form"
+        );
     }
 
     #[test]
     fn bare_counter_keeps_cooperative() {
         // y[i] = acc; — the GEMV form, no decomposition anywhere.
-        let stmts = vec![
-            Statement::Assign(Expr::Index(Box::new(id("y")), Box::new(id("i"))), id("acc")),
-        ];
+        let stmts = vec![Statement::Assign(
+            Expr::Index(Box::new(id("y")), Box::new(id("i"))),
+            id("acc"),
+        )];
         let shape = shape_with(stmts);
-        assert!(!kernel_stmts_decompose_counter(&shape),
-            "a bare counter is the GEMV cooperative form");
+        assert!(
+            !kernel_stmts_decompose_counter(&shape),
+            "a bare counter is the GEMV cooperative form"
+        );
     }
 
     #[test]
     fn decomposition_inside_foreach_body_counts() {
         // The counter decomposed INSIDE the reduction body must reject too —
         // the binding happens before any body emission.
-        let inner = vec![
-            Statement::Let {
-                name: "row".into(),
-                names: vec![],
-                ty: Some(Type::Custom("Int".into())),
-                expr: Some(Expr::BinaryOp(BinaryOpKind::Div, Box::new(id("i")), Box::new(id("T")))),
-                modifiers: vec![],
-            },
-        ];
-        let stmts = vec![
-            Statement::Foreach {
-                item: "k".into(),
-                list: Box::new(Expr::Range {
-                    start: Box::new(Expr::Decimal(0)),
-                    end: Box::new(Expr::Decimal(64)),
-                    inclusive: false,
-                }),
-                body: inner,
+        let inner = vec![Statement::Let {
+            name: "row".into(),
+            names: vec![],
+            ty: Some(Type::Custom("Int".into())),
+            expr: Some(Expr::BinaryOp(
+                BinaryOpKind::Div,
+                Box::new(id("i")),
+                Box::new(id("T")),
+            )),
             modifiers: vec![],
-            },
-        ];
+        }];
+        let stmts = vec![Statement::Foreach {
+            item: "k".into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(Expr::Decimal(0)),
+                end: Box::new(Expr::Decimal(64)),
+                inclusive: false,
+            }),
+            body: inner,
+            modifiers: vec![],
+        }];
         let shape = shape_with(stmts);
-        assert!(kernel_stmts_decompose_counter(&shape),
-            "decomposition inside the foreach body counts");
+        assert!(
+            kernel_stmts_decompose_counter(&shape),
+            "decomposition inside the foreach body counts"
+        );
     }
 }

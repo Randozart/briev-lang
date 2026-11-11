@@ -19,7 +19,9 @@ pub(crate) fn unify_generic_binding(
 ) {
     if let Type::Custom(declared_name) = declared {
         if params.iter().any(|p| p == declared_name) {
-            subst.entry(declared_name.clone()).or_insert_with(|| concrete.clone());
+            subst
+                .entry(declared_name.clone())
+                .or_insert_with(|| concrete.clone());
             return;
         }
     }
@@ -71,7 +73,10 @@ fn mangle_type_suffix(ty: &Type) -> String {
                 format!(
                     "{}${}",
                     n,
-                    args.iter().map(mangle_type_suffix).collect::<Vec<_>>().join("$")
+                    args.iter()
+                        .map(mangle_type_suffix)
+                        .collect::<Vec<_>>()
+                        .join("$")
                 )
             }
         }
@@ -83,4 +88,3 @@ fn mangle_type_suffix(ty: &Type) -> String {
         }
     }
 }
-

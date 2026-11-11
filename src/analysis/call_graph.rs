@@ -50,12 +50,18 @@ impl CallGraph {
                 TopLevel::Transaction(txn) => {
                     self.txn_names.insert(txn.name.clone());
                     let called = extract_called_functions(&txn.body);
-                    self.graph.entry(txn.name.clone()).or_default().extend(called);
+                    self.graph
+                        .entry(txn.name.clone())
+                        .or_default()
+                        .extend(called);
                 }
                 TopLevel::Definition(defn) => {
                     self.defn_names.insert(defn.name.clone());
                     let called = extract_called_functions(&defn.body);
-                    self.defn_edges.entry(defn.name.clone()).or_default().extend(called);
+                    self.defn_edges
+                        .entry(defn.name.clone())
+                        .or_default()
+                        .extend(called);
                 }
                 // A `node`/`cell` owns its transactions and definitions; the
                 // daemon's entry node lives here. Index them so arena-context
@@ -64,12 +70,18 @@ impl CallGraph {
                     for txn in &cell.transactions {
                         self.txn_names.insert(txn.name.clone());
                         let called = extract_called_functions(&txn.body);
-                        self.graph.entry(txn.name.clone()).or_default().extend(called);
+                        self.graph
+                            .entry(txn.name.clone())
+                            .or_default()
+                            .extend(called);
                     }
                     for defn in &cell.definitions {
                         self.defn_names.insert(defn.name.clone());
                         let called = extract_called_functions(&defn.body);
-                        self.defn_edges.entry(defn.name.clone()).or_default().extend(called);
+                        self.defn_edges
+                            .entry(defn.name.clone())
+                            .or_default()
+                            .extend(called);
                     }
                 }
                 _ => {}
@@ -192,8 +204,10 @@ pub fn extract_called_functions(body: &[Statement]) -> Vec<String> {
             Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
                 collect_call_names(e, &mut called);
             }
-            Statement::Block(stmts) | Statement::Defer(stmts)
-            | Statement::SyncBlock(stmts) | Statement::Mutex(stmts) => {
+            Statement::Block(stmts)
+            | Statement::Defer(stmts)
+            | Statement::SyncBlock(stmts)
+            | Statement::Mutex(stmts) => {
                 called.extend(extract_called_functions(stmts));
             }
             Statement::Guarded(_, statements) => {
@@ -213,27 +227,52 @@ pub fn body_has_indirect_call(body: &[Statement]) -> bool {
 
 fn stmt_has_indirect_call(stmt: &Statement) -> bool {
     match stmt {
-        Statement::Let { expr: Some(e), .. } | Statement::Expression(e)
-        | Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => expr_has_indirect_call(e),
+        Statement::Let { expr: Some(e), .. }
+        | Statement::Expression(e)
+        | Statement::Term(Some(e))
+        | Statement::EndProgram(Some(e))
+        | Statement::Tail(e) => expr_has_indirect_call(e),
         Statement::Assign(_, e) => expr_has_indirect_call(e),
-        Statement::Guarded(_, body) | Statement::Block(body) | Statement::Defer(body)
-        | Statement::SyncBlock(body) | Statement::Mutex(body) => body_has_indirect_call(body),
+        Statement::Guarded(_, body)
+        | Statement::Block(body)
+        | Statement::Defer(body)
+        | Statement::SyncBlock(body)
+        | Statement::Mutex(body) => body_has_indirect_call(body),
         _ => false,
     }
 }
 
 fn expr_has_indirect_call(expr: &Expr) -> bool {
     match expr {
-        Expr::MethodCall(recv, _, args, _) => true || expr_has_indirect_call(recv) || args.iter().any(expr_has_indirect_call),
-        Expr::Spawn { args, .. } | Expr::List(args) | Expr::Tuple(args) => args.iter().any(expr_has_indirect_call),
-        Expr::StructLiteral { fields, specs, .. } => fields.iter().chain(specs.iter()).any(|(_, e)| expr_has_indirect_call(e)),
+        Expr::MethodCall(recv, _, args, _) => {
+            true || expr_has_indirect_call(recv) || args.iter().any(expr_has_indirect_call)
+        }
+        Expr::Spawn { args, .. } | Expr::List(args) | Expr::Tuple(args) => {
+            args.iter().any(expr_has_indirect_call)
+        }
+        Expr::StructLiteral { fields, specs, .. } => fields
+            .iter()
+            .chain(specs.iter())
+            .any(|(_, e)| expr_has_indirect_call(e)),
         Expr::Call(_, args, _) => args.iter().any(expr_has_indirect_call),
         Expr::BinaryOp(_, l, r) => expr_has_indirect_call(l) || expr_has_indirect_call(r),
-        Expr::UnaryOp(_, e) | Expr::Cast(e, _) | Expr::Deref(e) | Expr::AddrOf(e) | Expr::Field(e, _)
-        | Expr::Consume(e) | Expr::Await(e) | Expr::Within(e, _) => expr_has_indirect_call(e),
+        Expr::UnaryOp(_, e)
+        | Expr::Cast(e, _)
+        | Expr::Deref(e)
+        | Expr::AddrOf(e)
+        | Expr::Field(e, _)
+        | Expr::Consume(e)
+        | Expr::Await(e)
+        | Expr::Within(e, _) => expr_has_indirect_call(e),
         Expr::Index(e, i) => expr_has_indirect_call(e) || expr_has_indirect_call(i),
-        Expr::If(c, t, e2) => expr_has_indirect_call(c) || expr_has_indirect_call(t) || e2.as_ref().map_or(false, |x| expr_has_indirect_call(x)),
-        Expr::Match(s, arms) => expr_has_indirect_call(s) || arms.iter().any(|a| expr_has_indirect_call(&a.body)),
+        Expr::If(c, t, e2) => {
+            expr_has_indirect_call(c)
+                || expr_has_indirect_call(t)
+                || e2.as_ref().map_or(false, |x| expr_has_indirect_call(x))
+        }
+        Expr::Match(s, arms) => {
+            expr_has_indirect_call(s) || arms.iter().any(|a| expr_has_indirect_call(&a.body))
+        }
         Expr::Block(stmts) => body_has_indirect_call(stmts),
         _ => false,
     }
@@ -269,7 +308,9 @@ pub fn collect_call_names(expr: &Expr, called: &mut Vec<String>) {
             collect_call_names(l, called);
             collect_call_names(r, called);
         }
-        Expr::UnaryOp(UnaryOpKind::Not, e) | Expr::UnaryOp(UnaryOpKind::Neg, e) | Expr::UnaryOp(UnaryOpKind::BitNot, e) => {
+        Expr::UnaryOp(UnaryOpKind::Not, e)
+        | Expr::UnaryOp(UnaryOpKind::Neg, e)
+        | Expr::UnaryOp(UnaryOpKind::BitNot, e) => {
             collect_call_names(e, called);
         }
         Expr::Field(e, _) => {
@@ -341,7 +382,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             is_async: false,
             is_reactive: false,
             type_params: vec![],
@@ -414,9 +456,10 @@ mod tests {
 
     #[test]
     fn test_cycle_within_guard() {
-        let items = vec![
-            make_txn("a", vec![make_guarded(vec![Statement::Expression(make_call("a"))])]),
-        ];
+        let items = vec![make_txn(
+            "a",
+            vec![make_guarded(vec![Statement::Expression(make_call("a"))])],
+        )];
         let mut cg = CallGraph::new();
         cg.build_from_program(&items);
         assert!(cg.has_cycle());

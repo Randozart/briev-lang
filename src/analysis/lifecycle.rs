@@ -21,9 +21,7 @@
 //! a reside law declares intent. Otherwise the program runs until the
 //! process is killed — legal (stalling stays possible) but warned.
 
-use crate::ast::{
-    Contract, Expr, LifeCycleArm, Statement, TopLevel, Transaction,
-};
+use crate::ast::{Contract, Expr, LifeCycleArm, Statement, TopLevel, Transaction};
 use std::collections::HashSet;
 
 /// Lower `hold G { endprogram; }` laws into synthetic reactive monitor
@@ -56,10 +54,7 @@ pub fn lower_lifecycle_laws(items: &mut Vec<TopLevel>) {
                 explicit: false,
                 post_authority: false,
             },
-            body: vec![Statement::Guarded(
-                guard,
-                vec![Statement::EndProgram(None)],
-            )],
+            body: vec![Statement::Guarded(guard, vec![Statement::EndProgram(None)])],
             metadata: std::collections::HashMap::new(),
             derivation: None,
             modifiers: vec![],
@@ -90,10 +85,7 @@ pub struct TerminationReport {
 /// AND contracts — PR #18's member-body multimap). `live` is passed in so
 /// the backend reuses the one analysis it already computed
 /// (frontend-driven dispatch: the pass computes, the caller consumes).
-pub fn analyze_termination(
-    items: &[TopLevel],
-    live: &HashSet<String>,
-) -> TerminationReport {
+pub fn analyze_termination(items: &[TopLevel], live: &HashSet<String>) -> TerminationReport {
     let has_reside = items.iter().any(|i| {
         matches!(
             i,
@@ -160,7 +152,9 @@ fn body_reaches_terminator(body: &[Statement]) -> bool {
 fn stmt_reaches_terminator(s: &Statement) -> bool {
     match s {
         Statement::EndProgram(_) | Statement::Halt | Statement::Trap => true,
-        Statement::Guarded(_, b) | Statement::Block(b) | Statement::SyncBlock(b)
+        Statement::Guarded(_, b)
+        | Statement::Block(b)
+        | Statement::SyncBlock(b)
         | Statement::Mutex(b) => body_reaches_terminator(b),
         Statement::Foreach { body, .. } => body_reaches_terminator(body),
         Statement::Defer(b) => body_reaches_terminator(b),
@@ -206,7 +200,10 @@ mod tests {
             .collect();
         assert_eq!(monitors.len(), 1, "one law → one monitor");
         let m = monitors[0];
-        assert!(m.is_reactive, "the monitor must be a reactive txn (liveness root)");
+        assert!(
+            m.is_reactive,
+            "the monitor must be a reactive txn (liveness root)"
+        );
         assert!(
             matches!(m.body.as_slice(), [Statement::Guarded(g, body)]
                 if matches!(body.as_slice(), [Statement::EndProgram(None)])),
@@ -224,19 +221,14 @@ mod tests {
     #[test]
     fn zombie_program_warns_endprogram_and_reside_silence() {
         // A settled node with no terminator: warn.
-        let zombie = parse(
-            "let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n",
-        );
-        let live = crate::analysis::defn_liveness::DefnLiveness::build(&zombie)
-            .live;
+        let zombie = parse("let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n");
+        let live = crate::analysis::defn_liveness::DefnLiveness::build(&zombie).live;
         let r = analyze_termination(&zombie, &live);
         assert!(!r.has_terminator && !r.has_reside);
         assert!(termination_warning(&r).is_some(), "zombie warns");
 
         // + a reside law: silent (declared intent).
-        let mut resident = parse(
-            "let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n",
-        );
+        let mut resident = parse("let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n");
         resident.insert(0, law(Expr::Bool(true), LifeCycleArm::Reside));
         let live = crate::analysis::defn_liveness::DefnLiveness::build(&resident).live;
         let r = analyze_termination(&resident, &live);
@@ -244,9 +236,7 @@ mod tests {
 
         // + an endprogram LAW: after lowering, the monitor txn is a liveness
         // root whose body ends the process — silent.
-        let mut ending = parse(
-            "let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n",
-        );
+        let mut ending = parse("let n: Int = 0;\nnode main [n == 0][n == 1] { n = 1; term; };\n");
         ending.insert(0, law(Expr::Bool(true), LifeCycleArm::EndProgram));
         lower_lifecycle_laws(&mut ending);
         let live = crate::analysis::defn_liveness::DefnLiveness::build(&ending).live;

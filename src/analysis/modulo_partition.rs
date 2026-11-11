@@ -98,7 +98,8 @@ fn extract_mod_info(expr: &Expr) -> Option<(String, i64)> {
 fn extract_mod_guard(expr: &Expr, counter: &str, divisor: i64) -> Option<i64> {
     match expr {
         Expr::BinaryOp(kind, l, r) if *kind == BinaryOpKind::And => {
-            extract_mod_guard(l, counter, divisor).or_else(|| extract_mod_guard(r, counter, divisor))
+            extract_mod_guard(l, counter, divisor)
+                .or_else(|| extract_mod_guard(r, counter, divisor))
         }
         Expr::BinaryOp(kind, l, r) if *kind == BinaryOpKind::Eq => {
             let inner = match l.as_ref() {
@@ -178,7 +179,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: Vec::new(),
             metadata: HashMap::new(),
             derivation: None,
@@ -194,7 +196,10 @@ mod tests {
         let mut items = Vec::new();
         for n in 0..8i64 {
             let pre = and(
-                lt(Expr::Identifier("count".into()), Expr::Identifier("total".into())),
+                lt(
+                    Expr::Identifier("count".into()),
+                    Expr::Identifier("total".into()),
+                ),
                 eq(mod_expr("count", 8), Expr::Decimal(n)),
             );
             items.push(txn(&format!("t{}", n), pre));
@@ -226,7 +231,10 @@ mod tests {
         ];
         let p = detect_modulo_partition(&items).unwrap();
         assert_eq!(p.divisor, 2);
-        assert_eq!(p.cases, vec![(0, "even".to_string()), (1, "odd".to_string())]);
+        assert_eq!(
+            p.cases,
+            vec![(0, "even".to_string()), (1, "odd".to_string())]
+        );
     }
 
     /// A txn without a matching residue breaks the partition.
@@ -234,7 +242,13 @@ mod tests {
     fn divergent_precondition_breaks_partition() {
         let items = vec![
             txn("t0", eq(mod_expr("count", 8), Expr::Decimal(0))),
-            txn("t1", lt(Expr::Identifier("count".into()), Expr::Identifier("total".into()))),
+            txn(
+                "t1",
+                lt(
+                    Expr::Identifier("count".into()),
+                    Expr::Identifier("total".into()),
+                ),
+            ),
         ];
         assert!(detect_modulo_partition(&items).is_none());
     }

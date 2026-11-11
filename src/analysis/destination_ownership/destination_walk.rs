@@ -454,17 +454,8 @@ impl<'a> BodyAnalyzer<'a> {
         );
         self.set_fact_type(&id, Type::Custom(type_name.to_string()));
         if self.loop_depth > 0 {
-            let site = format!(
-                "{}/expr/{}",
-                cursor.body_path,
-                format_path(cursor.path)
-            );
-            self.add_sink(
-                &id,
-                SinkKind::LoopCarrier,
-                &site,
-                EscapeKind::LoopLifetime,
-            );
+            let site = format!("{}/expr/{}", cursor.body_path, format_path(cursor.path));
+            self.add_sink(&id, SinkKind::LoopCarrier, &site, EscapeKind::LoopLifetime);
         }
         id
     }
@@ -485,12 +476,7 @@ impl<'a> BodyAnalyzer<'a> {
                 for (index, value) in values.iter().enumerate() {
                     let id = self.child_expr(value, index, cursor, scope);
                     self.use_value(&id);
-                    self.add_sink(
-                        &id,
-                        SinkKind::TupleStore,
-                        &site,
-                        EscapeKind::TupleLifetime,
-                    );
+                    self.add_sink(&id, SinkKind::TupleStore, &site, EscapeKind::TupleLifetime);
                 }
                 let id = self.temp_value(
                     cursor,
@@ -897,7 +883,9 @@ impl<'a> BodyAnalyzer<'a> {
         scope: &mut Scope,
     ) -> Option<ValueId> {
         match statement {
-            Statement::Foreach { item, list, body , ..} => {
+            Statement::Foreach {
+                item, list, body, ..
+            } => {
                 let site = format!("{}/stmt/{}", body_path, format_path(stmt_path));
                 let mut expr_path = Vec::new();
                 let list_id = self.stmt_expr(list, body_path, &mut expr_path, scope);

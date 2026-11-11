@@ -115,9 +115,9 @@ pub fn solve_dc_laws(ctx: &DcContext<'_>) -> (Vec<DcSolution>, Vec<String>) {
 
 /// Combine independent group candidates into deterministic global states.
 fn global_states(group_candidates: Vec<Vec<DcSolution>>) -> Result<Vec<DcSolution>, String> {
-    group_candidates.into_iter().try_fold(
-        vec![DcSolution::default()],
-        |states, candidates| {
+    group_candidates
+        .into_iter()
+        .try_fold(vec![DcSolution::default()], |states, candidates| {
             let product = states.len().saturating_mul(candidates.len());
             if product > MAX_OPERATING_STATES {
                 return Err(format!(
@@ -131,8 +131,7 @@ fn global_states(group_candidates: Vec<Vec<DcSolution>>) -> Result<Vec<DcSolutio
                 combine_state_candidates(state, &candidates, &mut combined);
             }
             Ok(combined)
-        },
-    )
+        })
 }
 
 /// Cross one existing global state with every candidate for the next group.
@@ -208,20 +207,21 @@ fn register_group_nets(
 }
 
 /// Every net touched by one law-bearing component's pins.
-fn component_nets(
-    component: &ComponentLaws,
-    ctx: &DcContext<'_>,
-) -> Vec<String> {
+fn component_nets(component: &ComponentLaws, ctx: &DcContext<'_>) -> Vec<String> {
     let mut nets = Vec::new();
-    let Some(inst) = ctx.instances.get(&component.instance) else { return nets };
-    let Some(pins) = ctx.type_pins.get(&inst.type_name) else { return nets };
+    let Some(inst) = ctx.instances.get(&component.instance) else {
+        return nets;
+    };
+    let Some(pins) = ctx.type_pins.get(&inst.type_name) else {
+        return nets;
+    };
     for (pin, _) in pins {
         let key = (component.instance.as_str(), pin.as_str());
-        if let Some(net) = ctx
-            .nets
-            .iter()
-            .find(|net| net.pins.iter().any(|p| p.component == key.0 && p.pin == key.1))
-        {
+        if let Some(net) = ctx.nets.iter().find(|net| {
+            net.pins
+                .iter()
+                .any(|p| p.component == key.0 && p.pin == key.1)
+        }) {
             nets.push(net.name.clone());
         }
     }
@@ -231,10 +231,7 @@ fn component_nets(
 }
 
 /// Build and solve one connected law group across all guarded branch modes.
-fn solve_group(
-    group: &ComponentGroup<'_>,
-    ctx: &DcContext<'_>,
-) -> Result<Vec<DcSolution>, String> {
+fn solve_group(group: &ComponentGroup<'_>, ctx: &DcContext<'_>) -> Result<Vec<DcSolution>, String> {
     let laws = guarded_laws(group);
     if laws.len() > MAX_GUARDED_MODES {
         return Err(group_guard_budget_error(group, laws.len()));
@@ -262,7 +259,11 @@ fn solve_group(
         group,
         candidates,
         rejections,
-        GroupSummary { unguarded: guards.laws.is_empty(), no_explicit_modes: explicit_mode_count <= 1, ctx },
+        GroupSummary {
+            unguarded: guards.laws.is_empty(),
+            no_explicit_modes: explicit_mode_count <= 1,
+            ctx,
+        },
     )
 }
 
@@ -276,7 +277,10 @@ struct SolveWork<'a> {
 /// Create every guard-mask/named-mode combination without nested scan loops.
 fn solve_work<'a>(
     guards: &'a BranchMode<'a>,
-    mode_choices: &'a [Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>],
+    mode_choices: &'a [Vec<(
+        &'a str,
+        &'a crate::analysis::electronics_laws::ElaboratedMode,
+    )>],
 ) -> Vec<SolveWork<'a>> {
     let mask_count = 1usize << guards.laws.len();
     mode_choices
@@ -287,7 +291,10 @@ fn solve_work<'a>(
                 .map(|(instance, mode)| ((*instance).to_string(), mode.name.clone()))
                 .collect();
             (0..mask_count).map(move |mask| SolveWork {
-                branch: BranchMode { laws: guards.laws.clone(), mask },
+                branch: BranchMode {
+                    laws: guards.laws.clone(),
+                    mask,
+                },
                 mask,
                 modes: selected.clone(),
             })
@@ -296,11 +303,7 @@ fn solve_work<'a>(
 }
 
 /// Label a valid solution with its guard mask and named-mode assignments.
-fn label_solution(
-    solution: &mut DcSolution,
-    selected: &BTreeMap<String, String>,
-    mask: usize,
-) {
+fn label_solution(solution: &mut DcSolution, selected: &BTreeMap<String, String>, mask: usize) {
     solution.states.insert(format!("mode={mask:02x}"));
     solution.modes.extend(selected.clone());
     for (instance, mode) in selected {
@@ -356,14 +359,25 @@ fn group_guard_budget_error(group: &ComponentGroup<'_>, count: usize) -> String 
 }
 
 /// One declared mode choice for every mode-bearing component.
-type ModeCombination<'a> = Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>;
+type ModeCombination<'a> = Vec<(
+    &'a str,
+    &'a crate::analysis::electronics_laws::ElaboratedMode,
+)>;
 
 /// Enumerate one choice from each component's named modes. Empty when no
 /// component uses named modes (one implicit combination remains).
 fn component_mode_choices<'a>(
     group: &ComponentGroup<'a>,
     ctx: &DcContext<'a>,
-) -> Result<Vec<Vec<(&'a str, &'a crate::analysis::electronics_laws::ElaboratedMode)>>, String> {
+) -> Result<
+    Vec<
+        Vec<(
+            &'a str,
+            &'a crate::analysis::electronics_laws::ElaboratedMode,
+        )>,
+    >,
+    String,
+> {
     let choices: Vec<(&str, &crate::analysis::electronics_laws::ElaboratedMode)> = group
         .components
         .iter()
@@ -409,7 +423,10 @@ fn component_mode_choices<'a>(
 /// named-mode candidates.
 fn group_bistable(group: &ComponentGroup<'_>, ctx: &DcContext<'_>) -> bool {
     group.components.iter().all(|component| {
-        let has_guarded = component.laws.iter().any(|law| law.guard != LawGuard::Always);
+        let has_guarded = component
+            .laws
+            .iter()
+            .any(|law| law.guard != LawGuard::Always);
         !has_guarded
             || ctx
                 .instances
@@ -420,7 +437,9 @@ fn group_bistable(group: &ComponentGroup<'_>, ctx: &DcContext<'_>) -> bool {
 }
 
 /// Guarded laws in deterministic original order.
-fn guarded_laws<'a>(group: &'a ComponentGroup<'a>) -> Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw> {
+fn guarded_laws<'a>(
+    group: &'a ComponentGroup<'a>,
+) -> Vec<&'a crate::analysis::electronics_laws::ElaboratedLaw> {
     group
         .components
         .iter()
@@ -437,7 +456,10 @@ fn solve_branch_mode(
     branch: &BranchMode<'_>,
     selected_modes: &BTreeMap<String, String>,
 ) -> Result<DcSolution, String> {
-    let selection = LawSelection { branch, modes: selected_modes };
+    let selection = LawSelection {
+        branch,
+        modes: selected_modes,
+    };
     let mut rows = Vec::new();
     let mut variables = VariableTable::default();
     append_law_equations(group, ctx, &mut variables, &mut rows, &selection)?;
@@ -456,13 +478,10 @@ fn mode_guards_hold(
     values: &BTreeMap<SystemVariable, f64>,
     ctx: &DcContext<'_>,
 ) -> bool {
-    branch
-        .laws
-        .iter()
-        .all(|law| {
-            let holds = law_guard_holds(group, law, values, ctx);
-            holds == branch.is_active(law)
-        })
+    branch.laws.iter().all(|law| {
+        let holds = law_guard_holds(group, law, values, ctx);
+        holds == branch.is_active(law)
+    })
 }
 
 /// Evaluate one guard as a linear comparison.
@@ -472,7 +491,9 @@ fn law_guard_holds(
     values: &BTreeMap<SystemVariable, f64>,
     ctx: &DcContext<'_>,
 ) -> bool {
-    let LawGuard::Comparison { left, op, right } = &law.guard else { return true };
+    let LawGuard::Comparison { left, op, right } = &law.guard else {
+        return true;
+    };
     let left = linear_value(left, group, values, ctx);
     let right = linear_value(right, group, values, ctx);
     let difference = left - right;
@@ -496,7 +517,9 @@ fn linear_value(
 ) -> f64 {
     let mut total = expression.constant;
     for (variable, coefficient) in &expression.terms {
-        let Some(system_variable) = system_variable(variable, ctx) else { continue };
+        let Some(system_variable) = system_variable(variable, ctx) else {
+            continue;
+        };
         let value = match &system_variable {
             SystemVariable::Net(net) => ctx.drives.get(net).copied().unwrap_or_else(|| {
                 values
@@ -535,7 +558,9 @@ fn values_to_solution(
         solution.net_voltage.insert(net.clone(), value);
     }
     for (variable, value) in values {
-        let SystemVariable::Current { component, pin } = variable else { continue };
+        let SystemVariable::Current { component, pin } = variable else {
+            continue;
+        };
         solution.pin_current.insert((component, pin), value);
     }
     solution
@@ -593,7 +618,10 @@ fn component_law_rows(
         }
     }
     if let Some(mode) = selection.modes.get(&component.instance) {
-        let Some(selected) = component.modes.iter().find(|candidate| &candidate.name == mode)
+        let Some(selected) = component
+            .modes
+            .iter()
+            .find(|candidate| &candidate.name == mode)
         else {
             return Err(format!(
                 "component '{}' selects undeclared mode '{mode}'",
@@ -708,11 +736,7 @@ fn net_kcl_row(
 }
 
 /// Law-bearing pins on one net, deterministic order.
-fn net_law_pins(
-    net: &str,
-    law_components: &BTreeSet<&str>,
-    ctx: &DcContext<'_>,
-) -> Vec<PinRef> {
+fn net_law_pins(net: &str, law_components: &BTreeSet<&str>, ctx: &DcContext<'_>) -> Vec<PinRef> {
     let Some(model) = ctx.nets.iter().find(|candidate| candidate.name == net) else {
         return Vec::new();
     };
@@ -752,10 +776,7 @@ fn append_term(
 }
 
 /// Map a law variable onto the DC system's net/current variables.
-fn system_variable(
-    variable: &LawVariable,
-    ctx: &DcContext<'_>,
-) -> Option<SystemVariable> {
+fn system_variable(variable: &LawVariable, ctx: &DcContext<'_>) -> Option<SystemVariable> {
     match variable {
         LawVariable::Voltage(pin) => {
             let net = pin_net(pin, ctx)?;
@@ -782,11 +803,7 @@ fn pin_net(pin: &PinRef, ctx: &DcContext<'_>) -> Option<String> {
 
 /// Pick the available row with the largest pivot magnitude. A deterministic
 /// helper avoids `max_by`'s range-item ambiguity.
-fn max_pivot_row(
-    augmented: &[(Vec<f64>, f64)],
-    start: usize,
-    column: usize,
-) -> Option<usize> {
+fn max_pivot_row(augmented: &[(Vec<f64>, f64)], start: usize, column: usize) -> Option<usize> {
     let mut choice = None;
     let mut best = 0.0f64;
     for row in start..augmented.len() {
@@ -837,7 +854,10 @@ fn gauss_eliminate(augmented: &mut [(Vec<f64>, f64)], width: usize) -> Vec<usize
 /// Normalize one pivot row and eliminate that column from every other row.
 fn normalize_pivot(augmented: &mut [(Vec<f64>, f64)], pivot_row: usize, column: usize) {
     let pivot = augmented[pivot_row].0[column];
-    augmented[pivot_row].0.iter_mut().for_each(|value| *value /= pivot);
+    augmented[pivot_row]
+        .0
+        .iter_mut()
+        .for_each(|value| *value /= pivot);
     augmented[pivot_row].1 /= pivot;
     let pivot_values = augmented[pivot_row].0.clone();
     let pivot_constant = augmented[pivot_row].1;
@@ -845,9 +865,7 @@ fn normalize_pivot(augmented: &mut [(Vec<f64>, f64)], pivot_row: usize, column: 
         .iter_mut()
         .enumerate()
         .filter(|(row, _)| *row != pivot_row)
-        .for_each(|(_, row)| {
-            eliminate_row(row, &pivot_values, pivot_constant, column)
-        });
+        .for_each(|(_, row)| eliminate_row(row, &pivot_values, pivot_constant, column));
 }
 
 /// Subtract one scaled pivot row from a target row.
@@ -936,8 +954,11 @@ fn back_substitute(
 
 /// Human-readable group label for diagnostics.
 fn group_label(group: &ComponentGroup<'_>) -> Vec<String> {
-    let mut names: Vec<String> =
-        group.components.iter().map(|component| component.instance.clone()).collect();
+    let mut names: Vec<String> = group
+        .components
+        .iter()
+        .map(|component| component.instance.clone())
+        .collect();
     names.sort();
     names
 }

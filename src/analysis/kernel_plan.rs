@@ -214,9 +214,15 @@ fn fold_side(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Resu
         Expr::Decimal(n) => Ok(*n),
         Expr::Identifier(s) => match consts.get(s) {
             Some(Expr::Decimal(n)) => Ok(*n),
-            _ => Err(format!("ptx general: count operand '{}' is not a constant", s)),
+            _ => Err(format!(
+                "ptx general: count operand '{}' is not a constant",
+                s
+            )),
         },
-        other => Err(format!("ptx general: count operand {:?} not foldable", other)),
+        other => Err(format!(
+            "ptx general: count operand {:?} not foldable",
+            other
+        )),
     }
 }
 
@@ -237,11 +243,7 @@ pub(crate) fn split_eligible(kv: i64, dim: i64, s: u64) -> bool {
 /// `tile`/`stage`/`unroll`/`split`/`vector`/`swizzle`/`fragment`).
 /// 2026-10-01 (D14 remainder): the ONE parse for every shape modifier —
 /// the lowering reads the decision, the analysis owns the declaration.
-pub(crate) fn declared_modifier(
-    items: &[TopLevel],
-    name: &str,
-    key: &str,
-) -> Option<u64> {
+pub(crate) fn declared_modifier(items: &[TopLevel], name: &str, key: &str) -> Option<u64> {
     for item in items {
         match item {
             TopLevel::Transaction(t) if t.name == name => {
@@ -312,11 +314,9 @@ fn deferred_split_tree(
     let dim = dim as i64;
     let s = match declared {
         Some(n) => n as u64,
-        None => crate::analysis::gpu_strategy::reduction_split_factor_for(
-            count as u64,
-            kv as u64,
-            hw,
-        ),
+        None => {
+            crate::analysis::gpu_strategy::reduction_split_factor_for(count as u64, kv as u64, hw)
+        }
     };
     if split_eligible(kv, dim, s) {
         ReduceTree::Split { factor: s }
@@ -480,9 +480,7 @@ impl KernelPlan {
         // declaration, so an undeclared body's plan has no gemm lane
         // (Rules 23/24).
         let declared = crate::analysis::gemm_shape::declared_matmul(shape);
-        let gemm = declared
-            .then(|| detect_gemm_shape(shape, items))
-            .flatten();
+        let gemm = declared.then(|| detect_gemm_shape(shape, items)).flatten();
         if std::env::var_os("BRIEV_ACCEL_EXPLAIN").is_some() {
             eprintln!(
                 "[plan] {} declared_matmul={} gemm_detected={}",
@@ -839,7 +837,10 @@ mod tests {
         assert!(d.contains("node fattn"), "{d}");
         assert!(d.contains("work per_item"), "{d}");
         assert!(d.contains("shape tile=128x256 stages=3"), "{d}");
-        assert!(d.contains("proofs disjoint=true associative=true single_writer=true"), "{d}");
+        assert!(
+            d.contains("proofs disjoint=true associative=true single_writer=true"),
+            "{d}"
+        );
         assert!(d.contains("op tile k 128x256"), "{d}");
         assert!(
             d.contains("op reduce softmax span=4096 tree=split(6) frag=128x1x4w"),
@@ -966,7 +967,11 @@ mod tests {
             name: "unroll".into(),
             value: Some(Expr::Decimal(0)),
         }]);
-        assert_eq!(declared_modifier(&zero, "u", "unroll"), None, "N must be > 0");
+        assert_eq!(
+            declared_modifier(&zero, "u", "unroll"),
+            None,
+            "N must be > 0"
+        );
         let none = mk(vec![]);
         assert_eq!(declared_modifier(&none, "u", "unroll"), None);
     }
@@ -1060,11 +1065,12 @@ mod tests {
                     col_buf: String::new(),
                     out_buf: "y".into(),
                     seq: false,
-            foreach_approx: false,
-            foreach_exact: false,
+                    foreach_approx: false,
+                    foreach_exact: false,
                 }),
                 deferred_normalize: None,
-                idiom_lane: buf_ty == crate::ast::Type::int() && buf_ty != crate::ast::Type::float(),
+                idiom_lane: buf_ty == crate::ast::Type::int()
+                    && buf_ty != crate::ast::Type::float(),
                 approx_declared: false,
                 exact_declared: false,
             }
@@ -1088,7 +1094,13 @@ mod tests {
             modifiers: vec![],
         }))];
         let float_shape = make(Expr::Decimal(1024), crate::ast::Type::float());
-        let pf = KernelPlan::from_shape("sum", &float_shape, &float_items, &consts, &GpuHardware::SM86);
+        let pf = KernelPlan::from_shape(
+            "sum",
+            &float_shape,
+            &float_items,
+            &consts,
+            &GpuHardware::SM86,
+        );
         assert!(
             !pf.dump().contains("op reduce"),
             "unlicensed float sum must not plan a cooperative reduce: {}",
@@ -1099,7 +1111,8 @@ mod tests {
         licensed.approx_declared = true;
         licensed.idiom_lane = crate::analysis::accel::fold_idiom_lane(&licensed, &float_items);
         assert!(licensed.idiom_lane);
-        let pl = KernelPlan::from_shape("sum", &licensed, &float_items, &consts, &GpuHardware::SM86);
+        let pl =
+            KernelPlan::from_shape("sum", &licensed, &float_items, &consts, &GpuHardware::SM86);
         assert!(
             pl.dump().contains("op reduce"),
             "approx-licensed float sum plans the cooperative reduce: {}",
@@ -1142,13 +1155,13 @@ mod tests {
                     col_buf: "x".into(),
                     out_buf: "y".into(),
                     seq: false,
-            foreach_approx: false,
-            foreach_exact: false,
+                    foreach_approx: false,
+                    foreach_exact: false,
                 }),
                 deferred_normalize: None,
                 idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                approx_declared: false,
+                exact_declared: false,
             }
         };
         let undeclared = {

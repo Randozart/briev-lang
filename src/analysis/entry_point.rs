@@ -122,9 +122,15 @@ impl EntryPointAnalyzer {
                 }
             }
             Expr::UnaryOp(UnaryOpKind::Neg, inner) => -Self::evaluate_to_constant(inner, items),
-            Expr::BinaryOp(BinaryOpKind::Add, l, r) => Self::evaluate_to_constant(l, items) + Self::evaluate_to_constant(r, items),
-            Expr::BinaryOp(BinaryOpKind::Sub, l, r) => Self::evaluate_to_constant(l, items) - Self::evaluate_to_constant(r, items),
-            Expr::BinaryOp(BinaryOpKind::Mul, l, r) => Self::evaluate_to_constant(l, items) * Self::evaluate_to_constant(r, items),
+            Expr::BinaryOp(BinaryOpKind::Add, l, r) => {
+                Self::evaluate_to_constant(l, items) + Self::evaluate_to_constant(r, items)
+            }
+            Expr::BinaryOp(BinaryOpKind::Sub, l, r) => {
+                Self::evaluate_to_constant(l, items) - Self::evaluate_to_constant(r, items)
+            }
+            Expr::BinaryOp(BinaryOpKind::Mul, l, r) => {
+                Self::evaluate_to_constant(l, items) * Self::evaluate_to_constant(r, items)
+            }
             _ => 0,
         }
     }
@@ -147,13 +153,19 @@ impl std::fmt::Display for EntryPointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EntryPointError::AmbiguousEntry { transactions } => {
-                write!(f, "Multiple transactions can fire from initial state: {}. \
-                    Specify which is the entry point or make some async.", 
-                    transactions.join(", "))
+                write!(
+                    f,
+                    "Multiple transactions can fire from initial state: {}. \
+                    Specify which is the entry point or make some async.",
+                    transactions.join(", ")
+                )
             }
             EntryPointError::NoEntryPoint => {
-                write!(f, "No transaction can fire from initial state. \
-                    Define a transaction with a precondition that is initially true.")
+                write!(
+                    f,
+                    "No transaction can fire from initial state. \
+                    Define a transaction with a precondition that is initially true."
+                )
             }
         }
     }
@@ -175,7 +187,7 @@ mod tests {
                 term;
             };
         "#;
-        
+
         // This test would require full parsing - just verify module compiles
         assert!(true);
     }

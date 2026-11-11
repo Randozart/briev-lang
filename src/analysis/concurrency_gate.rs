@@ -71,7 +71,10 @@ fn collect_reactive(items: &[TopLevel]) -> Vec<ReactiveTxn<'_>> {
                     });
                 }
             }
-            TopLevel::SyncGroup { domains, item: inner } => {
+            TopLevel::SyncGroup {
+                domains,
+                item: inner,
+            } => {
                 if let TopLevel::Transaction(t) = inner.as_ref() {
                     if t.is_reactive && !has_bootstrap_modifier(t) {
                         out.push(ReactiveTxn {
@@ -140,11 +143,9 @@ fn classify_eligible_pair(
 /// XOR read-write overlap: A writes what B reads/writes, or B writes what A
 /// reads. Uses the full body write/read sets (rule: frontend-computed).
 fn xor_overlap(a: &ReactiveTxn<'_>, b: &ReactiveTxn<'_>) -> bool {
-    let a_writes: HashSet<String> =
-        collect_assigned_identifiers(a.body).into_iter().collect();
+    let a_writes: HashSet<String> = collect_assigned_identifiers(a.body).into_iter().collect();
     let a_reads = collect_read_identifiers(a.body);
-    let b_writes: HashSet<String> =
-        collect_assigned_identifiers(b.body).into_iter().collect();
+    let b_writes: HashSet<String> = collect_assigned_identifiers(b.body).into_iter().collect();
     let b_reads = collect_read_identifiers(b.body);
 
     !a_writes.is_disjoint(&b_reads)
@@ -186,7 +187,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: true,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -271,8 +273,16 @@ mod tests {
     fn test_mutually_exclusive_voltage_guards_need_no_classification() {
         // Two electronics nodes gated on the same pin at different voltages
         // can never both fire — the gate must NOT demand classification.
-        let a = txn("clk_hi", "u1.sclk.voltage == 3.3V", &["d1.a = u1.vout;", "term;"]);
-        let b = txn("clk_lo", "u1.sclk.voltage == 1.8V", &["d2.a = u1.vout;", "term;"]);
+        let a = txn(
+            "clk_hi",
+            "u1.sclk.voltage == 3.3V",
+            &["d1.a = u1.vout;", "term;"],
+        );
+        let b = txn(
+            "clk_lo",
+            "u1.sclk.voltage == 1.8V",
+            &["d2.a = u1.vout;", "term;"],
+        );
         let errors = run_concurrency_gate(&[a, b]);
         assert!(
             errors.is_empty(),
@@ -284,8 +294,16 @@ mod tests {
     fn test_co_satisfiable_pin_writes_demand_classification() {
         // Same pin, SAME voltage, overlapping writes → eligible to fire
         // together → must classify.
-        let a = txn("a", "u1.sclk.voltage == 3.3V", &["d1.a = u1.vout;", "term;"]);
-        let b = txn("b", "u1.sclk.voltage == 3.3V", &["d2.a = u1.vout;", "term;"]);
+        let a = txn(
+            "a",
+            "u1.sclk.voltage == 3.3V",
+            &["d1.a = u1.vout;", "term;"],
+        );
+        let b = txn(
+            "b",
+            "u1.sclk.voltage == 3.3V",
+            &["d2.a = u1.vout;", "term;"],
+        );
         let errors = run_concurrency_gate(&[a, b]);
         assert!(
             errors.len() == 1,
@@ -362,6 +380,9 @@ mod kani_full_tests {
             sync_groups: vec![],
         };
         let result = classify_eligible_pair(false, false, &a, &b);
-        assert!(result.is_some(), "an unclassified eligible pair must be rejected");
+        assert!(
+            result.is_some(),
+            "an unclassified eligible pair must be rejected"
+        );
     }
 }

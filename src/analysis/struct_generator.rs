@@ -34,13 +34,10 @@ impl StructGenerator {
         for (addr, mem_map) in sorted_addrs {
             let field_name = Self::field_name_from_addr(addr);
             let rust_type = Self::rust_type(mem_map);
-            
+
             output.push_str(&format!(
                 "    pub {}: {},  // {} @ {}\n",
-                field_name,
-                rust_type,
-                mem_map.mem_type,
-                addr
+                field_name, rust_type, mem_map.mem_type, addr
             ));
         }
 
@@ -70,10 +67,8 @@ impl StructGenerator {
     fn field_name_from_addr(addr: &str) -> String {
         let addr_lower = addr.to_lowercase();
         // Remove 0x prefix and make valid identifier
-        let clean = addr_lower
-            .trim_start_matches("0x")
-            .replace("-", "_");
-        
+        let clean = addr_lower.trim_start_matches("0x").replace("-", "_");
+
         // Common field names for standard MMIO addresses
         match clean.as_str() {
             "4000a000" | "8000a000" => "control".to_string(),
@@ -100,18 +95,22 @@ impl StructGenerator {
         }
     }
 
-    pub fn validate_against_rust(hw_config: &HardwareConfig, rust_source: &str) -> Vec<StructValidationError> {
+    pub fn validate_against_rust(
+        hw_config: &HardwareConfig,
+        rust_source: &str,
+    ) -> Vec<StructValidationError> {
         let mut errors = Vec::new();
 
         let generated = Self::generate(hw_config);
-        
+
         // Check if key fields are present in the Rust source
         for (addr, mem_map) in &hw_config.memory {
             let field_name = Self::field_name_from_addr(addr);
-            
+
             // Simple presence check - in real implementation would parse the Rust struct
-            if !rust_source.contains(&format!("pub {}", field_name)) &&
-               !rust_source.contains(&format!("{}:", field_name)) {
+            if !rust_source.contains(&format!("pub {}", field_name))
+                && !rust_source.contains(&format!("{}:", field_name))
+            {
                 // This is actually fine - we generate the struct, we don't validate against it
                 // This would be for generate mode
             }
@@ -146,16 +145,20 @@ mod tests {
         let mut memory_b = std::collections::BTreeMap::new();
         memory_b.insert(
             "0x8000A000".to_string(),
-            MemoryMapping { mem_type: "flipflop".to_string(), element_bits: 8 },
+            MemoryMapping {
+                mem_type: "flipflop".to_string(),
+                element_bits: 8,
+            },
         );
         memory_b.insert(
             "0x8000A004".to_string(),
-            MemoryMapping { mem_type: "flipflop".to_string(), element_bits: 8 },
+            MemoryMapping {
+                mem_type: "flipflop".to_string(),
+                element_bits: 8,
+            },
         );
 
-        let config = HardwareConfig {
-            memory: memory_b,
-        };
+        let config = HardwareConfig { memory: memory_b };
 
         let output = StructGenerator::generate(&config);
         assert!(output.contains("pub control: u8"));

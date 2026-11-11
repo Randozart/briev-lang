@@ -28,7 +28,7 @@ impl ProtocolVerifier {
         for (txn_name, prereqs) in &txn_prerequisites {
             for prereq in prereqs {
                 let mut found_writer = false;
-                
+
                 // Find transactions that set this register
                 for (other_name, _) in &all_preconditions {
                     if other_name == txn_name {
@@ -171,13 +171,18 @@ impl ProtocolVerifier {
 
     fn extract_writes_recursive(expr: &Expr, writes: &mut HashSet<String>) {
         match expr {
-            Expr::BinaryOp(BinaryOpKind::Eq, lhs, _) | Expr::BinaryOp(BinaryOpKind::Ge, lhs, _) | Expr::BinaryOp(BinaryOpKind::Gt, lhs, _)
-            | Expr::BinaryOp(BinaryOpKind::Le, lhs, _) | Expr::BinaryOp(BinaryOpKind::Lt, lhs, _) | Expr::BinaryOp(BinaryOpKind::Neq, lhs, _) => {
+            Expr::BinaryOp(BinaryOpKind::Eq, lhs, _)
+            | Expr::BinaryOp(BinaryOpKind::Ge, lhs, _)
+            | Expr::BinaryOp(BinaryOpKind::Gt, lhs, _)
+            | Expr::BinaryOp(BinaryOpKind::Le, lhs, _)
+            | Expr::BinaryOp(BinaryOpKind::Lt, lhs, _)
+            | Expr::BinaryOp(BinaryOpKind::Neq, lhs, _) => {
                 if let Expr::Identifier(name) = lhs.as_ref() {
                     writes.insert(name.clone());
                 }
             }
-            Expr::BinaryOp(BinaryOpKind::And, lhs, rhs) | Expr::BinaryOp(BinaryOpKind::Or, lhs, rhs) => {
+            Expr::BinaryOp(BinaryOpKind::And, lhs, rhs)
+            | Expr::BinaryOp(BinaryOpKind::Or, lhs, rhs) => {
                 Self::extract_writes_recursive(lhs, writes);
                 Self::extract_writes_recursive(rhs, writes);
             }
@@ -223,11 +228,12 @@ mod tests {
 
     #[test]
     fn test_prerequisite_extraction() {
-        let expr = Expr::BinaryOp(BinaryOpKind::Eq, 
+        let expr = Expr::BinaryOp(
+            BinaryOpKind::Eq,
             Box::new(Expr::Identifier("control".to_string())),
             Box::new(Expr::Decimal(1)),
         );
-        
+
         let prereqs = ProtocolVerifier::extract_prerequisites(&expr);
         assert_eq!(prereqs.len(), 1);
         assert_eq!(prereqs[0].register, "control");

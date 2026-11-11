@@ -150,7 +150,9 @@ fn collect_locals_into(stmts: &[Statement], locals: &mut HashMap<String, Expr>) 
     for s in stmts {
         match s {
             Statement::Let {
-                name, expr: Some(e), ..
+                name,
+                expr: Some(e),
+                ..
             } => {
                 locals.insert(name.clone(), e.clone());
             }
@@ -191,9 +193,7 @@ fn collect_array_loads(stmts: &[Statement], out: &mut Vec<(String, Expr)>) {
     for s in stmts {
         match s {
             Statement::Assign(_, rhs) => walk_expr(rhs, out),
-            Statement::Let {
-                expr: Some(e), ..
-            } => walk_expr(e, out),
+            Statement::Let { expr: Some(e), .. } => walk_expr(e, out),
             Statement::Foreach { body, .. } => collect_array_loads(body, out),
             _ => {}
         }
@@ -279,7 +279,11 @@ impl CoeffEnv<'_> {
         self.consts
             .get(n)
             .and_then(|x| ev(x, self.consts, self.locals, 0))
-            .or_else(|| self.locals.get(n).and_then(|x| ev(x, self.consts, self.locals, 0)))
+            .or_else(|| {
+                self.locals
+                    .get(n)
+                    .and_then(|x| ev(x, self.consts, self.locals, 0))
+            })
     }
 
     fn coeff(&mut self, e: &Expr) -> Coeff {
@@ -431,9 +435,13 @@ mod tests {
     }
 
     fn consts() -> HashMap<String, i64> {
-        [("D".to_string(), 128), ("NKV".to_string(), 4096), ("G".to_string(), 4)]
-            .into_iter()
-            .collect()
+        [
+            ("D".to_string(), 128),
+            ("NKV".to_string(), 4096),
+            ("G".to_string(), 4),
+        ]
+        .into_iter()
+        .collect()
     }
 
     fn const_exprs() -> HashMap<String, Expr> {
@@ -490,11 +498,14 @@ mod tests {
                         id("acc"),
                         b(
                             BinaryOpKind::Mul,
-                            Expr::Index(Box::new(id("q")), Box::new(b(
-                                BinaryOpKind::Add,
-                                b(BinaryOpKind::Mul, id("h"), id("D")),
-                                id("d"),
-                            ))),
+                            Expr::Index(
+                                Box::new(id("q")),
+                                Box::new(b(
+                                    BinaryOpKind::Add,
+                                    b(BinaryOpKind::Mul, id("h"), id("D")),
+                                    id("d"),
+                                )),
+                            ),
                             Expr::Cast(
                                 Box::new(Expr::Index(
                                     Box::new(id("k")),
@@ -502,7 +513,11 @@ mod tests {
                                         BinaryOpKind::Add,
                                         b(
                                             BinaryOpKind::Add,
-                                            b(BinaryOpKind::Mul, id("kh"), b(BinaryOpKind::Mul, id("D"), id("NKV"))),
+                                            b(
+                                                BinaryOpKind::Mul,
+                                                id("kh"),
+                                                b(BinaryOpKind::Mul, id("D"), id("NKV")),
+                                            ),
                                             b(BinaryOpKind::Mul, id("j"), id("D")),
                                         ),
                                         id("d"),
@@ -513,7 +528,7 @@ mod tests {
                         ),
                     ),
                 )],
-            modifiers: vec![],
+                modifiers: vec![],
             },
         ];
         let s = shape(stmts, "t");
@@ -527,7 +542,11 @@ mod tests {
                 BinaryOpKind::Add,
                 b(
                     BinaryOpKind::Add,
-                    b(BinaryOpKind::Mul, id("kh"), b(BinaryOpKind::Mul, id("D"), id("NKV"))),
+                    b(
+                        BinaryOpKind::Mul,
+                        id("kh"),
+                        b(BinaryOpKind::Mul, id("D"), id("NKV")),
+                    ),
                     b(BinaryOpKind::Mul, id("j"), id("D")),
                 ),
                 id("d"),
@@ -536,7 +555,11 @@ mod tests {
             &const_exprs(),
             &locals,
         );
-        assert_eq!(c, Coeff::Stride(128), "k must prove a stride-D scattered read");
+        assert_eq!(
+            c,
+            Coeff::Stride(128),
+            "k must prove a stride-D scattered read"
+        );
     }
 
     /// The q load in the same kernel: h = t / NKV is div-protected —
@@ -566,7 +589,11 @@ mod tests {
             &const_exprs(),
             &locals,
         );
-        assert_eq!(c, Coeff::Constant(0), "div-protected h must read as broadcast");
+        assert_eq!(
+            c,
+            Coeff::Constant(0),
+            "div-protected h must read as broadcast"
+        );
     }
 
     /// F2 limits-of-proof (plan coalesced-kv-memory-path): a load indexed
@@ -575,28 +602,26 @@ mod tests {
     /// Silence on the unprovable would overstate the analysis.
     #[test]
     fn nested_index_load_is_reported_unproven() {
-        let stmts = vec![
-            Statement::Foreach {
-                item: "j".into(),
-                list: Box::new(Expr::Range {
-                    start: Box::new(num(0)),
-                    end: Box::new(id("D")),
-                    inclusive: false,
-                }),
-                body: vec![Statement::Assign(
+        let stmts = vec![Statement::Foreach {
+            item: "j".into(),
+            list: Box::new(Expr::Range {
+                start: Box::new(num(0)),
+                end: Box::new(id("D")),
+                inclusive: false,
+            }),
+            body: vec![Statement::Assign(
+                id("acc"),
+                b(
+                    BinaryOpKind::Add,
                     id("acc"),
-                    b(
-                        BinaryOpKind::Add,
-                        id("acc"),
-                        Expr::Index(
-                            Box::new(id("k")),
-                            Box::new(Expr::Index(Box::new(id("ii")), Box::new(id("j")))),
-                        ),
+                    Expr::Index(
+                        Box::new(id("k")),
+                        Box::new(Expr::Index(Box::new(id("ii")), Box::new(id("j")))),
                     ),
-                )],
+                ),
+            )],
             modifiers: vec![],
-            },
-        ];
+        }];
         let s = shape(stmts, "t");
         let locals = {
             let mut m = HashMap::new();

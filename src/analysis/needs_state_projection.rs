@@ -28,16 +28,28 @@ use crate::ast::{Definition, Expr, Statement, TopLevel};
 /// The intrinsic calls that force `needs_state` (kept in sync with the
 /// backend's list; serialized so the Briev pass need not hardcode them).
 const STATEFUL_INTRINSICS: &[&str] = &[
-    "Malloc#", "Memcpy#", "Memmove#", "Memset#",
+    "Malloc#",
+    "Memcpy#",
+    "Memmove#",
+    "Memset#",
     "Print#",
-    "FileRead#", "FileWrite#", "ShellCmd#",
-    "SysQuery#", "EnvGet#", "HttpFetch#",
-    "AllocArray#", "AllocInitArray#", "StringNew#",
-    "StringFromPtr#", "StringConcat#",
+    "FileRead#",
+    "FileWrite#",
+    "ShellCmd#",
+    "SysQuery#",
+    "EnvGet#",
+    "HttpFetch#",
+    "AllocArray#",
+    "AllocInitArray#",
+    "StringNew#",
+    "StringFromPtr#",
+    "StringConcat#",
     // 2026-09-23 (stateless-defn mechanism): intrinsics whose lowering emits
     // `ptr %state` directly (task-segment dispatch, cwd read) — must mirror
     // export_abi.rs so the Briev pass and the Rust reference agree.
-    "TaskCall#", "GetCwd#", "ChDir#",
+    "TaskCall#",
+    "GetCwd#",
+    "ChDir#",
 ];
 
 /// Serialize the needs_state input projection for a program.
@@ -73,8 +85,22 @@ pub fn serialize_needs_state_projection(items: &[TopLevel]) -> String {
     emit_names(&mut out, "state", &state_fields);
     emit_names(&mut out, "regular", &regular);
     emit_names(&mut out, "txn", &txns);
-    emit_names(&mut out, "intrinsic", &STATEFUL_INTRINSICS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-    emit_names(&mut out, "export", &exports.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>());
+    emit_names(
+        &mut out,
+        "intrinsic",
+        &STATEFUL_INTRINSICS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    );
+    emit_names(
+        &mut out,
+        "export",
+        &exports
+            .iter()
+            .map(|(n, _)| n.to_string())
+            .collect::<Vec<_>>(),
+    );
     // 2026-09-23 (stateless-defn mechanism): the Rust fixpoint's verdict for
     // every defn — a `C:<name>` call to a defn in this set is STATELESS (the
     // cstr doors, arithmetic lanes). The Briev pass mirrors it: a call to a
@@ -82,8 +108,16 @@ pub fn serialize_needs_state_projection(items: &[TopLevel]) -> String {
     // Computed from the SAME items the Rust analysis uses (single source of
     // truth: src/analysis/export_abi.rs), so the projection carries the
     // verdict and the Briev pass stays a faithful single-pass mirror.
-    let needs = crate::analysis::export_abi::compute_defn_needs_state(items, &crate::analysis::storage_class::classify_plain_lets(items, None, &std::collections::HashSet::new()));
-    let mut stateless: Vec<String> = needs.iter()
+    let needs = crate::analysis::export_abi::compute_defn_needs_state(
+        items,
+        &crate::analysis::storage_class::classify_plain_lets(
+            items,
+            None,
+            &std::collections::HashSet::new(),
+        ),
+    );
+    let mut stateless: Vec<String> = needs
+        .iter()
         .filter(|(_, v)| !**v)
         .map(|(k, _)| k.clone())
         .collect();
@@ -120,11 +154,26 @@ fn emit_names(out: &mut String, key: &str, names: &[String]) {
 
 fn emit_stmt_flat(out: &mut Vec<String>, stmt: &Statement) {
     match stmt {
-        Statement::Term(opt) => { out.push("t:".into()); emit_opt_expr_flat(out, opt); }
-        Statement::Tail(e) => { out.push("t:".into()); emit_opt_expr_flat(out, &Some(e.clone())); }
-        Statement::EndProgram(opt) => { out.push("b:".into()); emit_opt_expr_flat(out, opt); }
-        Statement::Rollback(opt) => { out.push("e:".into()); emit_opt_expr_flat(out, opt); }
-        Statement::Expression(expr) => { out.push("x:".into()); emit_expr_flat(out, expr); }
+        Statement::Term(opt) => {
+            out.push("t:".into());
+            emit_opt_expr_flat(out, opt);
+        }
+        Statement::Tail(e) => {
+            out.push("t:".into());
+            emit_opt_expr_flat(out, &Some(e.clone()));
+        }
+        Statement::EndProgram(opt) => {
+            out.push("b:".into());
+            emit_opt_expr_flat(out, opt);
+        }
+        Statement::Rollback(opt) => {
+            out.push("e:".into());
+            emit_opt_expr_flat(out, opt);
+        }
+        Statement::Expression(expr) => {
+            out.push("x:".into());
+            emit_expr_flat(out, expr);
+        }
         Statement::Let { name, expr, .. } => {
             out.push(format!("l:{}", name));
             match expr {
@@ -139,15 +188,21 @@ fn emit_stmt_flat(out: &mut Vec<String>, stmt: &Statement) {
         }
         Statement::Guarded(_, body) => {
             out.push("g:".into());
-            for s in body { emit_stmt_flat(out, s); }
+            for s in body {
+                emit_stmt_flat(out, s);
+            }
         }
         Statement::Foreach { body, .. } => {
             out.push("f:".into());
-            for s in body { emit_stmt_flat(out, s); }
+            for s in body {
+                emit_stmt_flat(out, s);
+            }
         }
         Statement::Block(body) => {
             out.push("c:".into());
-            for s in body { emit_stmt_flat(out, s); }
+            for s in body {
+                emit_stmt_flat(out, s);
+            }
         }
         Statement::MetadataAssignment(..) => out.push("m:".into()),
         _ => out.push("o:".into()),
@@ -165,7 +220,9 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
         Expr::Field(_, _) => out.push("D:".into()),
         Expr::Call(name, args, _) => {
             out.push(format!("C:{}", name));
-            for a in args { emit_expr_flat(out, a); }
+            for a in args {
+                emit_expr_flat(out, a);
+            }
         }
         Expr::BinaryOp(_, l, r) => {
             out.push("B:".into());
@@ -178,7 +235,9 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
         }
         Expr::List(items) => {
             out.push("L:".into());
-            for e in items { emit_expr_flat(out, e); }
+            for e in items {
+                emit_expr_flat(out, e);
+            }
         }
         Expr::Identifier(name) => out.push(format!("I:{}", name)),
         // 2026-08-04 (compiler-in-Briev): wrapping kinds that can HIDE a
@@ -190,21 +249,31 @@ fn emit_expr_flat(out: &mut Vec<String>, expr: &Expr) {
         Expr::MethodCall(recv, name, args, _) => {
             out.push(format!("C:{}", name));
             emit_expr_flat(out, recv);
-            for a in args { emit_expr_flat(out, a); }
+            for a in args {
+                emit_expr_flat(out, a);
+            }
         }
         Expr::Reflect(recv, _, _) => emit_expr_flat(out, recv),
         Expr::Index(arr, idx) => {
             emit_expr_flat(out, arr);
             emit_expr_flat(out, idx);
         }
-        Expr::Slice { array, start, end, .. } => {
+        Expr::Slice {
+            array, start, end, ..
+        } => {
             emit_expr_flat(out, array);
-            if let Some(s) = start { emit_expr_flat(out, s); }
-            if let Some(e) = end { emit_expr_flat(out, e); }
+            if let Some(s) = start {
+                emit_expr_flat(out, s);
+            }
+            if let Some(e) = end {
+                emit_expr_flat(out, e);
+            }
         }
         Expr::Block(body) => {
             out.push("c:".into());
-            for stmt in body { emit_stmt_flat(out, stmt); }
+            for stmt in body {
+                emit_stmt_flat(out, stmt);
+            }
         }
         Expr::AddrOf(inner) => emit_expr_flat(out, inner),
         // 2026-09-23 (stateless-defn mechanism): `spawn`/`await` lower to
@@ -223,11 +292,13 @@ mod tests {
     fn defn(name: &str, body: Vec<Statement>) -> Definition {
         use crate::ast::{Contract, OutputType, TypeParam};
         Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.to_string(),
             type_params: Vec::<TypeParam>::new(),
             parameters: vec![],
-            output_type: Some(OutputType::Single(crate::ast::Type::Custom("Int".to_string()))),
+            output_type: Some(OutputType::Single(crate::ast::Type::Custom(
+                "Int".to_string(),
+            ))),
             outputs: vec![],
             contract: Contract {
                 pre_condition: Expr::Bool(true),
@@ -235,7 +306,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -247,15 +319,28 @@ mod tests {
     }
 
     fn exported(d: Definition) -> TopLevel {
-        TopLevel::Export(Export { inner: Box::new(TopLevel::Definition(d)), export_name: None })
+        TopLevel::Export(Export {
+            inner: Box::new(TopLevel::Definition(d)),
+            export_name: None,
+        })
     }
 
     #[test]
     fn projection_encodes_state_field_identifier() {
-        let d = defn("read", vec![Statement::Term(Some(Expr::Identifier("saved".into())))]);
-        let items = vec![TopLevel::Statement(Box::new(Statement::Let {
-            name: "saved".into(), names: vec![], ty: None, expr: None, modifiers: vec![],
-        })), exported(d)];
+        let d = defn(
+            "read",
+            vec![Statement::Term(Some(Expr::Identifier("saved".into())))],
+        );
+        let items = vec![
+            TopLevel::Statement(Box::new(Statement::Let {
+                name: "saved".into(),
+                names: vec![],
+                ty: None,
+                expr: None,
+                modifiers: vec![],
+            })),
+            exported(d),
+        ];
         let p = serialize_needs_state_projection(&items);
         assert!(p.contains("state 1 saved"), "state fields: {}", p);
         assert!(p.contains(r#"body read 2 t: I:saved"#), "body: {}", p);
@@ -263,24 +348,48 @@ mod tests {
 
     #[test]
     fn projection_encodes_call_and_assign() {
-        let d = defn("greet", vec![
-            Statement::Assign(Expr::Identifier("saved".into()), Expr::Identifier("name".into())),
-            Statement::Term(Some(Expr::Call("cstr_to_briev".into(), vec![Expr::Identifier("saved".into())], None))),
-        ]);
+        let d = defn(
+            "greet",
+            vec![
+                Statement::Assign(
+                    Expr::Identifier("saved".into()),
+                    Expr::Identifier("name".into()),
+                ),
+                Statement::Term(Some(Expr::Call(
+                    "cstr_to_briev".into(),
+                    vec![Expr::Identifier("saved".into())],
+                    None,
+                ))),
+            ],
+        );
         let items = vec![exported(d)];
         let p = serialize_needs_state_projection(&items);
         // {a (I saved) (I name)} {t (C cstr_to_briev [(I saved)])}
-        assert!(p.contains("body greet 6 a: I:saved I:name t: C:cstr_to_briev I:saved"), "{}", p);
+        assert!(
+            p.contains("body greet 6 a: I:saved I:name t: C:cstr_to_briev I:saved"),
+            "{}",
+            p
+        );
     }
 
     #[test]
     fn projection_encodes_expression_block() {
-        let d = defn("block", vec![Statement::Term(Some(Expr::Block(vec![
-            Statement::Expression(Expr::Identifier("saved".into())),
-        ])))]);
-        let items = vec![TopLevel::Statement(Box::new(Statement::Let {
-            name: "saved".into(), names: vec![], ty: None, expr: None, modifiers: vec![],
-        })), exported(d)];
+        let d = defn(
+            "block",
+            vec![Statement::Term(Some(Expr::Block(vec![
+                Statement::Expression(Expr::Identifier("saved".into())),
+            ])))],
+        );
+        let items = vec![
+            TopLevel::Statement(Box::new(Statement::Let {
+                name: "saved".into(),
+                names: vec![],
+                ty: None,
+                expr: None,
+                modifiers: vec![],
+            })),
+            exported(d),
+        ];
         let p = serialize_needs_state_projection(&items);
         assert!(p.contains("body block 4 t: c: x: I:saved"), "{}", p);
     }
@@ -294,7 +403,8 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            let (items, _) = crate::library::parse_and_check(path.to_str().unwrap(), &source).unwrap();
+            let (items, _) =
+                crate::library::parse_and_check(path.to_str().unwrap(), &source).unwrap();
             let projection = serialize_needs_state_projection(&items);
             assert!(projection.contains("export "), "{}: no exports", name);
             assert!(projection.contains("\nbody "), "{}: no bodies", name);

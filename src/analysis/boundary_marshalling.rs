@@ -38,7 +38,8 @@ pub fn rewrite_boundary_marshalling(items: &mut [TopLevel], universe: &TypeUnive
     // insert the delta at those sites as well. Pre-collect the types needed to
     // resolve the targets.
     let mut state_types: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
-    let mut fn_param_types: std::collections::HashMap<String, Vec<Type>> = std::collections::HashMap::new();
+    let mut fn_param_types: std::collections::HashMap<String, Vec<Type>> =
+        std::collections::HashMap::new();
     let mut type_slots: std::collections::HashMap<String, Vec<crate::ast::top::TypeDefSlot>> =
         std::collections::HashMap::new();
     for item in items.iter() {
@@ -52,7 +53,8 @@ pub fn rewrite_boundary_marshalling(items: &mut [TopLevel], universe: &TypeUnive
                 }
             }
             TopLevel::StaticStruct(sd) => {
-                let slots: Vec<crate::ast::top::TypeDefSlot> = sd.fields
+                let slots: Vec<crate::ast::top::TypeDefSlot> = sd
+                    .fields
                     .iter()
                     .map(|(n, ty)| crate::ast::top::TypeDefSlot {
                         name: n.clone(),
@@ -173,9 +175,7 @@ fn rewrite_body(
 ) {
     for stmt in body {
         match stmt {
-            Statement::Term(opt)
-            | Statement::EndProgram(opt)
-            | Statement::Rollback(opt) => {
+            Statement::Term(opt) | Statement::EndProgram(opt) | Statement::Rollback(opt) => {
                 if let Some(expr) = opt.as_mut() {
                     rewrite_expr(ctx, env, expr);
                     // 2026-08-03 (P3): an implicit meld conversion at the
@@ -252,7 +252,9 @@ fn rewrite_expr(
             // the marshalling delta — resolve the graph path and emit the
             // binding call in its place.
             let src_ty = expr_type_of(inner, env, ctx.universe);
-            if let Some(fn_name) = marshalling_fn(ctx.graph, ctx.universe, ctx.type_protocols, &src_ty, target) {
+            if let Some(fn_name) =
+                marshalling_fn(ctx.graph, ctx.universe, ctx.type_protocols, &src_ty, target)
+            {
                 let name = crate::ast::Expr::Call(fn_name, vec![(**inner).clone()], None);
                 *expr = name;
             }
@@ -262,7 +264,9 @@ fn rewrite_expr(
             // boundary representation — a callee param (frgn or defn) or a
             // struct/obj constructor slot whose type is melded with the arg.
             let callee_params: Option<Vec<Type>> = if ctx.type_slots.contains_key(fn_name) {
-                ctx.type_slots.get(fn_name).map(|slots| slots.iter().map(|s| s.ty.clone()).collect())
+                ctx.type_slots
+                    .get(fn_name)
+                    .map(|slots| slots.iter().map(|s| s.ty.clone()).collect())
             } else {
                 ctx.fn_param_types.get(fn_name).cloned()
             };
@@ -282,10 +286,15 @@ fn rewrite_expr(
             // `CStr + CStr`, or `++`) uses the VARIANT's own cross-op
             // (cstring_concat) — the generic inline concat treats the value
             // as [len][data], which is wrong for a nul-terminated C string.
-            if matches!(kind, crate::ast::BinaryOpKind::Add | crate::ast::BinaryOpKind::Concat) {
+            if matches!(
+                kind,
+                crate::ast::BinaryOpKind::Add | crate::ast::BinaryOpKind::Concat
+            ) {
                 let lt = expr_type_of(l, env, ctx.universe);
                 let rt = expr_type_of(r, env, ctx.universe);
-                if let Some(fn_name) = variant_concat_fn(ctx.graph, ctx.universe, ctx.type_protocols, &lt, &rt) {
+                if let Some(fn_name) =
+                    variant_concat_fn(ctx.graph, ctx.universe, ctx.type_protocols, &lt, &rt)
+                {
                     let lv = (**l).clone();
                     let rv = (**r).clone();
                     *expr = crate::ast::Expr::Call(fn_name, vec![lv, rv], None);
@@ -346,7 +355,9 @@ fn variant_concat_fn(
     if variant.is_empty() {
         return None;
     }
-    graph.get_variant_op(&lcat, &variant, "Concat").map(str::to_string)
+    graph
+        .get_variant_op(&lcat, &variant, "Concat")
+        .map(str::to_string)
 }
 
 /// Resolve the binding function for a same-category representation cast:
@@ -435,7 +446,8 @@ mod tests {
                         fn_name: "cstr_to_briev".to_string(),
                         param: "#Lh".to_string(),
                     }),
-                trusted_axiom: false},
+                    trusted_axiom: false,
+                },
                 crate::ast::top::CastEdge {
                     direction: CastDirection::CastFrom,
                     target_category: "String".to_string(),
@@ -444,7 +456,8 @@ mod tests {
                         fn_name: "str_to_c".to_string(),
                         param: "#Lh".to_string(),
                     }),
-                trusted_axiom: false},
+                    trusted_axiom: false,
+                },
             ],
             cross_ops: vec![],
             span: None,
@@ -489,7 +502,7 @@ mod tests {
             cstr_proto(),
             cstr_type(),
             TopLevel::Definition(Definition {
-                    variadic_param: None,
+                variadic_param: None,
                 name: "marshall".to_string(),
                 type_params: vec![],
                 parameters: vec![("name".to_string(), Type::Custom("CStr".to_string()))],
@@ -501,7 +514,8 @@ mod tests {
                     watchdog: None,
                     span: None,
                     explicit: false,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![Statement::Term(Some(Expr::Cast(
                     Box::new(Expr::Identifier("name".to_string())),
                     Type::Custom("String".to_string()),
@@ -515,8 +529,12 @@ mod tests {
             }),
         ];
         rewrite_boundary_marshalling(&mut items, &universe);
-        let TopLevel::Definition(d) = &items[2] else { panic!() };
-        let Statement::Term(Some(expr)) = &d.body[0] else { panic!() };
+        let TopLevel::Definition(d) = &items[2] else {
+            panic!()
+        };
+        let Statement::Term(Some(expr)) = &d.body[0] else {
+            panic!()
+        };
         match expr {
             Expr::Call(name, args, _) => {
                 assert_eq!(name, "cstr_to_briev", "CStr→String must emit cstr_to_briev");
@@ -538,7 +556,7 @@ mod tests {
             cstr_proto(),
             cstr_type(),
             TopLevel::Definition(Definition {
-                    variadic_param: None,
+                variadic_param: None,
                 name: "marshall_out".to_string(),
                 type_params: vec![],
                 parameters: vec![("s".to_string(), Type::Custom("String".to_string()))],
@@ -550,7 +568,8 @@ mod tests {
                     watchdog: None,
                     span: None,
                     explicit: false,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![Statement::Term(Some(Expr::Cast(
                     Box::new(Expr::Identifier("s".to_string())),
                     Type::Custom("CStr".to_string()),
@@ -564,11 +583,18 @@ mod tests {
             }),
         ];
         rewrite_boundary_marshalling(&mut items, &universe);
-        let TopLevel::Definition(d) = &items[2] else { panic!() };
-        let Statement::Term(Some(expr)) = &d.body[0] else { panic!() };
+        let TopLevel::Definition(d) = &items[2] else {
+            panic!()
+        };
+        let Statement::Term(Some(expr)) = &d.body[0] else {
+            panic!()
+        };
         match expr {
             Expr::Call(name, args, _) => {
-                assert_eq!(name, "str_to_c", "String→CStr must emit str_to_c (zero-copy)");
+                assert_eq!(
+                    name, "str_to_c",
+                    "String→CStr must emit str_to_c (zero-copy)"
+                );
                 assert!(matches!(args[0], Expr::Identifier(ref n) if n == "s"));
             }
             other => panic!("expected a str_to_c binding call, got {:?}", other),

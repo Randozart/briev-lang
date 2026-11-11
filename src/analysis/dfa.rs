@@ -35,7 +35,9 @@ pub fn compile_to_dfa(pattern: &str) -> Result<RegexPattern, String> {
     for (i, ch) in pattern.char_indices() {
         match ch {
             '(' => {
-                if depth == 0 && (i == 0 || pattern.as_bytes().get(i.wrapping_sub(1)) != Some(&b'\\')) {
+                if depth == 0
+                    && (i == 0 || pattern.as_bytes().get(i.wrapping_sub(1)) != Some(&b'\\'))
+                {
                     depth += 1;
                     group_count += 1;
                     group_positions.push((0, 0)); // placeholder
@@ -93,19 +95,19 @@ fn build_minimal_dfa(pattern: &str, num_groups: usize) -> Result<DfaResult, Stri
 #[derive(Debug, Clone)]
 enum RegexToken {
     Literal(char),
-    Any,           // .
-    ZeroOrMore,    // *
-    OneOrMore,     // +
-    ZeroOrOne,     // ?
+    Any,        // .
+    ZeroOrMore, // *
+    OneOrMore,  // +
+    ZeroOrOne,  // ?
     LParen,
     RParen,
     LBracket,
     RBracket,
-    Caret,         // ^
-    Dollar,        // $
-    Pipe,          // |
+    Caret,                      // ^
+    Dollar,                     // $
+    Pipe,                       // |
     CharClass(Vec<char>, bool), // [...] with negation
-    Escape(char),  // \d, \w, \s, etc.
+    Escape(char),               // \d, \w, \s, etc.
 }
 
 /// Tokenize a regex pattern string
@@ -119,18 +121,26 @@ fn tokenize(pattern: &str) -> Result<Vec<RegexToken>, String> {
                 if i + 1 < chars.len() {
                     let next = chars[i + 1];
                     match next {
-                        'd' => tokens.push(RegexToken::CharClass(
-                            "0123456789".chars().collect(), false)),
+                        'd' => tokens
+                            .push(RegexToken::CharClass("0123456789".chars().collect(), false)),
                         'w' => {
-                            let mut cs: Vec<char> = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_".chars().collect();
+                            let mut cs: Vec<char> =
+                                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+                                    .chars()
+                                    .collect();
                             tokens.push(RegexToken::CharClass(cs, false));
                         }
-                        's' => tokens.push(RegexToken::CharClass(
-                            " \t\n\r".chars().collect(), false)),
-                        'D' => tokens.push(RegexToken::CharClass(
-                            "0123456789".chars().collect(), true)),
+                        's' => {
+                            tokens.push(RegexToken::CharClass(" \t\n\r".chars().collect(), false))
+                        }
+                        'D' => {
+                            tokens.push(RegexToken::CharClass("0123456789".chars().collect(), true))
+                        }
                         'W' => {
-                            let cs: Vec<char> = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_".chars().collect();
+                            let cs: Vec<char> =
+                                "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+                                    .chars()
+                                    .collect();
                             tokens.push(RegexToken::CharClass(cs, true));
                         }
                         _ => tokens.push(RegexToken::Escape(next)),
@@ -140,12 +150,30 @@ fn tokenize(pattern: &str) -> Result<Vec<RegexToken>, String> {
                     return Err("Trailing backslash".to_string());
                 }
             }
-            '.' => { tokens.push(RegexToken::Any); i += 1; }
-            '*' => { tokens.push(RegexToken::ZeroOrMore); i += 1; }
-            '+' => { tokens.push(RegexToken::OneOrMore); i += 1; }
-            '?' => { tokens.push(RegexToken::ZeroOrOne); i += 1; }
-            '(' => { tokens.push(RegexToken::LParen); i += 1; }
-            ')' => { tokens.push(RegexToken::RParen); i += 1; }
+            '.' => {
+                tokens.push(RegexToken::Any);
+                i += 1;
+            }
+            '*' => {
+                tokens.push(RegexToken::ZeroOrMore);
+                i += 1;
+            }
+            '+' => {
+                tokens.push(RegexToken::OneOrMore);
+                i += 1;
+            }
+            '?' => {
+                tokens.push(RegexToken::ZeroOrOne);
+                i += 1;
+            }
+            '(' => {
+                tokens.push(RegexToken::LParen);
+                i += 1;
+            }
+            ')' => {
+                tokens.push(RegexToken::RParen);
+                i += 1;
+            }
             '[' => {
                 // Character class
                 i += 1;
@@ -173,9 +201,18 @@ fn tokenize(pattern: &str) -> Result<Vec<RegexToken>, String> {
                 }
                 tokens.push(RegexToken::CharClass(class_chars, negated));
             }
-            '^' => { tokens.push(RegexToken::Caret); i += 1; }
-            '$' => { tokens.push(RegexToken::Dollar); i += 1; }
-            '|' => { tokens.push(RegexToken::Pipe); i += 1; }
+            '^' => {
+                tokens.push(RegexToken::Caret);
+                i += 1;
+            }
+            '$' => {
+                tokens.push(RegexToken::Dollar);
+                i += 1;
+            }
+            '|' => {
+                tokens.push(RegexToken::Pipe);
+                i += 1;
+            }
             ch => {
                 // Check for escaped special chars: \( \) \[ \] \. \* \+ \? \| \^ \$
                 // Already handled by the \ branch above
@@ -213,7 +250,10 @@ fn thompson_construct(tokens: &[RegexToken]) -> Result<Vec<NfaState>, String> {
 
     // Process tokens in sequence, building a linear chain of states.
     let mut start = {
-        states.push(NfaState { edges: Vec::new(), is_accept: false });
+        states.push(NfaState {
+            edges: Vec::new(),
+            is_accept: false,
+        });
         let id = state_id;
         state_id += 1;
         id
@@ -224,7 +264,10 @@ fn thompson_construct(tokens: &[RegexToken]) -> Result<Vec<NfaState>, String> {
     while i < tokens.len() {
         match &tokens[i] {
             RegexToken::Literal(c) => {
-                states.push(NfaState { edges: Vec::new(), is_accept: false });
+                states.push(NfaState {
+                    edges: Vec::new(),
+                    is_accept: false,
+                });
                 let next = state_id;
                 state_id += 1;
                 states[current as usize].edges.push(NfaEdge::Char(*c));
@@ -232,7 +275,10 @@ fn thompson_construct(tokens: &[RegexToken]) -> Result<Vec<NfaState>, String> {
                 i += 1;
             }
             RegexToken::Any => {
-                states.push(NfaState { edges: Vec::new(), is_accept: false });
+                states.push(NfaState {
+                    edges: Vec::new(),
+                    is_accept: false,
+                });
                 let next = state_id;
                 state_id += 1;
                 states[current as usize].edges.push(NfaEdge::Any);
@@ -240,15 +286,23 @@ fn thompson_construct(tokens: &[RegexToken]) -> Result<Vec<NfaState>, String> {
                 i += 1;
             }
             RegexToken::CharClass(chars, negated) => {
-                states.push(NfaState { edges: Vec::new(), is_accept: false });
+                states.push(NfaState {
+                    edges: Vec::new(),
+                    is_accept: false,
+                });
                 let next = state_id;
                 state_id += 1;
-                states[current as usize].edges.push(NfaEdge::Class(chars.clone(), *negated));
+                states[current as usize]
+                    .edges
+                    .push(NfaEdge::Class(chars.clone(), *negated));
                 current = next;
                 i += 1;
             }
             RegexToken::Escape(c) => {
-                states.push(NfaState { edges: Vec::new(), is_accept: false });
+                states.push(NfaState {
+                    edges: Vec::new(),
+                    is_accept: false,
+                });
                 let next = state_id;
                 state_id += 1;
                 states[current as usize].edges.push(NfaEdge::Char(*c));
@@ -258,8 +312,11 @@ fn thompson_construct(tokens: &[RegexToken]) -> Result<Vec<NfaState>, String> {
             RegexToken::ZeroOrMore | RegexToken::OneOrMore | RegexToken::ZeroOrOne => {
                 i += 1;
             }
-            RegexToken::LParen | RegexToken::RParen | RegexToken::Pipe
-            | RegexToken::Caret | RegexToken::Dollar => {
+            RegexToken::LParen
+            | RegexToken::RParen
+            | RegexToken::Pipe
+            | RegexToken::Caret
+            | RegexToken::Dollar => {
                 i += 1;
             }
             RegexToken::LBracket | RegexToken::RBracket => {
@@ -310,7 +367,11 @@ fn subset_construct(nfa: &[NfaState], _num_groups: usize) -> DfaResult {
                         NfaEdge::Any => c != '\n',
                         NfaEdge::Class(chars, negated) => {
                             let in_class = chars.contains(&c);
-                            if *negated { !in_class } else { in_class }
+                            if *negated {
+                                !in_class
+                            } else {
+                                in_class
+                            }
                         }
                         NfaEdge::Epsilon => false,
                     };

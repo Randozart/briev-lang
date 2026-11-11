@@ -117,7 +117,10 @@ impl DefnLiveness {
             }
         }
 
-        DefnLiveness { live: pass.live, keep_all: pass.keep_all }
+        DefnLiveness {
+            live: pass.live,
+            keep_all: pass.keep_all,
+        }
     }
 }
 
@@ -166,11 +169,7 @@ pub fn unfired_txn_warnings(
 
 /// True when `name` has an emitted `name__N` instantiation in `items` that
 /// liveness keeps (the variadic original served its purpose through it).
-fn live_instantiation_exists(
-    items: &[TopLevel],
-    name: &str,
-    liveness: &DefnLiveness,
-) -> bool {
+fn live_instantiation_exists(items: &[TopLevel], name: &str, liveness: &DefnLiveness) -> bool {
     let mut declared = HashMap::new();
     declared.insert(name.to_string(), (0usize, false));
     items.iter().any(|it| match it {
@@ -255,12 +254,7 @@ impl<'a> Builder<'a> {
     /// survives for the worklist to walk. Appending here keeps ALL of them,
     /// and the worklist walks every one when the name goes live, so no
     /// member's call edges are lost. See `member_bodies`.
-    fn index_member_body(
-        &mut self,
-        name: &str,
-        body: &'a [Statement],
-        contract: &'a Contract,
-    ) {
+    fn index_member_body(&mut self, name: &str, body: &'a [Statement], contract: &'a Contract) {
         self.member_bodies
             .entry(name.to_string())
             .or_default()
@@ -351,8 +345,19 @@ impl<'a> Builder<'a> {
         use crate::ast::bad::BadOperand;
         if !matches!(
             i.mnemonic.as_str(),
-            "call" | "addr" | "jmp" | "jz" | "jnz" | "jlt" | "jle" | "jgt"
-                | "jge" | "jlo" | "jls" | "jhi" | "jhs"
+            "call"
+                | "addr"
+                | "jmp"
+                | "jz"
+                | "jnz"
+                | "jlt"
+                | "jle"
+                | "jgt"
+                | "jge"
+                | "jlo"
+                | "jls"
+                | "jhi"
+                | "jhs"
         ) {
             return;
         }
@@ -401,7 +406,9 @@ impl<'a> Builder<'a> {
                 // wrapper AND walk the body so its callees join the closure.
                 self.roots.insert(isr.name.clone());
                 self.txns.entry(isr.name.clone()).or_insert(&isr.body);
-                self.contracts.entry(isr.name.clone()).or_insert(&isr.contract);
+                self.contracts
+                    .entry(isr.name.clone())
+                    .or_insert(&isr.contract);
             }
             TopLevel::AsmFn(asm) => {
                 // Top-level observable asm.
@@ -429,11 +436,15 @@ impl<'a> Builder<'a> {
             TopLevel::Obj(s) => {
                 // Obj member txns (`node apply_damage()…` inside
                 // `obj Enemy { … }`) — usage-rooted via construction.
-                let members = s.transactions.iter().map(|t| {
-                    self.index_txn(t);
-                    self.index_member_body(&t.name, &t.body, &t.contract);
-                    t.name.clone()
-                }).collect();
+                let members = s
+                    .transactions
+                    .iter()
+                    .map(|t| {
+                        self.index_txn(t);
+                        self.index_member_body(&t.name, &t.body, &t.contract);
+                        t.name.clone()
+                    })
+                    .collect();
                 self.type_members.insert(s.name.clone(), members);
             }
             TopLevel::Cfg(cfg) => {
@@ -646,7 +657,9 @@ impl<'a> Builder<'a> {
     }
 
     fn walk_match_arms(&mut self, arms: &'a [crate::ast::StmtMatchArm], queue: &mut Vec<String>) {
-        arms.iter().flat_map(|arm| arm.body.iter()).for_each(|s| self.walk_stmt(s, queue));
+        arms.iter()
+            .flat_map(|arm| arm.body.iter())
+            .for_each(|s| self.walk_stmt(s, queue));
     }
 
     fn walk_expr(&mut self, expr: &'a Expr, queue: &mut Vec<String>) {
@@ -662,11 +675,11 @@ impl<'a> Builder<'a> {
                     self.mark(h, queue);
                 }
                 // 2026-09-14 (machine-entry plan): `Asm#("raw", template)`
-                    // templates may reference program symbols (`la $0,
-                    // task_a` — machine wiring names handlers). Extract the
-                    // template's identifier words and mark any that are
-                    // known callables — conservative over-approximation
-                    // (substring hits only ever ADD liveness).
+                // templates may reference program symbols (`la $0,
+                // task_a` — machine wiring names handlers). Extract the
+                // template's identifier words and mark any that are
+                // known callables — conservative over-approximation
+                // (substring hits only ever ADD liveness).
                 if name == "Asm#" {
                     if let Some(crate::ast::Expr::Quoted(t)) = args.get(1) {
                         let text = String::from_utf8_lossy(t).to_string();
@@ -704,7 +717,9 @@ impl<'a> Builder<'a> {
                     self.walk_expr(a, queue);
                 }
             }
-            Expr::Spawn { type_name, args, .. } => {
+            Expr::Spawn {
+                type_name, args, ..
+            } => {
                 // `spawn defn(args)` = task spawn of the defn; `spawn Obj(…)`
                 // constructs the obj base — either way its members join.
                 // 2026-09-22 (soundness-net catch): a task spawn lowers to
@@ -724,7 +739,8 @@ impl<'a> Builder<'a> {
                 }
             }
             Expr::Reflect(receiver, target, crate::ast::ReflectKind::CompileTime)
-                if matches!(target.as_str(), "Size" | "Bytes" | "Alignment" | "Type") => {
+                if matches!(target.as_str(), "Size" | "Bytes" | "Alignment" | "Type") =>
+            {
                 // 2026-10-22: these closed value inspections cannot resolve a
                 // callable by name. Pinning every imported definition emitted
                 // dead native asm on WASM. Preserve evaluated receiver effects;
@@ -785,7 +801,13 @@ impl<'a> Builder<'a> {
                 self.walk_expr(obj, queue);
                 self.walk_expr(idx, queue);
             }
-            Expr::Slice { array, start, end, stride, .. } => {
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+                ..
+            } => {
                 // Vector range gather lowers to briev_slice_range64/_f32.
                 self.mark("briev_slice_range64", queue);
                 self.mark("briev_slice_range_f32", queue);
@@ -853,7 +875,11 @@ impl<'a> Builder<'a> {
                     self.walk_expr(e, queue);
                 }
             }
-            Expr::StructLiteral { type_name, fields, specs } => {
+            Expr::StructLiteral {
+                type_name,
+                fields,
+                specs,
+            } => {
                 // `HashMap { … }` / `Point { … }` — construction roots the
                 // type's behavioral members.
                 self.on_construction(type_name, queue);
@@ -971,9 +997,7 @@ pub(crate) fn intrinsic_helpers(intrinsic: &str) -> &'static [&'static str] {
         // Count# on a String operand = char count (briev_char_len scan).
         "Count#" | "CharCount#" => &["briev_char_len", "briev_str_next_char"],
         // Collection growth family realloc-or-copy via the runtime helper.
-        "Resize#" | "EnsureCap#" | "TrimCap#" | "InsertAt#" | "Insert#" => {
-            &["coll_resize"]
-        }
+        "Resize#" | "EnsureCap#" | "TrimCap#" | "InsertAt#" | "Insert#" => &["coll_resize"],
         // Working directory / environment.
         "GetCwd#" => &["cstr_len", "rt_getcwd"],
         "ChDir#" => &["rt_chdir"],
@@ -1043,9 +1067,10 @@ fn collect_call_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
             }
             exprs.push(value);
         }
-        Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Expression(e) => {
-            exprs.push(e)
-        }
+        Statement::Term(Some(e))
+        | Statement::Tail(e)
+        | Statement::Check(e)
+        | Statement::Expression(e) => exprs.push(e),
         Statement::EndProgram(e) => {
             if let Some(e) = e {
                 exprs.push(e);
@@ -1073,7 +1098,9 @@ fn collect_call_names_stmt(stmt: &Statement, out: &mut Vec<String>) {
         | Statement::SyncBlock(body) => substmts.extend(body.iter()),
         Statement::Match { expr, arms } => {
             exprs.push(expr);
-            arms.iter().flat_map(|arm| arm.body.iter()).for_each(|s| substmts.push(s));
+            arms.iter()
+                .flat_map(|arm| arm.body.iter())
+                .for_each(|s| substmts.push(s));
         }
         Statement::TrgBinding { instance, .. } => exprs.push(instance),
         _ => {}
@@ -1103,7 +1130,9 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(a, out);
             }
         }
-        Expr::Spawn { type_name, args, .. } => {
+        Expr::Spawn {
+            type_name, args, ..
+        } => {
             out.push(type_name.clone());
             for a in args {
                 collect_call_names_expr(a, out);
@@ -1115,14 +1144,24 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
         }
         Expr::UnaryOp(_, i) => collect_call_names_expr(i, out),
         Expr::Reflect(receiver, _, _) => collect_call_names_expr(receiver, out),
-        Expr::Field(o, _) | Expr::Deref(o) | Expr::AddrOf(o) | Expr::Consume(o)
-        | Expr::Await(o) | Expr::IsType(o, _) | Expr::Cast(o, _)
-        => collect_call_names_expr(o, out),
+        Expr::Field(o, _)
+        | Expr::Deref(o)
+        | Expr::AddrOf(o)
+        | Expr::Consume(o)
+        | Expr::Await(o)
+        | Expr::IsType(o, _)
+        | Expr::Cast(o, _) => collect_call_names_expr(o, out),
         Expr::Index(o, i) => {
             collect_call_names_expr(o, out);
             collect_call_names_expr(i, out);
         }
-        Expr::Slice { array, start, end, stride, .. } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+            ..
+        } => {
             collect_call_names_expr(array, out);
             if let Some(s) = start {
                 collect_call_names_expr(s, out);
@@ -1164,7 +1203,11 @@ fn collect_call_names_expr(expr: &Expr, out: &mut Vec<String>) {
                 collect_call_names_expr(e, out);
             }
         }
-        Expr::StructLiteral { type_name, fields, specs } => {
+        Expr::StructLiteral {
+            type_name,
+            fields,
+            specs,
+        } => {
             out.push(type_name.clone());
             for (_, e) in fields.iter().chain(specs.iter()) {
                 collect_call_names_expr(e, out);
@@ -1427,11 +1470,15 @@ mod tests {
     #[test]
     fn intrinsic_helpers_are_rooted() {
         let items = vec![
-            txn("main_node", true, vec![Statement::Expression(Expr::Call(
-                "Print#".to_string(),
-                vec![Expr::Decimal(1)],
-                None,
-            ))]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::Expression(Expr::Call(
+                    "Print#".to_string(),
+                    vec![Expr::Decimal(1)],
+                    None,
+                ))],
+            ),
             defn("print_int", vec![Statement::Term(None)]),
             defn("print_str", vec![Statement::Term(None)]),
         ];
@@ -1443,11 +1490,15 @@ mod tests {
     #[test]
     fn collection_arrow_does_not_root_unused_task_runtime() {
         let items = vec![
-            txn("main_node", true, vec![Statement::ArrowAssign {
-                target: None,
-                value: Box::new(Expr::Decimal(1)),
-                consume: false,
-            }]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::ArrowAssign {
+                    target: None,
+                    value: Box::new(Expr::Decimal(1)),
+                    consume: false,
+                }],
+            ),
             defn("briev_event_fire_impl", vec![Statement::Term(None)]),
             defn("event_strict_trap", vec![Statement::Term(None)]),
         ];
@@ -1459,13 +1510,15 @@ mod tests {
     #[test]
     fn missing_helper_row_is_harmless() {
         // An intrinsic with no defns present: nothing to mark, no panic.
-        let items = vec![
-            txn("main_node", true, vec![Statement::Expression(Expr::Call(
+        let items = vec![txn(
+            "main_node",
+            true,
+            vec![Statement::Expression(Expr::Call(
                 "VolatileStore#".to_string(),
                 vec![],
                 None,
-            ))]),
-        ];
+            ))],
+        )];
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("main_node"));
     }
@@ -1493,11 +1546,15 @@ mod tests {
     #[test]
     fn unclassified_reflection_pins_everything() {
         let items = vec![
-            txn("main_node", true, vec![Statement::Expression(Expr::Reflect(
-                Box::new(Expr::Identifier("x".into())),
-                "Members".into(),
-                crate::ast::ReflectKind::CompileTime,
-            ))]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::Expression(Expr::Reflect(
+                    Box::new(Expr::Identifier("x".into())),
+                    "Members".into(),
+                    crate::ast::ReflectKind::CompileTime,
+                ))],
+            ),
             defn("maybe_reflected", vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
@@ -1509,26 +1566,52 @@ mod tests {
     fn closed_reflection_inspections_keep_only_receiver_dependencies() {
         for target in ["Size", "Bytes", "Alignment", "Type"] {
             let items = vec![
-                txn("main_node", true, vec![Statement::Expression(Expr::Reflect(
-                    Box::new(Expr::Call("receiver".into(), vec![], None)),
-                    target.into(), crate::ast::ReflectKind::CompileTime))]),
+                txn(
+                    "main_node",
+                    true,
+                    vec![Statement::Expression(Expr::Reflect(
+                        Box::new(Expr::Call("receiver".into(), vec![], None)),
+                        target.into(),
+                        crate::ast::ReflectKind::CompileTime,
+                    ))],
+                ),
                 defn("receiver", vec![Statement::Term(Some(Expr::Decimal(7)))]),
                 defn("unrelated_target_wrapper", vec![Statement::Term(None)]),
             ];
             let liveness = DefnLiveness::build(&items);
-            assert!(!liveness.keep_all, "closed inspection {target} cannot call arbitrary members");
-            assert!(liveness.is_live("receiver"), "{target} still evaluates its receiver");
+            assert!(
+                !liveness.keep_all,
+                "closed inspection {target} cannot call arbitrary members"
+            );
+            assert!(
+                liveness.is_live("receiver"),
+                "{target} still evaluates its receiver"
+            );
             assert!(!liveness.is_live("unrelated_target_wrapper"));
         }
     }
 
     #[test]
     fn runtime_reflection_keeps_its_receiver_and_transitive_calls() {
-        let expression = Expr::Reflect(Box::new(Expr::Call("receiver".into(), vec![], None)),
-            "Length".into(), crate::ast::ReflectKind::Runtime);
+        let expression = Expr::Reflect(
+            Box::new(Expr::Call("receiver".into(), vec![], None)),
+            "Length".into(),
+            crate::ast::ReflectKind::Runtime,
+        );
         let items = vec![
-            txn("main_node", true, vec![Statement::Expression(expression.clone())]),
-            defn("receiver", vec![Statement::Term(Some(Expr::Call("nested".into(), vec![], None)))]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::Expression(expression.clone())],
+            ),
+            defn(
+                "receiver",
+                vec![Statement::Term(Some(Expr::Call(
+                    "nested".into(),
+                    vec![],
+                    None,
+                )))],
+            ),
             defn("nested", vec![Statement::Term(Some(Expr::Quoted(vec![])))]),
             defn("unrelated", vec![Statement::Term(None)]),
         ];
@@ -1545,12 +1628,16 @@ mod tests {
     #[test]
     fn foreach_roots_string_iteration_helper() {
         let items = vec![
-            txn("main_node", true, vec![Statement::Foreach {
-                item: "c".to_string(),
-                list: Box::new(Expr::Identifier("s".into())),
-                body: vec![Statement::Term(None)],
-            modifiers: vec![],
-            }]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::Foreach {
+                    item: "c".to_string(),
+                    list: Box::new(Expr::Identifier("s".into())),
+                    body: vec![Statement::Term(None)],
+                    modifiers: vec![],
+                }],
+            ),
             defn("briev_str_next_char", vec![Statement::Term(None)]),
             defn("orphan", vec![Statement::Term(None)]),
         ];
@@ -1562,11 +1649,15 @@ mod tests {
     #[test]
     fn spawn_roots_task_target() {
         let items = vec![
-            txn("main_node", true, vec![Statement::Expression(Expr::Spawn {
-                type_name: "worker".to_string(),
-                args: vec![],
-                storage: crate::ast::SpawnStorage::Pooled,
-            })]),
+            txn(
+                "main_node",
+                true,
+                vec![Statement::Expression(Expr::Spawn {
+                    type_name: "worker".to_string(),
+                    args: vec![],
+                    storage: crate::ast::SpawnStorage::Pooled,
+                })],
+            ),
             defn("worker", vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
@@ -1595,7 +1686,10 @@ mod tests {
         c.watchdog = Some(watchdog(
             Expr::Bool(true),
             None,
-            Some(WatchdogOnFire { handler: "print_best".into(), arg: Some("v".into()) }),
+            Some(WatchdogOnFire {
+                handler: "print_best".into(),
+                arg: Some("v".into()),
+            }),
         ));
         let items = vec![
             txn_with_contract("converge", true, vec![Statement::Term(None)], c),
@@ -1604,7 +1698,10 @@ mod tests {
         ];
         let l = DefnLiveness::build(&items);
         assert!(l.is_live("converge"));
-        assert!(l.is_live("print_best"), "on-fire handler must join the closure");
+        assert!(
+            l.is_live("print_best"),
+            "on-fire handler must join the closure"
+        );
         assert!(!l.is_live("orphan"));
     }
 
@@ -1624,8 +1721,14 @@ mod tests {
             defn("recover", vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
-        assert!(l.is_live("progress"), "watchdog condition callee must be live");
-        assert!(l.is_live("recover"), "watchdog fallback callee must be live");
+        assert!(
+            l.is_live("progress"),
+            "watchdog condition callee must be live"
+        );
+        assert!(
+            l.is_live("recover"),
+            "watchdog fallback callee must be live"
+        );
     }
 
     #[test]
@@ -1655,10 +1758,16 @@ mod tests {
             txn("stdlib_orphan", false, vec![Statement::Term(None)]),
         ];
         let l = DefnLiveness::build(&items);
-        let user: HashSet<String> =
-            ["main_node", "called", "orphan"].iter().map(|s| s.to_string()).collect();
+        let user: HashSet<String> = ["main_node", "called", "orphan"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let warnings = unfired_txn_warnings(&items, &user, &l);
-        assert_eq!(warnings.len(), 1, "only the dead user txn warns: {warnings:?}");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "only the dead user txn warns: {warnings:?}"
+        );
         assert!(warnings[0].contains("orphan"), "{warnings:?}");
         assert!(
             warnings[0].contains("node") && warnings[0].contains("never called"),
@@ -1682,9 +1791,9 @@ fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::ba
                 // 2026-10-01 (bad-site-blocks plan): a site lowers ONE
                 // row per family; liveness is family-agnostic, so every
                 // row's instructions count conservatively.
-                BadBodyItem::Site(s) => out.extend(
-                    s.rows.iter().flat_map(|r| r.body.iter().cloned()),
-                ),
+                BadBodyItem::Site(s) => {
+                    out.extend(s.rows.iter().flat_map(|r| r.body.iter().cloned()))
+                }
                 // Symbolic statements are lowered before this analysis;
                 // if one reaches here it carries no BILLD instructions.
                 BadBodyItem::Let(_)
@@ -1694,9 +1803,9 @@ fn bad_instructions_of(item: crate::ast::bad::BadTopLevel) -> Vec<crate::ast::ba
                 | BadBodyItem::While(_)
                 | BadBodyItem::Break(_)
                 | BadBodyItem::Continue(_)
-        | BadBodyItem::CallStmt { .. }
-        | BadBodyItem::Return { .. }
-        | BadBodyItem::RawRegion { .. } => {}
+                | BadBodyItem::CallStmt { .. }
+                | BadBodyItem::Return { .. }
+                | BadBodyItem::RawRegion { .. } => {}
             }
         }
         out

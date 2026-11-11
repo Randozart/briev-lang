@@ -35,7 +35,13 @@ pub struct TestOutcome {
 
 impl TestOutcome {
     fn new(name: String, passed: bool, detail: String) -> Self {
-        TestOutcome { name, passed, detail, tests_run: 0, tests_failed: 0 }
+        TestOutcome {
+            name,
+            passed,
+            detail,
+            tests_run: 0,
+            tests_failed: 0,
+        }
     }
 }
 
@@ -95,7 +101,8 @@ fn apply_directive(line: &str, d: &mut Directives, stdout: &mut String) {
     };
     let rest = rest.trim();
     if let Some(args) = rest.strip_prefix("RUN:") {
-        d.run_args.extend(args.split_whitespace().map(str::to_string));
+        d.run_args
+            .extend(args.split_whitespace().map(str::to_string));
         return;
     }
     if let Some(needle) = rest.strip_prefix("EXPECT-ERROR:") {
@@ -179,9 +186,7 @@ fn run_one(exe: &Path, bv: &Path, root: &Path, args: &TestArgs) -> TestOutcome {
                 }
                 return run_program_file(exe, bv, name, &dirs, &scratch);
             }
-            Err(e) => {
-                return TestOutcome::new(name, false, format!("test compile failed:\n{e}"))
-            }
+            Err(e) => return TestOutcome::new(name, false, format!("test compile failed:\n{e}")),
         };
         if run.reports.is_empty() {
             return TestOutcome::new(
@@ -221,7 +226,13 @@ fn run_one(exe: &Path, bv: &Path, root: &Path, args: &TestArgs) -> TestOutcome {
             };
         }
         if args.tests_only {
-            return TestOutcome { tests_run, tests_failed, name, passed: true, detail: String::new() };
+            return TestOutcome {
+                tests_run,
+                tests_failed,
+                name,
+                passed: true,
+                detail: String::new(),
+            };
         }
         let mut outcome = run_program_file(exe, bv, name, &dirs, &scratch);
         outcome.tests_run = tests_run;
@@ -235,7 +246,13 @@ fn run_one(exe: &Path, bv: &Path, root: &Path, args: &TestArgs) -> TestOutcome {
 }
 
 /// Build + link + run the file as a program (the pre-test-block path).
-fn run_program_file(exe: &Path, bv: &Path, name: String, dirs: &Directives, scratch: &Path) -> TestOutcome {
+fn run_program_file(
+    exe: &Path,
+    bv: &Path,
+    name: String,
+    dirs: &Directives,
+    scratch: &Path,
+) -> TestOutcome {
     let build = match spawn_build(exe, bv, scratch, &dirs.run_args) {
         Ok(b) => b,
         Err(e) => return TestOutcome::new(name, false, e),
@@ -341,9 +358,7 @@ fn parse_test_args(args: &[String]) -> Result<TestArgs, String> {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--out" => {
-                out_dir = PathBuf::from(
-                    it.next().ok_or("--out needs a directory argument")?,
-                );
+                out_dir = PathBuf::from(it.next().ok_or("--out needs a directory argument")?);
             }
             "--tests-only" => tests_only = true,
             "--list-tests" => list_tests = true,
@@ -354,10 +369,15 @@ fn parse_test_args(args: &[String]) -> Result<TestArgs, String> {
             other => return Err(format!("unexpected argument '{other}'")),
         }
     }
-    let target = target.ok_or(
-        "specify a test file or a directory of *.bv tests — e.g. `brievc test tests/`",
-    )?;
-    Ok(TestArgs { target, out_dir, tests_only, list_tests, domain })
+    let target = target
+        .ok_or("specify a test file or a directory of *.bv tests — e.g. `brievc test tests/`")?;
+    Ok(TestArgs {
+        target,
+        out_dir,
+        tests_only,
+        list_tests,
+        domain,
+    })
 }
 
 fn collect_test_files(target: &Path) -> Result<Vec<PathBuf>, String> {

@@ -71,7 +71,9 @@ fn part_box(
     name: &str,
     part: &PlacedPart,
 ) -> Result<(f64, f64, f64, f64), String> {
-    let inst = instances.get(name).ok_or_else(|| format!("unknown part '{}'", name))?;
+    let inst = instances
+        .get(name)
+        .ok_or_else(|| format!("unknown part '{}'", name))?;
     let package = inst
         .properties
         .iter()
@@ -85,8 +87,17 @@ fn part_box(
         ));
     };
     let (fw, fh) = fp.outline;
-    let (w, h) = if part.rot.rem_euclid(180.0) == 90.0 { (fh, fw) } else { (fw, fh) };
-    Ok((part.x - w / 2.0, part.y - h / 2.0, part.x + w / 2.0, part.y + h / 2.0))
+    let (w, h) = if part.rot.rem_euclid(180.0) == 90.0 {
+        (fh, fw)
+    } else {
+        (fw, fh)
+    };
+    Ok((
+        part.x - w / 2.0,
+        part.y - h / 2.0,
+        part.x + w / 2.0,
+        part.y + h / 2.0,
+    ))
 }
 
 /// Whether a box lies inside the board outline.
@@ -109,10 +120,7 @@ fn clearance_warnings(boxes: &[(String, (f64, f64, f64, f64))]) -> Vec<String> {
 }
 
 /// The parts ahead of `i` whose boxes are close enough to matter.
-fn warn_close(
-    sorted: &[(&String, (f64, f64, f64, f64))],
-    i: usize,
-) -> Vec<String> {
+fn warn_close(sorted: &[(&String, (f64, f64, f64, f64))], i: usize) -> Vec<String> {
     let (na, a) = &sorted[i];
     let mut warnings = Vec::new();
     for (nb, b) in sorted.iter().skip(i + 1) {
@@ -380,10 +388,7 @@ fn apply_pinned(
     let mut out = BTreeMap::new();
     for p in &fab.placements {
         if !instances.contains_key(&p.inst) {
-            return Err(format!(
-                "fab place '{}' names no declared instance",
-                p.inst
-            ));
+            return Err(format!("fab place '{}' names no declared instance", p.inst));
         }
         out.insert(
             p.inst.clone(),
@@ -447,7 +452,10 @@ fn property_true(
 mod tests {
     use super::*;
 
-    fn instance(name: &str, type_name: &str) -> (String, crate::analysis::electronics::ComponentInstance) {
+    fn instance(
+        name: &str,
+        type_name: &str,
+    ) -> (String, crate::analysis::electronics::ComponentInstance) {
         let inst = crate::analysis::electronics::ComponentInstance {
             name: name.into(),
             type_name: type_name.into(),
@@ -477,7 +485,9 @@ mod tests {
             }],
         ))];
         let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> =
-            vec![instance("u1", "Chip"), instance("r1", "Res")].into_iter().collect();
+            vec![instance("u1", "Chip"), instance("r1", "Res")]
+                .into_iter()
+                .collect();
         let bp = place_board(&items, &instances, &BTreeMap::new())
             .unwrap()
             .unwrap();
@@ -493,8 +503,10 @@ mod tests {
     #[test]
     fn board_too_small_for_parts_is_an_error() {
         let items = vec![TopLevel::FabBlock(fab_block((10.0, 10.0), vec![]))];
-        let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> =
-            (0..4).map(|i| instance(&format!("r{i}"), "Res")).into_iter().collect();
+        let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> = (0..4)
+            .map(|i| instance(&format!("r{i}"), "Res"))
+            .into_iter()
+            .collect();
         let err = place_board(&items, &instances, &BTreeMap::new()).unwrap_err();
         assert!(err.contains("too small"), "{err}");
     }
@@ -524,7 +536,10 @@ mod tests {
         assert!(err.contains("ghost"), "{err}");
     }
 
-    fn part_with_package(name: &str, package: &str) -> (String, crate::analysis::electronics::ComponentInstance) {
+    fn part_with_package(
+        name: &str,
+        package: &str,
+    ) -> (String, crate::analysis::electronics::ComponentInstance) {
         let inst = crate::analysis::electronics::ComponentInstance {
             name: name.into(),
             type_name: "Res".into(),
@@ -538,9 +553,14 @@ mod tests {
     fn containment_error_when_part_is_off_board() {
         let bp = BoardPlacement {
             board: (10.0, 10.0),
-            parts: BTreeMap::from([
-                ("r1".into(), PlacedPart { x: 20.0, y: 5.0, rot: 0.0 }),
-            ]),
+            parts: BTreeMap::from([(
+                "r1".into(),
+                PlacedPart {
+                    x: 20.0,
+                    y: 5.0,
+                    rot: 0.0,
+                },
+            )]),
         };
         let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> =
             vec![part_with_package("r1", "0603")].into_iter().collect();
@@ -556,12 +576,19 @@ mod tests {
     fn unknown_package_is_a_layout_error() {
         let bp = BoardPlacement {
             board: (10.0, 10.0),
-            parts: BTreeMap::from([
-                ("r1".into(), PlacedPart { x: 5.0, y: 5.0, rot: 0.0 }),
-            ]),
+            parts: BTreeMap::from([(
+                "r1".into(),
+                PlacedPart {
+                    x: 5.0,
+                    y: 5.0,
+                    rot: 0.0,
+                },
+            )]),
         };
         let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> =
-            vec![part_with_package("r1", "not-a-package")].into_iter().collect();
+            vec![part_with_package("r1", "not-a-package")]
+                .into_iter()
+                .collect();
         let (errs, _) = check_layout(&bp, &instances);
         assert!(
             errs.iter().any(|e| e.contains("no footprint")),
@@ -575,14 +602,30 @@ mod tests {
         let bp = BoardPlacement {
             board: (30.0, 20.0),
             parts: BTreeMap::from([
-                ("r1".into(), PlacedPart { x: 5.0, y: 5.0, rot: 0.0 }),
-                ("r2".into(), PlacedPart { x: 5.3, y: 5.0, rot: 0.0 }),
+                (
+                    "r1".into(),
+                    PlacedPart {
+                        x: 5.0,
+                        y: 5.0,
+                        rot: 0.0,
+                    },
+                ),
+                (
+                    "r2".into(),
+                    PlacedPart {
+                        x: 5.3,
+                        y: 5.0,
+                        rot: 0.0,
+                    },
+                ),
             ]),
         };
-        let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> =
-            vec![part_with_package("r1", "0603"), part_with_package("r2", "0603")]
-                .into_iter()
-                .collect();
+        let instances: BTreeMap<String, crate::analysis::electronics::ComponentInstance> = vec![
+            part_with_package("r1", "0603"),
+            part_with_package("r2", "0603"),
+        ]
+        .into_iter()
+        .collect();
         let (errs, warns) = check_layout(&bp, &instances);
         assert!(errs.is_empty(), "{:?}", errs);
         assert!(

@@ -37,9 +37,8 @@ pub fn cross_validate(
         );
     }
 
-    let mut addr_by_name: Vec<(&String, u64)> = target_addresses.iter()
-        .map(|(n, a)| (n, *a))
-        .collect();
+    let mut addr_by_name: Vec<(&String, u64)> =
+        target_addresses.iter().map(|(n, a)| (n, *a)).collect();
     addr_by_name.sort_by_key(|(_, a)| *a);
 
     let mut base_addrs: Vec<(String, u64)> = Vec::new();
@@ -55,9 +54,7 @@ pub fn cross_validate(
                             "alias '{}' and '{}' both map to address 0x{:X}",
                             name, existing_name, addr
                         ))
-                        .with_hint(
-                            "each alias must have a unique base address in the target DBV",
-                        ),
+                        .with_hint("each alias must have a unique base address in the target DBV"),
                 );
             }
         }

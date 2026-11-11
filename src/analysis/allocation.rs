@@ -26,7 +26,10 @@ fn scalarish_output(d: &Definition) -> bool {
         None => true,
         Some(OutputType::Single(ty)) => match ty {
             Type::Void | Type::Bits(_) => true,
-            Type::Custom(n) => matches!(n.as_str(), "Int" | "Float" | "Float64" | "Bool" | "Char" | "Void"),
+            Type::Custom(n) => matches!(
+                n.as_str(),
+                "Int" | "Float" | "Float64" | "Bool" | "Char" | "Void"
+            ),
             _ => false,
         },
         Some(_) => false,
@@ -38,9 +41,13 @@ fn scalarish_output(d: &Definition) -> bool {
 /// can route storage through a library/aggregate (read_file's growing String,
 /// List growth) stays Malloc until return-alias/destination facts are proven.
 fn arena_leaf_safe(d: &Definition) -> bool {
-    if !scalarish_output(d) { return false; }
+    if !scalarish_output(d) {
+        return false;
+    }
     let calls = crate::analysis::call_graph::extract_called_functions(&d.body);
-    calls.iter().all(|c| c == "Alloc#" || is_borrowed_intrinsic(c) || c == "Free#")
+    calls
+        .iter()
+        .all(|c| c == "Alloc#" || is_borrowed_intrinsic(c) || c == "Free#")
         && !crate::analysis::call_graph::body_has_indirect_call(&d.body)
 }
 
@@ -722,8 +729,8 @@ impl<'a> DagBuilder<'a> {
                     // Aggregate/Result/String returns can carry the allocation
                     // out (read_file's growing buffer), and treating them as
                     // tick-local corrupts live pointers.
-                    self.arena_context = self.arena_context_set.contains(&defn.name)
-                        && arena_leaf_safe(defn);
+                    self.arena_context =
+                        self.arena_context_set.contains(&defn.name) && arena_leaf_safe(defn);
                     self.in_txn = self.arena_context;
                     self.in_bounded = false;
                     self.walk_stmts(&mut defn.body);
@@ -743,8 +750,8 @@ impl<'a> DagBuilder<'a> {
                     }
                     for defn in cell.definitions.iter_mut() {
                         self.graph = DataflowGraph::new();
-                        self.arena_context = self.arena_context_set.contains(&defn.name)
-                            && arena_leaf_safe(defn);
+                        self.arena_context =
+                            self.arena_context_set.contains(&defn.name) && arena_leaf_safe(defn);
                         self.in_txn = self.arena_context;
                         self.in_bounded = false;
                         self.walk_stmts(&mut defn.body);
@@ -1103,8 +1110,7 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
                 builder.walk_stmts(&mut txn.body);
             }
             TopLevel::Definition(defn) => {
-                builder.arena_context = arena_defns.contains(&defn.name)
-                    && arena_leaf_safe(defn);
+                builder.arena_context = arena_defns.contains(&defn.name) && arena_leaf_safe(defn);
                 builder.in_txn = builder.arena_context;
                 builder.in_bounded = false;
                 builder.walk_stmts(&mut defn.body);
@@ -1114,15 +1120,19 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
                     builder.in_txn = true;
                     builder.in_bounded = !matches!(txn.contract.post_condition, Expr::Bool(true));
                     builder.walk_stmts(&mut txn.body);
-                    if builder.needs_arena { direct_needs.insert(txn.name.clone()); }
+                    if builder.needs_arena {
+                        direct_needs.insert(txn.name.clone());
+                    }
                 }
                 for defn in cell.definitions.iter_mut() {
-                    builder.arena_context = arena_defns.contains(&defn.name)
-                        && arena_leaf_safe(defn);
+                    builder.arena_context =
+                        arena_defns.contains(&defn.name) && arena_leaf_safe(defn);
                     builder.in_txn = builder.arena_context;
                     builder.in_bounded = false;
                     builder.walk_stmts(&mut defn.body);
-                    if builder.needs_arena { direct_needs.insert(defn.name.clone()); }
+                    if builder.needs_arena {
+                        direct_needs.insert(defn.name.clone());
+                    }
                 }
             }
             _ => {}
@@ -1151,12 +1161,14 @@ mod kani_full_tests {
         let mut counter = 0;
         let mut result = HashMap::new();
         let summaries = HashMap::new();
-        let mut builder = DagBuilder::new(
-            &mut counter, &mut result, true, false, &summaries, false,
-        );
+        let mut builder =
+            DagBuilder::new(&mut counter, &mut result, true, false, &summaries, false);
         let binding = |name: &str, expr: Expr| Statement::Let {
-            names: vec![], name: name.into(), ty: None,
-            expr: Some(expr), modifiers: vec![],
+            names: vec![],
+            name: name.into(),
+            ty: None,
+            expr: Some(expr),
+            modifiers: vec![],
         };
         let source = Expr::Cast(Box::new(Expr::Identifier("p".into())), Type::int());
         let alias = if assign {
@@ -1166,13 +1178,18 @@ mod kani_full_tests {
         };
         let sink = if call {
             Statement::Expression(Expr::Call(
-                "unknown".into(), vec![Expr::Identifier("q".into())], None,
+                "unknown".into(),
+                vec![Expr::Identifier("q".into())],
+                None,
             ))
         } else {
             Statement::Term(Some(Expr::Identifier("q".into())))
         };
         let mut body = vec![
-            binding("p", Expr::Call("Alloc#".into(), vec![Expr::Decimal(64)], None)),
+            binding(
+                "p",
+                Expr::Call("Alloc#".into(), vec![Expr::Decimal(64)], None),
+            ),
             alias,
             sink,
         ];
@@ -1327,7 +1344,8 @@ node entry [beginprogram][true] { Print#(helper(16)); endprogram; };
             "term pass(Load#(p, 8));",
             "let value: Int = read_at(p); term value;",
         ] {
-            let src = format!(r#"
+            let src = format!(
+                r#"
 defn pass(value: Int) -> Int {{ term value; }};
 defn read_at(p: Int) -> Int {{ term Load#(p, 8); }};
 txn make(n: Int) [n > 0][n > 0] -> Int {{
@@ -1335,7 +1353,8 @@ txn make(n: Int) [n > 0][n > 0] -> Int {{
     Store#(p, 42, 8);
     {result}
 }};
-"#);
+"#
+            );
             assert_eq!(strategies(&src), vec![AllocStrategy::Arena], "{result}");
         }
     }
@@ -1347,18 +1366,18 @@ txn make(n: Int) [n > 0][n > 0] -> Int {{
             "let q: Int = 0; q = p + 8; term q;",
             "term pass(p);",
         ] {
-            let src = format!(r#"
+            let src = format!(
+                r#"
 defn pass(value: Int) -> Int {{ term value; }};
 txn make(n: Int) [n > 0][n > 0] -> Int {{
     let p: Int = Alloc#(n) as Int;
     {result}
 }};
-"#);
+"#
+            );
             assert_eq!(strategies(&src), vec![AllocStrategy::Malloc], "{result}");
         }
     }
-
-
 
     #[test]
     fn helper_that_returns_pointer_forces_malloc() {

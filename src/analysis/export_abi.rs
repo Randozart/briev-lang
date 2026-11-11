@@ -31,7 +31,10 @@ use std::collections::{HashMap, HashSet};
 /// The returned map is the single source of truth for:
 ///   - export ABI (`compute_export_needs_state` — the subset for exports)
 ///   - regular-defn emission (backend emits `%state` iff needs it)
-pub fn compute_defn_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> HashMap<String, bool> {
+pub fn compute_defn_needs_state(
+    items: &[TopLevel],
+    plain: &HashSet<String>,
+) -> HashMap<String, bool> {
     compute_defn_needs_state_with_arena(items, plain, &HashSet::new())
 }
 
@@ -68,7 +71,9 @@ pub fn compute_defn_needs_state_with_arena(
     // them. Without this, an arena helper stayed stateless and Alloc# fell
     // back to @malloc inside it.
     for name in &always_stateful {
-        if let Some(v) = needs.get_mut(name) { *v = true; }
+        if let Some(v) = needs.get_mut(name) {
+            *v = true;
+        }
     }
     let mut changed = true;
     while changed {
@@ -110,13 +115,7 @@ pub fn compute_defn_needs_plain(
                 continue;
             }
             if body_needs_state(
-                &d.body,
-                &regular,
-                &no_txns,
-                plain,
-                &no_always,
-                &no_locals,
-                &needs,
+                &d.body, &regular, &no_txns, plain, &no_always, &no_locals, &needs,
             ) {
                 needs.insert(name.clone(), true);
                 changed = true;
@@ -160,8 +159,12 @@ fn index_program<'a>(
                     regular.insert(d.name.clone(), d);
                 }
             }
-            TopLevel::AsmFn(a) => { always_stateful.insert(a.name.clone()); }
-            TopLevel::BadFn(b) => { always_stateful.insert(b.name.clone()); }
+            TopLevel::AsmFn(a) => {
+                always_stateful.insert(a.name.clone());
+            }
+            TopLevel::BadFn(b) => {
+                always_stateful.insert(b.name.clone());
+            }
             // 2026-10-15 (type-dependent member statefulness, found by Design
             // D's GrowBuf): obj MEMBER defns were never indexed here, so a
             // member reaching a stateful intrinsic was invisible to the
@@ -267,9 +270,9 @@ fn method_is_stateful_on_any_type(
     needs: &HashMap<String, bool>,
 ) -> bool {
     let suffix = format!("::{method}");
-    regular.keys().any(|key| {
-        key.ends_with(&suffix) && *needs.get(key).unwrap_or(&false)
-    })
+    regular
+        .keys()
+        .any(|key| key.ends_with(&suffix) && *needs.get(key).unwrap_or(&false))
 }
 
 /// Index an obj type's member defns under type-qualified keys. Only body-ful
@@ -320,7 +323,10 @@ fn index_impl_members<'a>(
 /// pointer param is free). Keyed by bare type name (`GrowBuf`), the shape the
 /// backend's `subst` yields.
 pub fn type_stateful_members(items: &[TopLevel]) -> HashSet<String> {
-    let per_defn = compute_defn_needs_state(items, &crate::analysis::storage_class::classify_plain_lets(items, None, &HashSet::new()));
+    let per_defn = compute_defn_needs_state(
+        items,
+        &crate::analysis::storage_class::classify_plain_lets(items, None, &HashSet::new()),
+    );
     let mut out: HashSet<String> = HashSet::new();
     for (key, needs) in &per_defn {
         if !needs {
@@ -349,22 +355,30 @@ fn defn_references_state(
         locals.insert(pn.clone());
     }
     collect_stmt_locals(&d.body, &mut locals);
-    body_needs_state(&d.body, regular, txns, state_fields, always_stateful, &locals, needs)
+    body_needs_state(
+        &d.body,
+        regular,
+        txns,
+        state_fields,
+        always_stateful,
+        &locals,
+        needs,
+    )
 }
 
 /// Compute `needs_state` for every EXPORTED defn — the subset of
 /// [`compute_defn_needs_state`] for GLUE ABI generation. A defn is exported
 /// if it appears as a `TopLevel::Export` (either direct or wrapping a defn).
-pub fn compute_export_needs_state(items: &[TopLevel], plain: &HashSet<String>) -> HashMap<String, bool> {
+pub fn compute_export_needs_state(
+    items: &[TopLevel],
+    plain: &HashSet<String>,
+) -> HashMap<String, bool> {
     let all = compute_defn_needs_state(items, plain);
     let mut exports: HashMap<String, bool> = HashMap::new();
     for item in items {
         if let TopLevel::Export(e) = item {
             if let TopLevel::Definition(d) = e.inner.as_ref() {
-                exports.insert(
-                    d.name.clone(),
-                    *all.get(&d.name).unwrap_or(&true),
-                );
+                exports.insert(d.name.clone(), *all.get(&d.name).unwrap_or(&true));
             }
         }
     }
@@ -384,7 +398,17 @@ fn body_needs_state(
     locals: &HashSet<String>,
     needs: &HashMap<String, bool>,
 ) -> bool {
-    body.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
+    body.iter().any(|s| {
+        stmt_needs_state(
+            s,
+            regular,
+            txns,
+            state_fields,
+            always_stateful,
+            locals,
+            needs,
+        )
+    })
 }
 
 /// Collect every name bound by a `let` inside a statement tree — those
@@ -426,9 +450,14 @@ fn collect_stmt_locals(stmts: &[Statement], out: &mut HashSet<String>) {
                 }
                 collect_expr_locals(value, out);
             }
-            Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Check(e) | Statement::Gate(e)
+            Statement::Term(Some(e))
+            | Statement::Tail(e)
+            | Statement::Check(e)
+            | Statement::Gate(e)
             | Statement::Expression(e) => collect_expr_locals(e, out),
-            Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => collect_expr_locals(e, out),
+            Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
+                collect_expr_locals(e, out)
+            }
             _ => {}
         }
     }
@@ -438,14 +467,21 @@ fn collect_expr_locals(expr: &Expr, out: &mut HashSet<String>) {
     match expr {
         Expr::Block(stmts) => collect_stmt_locals(stmts, out),
         Expr::Call(_, args, _) | Expr::Tuple(args) | Expr::List(args) => {
-            for a in args { collect_expr_locals(a, out); }
+            for a in args {
+                collect_expr_locals(a, out);
+            }
         }
         Expr::BinaryOp(_, l, r) | Expr::Within(l, r) => {
             collect_expr_locals(l, out);
             collect_expr_locals(r, out);
         }
-        Expr::UnaryOp(_, i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Consume(i)
-        | Expr::Await(i) | Expr::Cast(i, _) | Expr::IsType(i, _)
+        Expr::UnaryOp(_, i)
+        | Expr::Deref(i)
+        | Expr::AddrOf(i)
+        | Expr::Consume(i)
+        | Expr::Await(i)
+        | Expr::Cast(i, _)
+        | Expr::IsType(i, _)
         | Expr::Reflect(i, _, _) => collect_expr_locals(i, out),
         Expr::Field(o, _) => collect_expr_locals(o, out),
         Expr::Index(o, i) => {
@@ -454,38 +490,65 @@ fn collect_expr_locals(expr: &Expr, out: &mut HashSet<String>) {
         }
         Expr::MethodCall(recv, _, args, _) => {
             collect_expr_locals(recv, out);
-            for a in args { collect_expr_locals(a, out); }
+            for a in args {
+                collect_expr_locals(a, out);
+            }
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr_locals(array, out);
-            if let Some(s) = start { collect_expr_locals(s, out); }
-            if let Some(e) = end { collect_expr_locals(e, out); }
-            if let Some(s) = stride { collect_expr_locals(s, out); }
+            if let Some(s) = start {
+                collect_expr_locals(s, out);
+            }
+            if let Some(e) = end {
+                collect_expr_locals(e, out);
+            }
+            if let Some(s) = stride {
+                collect_expr_locals(s, out);
+            }
         }
         Expr::Range { start, end, .. } => {
             collect_expr_locals(start, out);
             collect_expr_locals(end, out);
         }
-        Expr::Spawn { args, .. } => { for a in args { collect_expr_locals(a, out); } }
+        Expr::Spawn { args, .. } => {
+            for a in args {
+                collect_expr_locals(a, out);
+            }
+        }
         Expr::If(c, t, e) => {
             collect_expr_locals(c, out);
             collect_expr_locals(t, out);
-            if let Some(els) = e { collect_expr_locals(els, out); }
+            if let Some(els) = e {
+                collect_expr_locals(els, out);
+            }
         }
         Expr::Match(scrut, arms) => {
             collect_expr_locals(scrut, out);
             for arm in arms {
-                if let Some(g) = &arm.guard { collect_expr_locals(g, out); }
+                if let Some(g) = &arm.guard {
+                    collect_expr_locals(g, out);
+                }
                 collect_expr_locals(&arm.body, out);
             }
         }
         Expr::StructLiteral { fields, specs, .. } => {
-            for (_, e) in fields.iter().chain(specs.iter()) { collect_expr_locals(e, out); }
+            for (_, e) in fields.iter().chain(specs.iter()) {
+                collect_expr_locals(e, out);
+            }
         }
         Expr::Lambda(_, body) => collect_expr_locals(body, out),
         Expr::PluginIntercept { args, receiver, .. } => {
-            if let Some(r) = receiver { collect_expr_locals(r, out); }
-            for a in args { collect_expr_locals(a, out); }
+            if let Some(r) = receiver {
+                collect_expr_locals(r, out);
+            }
+            for a in args {
+                collect_expr_locals(a, out);
+            }
         }
         _ => {}
     }
@@ -504,25 +567,29 @@ fn stmt_needs_state(
     // defn is emitted WITHOUT `%state`. A missed expression here marks a
     // stateful defn stateless → undefined `%state` in the IR (opt rejects).
     // Every expression-bearing variant must be visited, not just the body.
-    let any_expr = |e: &Expr| expr_needs_state(e, regular, txns, state_fields, always_stateful, locals, needs);
+    let any_expr = |e: &Expr| {
+        expr_needs_state(
+            e,
+            regular,
+            txns,
+            state_fields,
+            always_stateful,
+            locals,
+            needs,
+        )
+    };
     match stmt {
         Statement::Expect(e) => any_expr(e),
-        Statement::Term(opt)
-        | Statement::EndProgram(opt)
-        | Statement::Rollback(opt) => {
+        Statement::Term(opt) | Statement::EndProgram(opt) | Statement::Rollback(opt) => {
             opt.as_ref().is_some_and(|e| any_expr(e))
         }
         Statement::Tail(e) => any_expr(e),
         Statement::Expression(expr) => any_expr(expr),
         Statement::Check(expr) | Statement::Gate(expr) => any_expr(expr),
-        Statement::Let { expr, .. } => {
-            expr.as_ref().is_some_and(|e| any_expr(e))
-        }
+        Statement::Let { expr, .. } => expr.as_ref().is_some_and(|e| any_expr(e)),
         // 2026-08-03 (node bridge): the assignment TARGET may be a state field
         // (`saved = name;`) — check it too, not just the RHS.
-        Statement::Assign(lhs, expr) => {
-            any_expr(lhs) || any_expr(expr)
-        }
+        Statement::Assign(lhs, expr) => any_expr(lhs) || any_expr(expr),
         Statement::ArrowAssign { target, value, .. } => {
             // 2026-09-23 (stateless-defn mechanism): `<-` on an Event wire
             // lowers DIRECTLY to briev_event_fire_impl(ptr %state, ...) —
@@ -538,16 +605,46 @@ fn stmt_needs_state(
         // (the arm ignored it), marking a stateful defn stateless.
         Statement::Guarded(cond, body) => {
             any_expr(cond)
-                || body.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
+                || body.iter().any(|s| {
+                    stmt_needs_state(
+                        s,
+                        regular,
+                        txns,
+                        state_fields,
+                        always_stateful,
+                        locals,
+                        needs,
+                    )
+                })
         }
         Statement::Foreach { list, body, .. } => {
             any_expr(list)
-                || body.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
+                || body.iter().any(|s| {
+                    stmt_needs_state(
+                        s,
+                        regular,
+                        txns,
+                        state_fields,
+                        always_stateful,
+                        locals,
+                        needs,
+                    )
+                })
         }
         Statement::Match { expr, arms } => {
             any_expr(expr)
                 || arms.iter().any(|arm| {
-                    arm.body.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
+                    arm.body.iter().any(|s| {
+                        stmt_needs_state(
+                            s,
+                            regular,
+                            txns,
+                            state_fields,
+                            always_stateful,
+                            locals,
+                            needs,
+                        )
+                    })
                 })
         }
         Statement::TrgBinding { instance, .. } => any_expr(instance),
@@ -557,9 +654,17 @@ fn stmt_needs_state(
         Statement::Block(body)
         | Statement::SyncBlock(body)
         | Statement::Defer(body)
-        | Statement::Mutex(body) => {
-            body.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
-        }
+        | Statement::Mutex(body) => body.iter().any(|s| {
+            stmt_needs_state(
+                s,
+                regular,
+                txns,
+                state_fields,
+                always_stateful,
+                locals,
+                needs,
+            )
+        }),
         // No runtime state: pure terminators, lifetime hints, and compile-time
         // metadata. (`trap`/`halt` never fall through; `yield` is a scheduler
         // point, not a state access.)
@@ -589,9 +694,29 @@ fn expr_needs_state(
     // mark a stateful defn stateless → undefined `%state` in the IR. Every
     // variant that can carry a sub-expression is therefore visited; only
     // genuine literals / no-runtime-state markers return false.
-    let rec = |e: &Expr| expr_needs_state(e, regular, txns, state_fields, always_stateful, locals, needs);
+    let rec = |e: &Expr| {
+        expr_needs_state(
+            e,
+            regular,
+            txns,
+            state_fields,
+            always_stateful,
+            locals,
+            needs,
+        )
+    };
     let rec_stmts = |stmts: &[Statement]| {
-        stmts.iter().any(|s| stmt_needs_state(s, regular, txns, state_fields, always_stateful, locals, needs))
+        stmts.iter().any(|s| {
+            stmt_needs_state(
+                s,
+                regular,
+                txns,
+                state_fields,
+                always_stateful,
+                locals,
+                needs,
+            )
+        })
     };
     match expr {
         // 2026-09-28 (E3): the `[*]` selector carries no runtime state — it is
@@ -618,7 +743,8 @@ fn expr_needs_state(
         Expr::Call(name, args, _) => {
             // Observable/stateful intrinsics need state (unchanged from the
             // backend's original list).
-            let name_needs = if matches!(name.as_str(),
+            let name_needs = if matches!(
+                name.as_str(),
                 "Malloc#" | "Memcpy#" | "Memmove#" | "Memset#"
                 | "Print#"
                 | "FileRead#" | "FileWrite#" | "ShellCmd#"
@@ -692,7 +818,12 @@ fn expr_needs_state(
         }
         Expr::Reflect(recv, _, _) => rec(recv),
         Expr::Index(arr, idx) => rec(arr) || rec(idx),
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rec(array)
                 || start.as_ref().is_some_and(|e| rec(e))
                 || end.as_ref().is_some_and(|e| rec(e))
@@ -711,23 +842,19 @@ fn expr_needs_state(
             true
         }
         Expr::Block(stmts) => rec_stmts(stmts),
-        Expr::If(cond, then, els) => {
-            rec(cond) || rec(then) || els.as_ref().is_some_and(|e| rec(e))
-        }
+        Expr::If(cond, then, els) => rec(cond) || rec(then) || els.as_ref().is_some_and(|e| rec(e)),
         Expr::Match(scrut, arms) => {
             rec(scrut)
-                || arms.iter().any(|arm| {
-                    arm.guard.as_ref().is_some_and(|g| rec(g)) || rec(&arm.body)
-                })
+                || arms
+                    .iter()
+                    .any(|arm| arm.guard.as_ref().is_some_and(|g| rec(g)) || rec(&arm.body))
         }
         Expr::StructLiteral { fields, specs, .. } => {
             fields.iter().chain(specs.iter()).any(|(_, e)| rec(e))
         }
         Expr::Lambda(_, body) => rec(body),
         Expr::Within(a, b) => rec(a) || rec(b),
-        Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) => {
-            rec(inner)
-        }
+        Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) => rec(inner),
         Expr::PluginIntercept { args, receiver, .. } => {
             receiver.as_ref().is_some_and(|r| rec(r)) || args.iter().any(|a| rec(a))
         }
@@ -762,11 +889,13 @@ mod tests {
     fn defn(name: &str, body: Vec<Statement>) -> Definition {
         use crate::ast::{Contract, OutputType, TypeParam};
         Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.to_string(),
             type_params: Vec::<TypeParam>::new(),
             parameters: vec![],
-            output_type: Some(OutputType::Single(crate::ast::Type::Custom("Int".to_string()))),
+            output_type: Some(OutputType::Single(crate::ast::Type::Custom(
+                "Int".to_string(),
+            ))),
             outputs: vec![],
             contract: Contract {
                 pre_condition: Expr::Bool(true),
@@ -774,7 +903,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -803,9 +933,14 @@ mod tests {
 
     #[test]
     fn export_calling_stateful_intrinsic_needs_state() {
-        let d = defn("f", vec![Statement::Term(Some(
-            Expr::Call("StringNew#".to_string(), vec![], None),
-        ))]);
+        let d = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![exported(d)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
@@ -817,9 +952,14 @@ mod tests {
         // stateless, so its caller does too — the cstr-door property that
         // keeps GLUE exports on a clean C ABI.
         let helper = defn("helper", vec![Statement::Term(Some(Expr::Decimal(1)))]);
-        let caller = defn("f", vec![Statement::Term(Some(
-            Expr::Call("helper".to_string(), vec![], None),
-        ))]);
+        let caller = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::Call(
+                "helper".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![TopLevel::Definition(helper), exported(caller)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&false));
@@ -829,12 +969,22 @@ mod tests {
     fn export_calling_stateful_regular_defn_needs_state() {
         // A helper that touches a stateful intrinsic forces its caller to
         // carry state (transitive).
-        let helper = defn("helper", vec![Statement::Term(Some(
-            Expr::Call("StringNew#".to_string(), vec![], None),
-        ))]);
-        let caller = defn("f", vec![Statement::Term(Some(
-            Expr::Call("helper".to_string(), vec![], None),
-        ))]);
+        let helper = defn(
+            "helper",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let caller = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::Call(
+                "helper".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![TopLevel::Definition(helper), exported(caller)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
@@ -853,14 +1003,15 @@ mod tests {
         let tokens = crate::lexer::tokenize(src).unwrap();
         let mut p = crate::parser::Parser::new(tokens, src);
         let mut items = p.parse_program().unwrap();
-        let caller = defn("f", vec![Statement::Term(Some(
-            Expr::MethodCall(
+        let caller = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::MethodCall(
                 Box::new(Expr::Identifier("sink".to_string())),
                 "grow_member".to_string(),
                 vec![],
                 None,
-            ),
-        ))]);
+            )))],
+        );
         items.push(exported(caller));
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(
@@ -875,13 +1026,21 @@ mod tests {
         // 2026-09-23: a stateful call in a `when` CONDITION must be seen —
         // the walker previously ignored the guard condition and marked the
         // defn stateless (undefined %state in the IR).
-        let helper = defn("helper", vec![Statement::Term(Some(
-            Expr::Call("StringNew#".to_string(), vec![], None),
-        ))]);
-        let caller = defn("f", vec![Statement::Guarded(
-            Expr::Call("helper".to_string(), vec![], None),
-            vec![Statement::Term(Some(Expr::Decimal(1)))],
-        )]);
+        let helper = defn(
+            "helper",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let caller = defn(
+            "f",
+            vec![Statement::Guarded(
+                Expr::Call("helper".to_string(), vec![], None),
+                vec![Statement::Term(Some(Expr::Decimal(1)))],
+            )],
+        );
         let items = vec![TopLevel::Definition(helper), exported(caller)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
@@ -892,9 +1051,14 @@ mod tests {
         // compute_defn_needs_state covers regular defns too (the emission
         // gate), not just exports.
         let pure = defn("pure_helper", vec![Statement::Term(Some(Expr::Decimal(1)))]);
-        let impure = defn("impure_helper", vec![Statement::Term(Some(
-            Expr::Call("StringNew#".to_string(), vec![], None),
-        ))]);
+        let impure = defn(
+            "impure_helper",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![TopLevel::Definition(pure), TopLevel::Definition(impure)];
         let map = compute_defn_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("pure_helper"), Some(&false));
@@ -904,9 +1068,14 @@ mod tests {
     #[test]
     fn pure_export_calling_pure_export_needs_no_state() {
         let inner = defn("inner", vec![Statement::Term(Some(Expr::Decimal(1)))]);
-        let outer = defn("outer", vec![Statement::Term(Some(
-            Expr::Call("inner".to_string(), vec![], None),
-        ))]);
+        let outer = defn(
+            "outer",
+            vec![Statement::Term(Some(Expr::Call(
+                "inner".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![exported(inner), exported(outer)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("inner"), Some(&false));
@@ -916,9 +1085,14 @@ mod tests {
     #[test]
     fn export_calling_frgn_needs_no_state() {
         // cstr_to_briev is a frgn, not a Briev defn → no state.
-        let d = defn("f", vec![Statement::Term(Some(
-            Expr::Call("cstr_to_briev".to_string(), vec![], None),
-        ))]);
+        let d = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::Call(
+                "cstr_to_briev".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![exported(d)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&false));
@@ -931,12 +1105,22 @@ mod tests {
         // forces nothing (the old DFS `visiting ⇒ true` rule wrongly marked
         // self-recursive stateless defns like cstr_len as stateful). Only a
         // genuinely stateful leaf propagates state up through the cycle.
-        let a = defn("a", vec![Statement::Term(Some(
-            Expr::Call("b".to_string(), vec![], None),
-        ))]);
-        let b = defn("b", vec![Statement::Term(Some(
-            Expr::Call("a".to_string(), vec![], None),
-        ))]);
+        let a = defn(
+            "a",
+            vec![Statement::Term(Some(Expr::Call(
+                "b".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let b = defn(
+            "b",
+            vec![Statement::Term(Some(Expr::Call(
+                "a".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![exported(a), exported(b)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("a"), Some(&false));
@@ -947,30 +1131,49 @@ mod tests {
     fn mutual_recursion_reaching_state_is_stateful() {
         // A cycle where ONE member reaches state flips the whole SCC (the
         // fixpoint propagates through the cycle edges).
-        let leaf = defn("leaf", vec![Statement::Term(Some(
-            Expr::Call("StringNew#".to_string(), vec![], None),
-        ))]);
-        let a = defn("a", vec![Statement::Term(Some(
-            Expr::Call("b".to_string(), vec![], None),
-        ))]);
-        let b = defn("b", vec![Statement::Term(Some(
-            Expr::Call("a".to_string(), vec![], None),
-        ))]);
+        let leaf = defn(
+            "leaf",
+            vec![Statement::Term(Some(Expr::Call(
+                "StringNew#".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let a = defn(
+            "a",
+            vec![Statement::Term(Some(Expr::Call(
+                "b".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let b = defn(
+            "b",
+            vec![Statement::Term(Some(Expr::Call(
+                "a".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         // `a` is in the cycle AND reaches the stateful leaf — the SCC flips.
         // (Both `a` and `b` are exported; `a` also calls `leaf`, so the
         // fixpoint propagates state into the cycle.)
-        let a = defn("a", vec![
-            Statement::Term(Some(Expr::Call("b".to_string(), vec![], None))),
-            Statement::Term(Some(Expr::Call("leaf".to_string(), vec![], None))),
-        ]);
-        let b = defn("b", vec![Statement::Term(Some(
-            Expr::Call("a".to_string(), vec![], None),
-        ))]);
-        let items = vec![
-            TopLevel::Definition(leaf),
-            exported(a),
-            exported(b),
-        ];
+        let a = defn(
+            "a",
+            vec![
+                Statement::Term(Some(Expr::Call("b".to_string(), vec![], None))),
+                Statement::Term(Some(Expr::Call("leaf".to_string(), vec![], None))),
+            ],
+        );
+        let b = defn(
+            "b",
+            vec![Statement::Term(Some(Expr::Call(
+                "a".to_string(),
+                vec![],
+                None,
+            )))],
+        );
+        let items = vec![TopLevel::Definition(leaf), exported(a), exported(b)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("a"), Some(&true));
         assert_eq!(map.get("b"), Some(&true));
@@ -996,7 +1199,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![],
             metadata: std::collections::HashMap::<String, PropertyValue>::new(),
             derivation: None,
@@ -1004,9 +1208,14 @@ mod tests {
             span: Option::<Span>::None,
             doc: None,
         };
-        let caller = defn("f", vec![Statement::Term(Some(
-            Expr::Call("loop_txn".to_string(), vec![], None),
-        ))]);
+        let caller = defn(
+            "f",
+            vec![Statement::Term(Some(Expr::Call(
+                "loop_txn".to_string(),
+                vec![],
+                None,
+            )))],
+        );
         let items = vec![TopLevel::Transaction(txn), exported(caller)];
         let map = compute_export_needs_state(&items, &HashSet::new());
         assert_eq!(map.get("f"), Some(&true));
@@ -1049,15 +1258,17 @@ mod tests {
             "put_two",
             vec![Statement::Term(Some(Expr::Call(
                 "put_one".to_string(),
-                vec![Expr::Call(
-                    "put_one".to_string(),
-                    vec![
-                        Expr::Identifier("sink".to_string()),
-                        Expr::Identifier("val".to_string()),
-                    ],
-                    None,
-                ),
-                Expr::Identifier("val".to_string())],
+                vec![
+                    Expr::Call(
+                        "put_one".to_string(),
+                        vec![
+                            Expr::Identifier("sink".to_string()),
+                            Expr::Identifier("val".to_string()),
+                        ],
+                        None,
+                    ),
+                    Expr::Identifier("val".to_string()),
+                ],
                 None,
             )))],
         );
@@ -1274,7 +1485,10 @@ mod tests {
         "#;
         let items = parse(src);
         let stateful = type_stateful_members(&items);
-        assert!(stateful.contains("Growing"), "Growing has a stateful member");
+        assert!(
+            stateful.contains("Growing"),
+            "Growing has a stateful member"
+        );
         assert!(!stateful.contains("Fixed"), "Fixed has no stateful member");
     }
 

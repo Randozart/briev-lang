@@ -21,17 +21,14 @@ impl CrossReferenceValidator {
 
         for item in items {
             match item {
-                TopLevel::StateDecl(_decl) => {
-                }
-                TopLevel::Trigger(_trg) => {
-                }
+                TopLevel::StateDecl(_decl) => {}
+                TopLevel::Trigger(_trg) => {}
                 _ => {}
             }
         }
 
         // Collect defined addresses from hardware.toml
         for addr in self.hw_config.keys() {
-            
             defined_addrs.insert(addr.clone());
         }
 
@@ -50,7 +47,7 @@ impl CrossReferenceValidator {
         let mut errors = Vec::new();
 
         // Group declarations by address
-        let mut addr_groups: std::collections::HashMap<u64, Vec<(String, Option<String>)>> = 
+        let mut addr_groups: std::collections::HashMap<u64, Vec<(String, Option<String>)>> =
             std::collections::HashMap::new();
 
         for item in _items {
@@ -63,7 +60,7 @@ impl CrossReferenceValidator {
                 // Multiple variables at same address - this is allowed for bit packing
                 // but we should verify bit ranges don't overlap
                 let addr_str = format!("0x{:08X}", addr);
-                
+
                 // Check if ANY declaration at this address lacks an explicit bit range.
                 // Only checking the first (as before) would miss cases where a later
                 // declaration has no bit range while an earlier one does.
@@ -71,7 +68,11 @@ impl CrossReferenceValidator {
                 if has_implicit_overlap {
                     let addr_for_error = addr_str.clone();
                     errors.push(CrossRefError {
-                        variable: decls.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>().join(", "),
+                        variable: decls
+                            .iter()
+                            .map(|(n, _)| n.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         address: addr_str,
                         error_type: CrossRefErrorType::ImplicitOverlap,
                         message: format!(

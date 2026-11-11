@@ -176,7 +176,10 @@ pub fn build_loop_shapes(
         let Some(txn) = txns.get(&node.name) else {
             continue;
         };
-        shapes.insert(node.name.clone(), build_shape(node, txn, &names, min_width, items));
+        shapes.insert(
+            node.name.clone(),
+            build_shape(node, txn, &names, min_width, items),
+        );
     }
     shapes
 }
@@ -198,9 +201,11 @@ pub fn program_convergence(
     }
     let txns = collect_txns(items);
     let has_persistent_txn = txns.values().any(|t| {
-        t.is_reactive && !graph.nodes.iter().any(|n| {
-            n.name == t.name && n.bounded_pre.is_some() && n.increments.is_some()
-        })
+        t.is_reactive
+            && !graph
+                .nodes
+                .iter()
+                .any(|n| n.name == t.name && n.bounded_pre.is_some() && n.increments.is_some())
     });
     if has_persistent_txn {
         return ProgramConvergence {
@@ -268,9 +273,13 @@ fn build_shape(
         .collect::<Vec<_>>();
     let local_fields = classify_local_fields(node, txn, items);
     let field_pressure = classify_field_pressure(&carried_fields, items);
-    let vector_groups = detect_vector_groups_structural(txn, node.write_set.clone(), &names.state_fields, min_width);
-    let temp_mediated_float_count =
-        count_temp_mediated_float_writes(txn, &carried_fields, items);
+    let vector_groups = detect_vector_groups_structural(
+        txn,
+        node.write_set.clone(),
+        &names.state_fields,
+        min_width,
+    );
+    let temp_mediated_float_count = count_temp_mediated_float_writes(txn, &carried_fields, items);
     let has_swan = swan_song::has_swan_song(&txn.body);
     let is_pure = node.is_pure_body || node.is_effectively_pure;
     LoopShape {
@@ -299,10 +308,7 @@ fn build_shape(
 /// Resolve a bound_var to a structured Bound using the item-level knowledge
 /// available to the analysis (state fields vs constants), matching the
 /// backend's `total_idx` / `total_const_name` resolution exactly.
-fn resolve_bound(
-    bp: &BoundedPre,
-    names: &ItemNames,
-) -> Bound {
+fn resolve_bound(bp: &BoundedPre, names: &ItemNames) -> Bound {
     if let Some(lit) = bp.bound_literal {
         return Bound::Literal(lit);
     }
@@ -348,14 +354,8 @@ fn classify_local_fields(
 ) -> Vec<String> {
     let mut external: HashSet<String> = HashSet::new();
     // This txn's contract is observable.
-    crate::analysis::storage_class::collect_raw_idents(
-        &txn.contract.pre_condition,
-        &mut external,
-    );
-    crate::analysis::storage_class::collect_raw_idents(
-        &txn.contract.post_condition,
-        &mut external,
-    );
+    crate::analysis::storage_class::collect_raw_idents(&txn.contract.pre_condition, &mut external);
+    crate::analysis::storage_class::collect_raw_idents(&txn.contract.post_condition, &mut external);
     for item in items {
         if let TopLevel::Transaction(other) = item {
             if other.name == txn.name {
@@ -454,9 +454,7 @@ fn pressure_class(ty: Option<&Type>, expr: Option<&Expr>) -> PressureClass {
     }
     match expr {
         Some(Expr::Float(_)) => PressureClass::Float,
-        Some(Expr::Decimal(_)) | Some(Expr::Bool(_)) | Some(Expr::Char(_)) => {
-            PressureClass::Scalar
-        }
+        Some(Expr::Decimal(_)) | Some(Expr::Bool(_)) | Some(Expr::Char(_)) => PressureClass::Scalar,
         _ => PressureClass::Aggregate,
     }
 }
@@ -466,12 +464,10 @@ fn type_pressure_class(ty: &Type) -> PressureClass {
         Type::Bits(_) => PressureClass::Scalar,
         Type::Ptr(_) | Type::PtrConst(_) => PressureClass::Scalar,
         Type::Custom(name) => match name.as_str() {
-            "Float" | "Float16" | "Float32" | "Float64" | "Half" | "Double" => {
-                PressureClass::Float
-            }
-            "Int" | "UInt" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Bool" | "Char"
-            | "String" | "Blob" | "Data" => PressureClass::Scalar,
+            "Float" | "Float16" | "Float32" | "Float64" | "Half" | "Double" => PressureClass::Float,
+            "Int" | "UInt" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128" | "UInt8"
+            | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Bool" | "Char" | "String" | "Blob"
+            | "Data" => PressureClass::Scalar,
             _ => PressureClass::Aggregate,
         },
         _ => PressureClass::Aggregate,
@@ -495,7 +491,9 @@ fn count_temp_mediated_float_writes(
         let Statement::Assign(lhs, Expr::Identifier(rhs)) = stmt else {
             continue;
         };
-        let Some(field) = lhs.as_var_name() else { continue };
+        let Some(field) = lhs.as_var_name() else {
+            continue;
+        };
         if carried_float.contains(field) && lets.contains(rhs) {
             seen.insert(field);
         }
@@ -590,9 +588,9 @@ pub fn program_carry_mode(
     if !all_direct_loops_prefer_carry(shapes, float_registers, vector_min_width, temp_min) {
         return false;
     }
-    shapes.iter().all(|(name, shape)| {
-        shape.carried_float_count == 0 || batch_txns.contains(name)
-    })
+    shapes
+        .iter()
+        .all(|(name, shape)| shape.carried_float_count == 0 || batch_txns.contains(name))
 }
 
 /// Return the first transaction (sorted for determinism) that needs the
@@ -813,12 +811,13 @@ mod tests {
         println!("float_math local_fields={:?}", shape.local_fields);
         assert!(!shape.has_swan_song, "term; is not a swan song");
         for f in [
-            "x0", "x1", "x2", "p00", "p01", "p02", "p10", "p11", "p12", "p20",
-            "p21", "p22",
+            "x0", "x1", "x2", "p00", "p01", "p02", "p10", "p11", "p12", "p20", "p21", "p22",
         ] {
             assert!(
                 shape.local_fields.contains(&f.to_string()),
-                "{} should be loop-local, got {:?}", f, shape.local_fields
+                "{} should be loop-local, got {:?}",
+                f,
+                shape.local_fields
             );
         }
         assert!(!shape.local_fields.contains(&"count".to_string()));
@@ -826,7 +825,8 @@ mod tests {
         assert_eq!(shape.carried_float_count, 12);
         assert_eq!(shape.carried_scalar_count, 13);
         assert_eq!(shape.carried_aggregate_count, 0);
-        let mut generalized = crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
+        let mut generalized =
+            crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
         crate::analysis::destination_model::attach_loop_engine_plans(&mut generalized, &shapes);
         let engine = generalized.loop_engines.get("tick").expect("tick engine");
         assert_eq!(
@@ -872,8 +872,11 @@ mod tests {
         assert_eq!(shape.temp_mediated_float_count, 16);
         let mut map = HashMap::new();
         map.insert("tick".to_string(), shape);
-        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
-            "a fully temp-mediated body keeps the stateless SROA/vector shape");
+        assert_eq!(
+            escaped_effect_cause(&map, 16, 4),
+            None,
+            "a fully temp-mediated body keeps the stateless SROA/vector shape"
+        );
     }
 
     #[test]
@@ -892,10 +895,13 @@ node tick [count < total][count == total] {
         let (graph, items) = graph_and_items(src);
         let shapes = build_loop_shapes(&graph, &items, 4);
         let shape = shapes.get("tick").expect("tick shape");
-        assert!(!shape.local_fields.contains(&"f".to_string()),
-            "a field referenced by an exported defn is not loop-local");
+        assert!(
+            !shape.local_fields.contains(&"f".to_string()),
+            "a field referenced by an exported defn is not loop-local"
+        );
         assert!(!shape.local_fields.contains(&"count".to_string()));
-        let mut generalized = crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
+        let mut generalized =
+            crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan::default();
         crate::analysis::destination_model::attach_loop_engine_plans(&mut generalized, &shapes);
         let engine = generalized.loop_engines.get("tick").expect("tick engine");
         assert_eq!(
@@ -921,7 +927,9 @@ node tick [count < total][count == total] {
             let src = match file {
                 "float_math" => include_str!("../../benchmarks/float_math.bv"),
                 "float_math_nonzero" => include_str!("../../benchmarks/float_math_nonzero.bv"),
-                "kalman_filter_runtime" => include_str!("../../benchmarks/kalman_filter_runtime.bv"),
+                "kalman_filter_runtime" => {
+                    include_str!("../../benchmarks/kalman_filter_runtime.bv")
+                }
                 "sweep_sparse" => include_str!("../../benchmarks/sweep_sparse.bv"),
                 "sweep_mid" => include_str!("../../benchmarks/sweep_mid.bv"),
                 "telemetry_stream" => include_str!("../../benchmarks/telemetry_stream.bv"),
@@ -963,10 +971,14 @@ node tick [count < total][count == total] {
         let shapes = build_loop_shapes(&graph, &items, 4);
         let direct = shapes.get("direct").expect("direct shape");
         let temp = shapes.get("temp").expect("temp shape");
-        assert_eq!(direct.temp_mediated_float_count, 0,
-            "direct arithmetic is not temp-mediated");
-        assert_eq!(temp.temp_mediated_float_count, temp.carried_float_count,
-            "temp loop captures every next value in a let");
+        assert_eq!(
+            direct.temp_mediated_float_count, 0,
+            "direct arithmetic is not temp-mediated"
+        );
+        assert_eq!(
+            temp.temp_mediated_float_count, temp.carried_float_count,
+            "temp loop captures every next value in a let"
+        );
         assert_eq!(
             escaped_effect_cause(&shapes, 16, 4),
             Some("direct".to_string()),
@@ -985,18 +997,30 @@ node tick [count < total][count == total] {
         no_float.carried_scalar_count = 1;
         let mut map = HashMap::new();
         map.insert("tick".to_string(), no_float);
-        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
-            "Int-only loops keep stateless print");
+        assert_eq!(
+            escaped_effect_cause(&map, 16, 4),
+            None,
+            "Int-only loops keep stateless print"
+        );
         let mut agg = shape.clone();
         agg.carried_aggregate_count = 1;
         map.insert("tick".to_string(), agg);
-        assert_eq!(escaped_effect_cause(&map, 16, 4), None,
-            "aggregate-carried loops keep the stateless effect shape");
+        assert_eq!(
+            escaped_effect_cause(&map, 16, 4),
+            None,
+            "aggregate-carried loops keep the stateless effect shape"
+        );
         map.insert("tick".to_string(), shape);
-        assert_eq!(escaped_effect_cause(&map, 4, 4), None,
-            "a target that reserves all FP registers has no escaped shape");
-        assert_eq!(escaped_effect_cause(&map, u32::MAX as usize, 4), None,
-            "virtual-register targets have no physical spill shape");
+        assert_eq!(
+            escaped_effect_cause(&map, 4, 4),
+            None,
+            "a target that reserves all FP registers has no escaped shape"
+        );
+        assert_eq!(
+            escaped_effect_cause(&map, u32::MAX as usize, 4),
+            None,
+            "virtual-register targets have no physical spill shape"
+        );
     }
 
     #[test]
@@ -1035,7 +1059,10 @@ node tick [count < total][count == total] {
         let shape = shapes.values().next().unwrap();
         assert!(!shape.counter_only_writes, "acc write breaks counter-only");
         // acc and count are both loop-carried (count is read by the contract).
-        assert_eq!(shape.carried_fields, vec!["acc".to_string(), "count".to_string()]);
+        assert_eq!(
+            shape.carried_fields,
+            vec!["acc".to_string(), "count".to_string()]
+        );
     }
 
     #[test]

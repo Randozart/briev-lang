@@ -48,9 +48,7 @@ fn rewrite_body(
 ) {
     for stmt in body {
         match stmt {
-            Statement::Term(opt)
-            | Statement::EndProgram(opt)
-            | Statement::Rollback(opt) => {
+            Statement::Term(opt) | Statement::EndProgram(opt) | Statement::Rollback(opt) => {
                 if let Some(expr) = opt.as_mut() {
                     rewrite_expr(expr, env, universe);
                 }
@@ -130,15 +128,18 @@ fn expr_is_string(
 pub fn is_string_category(ty: &Type, universe: &TypeUniverse) -> bool {
     match ty {
         Type::Custom(name) => {
-            universe.get(name).map(|rt| {
-                rt.properties.contains_key("Cast.String")
+            universe
+                .get(name)
+                .map(|rt| {
+                    rt.properties.contains_key("Cast.String")
                     || rt.properties.contains_key("Cast.Blob")
                     // 2026-09-02 (de-hashtag sweep): category comparison on
                     // the trimmed base — legacy registrations may still
                     // spell the base "String"; the law is plain names.
                     || rt.base.trim_start_matches('#').starts_with("String")
                     || rt.base.trim_start_matches('#').starts_with("Blob")
-            }).unwrap_or(false)
+                })
+                .unwrap_or(false)
         }
         _ => false,
     }
@@ -152,7 +153,7 @@ mod tests {
     fn string_defn(name: &str, param_ty: Type, plus_rhs: Expr) -> Definition {
         use crate::ast::{Definition, Statement};
         Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
             parameters: vec![("a".to_string(), param_ty.clone())],
@@ -164,7 +165,8 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: false,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(Some(Expr::BinaryOp(
                 BinaryOpKind::Add,
                 Box::new(Expr::Identifier("a".to_string())),
@@ -180,8 +182,12 @@ mod tests {
     }
 
     fn term_kind(defn: &Definition) -> BinaryOpKind {
-        let Statement::Term(Some(expr)) = &defn.body[0] else { panic!("term expected") };
-        let Expr::BinaryOp(kind, _, _) = expr else { panic!("binary expected") };
+        let Statement::Term(Some(expr)) = &defn.body[0] else {
+            panic!("term expected")
+        };
+        let Expr::BinaryOp(kind, _, _) = expr else {
+            panic!("binary expected")
+        };
         *kind
     }
 
@@ -194,7 +200,9 @@ mod tests {
             Expr::Quoted(b"x".to_vec()),
         ))];
         rewrite_plus_concat(&mut items, &universe);
-        let TopLevel::Definition(d) = &items[0] else { panic!() };
+        let TopLevel::Definition(d) = &items[0] else {
+            panic!()
+        };
         assert_eq!(term_kind(d), BinaryOpKind::Concat);
     }
 
@@ -207,7 +215,9 @@ mod tests {
             Expr::Decimal(1),
         ))];
         rewrite_plus_concat(&mut items, &universe);
-        let TopLevel::Definition(d) = &items[0] else { panic!() };
+        let TopLevel::Definition(d) = &items[0] else {
+            panic!()
+        };
         assert_eq!(term_kind(d), BinaryOpKind::Add);
     }
 
@@ -220,7 +230,9 @@ mod tests {
             Expr::Quoted(b"literal".to_vec()),
         ))];
         rewrite_plus_concat(&mut items, &universe);
-        let TopLevel::Definition(d) = &items[0] else { panic!() };
+        let TopLevel::Definition(d) = &items[0] else {
+            panic!()
+        };
         assert_eq!(term_kind(d), BinaryOpKind::Concat);
     }
 }

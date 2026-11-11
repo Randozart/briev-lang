@@ -105,7 +105,12 @@ fn detect_for_body(txn_name: &str, body: &[Statement]) -> Option<BatchShape> {
                     pre.extend(stmts.clone());
                 }
             }
-            Segment::Guard { condition, body: gbody, classification, .. } => {
+            Segment::Guard {
+                condition,
+                body: gbody,
+                classification,
+                ..
+            } => {
                 if seen_guard {
                     return None; // multiple guards — not a batch shape
                 }
@@ -216,9 +221,10 @@ pub fn arithmetic_op_count(body: &[Statement]) -> usize {
 fn stmt_arith_ops(s: &Statement) -> usize {
     match s {
         Statement::Assign(_, e) | Statement::Let { expr: Some(e), .. } => expr_arith_ops(e),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) | Statement::Expression(e) => {
-            expr_arith_ops(e)
-        }
+        Statement::Term(Some(e))
+        | Statement::EndProgram(Some(e))
+        | Statement::Tail(e)
+        | Statement::Expression(e) => expr_arith_ops(e),
         Statement::Guarded(cond, body) => {
             expr_arith_ops(cond) + body.iter().map(stmt_arith_ops).sum::<usize>()
         }
@@ -230,13 +236,18 @@ fn expr_arith_ops(e: &Expr) -> usize {
     match e {
         Expr::BinaryOp(kind, l, r) => {
             let base = match kind {
-                BinaryOpKind::Add | BinaryOpKind::Sub
-                | BinaryOpKind::Mul | BinaryOpKind::Div | BinaryOpKind::Mod => 1,
+                BinaryOpKind::Add
+                | BinaryOpKind::Sub
+                | BinaryOpKind::Mul
+                | BinaryOpKind::Div
+                | BinaryOpKind::Mod => 1,
                 _ => 0,
             };
             base + expr_arith_ops(l) + expr_arith_ops(r)
         }
-        Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Deref(inner) => expr_arith_ops(inner),
+        Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::Deref(inner) => {
+            expr_arith_ops(inner)
+        }
         Expr::Call(_, args, _) => args.iter().map(expr_arith_ops).sum(),
         Expr::Tuple(ts) | Expr::List(ts) => ts.iter().map(expr_arith_ops).sum(),
         Expr::Index(a, i) => expr_arith_ops(a) + expr_arith_ops(i),
@@ -288,15 +299,24 @@ mod tests {
         let body = vec![
             assign("x0", add(id("a00"), id("x0"))),
             inc("count"),
-            guard(eq(mod_(id("count"), Expr::Decimal(5000000)), Expr::Decimal(0)),
-                vec![Statement::Expression(Expr::Call("PrintLn#".into(), vec![id("x0")], None))]),
+            guard(
+                eq(mod_(id("count"), Expr::Decimal(5000000)), Expr::Decimal(0)),
+                vec![Statement::Expression(Expr::Call(
+                    "PrintLn#".into(),
+                    vec![id("x0")],
+                    None,
+                ))],
+            ),
         ];
         let bs = detect_batch_shape(&txn(body)).unwrap();
         assert_eq!(bs.counter, "count");
         assert_eq!(bs.batch_size, 5000000);
         // inner body = pre + post (increment included), guard removed
         assert_eq!(bs.inner_body.len(), 2);
-        assert!(bs.inner_body.iter().any(|s| is_counter_increment(s, "count")));
+        assert!(bs
+            .inner_body
+            .iter()
+            .any(|s| is_counter_increment(s, "count")));
     }
 
     /// knucleotide-style: guard BEFORE the increment (pre-increment) — REJECTED
@@ -305,8 +325,14 @@ mod tests {
     fn pre_increment_guard_rejected() {
         let body = vec![
             assign("chksum", add(id("chksum"), id("n"))),
-            guard(eq(mod_(id("count"), Expr::Decimal(5000000)), Expr::Decimal(0)),
-                vec![Statement::Expression(Expr::Call("PrintLn#".into(), vec![id("nchksum")], None))]),
+            guard(
+                eq(mod_(id("count"), Expr::Decimal(5000000)), Expr::Decimal(0)),
+                vec![Statement::Expression(Expr::Call(
+                    "PrintLn#".into(),
+                    vec![id("nchksum")],
+                    None,
+                ))],
+            ),
             inc("count"),
         ];
         assert!(detect_batch_shape(&txn(body)).is_none());
@@ -315,10 +341,7 @@ mod tests {
     /// A non-periodic guard (`count == N`) is NOT a batch shape.
     #[test]
     fn non_periodic_guard_rejected() {
-        let body = vec![
-            inc("count"),
-            guard(eq(id("count"), id("total")), vec![]),
-        ];
+        let body = vec![inc("count"), guard(eq(id("count"), id("total")), vec![])];
         assert!(detect_batch_shape(&txn(body)).is_none());
     }
 
@@ -327,8 +350,14 @@ mod tests {
     fn multiple_guards_rejected() {
         let body = vec![
             inc("count"),
-            guard(eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)), vec![]),
-            guard(eq(mod_(id("count"), Expr::Decimal(7)), Expr::Decimal(0)), vec![]),
+            guard(
+                eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)),
+                vec![],
+            ),
+            guard(
+                eq(mod_(id("count"), Expr::Decimal(7)), Expr::Decimal(0)),
+                vec![],
+            ),
         ];
         assert!(detect_batch_shape(&txn(body)).is_none());
     }
@@ -336,9 +365,10 @@ mod tests {
     /// A counter that never increments cannot be batched.
     #[test]
     fn no_increment_rejected() {
-        let body = vec![
-            guard(eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)), vec![]),
-        ];
+        let body = vec![guard(
+            eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)),
+            vec![],
+        )];
         assert!(detect_batch_shape(&txn(body)).is_none());
     }
 
@@ -348,7 +378,10 @@ mod tests {
     fn multiple_batch_shapes_are_per_txn() {
         let body = vec![
             inc("count"),
-            guard(eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)), vec![]),
+            guard(
+                eq(mod_(id("count"), Expr::Decimal(5)), Expr::Decimal(0)),
+                vec![],
+            ),
         ];
         let mut m = HashMap::new();
         m.insert("a".to_string(), (body.clone(), Vec::new()));
@@ -365,7 +398,10 @@ mod tests {
     fn zero_on_left_matches() {
         let body = vec![
             inc("count"),
-            guard(eq(Expr::Decimal(0), mod_(id("count"), Expr::Decimal(5000000))), vec![]),
+            guard(
+                eq(Expr::Decimal(0), mod_(id("count"), Expr::Decimal(5000000))),
+                vec![],
+            ),
         ];
         let bs = detect_batch_shape(&txn(body)).unwrap();
         assert_eq!(bs.batch_size, 5000000);

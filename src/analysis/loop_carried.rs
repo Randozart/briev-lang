@@ -38,7 +38,10 @@ pub fn classify_fields(
 ) -> HashMap<String, FieldClass> {
     let mut out: HashMap<String, FieldClass> = HashMap::new();
     for f in write_set {
-        out.insert(f.clone(), classify_field(f, body, contract_exprs, observable_bodies));
+        out.insert(
+            f.clone(),
+            classify_field(f, body, contract_exprs, observable_bodies),
+        );
     }
     out
 }
@@ -57,7 +60,9 @@ fn classify_field(
     // contract expression, or read by an observable body.
     let read_in_body = body.iter().any(|s| statement_reads(s, field));
     let read_in_contract = contract_exprs.iter().any(|e| expr_reads(e, field));
-    let read_observable = observable_bodies.iter().any(|b| b.iter().any(|s| statement_reads(s, field)));
+    let read_observable = observable_bodies
+        .iter()
+        .any(|b| b.iter().any(|s| statement_reads(s, field)));
     if read_in_body || read_in_contract || read_observable {
         FieldClass::LoopCarried
     } else {
@@ -77,13 +82,16 @@ fn statement_writes(stmt: &Statement, field: &str) -> bool {
 fn statement_reads(stmt: &Statement, field: &str) -> bool {
     match stmt {
         Statement::Assign(lhs, rhs) => {
-            expr_reads(rhs, field) || match lhs {
-                Expr::Identifier(n) => n != field && expr_reads(lhs, field),
-                _ => expr_reads(lhs, field),
-            }
+            expr_reads(rhs, field)
+                || match lhs {
+                    Expr::Identifier(n) => n != field && expr_reads(lhs, field),
+                    _ => expr_reads(lhs, field),
+                }
         }
         Statement::Let { expr, .. } => expr.as_ref().map_or(false, |e| expr_reads(e, field)),
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => expr_reads(e, field),
+        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
+            expr_reads(e, field)
+        }
         Statement::Expression(e) => expr_reads(e, field),
         Statement::Guarded(cond, body) => {
             expr_reads(cond, field) || body.iter().any(|s| statement_reads(s, field))
@@ -106,7 +114,11 @@ fn expr_reads(expr: &Expr, field: &str) -> bool {
         Expr::List(items) => items.iter().any(|i| expr_reads(i, field)),
         Expr::Tuple(items) => items.iter().any(|i| expr_reads(i, field)),
         Expr::Block(stmts) => stmts.iter().any(|s| statement_reads(s, field)),
-        Expr::If(c, t, e) => expr_reads(c, field) || expr_reads(t, field) || e.as_ref().map_or(false, |e| expr_reads(e, field)),
+        Expr::If(c, t, e) => {
+            expr_reads(c, field)
+                || expr_reads(t, field)
+                || e.as_ref().map_or(false, |e| expr_reads(e, field))
+        }
         Expr::Deref(inner) => expr_reads(inner, field),
         _ => false,
     }

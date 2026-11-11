@@ -34,7 +34,6 @@
 
 use crate::ast::{Expr, Statement, TopLevel, Type};
 
-
 /// Split `body` into segments per the rules above.
 pub fn split_task_body(body: &[Statement], param_names: &[String]) -> Vec<Vec<Statement>> {
     let mut segments: Vec<Vec<Statement>> = vec![Vec::new()];
@@ -91,8 +90,7 @@ pub fn collect_task_abi_errors(
     errors
 }
 
-const TASK_ABI_HINT: &str =
-    "compiled tasks carry arguments/results as i64 slots; \
+const TASK_ABI_HINT: &str = "compiled tasks carry arguments/results as i64 slots; \
      use Int/Bool/Char/Ptr (v1 scope)";
 
 fn task_type_is_i64_abi(
@@ -159,7 +157,10 @@ fn stmt_walk(s: &Statement, out: &mut std::collections::HashSet<String>) {
 }
 
 fn expr_walk(e: &Expr, out: &mut std::collections::HashSet<String>) {
-    if let Expr::Spawn { type_name, args, .. } = e {
+    if let Expr::Spawn {
+        type_name, args, ..
+    } = e
+    {
         out.insert(type_name.clone());
     }
     for child in expr_children(e) {
@@ -180,9 +181,11 @@ fn stmt_exprs(s: &Statement) -> Vec<&Expr> {
         | Statement::Gate(e) => vec![e],
         Statement::Guarded(cond, _) => vec![cond],
         Statement::Foreach { list, .. } => vec![list],
-        Statement::ArrowAssign { target, value, .. } => {
-            target.iter().map(|t| t.as_ref()).chain(std::iter::once(value.as_ref())).collect()
-        }
+        Statement::ArrowAssign { target, value, .. } => target
+            .iter()
+            .map(|t| t.as_ref())
+            .chain(std::iter::once(value.as_ref()))
+            .collect(),
         Statement::Match { expr, .. } => vec![expr],
         _ => Vec::new(),
     }
@@ -223,7 +226,9 @@ fn expr_children(e: &Expr) -> Vec<&Expr> {
 /// roots at the parameter. Canonical home — the interpreter's registration
 /// path calls THIS function after Phase C extraction.
 pub fn mentions_param_field(stmt: &Statement, params: &[String]) -> bool {
-    if params.is_empty() { return false; }
+    if params.is_empty() {
+        return false;
+    }
     fn root_is_param(e: &Expr, params: &[String]) -> bool {
         let mut root = e;
         loop {
@@ -246,7 +251,7 @@ pub fn mentions_param_field(stmt: &Statement, params: &[String]) -> bool {
             | Statement::Assign(_, e)
             | Statement::Expression(e)
             | Statement::Term(Some(e))
-        | Statement::Tail(e)
+            | Statement::Tail(e)
             | Statement::Rollback(Some(e))
             | Statement::EndProgram(Some(e))
             | Statement::Check(e)
@@ -261,13 +266,17 @@ pub fn mentions_param_field(stmt: &Statement, params: &[String]) -> bool {
             Statement::Foreach { list, body, .. } => {
                 expr_walk(list, params) || body.iter().any(|s| stmt_exprs(s, params))
             }
-            Statement::ArrowAssign { target: Some(t), value, .. } => {
-                expr_walk(t, params) || expr_walk(value, params)
-            }
+            Statement::ArrowAssign {
+                target: Some(t),
+                value,
+                ..
+            } => expr_walk(t, params) || expr_walk(value, params),
             Statement::ArrowAssign { value, .. } => expr_walk(value, params),
             Statement::Match { expr, arms } => {
                 expr_walk(expr, params)
-                    || arms.iter().any(|a| a.body.iter().any(|s| stmt_exprs(s, params)))
+                    || arms
+                        .iter()
+                        .any(|a| a.body.iter().any(|s| stmt_exprs(s, params)))
             }
             _ => false,
         }
@@ -293,9 +302,7 @@ mod tests {
     fn yield_boundaries_and_param_reads_head_segments() {
         // fire (bare target) | read: the port read must HEAD segment 1 so
         // post-wake re-runs never repeat the fire.
-        let body = parse_body(
-            "defn job(d: Dmg, o: Dmg) -> Int { o <- Dmg{x:1}; term d.x; };",
-        );
+        let body = parse_body("defn job(d: Dmg, o: Dmg) -> Int { o <- Dmg{x:1}; term d.x; };");
         let segs = split_task_body(&body, &["d".into(), "o".into()]);
         assert_eq!(segs.len(), 2);
         assert!(matches!(segs[0][0], Statement::ArrowAssign { .. }));
@@ -304,9 +311,7 @@ mod tests {
 
     #[test]
     fn nested_port_path_roots_at_parameter() {
-        let body = parse_body(
-            "defn job(ch: Chan) -> Int { side(); term ch.wire.v; };",
-        );
+        let body = parse_body("defn job(ch: Chan) -> Int { side(); term ch.wire.v; };");
         let segs = split_task_body(&body, &["ch".into()]);
         assert_eq!(segs.len(), 2, "nested path still heads its segment");
     }
@@ -322,7 +327,10 @@ mod tests {
         let (body, params) = match &items[0] {
             TopLevel::Definition(d) => (
                 d.body.clone(),
-                d.parameters.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+                d.parameters
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect::<Vec<_>>(),
             ),
             _ => panic!(),
         };
@@ -332,11 +340,8 @@ mod tests {
         // read back.
         let mut interp = crate::interpreter::Interpreter::new();
         interp.load_program(&items);
-        crate::interpreter::register_pending_task(
-            1, "job".to_string(), Vec::new(), body, &params,
-        );
-        let registered = crate::interpreter::take_task_segments(1)
-            .expect("registered task id 1");
+        crate::interpreter::register_pending_task(1, "job".to_string(), Vec::new(), body, &params);
+        let registered = crate::interpreter::take_task_segments(1).expect("registered task id 1");
         // Statement's hand-written PartialEq ignores some fields (spans,
         // inline wrappers), so structural equality is asserted via Debug —
         // behavioral pin of "same splitter output", not literal identity.

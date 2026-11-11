@@ -16,16 +16,16 @@
 //! Undo: move these functions back into src/compile.rs and drop this
 //! module.
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use crate::ast::{Expr, StageKind, TopLevel};
+pub use crate::backend::llvm::TrgUnresolvedAction;
 use crate::lexer::Token;
 use crate::plugin::loader::{discover_system_plugins, extract_inline_stage_blocks};
 use crate::plugin::PluginManager;
-use crate::target::{BackendKind, get_extension};
+use crate::target::{get_extension, BackendKind};
 use crate::type_universe::TypeUniverse;
-pub use crate::backend::llvm::TrgUnresolvedAction;
-use crate::{macros, dbriev, analysis};
+use crate::{analysis, dbriev, macros};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BeastStage {
@@ -43,9 +43,16 @@ pub enum BeastStage {
 impl BeastStage {
     /// Stages that have AST data (get .beast files).
     pub fn has_ast(&self) -> bool {
-        matches!(self, BeastStage::Parse | BeastStage::Resolve
-            | BeastStage::TypeCheck | BeastStage::Normalize | BeastStage::Verify
-            | BeastStage::Alloc | BeastStage::Provenance)
+        matches!(
+            self,
+            BeastStage::Parse
+                | BeastStage::Resolve
+                | BeastStage::TypeCheck
+                | BeastStage::Normalize
+                | BeastStage::Verify
+                | BeastStage::Alloc
+                | BeastStage::Provenance
+        )
     }
 
     /// Stages that have IR text data (get .ir files).
@@ -68,8 +75,11 @@ impl std::str::FromStr for BeastStage {
             "codegen" => Ok(BeastStage::Codegen),
             "optimize" => Ok(BeastStage::Optimize),
             "all" => Err("use multiple --emit-beast flags for individual stages".to_string()),
-            _ => Err(format!("unknown BEAST stage '{}'. Use one of: parse, resolve, type-check, \
-                             normalize, verify, alloc, provenance, codegen, optimize", s)),
+            _ => Err(format!(
+                "unknown BEAST stage '{}'. Use one of: parse, resolve, type-check, \
+                             normalize, verify, alloc, provenance, codegen, optimize",
+                s
+            )),
         }
     }
 }
@@ -116,15 +126,11 @@ pub struct CompiledView {
 /// var → spec). Bundled so compile_view stays at five parameters.
 pub struct ViewMountSpecs {
     /// Component type → per-mount pool specs (`<Counter />` anonymous spawns).
-    pub pools: std::collections::HashMap<
-        String,
-        Vec<crate::analysis::component_instances::MountSpec>,
-    >,
+    pub pools:
+        std::collections::HashMap<String, Vec<crate::analysis::component_instances::MountSpec>>,
     /// Briev-side instance var → spec (`<c1 />` mounts `let c1: Counter`).
-    pub instances: std::collections::HashMap<
-        String,
-        crate::analysis::component_instances::MountSpec,
-    >,
+    pub instances:
+        std::collections::HashMap<String, crate::analysis::component_instances::MountSpec>,
     /// 2026-10-07 (member-txn-on-plain-obj-var): bare member-txn name → the
     /// emitted top-level variant (`go` → `go_router`) for a plain top-level obj
     /// var whose view `b-trigger` references the member txn. The top-level
@@ -149,12 +155,23 @@ impl std::str::FromStr for BeastFilter {
             let position = match pos_str {
                 "before" => BeastPosition::Before,
                 "after" => BeastPosition::After,
-                _ => return Err(format!("unknown beast position '{}'. Use before, after, or omit", pos_str)),
+                _ => {
+                    return Err(format!(
+                        "unknown beast position '{}'. Use before, after, or omit",
+                        pos_str
+                    ))
+                }
             };
-            Ok(BeastFilter { stage, position: Some(position) })
+            Ok(BeastFilter {
+                stage,
+                position: Some(position),
+            })
         } else {
             let stage: BeastStage = s.parse()?;
-            Ok(BeastFilter { stage, position: None })
+            Ok(BeastFilter {
+                stage,
+                position: None,
+            })
         }
     }
 }
@@ -309,6 +326,10 @@ pub struct BuildOptions {
     /// manifest). Provenance only — the compiler never interprets the key as
     /// a route (route policy is the stdlib's, Part 2).
     pub web_page_key: Option<String>,
+    /// 2026-11-11 (verify-bodies plan): prove each txn/defn BODY satisfies its
+    /// own [pre][post] via the symbolic+Z3 body prover (--verify-bodies).
+    /// Default off — keeps the historical consistency-only contract behaviour.
+    pub verify_bodies: bool,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -321,31 +342,58 @@ impl Default for BuildOptions {
     fn default() -> Self {
         BuildOptions {
             run: false,
-            config_dir: None, file_path: String::new(),
-            emit_ir_only: false, out_dir: None,
-            optimize_budget: 256, emit_beast_stages: vec![], emit_hir: false,
-            backend: BackendKind::Llvm, no_stdlib: false,
-            stdlib_path: None, disable_plugins: vec![],
-            enable_plugins: vec![], trg_unresolved_action: TrgUnresolvedAction::Warn,
-            explain_causality: false, extra_objects: vec![],
-            shared: false, library_mode: false,
-            keep_all_defns: false, int_bits: 64,
-            glue_config: None, stack_threshold: 4096,
-            allow_read: false, allow_write: false,
-            allow_run: false, allow_sys_query: false,
-            allow_net: false, macro_budget: 0,
-            dump_vfs: false, update_lockfile: false,
-            dump_traces: false, diff_mode: false,
-            sysquery_overrides: HashMap::new(), target: None,
-            all_targets: false, sysquery_pairs: vec![],
-            sysquery_files: vec![], style_css: None,
-            view_html: None, view_bindings: vec![],
-            ssr: false, dev: false, split: false,
+            config_dir: None,
+            file_path: String::new(),
+            emit_ir_only: false,
+            out_dir: None,
+            optimize_budget: 256,
+            emit_beast_stages: vec![],
+            emit_hir: false,
+            backend: BackendKind::Llvm,
+            no_stdlib: false,
+            stdlib_path: None,
+            disable_plugins: vec![],
+            enable_plugins: vec![],
+            trg_unresolved_action: TrgUnresolvedAction::Warn,
+            explain_causality: false,
+            extra_objects: vec![],
+            shared: false,
+            library_mode: false,
+            keep_all_defns: false,
+            int_bits: 64,
+            glue_config: None,
+            stack_threshold: 4096,
+            allow_read: false,
+            allow_write: false,
+            allow_run: false,
+            allow_sys_query: false,
+            allow_net: false,
+            macro_budget: 0,
+            dump_vfs: false,
+            update_lockfile: false,
+            dump_traces: false,
+            diff_mode: false,
+            sysquery_overrides: HashMap::new(),
+            target: None,
+            all_targets: false,
+            sysquery_pairs: vec![],
+            sysquery_files: vec![],
+            style_css: None,
+            view_html: None,
+            view_bindings: vec![],
+            ssr: false,
+            dev: false,
+            split: false,
             accel_cpu_fallback: None,
-            accel_mode: None, isr_mechanism: None,
-            triple_override: None, linker_script_override: None,
-            entry_override: None, raw_bin: false,
-            no_link: false, web_page_key: None,
+            accel_mode: None,
+            isr_mechanism: None,
+            triple_override: None,
+            linker_script_override: None,
+            entry_override: None,
+            raw_bin: false,
+            no_link: false,
+            web_page_key: None,
+            verify_bodies: false,
         }
     }
 }
@@ -361,7 +409,9 @@ pub fn evaluate_pending_comptime(
     program: &mut Vec<TopLevel>,
     universe: &mut TypeUniverse,
 ) -> Result<(), String> {
-    let pending: Vec<(String, crate::ast::Expr, bool)> = pm.pending_comptime.drain()
+    let pending: Vec<(String, crate::ast::Expr, bool)> = pm
+        .pending_comptime
+        .drain()
         .map(|(k, (e, c))| (k, e, c))
         .collect();
     // 2026-07-25: Use a fresh sandbox cloned from pm for evaluation, then
@@ -371,9 +421,13 @@ pub fn evaluate_pending_comptime(
         let val = {
             let mut pm_opt: Option<&mut PluginManager> = Some(pm);
             crate::macros::eval::eval_nav_chain(
-                &expr, program, universe, StageKind::Parsed,
+                &expr,
+                program,
+                universe,
+                StageKind::Parsed,
                 &std::collections::HashMap::new(),
-                &mut sandbox, &mut pm_opt,
+                &mut sandbox,
+                &mut pm_opt,
             )?
         };
         pm.comptime_vars.insert(name, (val, is_const));
@@ -426,7 +480,10 @@ pub fn nav_value_to_expr(val: &crate::macros::eval::NavValue) -> Result<Expr, St
     }
 }
 
-pub fn preprocess_source_for_path(file_path: &str, source: &str) -> Result<PreprocessedSource, String> {
+pub fn preprocess_source_for_path(
+    file_path: &str,
+    source: &str,
+) -> Result<PreprocessedSource, String> {
     if get_extension(file_path) != ".rbv" {
         return Ok(PreprocessedSource {
             briev_source: source.to_string(),
@@ -504,7 +561,10 @@ pub fn compile_view(
     let html = if specs.top_level_variants.is_empty() {
         html
     } else {
-        crate::view_compiler::ViewCompiler::rewrite_top_level_txn_variants(&html, &specs.top_level_variants)
+        crate::view_compiler::ViewCompiler::rewrite_top_level_txn_variants(
+            &html,
+            &specs.top_level_variants,
+        )
     };
     for item in items {
         match item {
@@ -562,8 +622,10 @@ pub fn compile_view(
         })
         .collect();
     let mut warnings: Vec<String> = diagnostics.iter().skip(validation_count).cloned().collect();
-    let mut collection_iterables: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut collection_string_iterables: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut collection_iterables: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut collection_string_iterables: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let mut collection_struct_iterables: std::collections::HashMap<
         String,
         Vec<crate::glue::web_generator::CollectionElementField>,
@@ -571,38 +633,41 @@ pub fn compile_view(
     for binding in &bindings {
         if let crate::view_compiler::Directive::Each { iterable, .. } = &binding.directive {
             let ty = field_types.get(iterable);
-            let is_vector = ty.map(|t| matches!(t, crate::ast::Type::Vector(..))).unwrap_or(false);
+            let is_vector = ty
+                .map(|t| matches!(t, crate::ast::Type::Vector(..)))
+                .unwrap_or(false);
             if !is_vector {
                 // 2026-08-12 (Iterable protocol, slice 4): a generic collection
                 // iterable gets a snapshot materializer; the vector-only skip
                 // warning is replaced by the materializer path.
-                let is_collection = ty.map(|t| {
-                    matches!(
-                        t,
-                        crate::ast::Type::Applied(..)
-                    )
-                }).unwrap_or(false);
+                let is_collection = ty
+                    .map(|t| matches!(t, crate::ast::Type::Applied(..)))
+                    .unwrap_or(false);
                 if is_collection {
                     collection_iterables.insert(iterable.clone());
                     // 2026-08-12 (slice 4, String elements): a collection whose
                     // element type is String materializes string POINTERS in the
                     // snapshot — the shim decodes them as `[len][bytes]`.
-                    let is_string_elem = ty.map(|t| match t {
-                        crate::ast::Type::Applied(_, args) => args
-                            .first()
-                            .map(|a| *a == crate::ast::Type::string())
-                            .unwrap_or(false),
-                        _ => false,
-                    }).unwrap_or(false);
+                    let is_string_elem = ty
+                        .map(|t| match t {
+                            crate::ast::Type::Applied(_, args) => args
+                                .first()
+                                .map(|a| *a == crate::ast::Type::string())
+                                .unwrap_or(false),
+                            _ => false,
+                        })
+                        .unwrap_or(false);
                     if is_string_elem {
                         collection_string_iterables.insert(iterable.clone());
                     }
                     let elem_base = ty.and_then(|t| match t {
-                        crate::ast::Type::Applied(_, args) => args.first().and_then(|elem| match elem {
-                            crate::ast::Type::Custom(base)
-                            | crate::ast::Type::Applied(base, _) => Some(base.clone()),
-                            _ => None,
-                        }),
+                        crate::ast::Type::Applied(_, args) => {
+                            args.first().and_then(|elem| match elem {
+                                crate::ast::Type::Custom(base)
+                                | crate::ast::Type::Applied(base, _) => Some(base.clone()),
+                                _ => None,
+                            })
+                        }
                         _ => None,
                     });
                     if let Some(fields) = elem_base.and_then(|base| struct_fields.get(&base)) {
@@ -758,7 +823,9 @@ pub fn view_external_roots(
     use crate::view_compiler::Directive;
     let mut roots = view_trigger_txns(bindings);
     for b in bindings {
-        let Directive::Bind { target } = &b.directive else { continue };
+        let Directive::Bind { target } = &b.directive else {
+            continue;
+        };
         if let Some(Ok(route)) = routes.get(target) {
             roots.insert(route.txn.clone());
         }
@@ -770,8 +837,7 @@ pub fn resolve_bind_routes(
     graph: &Option<crate::analysis::transition_graph::ReactorTransitionGraph>,
     items: &[crate::ast::TopLevel],
     universe: &TypeUniverse,
-) -> std::collections::HashMap<String, Result<crate::glue::web_generator::BindRoute, String>>
-{
+) -> std::collections::HashMap<String, Result<crate::glue::web_generator::BindRoute, String>> {
     use crate::glue::web_generator::{BindRoute, ParamKind, TypeTag};
     use std::collections::HashMap;
 
@@ -822,8 +888,15 @@ pub fn resolve_bind_routes(
         match param_ty.get(&txn) {
             Some(ty) => {
                 let cat = crate::type_universe::protocol_category(universe, ty);
-                let kind = ParamKind::from_type_tag(TypeTag::from_protocol_category(cat.as_deref()));
-                out.insert(field.clone(), Ok(BindRoute { txn, param_kind: kind }));
+                let kind =
+                    ParamKind::from_type_tag(TypeTag::from_protocol_category(cat.as_deref()));
+                out.insert(
+                    field.clone(),
+                    Ok(BindRoute {
+                        txn,
+                        param_kind: kind,
+                    }),
+                );
             }
             None => {
                 out.insert(
@@ -945,7 +1018,9 @@ pub fn check_data_source(file_path: &str, source: &str) -> Result<(), String> {
         let Ok(import_src) = std::fs::read_to_string(&candidate) else {
             return Err(format!(
                 "{}: cannot resolve schema import '{}' (wanted {})",
-                file_path, imp, candidate.display()
+                file_path,
+                imp,
+                candidate.display()
             ));
         };
         let imported = crate::dbriev::v2::parse_document(&import_src)
@@ -954,13 +1029,19 @@ pub fn check_data_source(file_path: &str, source: &str) -> Result<(), String> {
     }
     let errors = crate::dbriev::validate::validate_document(&doc);
     if errors.is_empty() {
-        println!("OK ({} schema{}, {} data groups)",
+        println!(
+            "OK ({} schema{}, {} data groups)",
             doc.schemas.len(),
             if doc.schemas.len() == 1 { "" } else { "s" },
-            doc.data_groups.len());
+            doc.data_groups.len()
+        );
         Ok(())
     } else {
-        Err(format!("schema validation failed for '{}':\n  {}", file_path, errors.join("\n  ")))
+        Err(format!(
+            "schema validation failed for '{}':\n  {}",
+            file_path,
+            errors.join("\n  ")
+        ))
     }
 }
 
@@ -974,7 +1055,9 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
     pm.register(Box::new(crate::plugin::env_plugin::EnvPlugin));
     pm.register(Box::new(crate::plugin::print_plugin::PrintPlugin));
     pm.register(Box::new(crate::plugin::entry_plugin::EntryPlugin));
-    pm.register(Box::new(crate::plugin::inline_frgn_plugin::InlineFrgnPlugin));
+    pm.register(Box::new(
+        crate::plugin::inline_frgn_plugin::InlineFrgnPlugin,
+    ));
     pm.register(Box::new(crate::plugin::script_plugin::ScriptPlugin));
 
     // Apply per-extension filtering from config/targets.dbvl
@@ -1056,15 +1139,22 @@ pub fn module_plugin_factory(
     })
 }
 
-pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
+pub fn compile_to_typed(
+    file_path: &str,
+    source: &str,
+    opts: &BuildOptions,
+) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
     let mut pm = build_plugin_manager(file_path, opts);
-    let project_root = std::env::current_dir()
-        .map_err(|e| format!("cannot determine project root: {}", e))?;
+    let project_root =
+        std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
     if opts.update_lockfile {
         let granted = crate::macros::lockfile::cli_granted_set(
-            opts.allow_read, opts.allow_write, opts.allow_run,
-            opts.allow_sys_query, opts.allow_net,
+            opts.allow_read,
+            opts.allow_write,
+            opts.allow_run,
+            opts.allow_sys_query,
+            opts.allow_net,
         );
         let lock = crate::macros::lockfile::generate_lockfile(&granted, None)?;
         crate::macros::lockfile::save_lockfile(&project_root_str, &lock)?;
@@ -1095,11 +1185,9 @@ pub fn compile_to_typed(file_path: &str, source: &str, opts: &BuildOptions) -> R
     resolver.plugin_factory = Some(module_plugin_factory(opts, file_path));
     // 2026-10-06 (package/module v0, folio): dependency import roots.
     // Build mode may write folio.lock (a no-op without git deps).
-    for root in crate::packages::project_dependency_roots(
-        file_path,
-        crate::packages::ResolveMode::Build,
-    )
-    .map_err(|e| e.to_string())?
+    for root in
+        crate::packages::project_dependency_roots(file_path, crate::packages::ResolveMode::Build)
+            .map_err(|e| e.to_string())?
     {
         resolver.add_search_path(root);
     }
@@ -1166,7 +1254,11 @@ pub fn effective_view_html(
     }
 }
 
-fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result<(Vec<crate::ast::TopLevel>, TypeUniverse), String> {
+fn parse_and_check(
+    file_path: &str,
+    source: &str,
+    opts: &BuildOptions,
+) -> Result<(Vec<crate::ast::TopLevel>, TypeUniverse), String> {
     // 2026-08-18 (check/build divergence): `brievc check` MUST run the SAME
     // pipeline stages as `brievc build` before check_types — plugin manager +
     // lockfile, PreLex, inline stage blocks, comptime evaluation, the Parsed
@@ -1180,8 +1272,8 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     let preprocessed = preprocess_source_for_path(file_path, source)?;
     let mut source = preprocessed.briev_source;
     let mut pm = build_plugin_manager(file_path, opts);
-    let project_root = std::env::current_dir()
-        .map_err(|e| format!("cannot determine project root: {}", e))?;
+    let project_root =
+        std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
     if opts.update_lockfile {
         let granted = crate::macros::lockfile::cli_granted_set(
@@ -1218,11 +1310,9 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     resolver.plugin_factory = Some(module_plugin_factory(opts, file_path));
     // 2026-10-06 (package/module v0, folio): dependency import roots.
     // Check mode is read-only — it never writes folio.lock.
-    for root in crate::packages::project_dependency_roots(
-        file_path,
-        crate::packages::ResolveMode::Check,
-    )
-    .map_err(|e| e.to_string())?
+    for root in
+        crate::packages::project_dependency_roots(file_path, crate::packages::ResolveMode::Check)
+            .map_err(|e| e.to_string())?
     {
         resolver.add_search_path(root);
     }
@@ -1261,11 +1351,7 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // 2026-09-26 (E15): declared typedefs registered before the typecheck —
     // same as the build path; `check` and `build` must not diverge on
     // quantity-literal admission (imports like the electronics Volt/Amp).
-    crate::backend::register_types::register_typedefs(
-        &items,
-        &mut universe,
-        opts.int_bits,
-    )?;
+    crate::backend::register_types::register_typedefs(&items, &mut universe, opts.int_bits)?;
     check_types(
         &mut items,
         &universe,
@@ -1316,19 +1402,13 @@ fn parse_and_check(file_path: &str, source: &str, opts: &BuildOptions) -> Result
     // diverges between paths.
     let task_errors = crate::analysis::task_linear::analyze(&items);
     if !task_errors.is_empty() {
-        return Err(format!(
-            "task handle errors:\n{}",
-            task_errors.join("\n")
-        ));
+        return Err(format!("task handle errors:\n{}", task_errors.join("\n")));
     }
     // 2026-08-07 (object instance pools): `check` must reject unprovable
     // spawn counts exactly like `build` (Briev has no runtime errors).
     let (_, _, spawn_errors, _) = crate::analysis::spawn_pool::analyze(&items);
     if !spawn_errors.is_empty() {
-        return Err(format!(
-            "spawn pool errors:\n{}",
-            spawn_errors.join("\n")
-        ));
+        return Err(format!("spawn pool errors:\n{}", spawn_errors.join("\n")));
     }
     Ok((items, universe))
 }
@@ -1350,15 +1430,18 @@ pub fn lex_for_path(
     source: &str,
 ) -> Result<Vec<(Token, std::ops::Range<usize>)>, String> {
     if crate::conformance::is_formatted(std::path::Path::new(file_path)) {
-        crate::layout::layout_process(source).map_err(|e| {
-            format!("{}: formatted-source error: {}", file_path, e)
-        })
+        crate::layout::layout_process(source)
+            .map_err(|e| format!("{}: formatted-source error: {}", file_path, e))
     } else {
         lex(source)
     }
 }
 
-pub fn parse(file_path: &str, tokens: &[(Token, std::ops::Range<usize>)], source: &str) -> Result<Vec<crate::ast::TopLevel>, String> {
+pub fn parse(
+    file_path: &str,
+    tokens: &[(Token, std::ops::Range<usize>)],
+    source: &str,
+) -> Result<Vec<crate::ast::TopLevel>, String> {
     parse_with_warnings(file_path, tokens, source).map(|(items, _)| items)
 }
 
@@ -1391,10 +1474,20 @@ pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String
         }
     }
     for item in items {
-        let crate::ast::TopLevel::TypeDef(td) = item else { continue; };
+        let crate::ast::TopLevel::TypeDef(td) = item else {
+            continue;
+        };
         for tp in &td.type_params {
-            let crate::ast::top::TypeParam { name, bound: Some(bound) } = tp else { continue; };
-            let Some(bound_category) = category_of(bound) else { continue };
+            let crate::ast::top::TypeParam {
+                name,
+                bound: Some(bound),
+            } = tp
+            else {
+                continue;
+            };
+            let Some(bound_category) = category_of(bound) else {
+                continue;
+            };
             // Check at least one operator references this category in its params
             let has_op = td.body.operators.iter().any(|op| {
                 op.params
@@ -1414,7 +1507,6 @@ pub fn validate_constraints(items: &[crate::ast::TopLevel]) -> Result<(), String
     Ok(())
 }
 
-
 /// 2026-09-14 (machine-entry plan): the effective ISR mechanism — the CLI
 /// override, else the target profile's row (keyed by the resolved triple,
 /// longest prefix). The inference source for mechanism-less
@@ -1429,8 +1521,7 @@ fn effective_isr_mechanism(opts: &BuildOptions) -> Option<String> {
             .lookup(&get_extension(&opts.file_path))
             .and_then(|e| e.target_triple.clone()),
     };
-    profile_triple
-        .and_then(|t| crate::config_tuning::target_settings_for(&t).isr_mechanism)
+    profile_triple.and_then(|t| crate::config_tuning::target_settings_for(&t).isr_mechanism)
 }
 
 pub fn check_types(
@@ -1445,11 +1536,16 @@ pub fn check_types(
     // uses). Only `.ebv` runs the electronics analysis that materializes
     // component-pin layout; elsewhere a component-pin access is a boundary
     // error at the typecheck, never a codegen panic (BUGS.md).
-    crate::typechecker::check_program_with_target(items, universe, isr_mechanism, surface_electronics)
-        .map_err(|errors| {
-            let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
-            format!("type errors:\n  {}", msgs.join("\n  "))
-        })
+    crate::typechecker::check_program_with_target(
+        items,
+        universe,
+        isr_mechanism,
+        surface_electronics,
+    )
+    .map_err(|errors| {
+        let msgs: Vec<String> = errors.iter().map(|e| format!("{}", e)).collect();
+        format!("type errors:\n  {}", msgs.join("\n  "))
+    })
 }
 
 #[cfg(test)]
@@ -1480,11 +1576,19 @@ mod tests {
         std::fs::write(&root, source).unwrap();
         let opts = BuildOptions {
             file_path: root.to_string_lossy().to_string(),
-            stdlib_path: Some(crate::resource_root().join("lib").to_string_lossy().to_string()),
+            stdlib_path: Some(
+                crate::resource_root()
+                    .join("lib")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             ..BuildOptions::default()
         };
         let result = parse_and_check(root.to_str().unwrap(), source, &opts);
-        assert!(result.is_ok(), "browser root import should typecheck: {result:?}");
+        assert!(
+            result.is_ok(),
+            "browser root import should typecheck: {result:?}"
+        );
     }
 
     #[test]
@@ -1495,7 +1599,12 @@ mod tests {
         std::fs::write(&root, source).unwrap();
         let opts = BuildOptions {
             file_path: root.to_string_lossy().to_string(),
-            stdlib_path: Some(crate::resource_root().join("lib").to_string_lossy().to_string()),
+            stdlib_path: Some(
+                crate::resource_root()
+                    .join("lib")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             ..BuildOptions::default()
         };
         let (items, universe) = parse_and_check(root.to_str().unwrap(), source, &opts)
@@ -1606,10 +1715,7 @@ mod tests {
     fn external_roots_add_only_bind_routes() {
         // Trigger txns + the sole-writer of each b-bind field; a display-only
         // field present in `routes` is NOT rooted unless bound.
-        let bindings = vec![
-            trigger("btn", "go"),
-            bind("name_input", "name"),
-        ];
+        let bindings = vec![trigger("btn", "go"), bind("name_input", "name")];
         let routes = routes(&[("name", "set_name"), ("unbound_field", "set_unbound")]);
         let roots = view_external_roots(&bindings, &routes);
         assert!(roots.contains("go"));
@@ -1623,10 +1729,7 @@ mod tests {
         // nothing — the shim surfaces a diagnostic elsewhere.
         let bindings = vec![bind("input", "ambiguous")];
         let mut routes = std::collections::HashMap::new();
-        routes.insert(
-            "ambiguous".to_string(),
-            Err("multiple writers".to_string()),
-        );
+        routes.insert("ambiguous".to_string(), Err("multiple writers".to_string()));
         assert!(view_external_roots(&bindings, &routes).is_empty());
     }
 
@@ -1655,8 +1758,8 @@ mod tests {
     fn sbv_float_state_is_rejected() {
         // Float is not synthesizable (B5007). The gate must fire for a .sbv.
         let src = "let temperature: Float = 0.0;\n";
-        let err = check_source("chip.sbv", src)
-            .expect_err("a .sbv with a Float state must be rejected");
+        let err =
+            check_source("chip.sbv", src).expect_err("a .sbv with a Float state must be rejected");
         assert!(
             err.contains("synthesizability"),
             "expected the .sbv synthesizability gate to fire, got: {err}"

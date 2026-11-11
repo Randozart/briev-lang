@@ -14,11 +14,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use briev_compiler::backend::llvm::LlvmBackend;
 use briev_compiler::ast::StageKind;
+use briev_compiler::backend::llvm::LlvmBackend;
 use briev_compiler::plugin::loader::extract_inline_stage_blocks;
 use briev_compiler::plugin::PluginManager;
-use briev_compiler::target::{BackendKind, get_extension};
+use briev_compiler::target::{get_extension, BackendKind};
 use briev_compiler::type_universe::TypeUniverse;
 
 /// Re-export the LLVM backend's TrgUnresolvedAction for CLI flag parsing.
@@ -26,30 +26,26 @@ use briev_compiler::type_universe::TypeUniverse;
 pub use briev_compiler::backend::llvm::TrgUnresolvedAction;
 // 2026-08-23 (Phase 10): frontend pipeline moved into the LIB so the sweep
 // and library consumers run the real path.
-pub use briev_compiler::pipeline::{
-    check_data_source, check_source, compile_to_typed, BuildOptions, BeastFilter,
-    BeastPosition, BeastStage,
-};
 use briev_compiler::pipeline::{
     build_plugin_manager, check_types, compile_view, effective_view_html,
     evaluate_pending_comptime, lex_for_path, load_target_config, parse_with_warnings,
-    preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs,
-    view_external_roots, view_root_signals, CompiledView, ViewMountSpecs,
+    preprocess_source_for_path, resolve_bind_routes, resolve_comptime_refs, view_external_roots,
+    view_root_signals, CompiledView, ViewMountSpecs,
+};
+pub use briev_compiler::pipeline::{
+    check_data_source, check_source, compile_to_typed, BeastFilter, BeastPosition, BeastStage,
+    BuildOptions,
 };
 
 /// Pipeline stage at which to emit a BEAST snapshot or IR snapshot.
 /// 2026-07-21: Expanded to granular stages matching the pipeline.
 /// AST stages emit .beast files; IR stages emit .ir files.
 
-
-
 /// Snapshot position relative to plugin execution.
 /// 2026-07-23: Used by --emit-beast for pre/post plugin snapshots.
 
-
 /// A BEAST snapshot filter: emit at a specific (stage, position) pair.
 /// 2026-07-23: --emit-beast accepts stage.position (before/after) or plain stage (both).
-
 
 /// Options parsed from the `briev-compiler build` CLI flags.
 
@@ -64,13 +60,11 @@ use briev_compiler::pipeline::{
 
 /// 2026-07-25: Convert a NavValue to its corresponding Expr literal.
 
-
 /// Normalize source text by file kind before lexing.
 ///
 /// `.rbv` files carry `<view>`/`<style>` markup that must not reach the lexer.
 /// The Briev parser consumes only extracted Briev source, while webstack output
 /// still receives the extracted HTML/CSS payload.
-
 
 /// 2026-08-11 (Phase 1 view wiring): compile the view markup with the
 /// ViewCompiler — element IDs injected, b-* bindings extracted, directives
@@ -93,7 +87,6 @@ use briev_compiler::pipeline::{
 /// - the sole writer takes no/several params → "transaction '<txn>' takes N
 ///   parameter(s); b-bind requires exactly one".
 
-
 /// 2026-08-27 (cbv-HW plan Slice A): copy every `extern` cell's referenced
 /// HDL source beside the output artifacts so verilator/Vivado link lines
 /// resolve blackbox references without user setup. Missing file -> hard
@@ -107,8 +100,12 @@ pub fn copy_extern_companions(
         .unwrap_or_else(|| std::path::Path::new("."));
     let base_out = main_file.strip_suffix(".bv").unwrap_or(main_file);
     for item in items {
-        let briev_compiler::ast::TopLevel::Cell(c) = item else { continue };
-        let Some(rel) = &c.extern_source else { continue };
+        let briev_compiler::ast::TopLevel::Cell(c) = item else {
+            continue;
+        };
+        let Some(rel) = &c.extern_source else {
+            continue;
+        };
         let src_path: std::path::PathBuf = base_dir.to_path_buf().join(rel);
         if !src_path.exists() {
             return Err(format!(
@@ -136,7 +133,7 @@ pub fn copy_extern_companions(
 /// silenceable (D29). To undo: delete this fn and its call in compile_source.
 fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Result<(), String> {
     use briev_compiler::ast::TopLevel;
-    use briev_compiler::config_tuning::{IrrPolicy, apply_module_config};
+    use briev_compiler::config_tuning::{apply_module_config, IrrPolicy};
     let Some(pos) = items
         .iter()
         .position(|i| matches!(i, TopLevel::ModuleConfig(_)))
@@ -157,13 +154,17 @@ fn enforce_module_config(items: &mut Vec<briev_compiler::ast::TopLevel>) -> Resu
     let irr_sites: Vec<&str> = items
         .iter()
         .filter_map(|item| match item {
-            TopLevel::Transaction(t) => {
-                t.modifiers.iter().any(|m| m.name == "irr").then_some(t.name.as_str())
-            }
+            TopLevel::Transaction(t) => t
+                .modifiers
+                .iter()
+                .any(|m| m.name == "irr")
+                .then_some(t.name.as_str()),
             TopLevel::SyncGroup { item, .. } => match item.as_ref() {
-                TopLevel::Transaction(t) => {
-                    t.modifiers.iter().any(|m| m.name == "irr").then_some(t.name.as_str())
-                }
+                TopLevel::Transaction(t) => t
+                    .modifiers
+                    .iter()
+                    .any(|m| m.name == "irr")
+                    .then_some(t.name.as_str()),
                 _ => None,
             },
             _ => None,
@@ -200,9 +201,7 @@ fn abv_accel_default(file_path: &str) -> Option<briev_compiler::analysis::accel:
 /// module(s) named by `frgn ... from "<path>.js"` and concatenate their
 /// source for inlining into the generated shim. Paths resolve like imports:
 /// `<resource_root>/lib/<path>`, then `<resource_root>/<path>`, then as-is.
-fn read_web_host_modules(
-    decls: &[briev_compiler::ast::ForeignBinding],
-) -> Result<String, String> {
+fn read_web_host_modules(decls: &[briev_compiler::ast::ForeignBinding]) -> Result<String, String> {
     let mut paths: Vec<String> = decls
         .iter()
         .filter_map(|fb| match &fb.from {
@@ -253,8 +252,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // current plugin files and --allow-* flags. Otherwise validate the
     // lockfile against loaded plugins and apply approved capabilities.
     let mut pm = build_plugin_manager(file_path, opts);
-    let project_root = std::env::current_dir()
-        .map_err(|e| format!("cannot determine project root: {}", e))?;
+    let project_root =
+        std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
     if opts.update_lockfile {
         let granted = briev_compiler::macros::lockfile::cli_granted_set(
@@ -316,14 +315,28 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // ── Parsed stage: AST transformation (before import resolution) ───
     {
         let mut parsed_universe = TypeUniverse::new();
-        emit_beast_snapshot(file_path, BeastStage::Parse, BeastPosition::Before, &items, &TypeUniverse::new(), opts)?;
-                pm.run_ast(StageKind::Parsed, &mut items, &mut parsed_universe)?;
+        emit_beast_snapshot(
+            file_path,
+            BeastStage::Parse,
+            BeastPosition::Before,
+            &items,
+            &TypeUniverse::new(),
+            opts,
+        )?;
+        pm.run_ast(StageKind::Parsed, &mut items, &mut parsed_universe)?;
     }
 
     // BEAST snapshot at Parse stage
     {
         let snapshot_universe = TypeUniverse::new();
-        emit_beast_snapshot(file_path, BeastStage::Parse, BeastPosition::After, &items, &snapshot_universe, opts)?;
+        emit_beast_snapshot(
+            file_path,
+            BeastStage::Parse,
+            BeastPosition::After,
+            &items,
+            &snapshot_universe,
+            opts,
+        )?;
     }
 
     // 2026-08-04 (Phase 4, .ebv heap reframe): the embedded mode backend
@@ -350,7 +363,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     if let Some(ref stdlib_path) = opts.stdlib_path {
         resolver = resolver.with_stdlib_path(Some(std::path::PathBuf::from(stdlib_path)));
     }
-    resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(opts, file_path));
+    resolver.plugin_factory = Some(briev_compiler::pipeline::module_plugin_factory(
+        opts, file_path,
+    ));
     // 2026-10-06 (package/module v0, folio): git/path dependencies declared in
     // the project's folio.toml become import search roots. Build mode may write
     // folio.lock (a no-op without git deps).
@@ -375,10 +390,24 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     }
 
     {
-        emit_beast_snapshot(file_path, BeastStage::Resolve, BeastPosition::Before, &items, &TypeUniverse::new(), opts)?;
-                pm.run_ast(StageKind::Resolved, &mut items, &mut TypeUniverse::new())?;
+        emit_beast_snapshot(
+            file_path,
+            BeastStage::Resolve,
+            BeastPosition::Before,
+            &items,
+            &TypeUniverse::new(),
+            opts,
+        )?;
+        pm.run_ast(StageKind::Resolved, &mut items, &mut TypeUniverse::new())?;
     }
-    emit_beast_snapshot(file_path, BeastStage::Resolve, BeastPosition::After, &items, &TypeUniverse::new(), opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Resolve,
+        BeastPosition::After,
+        &items,
+        &TypeUniverse::new(),
+        opts,
+    )?;
 
     // ── Type check ────────────────────────────────────────────────────
     // 2026-07-25: Resolve comptime var references in const initializers
@@ -449,14 +478,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     )?;
     // 2026-09-14 (machine-entry plan): effective mechanism — CLI override,
     // else the target profile's row (keyed by triple, longest prefix).
-    let check_isr_mechanism = opts.isr_mechanism.clone()
-        .or_else(|| briev_compiler::config_tuning::target_settings_for(
-            opts.triple_override.as_deref().unwrap_or("")).isr_mechanism)
-        .or_else(|| briev_compiler::config_tuning::target_settings_for(
-            &get_extension(&opts.file_path))
-            .isr_mechanism.take())
+    let check_isr_mechanism = opts
+        .isr_mechanism
+        .clone()
         .or_else(|| {
-            load_target_config(opts).lookup(&get_extension(&opts.file_path))
+            briev_compiler::config_tuning::target_settings_for(
+                opts.triple_override.as_deref().unwrap_or(""),
+            )
+            .isr_mechanism
+        })
+        .or_else(|| {
+            briev_compiler::config_tuning::target_settings_for(&get_extension(&opts.file_path))
+                .isr_mechanism
+                .take()
+        })
+        .or_else(|| {
+            load_target_config(opts)
+                .lookup(&get_extension(&opts.file_path))
                 .and_then(|e| e.target_triple.clone())
                 .and_then(|t| briev_compiler::config_tuning::target_settings_for(&t).isr_mechanism)
         });
@@ -487,7 +525,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // hint. Runs here (typed AST, pre-normalizer) so the backend never sees
     // a body whose semantics the interpreter would unwind early.
     {
-        let (term_errors, term_warnings) = briev_compiler::analysis::termination::analyze_dual(&items);
+        let (term_errors, term_warnings) =
+            briev_compiler::analysis::termination::analyze_dual(&items);
         for w in &term_warnings {
             eprintln!("warning: {w}");
         }
@@ -515,8 +554,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // `.sbv`/`.srbv`. Proof obligations, trivial contracts, and concurrency
     // classification are global gates already; strict adds the memory-
     // decision tier. The trust-boundary report is written when strict passes.
-    let strict_profile =
-        briev_compiler::conformance::is_strict(std::path::Path::new(file_path));
+    let strict_profile = briev_compiler::conformance::is_strict(std::path::Path::new(file_path));
     if strict_profile {
         let mc = briev_compiler::macros::memcheck::run_memcheck(&items);
         briev_compiler::analysis::strict::enforce(&items, &mc)?;
@@ -525,7 +563,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         if let Err(e) = std::fs::write(&report_path, &report) {
             return Err(format!(
                 "cannot write the `.s` verification report to {}: {}",
-                report_path.display(), e
+                report_path.display(),
+                e
             ));
         }
         eprintln!("[.s] verification report: {}", report_path.display());
@@ -535,10 +574,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // cancellation point in the spawned body.
     let task_errors = briev_compiler::analysis::task_linear::analyze(&items);
     if !task_errors.is_empty() {
-        return Err(format!(
-            "task handle errors:\n{}",
-            task_errors.join("\n")
-        ));
+        return Err(format!("task handle errors:\n{}", task_errors.join("\n")));
     }
     // 2026-08-07 (object instance pools): spawn pools must be predictably
     // inexhaustible — the spawn-count analysis rejects any spawn whose
@@ -546,10 +582,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     {
         let (_, _, spawn_errors, _) = briev_compiler::analysis::spawn_pool::analyze(&items);
         if !spawn_errors.is_empty() {
-            return Err(format!(
-                "spawn pool errors:\n{}",
-                spawn_errors.join("\n")
-            ));
+            return Err(format!("spawn pool errors:\n{}", spawn_errors.join("\n")));
         }
     }
     // 2026-08-26 (async Phase C): compiled tasks carry args/results as i64
@@ -558,14 +591,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // interpreter (and `brievc check`) legitimately support Event<T>
     // parameters for blocking port reads (async Phase B).
     if matches!(opts.backend, BackendKind::Llvm | BackendKind::Webstack) {
-        let abi_errors = briev_compiler::analysis::task_segments::collect_task_abi_errors(
-            &items, &universe,
-        );
+        let abi_errors =
+            briev_compiler::analysis::task_segments::collect_task_abi_errors(&items, &universe);
         if !abi_errors.is_empty() {
-            return Err(format!(
-                "task ABI errors:\n{}",
-                abi_errors.join("\n")
-            ));
+            return Err(format!("task ABI errors:\n{}", abi_errors.join("\n")));
         }
     }
     // 2026-08-03: `+` is string concat for String/Blob operands — rewrite
@@ -576,7 +605,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // the graph-resolved binding calls (cstr_to_briev / str_to_c) — Briev's
     // boxing loses the boundary type at codegen, so the marshalling decision
     // (the casting graph's minimal path) is made on the typed AST.
-    briev_compiler::analysis::boundary_marshalling::rewrite_boundary_marshalling(&mut items, &universe);
+    briev_compiler::analysis::boundary_marshalling::rewrite_boundary_marshalling(
+        &mut items, &universe,
+    );
 
     // ── Concurrency gate (Phase 3c, rule #21: no implicit concurrency) ──
     // Any pair of reactive txns that can fire together must be classified
@@ -601,10 +632,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     let gate_errors = briev_compiler::analysis::concurrency_gate::run_concurrency_gate(&items);
     if !gate_errors.is_empty() {
-        return Err(format!(
-            "concurrency gate:\n  {}",
-            gate_errors.join("\n  ")
-        ));
+        return Err(format!("concurrency gate:\n  {}", gate_errors.join("\n  ")));
     }
 
     // ── Static hold-law gate (2026-09-22, Slice C2) ──────────────────────
@@ -614,16 +642,27 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // satisfiable guard is a refusal.
     let when_errors = briev_compiler::analysis::hold_law::run_hold_law_check(&items);
     if !when_errors.is_empty() {
-        return Err(format!(
-            "hold-law gate:\n  {}",
-            when_errors.join("\n  ")
-        ));
+        return Err(format!("hold-law gate:\n  {}", when_errors.join("\n  ")));
     }
 
     // ── Typed stage: AST transformation (after type check) ────────────
-    emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::Before, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::TypeCheck,
+        BeastPosition::Before,
+        &items,
+        &universe,
+        opts,
+    )?;
     pm.run_ast(StageKind::Typed, &mut items, &mut universe)?;
-    emit_beast_snapshot(file_path, BeastStage::TypeCheck, BeastPosition::After, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::TypeCheck,
+        BeastPosition::After,
+        &items,
+        &universe,
+        opts,
+    )?;
     emit_hir_snapshot(file_path, "typed", &items, opts)?;
 
     // ── Normalizer pass ───────────────────────────────────────────────
@@ -631,30 +670,54 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     let int_bits = opts.int_bits;
     match opts.backend {
         BackendKind::Llvm | BackendKind::Gpu => {
-            briev_compiler::backend::llvm::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+            briev_compiler::backend::llvm::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                int_bits,
+            )?;
         }
         BackendKind::Circt => {
-            briev_compiler::backend::circt::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+            briev_compiler::backend::circt::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                int_bits,
+            )?;
         }
         BackendKind::Electronics => {
             // Electronics backend has no normalization pass — AST is consumed directly.
         }
         BackendKind::Webstack => {
             // Webstack is always wasm32 (32-bit pointers)
-            briev_compiler::backend::webstack::normalizer::normalize(&mut items, &mut universe, 32)?;
+            briev_compiler::backend::webstack::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                32,
+            )?;
         }
         BackendKind::Spirv => {
-            briev_compiler::backend::spirv::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+            briev_compiler::backend::spirv::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                int_bits,
+            )?;
         }
         BackendKind::Ptx => {
             // The PTX tier reuses the SPIR-V normalizer + accel analysis:
             // same frontend-driven kernel selection, different emitter.
-            briev_compiler::backend::spirv::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+            briev_compiler::backend::spirv::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                int_bits,
+            )?;
         }
         BackendKind::Vm => {
             // 2026-08-10: VM is untyped but the universe must be populated
             // uniformly — minimal shared registration, nothing backend-specific.
-            briev_compiler::backend::vm::normalizer::normalize(&mut items, &mut universe, int_bits)?;
+            briev_compiler::backend::vm::normalizer::normalize(
+                &mut items,
+                &mut universe,
+                int_bits,
+            )?;
         }
         BackendKind::Bad => {
             // 2026-09-21 (bad-dialect plan): .bad never enters the .bv
@@ -664,9 +727,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         }
     }
 
-    emit_beast_snapshot(file_path, BeastStage::Normalize, BeastPosition::Before, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Normalize,
+        BeastPosition::Before,
+        &items,
+        &universe,
+        opts,
+    )?;
     pm.run_ast(StageKind::Normalized, &mut items, &mut universe)?;
-    emit_beast_snapshot(file_path, BeastStage::Normalize, BeastPosition::After, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Normalize,
+        BeastPosition::After,
+        &items,
+        &universe,
+        opts,
+    )?;
 
     // ── Build protocol graph from protocol declarations ────────────────
     // ── Protocol contract enforcement via SMT ──────────────────────────
@@ -693,16 +770,28 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                 let pre = &contract.pre_condition;
                 let post = &contract.post_condition;
                 let params = vec![("Self".to_string(), briev_compiler::ast::Type::int())];
-                if let Err(errs) = briev_compiler::proof_engine::prove_contract(pre, post, &params, contract.explicit) {
-                    return Err(format!("protocol contract violation in '{}': {:?}", pd.name, errs));
+                if let Err(errs) = briev_compiler::proof_engine::prove_contract(
+                    pre,
+                    post,
+                    &params,
+                    contract.explicit,
+                ) {
+                    return Err(format!(
+                        "protocol contract violation in '{}': {:?}",
+                        pd.name, errs
+                    ));
                 }
             }
             // 2026-07-23: Round-trip proof — CastFrom(CastTo(x)) == x
-            if let Err(msg) = briev_compiler::analysis::protocol_graph::verify_protocol_roundtrip(pd, &items) {
+            if let Err(msg) =
+                briev_compiler::analysis::protocol_graph::verify_protocol_roundtrip(pd, &items)
+            {
                 return Err(msg);
             }
             // 2026-07-23: Cross-op equivalence proof
-            if let Err(msg) = briev_compiler::analysis::protocol_graph::verify_crossop_equivalence(pd, &items) {
+            if let Err(msg) =
+                briev_compiler::analysis::protocol_graph::verify_crossop_equivalence(pd, &items)
+            {
                 return Err(msg);
             }
         }
@@ -739,6 +828,21 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         }
     }
 
+    // ── Body⇒post verification (--verify-bodies) ───────────────────
+    // 2026-11-11 (verify-bodies plan): prove each txn/defn body satisfies
+    // its own [pre][post] via symbolic execution over the body's paths. This
+    // is opt-in and off by default, so the historical consistency-only
+    // behaviour is unchanged without the flag.
+    if opts.verify_bodies {
+        if let Err(a_errs) = briev_compiler::analysis::verify_bodies::verify_bodies(&items) {
+            return Err(format!(
+                "--verify-bodies:
+{}",
+                a_errs.join("\n")
+            ));
+        }
+    }
+
     // ── Watchdog contract checks (Phase C4) ──────────────────────────
     // 2026-08-01: wire the trigger->handler watchdog analysis into the
     // pipeline, and validate the `-> handler(val)` on-fire callback (the
@@ -754,24 +858,53 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // ── Protocol round-trip verification ──────────────────────────────
     briev_compiler::protocol_verify::verify_roundtrips(&items, &universe)?;
 
-    emit_beast_snapshot(file_path, BeastStage::Verify, BeastPosition::Before, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Verify,
+        BeastPosition::Before,
+        &items,
+        &universe,
+        opts,
+    )?;
     pm.run_ast(StageKind::Verified, &mut items, &mut universe)?;
-    emit_beast_snapshot(file_path, BeastStage::Verify, BeastPosition::After, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Verify,
+        BeastPosition::After,
+        &items,
+        &universe,
+        opts,
+    )?;
 
     // ── Slice narrowing ───────────────────────────────────────────────
     // 2026-07-26: Convert constant-bounds Expr::Slice to direct array access.
     briev_compiler::analysis::narrow_slice::narrow_slices(&mut items);
 
     // ── Allocation strategy analysis ──────────────────────────────────
-    let alloc_strategies = briev_compiler::analysis::allocation::analyze_alloc_strategies(&mut items);
+    let alloc_strategies =
+        briev_compiler::analysis::allocation::analyze_alloc_strategies(&mut items);
     // 2026-07-27: Compute transitive arena need from the same allocation walk.
     // This determines which functions need the 64KB arena buffer. When empty,
     // arena fields in %State and all arena init/fini calls are skipped — saving
     // 64KB malloc and 24 bytes of %State for benchmarks with no Alloc# calls.
     let needs_arena = briev_compiler::analysis::allocation::analyze_arena_need(&mut items);
-    emit_beast_snapshot(file_path, BeastStage::Alloc, BeastPosition::Before, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Alloc,
+        BeastPosition::Before,
+        &items,
+        &universe,
+        opts,
+    )?;
     pm.run_ast(StageKind::Allocated, &mut items, &mut universe)?;
-    emit_beast_snapshot(file_path, BeastStage::Alloc, BeastPosition::After, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Alloc,
+        BeastPosition::After,
+        &items,
+        &universe,
+        opts,
+    )?;
 
     // ── Dangling pointer detection ────────────────────────────────────
     // 2026-07-31: provenance warning → HARD compile error (memory-by-proof,
@@ -795,9 +928,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         }
     }
 
-    emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::Before, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Provenance,
+        BeastPosition::Before,
+        &items,
+        &universe,
+        opts,
+    )?;
     pm.run_ast(StageKind::Provenanced, &mut items, &mut universe)?;
-    emit_beast_snapshot(file_path, BeastStage::Provenance, BeastPosition::After, &items, &universe, opts)?;
+    emit_beast_snapshot(
+        file_path,
+        BeastStage::Provenance,
+        BeastPosition::After,
+        &items,
+        &universe,
+        opts,
+    )?;
     emit_hir_snapshot(file_path, "prov", &items, opts)?;
 
     // 2026-07-16: P4 — Collect extra objects from ForeignBinding FromSpec paths
@@ -812,17 +959,23 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-22: Resolve each frgn declaration's dispatch strategy before
     // codegen. The backend receives the resolved strategies and does not
     // re-implement dispatch logic.
-    let glue_targets = briev_compiler::glue::config::load_glue_config(
-        opts.glue_config.as_deref().map(Path::new),
-    )?;
+    let glue_targets =
+        briev_compiler::glue::config::load_glue_config(opts.glue_config.as_deref().map(Path::new))?;
     let mut resolved_frgns: std::collections::HashMap<
-        String, briev_compiler::analysis::frgn_dispatch::ResolvedFrgn,
+        String,
+        briev_compiler::analysis::frgn_dispatch::ResolvedFrgn,
     > = std::collections::HashMap::new();
     for item in &items {
-        let briev_compiler::ast::TopLevel::ForeignBinding(fb) = item else { continue; };
+        let briev_compiler::ast::TopLevel::ForeignBinding(fb) = item else {
+            continue;
+        };
         let ext = fb.from.extension().unwrap_or_default();
         let dispatch = briev_compiler::analysis::frgn_dispatch::resolve_single_frgn(
-            fb, &ext, &glue_targets, opts.backend, Some(&universe),
+            fb,
+            &ext,
+            &glue_targets,
+            opts.backend,
+            Some(&universe),
         )?;
         // 2026-10-06 (web bridge ABI fix): key by the FOREIGN symbol — the
         // backend's `emit_frgn_call` looks up `resolved_frgns.get(&sig.name)`
@@ -834,26 +987,39 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // 2026-07-26: Collect protocol library names from resolved frgns
     // for passing as -l<lib> flags to clang during linking.
-    let protocol_libs: Vec<String> = resolved_frgns.values().filter_map(|rf| {
-        if let briev_compiler::analysis::frgn_dispatch::ResolvedFrgn::Inline { protocol_lib: Some(lib), .. } = rf {
-            Some(lib.clone())
-        } else {
-            None
-        }
-    }).collect();
+    let protocol_libs: Vec<String> = resolved_frgns
+        .values()
+        .filter_map(|rf| {
+            if let briev_compiler::analysis::frgn_dispatch::ResolvedFrgn::Inline {
+                protocol_lib: Some(lib),
+                ..
+            } = rf
+            {
+                Some(lib.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // ── Layout optimization (frgn/export boundary) ─────────────────────
     // 2026-07-22: Propose adopting foreign type layouts to minimize
     // protocol transform costs. Only applies to bridge-path frgns.
     // This is additive — removing this pass does not affect correctness.
     let layout_changes = briev_compiler::analysis::layout_optimizer::optimize_layouts(
-        &items, &universe, &resolved_frgns, &glue_targets,
+        &items,
+        &universe,
+        &resolved_frgns,
+        &glue_targets,
     )?;
     for change in &layout_changes {
         briev_compiler::analysis::layout_optimizer::apply_layout_change(&mut items, change)?;
     }
     if !layout_changes.is_empty() {
-        eprintln!("layout optimizer: {} change(s) applied", layout_changes.len());
+        eprintln!(
+            "layout optimizer: {} change(s) applied",
+            layout_changes.len()
+        );
     }
 
     // ── Diff mode / dry-run ─────────────────────────────────────────────
@@ -878,7 +1044,9 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     {
         let mut interp = briev_compiler::interpreter::Interpreter::new();
         interp.load_program(&items);
-        if let Err(errors) = briev_compiler::derive::verify_derivation_assertions(&items, &mut interp) {
+        if let Err(errors) =
+            briev_compiler::derive::verify_derivation_assertions(&items, &mut interp)
+        {
             for e in &errors {
                 eprintln!("error: derivation assertion: {}", e);
             }
@@ -898,10 +1066,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         String,
         Vec<briev_compiler::analysis::component_instances::MountSpec>,
     > = std::collections::HashMap::new();
-    let mut component_initializers: std::collections::HashMap<
-        String,
-        briev_compiler::ast::Expr,
-    > = std::collections::HashMap::new();
+    let mut component_initializers: std::collections::HashMap<String, briev_compiler::ast::Expr> =
+        std::collections::HashMap::new();
     let mut instance_specs: std::collections::HashMap<
         String,
         briev_compiler::analysis::component_instances::MountSpec,
@@ -912,8 +1078,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     if opts.backend == BackendKind::Webstack {
         let view_html = effective_view_html(opts, &preprocessed, &items).unwrap_or_default();
         match briev_compiler::analysis::component_instances::expand_component_instances(
-            &mut items,
-            &view_html,
+            &mut items, &view_html,
         ) {
             Ok(plan) => {
                 component_specs = plan.mounts;
@@ -926,11 +1091,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         }
     }
     let compiled_view: CompiledView = if opts.backend == BackendKind::Webstack {
-        compile_view(file_path, &items, opts, &preprocessed, &ViewMountSpecs {
-            pools: component_specs.clone(),
-            instances: instance_specs.clone(),
-            top_level_variants,
-        })?
+        compile_view(
+            file_path,
+            &items,
+            opts,
+            &preprocessed,
+            &ViewMountSpecs {
+                pools: component_specs.clone(),
+                instances: instance_specs.clone(),
+                top_level_variants,
+            },
+        )?
     } else {
         CompiledView {
             bindings: Vec::new(),
@@ -959,12 +1130,30 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     let mut web_layout: Option<briev_compiler::glue::web_generator::StateLayout> = None;
     // 2026-08-11 (Phase 2a2): b-bind routes resolved during codegen from the
     // transition graph; surfaced here so unresolvable routes are hard errors.
-    let mut bind_routes: Option<std::collections::HashMap<
-        String,
-        Result<briev_compiler::glue::web_generator::BindRoute, String>,
-    >> = None;
+    let mut bind_routes: Option<
+        std::collections::HashMap<
+            String,
+            Result<briev_compiler::glue::web_generator::BindRoute, String>,
+        >,
+    > = None;
 
-    let (codegen_output, ext) = codegen(&items, &mut universe, &pm, opts, alloc_strategies, needs_arena, resolved_frgns, enable_module_init, &mut web_layout, &view_signals, &view_bindings, &collection_iterables, &mut bind_routes, &component_initializers, &init_roots)?;
+    let (codegen_output, ext) = codegen(
+        &items,
+        &mut universe,
+        &pm,
+        opts,
+        alloc_strategies,
+        needs_arena,
+        resolved_frgns,
+        enable_module_init,
+        &mut web_layout,
+        &view_signals,
+        &view_bindings,
+        &collection_iterables,
+        &mut bind_routes,
+        &component_initializers,
+        &init_roots,
+    )?;
 
     // 2026-10-06 (BUGS.md:5698): a user-declared `txn` that liveness drops is
     // never called and never fired — without this the program compiles to an
@@ -985,16 +1174,20 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             &extra_roots,
         );
         for w in briev_compiler::analysis::defn_liveness::unfired_txn_warnings(
-            &items,
-            &user_txns,
-            &liveness,
+            &items, &user_txns, &liveness,
         ) {
             eprintln!("warning: {w}");
         }
     }
 
     // Codegen-stage IR snapshot: the real backend text.
-    emit_ir_snapshot(file_path, BeastStage::Codegen, BeastPosition::After, &codegen_output, opts)?;
+    emit_ir_snapshot(
+        file_path,
+        BeastStage::Codegen,
+        BeastPosition::After,
+        &codegen_output,
+        opts,
+    )?;
 
     // ── Generated stage: IR text manipulation ──────────────────────────
     let mut output = codegen_output;
@@ -1008,11 +1201,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-25: Vm backend also writes inside codegen (.lair is binary)
     // 2026-09-08: PTX writes inside codegen (.ptx is text but artifacts are
     // managed by the arm, like the .spv path).
-    if opts.backend != BackendKind::Spirv && opts.backend != BackendKind::Vm && opts.backend != BackendKind::Ptx {
+    if opts.backend != BackendKind::Spirv
+        && opts.backend != BackendKind::Vm
+        && opts.backend != BackendKind::Ptx
+    {
         if let Some(parent) = std::path::Path::new(&out_path).parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("cannot create output dir '{}': {}", parent.display(), e))?;
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    format!("cannot create output dir '{}': {}", parent.display(), e)
+                })?;
             }
         }
         std::fs::write(&out_path, &output)
@@ -1022,18 +1219,35 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
 
     // ── Optimized stage: final IR validation ──────────────────────────
     pm.run_ir(StageKind::Optimized, &mut output)?;
-    emit_ir_snapshot(file_path, BeastStage::Optimize, BeastPosition::After, &output, opts)?;
+    emit_ir_snapshot(
+        file_path,
+        BeastStage::Optimize,
+        BeastPosition::After,
+        &output,
+        opts,
+    )?;
 
     // 2026-09-21: Compile `bad fn` bodies through the bad backend and
     // collect their .o files for linking. Each bad fn body is a standalone
     // .bad program compiled per-target; the LLVM IR references the symbols
     // via `declare`.
-    let bad_triple = opts.triple_override.clone()
-        .or_else(|| load_target_config(opts)
-            .lookup(&get_extension(&opts.file_path))
-            .and_then(|e| e.target_triple.clone()))
+    let bad_triple = opts
+        .triple_override
+        .clone()
+        .or_else(|| {
+            load_target_config(opts)
+                .lookup(&get_extension(&opts.file_path))
+                .and_then(|e| e.target_triple.clone())
+        })
         .unwrap_or_else(|| "x86_64-unknown-linux-gnu".to_string());
-    let bad_fn_objects = compile_bad_fn_objects(&items, &bad_triple, &resolver.bad_imports, std::path::Path::new(file_path).parent().map(|p| p.to_path_buf()))?;
+    let bad_fn_objects = compile_bad_fn_objects(
+        &items,
+        &bad_triple,
+        &resolver.bad_imports,
+        std::path::Path::new(file_path)
+            .parent()
+            .map(|p| p.to_path_buf()),
+    )?;
     // 2026-09-22 (bootstrap-bad plan): bad fn .o files must link in the
     // FREESTANDING path too (a `bootstrap bad` entry lives there) — they
     // are kept separate from the frgn extra_objects (briev_rt etc.), which
@@ -1079,10 +1293,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // staticlib (src/accel_rt.rs, built by build.rs alongside the
             // driver archive); --gc-sections drops it when the program has
             // no accel kernels.
-            let accel_lib = briev_compiler::resource_root()
-                .join("target/compiler-in-briv/libbriev_accel_rt.a");
-            let driver_lib = briev_compiler::resource_root()
-                .join("target/compiler-in-briv/libbriev_gpu_rt.a");
+            let accel_lib =
+                briev_compiler::resource_root().join("target/compiler-in-briv/libbriev_accel_rt.a");
+            let driver_lib =
+                briev_compiler::resource_root().join("target/compiler-in-briv/libbriev_gpu_rt.a");
             if accel_lib.exists() && driver_lib.exists() {
                 all_objects.push(accel_lib.clone());
                 all_objects.push(driver_lib.clone());
@@ -1098,13 +1312,17 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // objcopy'd from the bootstrap bad .o directly (an MBR-style
             // .code16/.org 510 body cannot link in a 64-bit ELF).
             if !opts.no_link {
-                compile_ll_to_binary(&out_path, &binary_path, LinkInputs {
-                    extra_objects: &all_objects,
-                    protocol_libs: &protocol_libs,
-                    shared: opts.shared,
-                    bad_objects: &bad_fn_objects,
-                    bootstrap_entry: bootstrap_entry.as_deref(),
-                })?;
+                compile_ll_to_binary(
+                    &out_path,
+                    &binary_path,
+                    LinkInputs {
+                        extra_objects: &all_objects,
+                        protocol_libs: &protocol_libs,
+                        shared: opts.shared,
+                        bad_objects: &bad_fn_objects,
+                        bootstrap_entry: bootstrap_entry.as_deref(),
+                    },
+                )?;
             }
         }
         // 2026-10-06 (install story, folio): `brievc run x.bv` executes the
@@ -1127,27 +1345,41 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             let bin_img = format!("{binary_base}.bin");
             // llvm-objcopy is target-agnostic (handles thumb/riscv/aarch64
             // ELF); plain objcopy handles the host x86_64.
-            let oc = if std::process::Command::new("llvm-objcopy").arg("--version").output().ok().map(|o| o.status.success()).unwrap_or(false) {
+            let oc = if std::process::Command::new("llvm-objcopy")
+                .arg("--version")
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
                 "llvm-objcopy"
-            } else { "objcopy" };
+            } else {
+                "objcopy"
+            };
             // --no-link: flatten the bootstrap bad .o (the only code a
             // flat boot sector can carry). Else flatten the linked ELF.
-            let src = if opts.no_link {
-                bad_fn_objects.first().ok_or_else(|| {
+            let src =
+                if opts.no_link {
+                    bad_fn_objects.first().ok_or_else(|| {
                     "no-link raw-bin needs a bootstrap bad .o - add a `bootstrap bad` to the \
                      program".to_string()
                 })?
                 .as_os_str()
-            } else {
-                std::ffi::OsStr::new(&binary_path)
-            };
+                } else {
+                    std::ffi::OsStr::new(&binary_path)
+                };
             let status = std::process::Command::new(oc)
-                .arg("-O").arg("binary")
-                .arg(src).arg(&bin_img)
+                .arg("-O")
+                .arg("binary")
+                .arg(src)
+                .arg(&bin_img)
                 .status()
                 .map_err(|e| format!("cannot run `{oc}`: {e} - is binutils installed?"))?;
             if !status.success() {
-                return Err(format!("objcopy failed to extract the flat image from `{}`", src.to_string_lossy()));
+                return Err(format!(
+                    "objcopy failed to extract the flat image from `{}`",
+                    src.to_string_lossy()
+                ));
             }
             println!("wrote {bin_img}");
         }
@@ -1163,7 +1395,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // undefined → the page never initialized. Export every
             // transaction/definition (the reactive entry points) + the
             // state_layout table the shim reads at init.
-            let mut exports: Vec<String> = items.iter()
+            let mut exports: Vec<String> = items
+                .iter()
                 .filter_map(|item| match item {
                     // 2026-08-11 (Phase 2a3): a callable txn emits `@<name>`; a
                     // reactive txn emits `@txn_<name>`. Export both forms —
@@ -1293,7 +1526,8 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             // FILE IS the host module: its source is inlined into the shim at
             // module scope, and the import stub calls the function by name. No
             // protocol hashword, no GLUE language target.
-            let frgn_decls: Vec<briev_compiler::ast::ForeignBinding> = items.iter()
+            let frgn_decls: Vec<briev_compiler::ast::ForeignBinding> = items
+                .iter()
                 .filter_map(|item| {
                     if let briev_compiler::ast::TopLevel::ForeignBinding(fb) = item {
                         if matches!(&fb.from,
@@ -1371,12 +1605,14 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
                             // key as a route.
                             if let Some(page_key) = &opts.web_page_key {
                                 let manifest_path = format!("{}.page.json", binary_base);
-                                let manifest = briev_compiler::glue::web_generator::render_page_manifest(
-                                    page_key,
-                                    binary_base,
-                                );
-                                std::fs::write(&manifest_path, manifest)
-                                    .map_err(|e| format!("cannot write '{}': {}", manifest_path, e))?;
+                                let manifest =
+                                    briev_compiler::glue::web_generator::render_page_manifest(
+                                        page_key,
+                                        binary_base,
+                                    );
+                                std::fs::write(&manifest_path, manifest).map_err(|e| {
+                                    format!("cannot write '{}': {}", manifest_path, e)
+                                })?;
                                 println!("wrote {}", manifest_path);
                             }
                         }
@@ -1431,7 +1667,11 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
             let content = &pm.vfs[*path];
             println!("  {} ({} bytes)", path, content.len());
             if let Some(first_line) = content.lines().next() {
-                let preview = if first_line.len() > 80 { &first_line[..77] } else { first_line };
+                let preview = if first_line.len() > 80 {
+                    &first_line[..77]
+                } else {
+                    first_line
+                };
                 println!("    -> {}", preview);
             }
         }
@@ -1442,8 +1682,11 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-23: If --dump-traces was specified, print macro expansion traces.
     if opts.dump_traces && !pm.expansion_traces.is_empty() {
         println!("\n=== Macro Expansion Traces ===");
-        let mut sorted: Vec<(usize, String)> = pm.expansion_traces.iter()
-            .map(|(k, v)| (*k, v.clone())).collect();
+        let mut sorted: Vec<(usize, String)> = pm
+            .expansion_traces
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
         sorted.sort_by_key(|(k, _)| *k);
         for (idx, desc) in &sorted {
             println!("  [{}] {}", idx, desc);
@@ -1544,10 +1787,7 @@ fn dump_bad_ptx_unit(name: &str, text: &str) {
     }
 }
 
-fn announce_bad_ptx_unit(
-    name: &str,
-    unit: &briev_compiler::backend::bad::BadKernel,
-) {
+fn announce_bad_ptx_unit(name: &str, unit: &briev_compiler::backend::bad::BadKernel) {
     let kind = if unit.blob.starts_with(b"\x7fELF") {
         "cubin"
     } else {
@@ -1651,18 +1891,26 @@ fn codegen(
     universe: &mut TypeUniverse,
     _pm: &PluginManager,
     opts: &BuildOptions,
-    alloc_strategies: std::collections::HashMap<usize, briev_compiler::backend::llvm::AllocStrategy>,
+    alloc_strategies: std::collections::HashMap<
+        usize,
+        briev_compiler::backend::llvm::AllocStrategy,
+    >,
     needs_arena: std::collections::HashSet<String>,
-    resolved_frgns: std::collections::HashMap<String, briev_compiler::analysis::frgn_dispatch::ResolvedFrgn>,
+    resolved_frgns: std::collections::HashMap<
+        String,
+        briev_compiler::analysis::frgn_dispatch::ResolvedFrgn,
+    >,
     enable_module_init: bool,
     web_layout: &mut Option<briev_compiler::glue::web_generator::StateLayout>,
     view_signals: &std::collections::HashSet<String>,
     view_bindings: &[briev_compiler::view_compiler::Binding],
     collection_iterables: &std::collections::HashSet<String>,
-    bind_routes: &mut Option<std::collections::HashMap<
-        String,
-        Result<briev_compiler::glue::web_generator::BindRoute, String>,
-    >>,
+    bind_routes: &mut Option<
+        std::collections::HashMap<
+            String,
+            Result<briev_compiler::glue::web_generator::BindRoute, String>,
+        >,
+    >,
     component_initializers: &std::collections::HashMap<String, briev_compiler::ast::Expr>,
     // 2026-10-07 (member-txn-on-plain-obj-var): call names inside a consumed
     // instance `let`'s initializer — the `let` is removed from `items` before
@@ -1670,8 +1918,12 @@ fn codegen(
     init_roots: &std::collections::HashSet<String>,
 ) -> Result<(String, &'static str), String> {
     // 2026-07-20: Extract operator definitions from AST for backend dispatch.
-    let mut operator_defs: std::collections::HashMap<String, Vec<briev_compiler::ast::top::OperatorDef>> = std::collections::HashMap::new();
-    let mut cast_from_bit_overrides: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut operator_defs: std::collections::HashMap<
+        String,
+        Vec<briev_compiler::ast::top::OperatorDef>,
+    > = std::collections::HashMap::new();
+    let mut cast_from_bit_overrides: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for item in items.iter() {
         if let briev_compiler::ast::TopLevel::TypeDef(td) = item {
             let mut all_ops = td.body.operators.clone();
@@ -1698,9 +1950,7 @@ fn codegen(
                     }
                     let args: Vec<briev_compiler::ast::Expr> = arg_form
                         .split(',')
-                        .map(|h| {
-                            briev_compiler::ast::Expr::Identifier(format!("#{}", h))
-                        })
+                        .map(|h| briev_compiler::ast::Expr::Identifier(format!("#{}", h)))
                         .collect();
                     coll_bindings.push(briev_compiler::ast::top::OperatorBinding {
                         name: op.to_string(),
@@ -1708,11 +1958,7 @@ fn codegen(
                         pre: None,
                         suf: None,
                         reg: None,
-                        expr: briev_compiler::ast::Expr::Call(
-                            impl_name.to_string(),
-                            args,
-                            None,
-                        ),
+                        expr: briev_compiler::ast::Expr::Call(impl_name.to_string(), args, None),
                         trusted_axiom: false,
                         span: None,
                     });
@@ -1757,7 +2003,9 @@ fn codegen(
                     None => vec![],
                 };
                 let impl_args = if let briev_compiler::ast::Expr::Call(fn_name, _, _) = &b.expr {
-                    Some(briev_compiler::ast::PropertyValue::Identifier(fn_name.clone()))
+                    Some(briev_compiler::ast::PropertyValue::Identifier(
+                        fn_name.clone(),
+                    ))
                 } else {
                     None
                 };
@@ -1792,20 +2040,27 @@ fn codegen(
         BackendKind::Webstack => "wasm32-unknown-wasi",
         _ => "x86_64-unknown-linux-gnu",
     };
-    let tuning_triple = opts.triple_override.clone()
-        .or_else(|| load_target_config(opts)
-            .lookup(&get_extension(&opts.file_path))
-            .and_then(|e| e.target_triple.clone()))
+    let tuning_triple = opts
+        .triple_override
+        .clone()
+        .or_else(|| {
+            load_target_config(opts)
+                .lookup(&get_extension(&opts.file_path))
+                .and_then(|e| e.target_triple.clone())
+        })
         .unwrap_or_else(|| default_triple.to_string());
     // 2026-09-14 (machine-entry plan): the effective ISR mechanism — CLI
     // override, else the target profile's row (the inference source for
     // mechanism-less `node @ vector` declarations).
-    let effective_isr_mechanism = opts.isr_mechanism.clone()
-        .or_else(|| briev_compiler::config_tuning::target_settings_for(&tuning_triple).isr_mechanism);
+    let effective_isr_mechanism = opts.isr_mechanism.clone().or_else(|| {
+        briev_compiler::config_tuning::target_settings_for(&tuning_triple).isr_mechanism
+    });
     // 2026-11-08 (attr plan): the accel policy is a compiler mode. `.abv`
     // files default to try-all (the extension IS the GPU intent); an explicit
     // `--accel` always wins.
-    let effective_accel_mode = opts.accel_mode.or_else(|| abv_accel_default(&opts.file_path));
+    let effective_accel_mode = opts
+        .accel_mode
+        .or_else(|| abv_accel_default(&opts.file_path));
     let mut analysis = briev_compiler::backend::analyze_program(
         items,
         false,
@@ -1822,7 +2077,12 @@ fn codegen(
     // skips this gate.
     if matches!(
         opts.backend,
-        BackendKind::Llvm | BackendKind::Circt | BackendKind::Electronics | BackendKind::Spirv | BackendKind::Vm | BackendKind::Ptx
+        BackendKind::Llvm
+            | BackendKind::Circt
+            | BackendKind::Electronics
+            | BackendKind::Spirv
+            | BackendKind::Vm
+            | BackendKind::Ptx
     ) {
         let caps = match opts.backend {
             // 2026-08-22 (Phase 7c): LLVM joins the gate — its surface is
@@ -1947,7 +2207,8 @@ fn codegen(
             // 2026-08-10: capture the real state layout (field names + handles)
             // so the JS shim can map view bindings to state fields.
             let stem = std::path::Path::new(&opts.file_path)
-                .file_stem().map(|s| s.to_string_lossy().to_string())
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "app".to_string());
             *web_layout = Some(b.web_state_layout(&stem));
             ".ll"
@@ -1967,11 +2228,8 @@ fn codegen(
             // the same transition-graph write sets `resolve_bind_routes`
             // uses later for the shim (deterministic — the early run and the
             // post-generate run return the identical map).
-            let route_map = resolve_bind_routes(
-                &Some(analysis.transition_graph.clone()),
-                items,
-                universe,
-            );
+            let route_map =
+                resolve_bind_routes(&Some(analysis.transition_graph.clone()), items, universe);
             let web_roots = view_external_roots(view_bindings, &route_map);
             // 2026-10-07 (member-txn-on-plain-obj-var): a consumed instance
             // `let` (e.g. `let router: Router = Router { path: current_path() }`)
@@ -2038,7 +2296,8 @@ fn codegen(
             // 2026-08-10: capture the real state layout (field names + handles)
             // so the JS shim can map view bindings to state fields.
             let stem = std::path::Path::new(&opts.file_path)
-                .file_stem().map(|s| s.to_string_lossy().to_string())
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "app".to_string());
             *web_layout = Some(b.web_state_layout(&stem));
             // 2026-08-11 (Phase 2a2): resolve `b-bind:value` input routes from
@@ -2046,7 +2305,11 @@ fn codegen(
             // covers) — a field's route is the UNIQUE transaction that writes
             // it. Compile_source surfaces unresolvable routes (zero / ambiguous
             // writers, wrong arity) as hard errors.
-            *bind_routes = Some(resolve_bind_routes(&b.ctx.transition_graph, items, universe));
+            *bind_routes = Some(resolve_bind_routes(
+                &b.ctx.transition_graph,
+                items,
+                universe,
+            ));
             ".ll"
         }
         BackendKind::Circt => {
@@ -2056,7 +2319,8 @@ fn codegen(
                 .with_universe(universe.clone());
             // 2026-08-23 (Plan 0.1): consume the shared dependency graph from
             // the pipeline analysis instead of re-deriving it.
-            output = b.generate_with_dep_graph_universe(items, &analysis.dependency_graph, universe);
+            output =
+                b.generate_with_dep_graph_universe(items, &analysis.dependency_graph, universe);
             // 2026-08-23 (Plan 3.3): recorded unsupported constructs are hard
             // errors — hardware targets never silently drop logic.
             let errs = b.errors.borrow().clone();
@@ -2068,7 +2332,10 @@ fn codegen(
             // firmem to an EXTERNALLY-generated module, and the harness links
             // these at verilator/Vivado time.
             for (fname, content) in b.memory_companions() {
-                let base = opts.file_path.strip_suffix(".bv").unwrap_or(&opts.file_path);
+                let base = opts
+                    .file_path
+                    .strip_suffix(".bv")
+                    .unwrap_or(&opts.file_path);
                 let path = format!("{}.{}", base, fname);
                 std::fs::write(&path, &content)
                     .map_err(|e| format!("cannot write '{}': {}", path, e))?;
@@ -2112,9 +2379,10 @@ fn codegen(
                 .ok_or("hierarchical emission returned no master sheet")?;
             let _ = master_name;
             output = master_content;
-            let out_dir = std::path::Path::new(
-                &determine_out_path(&opts.file_path, opts.out_dir.as_deref())?,
-            )
+            let out_dir = std::path::Path::new(&determine_out_path(
+                &opts.file_path,
+                opts.out_dir.as_deref(),
+            )?)
             .parent()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
@@ -2126,7 +2394,9 @@ fn codegen(
             }
             // 2026-09-25 (E5): the assembly BOM rides with the schematic —
             // populated parts only, deterministic order.
-            let bom = briev_compiler::backend::electronics::ElectronicsBackend::generate_bom(&analysis.electronics);
+            let bom = briev_compiler::backend::electronics::ElectronicsBackend::generate_bom(
+                &analysis.electronics,
+            );
             let bom_path = determine_out_path(&opts.file_path, opts.out_dir.as_deref())?
                 .replace(".ll", ".csv");
             if let Some(parent) = std::path::Path::new(&bom_path).parent() {
@@ -2255,13 +2525,12 @@ fn codegen(
                     )
                 );
             }
-            let reuse_map = if briev_compiler::config_tuning::ir_lowering()
-                .gpu_schedule_buffer_reuse
-            {
-                analysis.gpu_schedule.reuse_map()
-            } else {
-                std::collections::HashMap::new()
-            };
+            let reuse_map =
+                if briev_compiler::config_tuning::ir_lowering().gpu_schedule_buffer_reuse {
+                    analysis.gpu_schedule.reuse_map()
+                } else {
+                    std::collections::HashMap::new()
+                };
             let mut kernels = briev_compiler::backend::spirv::runner::build_kernels(
                 items,
                 universe,
@@ -2326,7 +2595,9 @@ fn codegen(
                     append_ptx_companions(&mut kernels, ptx_kernels);
                 }
                 Err(e) => {
-                    println!("note: PTX images unavailable for this program ({e}); CUDA lane skipped");
+                    println!(
+                        "note: PTX images unavailable for this program ({e}); CUDA lane skipped"
+                    );
                 }
             }
             // 2026-10-01 (bad-ptx-family plan M4): `bad<ptx> fn` kernel
@@ -2381,15 +2652,19 @@ fn codegen(
                 output = String::new();
                 return Ok((output, ".spv"));
             }
-            let runner =
-                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels, Some(&analysis.gpu_schedule))?;
+            let runner = briev_compiler::backend::spirv::runner::emit_runner(
+                items,
+                universe,
+                opts.int_bits,
+                &kernels,
+                Some(&analysis.gpu_schedule),
+            )?;
             let runner_path = out_path.replace(".spv", "_runner.c");
             std::fs::write(&runner_path, &runner)
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
             // The runner #includes the runtime (single TU) — copy the
             // runtime AND its device drivers beside it.
-            let rt_dir = briev_compiler::resource_root()
-                .join("lib/runtime");
+            let rt_dir = briev_compiler::resource_root().join("lib/runtime");
             let rt_dir_out = std::path::Path::new(&runner_path)
                 .parent()
                 .map(|d| d.to_path_buf())
@@ -2397,8 +2672,7 @@ fn codegen(
             // 2026-09-21 (Family K): the header + the Rust-built
             // orchestration archive + the driver archive. Runner cc line:
             //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
-            let briv_out = briev_compiler::resource_root()
-                .join("target/compiler-in-briv");
+            let briv_out = briev_compiler::resource_root().join("target/compiler-in-briv");
             let rt_files = [
                 ("briev_accel_rt.h", rt_dir.as_path()),
                 ("libbriev_accel_rt.a", briv_out.as_path()),
@@ -2407,7 +2681,12 @@ fn codegen(
             for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
                 std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
-                    format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
+                    format!(
+                        "cannot copy runtime '{}' to '{}': {}",
+                        rt_file,
+                        dest.display(),
+                        e
+                    )
                 })?;
             }
             println!("wrote {}", runner_path);
@@ -2449,13 +2728,17 @@ fn codegen(
                     println!("wrote {}", p);
                 }
             }
-            let runner =
-                briev_compiler::backend::spirv::runner::emit_runner(items, universe, opts.int_bits, &kernels, Some(&analysis.gpu_schedule))?;
+            let runner = briev_compiler::backend::spirv::runner::emit_runner(
+                items,
+                universe,
+                opts.int_bits,
+                &kernels,
+                Some(&analysis.gpu_schedule),
+            )?;
             let runner_path = out_path.replace(".ptx", "_runner.c");
             std::fs::write(&runner_path, &runner)
                 .map_err(|e| format!("cannot write '{}': {}", runner_path, e))?;
-            let rt_dir = briev_compiler::resource_root()
-                .join("lib/runtime");
+            let rt_dir = briev_compiler::resource_root().join("lib/runtime");
             let rt_dir_out = std::path::Path::new(&runner_path)
                 .parent()
                 .map(|d| d.to_path_buf())
@@ -2463,8 +2746,7 @@ fn codegen(
             // 2026-09-21 (Family K): the header + the Rust-built
             // orchestration archive + the driver archive. Runner cc line:
             //   cc ... runner.c -I. -L. -lbriev_accel_rt -lbriev_gpu_rt -ldl -lpthread -lm
-            let briv_out = briev_compiler::resource_root()
-                .join("target/compiler-in-briv");
+            let briv_out = briev_compiler::resource_root().join("target/compiler-in-briv");
             let rt_files = [
                 ("briev_accel_rt.h", rt_dir.as_path()),
                 ("libbriev_accel_rt.a", briv_out.as_path()),
@@ -2473,7 +2755,12 @@ fn codegen(
             for (rt_file, src_dir) in rt_files {
                 let dest = rt_dir_out.join(rt_file);
                 std::fs::copy(src_dir.join(rt_file), &dest).map_err(|e| {
-                    format!("cannot copy runtime '{}' to '{}': {}", rt_file, dest.display(), e)
+                    format!(
+                        "cannot copy runtime '{}' to '{}': {}",
+                        rt_file,
+                        dest.display(),
+                        e
+                    )
                 })?;
             }
             println!("wrote {}", runner_path);
@@ -2562,8 +2849,7 @@ fn emit_beast_snapshot(
         stage_name,
         position.priority()
     );
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("cannot write '{}': {}", path, e))?;
+    std::fs::write(&path, &data).map_err(|e| format!("cannot write '{}': {}", path, e))?;
     eprintln!("wrote beast snapshot: {}", path);
     Ok(())
 }
@@ -2582,7 +2868,11 @@ fn emit_ir_snapshot(
     let stage_name = match stage {
         BeastStage::Codegen => "codegen",
         BeastStage::Optimize => "opt",
-        other => return Err(format!("internal: IR snapshot requested for AST stage {other:?}")),
+        other => {
+            return Err(format!(
+                "internal: IR snapshot requested for AST stage {other:?}"
+            ))
+        }
     };
     let path = format!(
         "{}.{}.{:03}.ir",
@@ -2621,13 +2911,15 @@ fn emit_hir_snapshot(
 /// Determine the output `.ll` file path from the input path and optional output directory.
 fn determine_out_path(file_path: &str, out_dir: Option<&str>) -> Result<String, String> {
     let p = Path::new(file_path);
-    let base = p.file_stem()
+    let base = p
+        .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| format!("cannot determine output path from '{}'", file_path))?;
 
     let parent = match out_dir {
         Some(dir) => dir.trim_end_matches('/').to_string(),
-        None => p.parent()
+        None => p
+            .parent()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string()),
     };
@@ -2658,7 +2950,9 @@ fn has_bootstrap_entry(items: &[briev_compiler::ast::TopLevel]) -> bool {
 /// passes the implicit %state pointer as the FIRST ABI arg — so the real
 /// params start at register index 1 (a1/x1), not 0.
 fn bad_param_env(
-    bf: &briev_compiler::ast::top::BadFn, abi_args: &[String], abi_args_fp: &[String],
+    bf: &briev_compiler::ast::top::BadFn,
+    abi_args: &[String],
+    abi_args_fp: &[String],
 ) -> std::collections::HashMap<String, briev_compiler::backend::bad::lower::Bound> {
     use briev_compiler::backend::bad::lower::Bound;
     let mut param_env = std::collections::HashMap::new();
@@ -2666,14 +2960,22 @@ fn bad_param_env(
     let mut f_idx = 0usize;
     for (pname, pty) in &bf.params {
         let type_name = pty.to_string();
-        let is_float = type_name.starts_with("Float") || type_name.starts_with("F32")
-            || type_name.starts_with("F64") || type_name == "Double";
+        let is_float = type_name.starts_with("Float")
+            || type_name.starts_with("F32")
+            || type_name.starts_with("F64")
+            || type_name == "Double";
         let reg = if is_float {
-            let r = abi_args_fp.get(f_idx).cloned().unwrap_or_else(|| format!("f{f_idx}"));
+            let r = abi_args_fp
+                .get(f_idx)
+                .cloned()
+                .unwrap_or_else(|| format!("f{f_idx}"));
             f_idx += 1;
             r
         } else {
-            let r = abi_args.get(r_idx).cloned().unwrap_or_else(|| format!("r{r_idx}"));
+            let r = abi_args
+                .get(r_idx)
+                .cloned()
+                .unwrap_or_else(|| format!("r{r_idx}"));
             r_idx += 1;
             r
         };
@@ -2723,17 +3025,16 @@ fn compile_bad_fn_objects(
             body.push_str(&format!("import \"{}\"\n", import.display()));
         }
         body.push_str(&bf.body);
-        let asm = briev_compiler::backend::bad::generate_bad_fn(
-            briev_compiler::backend::bad::BadFnReq {
+        let asm =
+            briev_compiler::backend::bad::generate_bad_fn(briev_compiler::backend::bad::BadFnReq {
                 body: &body,
                 target_triple,
                 param_env,
                 bootstrap: bf.bootstrap,
                 name: &bf.name,
                 base_dir: base_dir.clone(),
-            },
-        )
-        .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
+            })
+            .map_err(|e| format!("bad fn `{}`: {}", bf.name, e))?;
         // Assemble to .o.
         // 2026-09-22: the cache key includes a content hash — two
         // programs with the same bootstrap entry name must not collide
@@ -2755,7 +3056,11 @@ fn compile_bad_fn_objects(
 /// 2026-07-16: P4 — Collect extra object files from ForeignBinding FromSpec paths.
 /// Each frgn declaration with a .c/.so/.a/etc. path triggers compilation or direct
 /// inclusion. The resolver is used to resolve compiler-relative <name> paths.
-fn collect_extra_objects(items: &[briev_compiler::ast::TopLevel], resolver: &briev_compiler::import_resolver::ImportResolver, skip_briev_rt: bool) -> Result<Vec<PathBuf>, String> {
+fn collect_extra_objects(
+    items: &[briev_compiler::ast::TopLevel],
+    resolver: &briev_compiler::import_resolver::ImportResolver,
+    skip_briev_rt: bool,
+) -> Result<Vec<PathBuf>, String> {
     let cache_dir = get_ffi_cache_dir();
     let mut objects = Vec::new();
     for item in items {
@@ -2783,7 +3088,8 @@ fn collect_extra_objects(items: &[briev_compiler::ast::TopLevel], resolver: &bri
                     return reg_path;
                 }
             }
-            resolver.resolve_stdlib_relative_path(&from_str)
+            resolver
+                .resolve_stdlib_relative_path(&from_str)
                 .unwrap_or_else(|| PathBuf::from(from_str))
         };
         match ext.as_deref() {
@@ -2826,24 +3132,42 @@ fn compile_source_to_object(source_path: &Path, cache_dir: &Path) -> Result<Path
     if cache_path.exists() {
         return Ok(cache_path);
     }
-    let ext = source_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = source_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let lang_flag = match ext {
         "c" | "m" => "c",
         "cpp" | "cc" | "cxx" => "c++",
-        _ => return Err(format!("unknown source extension '{}' for '{}'", ext, source_path.display())),
+        _ => {
+            return Err(format!(
+                "unknown source extension '{}' for '{}'",
+                ext,
+                source_path.display()
+            ))
+        }
     };
     let status = Command::new("clang")
         .args([
-            "-O3", "-flto", "-march=native", "-ffast-math", "-fPIC",
-            "-x", lang_flag,
+            "-O3",
+            "-flto",
+            "-march=native",
+            "-ffast-math",
+            "-fPIC",
+            "-x",
+            lang_flag,
             "-c",
             source_path.to_str().unwrap(),
-            "-o", cache_path.to_str().unwrap(),
+            "-o",
+            cache_path.to_str().unwrap(),
         ])
         .status()
         .map_err(|e| format!("failed to invoke clang (is it installed?): {}", e))?;
     if !status.success() {
-        return Err(format!("clang failed to compile '{}'", source_path.display()));
+        return Err(format!(
+            "clang failed to compile '{}'",
+            source_path.display()
+        ));
     }
     Ok(cache_path)
 }
@@ -2882,13 +3206,24 @@ fn verify_emitted_ir(ll_path: &str) -> Result<(), String> {
     ))
 }
 
-fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>) -> Result<(), String> {
-    let LinkInputs { extra_objects, protocol_libs, shared, bad_objects, bootstrap_entry } = inputs;
+fn compile_ll_to_binary(
+    ll_path: &str,
+    binary_path: &str,
+    inputs: LinkInputs<'_>,
+) -> Result<(), String> {
+    let LinkInputs {
+        extra_objects,
+        protocol_libs,
+        shared,
+        bad_objects,
+        bootstrap_entry,
+    } = inputs;
     verify_emitted_ir(ll_path)?;
     let ll_text = std::fs::read_to_string(ll_path)
         .map_err(|e| format!("cannot read '{}': {}", ll_path, e))?;
     // Extract target triple from the IR (first line: target triple = "..."`)
-    let triple = ll_text.lines()
+    let triple = ll_text
+        .lines()
         .find(|l| l.starts_with("target triple"))
         .and_then(|l| {
             let start = l.find('"')?.checked_add(1)?;
@@ -2947,8 +3282,7 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
         // the bitop lanes (briev_str_band/bor/bxor/bnot) still live there
         // and are emitted via hardcoded declares, so a program that uses
         // them must link the runtime even with no frgn pulling it.
-        let runtime_c = briev_compiler::resource_root()
-            .join("lib/runtime/briev_rt.c");
+        let runtime_c = briev_compiler::resource_root().join("lib/runtime/briev_rt.c");
         let needs_runtime = [
             "@briev_bits_to_str(",
             "@briev_str_band(",
@@ -2956,10 +3290,12 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
             "@briev_str_bxor(",
             "@briev_str_bnot(",
             "@briev_free_briev_str(",
-        ].iter().any(|sym| ll_text.contains(sym));
-        let has_runtime = extra_objects.iter().any(|o| {
-            o.to_string_lossy().contains("briev_rt")
-        });
+        ]
+        .iter()
+        .any(|sym| ll_text.contains(sym));
+        let has_runtime = extra_objects
+            .iter()
+            .any(|o| o.to_string_lossy().contains("briev_rt"));
         if needs_runtime && !has_runtime {
             let cache_dir = get_ffi_cache_dir();
             let obj = compile_source_to_object(&runtime_c, &cache_dir)?;
@@ -2978,11 +3314,12 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
     if !freestanding {
         cmd.args(["-lm", "-ldl"]);
     }
-    let status = cmd.status()
-        .map_err(|e| format!(
+    let status = cmd.status().map_err(|e| {
+        format!(
             "failed to invoke clang: {} (is clang installed? use --llvm to emit IR only)",
             e
-        ))?;
+        )
+    })?;
 
     if !status.success() {
         return Err(format!(
@@ -3000,7 +3337,10 @@ fn compile_ll_to_binary(ll_path: &str, binary_path: &str, inputs: LinkInputs<'_>
 /// and the bootstrap entry symbol (2026-09-13/09-14/09-22 rationale
 /// comments preserved with each block).
 fn apply_freestanding(
-    cmd: &mut Command, triple: &str, ll_text: &str, bad_objects: &[PathBuf],
+    cmd: &mut Command,
+    triple: &str,
+    ll_text: &str,
+    bad_objects: &[PathBuf],
     bootstrap_entry: Option<&str>,
 ) -> Result<(), String> {
     cmd.args(["-nostdlib", "-no-pie", "-ffreestanding"]);
@@ -3027,7 +3367,8 @@ fn apply_freestanding(
     // Read the linker script path from the IR (the backend emits a module
     // asm comment `; linker: <path>` when configured). If present, pass
     // -T <path> to the linker.
-    if let Some(ld_path) = ll_text.lines()
+    if let Some(ld_path) = ll_text
+        .lines()
         .find(|l| l.contains("; linker: "))
         .and_then(|l| {
             let start = l.find("; linker: ")?.checked_add(10)?;
@@ -3068,7 +3409,10 @@ fn add_compiler_rt(cmd: &mut Command, triple: &str) {
     // division entries are assembly (.S): LLVM calls them with the
     // AEABI register convention, which C cannot express.
     if triple.starts_with("thumb") || triple.starts_with("arm") {
-        for shim in ["lib/runtime/compiler_rt_arm.c", "lib/runtime/compiler_rt_arm.S"] {
+        for shim in [
+            "lib/runtime/compiler_rt_arm.c",
+            "lib/runtime/compiler_rt_arm.S",
+        ] {
             let crt_path = root.join(shim);
             if crt_path.exists() {
                 cmd.arg(crt_path);
@@ -3086,7 +3430,11 @@ fn add_compiler_rt(cmd: &mut Command, triple: &str) {
 /// plus a NON-LTO briev_rt.o. frgn-derived objects are LTO bitcode (clang
 /// -flto) and live in the .so; plain C hosts link the .a. Bridges with
 /// custom C frgns use the .so / clang.
-fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) -> Result<(), String> {
+fn compile_ll_to_library(
+    ll_path: &str,
+    base: &str,
+    _extra_objects: &[PathBuf],
+) -> Result<(), String> {
     // Step 1: optimize the IR, then codegen. 2026-08-03: `llc -O3` alone did
     // NOT SROA the txn allocas in this LLVM (18.1.3) — the loop kept stack
     // slots (2.2× slower than native). Running the IR pipeline via
@@ -3095,7 +3443,8 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
     let opt_path = format!("{}.opt.ll", base);
     let mut opt = Command::new("opt");
     opt.args(["-S", "-passes=default<O3>", "-o", &opt_path, ll_path]);
-    let status = opt.status()
+    let status = opt
+        .status()
         .map_err(|e| format!("failed to invoke opt: {}", e))?;
     if !status.success() {
         let _ = std::fs::remove_file(&opt_path);
@@ -3103,8 +3452,16 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
     }
     let o_path = format!("{}.o", base);
     let mut llc = Command::new("llc");
-    llc.args(["-O2", "-filetype=obj", "-relocation-model=pic", "-o", &o_path, &opt_path]);
-    let status = llc.status()
+    llc.args([
+        "-O2",
+        "-filetype=obj",
+        "-relocation-model=pic",
+        "-o",
+        &o_path,
+        &opt_path,
+    ]);
+    let status = llc
+        .status()
         .map_err(|e| format!("failed to invoke llc: {}", e))?;
     let _ = std::fs::remove_file(&opt_path);
     if !status.success() {
@@ -3121,7 +3478,8 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
     let mut cc_rt = Command::new("cc");
     cc_rt.args(["-c", "-fPIC", "-o", &rt_o]);
     cc_rt.arg(&rt_c);
-    let status = cc_rt.status()
+    let status = cc_rt
+        .status()
         .map_err(|e| format!("failed to invoke cc: {}", e))?;
     if !status.success() {
         return Err(format!("cc failed for '{}'", rt_c.display()));
@@ -3133,14 +3491,16 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
         Some(stem) => format!("lib{}.a", stem),
         None => format!("lib{}.a", base),
     };
-    let a_path = base_path.parent()
+    let a_path = base_path
+        .parent()
         .map(|p| p.join(&a_name))
         .unwrap_or_else(|| std::path::PathBuf::from(&a_name));
     let mut ar = Command::new("ar");
     ar.arg("rcs").arg(&a_path);
     ar.arg(&o_path);
     ar.arg(&rt_o);
-    let status = ar.status()
+    let status = ar
+        .status()
         .map_err(|e| format!("failed to invoke ar: {}", e))?;
     if !status.success() {
         return Err(format!("ar failed for '{}'", a_path.display()));
@@ -3155,7 +3515,8 @@ fn compile_ll_to_library(ll_path: &str, base: &str, _extra_objects: &[PathBuf]) 
     clang.args(["-O3", "-flto", "-shared", "-fPIC", ll_path]);
     clang.arg(&rt_o);
     clang.args(["-o", &so_path, "-lm"]);
-    let status = clang.status()
+    let status = clang
+        .status()
         .map_err(|e| format!("failed to invoke clang: {}", e))?;
     if !status.success() {
         return Err(format!("clang failed to link '{}'", so_path));
@@ -3177,38 +3538,66 @@ fn compile_wasm(ll_path: &str, wasm_path: &str, exports: &[String]) -> Result<()
     // Retire this stage only when the shared lowering guarantees bounded stack.
     let lowered_path = format!("{}.lowered.ll", wasm_path);
     let optimized = Command::new("opt")
-        .args(["-S", "-passes=mem2reg,tailcallelim", ll_path, "-o", &lowered_path])
-        .status().map_err(|error| format!("Could not run LLVM opt: {error}. Install llvm-tools or use --emit-ir-only."))?;
+        .args([
+            "-S",
+            "-passes=mem2reg,tailcallelim",
+            ll_path,
+            "-o",
+            &lowered_path,
+        ])
+        .status()
+        .map_err(|error| {
+            format!("Could not run LLVM opt: {error}. Install llvm-tools or use --emit-ir-only.")
+        })?;
     if !optimized.success() {
         let _ = std::fs::remove_file(&lowered_path);
-        return Err(format!("LLVM could not lower '{ll_path}' for WebAssembly. Check the emitted IR diagnostics."));
+        return Err(format!(
+            "LLVM could not lower '{ll_path}' for WebAssembly. Check the emitted IR diagnostics."
+        ));
     }
     // Step 1: compile .ll to .wasm object file
     let obj_path = format!("{}.o", wasm_path);
     let mut assemble = Command::new("llc");
-    assemble.args(["-march=wasm32", "-filetype=obj", &lowered_path, "-o", &obj_path]);
-    let status = assemble.status()
-        .map_err(|e| format!(
+    assemble.args([
+        "-march=wasm32",
+        "-filetype=obj",
+        &lowered_path,
+        "-o",
+        &obj_path,
+    ]);
+    let status = assemble.status().map_err(|e| {
+        format!(
             "failed to invoke llc: {} (install llvm-tools or use --emit-ir-only)",
             e
-        ))?;
+        )
+    })?;
     if !status.success() {
-        return Err(format!("llc failed to compile '{}' to WASM object", ll_path));
+        return Err(format!(
+            "llc failed to compile '{}' to WASM object",
+            ll_path
+        ));
     }
     // Step 2: link .o to .wasm — export the reactive entry points the JS shim
     // calls (state_layout + every txn/definition). wasm-ld exports nothing by
     // default; without these the generated module is a dead object.
     let linker = resolve_wasm_linker()?;
     let mut link = Command::new(linker);
-    link.args(["--no-entry", "--allow-undefined", "-o", wasm_path, &obj_path]);
+    link.args([
+        "--no-entry",
+        "--allow-undefined",
+        "-o",
+        wasm_path,
+        &obj_path,
+    ]);
     for name in exports {
         link.arg(format!("--export={}", name));
     }
-    let status = link.status()
-        .map_err(|e| format!(
+    let status = link.status().map_err(|e| {
+        format!(
             "failed to invoke wasm-ld: {} (install wasm-ld or use --emit-ir-only)",
             e
-        ))?;
+        )
+    })?;
     if !status.success() {
         let _ = std::fs::remove_file(&obj_path);
         return Err(format!("wasm-ld failed to link '{}'", wasm_path));
@@ -3256,7 +3645,6 @@ fn resolve_wasm_linker() -> Result<String, String> {
 /// Load TargetConfig, respecting --config-dir when set in opts.
 /// 2026-07-16: P1 — Runtime config directory overrides compile-time baked.
 
-
 /// Lex the source into tokens with source spans.
 /// 2026-07-16: Fixed — use actual spans from logos instead of 0..0.
 
@@ -3278,10 +3666,7 @@ fn resolve_wasm_linker() -> Result<String, String> {
 mod tests {
     #[test]
     fn emitted_ir_verifier_rejects_invalid_module() {
-        let path = std::env::temp_dir().join(format!(
-            "briev-invalid-{}.ll",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("briev-invalid-{}.ll", std::process::id()));
         std::fs::write(&path, "define i32 @bad() {\n  ret void\n}\n").unwrap();
         let result = super::verify_emitted_ir(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
@@ -3292,13 +3677,12 @@ mod tests {
         );
     }
 
-
     /// 2026-08-27 (Slice A): an extern source that does not exist is a hard
     /// error naming both symbol and path.
     #[test]
     fn test_extern_missing_source_is_hard_error() {
-        use briev_compiler::ast::{TopLevel};
         use briev_compiler::ast::top::*;
+        use briev_compiler::ast::TopLevel;
         let cell = TopLevel::Cell(CellDef {
             name: "Ghost".into(),
             type_params: vec![],
@@ -3469,6 +3853,7 @@ node go [done == false][done == true] {
             raw_bin: false,
             no_link: false,
             web_page_key: None,
+            verify_bodies: false,
         }
     }
 
@@ -3483,22 +3868,34 @@ node go [done == false][done == true] {
     #[test]
     fn test_compile_view_injects_ids_and_extracts_bindings() {
         let opts = webstack_opts("/tmp/app.rbv");
-        let items = vec![
-            briev_compiler::ast::TopLevel::Statement(Box::new(
-                briev_compiler::ast::Statement::Let {
-                    name: "count".to_string(),
-                    names: vec![],
-                    ty: Some(briev_compiler::ast::Type::int()),
-                    expr: Some(briev_compiler::ast::Expr::Decimal(0)),
-                    modifiers: vec![],
-                },
-            )),
-        ];
+        let items = vec![briev_compiler::ast::TopLevel::Statement(Box::new(
+            briev_compiler::ast::Statement::Let {
+                name: "count".to_string(),
+                names: vec![],
+                ty: Some(briev_compiler::ast::Type::int()),
+                expr: Some(briev_compiler::ast::Expr::Decimal(0)),
+                modifiers: vec![],
+            },
+        ))];
         let pre = preprocessed_with_view(
             r#"<div><span b-text="count">0</span><button b-trigger:click="bump">+</button></div>"#,
         );
-        let cv = compile_view("/tmp/app.rbv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("view compiles");
-        assert!(!cv.bindings.is_empty(), "b-text/b-trigger bindings extracted");
+        let cv = compile_view(
+            "/tmp/app.rbv",
+            &items,
+            &opts,
+            &pre,
+            &ViewMountSpecs {
+                pools: std::collections::HashMap::new(),
+                instances: std::collections::HashMap::new(),
+                top_level_variants: std::collections::HashMap::new(),
+            },
+        )
+        .expect("view compiles");
+        assert!(
+            !cv.bindings.is_empty(),
+            "b-text/b-trigger bindings extracted"
+        );
         let html = cv.modified_html.expect("modified html present");
         assert!(
             html.contains("id=\"rbv-"),
@@ -3517,7 +3914,18 @@ node go [done == false][done == true] {
     fn test_compile_view_rejects_b_if() {
         let opts = webstack_opts("/tmp/app.rbv");
         let pre = preprocessed_with_view(r#"<div b-if="x">bad</div>"#);
-        let err = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).unwrap_err();
+        let err = compile_view(
+            "/tmp/app.rbv",
+            &[],
+            &opts,
+            &pre,
+            &ViewMountSpecs {
+                pools: std::collections::HashMap::new(),
+                instances: std::collections::HashMap::new(),
+                top_level_variants: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap_err();
         assert!(
             err.contains("`b-if` is invalid"),
             "b-if rejected per SPEC 21.4: {err}"
@@ -3528,7 +3936,18 @@ node go [done == false][done == true] {
     fn test_compile_view_strict_rejects_undefined_signal() {
         let opts = webstack_opts("/tmp/ui.s.rbv");
         let pre = preprocessed_with_view(r#"<span b-text="nope">x</span>"#);
-        let err = compile_view("/tmp/ui.s.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).unwrap_err();
+        let err = compile_view(
+            "/tmp/ui.s.rbv",
+            &[],
+            &opts,
+            &pre,
+            &ViewMountSpecs {
+                pools: std::collections::HashMap::new(),
+                instances: std::collections::HashMap::new(),
+                top_level_variants: std::collections::HashMap::new(),
+            },
+        )
+        .unwrap_err();
         assert!(
             err.contains("SRBV001") && err.contains("'nope'"),
             "strict profile rejects undefined signal: {err}"
@@ -3541,7 +3960,18 @@ node go [done == false][done == true] {
         // warnings — SRBV reference errors are a `.s` strict-profile feature.
         let opts = webstack_opts("/tmp/app.rbv");
         let pre = preprocessed_with_view(r#"<span b-text="nope">x</span>"#);
-        let cv = compile_view("/tmp/app.rbv", &[], &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("non-strict view compiles");
+        let cv = compile_view(
+            "/tmp/app.rbv",
+            &[],
+            &opts,
+            &pre,
+            &ViewMountSpecs {
+                pools: std::collections::HashMap::new(),
+                instances: std::collections::HashMap::new(),
+                top_level_variants: std::collections::HashMap::new(),
+            },
+        )
+        .expect("non-strict view compiles");
         assert!(
             cv.bindings.iter().any(|b| {
                 matches!(
@@ -3570,7 +4000,18 @@ node go [done == false][done == true] {
             style_css: None,
             view_html: None,
         };
-        let cv = compile_view("/tmp/app.bv", &items, &opts, &pre, &ViewMountSpecs { pools: std::collections::HashMap::new(), instances: std::collections::HashMap::new(), top_level_variants: std::collections::HashMap::new() }).expect("render block compiles");
+        let cv = compile_view(
+            "/tmp/app.bv",
+            &items,
+            &opts,
+            &pre,
+            &ViewMountSpecs {
+                pools: std::collections::HashMap::new(),
+                instances: std::collections::HashMap::new(),
+                top_level_variants: std::collections::HashMap::new(),
+            },
+        )
+        .expect("render block compiles");
         let html = cv.modified_html.expect("html from render block");
         assert!(html.contains("b-text") || html.contains("rbv-"));
         assert!(!cv.bindings.is_empty());
@@ -3605,7 +4046,10 @@ node go [done == false][done == true] {
         let signals = view_root_signals(&bindings);
         assert!(signals.contains("items"), "projection derefs to root field");
         assert!(signals.contains("count"));
-        assert!(!signals.contains("bump"), "triggers reference txns, not fields");
+        assert!(
+            !signals.contains("bump"),
+            "triggers reference txns, not fields"
+        );
     }
 
     #[test]
@@ -3708,7 +4152,8 @@ node go [done == false][done == true] {
 
     /// Helper: create a temporary file with given content, run a function on its path.
     fn with_temp_file<F>(content: &str, f: F)
-    where F: FnOnce(&Path)
+    where
+        F: FnOnce(&Path),
     {
         let dir = std::env::temp_dir().join("briev_compile_test");
         std::fs::create_dir_all(&dir).ok();
@@ -3747,7 +4192,10 @@ node go [done == false][done == true] {
         let path = Path::new("/tmp/test_bad_ext.xyz");
         std::fs::write(path, "hello").ok();
         let result = compile_source_to_object(path, &get_ffi_cache_dir());
-        assert!(result.is_err(), "expected compile error for unknown extension");
+        assert!(
+            result.is_err(),
+            "expected compile error for unknown extension"
+        );
         let _ = std::fs::remove_file(path);
     }
 }
