@@ -112,6 +112,7 @@ briev-self-hosted
 metrod*
 test_*
 !src/test_runner.rs
+!src/test_engine.rs
 test_cases/
 test_rstruct-build/
 test_schema/
