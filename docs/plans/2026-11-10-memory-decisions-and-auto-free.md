@@ -283,3 +283,22 @@ the corruption appears when a helper becomes stateful and returns an object.
 the stateful object-return ABI (or prove the correct sret/state ordering) with
 a focused regression, then re-enable the gate and keep the helper Arena tests.
 No kiosk pin bump until this is resolved.
+
+### 9.7 HIR emission does not consume the AST arena decision
+
+Further spike: with the leaf gate enabled, the AST allocation analysis does
+mark `helper`/`make`/`entry` in `needs_arena`, and a leaf helper's plain
+`Alloc#` is assigned `Arena`. The emitted helper is still stateless with
+`@malloc` because **default emission is typed HIR**; the AST
+`defn_needs_state` / arena decision is not the HIR emission input
+(`BRIEV_HIR_EMIT=0` selects the AST path). The earlier corruption was the
+stateful object-return ABI; this is the second half of the gate.
+
+M1.1 therefore has two prerequisites:
+1. teach the HIR emission path to consume the allocation/arena/needs-state
+   decisions (or run the decision after HIR lowering on the HIR form);
+2. add the stateful object-return ABI regression (OnnxValue/parser shape)
+   and fix the sret/state ordering.
+
+Only then re-enable helper arena context. Transaction-local arena behavior
+is unaffected.
