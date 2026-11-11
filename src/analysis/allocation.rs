@@ -729,6 +729,28 @@ impl<'a> DagBuilder<'a> {
                     self.walk_stmts(&mut defn.body);
                     self.compute_reaching_allocs();
                 }
+                // A node/cell owns transactions and definitions. Its body is
+                // a transaction: plain Alloc# there must select the tick arena
+                // so the runtime can hand a single arena block to helpers.
+                TopLevel::Cell(cell) => {
+                    for txn in cell.transactions.iter_mut() {
+                        self.graph = DataflowGraph::new();
+                        self.arena_context = false;
+                        self.in_txn = true;
+                        self.in_bounded = !matches!(txn.contract.post_condition, Expr::Bool(true));
+                        self.walk_stmts(&mut txn.body);
+                        self.compute_reaching_allocs();
+                    }
+                    for defn in cell.definitions.iter_mut() {
+                        self.graph = DataflowGraph::new();
+                        self.arena_context = self.arena_context_set.contains(&defn.name)
+                            && arena_leaf_safe(defn);
+                        self.in_txn = self.arena_context;
+                        self.in_bounded = false;
+                        self.walk_stmts(&mut defn.body);
+                        self.compute_reaching_allocs();
+                    }
+                }
                 _ => {}
             }
         }
@@ -1086,6 +1108,22 @@ pub fn analyze_arena_need(items: &mut [TopLevel]) -> HashSet<String> {
                 builder.in_txn = builder.arena_context;
                 builder.in_bounded = false;
                 builder.walk_stmts(&mut defn.body);
+            }
+            TopLevel::Cell(cell) => {
+                for txn in cell.transactions.iter_mut() {
+                    builder.in_txn = true;
+                    builder.in_bounded = !matches!(txn.contract.post_condition, Expr::Bool(true));
+                    builder.walk_stmts(&mut txn.body);
+                    if builder.needs_arena { direct_needs.insert(txn.name.clone()); }
+                }
+                for defn in cell.definitions.iter_mut() {
+                    builder.arena_context = arena_defns.contains(&defn.name)
+                        && arena_leaf_safe(defn);
+                    builder.in_txn = builder.arena_context;
+                    builder.in_bounded = false;
+                    builder.walk_stmts(&mut defn.body);
+                    if builder.needs_arena { direct_needs.insert(defn.name.clone()); }
+                }
             }
             _ => {}
         }

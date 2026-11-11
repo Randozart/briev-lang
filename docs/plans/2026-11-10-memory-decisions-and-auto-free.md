@@ -299,3 +299,22 @@ scalar/void helpers now emit stateful with arena init/bump; callers receive
 remain Malloc by the scalar-output gate, so the stateful object-return ABI is
 not exercised; it remains a prerequisite before widening the gate to
 aggregate-returning helpers.
+
+## 10. M2 progress — tensor arena foundation (2026-11-11)
+
+- Cell/node transactions now participate in allocation-strategy and
+  arena-need analysis (`analyze_alloc_strategies` / `analyze_arena_need`),
+  so a node-body `Alloc#` can select the tick arena. Unit tests cover the
+  node transaction path.
+- Kiosk `briev/ml/tensor.bv` gained a per-request bump arena (`install`,
+  `reset`, `tensor_alloc`); `tensor_free` no-ops for arena tensors.
+  `detect_faces` resets after each response; VAD copies state to an owned
+  tensor before reset. Activations no longer Malloc-per-op.
+- The arena block is still an owned `Malloc#` installed by the node entry.
+  Switching that block to plain `Alloc#` reproduces the stateful
+  object-return ABI miscompile (OnnxValue/message shapes), so the compiler
+  arena path stays gated until that ABI regression is fixed.
+- Face graph caching is not solved yet: top-level object/list globals are not
+  emitted (undefined `@face_cached`/`@empty_xs`), so the daemon reparses per
+  request and RSS still grows. Next: cache the parsed graph without relying
+  on unsupported globals, or make parser graph/list allocations arena-backed.
