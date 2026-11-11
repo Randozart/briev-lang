@@ -361,6 +361,11 @@ fn extend<T: Ord>(target: &mut BTreeSet<T>, values: impl IntoIterator<Item = T>)
     target.len() != before
 }
 
+#[cfg(test)]
+pub(crate) fn closed_initializers_for_test(items: &[TopLevel]) -> bool {
+    walk::closed_initializers(items)
+}
+
 pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, universe: Option<&crate::type_universe::TypeUniverse>) -> ReclamationPlan {
     let mut index = Graph::default();
     if let Some(universe) = universe { index.universe = universe.clone(); }

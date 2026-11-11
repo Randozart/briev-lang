@@ -144,4 +144,27 @@ P7 heading says six; INDEX suite counts refreshed; AGENTS per-commit
 checklist now names `scripts/gate.sh`; H5 inventory records the
 no-runtime-consumer decisions.
 
-**Next: R (reclamation HIR parity).**
+**2026-11-11 — V1 (interpreter-over-corpus) DONE ahead of R.** Six curated
+programs (`tests/interpreter_corpus_parity.rs`) end with `endprogram <value>`;
+the native exit code and the reference interpreter's `ProgramExit` value must
+agree. Covers recursion, nested foreach, list read/write, Bool flags, and
+matrix ops. Found a real bug: unused Bool plain globals emitted
+`global i8 false` (i1 constant) — fixed to `1`/`0` and recorded in BUGS.md.
+Added to the quick gate (~16 s).
+
+**2026-11-11 — R started (parity foundation + first fact).**
+
+- `tests/hir_reclamation_parity.rs`: pins that HIR lowering preserves the
+  callable/body/global surfaces the reclamation walker reads and that every
+  HIR callable body round-trips through `to_ast` structurally unchanged
+  (alloc/escape, publish-into-parameter, guards/keep fixtures; generic body
+  preserved). This is the gate the port grows against.
+- `src/hir/reclamation.rs` (first port slice):
+  `closed_initializers` over `HirProgram` with AST-parity unit tests (literal
+  globals closed; state and non-literal globals open; no globals closed).
+  The test-only AST wrapper lives in `analysis::reclamation`.
+
+**Next R slices:** port `walk::register` facts (bodies, generics, results,
+methods, entry nodes, default-encoding targets, globals/enums/typedefs), then
+constraints/build_owner, solver, plan absorption; flip the consumer only when
+the whole plan compares equal.
