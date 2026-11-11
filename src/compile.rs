@@ -506,7 +506,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // no transitively-effectful call) is dead weight the reactor still
     // schedules; the author almost certainly meant something else. Born
     // composite via diagnostics::Block (what/why/fix); warn, never error.
-    for b in briev_compiler::analysis::purity::analyze(&items) {
+    for b in briev_compiler::analysis::purity::analyze_dual(&items) {
         eprintln!("{}", b.render().trim_end());
     }
     // 2026-08-22 (spec-conformance plan Phase 9, SPEC §3.2): `.s` strict
