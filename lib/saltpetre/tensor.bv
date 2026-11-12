@@ -1,0 +1,158 @@
+// tensor.bv — flat f32 tensors with NCHW-style shape metadata.
+//
+// Storage is [ptr: Int] to a heap block with `n` f32 slots at stride 4 bytes.
+// Activations allocate from the per-inference arena when one is installed;
+// model weights/temporaries use owned Malloc blocks. Dims carry the logical
+// shape; kernels index flat and read shape as needed.
+
+obj Tensor {
+    name: String;
+    dims: List<Int>;
+    n: Int;
+    ptr: Int;
+    arena: Bool;
+};
+
+// ── Per-inference arena ────────────────────────────────────────────────
+// Backing block is one plain `Alloc#()` in the node/test entry; the compiler
+// selects the tick arena (cell transaction analysis). This layer bumps
+// offsets within that block and resets after the request.
+let ml_arena_base: Int = 0;
+let ml_arena_off: Int = 0;
+let ml_arena_cap: Int = 0;
+let ml_arena_on: Int = 0;
+
+defn ml_arena_install(base: Int, cap: Int) -> Void {
+    ml_arena_base = base;
+    ml_arena_off = 0;
+    ml_arena_cap = cap;
+    ml_arena_on = 0; when cap > 0 && base != 0 { ml_arena_on = 1; };
+    term;
+};
+
+defn ml_arena_reset() -> Void {
+    ml_arena_off = 0;
+    term;
+};
+
+defn ml_arena_off_bytes() [true][term >= 0] -> Int {
+    term ml_arena_off;
+};
+
+defn tensor_alloc(n: Int) -> (Int, Bool) {
+    let need: Int = n * 4;
+    when ml_arena_on != 0 && ml_arena_off + need <= ml_arena_cap {
+        let p: Int = ml_arena_base + ml_arena_off;
+        ml_arena_off = ml_arena_off + need;
+        term (p, true);
+    };
+    term (Malloc#(need) as Int, false);
+};
+
+defn tensor_alloc_owned(n: Int) -> Int {
+    term Malloc#(n * 4) as Int;
+};
+
+defn dims_product(dims: List<Int>) -> Int {
+    let acc: Int = 1;
+    foreach i in 0..dims.Count#() {
+        acc = acc * dims[i];
+    };
+    term acc;
+};
+
+defn tensor_empty() -> Tensor {
+    let dims: List<Int> = [];
+    term Tensor { name: "", dims: dims, n: 0, ptr: 0, arena: false };
+};
+
+defn tensor_new(n: Int) [n >= 0][true] -> Tensor {
+    let (addr, in_arena) = tensor_alloc(n);
+    let dims: List<Int> = [];
+    term Tensor { name: "", dims: dims, n: n, ptr: addr, arena: in_arena };
+};
+
+defn tensor_named(name: String, dims: List<Int>, n: Int) -> Tensor {
+    let (addr, in_arena) = tensor_alloc(n);
+    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: in_arena };
+};
+
+defn tensor_named_owned(name: String, dims: List<Int>, n: Int) -> Tensor {
+    let addr: Int = tensor_alloc_owned(n);
+    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: false };
+};
+
+defn tensor_named4(name: String, dims: List<Int>, n: Int) -> Tensor {
+    let addr: Int = tensor_alloc_owned(n);
+    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: false };
+};
+
+defn string_free(s: String) -> Void {
+    when (s .^Length) > 0 {
+        Free#(((s as Data) as Int) as Ptr<Bit<8>>);
+    };
+    term;
+};
+
+defn tensor_drop(t: Tensor) -> Void {
+    tensor_free(t);
+    when t.ptr != 0 {
+        Free#(((t as Data) as Int) as Ptr<Bit<8>>);
+    };
+    term;
+};
+
+defn tensor_copy_owned(t: Tensor) -> Tensor {
+    let addr: Int = tensor_alloc_owned(t.n);
+    let copy: Tensor = Tensor { name: t.name, dims: t.dims, n: t.n, ptr: addr, arena: false };
+    foreach i in 0..t.n { tensor_set(copy, i, tensor_get(t, i)); };
+    term copy;
+};
+
+defn tensor_free(t: Tensor) -> Void {
+    when t.ptr != 0 && !t.arena {
+        Free#(t.ptr as Ptr<Bit<8>>);
+    };
+    term;
+};
+
+defn tensor_get(t: Tensor, i: Int) [i >= 0 && i < t.n][true] -> Float {
+    let base: Ptr<Float> = t.ptr as Ptr<Float>;
+    term base[i];
+};
+
+defn tensor_set(t: Tensor, i: Int, v: Float) [i >= 0 && i < t.n][true] -> Void {
+    let base: Ptr<Float> = t.ptr as Ptr<Float>;
+    base[i] = v;
+    term;
+};
+
+defn tensor_rename(t: Tensor, name: String) -> Tensor {
+    term Tensor { name: name, dims: t.dims, n: t.n, ptr: t.ptr, arena: t.arena };
+};
+
+defn tensor_byte_store(t: Tensor, at: Int, v: Int) -> Void {
+    let base: Ptr<Bit<8>> = t.ptr as Ptr<Bit<8>>;
+    base[at] = v as Bit<8>;
+    term;
+};
+
+defn f32_from_bytes(bytes: String, off: Int) -> Float {
+    let buf: Int = Malloc#(8) as Int;
+    let base: Ptr<Bit<8>> = buf as Ptr<Bit<8>>;
+    foreach i in 0..4 {
+        base[i] = byte_at(bytes, off + i) as Bit<8>;
+    };
+    let fbase: Ptr<Float> = buf as Ptr<Float>;
+    let v: Float = fbase[0];
+    Free#(buf as Ptr<Bit<8>>);
+    term v;
+};
+
+defn int_from_bytes_le(bytes: String, off: Int, width: Int) -> Int {
+    let acc: Int = 0;
+    foreach i in 0..width {
+        acc = acc | (byte_at(bytes, off + i) << (8 * i));
+    };
+    term acc;
+};

@@ -1,0 +1,519 @@
+// onnx.bv — ONNX ModelProto reader (graph, nodes, attributes, initializers).
+//
+// Schema-free: each parser walks the protobuf fields it needs and skips the
+// rest by wire kind. Unknown fields and newer ONNX versions are tolerated.
+// Lists are built in locals and returned; object fields are set only at
+// construction, keeping the walk free of field-level arrow mutation.
+
+import "./proto.bv";
+import "./tensor.bv";
+import "std/string.bv";
+import "std/os/fs.bv";
+import "std/cast_lanes.bv";
+
+// Owned copy of a protobuf-delimited string. Parsed graph strings must not
+// alias the model byte buffer: once the caller's model String dies, graph
+// names/ops/attrs would be use-after-free (region lowering used to mask it).
+defn owned_string(src: String) [true][CharCount#(term) >= 0] -> String {
+    let len: Int = src .^Length;
+    let p: Int = Malloc#(8 + len) as Int;
+    Store#(p, len, 8);
+    Copy#(p + 8, (src as Data) as Int + 8, len);
+    term (p as Data) as String;
+};
+
+obj OnnxAttr {
+    name: String;
+    i: Int;
+    f: Float;
+    s: String;
+    ints: List<Int>;
+    floats: List<Float>;
+};
+
+obj OnnxNode {
+    op_type: String;
+    ins: List<String>;
+    outs: List<String>;
+    attrs: List<OnnxAttr>;
+};
+
+obj OnnxValue {
+    name: String;
+    dims: List<Int>;
+};
+
+obj OnnxExternal {
+    location: String;
+    offset: String;
+    length: String;
+    flag: Int;
+};
+
+obj OnnxGraph {
+    nodes: List<OnnxNode>;
+    ins: List<OnnxValue>;
+    outs: List<OnnxValue>;
+    inits: List<Tensor>;
+};
+
+defn parse_dimension_loop(r: ProtoReader, dims: List<Int>) -> List<Int> {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let next: List<Int> = dims;
+            next <- proto_varint(r);
+            term parse_dimension_loop(r, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_dimension_loop(r, dims);
+    };
+    term dims;
+};
+
+defn parse_shape_loop(r: ProtoReader, dims: List<Int>) -> List<Int> {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let dim_bytes: String = proto_bytes(r);
+            let dr: ProtoReader = proto_reader(dim_bytes);
+            let next: List<Int> = parse_dimension_loop(dr, dims);
+            term parse_shape_loop(r, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_shape_loop(r, dims);
+    };
+    term dims;
+};
+
+defn parse_tensor_type_loop(r: ProtoReader, dims: List<Int>) -> List<Int> {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 2 {
+            let shape_bytes: String = proto_bytes(r);
+            let sr: ProtoReader = proto_reader(shape_bytes);
+            let next: List<Int> = parse_shape_loop(sr, dims);
+            term parse_tensor_type_loop(r, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_tensor_type_loop(r, dims);
+    };
+    term dims;
+};
+
+defn parse_type_loop(r: ProtoReader, dims: List<Int>) -> List<Int> {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let tensor_bytes: String = proto_bytes(r);
+            let tr: ProtoReader = proto_reader(tensor_bytes);
+            let next: List<Int> = parse_tensor_type_loop(tr, dims);
+            term parse_type_loop(r, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_type_loop(r, dims);
+    };
+    term dims;
+};
+
+defn parse_value_name_loop(r: ProtoReader, name: String, dims: List<Int>) -> OnnxValue {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let raw_name: String = proto_bytes(r);
+            let next: String = owned_string(raw_name);
+            term parse_value_name_loop(r, next, dims);
+        };
+        when field == 2 {
+            let type_bytes: String = proto_bytes(r);
+            let tr: ProtoReader = proto_reader(type_bytes);
+            let next: List<Int> = parse_type_loop(tr, dims);
+            // ONNX ValueInfo metadata_props follow the type. Ignore the rest:
+            // metadata is not part of the graph shape and looping over it is
+            // the layout-sensitive path under the arena/stateful ABI.
+            term OnnxValue { name: name, dims: next };
+        };
+        proto_skip_kind(r, wire);
+        term parse_value_name_loop(r, name, dims);
+    };
+    term OnnxValue { name: name, dims: dims };
+};
+
+defn parse_value_info(bytes: String) -> OnnxValue {
+    let empty: List<Int> = [];
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_value_name_loop(r, "", empty);
+};
+
+defn packed_ints(bytes: String, acc: List<Int>) -> List<Int> {
+    let r: ProtoReader = proto_reader(bytes);
+    term packed_ints_loop(r, acc);
+};
+
+defn packed_ints_loop(r: ProtoReader, acc: List<Int>) -> List<Int> {
+    when !proto_done(r) {
+        let next: List<Int> = acc;
+        next <- proto_varint(r);
+        term packed_ints_loop(r, next);
+    };
+    term acc;
+};
+
+
+defn parse_attr_loop(r: ProtoReader, name: String, i: Int, f: Float, s: String, ints: List<Int>, floats: List<Float>) -> OnnxAttr {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let next: String = owned_string(proto_bytes(r));
+            term parse_attr_loop(r, next, i, f, s, ints, floats);
+        };
+        when field == 2 {
+            when wire == 5 {
+                let start: Int = r.pos;
+                r.pos = r.pos + 4;
+                let next: Float = f32_from_bytes(r.buf, start);
+                term parse_attr_loop(r, name, i, next, s, ints, floats);
+            };
+            proto_skip_kind(r, wire);
+            term parse_attr_loop(r, name, i, f, s, ints, floats);
+        };
+        when field == 3 {
+            let next: Int = proto_varint(r);
+            term parse_attr_loop(r, name, next, f, s, ints, floats);
+        };
+        when field == 4 {
+            let next: String = owned_string(proto_bytes(r));
+            term parse_attr_loop(r, name, i, f, next, ints, floats);
+        };
+        when field == 7 {
+            when wire == 5 { r.pos = r.pos + 4; term parse_attr_loop(r, name, i, f, s, ints, floats); };
+            when wire == 2 { let ignored: String = proto_bytes(r); term parse_attr_loop(r, name, i, f, s, ints, floats); };
+            proto_skip_kind(r, wire);
+            term parse_attr_loop(r, name, i, f, s, ints, floats);
+        };
+        when field == 8 {
+            when wire == 2 {
+                let ib: String = proto_bytes(r);
+                let next: List<Int> = packed_ints(ib, ints);
+                term parse_attr_loop(r, name, i, f, s, next, floats);
+            };
+            let next: List<Int> = ints;
+            next <- proto_varint(r);
+            term parse_attr_loop(r, name, i, f, s, next, floats);
+        };
+        proto_skip_kind(r, wire);
+        term parse_attr_loop(r, name, i, f, s, ints, floats);
+    };
+    term OnnxAttr { name: name, i: i, f: f, s: s, ints: ints, floats: floats };
+};
+
+defn parse_attr(bytes: String) -> OnnxAttr {
+    let ints: List<Int> = [];
+    let floats: List<Float> = [];
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_attr_loop(r, "", 0, 0.0, "", ints, floats);
+};
+
+defn parse_node_loop(r: ProtoReader, op_type: String, ins: List<String>, outs: List<String>, attrs: List<OnnxAttr>) -> OnnxNode {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let next: List<String> = ins;
+            next <- proto_bytes(r);
+            term parse_node_loop(r, op_type, next, outs, attrs);
+        };
+        when field == 2 {
+            let next: List<String> = outs;
+            next <- proto_bytes(r);
+            term parse_node_loop(r, op_type, ins, next, attrs);
+        };
+        when field == 4 {
+            let next: String = proto_bytes(r);
+            term parse_node_loop(r, next, ins, outs, attrs);
+        };
+        when field == 5 {
+            let attr_bytes: String = proto_bytes(r);
+            let next: List<OnnxAttr> = attrs;
+            next <- parse_attr(attr_bytes);
+            term parse_node_loop(r, op_type, ins, outs, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_node_loop(r, op_type, ins, outs, attrs);
+    };
+    term OnnxNode { op_type: op_type, ins: ins, outs: outs, attrs: attrs };
+};
+
+defn parse_node(bytes: String) -> OnnxNode {
+    let ins: List<String> = [];
+    let outs: List<String> = [];
+    let attrs: List<OnnxAttr> = [];
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_node_loop(r, "", ins, outs, attrs);
+};
+
+defn parse_pair_loop(r: ProtoReader, key: String, value: String) -> (String, String) {
+    when !proto_done(r) {
+        let keycode: Int = proto_varint(r);
+        let field: Int = keycode >> 3;
+        let wire: Int = keycode & 7;
+        when field == 1 {
+            let next: String = owned_string(proto_bytes(r));
+            term parse_pair_loop(r, next, value);
+        };
+        when field == 2 {
+            let next: String = owned_string(proto_bytes(r));
+            term parse_pair_loop(r, key, next);
+        };
+        proto_skip_kind(r, wire);
+        term parse_pair_loop(r, key, value);
+    };
+    term (key, value);
+};
+
+defn parse_pair(bytes: String) -> (String, String) {
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_pair_loop(r, "", "");
+};
+
+defn ext_note(ext: OnnxExternal, key: String, value: String) -> Void {
+    when key == "location" { ext.location = value; };
+    when key == "offset" { ext.offset = value; };
+    when key == "length" { ext.length = value; };
+    term;
+};
+
+defn parse_tensor_loop(r: ProtoReader, name: String, dtype: Int, dims: List<Int>, raw: String, fbuf: String, ibuf: String, ext: OnnxExternal) -> Tensor {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            when wire == 2 {
+                let db: String = proto_bytes(r);
+                let next: List<Int> = packed_ints(db, dims);
+                term parse_tensor_loop(r, name, dtype, next, raw, fbuf, ibuf, ext);
+            };
+            let next: List<Int> = dims;
+            next <- proto_varint(r);
+            term parse_tensor_loop(r, name, dtype, next, raw, fbuf, ibuf, ext);
+        };
+        when field == 2 {
+            let next: Int = proto_varint(r);
+            term parse_tensor_loop(r, name, next, dims, raw, fbuf, ibuf, ext);
+        };
+        when field == 4 {
+            let fb: String = proto_bytes(r);
+            let next: String = concat(fbuf, fb);
+            term parse_tensor_loop(r, name, dtype, dims, raw, next, ibuf, ext);
+        };
+        when field == 5 {
+            let ib: String = proto_bytes(r);
+            let next: String = concat(ibuf, ib);
+            term parse_tensor_loop(r, name, dtype, dims, raw, fbuf, next, ext);
+        };
+        when field == 7 {
+            let ib: String = proto_bytes(r);
+            let next: String = concat(ibuf, ib);
+            term parse_tensor_loop(r, name, dtype, dims, raw, fbuf, next, ext);
+        };
+        when field == 8 {
+            let next: String = owned_string(proto_bytes(r));
+            term parse_tensor_loop(r, next, dtype, dims, raw, fbuf, ibuf, ext);
+        };
+        when field == 9 {
+            let next: String = proto_bytes(r);
+            term parse_tensor_loop(r, name, dtype, dims, next, fbuf, ibuf, ext);
+        };
+        when field == 13 {
+            let entry: String = proto_bytes(r);
+            let (key, value) = parse_pair(entry);
+            ext_note(ext, key, value);
+            term parse_tensor_loop(r, name, dtype, dims, raw, fbuf, ibuf, ext);
+        };
+        when field == 14 {
+            let next: Int = proto_varint(r);
+            ext.flag = next;
+            term parse_tensor_loop(r, name, dtype, dims, raw, fbuf, ibuf, ext);
+        };
+        proto_skip_kind(r, wire);
+        term parse_tensor_loop(r, name, dtype, dims, raw, fbuf, ibuf, ext);
+    };
+    term tensor_from_proto(name, dtype, dims, raw, fbuf, ibuf, ext);
+};
+
+defn tensor_copy_f32(t: Tensor, bytes: String, count: Int) -> Void {
+    foreach i in 0..count {
+        foreach b in 0..4 {
+            tensor_byte_store(t, 4 * i + b, byte_at(bytes, 4 * i + b));
+        };
+    };
+    term;
+};
+
+defn tensor_copy_int(t: Tensor, bytes: String, count: Int, width: Int) -> Void {
+    foreach i in 0..count {
+        let v: Int = int_from_bytes_le(bytes, width * i, width);
+        when width == 2 && v >= 32768 { v = v - 65536; };
+        when width == 4 && v >= 2147483648 { v = v - 4294967296; };
+        tensor_set(t, i, v as Float);
+    };
+    term;
+};
+
+defn tensor_copy_int8(t: Tensor, bytes: String, count: Int) -> Void {
+    foreach i in 0..count {
+        let u: Int = byte_at(bytes, i);
+        let v: Int = 0;
+        when u >= 128 { v = u - 256; };
+        when u < 128 { v = u; };
+        tensor_set(t, i, v as Float);
+    };
+    term;
+};
+
+let onnx_base: String = "";
+
+defn dir_of(path: String) -> String {
+    let n: Int = path .^Length;
+    let cut: Int = 0;
+    foreach i in 0..n {
+        when byte_at(path, i) == 47 { cut = i; };
+    };
+    term path[0:cut];
+};
+
+defn parse_model_at(bytes: String, path: String) -> OnnxGraph {
+    onnx_base = owned_string(dir_of(path));
+    term parse_model(bytes);
+};
+
+defn external_bytes(ext: OnnxExternal) -> String {
+    when (ext.location .^Length) == 0 { term ""; };
+    let path: String = concat(concat(onnx_base, "/"), ext.location);
+    let file: Result<String, Int> = read_file(path);
+    when is_err(file) { term ""; };
+    let all: String = unwrap(file);
+    let off: Int = to_int(ext.offset);
+    let len: Int = to_int(ext.length);
+    term all[off:off + len];
+};
+
+defn tensor_from_proto(name: String, dtype: Int, dims: List<Int>, raw0: String, fbuf: String, ibuf: String, ext: OnnxExternal) -> Tensor {
+    let n: Int = dims_product(dims);
+    let t: Tensor = tensor_named_owned(name, dims, n);
+    let raw: String = raw0;
+    when (raw .^Length) == 0 && ext.flag == 1 { raw = external_bytes(ext); };
+    when (raw .^Length) > 0 {
+        when dtype == 1 { tensor_copy_f32(t, raw, n); };
+        when dtype == 3 { tensor_copy_int8(t, raw, n); };
+        when dtype == 7 { tensor_copy_int(t, raw, n, 8); };
+        when dtype == 6 { tensor_copy_int(t, raw, n, 4); };
+    };
+    when (raw .^Length) == 0 && (fbuf .^Length) > 0 {
+        tensor_copy_f32(t, fbuf, n);
+    };
+    when (raw .^Length) == 0 && (fbuf .^Length) == 0 && (ibuf .^Length) > 0 {
+        when dtype == 7 { tensor_copy_int(t, ibuf, n, 8); };
+        when dtype == 6 { tensor_copy_int(t, ibuf, n, 4); };
+        when dtype == 3 { tensor_copy_int(t, ibuf, n, 4); };
+        when dtype == 2 { tensor_copy_int(t, ibuf, n, 4); };
+    };
+    term t;
+};
+
+defn parse_tensor(bytes: String) -> Tensor {
+    let dims: List<Int> = [];
+    let ext: OnnxExternal = OnnxExternal { location: "", offset: "0", length: "0", flag: 0 };
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_tensor_loop(r, "", 0, dims, "", "", "", ext);
+};
+
+defn parse_graph_loop(r: ProtoReader, nodes: List<OnnxNode>, ins: List<OnnxValue>, outs: List<OnnxValue>, inits: List<Tensor>) -> OnnxGraph {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 1 {
+            let node_bytes: String = proto_bytes(r);
+            let next: List<OnnxNode> = nodes;
+            next <- parse_node(node_bytes);
+            term parse_graph_loop(r, next, ins, outs, inits);
+        };
+        when field == 5 {
+            let tensor_bytes: String = proto_bytes(r);
+            let next: List<Tensor> = inits;
+            next <- parse_tensor(tensor_bytes);
+            term parse_graph_loop(r, nodes, ins, outs, next);
+        };
+        when field == 11 {
+            let value_bytes: String = proto_bytes(r);
+            let next: List<OnnxValue> = ins;
+            next <- parse_value_info(value_bytes);
+            term parse_graph_loop(r, nodes, next, outs, inits);
+        };
+        when field == 12 {
+            let value_bytes: String = proto_bytes(r);
+            let next: List<OnnxValue> = outs;
+            next <- parse_value_info(value_bytes);
+            term parse_graph_loop(r, nodes, ins, next, inits);
+        };
+        proto_skip_kind(r, wire);
+        term parse_graph_loop(r, nodes, ins, outs, inits);
+    };
+    term OnnxGraph { nodes: nodes, ins: ins, outs: outs, inits: inits };
+};
+
+defn parse_graph(bytes: String) -> OnnxGraph {
+    let nodes: List<OnnxNode> = [];
+    let ins: List<OnnxValue> = [];
+    let outs: List<OnnxValue> = [];
+    let inits: List<Tensor> = [];
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_graph_loop(r, nodes, ins, outs, inits);
+};
+
+defn parse_model_loop(r: ProtoReader) -> OnnxGraph {
+    when !proto_done(r) {
+        let key: Int = proto_varint(r);
+        let field: Int = key >> 3;
+        let wire: Int = key & 7;
+        when field == 7 {
+            let graph_bytes: String = proto_bytes(r);
+            term parse_graph(graph_bytes);
+        };
+        proto_skip_kind(r, wire);
+        term parse_model_loop(r);
+    };
+    let nodes: List<OnnxNode> = [];
+    let ins: List<OnnxValue> = [];
+    let outs: List<OnnxValue> = [];
+    let inits: List<Tensor> = [];
+    term OnnxGraph { nodes: nodes, ins: ins, outs: outs, inits: inits };
+};
+
+defn empty_onnx_graph() -> OnnxGraph {
+    let nodes: List<OnnxNode> = [];
+    let ins: List<OnnxValue> = [];
+    let outs: List<OnnxValue> = [];
+    let inits: List<Tensor> = [];
+    term OnnxGraph { nodes: nodes, ins: ins, outs: outs, inits: inits };
+};
+
+defn parse_model(bytes: String) -> OnnxGraph {
+    let r: ProtoReader = proto_reader(bytes);
+    term parse_model_loop(r);
+};

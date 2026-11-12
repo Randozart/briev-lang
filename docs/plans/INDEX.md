@@ -139,6 +139,15 @@ captured final block) at the two hardcoded sites, then fixes the arena
 subsystem (Direct-SSA init, brk-aware fini, grow preserves the bump) and
 re-enables selection behind an IR gate. Prerequisite for per-worker arenas.
 
+**Saltpetre ML library (2026-11-12, LANDED v0):**
+`docs/plans/2026-11-12-saltpetre-ml-library.md` +
+`docs/architecture/saltpetre.md` — the kiosk `briev/ml` stack is now
+`lib/saltpetre/` in-repo (tensor/proto/onnx/exec/frame/yunet verbatim; NEW
+`session.bv` owns both request-arena lifecycles: `sp_begin`/`sp_request_reset`/
+`sp_run`/`sp_end`). Tiny ONNX corpus conformance gate in-repo
+(`tests/saltpetre_conformance.rs`, atol/rtol 1e-3, no PTL); kiosk acceptance
+stays the external capability meter. Saltpetre is the OpenVINO-retire vehicle.
+
 **Memory decisions + auto-free (2026-11-10, ACTIVE — M2 in progress):**
 `docs/plans/2026-11-10-memory-decisions-and-auto-free.md` — plain `Alloc#()`
 is the author surface; the compiler picks arena/stack/malloc when feasible.
