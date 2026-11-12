@@ -771,7 +771,9 @@ mod tests {
         assert_eq!(violated.len(), 1);
         assert_eq!(violated[0]["name"], "f");
         assert!(
-            violated[0]["reason"].as_str().is_some_and(|reason| !reason.is_empty()),
+            violated[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()),
             "{json}"
         );
         // A finding without the "name: reason" separator still yields a name.
