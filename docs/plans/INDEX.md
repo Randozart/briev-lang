@@ -162,9 +162,9 @@ request coll arena (C runtime, weak entry points), String-ownership slices
 pass `hir::owned_storage`), owned List destruction + temp-transfer (§16:
 `ReleaseOwned`/`TempTransfer` first-class HIR kinds, body-seam two-cursor
 walk, fresh-set gated on zero escaping params, identity-return transfer).
-Kiosk face soak: 144→187 MB pre-slices → flat 171 MB at 200 calls. NEXT:
-guard-nested inserts (currently AST-fallback leaks), tensor dims owner slot,
-then VAD RPC + op ledger.
+Kiosk face soak: 144→187 MB pre-slices → flat 171 MB at 200 calls. DONE SINCE: guard-nested seam (§17), owned List + temp-transfer (§16),
+tensor dims owner slot + cached-model session (saltpetre plan). NEXT:
+VAD RPC + op ledger.
 
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
