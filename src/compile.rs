@@ -251,7 +251,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-23: If --update-lockfile, regenerate macro-lock.toml from
     // current plugin files and --allow-* flags. Otherwise validate the
     // lockfile against loaded plugins and apply approved capabilities.
-    let mut pm = build_plugin_manager(file_path, opts);
+    let mut pm = build_plugin_manager(file_path, opts)?;
     let project_root =
         std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
