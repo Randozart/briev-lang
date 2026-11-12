@@ -13286,3 +13286,59 @@ cache was rewound to scalar per-slot globals (sp_s0_*/sp_s1_*), which also
 matches the two-slot requirement. Fix the scaffold's global-init store path
 for coll-typed globals, then the scalar rewind can become a List again if
 dynamic slot growth is ever wanted.
+
+## 2026-11-14 — `--verify-bodies` cannot discharge a relational goal over a sum
+
+**Status:** open. Found while implementing loop-invariant preservation (Counsel
+P4); the same shape caps every accumulator proof, so it blocks more than one
+consumer.
+
+### Symptom
+
+```briev
+defn two_var(a: Int, b: Int) [a >= 0 && b >= 0][term >= 0] -> Int { term a + b; };
+```
+→ `warning: --verify-bodies could not prove: two_var: could not prove the
+postcondition on path 1 of 1 (goal: (term >= 0))`
+
+### What does and does not discharge
+
+| shape | verdict | route |
+|---|---|---|
+| `[a >= 0][term >= 0] { term a; }` | proven | symbolic (structural) |
+| `[a >= 5][term > 4] { term a; }` | proven | symbolic (bounds) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven | SMT (equality) |
+| `[a >= 0 && b >= 0][term >= 0] { term a + b; }` | **UNPROVEN** | SMT (relational) |
+
+So equality goals over a sum reach SMT and are discharged, while relational goals
+over a sum are not. Single-variable relational goals never needed SMT, which is
+why the gap stayed hidden: `verify_bodies`'s symbolic bounds answer those.
+
+### Ruled out
+
+- **Contract shape**: hand-written defns reproduce it, and the `[I][I]` form for
+  preservation is the standard one.
+- **Parenthesised bounds** (`i >= (0)`): same result without parens.
+- **Self-referential substitution** from `acc = acc + i`: the failure reproduces
+  with **no assignment at all** (`term a + b;`).
+- **Z3 availability**: the managed z3 is installed, and the `3 * a` equality goal
+  proves through the SMT path in the same invocation.
+
+### Suspect
+
+`smt_discharge` (src/analysis/verify_bodies.rs) downgrades `Sat` to "unproven"
+when the goal has free identifiers — correct policy, but it makes this defect
+**silent**: a query whose facts never reached the solver returns a model, gets
+downgraded, and reads as the prover merely lacking information.
+
+Next probe: `[a >= 0 && b >= 0][term >= 1]` with `term a + b + 1`. It is provable
+only if the facts are used, so it separates "facts not asserted" from
+"relational-over-sum unsupported". If it fails, inspect `build_vc_query` and the
+fact plumbing; if it passes, the fault is the `bvsge` encoding path.
+
+### Why it matters
+
+Any function that accumulates (`acc = acc + x`) has a postcondition of exactly
+this shape, so this single gap is what stops Counsel from verifying
+loop-accumulator kernels — 270 of 535 eligible functions in this repo contain a
+loop, 178 with dynamic bounds.
