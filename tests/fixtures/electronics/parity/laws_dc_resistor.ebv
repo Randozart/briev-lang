@@ -1,0 +1,19 @@
+
+            type Resistor {
+                pin a; pin b;
+                reference "R"; spec Tolerance: any; spec Rating: 0.05W;
+                spec Resistance: Ohm;
+                hold true {
+                    a.voltage - b.voltage == Resistance * a.current;
+                    a.current + b.current == 0;
+                }
+            };
+            type Supply { pin p; pin n; reference "V"; spec Tolerance: any; };
+            let v1: Supply = Supply { };
+            let r1: Resistor = Resistor { spec Resistance: 330Ohm; };
+            txn drive
+                [v1.p.voltage == 3.3V && v1.p.voltage == r1.a.voltage
+                 && r1.b.voltage == v1.n.voltage && v1.n.voltage == 0.0V]
+                [r1.b.current <= 0.011]
+            { }
+        

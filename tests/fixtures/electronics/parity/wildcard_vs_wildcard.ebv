@@ -1,0 +1,6 @@
+
+            type Resistor { pin a; pin b; reference "R"; spec Tolerance: any; };
+            let t[i:2][j:3]: Resistor = Resistor { value: "x" };
+            let s[i:2][j:3]: Resistor = Resistor { value: "y" };
+            node n [t[*].a.voltage == s[*].a.voltage] { };
+        

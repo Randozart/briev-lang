@@ -1,0 +1,18 @@
+
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+            type Ldo {
+                pin in: Power;
+                pin vout: Power;
+                pin gnd: Ground;
+                reference "U";
+                spec Tolerance: any;
+                spec Output: Volt;
+                hold true { vout.voltage == Output; }
+            };
+            type Chip { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+            let u1: Ldo = Ldo { spec Output: 3.3V };
+            stdnet<V3V3> let u2: Chip = Chip { };
+            txn on [u1.in.voltage == 5.0V] { }
+        

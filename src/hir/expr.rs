@@ -74,6 +74,11 @@ pub enum HirExprKind {
         kind: ReflectKind,
     },
     Index(Box<HirExpr>, Box<HirExpr>),
+    /// 2026-11-12 (electronics full-surface port): the `[*]` wildcard
+    /// selector — every element of the indexed array. Only valid as an
+    /// index (`t[*]`, `u2.gpio[*]`); resolved by eager expansion in the
+    /// electronics analysis, never emitted.
+    Wildcard,
     Slice {
         array: Box<HirExpr>,
         start: Option<Box<HirExpr>>,

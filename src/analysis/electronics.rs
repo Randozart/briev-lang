@@ -27,7 +27,7 @@ use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel};
 use std::collections::BTreeMap;
 
 /// One component instance in the schematic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ComponentInstance {
     pub name: String,
     pub type_name: String,
@@ -49,7 +49,7 @@ pub struct PinRef {
 }
 
 /// Per-component-type schematic facts extracted from the type declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeInfo {
     /// KiCad reference-designator prefix (`R`, `D`, `J`) — `attr Reference` on
     /// the type, defaulting to the type's first letter uppercased.
@@ -96,7 +96,7 @@ pub struct TypeInfo {
 }
 
 /// One derived electrical node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Net {
     pub name: String,
     pub pins: Vec<PinRef>,
@@ -107,7 +107,7 @@ pub struct Net {
 }
 
 /// The derived netlist plus hard diagnostics.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ElectronicsNetlist {
     pub components: Vec<ComponentInstance>,
     pub nets: Vec<Net>,
@@ -225,7 +225,7 @@ impl Default for PinClassProps {
 /// driven net whose type declares `attr Tolerance: <max>` must tolerate the
 /// class; a 5 V net into a 3.3 V-only pin is a compile error, never a fried
 /// board. Unrated pins place no constraint.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct VoltageCheck {
     /// Net name → driven voltage class (max of agreeing drives).
     pub net_voltage: BTreeMap<String, f64>,
@@ -779,7 +779,7 @@ fn is_supply_pin(pin: &PinRef, ctx: &SynthesisContext<'_>) -> bool {
 /// The E24 preferred-value ladder — `config/e_series.dbvl` baked via
 /// include_str! (the footprints.dbvl pattern). A new family is a data row;
 /// the compiler carries the table, never a hardcoded part list (Rules 14/15).
-fn e24_base() -> &'static Vec<f64> {
+pub(crate) fn e24_base() -> &'static Vec<f64> {
     static CACHE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| parse_e_series(include_str!("../../config/e_series.dbvl")))
 }
@@ -817,7 +817,7 @@ fn parse_e_series(content: &str) -> Vec<f64> {
 /// The smallest E-series step inside the resistance window — candidates are
 /// the base row across decades (mΩ..MΩ covers every board-scale resistor).
 /// None = the window holds no preferred value.
-fn e_series_value_in_window(rmin: f64, rmax: f64) -> Option<f64> {
+pub(crate) fn e_series_value_in_window(rmin: f64, rmax: f64) -> Option<f64> {
     let mut best: Option<f64> = None;
     for exp in -6..=6 {
         for base in e24_base() {
@@ -904,7 +904,7 @@ fn envelope_values(td: &crate::ast::top::TypeDef) -> (Option<f64>, Option<f64>) 
 /// schematic facts (`attr Reference` prefix) each type carries. Also resolves
 /// pin-class ascriptions (E12) against the program's declared types —
 /// the prelude injects the class fundamentals from std/electronics.bv.
-fn collect_type_pins(
+pub(crate) fn collect_type_pins(
     items: &[TopLevel],
 ) -> (
     BTreeMap<String, Vec<(String, u64)>>,
@@ -1116,7 +1116,7 @@ fn collect_data_tables<'a>(
 /// indexed field (`value: w[i][j]`, E2) resolves to its cell's literal.
 /// Returns the instances plus any data-table errors (duplicate declaration,
 /// missing table, bad index) for the caller to report.
-fn collect_instances(
+pub(crate) fn collect_instances(
     items: &[TopLevel],
     type_pins: &BTreeMap<String, Vec<(String, u64)>>,
 ) -> (Vec<ComponentInstance>, Vec<String>) {
@@ -3222,7 +3222,7 @@ pub(crate) fn format_amps(a: f64) -> String {
 
 /// Voltage formatting for diagnostics: trim trailing zeros (5.0 → "5 V",
 /// 3.3 → "3.3 V").
-fn format_watts(w: f64) -> String {
+pub(crate) fn format_watts(w: f64) -> String {
     if w >= 1.0 {
         format!("{:.2} W", w)
     } else if w >= 1e-3 {
@@ -3240,7 +3240,7 @@ pub(crate) fn format_volts(v: f64) -> String {
 
 /// Canonical diagnostic spelling for resistance (2026-09-24 ASCII units):
 /// compact `R` with an SI prefix; full-word `Ohm` is an equal surface alias.
-fn format_ohms(r: f64) -> String {
+pub(crate) fn format_ohms(r: f64) -> String {
     let (prefix, scale) = ohm_prefix(r);
     let v = r / scale;
     let s = format!("{:.3}", v);
@@ -3249,7 +3249,7 @@ fn format_ohms(r: f64) -> String {
 }
 
 /// Pick the largest deterministic SI prefix not exceeding `r`.
-fn ohm_prefix(r: f64) -> (&'static str, f64) {
+pub(crate) fn ohm_prefix(r: f64) -> (&'static str, f64) {
     const PREFIXES: [(f64, &'static str); 4] = [(1e9, "G"), (1e6, "M"), (1e3, "k"), (1e-3, "m")];
     PREFIXES
         .into_iter()
@@ -6266,7 +6266,7 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         self.ctx.ds.union(w.rail, &pb_key);
         self.proofs.push(format!(
             "series part forced by current obligation '>= {}' (node '{}'): {}.{} <-> {}.{} \
-             (load anode), {}.{} <-> {} rail ({}V, forward drop {}V) — the DC solve proves \
+             (load anode), {}.{} <-> {} rail ({}, forward drop {}) — the DC solve proves \
              the bound through it",
             format_amps(w.amps),
             w.nodes,
@@ -6844,7 +6844,7 @@ fn law_rail_births(
 /// `expression == 0` with exactly one term — a pin voltage in Volt.
 /// `vout.voltage == Output` elaborates to `Voltage(vout)·coeff + const`,
 /// so the pinned value is `-const / coeff`.
-fn constant_voltage_pin(
+pub(crate) fn constant_voltage_pin(
     expression: &crate::analysis::electronics_laws::LinearExpression,
 ) -> Option<(PinRef, f64)> {
     if expression.dimension != crate::analysis::electronics_laws::LawDimension::VOLT
@@ -12047,3 +12047,7 @@ mod tests {
         );
     }
 }
+
+/// HIR-port aliases for the shared formatters (2026-11-12): one spelling.
+pub(crate) use format_watts as format_watts_pub;
+pub(crate) use format_ohms as format_ohms_pub;

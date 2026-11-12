@@ -124,3 +124,29 @@ Praetor on `src/hir`/`src/analysis`.
 4. Flip policy: HIR default with AST oracle during the opt-out window
    (recommended, same as reclamation/region) vs AST default until the window
    closes.
+
+## Execution record (2026-11-12)
+
+- **Phase 0 done.** Added a shared corpus of AST reference sources under
+  `tests/fixtures/electronics/parity/` (budgets, current fixpoint, drive
+  capability, laws/DC resistor + divider, mechanisms, series forcing/E-series/
+  understrength, stdnet membership + law-born rail, wildcards) plus every
+  `.ebv` under `tests/electronics`, `examples/electronics`, and
+  `examples/silicon`. `corpus_parity_for_ebv_fixtures` runs AST vs HIR
+  canonical dumps over all of them. Deleted the 11 WIP tests whose simplified
+  boards asserted behaviour the AST does not produce (AST is the oracle; the
+  AST reference tests already prove those features).
+- **Real bug fixed:** multi-dimensional instance-array pin resolution
+  (`t[0][0].a.voltage`) fell through the HIR `Index-of-Index` branch and
+  returned no pins, leaving every data-table fixture netless. The branch now
+  mirrors the AST fallback through `instance_array_name`.
+- **Real ordering bug fixed:** `intent_proofs` was topology-first in HIR;
+  AST emits intent/synthesis proofs first and return-topology proofs last.
+- **AST oracle bug fixed:** series-forcing proof printed `VV` (formatted volts
+  plus a literal `V`); the duplicate suffix is removed so both sides agree.
+- **Consumer flipped:** `AnalysisResults.electronics` uses
+  `hir::electronics::derive_netlist` by default with a `PartialEq` debug
+  oracle (`ElectronicsNetlist`/`VoltageCheck`/nested structs derive
+  `PartialEq`); `BRIEV_HIR_EMIT=0` still has the AST path.
+- Gates: HIR electronics **35** (corpus included), AST electronics **157**,
+  quick gate **41/41**, corpus parity green for all fixtures.

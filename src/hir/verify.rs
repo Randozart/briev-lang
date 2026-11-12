@@ -179,6 +179,7 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_exprs(args, nodes)
         }
         HirExprKind::Index(array, index) => verify_exprs([array.as_ref(), index.as_ref()], nodes),
+        HirExprKind::Wildcard => Ok(()),
         HirExprKind::Slice { array, start, end, stride } => {
             verify_expr(array, nodes)?;
             verify_opt_expr(start.as_deref(), nodes)?;
@@ -460,6 +461,7 @@ fn verify_container_types(
             verify_expr_types(a, env, universe, graph)?;
             verify_expr_types(b, env, universe, graph)
         }
+        HirExprKind::Wildcard => Ok(()),
         HirExprKind::Slice { array, start, end, stride } => {
             verify_expr_types(array, env, universe, graph)?;
             for opt in [start, end, stride].into_iter().flatten() {

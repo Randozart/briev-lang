@@ -29,7 +29,7 @@ impl LawDimension {
     pub const OHM: Self = Self { volts: 1, amps: -1 };
 
     /// Compose dimensions under multiplication.
-    fn mul(self, other: Self) -> Self {
+    pub(crate) fn mul(self, other: Self) -> Self {
         Self {
             volts: self.volts + other.volts,
             amps: self.amps + other.amps,
@@ -37,7 +37,7 @@ impl LawDimension {
     }
 
     /// Compose dimensions under division.
-    fn div(self, other: Self) -> Self {
+    pub(crate) fn div(self, other: Self) -> Self {
         Self {
             volts: self.volts - other.volts,
             amps: self.amps - other.amps,
@@ -45,7 +45,7 @@ impl LawDimension {
     }
 
     /// Canonical diagnostic name; derived exponents stay explicit and honest.
-    fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         match (self.volts, self.amps) {
             (0, 0) => "dimensionless".to_string(),
             (1, 0) => "volt".to_string(),
@@ -56,7 +56,7 @@ impl LawDimension {
     }
 
     /// Map a spec quantity dimension onto the DC-law substrate.
-    fn from_quantity(dim: crate::ast::QuantityDim) -> Option<Self> {
+    pub(crate) fn from_quantity(dim: crate::ast::QuantityDim) -> Option<Self> {
         match dim {
             crate::ast::QuantityDim::Volt => Some(Self::VOLT),
             crate::ast::QuantityDim::Amp => Some(Self::AMP),
@@ -77,7 +77,7 @@ pub enum LawVariable {
 
 impl LawVariable {
     /// A variable's physical dimension.
-    fn dimension(&self) -> LawDimension {
+    pub(crate) fn dimension(&self) -> LawDimension {
         match self {
             Self::Voltage(_) => LawDimension::VOLT,
             Self::Current(_) => LawDimension::AMP,
@@ -96,7 +96,7 @@ pub struct LinearExpression {
 
 impl LinearExpression {
     /// The zero expression in `dimension`.
-    fn zero(dimension: LawDimension) -> Self {
+    pub(crate) fn zero(dimension: LawDimension) -> Self {
         Self {
             constant: 0.0,
             dimension,
@@ -106,7 +106,7 @@ impl LinearExpression {
 
     /// Combine coefficients and canonicalize order for deterministic IR and
     /// duplicate-law detection.
-    fn canonicalize(mut self) -> Self {
+    pub(crate) fn canonicalize(mut self) -> Self {
         let mut merged: BTreeMap<LawVariable, f64> = BTreeMap::new();
         for (var, coeff) in self.terms {
             *merged.entry(var).or_default() += coeff;
@@ -177,14 +177,14 @@ pub struct LawIr {
 
 /// A scalar-or-variable expression during recursive elaboration.
 #[derive(Debug, Clone)]
-struct BuiltExpression {
-    constant: f64,
-    dimension: LawDimension,
-    terms: Vec<(LawVariable, f64)>,
+pub(crate) struct BuiltExpression {
+    pub(crate) constant: f64,
+    pub(crate) dimension: LawDimension,
+    pub(crate) terms: Vec<(LawVariable, f64)>,
 }
 
 impl BuiltExpression {
-    fn constant(value: f64, dimension: LawDimension) -> Self {
+    pub(crate) fn constant(value: f64, dimension: LawDimension) -> Self {
         Self {
             constant: value,
             dimension,
@@ -193,7 +193,7 @@ impl BuiltExpression {
     }
 
     /// Exact zero expressed in `dimension` (polymorphic-zero result).
-    fn zero_expression(dimension: LawDimension) -> Self {
+    pub(crate) fn zero_expression(dimension: LawDimension) -> Self {
         Self {
             constant: 0.0,
             dimension,
@@ -201,7 +201,7 @@ impl BuiltExpression {
         }
     }
 
-    fn variable(variable: LawVariable) -> Self {
+    pub(crate) fn variable(variable: LawVariable) -> Self {
         let dimension = variable.dimension();
         Self {
             constant: 0.0,
@@ -210,11 +210,11 @@ impl BuiltExpression {
         }
     }
 
-    fn has_variable(&self) -> bool {
+    pub(crate) fn has_variable(&self) -> bool {
         !self.terms.is_empty()
     }
 
-    fn into_linear(mut self) -> LinearExpression {
+    pub(crate) fn into_linear(mut self) -> LinearExpression {
         let mut expr = LinearExpression {
             constant: self.constant,
             dimension: self.dimension,
@@ -234,10 +234,10 @@ pub struct LawContext<'a> {
 
 /// One expression's elaboration site. Bundles the instance, shared tables,
 /// and diagnostic source so expression helpers stay under the parameter gate.
-struct ExpressionSite<'a> {
-    instance: &'a str,
-    ctx: &'a LawContext<'a>,
-    source: &'a str,
+pub(crate) struct ExpressionSite<'a> {
+    pub(crate) instance: &'a str,
+    pub(crate) ctx: &'a LawContext<'a>,
+    pub(crate) source: &'a str,
 }
 
 /// Elaborate every pin-bearing type's laws once per declared instance.
@@ -501,7 +501,7 @@ fn build_expression(expr: &Expr, site: &ExpressionSite<'_>) -> Result<BuiltExpre
 }
 
 /// A quantity literal in canonical SI units.
-fn constant_quantity(value: f64, unit: &str, source: &str) -> Result<BuiltExpression, String> {
+pub(crate) fn constant_quantity(value: f64, unit: &str, source: &str) -> Result<BuiltExpression, String> {
     let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
         crate::parser::quantity::parse_unit_suffix(unit)
     else {
@@ -516,7 +516,7 @@ fn constant_quantity(value: f64, unit: &str, source: &str) -> Result<BuiltExpres
 }
 
 /// Resolve a bare spec parameter to its instance quantity.
-fn spec_constant(name: &str, site: &ExpressionSite<'_>) -> Result<BuiltExpression, String> {
+pub(crate) fn spec_constant(name: &str, site: &ExpressionSite<'_>) -> Result<BuiltExpression, String> {
     let (instance, ctx, source) = (site.instance, site.ctx, site.source);
     // Known physics keys use canonical snake-case metadata storage; user law
     // parameters use the lowercase spelling.
@@ -630,7 +630,7 @@ fn binary_expression(
 
 /// Add two linear expressions of the same dimension. A literal dimensionless
 /// zero is polymorphic (`current == 0`), but a nonzero constant is not.
-fn add_expressions(
+pub(crate) fn add_expressions(
     left: BuiltExpression,
     right: BuiltExpression,
     source: &str,
@@ -654,7 +654,7 @@ fn add_expressions(
 }
 
 /// Negate one expression without changing its dimension.
-fn negate(mut value: BuiltExpression) -> BuiltExpression {
+pub(crate) fn negate(mut value: BuiltExpression) -> BuiltExpression {
     value.constant = -value.constant;
     for (_, coeff) in &mut value.terms {
         *coeff = -*coeff;
@@ -664,7 +664,7 @@ fn negate(mut value: BuiltExpression) -> BuiltExpression {
 
 /// Multiply expressions. One side must be constant; variable × variable is
 /// nonlinear and rejected.
-fn multiply_expressions(
+pub(crate) fn multiply_expressions(
     left: BuiltExpression,
     right: BuiltExpression,
     source: &str,
@@ -694,7 +694,7 @@ fn multiply_expressions(
 }
 
 /// Divide by a constant. Division by a variable is nonlinear and rejected.
-fn divide_expressions(
+pub(crate) fn divide_expressions(
     left: BuiltExpression,
     right: BuiltExpression,
     source: &str,
@@ -716,7 +716,7 @@ fn divide_expressions(
 }
 
 /// Scale all variable coefficients by a constant.
-fn scale_terms(terms: Vec<(LawVariable, f64)>, scale: f64) -> Vec<(LawVariable, f64)> {
+pub(crate) fn scale_terms(terms: Vec<(LawVariable, f64)>, scale: f64) -> Vec<(LawVariable, f64)> {
     terms
         .into_iter()
         .map(|(var, coeff)| (var, coeff * scale))
@@ -725,7 +725,7 @@ fn scale_terms(terms: Vec<(LawVariable, f64)>, scale: f64) -> Vec<(LawVariable, 
 
 /// A literal `0` means zero in the other side's dimension. This is notation,
 /// not implicit unit conversion: only exact zero with no variables changes.
-fn polymorphic_zero(value: BuiltExpression, dimension: LawDimension) -> BuiltExpression {
+pub(crate) fn polymorphic_zero(value: BuiltExpression, dimension: LawDimension) -> BuiltExpression {
     let is_zero = value.dimension == LawDimension::DIMENSIONLESS
         && value.constant == 0.0
         && !value.has_variable();
@@ -737,7 +737,7 @@ fn polymorphic_zero(value: BuiltExpression, dimension: LawDimension) -> BuiltExp
 }
 
 /// Convert `lhs == rhs` to the canonical `lhs - rhs == 0`.
-fn linear_equation(
+pub(crate) fn linear_equation(
     left: BuiltExpression,
     right: BuiltExpression,
     source: &str,
@@ -761,7 +761,7 @@ fn linear_equation(
 
 /// Duplicate equations carry no independent behavior; rejecting them prevents
 /// a component from looking more constrained than it is.
-fn reject_duplicate_equations(equations: &[LawEquation]) -> Result<(), String> {
+pub(crate) fn reject_duplicate_equations(equations: &[LawEquation]) -> Result<(), String> {
     let mut seen = std::collections::BTreeSet::new();
     for equation in equations {
         let key = format!("{:?}", equation.expression);

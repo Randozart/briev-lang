@@ -235,6 +235,7 @@ fn expr_needs_state(expr: &HirExpr, ctx: &Ctx<'_>) -> bool {
             ctx.state_fields.contains(name) && !ctx.locals.contains(name)
         }
         HirExprKind::Other(_) | HirExprKind::Spawn { .. } | HirExprKind::Await(_) => true,
+        HirExprKind::Wildcard => true,
         HirExprKind::Call { callee, args, .. } => call_needs_state(callee, args, ctx),
         HirExprKind::MethodCall { receiver, name, args, .. } => {
             method_needs_state(receiver, name, args, ctx)

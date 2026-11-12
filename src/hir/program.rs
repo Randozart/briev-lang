@@ -166,6 +166,34 @@ pub struct HirParticipation {
     pub shortcircuit: bool,
 }
 
+/// 2026-11-12 (electronics full-surface port): one declared component
+/// operating mode — the name plus its equation facts. `HirTypeDef.modes`
+/// keeps the names-only view (TypeInfo parity); this carries the body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirModeDecl {
+    pub name: String,
+    pub facts: Vec<HirStmt>,
+}
+
+/// 2026-11-12 (electronics full-surface port): a `data name: T[d0][d1] = …`
+/// constant table. `dims` are the declared extents (row-major) and `cells`
+/// the row-major cell literals — plain data, resolved by the electronics
+/// instance collector exactly like the AST `DataTable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirDataTable {
+    pub name: String,
+    pub dims: Vec<u64>,
+    pub cells: Vec<i64>,
+}
+
+/// 2026-11-12 (electronics full-surface port): a `budget inst.pin <= I;`
+/// source-pin current budget. The contract expression is carried whole; the
+/// electronics budget check classifies its comparison shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBudget {
+    pub contract: HirExpr,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirEnumVariant {
     Unit(String),
@@ -222,6 +250,9 @@ pub struct HirTypeDef {
     pub hold_laws: Vec<HirHoldLaw>,
     /// Declared named operating modes, in declaration order.
     pub modes: Vec<String>,
+    /// 2026-11-12 (electronics): the same modes with their equation facts,
+    /// in declaration order — the constitutive-law elaborator's input.
+    pub mode_decls: Vec<HirModeDecl>,
     pub span: Option<Span>,
 }
 
@@ -285,6 +316,10 @@ pub struct HirProgram {
     pub participations: Vec<HirParticipation>,
     /// 2026-11-12 (electronics): top-level static `hold` laws.
     pub hold_laws: Vec<HirHoldLaw>,
+    /// 2026-11-12 (electronics): declared `data` constant tables.
+    pub data_tables: Vec<HirDataTable>,
+    /// 2026-11-12 (electronics): declared `budget` statements.
+    pub budgets: Vec<HirBudget>,
     /// 2026-11-10 (casing port): declared-name surfaces by origin. The AST
     /// advisory distinguishes `type` from `struct`, `trait`, and `cell`
     /// declarations; `type_defs` alone conflates TypeDef and StaticStruct.
