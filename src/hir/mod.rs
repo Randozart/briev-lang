@@ -16,6 +16,7 @@ pub mod batch_shape;
 pub mod casing;
 pub mod dependency_graph;
 pub mod destination_ownership;
+pub mod destination_model;
 pub mod inline_cost;
 pub mod purity;
 pub mod reclamation;

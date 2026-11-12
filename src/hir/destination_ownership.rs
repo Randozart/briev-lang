@@ -12,11 +12,11 @@
 //! type-identical swap. The wrapping plan differs in one field:
 //! `DestinationOwnershipPlan.generalized` is built by
 //! `analysis::destination_model::build(&[TopLevel], …)`, which walks AST
-//! items and stores `ast::Type` payloads — it cannot be produced from HIR
-//! until `destination_model` itself is ported. This module therefore exposes
-//! `HirDestinationOwnershipPlan` carrying the R1 facts without that field;
-//! the parity suite (`tests`) asserts exact canonical equality of the R1
-//! facts between both analyzers.
+//! items. 2026-11-12: `hir::destination_model` is the HIR-native port and
+//! produces the same schema from this plan; this module's
+//! `HirDestinationOwnershipPlan` is its legacy-facts input. The parity suite
+//! (`tests`) asserts exact canonical equality of the R1 facts between both
+//! analyzers.
 //!
 //! Coverage notes (mirrors the AST analyzer exactly, quirks included):
 //! - Analyzed: top-level `defn`/`txn`/`$defn`/`$txn`, `export`-wrapped or

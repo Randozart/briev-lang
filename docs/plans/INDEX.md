@@ -67,7 +67,10 @@ guarantees; follow-ups in the completion plan below.
 ledger: test-block polish → reclamation HIR parity → interpreter/wasm corpus
 gates → batch_shape → large H5 ports; no-runtime-consumer decisions for
 range/dataflow/destination_ownership; AST-arm deletion after the opt-out
-release.
+release. 2026-11-12: the destination-ownership defer is superseded — R1 facts
+(`hir::destination_ownership`) and the generalized Phase D1 model
+(`hir::destination_model`) are ported with exact AST-parity suites; the
+backend still consumes the AST-built plan (consumer flip pending).
 
 **Verification program (2026-11-09, umbrella):**
 `docs/plans/2026-11-09-compiler-verification-program.md` — P1 HIR
