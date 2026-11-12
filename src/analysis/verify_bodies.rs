@@ -333,7 +333,13 @@ const SUBST_DEPTH_CAP: usize = 8;
 /// Substitution is transitive (a local may be defined in terms of another) with
 /// a depth cap; it bails out (`None`) rather than guessing.
 fn substitute_all(expr: &Expr, assignments: &HashMap<String, SymbolicValue>) -> Option<Expr> {
-    subst_expr(expr, assignments, 0)
+    // A body assignment is self-referential: `acc = acc + 1` binds
+    // `acc -> acc + 1`. Following that chain reaches the depth cap and returns
+    // None, which silently meant NO verification condition was ever built — so
+    // no accumulating body could ever reach the solver. The `seen` guard stops
+    // at the cycle and leaves the name free, which is what a VC needs.
+    let mut seen = Vec::new();
+    subst_expr(expr, assignments, 0, &mut seen)
 }
 
 /// One substitution step; `depth` caps transitive chains.
@@ -341,23 +347,24 @@ fn subst_expr(
     expr: &Expr,
     assignments: &HashMap<String, SymbolicValue>,
     depth: usize,
+    seen: &mut Vec<String>,
 ) -> Option<Expr> {
     if depth > SUBST_DEPTH_CAP {
         return None;
     }
     match expr {
         Expr::Identifier(name) => match assignments.get(name) {
-            Some(value) => symbolic_to_expr(value, assignments, depth + 1),
+            Some(value) => symbolic_to_expr(value, assignments, depth + 1, seen),
             None => Some(expr.clone()),
         },
         Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
             *kind,
-            Box::new(subst_expr(l, assignments, depth)?),
-            Box::new(subst_expr(r, assignments, depth)?),
+            Box::new(subst_expr(l, assignments, depth, seen)?),
+            Box::new(subst_expr(r, assignments, depth, seen)?),
         )),
         Expr::UnaryOp(kind, inner) => Some(Expr::UnaryOp(
             *kind,
-            Box::new(subst_expr(inner, assignments, depth)?),
+            Box::new(subst_expr(inner, assignments, depth, seen)?),
         )),
         other => Some(other.clone()),
     }
@@ -368,18 +375,31 @@ fn symbolic_to_expr(
     value: &SymbolicValue,
     assignments: &HashMap<String, SymbolicValue>,
     depth: usize,
+    seen: &mut Vec<String>,
 ) -> Option<Expr> {
     match value {
         SymbolicValue::Literal(n, _) => Some(Expr::Decimal(*n)),
-        SymbolicValue::Identifier(name) => match assignments.get(name) {
-            Some(_) if depth > SUBST_DEPTH_CAP => None,
-            Some(inner) => symbolic_to_expr(inner, assignments, depth + 1),
-            None => Some(Expr::Identifier(name.clone())),
-        },
+        SymbolicValue::Identifier(name) => {
+            // A cycle means "this name refers to itself": keep it free rather
+            // than expanding until the depth cap and giving up.
+            if seen.iter().any(|seen_name| seen_name == name) {
+                return Some(Expr::Identifier(name.clone()));
+            }
+            match assignments.get(name) {
+                Some(_) if depth > SUBST_DEPTH_CAP => Some(Expr::Identifier(name.clone())),
+                Some(inner) => {
+                    seen.push(name.clone());
+                    let expanded = symbolic_to_expr(inner, assignments, depth + 1, seen);
+                    seen.pop();
+                    expanded
+                }
+                None => Some(Expr::Identifier(name.clone())),
+            }
+        }
         SymbolicValue::Binary(op, l, r) => Some(Expr::BinaryOp(
             op_kind(op)?,
-            Box::new(symbolic_to_expr(l, assignments, depth + 1)?),
-            Box::new(symbolic_to_expr(r, assignments, depth + 1)?),
+            Box::new(symbolic_to_expr(l, assignments, depth + 1, seen)?),
+            Box::new(symbolic_to_expr(r, assignments, depth + 1, seen)?),
         )),
         // Prior-state (`@x`) and unknown values have no solver encoding here.
         SymbolicValue::Previous(_) | SymbolicValue::Unknown => None,
@@ -1067,8 +1087,14 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
                 }
             }
             Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-                return symbolic_to_expr(&eval_symbolic(e, &state), &state.assignments, 0)
-                    .ok_or(());
+                let mut seen = Vec::new();
+                return symbolic_to_expr(
+                    &eval_symbolic(e, &state),
+                    &state.assignments,
+                    0,
+                    &mut seen,
+                )
+                .ok_or(());
             }
             Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
             // Guards pick between values; a non-value exit has no result.
@@ -1444,6 +1470,50 @@ mod point_bound_tests {
             report.violated.is_empty(),
             "violated: {:?}",
             report.violated
+        );
+    }
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+
+    /// Parse one defn through the real frontend.
+    fn parse_defn(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+            .into_iter()
+            .find(|item| matches!(item, TopLevel::Definition(_)))
+            .expect("expected a Definition")
+    }
+
+    /// A self-referential assignment must still produce a verification condition.
+    ///
+    /// Before the cycle guard, `acc = acc + 1` bound `acc -> acc + 1`, and
+    /// substitution followed that chain to the depth cap and returned `None` —
+    /// so `substitute_all` bailed and **no VC was ever built**. Every
+    /// accumulating body was therefore undecidable, silently.
+    #[test]
+    fn self_referential_assignment_is_decided_not_skipped() {
+        let d = parse_defn(
+            "defn f(n: Int, acc: Int) [n >= 0 && n <= 1000 && acc == n][acc == n] -> Int {\n\
+                 acc = acc + 1;\n\
+                 acc = acc - 1;\n\
+                 term 0;\n\
+             };",
+        );
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "an accumulating body must be DECIDED, not skipped: unproven {:?}",
+            report.unproven
         );
     }
 }
