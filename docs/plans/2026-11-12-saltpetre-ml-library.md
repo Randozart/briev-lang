@@ -93,3 +93,18 @@ Kiosk gates after the swap: native faces raw=0/jpeg=2, ML smoke, VAD
 VmRSS 163 MB (HWM 219 MB) — 8 MB under the pre-extraction plateau, from the
 cache-before-open ordering. Library conformance re-run green on the split
 signatures.
+
+## Next: tensor dims owner slot (queued, design)
+
+Add `owns_dims: Int` to `Tensor`. Constructors that build a fresh dims list
+(`tensor_new`/`tensor_named`/`tensor_named_owned`/`tensor_reshape`-style)
+set 1; copies that alias (`tensor_copy_owned` keeps the source dims) set 0.
+`tensor_drop` frees the dims list (coll_destroy) only when the flag is set;
+`tensor_free` stays data-only. The executor's patch/temporary tensors
+currently freed with `tensor_free` (data-only) switch to `tensor_drop` so
+the object AND its fresh dims die at the same point. Initializers parsed
+into a primed model cache own their dims but are never dropped — the flag
+is still correct (drop happens only via tensor_drop). Gates: conformance
+corpus, kiosk native/ML/VAD, 300-call soak — the target is the discrete
+staging (both daemon builds stage; fewer per-request coll allocations
+should shrink the staged block).
