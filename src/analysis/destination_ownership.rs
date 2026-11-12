@@ -773,7 +773,11 @@ fn collect_calls_expr(expr: &Expr, out: &mut BTreeSet<String>) {
     }
 }
 
-fn is_primitive(ty: &Type) -> bool {
+/// 2026-11-12: `pub(crate)` so the typed-HIR port (`hir::destination_ownership`)
+/// reuses ONE primitive predicate instead of duplicating it — the two
+/// analyzers must classify parameters identically for parity. Undo: restore
+/// private visibility when the AST analyzer retires.
+pub(crate) fn is_primitive(ty: &Type) -> bool {
     match ty {
         Type::Bits(_) | Type::Void => true,
         Type::Custom(name) => {
@@ -1059,6 +1063,20 @@ pub(super) fn sanitize_path(name: &str) -> String {
             }
         })
         .collect()
+}
+
+/// 2026-11-12: test-only canonical dump of the R1 facts, formatted by the
+/// shared HIR-side helper so `hir::destination_ownership::tests` can assert
+/// exact AST-vs-HIR equality. The `generalized` Phase D1 field is
+/// deliberately excluded (built from AST items; not part of the HIR port).
+#[cfg(test)]
+pub(crate) fn canonical_dump(plan: &DestinationOwnershipPlan) -> BTreeMap<String, String> {
+    crate::hir::destination_ownership::parity_dump::dump(
+        &plan.callables,
+        &plan.callables_by_owner,
+        &plan.call_sites,
+        &plan.diagnostics,
+    )
 }
 
 #[cfg(test)]
