@@ -483,22 +483,16 @@ fn rewrite_list(
 fn release(name: &str, ctx: &mut Pass<'_>) -> HirStmt {
     let id = NodeId(ctx.next);
     ctx.next += 1;
-    let inner = HirExpr {
+    // 2026-11-12: pass the String handle directly. The HIR String→Ptr cast
+    // lane stamps a ptr type on an i64 handle register, which mis-types
+    // emit_free's width adapter (wasm32 dashboard caught it). The plain
+    // identifier materializes as an actual ptr on every target, and
+    // adapt_to_ptr_width's ptr→ptrtoint path handles the rest.
+    let arg = HirExpr {
         id: NodeId(ctx.next),
         span: None,
         ty: Some(Type::Custom(name.to_string())),
         kind: HirExprKind::Identifier(name.to_string()),
-    };
-    ctx.next += 1;
-    let arg = HirExpr {
-        id: NodeId(ctx.next),
-        span: None,
-        ty: Some(Type::Ptr(Box::new(Type::Bits(8)))),
-        kind: HirExprKind::Cast {
-            inner: Box::new(inner),
-            to: Type::Ptr(Box::new(Type::Bits(8))),
-            via: None,
-        },
     };
     ctx.next += 1;
     let call = HirExpr {
