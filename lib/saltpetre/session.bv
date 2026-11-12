@@ -12,19 +12,31 @@ import "./tensor.bv";
 import "./exec.bv";
 import "std/result.bv";
 
-// sp_begin — allocate the tensor-arena block and open the request coll
-// arena. Call once per service lifetime, from a NODE-ENTRY context: the
-// Alloc# picks the entry region allocator, which lives for the program, so
-// the activation block survives every request reset (the kiosk daemon's
-// identical node-entry pattern is the reference use). Calling sp_begin
-// inside a per-tick txn would tie the block to a per-tick region — do not.
-// tensor_cap sizes the activation block; coll_cap sizes the request coll
-// block (kiosk uses 512 MiB / 64 MiB).
-defn sp_begin(tensor_cap: Int, coll_cap: Int)
-    [tensor_cap > 0 && coll_cap >= 0][ml_arena_off_bytes() == 0]
+// sp_begin — allocate the tensor-arena block. Call once per service
+// lifetime, from a NODE-ENTRY context: the Alloc# picks the entry region
+// allocator, which lives for the program, so the activation block survives
+// every request reset (the kiosk daemon's identical node-entry pattern is
+// the reference use). Calling sp_begin inside a per-tick txn would tie the
+// block to a per-tick region — do not.
+// PERSISTENT-STATE RULE: open the request coll arena (sp_open_coll) only
+// AFTER any long-lived parse/caching has loaded — coll growth while the
+// arena is active lands in the request block and dies at the next reset.
+// The kiosk daemon loads its face-graph cache BEFORE sp_open_coll for
+// exactly this reason.
+defn sp_begin(tensor_cap: Int)
+    [tensor_cap > 0][ml_arena_off_bytes() == 0]
     -> Void {
     let base: Int = Alloc#(tensor_cap) as Int;
     ml_arena_install(base, tensor_cap);
+    term;
+};
+
+// sp_open_coll — open (or re-open) the request coll block. Per connection
+// in a service; idempotent while the capacity fits (the C runtime reuses
+// the block). See the persistent-state rule on sp_begin.
+defn sp_open_coll(coll_cap: Int)
+    [coll_cap >= 0][ml_arena_off_bytes() >= 0]
+    -> Void {
     coll_arena_begin(coll_cap);
     term;
 };
@@ -38,6 +50,10 @@ defn sp_request_reset() [ml_arena_off_bytes() >= 0][ml_arena_off_bytes() == 0] -
 
 // sp_run — one inference at out_index, with the per-run arena reset and an
 // owned copy of the output so the result outlives the next reset.
+// INPUT LIFETIME: the reset fires inside sp_run, so any input allocated from
+// the inference arena AFTER the previous reset is wiped by this call.
+// Allocate inputs after the previous reset (or use owned inputs) — the
+// kiosk daemon resets before decoding its frame for exactly this reason.
 defn sp_run(graph: OnnxGraph, input: Tensor, out_index: Int)
     [out_index >= 0][ml_arena_off_bytes() >= 0]
     -> Result<Tensor, String>
@@ -51,9 +67,8 @@ defn sp_run(graph: OnnxGraph, input: Tensor, out_index: Int)
     term result;
 };
 
-// sp_run_env — whole-graph run (every output), per-run arena reset. Outputs
-// live in the request arena; copy out (tensor_copy_owned) anything that must
-// survive the next reset.
+// sp_run_env — whole-graph run (every output), per-run arena reset. Same
+// input-lifetime rule as sp_run: the reset fires inside the call.
 defn sp_run_env(graph: OnnxGraph, input: Tensor)
     [graph.outs.Count#() >= 0][ml_arena_off_bytes() >= 0]
     -> Result<List<Tensor>, String>

@@ -74,3 +74,22 @@ Session arrives later.
 - `Alloc#` storage strategy for the tensor block in `sp_begin` — must land
   malloc, not arena/stack aliasing its own backing; checked in the first IR.
 - `tests/ml/*.bv` env paths (`models/onnx/...`) unchanged — imports only.
+
+## Outcome (2026-11-12)
+
+v0 landed. One contract refinement surfaced by the kiosk daemon gates:
+`sp_begin`/`sp_open_coll` are separate — the request coll arena must open
+AFTER long-lived parsing/caching (the face-graph cache lists landed in the
+request block when the arena was active at node entry, and the first
+`sp_request_reset` rewound them under the next request → segfault in the
+JPEG RPC; raw-frame passed vacuously at count 0). The persistent-state rule
+is documented on `sp_begin` and enforced by the daemon ordering
+(cache → `sp_open_coll` per connection). Same class of lesson as the
+sp_run input-lifetime rule: request-arena resets kill anything allocated
+inside the arena — persistent state must live outside it.
+
+Kiosk gates after the swap: native faces raw=0/jpeg=2, ML smoke, VAD
+(187 chunks, max |Δ| 3.057e-07), dashboard IR verify, 200-call soak flat
+VmRSS 163 MB (HWM 219 MB) — 8 MB under the pre-extraction plateau, from the
+cache-before-open ordering. Library conformance re-run green on the split
+signatures.
