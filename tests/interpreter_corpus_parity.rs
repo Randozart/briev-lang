@@ -192,9 +192,16 @@ fn run_native(dir: &Path, src_path: &Path, name: &str) -> Result<i32, String> {
         ));
     }
     let bin = dir.join(name);
-    let link = Command::new("clang")
-        .args(["-O0", "-march=native"])
-        .arg(out.join(format!("{name}.ll")))
+    let ll = out.join(format!("{name}.ll"));
+    let ll_text = std::fs::read_to_string(&ll).unwrap_or_default();
+    let mut link = Command::new("clang");
+    link.args(["-O0", "-march=native"]);
+    if ll_text.contains("define void @_start") {
+        // Owned-_start programs carry their own entry; the CRT would duplicate it.
+        link.arg("-nostartfiles");
+    }
+    let link = link
+        .arg(&ll)
         .arg(root().join("lib/runtime/briev_rt.c"))
         .arg("-o")
         .arg(&bin)
