@@ -13342,3 +13342,41 @@ Any function that accumulates (`acc = acc + x`) has a postcondition of exactly
 this shape, so this single gap is what stops Counsel from verifying
 loop-accumulator kernels — 270 of 535 eligible functions in this repo contain a
 loop, 178 with dynamic bounds.
+
+### 2026-11-14 (amendment) — the SMT path appears not to use the path FACTS
+
+The original report above blamed the relational encoding. Three further probes
+show something sharper and worse:
+
+| probe | result |
+|---|---|
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` — provable **only** from the pre | **UNPROVEN** |
+| `[a >= 0 && b >= 0 && a + b >= 0][term >= 0] { term a + b; }` — same goal, fact added | **proven** (structurally) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven |
+
+That last one is the tell: `a + a + a == 3 * a` holds in bitvector arithmetic for
+**every** `a`, so it never needed the precondition. Re-reading the earlier C4
+evidence with this in mind, **every** case believed to demonstrate SMT-assisted
+proof was fact-free:
+
+- `range_bound_does_not_pin` (`a + a == 2 * a`) — tautology.
+- `smt_discharges_arithmetic_identity` (`a + a + a == 3 * a`) — tautology.
+
+None of them exercised "the precondition constrains the goal". `needs_facts` is
+the first probe that does, and it fails.
+
+**Conclusion:** `--verify-bodies`'s SMT discharge is (at most) deciding closed
+formulas; it is not using `SymbolicState::path_constraints`. That is consistent
+with `smt_discharge`'s `Sat => unproven` policy hiding the failure: a query with
+no facts finds a model immediately, the model is silently downgraded to advisory,
+and the result reads as "the prover lacked information" rather than "the facts
+were never sent".
+
+**Where to look:** `smt_discharge` in src/analysis/verify_bodies.rs — does
+`state.path_constraints` actually contain the precondition by the time a path is
+discharged, and does `build_vc_query` emit each fact as its own `(assert …)`
+before `(assert (not <goal>))`? Add a probe that prints the generated SMT-LIB.
+
+**Impact:** this caps `--verify-bodies` at tautologies and bound-provable goals.
+Any contract whose goal depends on the declared precondition is unprovable today
+— which is most real contracts, and all of Counsel's accumulator VC2.
