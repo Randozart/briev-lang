@@ -13116,3 +13116,59 @@ first-class values that can be forwarded and recursed through.
 `verify_samples(original, shadow, n)` gets `-1` when all samples agree and the
 first divergent sample index otherwise. Regression test asserting the call site
 passes `ptr`, not an i64, for a forwarded fn-typed parameter.
+
+## 2026-11-12 — `brievc` is not relocatable (release artifacts cannot compile)
+
+**Status:** open. Found while shipping a prebuilt compiler for `counsel`.
+
+### Symptom
+
+A `brievc` built and copied outside its build tree cannot compile a contract.
+The failure **cascades** — each directory added to the package reveals the next
+missing root, which is the signature of several independent path assumptions
+rather than one bug:
+
+| Package contents | Failure |
+|---|---|
+| `brievc` alone | `Cannot find module 'std/cli.bv'` (searches `/lib`, `/imports`, `/std`) |
+| + `lib/` `config/` `glue/` | `type mismatch: expected Float for term value vs declared return type, found Int` |
+| + `std/` `imports/` `spec/` … | `cannot read 'std/c/coll_arena.c'` |
+
+### Evidence — four negatives
+
+Each rules out the obvious explanation, so a packaging fix alone will not do:
+
+1. A **byte-identical** copy of `lib/` (0 symlinks, same file list, same size)
+   reproduces the typing failure → not a copy artifact.
+2. A self-contained package with the **source inside it** still fails → not the
+   source location.
+3. `--stdlib-path <packaged lib>` from a foreign cwd still fails → not the
+   stdlib root.
+4. `.config/` holds only `nextest.toml` → not type seeding.
+
+An apparent success with `--stdlib-path` turned out to be **confounded**: `/tmp`
+still held symlinks from an earlier experiment, so the compiler was reading the
+real repo tree. With them removed the failure returns.
+
+### Where the roots live
+
+- `src/import_resolver.rs` — `search_paths = ["lib", "imports", "."]`
+  (cwd-relative), `root_path` from the source file's directory, plus
+  exe-relative probes (~L400-430) that already include `exe_dir/lib`.
+- `src/config_resolver.rs` — `BRIEV_CONFIG_DIR` or defaults.
+- C sources read through a relative `std/c/...` path.
+
+### Proposed fix
+
+Resolve **one** resource root from `std::env::current_exe()` and use it for
+`lib/`, `config/`, `glue/`, `std/` and the C sources; allow a `BRIEV_ROOT`
+override for unusual layouts. Add an acceptance test that copies `brievc` + the
+resource tree to a temp dir, compiles a contract from an unrelated cwd, and
+asserts the verdicts equal the in-tree run — that test would catch all three
+cascade failures.
+
+**Unresolved:** the `Int` → `Float` degradation is *not* explained by path
+resolution (see the negatives). It needs instrumentation: locate the
+`format!`-built emitter of `expected {} for term value`, log the type `term` is
+bound to at contract elaboration, and check via `--emit-beast parse.after`
+whether `lib/std/types/bootstrap.bv` was spliced into that run.
