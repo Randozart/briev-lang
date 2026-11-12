@@ -11,6 +11,7 @@
 import "./tensor.bv";
 import "./exec.bv";
 import "std/result.bv";
+import "std/os/fs.bv";
 
 // sp_begin — allocate the tensor-arena block. Call once per service
 // lifetime, from a NODE-ENTRY context: the Alloc# picks the entry region
@@ -81,5 +82,52 @@ defn sp_run_env(graph: OnnxGraph, input: Tensor)
 defn sp_end() [ml_arena_off_bytes() >= 0][ml_arena_off_bytes() == 0] -> Void {
     coll_arena_end();
     ml_arena_install(0, 0);
+    term;
+};
+
+// ── Cached model session (single slot) ──────────────────────────────────
+// A parsed graph is persistent state: the cache below stores the four list
+// handles out of the request arenas' reach, so every caller reuses one
+// parse for the process lifetime. Prime at service start (BEFORE
+// sp_open_coll — the persistent-state rule on sp_begin), then fetch per
+// request; the OnnxGraph itself is a value rebuilt around the cached lists.
+let sp_cached_nodes: Int = 0;
+let sp_cached_ins: Int = 0;
+let sp_cached_outs: Int = 0;
+let sp_cached_inits: Int = 0;
+let sp_cached_loaded: Int = 0;
+
+defn sp_cached_model(path: String)
+    [CharCount#(path) >= 0][sp_cached_loaded >= 0]
+    -> Result<OnnxGraph, String>
+{
+    when sp_cached_loaded == 0 {
+        let mf: Result<String, Int> = read_file(path);
+        when is_ok(mf) {
+            let parsed: OnnxGraph = parse_model_at(unwrap(mf), path);
+            sp_cached_nodes = (parsed.nodes as Data) as Int;
+            sp_cached_ins = (parsed.ins as Data) as Int;
+            sp_cached_outs = (parsed.outs as Data) as Int;
+            sp_cached_inits = (parsed.inits as Data) as Int;
+            sp_cached_loaded = 1;
+        };
+    };
+    when sp_cached_loaded == 0 { term Err("model unavailable"); };
+    let graph: OnnxGraph = OnnxGraph {
+        nodes: sp_cached_nodes as List<OnnxNode>,
+        ins: sp_cached_ins as List<OnnxValue>,
+        outs: sp_cached_outs as List<OnnxValue>,
+        inits: sp_cached_inits as List<Tensor>,
+    };
+    term Ok(graph);
+};
+
+// sp_prime_model — load-and-cache without consuming the result. Call at
+// service start, after sp_begin and BEFORE sp_open_coll, so the parse's
+// coll growth uses malloc (persistent) instead of the request block.
+defn sp_prime_model(path: String)
+    [CharCount#(path) >= 0][sp_cached_loaded >= 0]
+    -> Void {
+    let ignored: Result<OnnxGraph, String> = sp_cached_model(path);
     term;
 };
