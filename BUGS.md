@@ -13145,7 +13145,8 @@ passes `ptr`, not an i64, for a forwarded fn-typed parameter.
 
 ## 2026-11-12 — `brievc` is not relocatable (release artifacts cannot compile)
 
-**Status:** open. Found while shipping a prebuilt compiler for `counsel`.
+**Status:** FIXED 2026-11-12 (`2172bbc6`, guarded by `tests/relocatability.rs`).
+Found while shipping a prebuilt compiler for `counsel`.
 
 ### Symptom
 
@@ -13193,11 +13194,44 @@ resource tree to a temp dir, compiles a contract from an unrelated cwd, and
 asserts the verdicts equal the in-tree run — that test would catch all three
 cascade failures.
 
-**Unresolved:** the `Int` → `Float` degradation is *not* explained by path
-resolution (see the negatives). It needs instrumentation: locate the
-`format!`-built emitter of `expected {} for term value`, log the type `term` is
-bound to at contract elaboration, and check via `--emit-beast parse.after`
-whether `lib/std/types/bootstrap.bv` was spliced into that run.
+## Resolution (2026-11-12)
+
+The `Int` → `Float` degradation *was* path resolution after all — just not the
+path anyone expected. `discover_system_plugins` looked for `./plugins` first and
+fell back to `<resource_root>/plugins`, then silently `continue`d when neither
+existed. But `plugins/parsed/prelude-native.bv` **is the prelude**: without it
+the fundamentals never load and the type checker, finding no `Int`, settles on
+`Float`. Nothing crashed; the compiler became quietly wrong. Because the working
+directory was consulted first, the identical tree typed differently depending
+on where you stood.
+
+That also explains the cascade: supplying `std/` and the rest changed which
+runs *looked* healthy, while the real dependency (`plugins/`) was never in any
+package. The earlier "`Int` → `Float` is independent of the stdlib root" note was
+true but misleading — it was independent of the *stdlib* root and entirely
+dependent on the *plugin* root.
+
+Rejected explanations, for the record: byte-identical `lib/` (correctly ruled
+out), source location (correctly ruled out), `--stdlib-path` (correctly ruled
+out), a `read_dir` ordering bug (wrong), and a missing C source (a later,
+unrelated failure that only appears once typing is fixed).
+
+Fix: the resource root wins; `./plugins` survives only as a development
+fallback; a missing or empty plugin directory is a hard error naming the
+expected path and `BRIEV_HOME`. `discover_system_plugins` now returns
+`Result`, propagated through `build_plugin_manager`'s call sites.
+
+How it was found, since the technique is reusable: `BRIEV_HOME=<original repo>`
+made the packaged binary compile from the package's own cwd, proving the
+resource *root* was the variable; then a bisect over the repo's 612 root
+entries converged on `plugins/` with "needed alone: YES". (The first bisect was
+inverted and converged on a random `.bc` with "needed alone: no" — the
+contradiction is what exposed the bug in the bisect rather than the compiler.)
+
+Release side: the artifact is now a tarball, `<prefix>/bin/brievc` +
+`<prefix>/share/briev/{lib,config,glue,std,spec,plugins}`, and the workflow
+extracts it in a temp directory and compiles from an unrelated cwd before
+publishing.
 ## 2026-11-12 — HIR/AST reclamation-plan drift on `c_driver_boundary`
 
 **Symptom.** `cargo test --test c_driver_boundary` panics in debug builds:
