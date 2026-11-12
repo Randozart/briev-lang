@@ -51,12 +51,7 @@ fn collect_law_facts(items: &[TopLevel]) -> Vec<LawFact> {
 /// A type body's laws, each contributing its member facts.
 fn collect_type_laws(td: &crate::ast::TypeDef, out: &mut Vec<LawFact>) {
     for law in &td.body.hold_laws {
-        collect_facts(
-            &law.guard,
-            &law.facts,
-            &format!("type '{}'", td.name),
-            out,
-        );
+        collect_facts(&law.guard, &law.facts, &format!("type '{}'", td.name), out);
     }
 }
 
@@ -71,11 +66,18 @@ fn collect_facts(guard: &Expr, facts: &[Statement], source: &str, out: &mut Vec<
             },
             _ => None,
         };
-        let Some((target, value)) = pair else { continue };
-        let Expr::Identifier(member) = target else { continue };
+        let Some((target, value)) = pair else {
+            continue;
+        };
+        let Expr::Identifier(member) = target else {
+            continue;
+        };
         let is_constant = matches!(
             value,
-            Expr::Bool(_) | Expr::Quoted(_) | Expr::Decimal(_) | Expr::UnitLiteral { .. }
+            Expr::Bool(_)
+                | Expr::Quoted(_)
+                | Expr::Decimal(_)
+                | Expr::UnitLiteral { .. }
                 | Expr::Float(_)
         );
         if !is_constant {
@@ -152,8 +154,12 @@ fn check_one_assignment(
         _ => None,
     };
     let Some((target, value)) = pair else { return };
-    let Expr::Identifier(member) = target else { return };
-    let Some(laws) = law_members.get(member) else { return };
+    let Expr::Identifier(member) = target else {
+        return;
+    };
+    let Some(laws) = law_members.get(member) else {
+        return;
+    };
     if expr_may_equal(value, &laws[0].value) {
         return; // same value — no contradiction
     }
@@ -213,7 +219,9 @@ pub fn run_hold_law_check(items: &[TopLevel]) -> Vec<String> {
     check_law_vs_law(&law_members, &mut errors);
     // Check node/txn body assignments against the laws.
     for item in items {
-        let TopLevel::Transaction(t) = item else { continue };
+        let TopLevel::Transaction(t) = item else {
+            continue;
+        };
         check_assignments(
             &t.name,
             &t.contract.pre_condition,
@@ -227,10 +235,7 @@ pub fn run_hold_law_check(items: &[TopLevel]) -> Vec<String> {
 
 /// Two laws forcing the same member to different values under jointly-
 /// satisfiable guards cannot both hold.
-fn check_law_vs_law(
-    law_members: &BTreeMap<String, Vec<&LawFact>>,
-    errors: &mut Vec<String>,
-) {
+fn check_law_vs_law(law_members: &BTreeMap<String, Vec<&LawFact>>, errors: &mut Vec<String>) {
     for (member, laws) in law_members {
         check_member_laws(member, laws, errors);
     }
@@ -250,7 +255,10 @@ fn check_member_laws(member: &str, laws: &[&LawFact], errors: &mut Vec<String>) 
         if !active {
             continue;
         }
-        by_value.entry(format!("{}", law.value)).or_default().push(law);
+        by_value
+            .entry(format!("{}", law.value))
+            .or_default()
+            .push(law);
     }
     if by_value.len() < 2 {
         return;
@@ -304,8 +312,16 @@ mod tests {
             node n [temperature > 100] { alarm = false; };
         "#;
         let errors = check(src);
-        assert_eq!(errors.len(), 1, "a contradicted law must refuse: {errors:?}");
-        assert!(errors[0].contains("hold law") && errors[0].contains("alarm"), "{}", errors[0]);
+        assert_eq!(
+            errors.len(),
+            1,
+            "a contradicted law must refuse: {errors:?}"
+        );
+        assert!(
+            errors[0].contains("hold law") && errors[0].contains("alarm"),
+            "{}",
+            errors[0]
+        );
     }
 
     #[test]
@@ -320,7 +336,10 @@ mod tests {
             node n [temperature <= 100] { alarm = false; };
         "#;
         let errors = check(src);
-        assert!(errors.is_empty(), "mutually-exclusive guards must pass: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "mutually-exclusive guards must pass: {errors:?}"
+        );
     }
 
     #[test]
@@ -332,7 +351,11 @@ mod tests {
             node n [alarm == false] { alarm = false; };
         "#;
         let errors = check(src);
-        assert_eq!(errors.len(), 1, "a type-body law contradicted must refuse: {errors:?}");
+        assert_eq!(
+            errors.len(),
+            1,
+            "a type-body law contradicted must refuse: {errors:?}"
+        );
         assert!(errors[0].contains("type 'Sensor'"), "{}", errors[0]);
     }
 
@@ -346,7 +369,11 @@ mod tests {
             hold x >= 0 { x = 2; }
         "#;
         let errors = check(src);
-        assert_eq!(errors.len(), 1, "law-vs-law contradiction must refuse: {errors:?}");
+        assert_eq!(
+            errors.len(),
+            1,
+            "law-vs-law contradiction must refuse: {errors:?}"
+        );
         assert!(errors[0].contains("different values"), "{}", errors[0]);
     }
 }

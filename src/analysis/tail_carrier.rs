@@ -21,15 +21,15 @@ use crate::analysis::tail_recursion::{build_tail_recursion_plan, TailRecursionCl
 use crate::ast::{Expr, Statement, TopLevel, Type};
 use std::collections::BTreeMap;
 
-pub fn build_recursive_carriers(
-    items: &[TopLevel],
-) -> BTreeMap<CallableId, RecursiveCarrierPlan> {
+pub fn build_recursive_carriers(items: &[TopLevel]) -> BTreeMap<CallableId, RecursiveCarrierPlan> {
     let tail = build_tail_recursion_plan(items);
     let enum_plan = build_enum_representation_plan(items);
     let mut defns = BTreeMap::new();
 
     for item in items {
-        let TopLevel::Definition(d) = item else { continue };
+        let TopLevel::Definition(d) = item else {
+            continue;
+        };
         if tail.class(&d.name) != TailRecursionClass::TailRecursive {
             continue;
         }
@@ -43,11 +43,14 @@ pub fn build_recursive_carriers(
         };
         let carriers = carrier_parameters(&callable, d, &self_calls, &enum_plan);
         if !carriers.is_empty() {
-            defns.insert(callable.clone(), RecursiveCarrierPlan {
-                callable,
-                carriers,
-                proof: carrier_proof(),
-            });
+            defns.insert(
+                callable.clone(),
+                RecursiveCarrierPlan {
+                    callable,
+                    carriers,
+                    proof: carrier_proof(),
+                },
+            );
         }
     }
     defns
@@ -68,18 +71,19 @@ fn carrier_parameters(
                 .iter()
                 .map(|args| classify_carrier_arg(args, param_index, param, &sret_locals))
                 .collect();
-            let (result_local, sret_callee) = classes
-                .iter()
-                .zip(self_calls.iter())
-                .find_map(|(class, args)| match class {
-                    RecursiveCarrierArgClass::InlineNested => {
-                        let Expr::Identifier(local) = &args[param_index] else {
-                            return None;
-                        };
-                        sret_locals.get(local).cloned()
-                    }
-                    _ => None,
-                })?;
+            let (result_local, sret_callee) =
+                classes
+                    .iter()
+                    .zip(self_calls.iter())
+                    .find_map(|(class, args)| match class {
+                        RecursiveCarrierArgClass::InlineNested => {
+                            let Expr::Identifier(local) = &args[param_index] else {
+                                return None;
+                            };
+                            sret_locals.get(local).cloned()
+                        }
+                        _ => None,
+                    })?;
             if !carrier_is_approved(&classes) {
                 return None;
             }
@@ -94,8 +98,7 @@ fn carrier_parameters(
                 param_name: param.0.clone(),
                 result_local,
                 sret_callee,
-                requires_backedge_copy: classes
-                    .contains(&RecursiveCarrierArgClass::InlineNested),
+                requires_backedge_copy: classes.contains(&RecursiveCarrierArgClass::InlineNested),
                 arg_classes: classes,
                 carrier: DestinationId {
                     owner: callable.name.clone(),
@@ -110,9 +113,7 @@ fn carrier_parameters(
 
 fn carrier_proof() -> ProofStatus {
     ProofStatus::Proven {
-        reasons: std::collections::BTreeSet::from([
-            ProofReason::StableCarrierLifetime,
-        ]),
+        reasons: std::collections::BTreeSet::from([ProofReason::StableCarrierLifetime]),
     }
 }
 

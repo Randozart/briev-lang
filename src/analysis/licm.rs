@@ -90,7 +90,9 @@ fn is_invariant_expression(
     state_fields: &HashSet<String>,
 ) -> bool {
     match expr {
-        Expr::Decimal(_) | Expr::Char(_) | Expr::Float(_) | Expr::Bool(_) | Expr::BeginProgram => true,
+        Expr::Decimal(_) | Expr::Char(_) | Expr::Float(_) | Expr::Bool(_) | Expr::BeginProgram => {
+            true
+        }
         // 2026-09-28 (E3): the `[*]` selector is a leaf constant — invariant.
         Expr::Wildcard => true,
         Expr::Quoted(_) => true,
@@ -111,22 +113,31 @@ fn is_invariant_expression(
                 && is_invariant_expression(r, write_set, invariant_names, state_fields)
         }
         Expr::UnaryOp(_, e) => is_invariant_expression(e, write_set, invariant_names, state_fields),
-        Expr::Field(obj, _) => is_invariant_expression(obj, write_set, invariant_names, state_fields),
+        Expr::Field(obj, _) => {
+            is_invariant_expression(obj, write_set, invariant_names, state_fields)
+        }
         Expr::Cast(e, _) => is_invariant_expression(e, write_set, invariant_names, state_fields),
         Expr::Call(_, _, _) => false,
         Expr::Index(_, _) => false,
         Expr::TaggedLiteral(_, _) | Expr::TaggedQuotedLiteral(_, _) => false,
-        Expr::List(items) => items.iter().all(|i| is_invariant_expression(i, write_set, invariant_names, state_fields)),
+        Expr::List(items) => items
+            .iter()
+            .all(|i| is_invariant_expression(i, write_set, invariant_names, state_fields)),
         Expr::Slice { .. } => false,
-Expr::Slice { .. } => false,
+        Expr::Slice { .. } => false,
         Expr::Range { .. } => false,
         Expr::Spawn { .. } => false,
-        Expr::Tuple(items) => items.iter().all(|i| is_invariant_expression(i, write_set, invariant_names, state_fields)),
+        Expr::Tuple(items) => items
+            .iter()
+            .all(|i| is_invariant_expression(i, write_set, invariant_names, state_fields)),
         Expr::Block(_) | Expr::If(_, _, _) | Expr::Match(_, _) | Expr::Lambda(_, _) => false,
         Expr::Deref(_) | Expr::AddrOf(_) | Expr::Consume(_) | Expr::Await(_) => false,
         Expr::Within(_, _) | Expr::IsType(_, _) | Expr::Exists(_) => false,
         Expr::StructLiteral { .. } => false,
-        Expr::Field(_, _) | Expr::Reflect(_, _, _) | Expr::MethodCall(..) | Expr::FormattingAnnotation(_) => false,
+        Expr::Field(_, _)
+        | Expr::Reflect(_, _, _)
+        | Expr::MethodCall(..)
+        | Expr::FormattingAnnotation(_) => false,
         Expr::PluginIntercept { .. } => false,
         Expr::DerivationBlock(_) => false,
         Expr::UnitLiteral { .. } => true,
@@ -144,7 +155,12 @@ mod tests {
         let state_fields = HashSet::new();
         let invariant_names = HashSet::new();
         let expr = Expr::Float(0.5);
-        assert!(is_invariant_expression(&expr, &write_set, &invariant_names, &state_fields));
+        assert!(is_invariant_expression(
+            &expr,
+            &write_set,
+            &invariant_names,
+            &state_fields
+        ));
     }
 
     #[test]
@@ -153,7 +169,12 @@ mod tests {
         let state_fields = HashSet::new();
         let invariant_names = HashSet::new();
         let expr = Expr::Decimal(42);
-        assert!(is_invariant_expression(&expr, &write_set, &invariant_names, &state_fields));
+        assert!(is_invariant_expression(
+            &expr,
+            &write_set,
+            &invariant_names,
+            &state_fields
+        ));
     }
 
     #[test]
@@ -164,7 +185,12 @@ mod tests {
         state_fields.insert("bx0".to_string());
         let invariant_names = HashSet::new();
         let expr = Expr::Identifier("bx0".to_string());
-        assert!(!is_invariant_expression(&expr, &write_set, &invariant_names, &state_fields));
+        assert!(!is_invariant_expression(
+            &expr,
+            &write_set,
+            &invariant_names,
+            &state_fields
+        ));
     }
 
     #[test]
@@ -174,7 +200,12 @@ mod tests {
         state_fields.insert("bx0".to_string());
         let invariant_names = HashSet::new();
         let expr = Expr::Identifier("bx0".to_string());
-        assert!(is_invariant_expression(&expr, &write_set, &invariant_names, &state_fields));
+        assert!(is_invariant_expression(
+            &expr,
+            &write_set,
+            &invariant_names,
+            &state_fields
+        ));
     }
 
     #[test]
@@ -188,7 +219,12 @@ mod tests {
             Box::new(Expr::Identifier("dt".to_string())),
             Box::new(Expr::Float(0.5)),
         );
-        assert!(is_invariant_expression(&expr, &write_set, &invariant_names, &state_fields));
+        assert!(is_invariant_expression(
+            &expr,
+            &write_set,
+            &invariant_names,
+            &state_fields
+        ));
     }
 
     #[test]
@@ -245,7 +281,11 @@ mod tests {
                 names: vec![],
                 name: "x".to_string(),
                 ty: None,
-                expr: Some(Expr::Call("PrintInt#".to_string(), vec![Expr::Decimal(1)], None)),
+                expr: Some(Expr::Call(
+                    "PrintInt#".to_string(),
+                    vec![Expr::Decimal(1)],
+                    None,
+                )),
                 modifiers: vec![],
             },
             Statement::Term(None),
@@ -271,7 +311,8 @@ mod tests {
                 name: "b".to_string(),
                 ty: None,
                 expr: Some(Expr::BinaryOp(
-                    BinaryOpKind::Add, Box::new(Expr::Identifier("a".to_string())),
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("a".to_string())),
                     Box::new(Expr::Decimal(2)),
                 )),
                 modifiers: vec![],
@@ -281,7 +322,8 @@ mod tests {
                 name: "c".to_string(),
                 ty: None,
                 expr: Some(Expr::BinaryOp(
-                    BinaryOpKind::Mul, Box::new(Expr::Identifier("b".to_string())),
+                    BinaryOpKind::Mul,
+                    Box::new(Expr::Identifier("b".to_string())),
                     Box::new(Expr::Decimal(3)),
                 )),
                 modifiers: vec![],

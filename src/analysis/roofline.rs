@@ -66,10 +66,18 @@ impl RooflineAnalyzer {
         let peak_compute = self.peak_flops();
         let peak_bandwidth = self.peak_bandwidth();
         let ridge_point = peak_compute / peak_bandwidth; // FLOP/byte
-        let intensity = if bytes_moved > 0.0 { flops / bytes_moved } else { f64::MAX };
+        let intensity = if bytes_moved > 0.0 {
+            flops / bytes_moved
+        } else {
+            f64::MAX
+        };
         let attained = (peak_compute).min(peak_bandwidth * intensity);
         let is_compute_bound = intensity > ridge_point;
-        RooflineResult { attained, is_compute_bound, ridge_point }
+        RooflineResult {
+            attained,
+            is_compute_bound,
+            ridge_point,
+        }
     }
 
     /// Check if a precomputed LUT of the given size fits in a cache tier.
@@ -87,10 +95,15 @@ impl RooflineAnalyzer {
 
     /// Should the compiler precompute a loop body as a LUT?
     /// Returns `true` if the LUT fits in cache and has sufficient reuse factor.
-    pub fn should_precompute_as_lut(&self, iterations: u64, lut_size_bytes: u64, bytes_saved_per_iter: f64) -> bool {
+    pub fn should_precompute_as_lut(
+        &self,
+        iterations: u64,
+        lut_size_bytes: u64,
+        bytes_saved_per_iter: f64,
+    ) -> bool {
         match self.lut_fits_cache(lut_size_bytes) {
-            Some(CacheTier::L1) => true,   // Free — L1 is essentially zero-cost
-            Some(CacheTier::L2) => true,   // Worth it — L2 is fast
+            Some(CacheTier::L1) => true, // Free — L1 is essentially zero-cost
+            Some(CacheTier::L2) => true, // Worth it — L2 is fast
             Some(CacheTier::L3) => {
                 // Only if bandwidth savings are significant (10x reuse)
                 let bandwidth_saved = iterations as f64 * bytes_saved_per_iter;

@@ -23,8 +23,8 @@
 //! and purity (no observable/FFI side effects in kernel statements).
 
 use crate::ast::*;
-use crate::type_universe::TypeUniverse;
 use crate::type_universe::operators::protocol_category;
+use crate::type_universe::TypeUniverse;
 use std::collections::{HashMap, HashSet};
 
 /// Offload policy selected by the compiler (`--accel=<value>`).
@@ -43,7 +43,10 @@ pub enum AccelMode {
 impl AccelMode {
     /// Whether a keyword-marked body is a candidate under this mode.
     fn targets_marked(self) -> bool {
-        matches!(self, AccelMode::TryKeyword | AccelMode::Force | AccelMode::TryAllForce)
+        matches!(
+            self,
+            AccelMode::TryKeyword | AccelMode::Force | AccelMode::TryAllForce
+        )
     }
 
     /// Whether ALL bodies are candidates under this mode.
@@ -292,13 +295,21 @@ impl ProgramInfo {
                 _ => {}
             }
         }
-        ProgramInfo { state_fields, array_types, consts, const_types }
+        ProgramInfo {
+            state_fields,
+            array_types,
+            consts,
+            const_types,
+        }
     }
 
     /// Flatness of a referenced array: look up its declared type (state or
     /// const) and prove the element type is a flat scalar via the universe.
     fn array_is_flat(&self, name: &str, universe: &TypeUniverse) -> bool {
-        let ty = self.array_types.get(name).or_else(|| self.const_types.get(name));
+        let ty = self
+            .array_types
+            .get(name)
+            .or_else(|| self.const_types.get(name));
         match ty {
             Some(Type::Vector(inner, _)) => is_flat_scalar(universe, inner),
             // 2026-09-14 (Matrix type plan): shape-bearing Applied type's
@@ -321,8 +332,9 @@ pub(crate) fn is_flat_scalar(universe: &TypeUniverse, ty: &Type) -> bool {
     match ty {
         Type::Bits(_) => true,
         Type::Vector(inner, _) => is_flat_scalar(universe, inner),
-        _ => protocol_category(universe, ty)
-            .map_or(false, |cat| matches!(cat.as_str(), "Int" | "UInt" | "Float" | "Bool" | "Char")),
+        _ => protocol_category(universe, ty).map_or(false, |cat| {
+            matches!(cat.as_str(), "Int" | "UInt" | "Float" | "Bool" | "Char")
+        }),
     }
 }
 
@@ -434,16 +446,22 @@ fn expr_contains(expr: &Expr, var: &str) -> bool {
 /// requires the index to CONTAIN `var` (see `stmt_is_kernel`).
 fn is_linear_in(expr: &Expr, var: &str) -> bool {
     match expr {
-        Expr::Identifier(_) | Expr::Decimal(_) | Expr::Char(_) | Expr::Bool(_) | Expr::Float(_) => true,
+        Expr::Identifier(_) | Expr::Decimal(_) | Expr::Char(_) | Expr::Bool(_) | Expr::Float(_) => {
+            true
+        }
         Expr::BinaryOp(BinaryOpKind::Add | BinaryOpKind::Sub, l, r) => {
             is_linear_in(l, var) && is_linear_in(r, var)
         }
         Expr::BinaryOp(BinaryOpKind::Mul, l, r) => {
             // Exactly one side depends on var; the other is constant.
-            (expr_contains(l, var) && !expr_contains(r, var)
-                && is_linear_in(l, var) && is_linear_in(r, var))
-                || (!expr_contains(l, var) && expr_contains(r, var)
-                    && is_linear_in(l, var) && is_linear_in(r, var))
+            (expr_contains(l, var)
+                && !expr_contains(r, var)
+                && is_linear_in(l, var)
+                && is_linear_in(r, var))
+                || (!expr_contains(l, var)
+                    && expr_contains(r, var)
+                    && is_linear_in(l, var)
+                    && is_linear_in(r, var))
         }
         _ => false,
     }
@@ -453,8 +471,13 @@ fn is_linear_in(expr: &Expr, var: &str) -> bool {
 /// reflection, pointers, control flow, and any observable/FFI surface.
 fn expr_is_pure(expr: &Expr) -> bool {
     match expr {
-        Expr::Decimal(_) | Expr::Char(_) | Expr::Bool(_) | Expr::Float(_)
-        | Expr::Quoted(_) | Expr::TaggedLiteral(_, _) | Expr::TaggedQuotedLiteral(_, _)
+        Expr::Decimal(_)
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Float(_)
+        | Expr::Quoted(_)
+        | Expr::TaggedLiteral(_, _)
+        | Expr::TaggedQuotedLiteral(_, _)
         | Expr::Identifier(_) => true,
         Expr::BinaryOp(_, l, r) => expr_is_pure(l) && expr_is_pure(r),
         Expr::UnaryOp(_, e) => expr_is_pure(e),
@@ -462,9 +485,7 @@ fn expr_is_pure(expr: &Expr) -> bool {
         // if-expression is pure selection — no side effects, deterministic
         // given its inputs. Both arms + the condition must be pure.
         Expr::If(c, t, e) => {
-            expr_is_pure(c)
-                && expr_is_pure(t)
-                && e.as_deref().map(expr_is_pure).unwrap_or(true)
+            expr_is_pure(c) && expr_is_pure(t) && e.as_deref().map(expr_is_pure).unwrap_or(true)
         }
         // `match cond { true => …, false => … }` — the two-way selection
         // form the SPIR-V kernel surface lowers. Guards or non-bool-literal
@@ -562,11 +583,7 @@ fn partition(body: &[Statement], ctx: &mut KernelCtx<'_>) -> PartitionOut {
 /// term/exit/rollback, when/gate, observables, non-affine scalar writes) fall
 /// through to `host`. A cross-work-item array write is NOT host material — it
 /// is an ineligibility, recorded in `ctx.reasons`.
-fn stmt_is_kernel(
-    stmt: &Statement,
-    ctx: &mut KernelCtx<'_>,
-    locals: &mut HashSet<String>,
-) -> bool {
+fn stmt_is_kernel(stmt: &Statement, ctx: &mut KernelCtx<'_>, locals: &mut HashSet<String>) -> bool {
     match stmt {
         Statement::Let { name, expr, .. } => {
             if let Some(e) = expr {
@@ -582,12 +599,9 @@ fn stmt_is_kernel(
             if !expr_is_pure(cond) {
                 return false;
             }
-            !body.is_empty()
-                && body.iter().all(|s| stmt_is_kernel(s, ctx, locals))
+            !body.is_empty() && body.iter().all(|s| stmt_is_kernel(s, ctx, locals))
         }
-        Statement::Block(b) => {
-            !b.is_empty() && b.iter().all(|s| stmt_is_kernel(s, ctx, locals))
-        }
+        Statement::Block(b) => !b.is_empty() && b.iter().all(|s| stmt_is_kernel(s, ctx, locals)),
         // 2026-08-31 (VITRIOL GEMM comparison, M1): a bounded `foreach k in
         // start..end` is a loop-private reduction — the loop variable is a
         // PRIVATE scalar (added to locals: the body's assignments to it and
@@ -595,7 +609,9 @@ fn stmt_is_kernel(
         // bounds are pure, and the body obeys every existing rule. The loop
         // itself adds no cross-work-item state: each invocation runs its own
         // copy. Non-range collections (heaps) stay host-side.
-        Statement::Foreach { item, list, body , ..} => {
+        Statement::Foreach {
+            item, list, body, ..
+        } => {
             let Expr::Range { start, end, .. } = list.as_ref() else {
                 ctx.reasons.push(format!(
                     "foreach over a non-range collection — kernel loops \
@@ -630,9 +646,7 @@ fn assign_is_kernel(
     match lhs {
         Expr::Index(arr, idx) => index_write_is_kernel(arr, idx, rhs, ctx),
         Expr::Identifier(name) => {
-            !ctx.info.state_fields.contains(name)
-                && locals.contains(name)
-                && expr_is_pure(rhs)
+            !ctx.info.state_fields.contains(name) && locals.contains(name) && expr_is_pure(rhs)
         }
         _ => false,
     }
@@ -641,12 +655,7 @@ fn assign_is_kernel(
 /// Eligibility of one array-slot write. The slot index must depend on the
 /// work-item id (`contains`) and be linear in it (no `i*i`, no `i/j`), so no
 /// two work-items write the same slot.
-fn index_write_is_kernel(
-    arr: &Expr,
-    idx: &Expr,
-    rhs: &Expr,
-    ctx: &mut KernelCtx<'_>,
-) -> bool {
+fn index_write_is_kernel(arr: &Expr, idx: &Expr, rhs: &Expr, ctx: &mut KernelCtx<'_>) -> bool {
     if !expr_is_pure(rhs) {
         return false;
     }
@@ -655,7 +664,8 @@ fn index_write_is_kernel(
         _ => return false,
     };
     if !ctx.info.state_fields.contains(&arr_name) {
-        ctx.reasons.push(format!("write to non-state array '{}'", arr_name));
+        ctx.reasons
+            .push(format!("write to non-state array '{}'", arr_name));
         return false;
     }
     if expr_contains(idx, ctx.index_var) && is_linear_in(idx, ctx.index_var) {
@@ -672,7 +682,14 @@ fn index_write_is_kernel(
 /// Prove the whole kernel and collect its buffer contracts.
 // pub(crate): ProgramInfo is module-internal — visibility must not
 // exceed the parameter type (private_interfaces lint).
-pub(crate) fn prove_kernel_pub(name: &str, body: &[Statement], contract: &Contract, info: &ProgramInfo, universe: &TypeUniverse, items: &[TopLevel]) -> KernelShape {
+pub(crate) fn prove_kernel_pub(
+    name: &str,
+    body: &[Statement],
+    contract: &Contract,
+    info: &ProgramInfo,
+    universe: &TypeUniverse,
+    items: &[TopLevel],
+) -> KernelShape {
     // Callers without txn modifiers (tests, ad-hoc probes): precise default
     // (neither `approx` nor `exact`).
     prove_kernel(name, body, contract, info, universe, items, false, false)
@@ -897,7 +914,13 @@ fn match_max_pass(body: &[Statement]) -> bool {
     if body.len() != 2 {
         return false;
     }
-    if !matches!(&body[0], Statement::Let { expr: Some(Expr::Index(_, _)), .. }) {
+    if !matches!(
+        &body[0],
+        Statement::Let {
+            expr: Some(Expr::Index(_, _)),
+            ..
+        }
+    ) {
         return false;
     }
     let Statement::Assign(_, rhs) = &body[1] else {
@@ -947,7 +970,11 @@ fn detect_row_softmax(stmts: &[Statement], _index_var: &str) -> Option<Reduction
 
     for stmt in stmts {
         match stmt {
-            Statement::Let { name, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 note_init(name, e, &mut max_local, &mut sum_local, &mut row_buf);
             }
             Statement::Foreach { list, body, .. } => {
@@ -1008,11 +1035,9 @@ fn expr_mentions(e: &Expr, name: &str) -> bool {
         Expr::MethodCall(recv, _, args, _) => {
             expr_mentions(recv, name) || args.iter().any(|a| expr_mentions(a, name))
         }
-        Expr::Cast(a, _)
-        | Expr::Deref(a)
-        | Expr::AddrOf(a)
-        | Expr::Consume(a)
-        | Expr::Await(a) => expr_mentions(a, name),
+        Expr::Cast(a, _) | Expr::Deref(a) | Expr::AddrOf(a) | Expr::Consume(a) | Expr::Await(a) => {
+            expr_mentions(a, name)
+        }
         Expr::Range { start, end, .. } => expr_mentions(start, name) || expr_mentions(end, name),
         Expr::Slice {
             array,
@@ -1140,12 +1165,20 @@ fn normalize_body_buffers(body: &[Statement], den: &str) -> Option<(String, Stri
 /// detector applies — lifted here so the decision is computed ONCE in the
 /// frontend and consumed by the backend (frontend-driven dispatch; the
 /// backend never re-derives it). No type or algorithm names are matched.
-fn detect_deferred_normalizer(stmts: &[Statement], _index_var: &str) -> Option<DeferredNormalization> {
+fn detect_deferred_normalizer(
+    stmts: &[Statement],
+    _index_var: &str,
+) -> Option<DeferredNormalization> {
     // Candidate denominators: top-level zero-init scalar lets, each name
     // considered once.
     let mut seen: Vec<String> = Vec::new();
     for stmt in stmts {
-        if let Statement::Let { name, expr: Some(e), .. } = stmt {
+        if let Statement::Let {
+            name,
+            expr: Some(e),
+            ..
+        } = stmt
+        {
             if matches!(e, Expr::Decimal(0) | Expr::Float(0.0)) && !seen.contains(name) {
                 seen.push(name.clone());
             }
@@ -1228,7 +1261,10 @@ fn trailing_normalize_loop(
     reduce_end: Expr,
 ) -> Option<DeferredNormalization> {
     for (idx, stmt) in stmts.iter().enumerate().skip(after + 1) {
-        let Statement::Foreach { item, list, body , ..} = stmt else {
+        let Statement::Foreach {
+            item, list, body, ..
+        } = stmt
+        else {
             continue;
         };
         let Expr::Range { end, .. } = list.as_ref() else {
@@ -1256,7 +1292,13 @@ fn trailing_normalize_loop(
 fn detect_reduction(stmts: &[Statement], index_var: &str) -> Option<ReductionInfo> {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
-        let Statement::Foreach { list, body, modifiers, .. } = stmt else {
+        let Statement::Foreach {
+            list,
+            body,
+            modifiers,
+            ..
+        } = stmt
+        else {
             continue;
         };
         let seq = modifiers.iter().any(|m| m.name == "seq");
@@ -1374,7 +1416,13 @@ fn expr_reads(e: &Expr, name: &str) -> bool {
 fn classify_idiom_fold(stmts: &[Statement]) -> FoldClass {
     use crate::ast::BinaryOpKind::{Add, Mul};
     for stmt in stmts {
-        let Statement::Foreach { list, body, modifiers, .. } = stmt else {
+        let Statement::Foreach {
+            list,
+            body,
+            modifiers,
+            ..
+        } = stmt
+        else {
             continue;
         };
         let seq = modifiers.iter().any(|m| m.name == "seq");
@@ -1508,21 +1556,20 @@ pub fn fold_buffer_is_int(items: &[TopLevel], buf: &str) -> bool {
 ///   not observable.
 /// Float folds never warn: rounding makes the accumulation order observable.
 pub fn seq_redundancy(shape: &KernelShape, items: &[TopLevel]) -> Option<&'static str> {
-    let has_seq = shape.kernel_stmts.iter().any(|st| matches!(
-        st,
-        Statement::Foreach { modifiers, .. }
-            if modifiers.iter().any(|m| m.name == "seq")
-    ));
+    let has_seq = shape.kernel_stmts.iter().any(|st| {
+        matches!(
+            st,
+            Statement::Foreach { modifiers, .. }
+                if modifiers.iter().any(|m| m.name == "seq")
+        )
+    });
     if !has_seq {
         return None;
     }
     if let Some(red) = &shape.reduction {
         let is_fold = matches!(
             red.kind,
-            ReductionKind::Sum
-                | ReductionKind::Product
-                | ReductionKind::Min
-                | ReductionKind::Max
+            ReductionKind::Sum | ReductionKind::Product | ReductionKind::Min | ReductionKind::Max
         );
         if is_fold && fold_buffer_is_int(items, &red.row_buf) {
             return Some("`seq` is redundant here: integer folds are order-independent");
@@ -1531,7 +1578,7 @@ pub fn seq_redundancy(shape: &KernelShape, items: &[TopLevel]) -> Option<&'stati
     }
     if shape.eligible {
         return Some(
-            "`seq` has no observable effect here: the loop is an independent, effect-free map "
+            "`seq` has no observable effect here: the loop is an independent, effect-free map ",
         );
     }
     None
@@ -1984,7 +2031,12 @@ pub fn analyze(
         }
         out.insert(
             txn.name.clone(),
-            AccelEntry { mode, forced, shape, decision },
+            AccelEntry {
+                mode,
+                forced,
+                shape,
+                decision,
+            },
         );
     }
     out
@@ -2049,11 +2101,15 @@ mod tests {
                 watchdog: None,
                 span: None,
                 explicit: true,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
-            modifiers: vec![Annotation { name: "accel".into(), value: None }],
+            modifiers: vec![Annotation {
+                name: "accel".into(),
+                value: None,
+            }],
             span: None,
             doc: None,
         })
@@ -2117,7 +2173,8 @@ mod tests {
     }
 
     fn entry<'a>(map: &'a HashMap<String, AccelEntry>, name: &str) -> &'a AccelEntry {
-        map.get(name).unwrap_or_else(|| panic!("no entry for {name}"))
+        map.get(name)
+            .unwrap_or_else(|| panic!("no entry for {name}"))
     }
 
     // ── eligibility: bound ────────────────────────────────────────
@@ -2128,18 +2185,29 @@ mod tests {
         state(&mut items);
         let body = vec![
             Statement::Assign(
-                Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
-        items.push(txn_with("ok", pre_lt("i", Expr::Identifier("nb".into())), body.clone()));
+        items.push(txn_with(
+            "ok",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body.clone(),
+        ));
         // Non-`[i < N]` precondition → ineligible.
         items.push(txn_with("bad", Expr::Bool(true), body));
         let map = analyze(&items, Some(&universe()), None);
         assert!(entry(&map, "ok").shape.eligible);
         assert!(!entry(&map, "bad").shape.eligible);
-        assert!(entry(&map, "bad").shape.reasons.iter().any(|r| r.contains("[i < N]")));
+        assert!(entry(&map, "bad")
+            .shape
+            .reasons
+            .iter()
+            .any(|r| r.contains("[i < N]")));
     }
 
     #[test]
@@ -2151,19 +2219,34 @@ mod tests {
         // Use `k` (not declared) as the bound var → ineligible.
         let body = vec![
             Statement::Assign(
-                Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("k".into()))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("k".into())),
+                ),
                 Expr::Decimal(1),
             ),
             Statement::Assign(
                 Expr::Identifier("k".into()),
-                Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("k".into())), Box::new(Expr::Decimal(1))),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("k".into())),
+                    Box::new(Expr::Decimal(1)),
+                ),
             ),
         ];
-        items.push(txn_with("t", pre_lt("k", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("k", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible, "undeclared counter must be rejected");
-        assert!(e.shape.reasons.iter().any(|r| r.contains("not a state counter")));
+        assert!(e
+            .shape
+            .reasons
+            .iter()
+            .any(|r| r.contains("not a state counter")));
     }
 
     #[test]
@@ -2173,14 +2256,28 @@ mod tests {
         let mut items = vec![];
         state(&mut items);
         let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(Expr::Identifier("dv".into())),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::Decimal(1),
         )];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
-        assert!(!e.shape.eligible, "never-incremented counter must be rejected");
-        assert!(e.shape.reasons.iter().any(|r| r.contains("never incremented")));
+        assert!(
+            !e.shape.eligible,
+            "never-incremented counter must be rejected"
+        );
+        assert!(e
+            .shape
+            .reasons
+            .iter()
+            .any(|r| r.contains("never incremented")));
     }
 
     // ── eligibility: write disjointness ───────────────────────────
@@ -2189,22 +2286,34 @@ mod tests {
     fn array_write_must_be_affine_in_index() {
         let mut items = vec![];
         state(&mut items);
-        let ok_body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let ok_body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
         // a[0] — constant slot written by every work-item → cross-work-item.
-        let cross_body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Decimal(0))),
+        let cross_body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Decimal(0)),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
         // a[j] with free j → not affine in i → cross-work-item.
-        let free_j = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("j".into()))),
+        let free_j = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("j".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
@@ -2251,7 +2360,11 @@ mod tests {
             },
             inc_i(),
         ];
-        items.push(txn_with("acc", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "acc",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "acc");
         assert!(e.shape.eligible, "reasons: {:?}", e.shape.reasons);
@@ -2276,21 +2389,36 @@ mod tests {
         // count = count + 1 is loop bookkeeping → host; dv[i] = 1 is kernel.
         let body = vec![
             Statement::Assign(
-                Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
             Statement::Assign(
                 Expr::Identifier("nb".into()),
-                Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("nb".into())), Box::new(Expr::Decimal(1))),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("nb".into())),
+                    Box::new(Expr::Decimal(1)),
+                ),
             ),
         ];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(e.shape.eligible);
         assert_eq!(e.shape.kernel_stmts.len(), 1);
-        assert_eq!(e.shape.host_stmts.len(), 2, "i = i + 1 and nb = nb + 1 are host");
+        assert_eq!(
+            e.shape.host_stmts.len(),
+            2,
+            "i = i + 1 and nb = nb + 1 are host"
+        );
     }
 
     // ── eligibility: purity ───────────────────────────────────────
@@ -2300,13 +2428,24 @@ mod tests {
         let mut items = vec![];
         state(&mut items);
         let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(Expr::Identifier("dv".into())),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::Call("println!".into(), vec![Expr::Decimal(1)], None),
         )];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), with_inc(body)));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            with_inc(body),
+        ));
         let map = analyze(&items, Some(&universe()), None);
         assert!(!entry(&map, "t").shape.eligible);
-        assert!(entry(&map, "t").shape.reasons.iter().any(|r| r.contains("no offloadable statements")));
+        assert!(entry(&map, "t")
+            .shape
+            .reasons
+            .iter()
+            .any(|r| r.contains("no offloadable statements")));
     }
 
     // ── eligibility: flat types ───────────────────────────────────
@@ -2322,14 +2461,25 @@ mod tests {
             span: None,
         }));
         let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("ss".into())), Box::new(Expr::Identifier("i".into()))),
+            Expr::Index(
+                Box::new(Expr::Identifier("ss".into())),
+                Box::new(Expr::Identifier("i".into())),
+            ),
             Expr::Identifier("x".into()),
         )];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), with_inc(body)));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            with_inc(body),
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(!e.shape.eligible);
-        assert!(e.shape.reasons.iter().any(|r| r.contains("not a flat scalar")));
+        assert!(e
+            .shape
+            .reasons
+            .iter()
+            .any(|r| r.contains("not a flat scalar")));
     }
 
     // ── decisions ─────────────────────────────────────────────────
@@ -2338,14 +2488,22 @@ mod tests {
     fn runtime_bound_is_probe() {
         let mut items = vec![];
         state(&mut items);
-        let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
         // `[i < nb]` with nb a runtime state scalar → Probe (try mode).
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
         assert!(e.shape.eligible);
@@ -2362,13 +2520,21 @@ mod tests {
             expr: Expr::Decimal(4),
             section: None,
         }));
-        let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("N".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("N".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         // N=4 below the PCIe crossover → CPU.
         assert_eq!(entry(&map, "t").decision, AccelDecision::Cpu);
@@ -2379,15 +2545,28 @@ mod tests {
         let mut items = vec![];
         state(&mut items);
         // const bound below crossover (would be Cpu in try mode)…
-        items.push(TopLevel::Constant(Constant { name: "nb".into(), ty: Type::int(), expr: Expr::Decimal(4), section: None }));
+        items.push(TopLevel::Constant(Constant {
+            name: "nb".into(),
+            ty: Type::int(),
+            expr: Expr::Decimal(4),
+            section: None,
+        }));
         // …but the body is accel-keyword-marked and the policy is force → Gpu.
-        let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
         ];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), Some(AccelMode::Force));
         let e = entry(&map, "t");
         assert!(e.forced);
@@ -2398,8 +2577,12 @@ mod tests {
     fn try_all_targets_unmarked_body() {
         let mut items = vec![];
         state(&mut items);
-        let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
@@ -2420,8 +2603,12 @@ mod tests {
     fn absent_mode_targets_only_marked() {
         let mut items = vec![];
         state(&mut items);
-        let body = vec![Statement::Assign(
-            Expr::Index(Box::new(Expr::Identifier("dv".into())), Box::new(Expr::Identifier("i".into()))),
+        let body = vec![
+            Statement::Assign(
+                Expr::Index(
+                    Box::new(Expr::Identifier("dv".into())),
+                    Box::new(Expr::Identifier("i".into())),
+                ),
                 Expr::Decimal(1),
             ),
             inc_i(),
@@ -2461,7 +2648,11 @@ mod tests {
             ),
             inc_i(),
         ];
-        items.push(txn_with("pairs", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "pairs",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "pairs").shape.work_cols, Some(4096));
     }
@@ -2480,7 +2671,11 @@ mod tests {
             ),
             inc_i(),
         ];
-        items.push(txn_with("flat", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "flat",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "flat").shape.work_cols, None);
     }
@@ -2490,9 +2685,7 @@ mod tests {
         // A shift says cols = 4096; a mask says 1024 → no 2D claim.
         let mut items = vec![];
         state(&mut items);
-        let idx = |e: Expr| {
-            Expr::Index(Box::new(Expr::Identifier("sv".into())), Box::new(e))
-        };
+        let idx = |e: Expr| Expr::Index(Box::new(Expr::Identifier("sv".into())), Box::new(e));
         let body = vec![
             Statement::Assign(
                 idx(Expr::BinaryOp(
@@ -2512,7 +2705,11 @@ mod tests {
             ),
             inc_i(),
         ];
-        items.push(txn_with("mix", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "mix",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         assert_eq!(entry(&map, "mix").shape.work_cols, None);
     }
@@ -2554,7 +2751,7 @@ mod tests {
                 inclusive: false,
             }),
             body,
-        modifiers: vec![],
+            modifiers: vec![],
         }
     }
 
@@ -2599,7 +2796,10 @@ mod tests {
             foreach(
                 "c",
                 ident("C"),
-                vec![Statement::Assign(ident("s"), add_e(ident("s"), num.clone()))],
+                vec![Statement::Assign(
+                    ident("s"),
+                    add_e(ident("s"), num.clone()),
+                )],
             ),
             foreach(
                 "c",
@@ -2630,7 +2830,10 @@ mod tests {
             foreach(
                 "d",
                 ident("N"),
-                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+                vec![Statement::Assign(
+                    fidx("out", "d"),
+                    div_e(fidx("x", "d"), ident("l")),
+                )],
             ),
         ];
         assert!(
@@ -2648,12 +2851,18 @@ mod tests {
             foreach(
                 "j",
                 ident("N"),
-                vec![Statement::Assign(ident("l"), mul(ident("l"), Expr::Decimal(2)))],
+                vec![Statement::Assign(
+                    ident("l"),
+                    mul(ident("l"), Expr::Decimal(2)),
+                )],
             ),
             foreach(
                 "d",
                 ident("N"),
-                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+                vec![Statement::Assign(
+                    fidx("out", "d"),
+                    div_e(fidx("x", "d"), ident("l")),
+                )],
             ),
         ];
         assert!(detect_deferred_normalizer(&stmts, "i").is_none());
@@ -2696,7 +2905,10 @@ mod tests {
             foreach(
                 "j",
                 ident("N"),
-                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("a", "j")))],
+                vec![Statement::Assign(
+                    ident("l"),
+                    add_e(ident("l"), fidx("a", "j")),
+                )],
             ),
             foreach(
                 "j",
@@ -2706,7 +2918,10 @@ mod tests {
             foreach(
                 "j",
                 ident("N"),
-                vec![Statement::Assign(fidx("out", "j"), div_e(fidx("raw", "j"), ident("l")))],
+                vec![Statement::Assign(
+                    fidx("out", "j"),
+                    div_e(fidx("raw", "j"), ident("l")),
+                )],
             ),
         ];
         let info = detect_deferred_normalizer(&stmts, "r").expect("must skip the fill pass");
@@ -2726,12 +2941,18 @@ mod tests {
             foreach(
                 "j",
                 ident("N"),
-                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("a", "j")))],
+                vec![Statement::Assign(
+                    ident("l"),
+                    add_e(ident("l"), fidx("a", "j")),
+                )],
             ),
             foreach(
                 "d",
                 ident("N"),
-                vec![Statement::Assign(fidx("out", "d"), div_e(fidx("x", "d"), ident("l")))],
+                vec![Statement::Assign(
+                    fidx("out", "d"),
+                    div_e(fidx("x", "d"), ident("l")),
+                )],
             ),
             Statement::Assign(ident("l"), add_e(ident("l"), Expr::Decimal(1))),
         ];
@@ -2749,7 +2970,10 @@ mod tests {
             foreach(
                 "j",
                 Expr::Decimal(64),
-                vec![Statement::Assign(ident("l"), add_e(ident("l"), fidx("px", "j")))],
+                vec![Statement::Assign(
+                    ident("l"),
+                    add_e(ident("l"), fidx("px", "j")),
+                )],
             ),
             foreach(
                 "j",
@@ -2773,10 +2997,18 @@ mod tests {
             ),
             inc_i(),
         ];
-        items.push(txn_with("t", pre_lt("i", Expr::Identifier("nb".into())), body));
+        items.push(txn_with(
+            "t",
+            pre_lt("i", Expr::Identifier("nb".into())),
+            body,
+        ));
         let map = analyze(&items, Some(&universe()), None);
         let e = entry(&map, "t");
-        assert!(e.shape.eligible, "kernel must stay eligible: {:?}", e.shape.reasons);
+        assert!(
+            e.shape.eligible,
+            "kernel must stay eligible: {:?}",
+            e.shape.reasons
+        );
         let info = e
             .shape
             .deferred_normalize
@@ -2844,7 +3076,10 @@ pub(crate) fn analyze_resident_safety(
         }
     }
     if kernel_arrays.is_empty() {
-        return ResidentVerdict { resident_ok: false, blocker: None };
+        return ResidentVerdict {
+            resident_ok: false,
+            blocker: None,
+        };
     }
 
     let mut blocker: Option<(String, String)> = None;
@@ -3000,24 +3235,22 @@ mod resident_gate_tests {
     fn make_defn(name: &str, read_fields: &[&str]) -> TopLevel {
         let body: Vec<Statement> = read_fields
             .iter()
-            .map(|f| {
-                Statement::Foreach {
-                    item: "j".into(),
-                    list: Box::new(Expr::Range {
-                        start: Box::new(Expr::Decimal(0)),
-                        end: Box::new(Expr::Decimal(64)),
-                        inclusive: false,
-                    }),
-                    body: vec![Statement::Assign(
-                        Expr::Identifier("s".into()),
-                        f32_idx(f, "j"),
-                    )],
+            .map(|f| Statement::Foreach {
+                item: "j".into(),
+                list: Box::new(Expr::Range {
+                    start: Box::new(Expr::Decimal(0)),
+                    end: Box::new(Expr::Decimal(64)),
+                    inclusive: false,
+                }),
+                body: vec![Statement::Assign(
+                    Expr::Identifier("s".into()),
+                    f32_idx(f, "j"),
+                )],
                 modifiers: vec![],
-                }
             })
             .collect();
         TopLevel::Definition(crate::ast::Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.into(),
             type_params: vec![],
             parameters: vec![],
@@ -3094,11 +3327,14 @@ mod resident_gate_tests {
                 inclusive: false,
             }),
             body,
-        modifiers: vec![],
+            modifiers: vec![],
         }];
         let (reads, _writes, _scalars) = collect_buffers(&stmts, &info);
-        assert_eq!(reads, vec!["a".to_string()],
-            "foreach-body reads MUST reach read_buffers (the vacuous-contracts bug)");
+        assert_eq!(
+            reads,
+            vec!["a".to_string()],
+            "foreach-body reads MUST reach read_buffers (the vacuous-contracts bug)"
+        );
     }
 
     /// The gate: a program whose defn reads a kernel array forces full-copy.
@@ -3157,9 +3393,7 @@ mod resident_gate_tests {
         assert!(verdict.resident_ok, "kernel-only program goes resident");
         assert!(verdict.blocker.is_none());
     }
-
 }
-
 
 /// 2026-09-18 (M3.5, moved from the SPIR-V router so frontend analyses and
 /// backend routers share one source of truth): a cooperative row kernel
@@ -3194,8 +3428,10 @@ pub fn kernel_stmts_decompose_counter(shape: &KernelShape) -> bool {
     fn expr_decomposes(e: &Expr, iv: &str) -> bool {
         match e {
             Expr::BinaryOp(kind, l, r) => {
-                let here = matches!(kind, crate::ast::BinaryOpKind::Div | crate::ast::BinaryOpKind::Mod)
-                    && matches!(l.as_ref(), Expr::Identifier(n) if n == iv);
+                let here = matches!(
+                    kind,
+                    crate::ast::BinaryOpKind::Div | crate::ast::BinaryOpKind::Mod
+                ) && matches!(l.as_ref(), Expr::Identifier(n) if n == iv);
                 here || expr_decomposes(l, iv) || expr_decomposes(r, iv)
             }
             Expr::Call(_, args, _) => args.iter().any(|a| expr_decomposes(a, iv)),
@@ -3217,7 +3453,6 @@ pub fn kernel_stmts_decompose_counter(shape: &KernelShape) -> bool {
         .iter()
         .any(|s| stmt_decomposes(s, &shape.index_var))
 }
-
 
 #[cfg(test)]
 mod fold_idiom_tests {
@@ -3244,14 +3479,14 @@ mod fold_idiom_tests {
         let operand = idx("a", Expr::Identifier("k".into()));
         let acc = Expr::Identifier("acc".into());
         match kind {
-            ReductionKind::Sum => Expr::BinaryOp(
-                BinaryOpKind::Add, Box::new(acc), Box::new(operand)),
-            ReductionKind::Product => Expr::BinaryOp(
-                BinaryOpKind::Mul, Box::new(acc), Box::new(operand)),
-            ReductionKind::Min => Expr::Call(
-                "Min#".into(), vec![acc, operand], None),
-            ReductionKind::Max => Expr::Call(
-                "Max#".into(), vec![acc, operand], None),
+            ReductionKind::Sum => {
+                Expr::BinaryOp(BinaryOpKind::Add, Box::new(acc), Box::new(operand))
+            }
+            ReductionKind::Product => {
+                Expr::BinaryOp(BinaryOpKind::Mul, Box::new(acc), Box::new(operand))
+            }
+            ReductionKind::Min => Expr::Call("Min#".into(), vec![acc, operand], None),
+            ReductionKind::Max => Expr::Call("Max#".into(), vec![acc, operand], None),
             _ => unreachable!("test kinds only"),
         }
     }
@@ -3260,8 +3495,16 @@ mod fold_idiom_tests {
         let operand = idx("a", Expr::Identifier("k".into()));
         let acc = Expr::Identifier("acc".into());
         let rhs = match kind {
-            ReductionKind::Sum => Expr::BinaryOp(BinaryOpKind::Add, Box::new(acc.clone()), Box::new(operand.clone())),
-            ReductionKind::Product => Expr::BinaryOp(BinaryOpKind::Mul, Box::new(acc.clone()), Box::new(operand.clone())),
+            ReductionKind::Sum => Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(acc.clone()),
+                Box::new(operand.clone()),
+            ),
+            ReductionKind::Product => Expr::BinaryOp(
+                BinaryOpKind::Mul,
+                Box::new(acc.clone()),
+                Box::new(operand.clone()),
+            ),
             ReductionKind::Min => Expr::Call("Min#".into(), vec![acc.clone(), operand], None),
             ReductionKind::Max => Expr::Call("Max#".into(), vec![acc.clone(), operand], None),
             _ => unreachable!("test kinds only"),
@@ -3274,9 +3517,11 @@ mod fold_idiom_tests {
                     _ => rhs,
                 },
                 ReductionKind::Min | ReductionKind::Max => match &rhs {
-                    Expr::Call(name, args, ext) => {
-                        Expr::Call(name.clone(), vec![args[1].clone(), args[0].clone()], ext.clone())
-                    }
+                    Expr::Call(name, args, ext) => Expr::Call(
+                        name.clone(),
+                        vec![args[1].clone(), args[0].clone()],
+                        ext.clone(),
+                    ),
                     _ => rhs,
                 },
                 _ => rhs,
@@ -3288,11 +3533,15 @@ mod fold_idiom_tests {
             item: "k".into(),
             list: Box::new(range(1024)),
             body: vec![Statement::Assign(Expr::Identifier("acc".into()), rhs)],
-        modifiers: vec![],
+            modifiers: vec![],
         }]
     }
 
-    fn near_miss_stmts(two_stmts: bool, operand_non_index: bool, idx_reads_acc: bool) -> Vec<Statement> {
+    fn near_miss_stmts(
+        two_stmts: bool,
+        operand_non_index: bool,
+        idx_reads_acc: bool,
+    ) -> Vec<Statement> {
         let operand = if operand_non_index {
             Expr::BinaryOp(
                 BinaryOpKind::Add,
@@ -3311,13 +3560,16 @@ mod fold_idiom_tests {
         );
         let mut body = vec![Statement::Assign(Expr::Identifier("acc".into()), rhs)];
         if two_stmts {
-            body.push(Statement::Assign(Expr::Identifier("acc".into()), Expr::Decimal(0)));
+            body.push(Statement::Assign(
+                Expr::Identifier("acc".into()),
+                Expr::Decimal(0),
+            ));
         }
         vec![Statement::Foreach {
             item: "k".into(),
             list: Box::new(range(1024)),
             body,
-        modifiers: vec![],
+            modifiers: vec![],
         }]
     }
 
@@ -3325,7 +3577,10 @@ mod fold_idiom_tests {
         vec![TopLevel::Statement(Box::new(Statement::Let {
             name: "a".into(),
             names: vec![],
-            ty: Some(Type::Vector(Box::new(elem), vec![Dimension::Anonymous(4096)])),
+            ty: Some(Type::Vector(
+                Box::new(elem),
+                vec![Dimension::Anonymous(4096)],
+            )),
             expr: None,
             modifiers: vec![],
         }))]
@@ -3359,8 +3614,8 @@ mod fold_idiom_tests {
                 col_buf: String::new(),
                 out_buf: "y".into(),
                 seq: false,
-            foreach_approx: false,
-            foreach_exact: false,
+                foreach_approx: false,
+                foreach_exact: false,
             }),
             deferred_normalize: None,
             idiom_lane: false,
@@ -3403,13 +3658,25 @@ mod fold_idiom_tests {
         let items = int_buffer_items(Type::int());
         for kind in FOLD_KINDS {
             let shape = fold_shape(kind, Expr::Decimal(1024));
-            assert!(fold_idiom_lane(&shape, &items), "{kind:?} int fold must license");
+            assert!(
+                fold_idiom_lane(&shape, &items),
+                "{kind:?} int fold must license"
+            );
             let items_f = int_buffer_items(Type::float());
-            assert!(!fold_idiom_lane(&shape, &items_f), "{kind:?} float fold must not license");
+            assert!(
+                !fold_idiom_lane(&shape, &items_f),
+                "{kind:?} float fold must not license"
+            );
             let shape_k = fold_shape(kind, Expr::Decimal(1000));
-            assert!(!fold_idiom_lane(&shape_k, &items), "{kind:?} non-32-multiple must refuse");
+            assert!(
+                !fold_idiom_lane(&shape_k, &items),
+                "{kind:?} non-32-multiple must refuse"
+            );
             let shape_n = fold_shape(kind, Expr::Identifier("N".into()));
-            assert!(!fold_idiom_lane(&shape_n, &items), "{kind:?} non-const must refuse");
+            assert!(
+                !fold_idiom_lane(&shape_n, &items),
+                "{kind:?} non-const must refuse"
+            );
         }
     }
 
@@ -3419,7 +3686,10 @@ mod fold_idiom_tests {
         let items_f = int_buffer_items(Type::float());
         for kind in FOLD_KINDS {
             let shape = fold_shape_flags(kind, Expr::Decimal(1024), true, false);
-            assert!(fold_idiom_lane(&shape, &items_f), "{kind:?} approx float must license");
+            assert!(
+                fold_idiom_lane(&shape, &items_f),
+                "{kind:?} approx float must license"
+            );
             assert_eq!(fold_idiom_outcome(&shape, &items_f), Ok(()));
         }
     }
@@ -3430,14 +3700,23 @@ mod fold_idiom_tests {
         let items_f = int_buffer_items(Type::float());
         for kind in FOLD_KINDS {
             let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
-            assert!(!fold_idiom_lane(&shape, &items_f), "{kind:?} exact float must not reassociate");
-            assert_eq!(fold_idiom_outcome(&shape, &items_f), Err(FoldIdiomBlock::ExactPinned));
+            assert!(
+                !fold_idiom_lane(&shape, &items_f),
+                "{kind:?} exact float must not reassociate"
+            );
+            assert_eq!(
+                fold_idiom_outcome(&shape, &items_f),
+                Err(FoldIdiomBlock::ExactPinned)
+            );
         }
         // Int folds are exact in any order — `exact` does not block them.
         let items_i = int_buffer_items(Type::int());
         for kind in FOLD_KINDS {
             let shape = fold_shape_flags(kind, Expr::Decimal(1024), false, true);
-            assert!(fold_idiom_lane(&shape, &items_i), "{kind:?} exact int stays licensed");
+            assert!(
+                fold_idiom_lane(&shape, &items_i),
+                "{kind:?} exact int stays licensed"
+            );
         }
     }
 
@@ -3568,7 +3847,7 @@ mod fold_idiom_tests {
                     None,
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         }];
         let reason = diagnose_idiom_fold(&unsupported).expect("near-miss");
         assert!(reason.contains("only `+`"), "{reason}");
@@ -3584,7 +3863,7 @@ mod fold_idiom_tests {
                     Box::new(Expr::Decimal(1)),
                 ),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         }];
         assert!(diagnose_idiom_fold(&map).is_none());
     }
@@ -3595,14 +3874,29 @@ mod fold_idiom_tests {
         let ok = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
         assert_eq!(fold_idiom_outcome(&ok, &items), Ok(()));
         let non_const = fold_shape(ReductionKind::Sum, Expr::Identifier("N".into()));
-        assert_eq!(fold_idiom_outcome(&non_const, &items), Err(FoldIdiomBlock::LengthNotConst));
+        assert_eq!(
+            fold_idiom_outcome(&non_const, &items),
+            Err(FoldIdiomBlock::LengthNotConst)
+        );
         let not32 = fold_shape(ReductionKind::Sum, Expr::Decimal(1000));
-        assert_eq!(fold_idiom_outcome(&not32, &items), Err(FoldIdiomBlock::LengthNotMultiple32));
+        assert_eq!(
+            fold_idiom_outcome(&not32, &items),
+            Err(FoldIdiomBlock::LengthNotMultiple32)
+        );
         let float_items = int_buffer_items(Type::float());
-        assert_eq!(fold_idiom_outcome(&ok, &float_items), Err(FoldIdiomBlock::FloatUnlicensed));
+        assert_eq!(
+            fold_idiom_outcome(&ok, &float_items),
+            Err(FoldIdiomBlock::FloatUnlicensed)
+        );
         let no_fold = fold_shape(ReductionKind::Sum, Expr::Decimal(1024));
         assert_eq!(
-            fold_idiom_outcome(&KernelShape { reduction: None, ..no_fold.clone() }, &items),
+            fold_idiom_outcome(
+                &KernelShape {
+                    reduction: None,
+                    ..no_fold.clone()
+                },
+                &items
+            ),
             Err(FoldIdiomBlock::NoFold)
         );
         // Every blocking fact has a non-empty, actionable message.

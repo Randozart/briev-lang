@@ -15,8 +15,8 @@
 //! (unknown base, non-shape type, arity mismatch) is a compile error —
 //! fail closed, never a silent miscompile.
 
-use crate::ast::Expr;
 use crate::ast::top::{Statement, TopLevel};
+use crate::ast::Expr;
 use crate::ast::Type;
 use crate::type_universe::TypeUniverse;
 use std::collections::HashMap;
@@ -37,7 +37,10 @@ pub fn rewrite_multi_index(items: &mut Vec<TopLevel>) -> Result<(), String> {
                 fields.insert(s.name.clone(), s.ty.clone());
             }
             TopLevel::Statement(stmt) => {
-                if let Statement::Let { name, ty: Some(t), .. } = stmt.as_ref() {
+                if let Statement::Let {
+                    name, ty: Some(t), ..
+                } = stmt.as_ref()
+                {
                     fields.insert(name.clone(), t.clone());
                 }
             }
@@ -179,9 +182,10 @@ fn rewrite_stmt(
             }
         }
         Statement::Expression(e) => rewrite_expr(e, universe, fields)?,
-        Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) | Statement::Tail(e) => {
-            rewrite_expr(e, universe, fields)?
-        }
+        Statement::Term(Some(e))
+        | Statement::EndProgram(Some(e))
+        | Statement::Rollback(Some(e))
+        | Statement::Tail(e) => rewrite_expr(e, universe, fields)?,
         _ => {}
     }
     Ok(())
@@ -243,9 +247,11 @@ fn rewrite_expr(
                 rewrite_expr(x, universe, fields)?;
             }
         }
-        Expr::AddrOf(i) | Expr::Deref(i) | Expr::Consume(i) | Expr::Await(i) | Expr::Within(i, _) => {
-            rewrite_expr(i, universe, fields)?
-        }
+        Expr::AddrOf(i)
+        | Expr::Deref(i)
+        | Expr::Consume(i)
+        | Expr::Await(i)
+        | Expr::Within(i, _) => rewrite_expr(i, universe, fields)?,
         Expr::If(c, t, f) => {
             rewrite_expr(c, universe, fields)?;
             rewrite_expr(t, universe, fields)?;
@@ -258,7 +264,6 @@ fn rewrite_expr(
     }
     Ok(())
 }
-
 
 // ── Wildcard element lift (2026-10-05, three-surfaces plan Phase 0.6a) ──
 //
@@ -305,7 +310,10 @@ pub fn rewrite_wildcard_lift(items: &mut Vec<TopLevel>) -> Result<(), String> {
                 fields.insert(st.name.clone(), st.ty.clone());
             }
             TopLevel::Statement(stmt) => {
-                if let Statement::Let { name, ty: Some(t), .. } = stmt.as_ref() {
+                if let Statement::Let {
+                    name, ty: Some(t), ..
+                } = stmt.as_ref()
+                {
                     fields.insert(name.clone(), t.clone());
                 }
             }
@@ -339,7 +347,10 @@ pub fn rewrite_wildcard_lift(items: &mut Vec<TopLevel>) -> Result<(), String> {
 /// any rewrite (a lift may reference a let declared later in the body).
 fn collect_let_types(body: &[Statement], fields: &mut HashMap<String, Type>) {
     for st in body {
-        if let Statement::Let { name, ty: Some(t), .. } = st {
+        if let Statement::Let {
+            name, ty: Some(t), ..
+        } = st
+        {
             fields.insert(name.clone(), t.clone());
         }
     }
@@ -378,7 +389,14 @@ fn expand_stmt(
 ) -> Result<(), String> {
     // `let d: T[N] = <init>;` with a wildcard init becomes a declaration
     // plus an assign, so the single assign path serves both forms.
-    if let Statement::Let { name, names, ty: Some(ty), expr: Some(init), modifiers } = stmt {
+    if let Statement::Let {
+        name,
+        names,
+        ty: Some(ty),
+        expr: Some(init),
+        modifiers,
+    } = stmt
+    {
         if expr_has_wildcard(init) {
             let decl = Statement::Let {
                 name: name.clone(),
@@ -395,9 +413,7 @@ fn expand_stmt(
         }
     }
     match stmt {
-        Statement::Assign(lhs, rhs) => {
-            expand_assign(lhs, rhs, universe, fields, counter, out)
-        }
+        Statement::Assign(lhs, rhs) => expand_assign(lhs, rhs, universe, fields, counter, out),
         Statement::Guarded(cond, body) => {
             if expr_has_wildcard(cond) {
                 return Err(
@@ -484,7 +500,8 @@ fn expand_assign(
         None => {
             let Expr::Identifier(dname) = lhs else {
                 return Err(
-                    "the destination of a `[*]` lift must be a declared array (v1 surface)".to_string(),
+                    "the destination of a `[*]` lift must be a declared array (v1 surface)"
+                        .to_string(),
                 );
             };
             let (elem, dn) = array_extent(dname, universe, fields)?;
@@ -573,10 +590,11 @@ fn stmt_has_wildcard(stmt: &Statement) -> bool {
     match stmt {
         Statement::Assign(l, r) => expr_has_wildcard(l) || expr_has_wildcard(r),
         Statement::Let { expr: Some(e), .. } => expr_has_wildcard(e),
-        Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Tail(e)
-        | Statement::EndProgram(Some(e)) | Statement::Rollback(Some(e)) => {
-            expr_has_wildcard(e)
-        }
+        Statement::Expression(e)
+        | Statement::Term(Some(e))
+        | Statement::Tail(e)
+        | Statement::EndProgram(Some(e))
+        | Statement::Rollback(Some(e)) => expr_has_wildcard(e),
         _ => false,
     }
 }
@@ -856,10 +874,7 @@ fn enum_variant_field(
         .map(|_| (name.clone(), variant.clone()))
 }
 
-fn rewrite_enum_expr(
-    e: &mut Expr,
-    enums: &HashMap<String, std::collections::HashSet<String>>,
-) {
+fn rewrite_enum_expr(e: &mut Expr, enums: &HashMap<String, std::collections::HashSet<String>>) {
     // `Enum.Variant` (unit) is a constructor, not a field read.
     if let Some((enum_name, variant)) = enum_variant_field(e, enums) {
         *e = Expr::Call(format!("{}::{}", enum_name, variant), Vec::new(), None);
@@ -881,11 +896,7 @@ fn rewrite_enum_expr(
             for a in lowered_args.iter_mut() {
                 rewrite_enum_expr(a, enums);
             }
-            *e = Expr::Call(
-                format!("{}::{}", enum_name, name),
-                lowered_args,
-                None,
-            );
+            *e = Expr::Call(format!("{}::{}", enum_name, name), lowered_args, None);
             return;
         }
     }
@@ -919,7 +930,12 @@ fn rewrite_enum_expr_children(
             rewrite_enum_expr(l, enums);
             rewrite_enum_expr(r, enums);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rewrite_enum_expr(array, enums);
             for part in [start, end, stride].into_iter().flatten() {
                 rewrite_enum_expr(part, enums);
@@ -1001,7 +1017,8 @@ mod tests {
         p.parse_program().unwrap()
     }
 
-    const TYPE_DECL: &str = "type Matrix<T, R, C> { spec Rows: R; spec Cols: C; };\nlet m: Matrix<Float, 4, 4>;\n";
+    const TYPE_DECL: &str =
+        "type Matrix<T, R, C> { spec Rows: R; spec Cols: C; };\nlet m: Matrix<Float, 4, 4>;\n";
 
     fn node_stmt(src: &str) -> Statement {
         // Parse `async node go [false][false] { <src> };` and take the
@@ -1073,9 +1090,18 @@ mod tests {
         let out = lift_body("d = a[*] + b[*];");
         assert_eq!(out.len(), 4, "{:?}", stmt_strs(&out));
         let first = format!("{:?}", out[0]);
-        assert!(first.contains("Index(Identifier(\"d\"), Decimal(0))"), "{first}");
-        assert!(first.contains("Index(Identifier(\"a\"), Decimal(0))"), "{first}");
-        assert!(first.contains("Index(Identifier(\"b\"), Decimal(0))"), "{first}");
+        assert!(
+            first.contains("Index(Identifier(\"d\"), Decimal(0))"),
+            "{first}"
+        );
+        assert!(
+            first.contains("Index(Identifier(\"a\"), Decimal(0))"),
+            "{first}"
+        );
+        assert!(
+            first.contains("Index(Identifier(\"b\"), Decimal(0))"),
+            "{first}"
+        );
         let last = format!("{:?}", out[3]);
         assert!(last.contains("Decimal(3)"), "{last}");
     }
@@ -1086,7 +1112,10 @@ mod tests {
         let out = lift_body("a[*] = s + 1;");
         assert_eq!(out.len(), 4);
         let first = format!("{:?}", out[0]);
-        assert!(first.contains("Index(Identifier(\"a\"), Decimal(0))"), "{first}");
+        assert!(
+            first.contains("Index(Identifier(\"a\"), Decimal(0))"),
+            "{first}"
+        );
         assert!(first.contains("Identifier(\"s\")"), "{first}");
     }
 
@@ -1122,9 +1151,8 @@ mod tests {
         let err = rewrite_wildcard_lift(&mut prog).unwrap_err();
         assert!(err.contains("not a state field or typed let"), "got: {err}");
 
-        let mut prog = parse(
-            "let l: List<Int>;\nlet d: Int[2];\nasync node go [false][false] { d = l[*]; };",
-        );
+        let mut prog =
+            parse("let l: List<Int>;\nlet d: Int[2];\nasync node go [false][false] { d = l[*]; };");
         let err = rewrite_wildcard_lift(&mut prog).unwrap_err();
         assert!(err.contains("not a fixed-size array"), "got: {err}");
     }
@@ -1136,18 +1164,22 @@ mod tests {
     fn lift_scope_boundary() {
         let mut prog = lift_prog("pick(a[*]);");
         let err = rewrite_wildcard_lift(&mut prog).unwrap_err();
-        assert!(err.contains("no lift") || err.contains("produces an array"), "got: {err}");
+        assert!(
+            err.contains("no lift") || err.contains("produces an array"),
+            "got: {err}"
+        );
 
         // A contract wildcard survives the pass untouched.
-        let mut prog = parse(
-            "let t: Int[2];\nnode go [t[*] > 0][true] { term; };",
-        );
+        let mut prog = parse("let t: Int[2];\nnode go [t[*] > 0][true] { term; };");
         rewrite_wildcard_lift(&mut prog).unwrap();
         let TopLevel::Transaction(t) = &prog[1] else {
             panic!("expected transaction");
         };
         let pre = format!("{:?}", t.contract.pre_condition);
-        assert!(pre.contains("Wildcard"), "contract wildcard must survive: {pre}");
+        assert!(
+            pre.contains("Wildcard"),
+            "contract wildcard must survive: {pre}"
+        );
     }
 
     #[test]
@@ -1161,14 +1193,15 @@ mod tests {
     fn imported_enum_variant_rewrites_to_constructor() {
         // The use site parses before the import is known: `Result.Ok(7)`
         // becomes Field/MethodCall, not the known-local Call form.
-        let mut use_items = parse(
-            "async node go [false][false] { let r = Result.Ok(7); term; };",
-        );
+        let mut use_items = parse("async node go [false][false] { let r = Result.Ok(7); term; };");
         let enum_items = parse("enum Result<T, E> { Ok(T), Err(E) };");
         use_items.extend(enum_items);
         rewrite_enum_variant_access(&mut use_items).unwrap();
         let dump = format!("{:?}", use_items);
-        assert!(dump.contains("Result::Ok"), "constructor not rewritten: {dump}");
+        assert!(
+            dump.contains("Result::Ok"),
+            "constructor not rewritten: {dump}"
+        );
     }
 
     #[test]

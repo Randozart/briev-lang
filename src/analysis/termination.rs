@@ -57,7 +57,12 @@ pub fn analyze(items: &[TopLevel]) -> (Vec<String>, Vec<String>) {
             TopLevel::Transaction(t) => check_list(&t.name, &t.body, &mut errors, &mut warnings),
             TopLevel::Definition(d) => check_list(&d.name, &d.body, &mut errors, &mut warnings),
             TopLevel::Statement(stmt) => {
-                check_list("top-level", std::slice::from_ref(stmt.as_ref()), &mut errors, &mut warnings);
+                check_list(
+                    "top-level",
+                    std::slice::from_ref(stmt.as_ref()),
+                    &mut errors,
+                    &mut warnings,
+                );
             }
             _ => {}
         }
@@ -91,7 +96,12 @@ fn list_always_terminates(stmts: &[Statement]) -> bool {
 /// every later sibling is unreachable — report the first and stop. Recurse
 /// into nested lists to catch the same rule inside guards, branches, blocks,
 /// loops, sync blocks, and match arms.
-fn check_list(name: &str, stmts: &[Statement], errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn check_list(
+    name: &str,
+    stmts: &[Statement],
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
     let mut alive = true;
     for (i, stmt) in stmts.iter().enumerate() {
         if !alive {
@@ -157,10 +167,7 @@ mod tests {
             parameters: Vec::new(),
             output_type: None,
             outputs: Vec::new(),
-            contract: crate::ast::Contract::new(
-                Expr::Bool(true),
-                Expr::Bool(true),
-            ),
+            contract: crate::ast::Contract::new(Expr::Bool(true), Expr::Bool(true)),
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -178,8 +185,12 @@ mod tests {
 
     #[test]
     fn always_terminates_value_forms_only() {
-        assert!(statement_always_terminates(&Statement::Term(Some(Expr::Decimal(1)))));
-        assert!(statement_always_terminates(&Statement::EndProgram(Some(Expr::Decimal(1)))));
+        assert!(statement_always_terminates(&Statement::Term(Some(
+            Expr::Decimal(1)
+        ))));
+        assert!(statement_always_terminates(&Statement::EndProgram(Some(
+            Expr::Decimal(1)
+        ))));
         assert!(!statement_always_terminates(&Statement::Term(None)));
         assert!(!statement_always_terminates(&Statement::EndProgram(None)));
         // A guard is conditional — NOT unconditional.
@@ -198,12 +209,19 @@ mod tests {
 
     #[test]
     fn unreachable_after_top_level_terminating_term() {
-        let (errors, warnings) = analyze(&[txn("n", vec![
-            Statement::Expression(expr_call("work")),
-            Statement::EndProgram(Some(expr_call("Print#"))),
-            Statement::Expression(expr_call("dead")),
-        ])]);
-        assert_eq!(errors.len(), 1, "dead statement must be flagged: {errors:?}");
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![
+                Statement::Expression(expr_call("work")),
+                Statement::EndProgram(Some(expr_call("Print#"))),
+                Statement::Expression(expr_call("dead")),
+            ],
+        )]);
+        assert_eq!(
+            errors.len(),
+            1,
+            "dead statement must be flagged: {errors:?}"
+        );
         assert!(errors[0].contains("unreachable"));
         assert!(errors[0].contains("n"), "error must name the node");
         assert!(warnings.is_empty());
@@ -211,57 +229,77 @@ mod tests {
 
     #[test]
     fn unreachable_inside_guard_body() {
-        let (errors, _) = analyze(&[txn("n", vec![
-            Statement::Guarded(
+        let (errors, _) = analyze(&[txn(
+            "n",
+            vec![Statement::Guarded(
                 Expr::Bool(true),
                 vec![
                     Statement::Expression(expr_call("print")),
                     Statement::EndProgram(Some(expr_call("Print#"))),
                     Statement::Expression(expr_call("dead")),
                 ],
-            ),
-        ])]);
-        assert_eq!(errors.len(), 1, "sibling after term! inside a guard is unreachable: {errors:?}");
+            )],
+        )]);
+        assert_eq!(
+            errors.len(),
+            1,
+            "sibling after term! inside a guard is unreachable: {errors:?}"
+        );
     }
 
     #[test]
     fn bare_term_guard_hint_when_code_follows() {
-        let (errors, warnings) = analyze(&[txn("n", vec![
-            Statement::Guarded(
-                Expr::Bool(true),
-                vec![
-                    Statement::Expression(expr_call("print")),
-                    Statement::Term(None),
-                ],
-            ),
-            Statement::Expression(expr_call("more")),
-        ])]);
-        assert!(errors.is_empty(), "bare term; continues — nothing is unreachable");
-        assert_eq!(warnings.len(), 1, "the confusion needs a hint: {warnings:?}");
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![
+                Statement::Guarded(
+                    Expr::Bool(true),
+                    vec![
+                        Statement::Expression(expr_call("print")),
+                        Statement::Term(None),
+                    ],
+                ),
+                Statement::Expression(expr_call("more")),
+            ],
+        )]);
+        assert!(
+            errors.is_empty(),
+            "bare term; continues — nothing is unreachable"
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the confusion needs a hint: {warnings:?}"
+        );
         assert!(warnings[0].contains("checkpoint"));
     }
 
     #[test]
     fn trailing_bare_term_guard_no_hint() {
-        let (errors, warnings) = analyze(&[txn("n", vec![
-            Statement::Guarded(
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![Statement::Guarded(
                 Expr::Bool(true),
                 vec![Statement::Term(None)],
-            ),
-        ])]);
+            )],
+        )]);
         assert!(errors.is_empty());
         assert!(warnings.is_empty(), "trailing checkpoint guard is harmless");
     }
 
     #[test]
     fn valid_swan_song_passes() {
-        let (errors, warnings) = analyze(&[txn("n", vec![
-            Statement::Guarded(
+        let (errors, warnings) = analyze(&[txn(
+            "n",
+            vec![Statement::Guarded(
                 Expr::Bool(true),
                 vec![Statement::EndProgram(Some(expr_call("PrintLn#")))],
-            ),
-        ])]);
+            )],
+        )]);
         assert!(errors.is_empty());
-        assert!(warnings.is_empty(), "the canonical swan song must not warn: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "the canonical swan song must not warn: {warnings:?}"
+        );
     }
 }

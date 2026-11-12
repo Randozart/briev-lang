@@ -12,7 +12,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use briev_compiler::library;
-use briev_compiler::target::{BackendKind, TargetConfig, get_extension};
+use briev_compiler::target::{get_extension, BackendKind, TargetConfig};
 use briev_compiler::vocab;
 use compile::BeastFilter;
 
@@ -83,7 +83,10 @@ fn main() {
         "install-deps" => deps::install_all(),
         "install-highlighter" => run_install_highlighter(&args[2..]),
         "freshness" => run_freshness_check(),
-        "help" | "--help" | "-h" => { print_usage(&args[0]); Ok(()) }
+        "help" | "--help" | "-h" => {
+            print_usage(&args[0]);
+            Ok(())
+        }
         "version" | "--version" | "-V" => {
             println!("brievc {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -108,7 +111,9 @@ fn run_targets() -> Result<(), String> {
             "bad" => "(host)",
             _ => "(profile default)",
         });
-        let plugins = entry.plugins.as_ref()
+        let plugins = entry
+            .plugins
+            .as_ref()
             .map(|p| p.join(","))
             .unwrap_or_else(|| "(default)".to_string());
         println!("{ext}\t{backend}\t{triple}\t{plugins}");
@@ -117,36 +122,104 @@ fn run_targets() -> Result<(), String> {
 }
 
 fn print_usage(program: &str) {
-    let name = Path::new(program).file_name()
+    let name = Path::new(program)
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("briev-compiler");
     eprintln!("Briev Compiler");
     eprintln!("Usage:");
-    eprintln!("  {} build <file.bv>                 Compile a Briev source file", name);
-    eprintln!("  {} lsp                             Run the language server (stdio; VS Code extension)", name);
+    eprintln!(
+        "  {} build <file.bv>                 Compile a Briev source file",
+        name
+    );
+    eprintln!(
+        "  {} lsp                             Run the language server (stdio; VS Code extension)",
+        name
+    );
     eprintln!("  {} test <file|dir>                 Run *.bv tests (exit 0 passes; <name>.golden pins stdout)", name);
-    eprintln!("  {} build <file.bv> --llvm           Emit LLVM IR only, no binary", name);
-    eprintln!("  {} build <file.bv> --config-dir <d>  Set config directory", name);
-    eprintln!("  {} build <file.bv> --out <dir>      Set output directory", name);
-    eprintln!("  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu", name);
+    eprintln!(
+        "  {} build <file.bv> --llvm           Emit LLVM IR only, no binary",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --config-dir <d>  Set config directory",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --out <dir>      Set output directory",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --backend <name> Select backend: llvm, circt, webstack, gpu",
+        name
+    );
     eprintln!("  {} build <file.rbv> --split          Emit separate web assets (default: one bundled HTML)", name);
-    eprintln!("  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots", name);
-    eprintln!("  {} build <file.bv> --emit-hir             Emit canonical HIR at Typed/Provenanced", name);
-    eprintln!("  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)", name);
-    eprintln!("  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)", name);
-    eprintln!("  {} build <file.bv> --stdlib-path <p>   Set stdlib search path", name);
-    eprintln!("  {} build <file.bv> --disable-plugin <name>  Disable a system plugin by name", name);
-    eprintln!("  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins", name);
+    eprintln!(
+        "  {} build <file.bv> --emit-beast [stage]  Emit AST (.beast) / IR (.ir) snapshots",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --emit-hir             Emit canonical HIR at Typed/Provenanced",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --no-std          Disable prelude (all prelude-family plugins)",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --keep-all-defns  Emit every defn (diagnostic: liveness A/B)",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --verify-bodies  Prove each txn/defn body satisfies its own [pre][post]",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --stdlib-path <p>   Set stdlib search path",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --disable-plugin <name>  Disable a system plugin by name",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --enable-plugin <name>   Enable only specific plugins",
+        name
+    );
     eprintln!("  {} build <file.bv> --macro-budget <n>       Set instruction limit for macros (0 = unlimited)", name);
-    eprintln!("  {} build <file.bv> --allow-read             Allow macros to read files", name);
-    eprintln!("  {} build <file.bv> --allow-write            Allow macros to write files", name);
-    eprintln!("  {} build <file.bv> --allow-run              Allow macros to execute shell commands", name);
-    eprintln!("  {} build <file.bv> --allow-sys-query        Allow macros to query host hardware", name);
-    eprintln!("  {} build <file.bv> --allow-net              Allow macros network access", name);
+    eprintln!(
+        "  {} build <file.bv> --allow-read             Allow macros to read files",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --allow-write            Allow macros to write files",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --allow-run              Allow macros to execute shell commands",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --allow-sys-query        Allow macros to query host hardware",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --allow-net              Allow macros network access",
+        name
+    );
     eprintln!("  {} build <file.bv> --dump-vfs               Print virtual filesystem contents after build", name);
-    eprintln!("  {} build <file.bv> --dump-traces            Print macro expansion traces after build", name);
-    eprintln!("  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)", name);
-    eprintln!("  {} targets                            List extension→target support rows", name);
+    eprintln!(
+        "  {} build <file.bv> --dump-traces            Print macro expansion traces after build",
+        name
+    );
+    eprintln!(
+        "  {} build <file.bv> --diff                   Show macro changes (dry-run, no output)",
+        name
+    );
+    eprintln!(
+        "  {} targets                            List extension→target support rows",
+        name
+    );
     eprintln!("  {} build <file.bv> --target <name>           Build for a specific target profile from folio.toml", name);
     eprintln!("  {} build <file.bv> --accel-cpu-fallback <n>  Min work items for GPU dispatch; below n runs the CPU loop", name);
     eprintln!("  {} build <file.bv> --sysquery <key=value>    Override a SysQuery$ result (repeatable, highest priority)", name);
@@ -154,24 +227,69 @@ fn print_usage(program: &str) {
     eprintln!("  {} build <file.bv> --update-lockfile        Regenerate macro-lock.toml from plugin files", name);
     eprintln!("  {} audit [file.bv]                Scan for $ intrinsic usage and capability requirements", name);
     eprintln!("  {} check <file.bv>               Type-check only", name);
-    eprintln!("  {} derive <file.bv>              Synthesize derivation blocks", name);
-    eprintln!("  {} derive --stochastic <file.bv> Synthesize + MCMC superoptimize (writes .opt.bv)", name);
-    eprintln!("  {} accept <file.bv>              Fold synthesized bodies into source", name);
-    eprintln!("  {} library <file.bv>             Compile to .a library", name);
-    eprintln!("  {} export <file.bv> <lang> [--out <dir>]  Generate a GLUE bridge for <lang>", name);
-    eprintln!("  {} doc <file.bv>                  Generate HTML documentation from doc comments", name);
-    eprintln!("  {} link <library.so/a/o>         Analyze a foreign library for frgn declarations", name);
-    eprintln!("  {} config list                   List available config profiles", name);
-    eprintln!("  {} config show                   Show active config profile", name);
-    eprintln!("  {} config set <name>             Switch to a config profile", name);
-    eprintln!("  {} config init <name>            Create a new config profile", name);
-    eprintln!("  {} bounty <file.bv>              Package a .bounty for install-time compilation", name);
-    eprintln!("  {} init <name>                   Create a new project", name);
-    eprintln!("  {} install-deps                 Download optional deps (z3, dwarfdump)", name);
+    eprintln!(
+        "  {} derive <file.bv>              Synthesize derivation blocks",
+        name
+    );
+    eprintln!(
+        "  {} derive --stochastic <file.bv> Synthesize + MCMC superoptimize (writes .opt.bv)",
+        name
+    );
+    eprintln!(
+        "  {} accept <file.bv>              Fold synthesized bodies into source",
+        name
+    );
+    eprintln!(
+        "  {} library <file.bv>             Compile to .a library",
+        name
+    );
+    eprintln!(
+        "  {} export <file.bv> <lang> [--out <dir>]  Generate a GLUE bridge for <lang>",
+        name
+    );
+    eprintln!(
+        "  {} doc <file.bv>                  Generate HTML documentation from doc comments",
+        name
+    );
+    eprintln!(
+        "  {} link <library.so/a/o>         Analyze a foreign library for frgn declarations",
+        name
+    );
+    eprintln!(
+        "  {} config list                   List available config profiles",
+        name
+    );
+    eprintln!(
+        "  {} config show                   Show active config profile",
+        name
+    );
+    eprintln!(
+        "  {} config set <name>             Switch to a config profile",
+        name
+    );
+    eprintln!(
+        "  {} config init <name>            Create a new config profile",
+        name
+    );
+    eprintln!(
+        "  {} bounty <file.bv>              Package a .bounty for install-time compilation",
+        name
+    );
+    eprintln!(
+        "  {} init <name>                   Create a new project",
+        name
+    );
+    eprintln!(
+        "  {} install-deps                 Download optional deps (z3, dwarfdump)",
+        name
+    );
     eprintln!("  {} install-highlighter [--vsix-only]  Build & install the syntax highlighter .vsix for VS Code / VSCodium", name);
     eprintln!("  {} vocab [path]                 Emit the canonical language vocabulary manifest (default: stdout)", name);
     eprintln!("  {} grammar <path>               Regenerate the TextMate grammar keyword/type patterns from the vocab", name);
-    eprintln!("  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)", name);
+    eprintln!(
+        "  {} fmt <file> [--stdout|--check]  Format a source file canonically (round-trip safe)",
+        name
+    );
     eprintln!("  {} freshness                     Check the brievc binary is newer than src/ + config/ (stale-binary guard)", name);
     eprintln!("  {} help                          Show this help", name);
 }
@@ -218,10 +336,10 @@ fn run_fmt(args: &[String]) -> Result<(), String> {
         }
     }
     let file = file.ok_or("usage: brievc fmt <file.bv> [--stdout|--check]")?;
-    let source = std::fs::read_to_string(file)
-        .map_err(|e| format!("cannot read '{}': {}", file, e))?;
-    let tokens = briev_compiler::lexer::tokenize(&source)
-        .map_err(|e| format!("lex failed: {}", e))?;
+    let source =
+        std::fs::read_to_string(file).map_err(|e| format!("cannot read '{}': {}", file, e))?;
+    let tokens =
+        briev_compiler::lexer::tokenize(&source).map_err(|e| format!("lex failed: {}", e))?;
     let mut parser = briev_compiler::parser::Parser::new(tokens, &source);
     let items = parser
         .parse_program()
@@ -252,8 +370,7 @@ fn run_fmt(args: &[String]) -> Result<(), String> {
     if stdout {
         print!("{}", formatted);
     } else {
-        std::fs::write(file, formatted)
-            .map_err(|e| format!("cannot write '{}': {}", file, e))?;
+        std::fs::write(file, formatted).map_err(|e| format!("cannot write '{}': {}", file, e))?;
     }
     Ok(())
 }
@@ -289,7 +406,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut disable_plugins = Vec::new();
     let mut enable_plugins = Vec::new();
     let mut trg_unresolved_action = compile::TrgUnresolvedAction::Warn;
-        let mut explain_causality = false;
+    let mut explain_causality = false;
     let mut allow_read = false;
     let mut allow_write = false;
     let mut allow_run = false;
@@ -312,6 +429,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut linker_script_override: Option<String> = None;
     let mut raw_bin = false;
     let mut no_link = false;
+    let mut verify_bodies = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -320,7 +438,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             emit_ir_only = true;
             i += 1;
         } else if arg == "--config-dir" {
-            let val = args.get(i + 1).ok_or("--config-dir requires a directory argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--config-dir requires a directory argument")?;
             config_dir = Some(val.clone());
             i += 2;
         } else if arg == "--shared" {
@@ -333,13 +453,23 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             // 2026-09-13 (defn-liveness emission): diagnostic override.
             keep_all_defns = true;
             i += 1;
+        } else if arg == "--verify-bodies" {
+            // 2026-11-11 (verify-bodies plan): prove each txn/defn BODY
+            // satisfies its own [pre][post] via the symbolic+Z3 prover.
+            verify_bodies = true;
+            i += 1;
         } else if arg == "--out" {
-            let val = args.get(i + 1).ok_or("--out requires a directory argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--out requires a directory argument")?;
             out_dir = Some(val.clone());
             i += 2;
         } else if arg == "--optimize-budget" {
-            let val = args.get(i + 1).ok_or("--optimize-budget requires a number argument")?;
-            optimize_budget = val.parse()
+            let val = args
+                .get(i + 1)
+                .ok_or("--optimize-budget requires a number argument")?;
+            optimize_budget = val
+                .parse()
                 .map_err(|_| format!("invalid --optimize-budget value: '{}'", val))?;
             i += 2;
         } else if arg == "--emit-beast" {
@@ -347,20 +477,25 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             let next = args.get(i + 1);
             let stage_str = next.filter(|s| !s.starts_with('-')).map(|s| s.as_str());
             let all_stages = vec![
-                "parse", "resolve", "type-check", "normalize", "verify",
-                "alloc", "provenance", "codegen", "optimize",
+                "parse",
+                "resolve",
+                "type-check",
+                "normalize",
+                "verify",
+                "alloc",
+                "provenance",
+                "codegen",
+                "optimize",
             ];
             match stage_str {
                 Some("all") | None => {
                     for s in all_stages {
-                        let filter: BeastFilter
-                            = s.parse().map_err(|e: String| e)?;
+                        let filter: BeastFilter = s.parse().map_err(|e: String| e)?;
                         emit_beast.push(filter);
                     }
                 }
                 Some(s) => {
-                    let filter: BeastFilter
-                        = s.parse().map_err(|e: String| e)?;
+                    let filter: BeastFilter = s.parse().map_err(|e: String| e)?;
                     emit_beast.push(filter);
                 }
             }
@@ -369,7 +504,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             emit_hir = true;
             i += 1;
         } else if arg == "--backend" {
-            let name = args.get(i + 1).ok_or("--backend requires a name argument (llvm, circt, webstack, gpu, spirv, vm)")?;
+            let name = args.get(i + 1).ok_or(
+                "--backend requires a name argument (llvm, circt, webstack, gpu, spirv, vm)",
+            )?;
             backend_override = Some(name.clone());
             i += 2;
         } else if arg == "--no-std" {
@@ -382,17 +519,25 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             split_flag = true;
             i += 1;
         } else if arg == "--stdlib-path" {
-            let val = args.get(i + 1).ok_or("--stdlib-path requires a path argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--stdlib-path requires a path argument")?;
             stdlib_path = Some(val.clone());
             i += 2;
         // 2026-07-25: Target Int protocol width. WASM uses 32 to emit
         // i32 instead of i64, eliminating BigInt overhead in JavaScript.
         } else if arg == "--int-bits" {
-            let val = args.get(i + 1).ok_or("--int-bits requires a number argument (8, 16, 32, or 64)")?;
-            int_bits = val.parse()
+            let val = args
+                .get(i + 1)
+                .ok_or("--int-bits requires a number argument (8, 16, 32, or 64)")?;
+            int_bits = val
+                .parse()
                 .map_err(|_| format!("invalid --int-bits value: '{}'", val))?;
             if int_bits != 8 && int_bits != 16 && int_bits != 32 && int_bits != 64 {
-                return Err(format!("--int-bits must be 8, 16, 32, or 64, got: {}", int_bits));
+                return Err(format!(
+                    "--int-bits must be 8, 16, 32, or 64, got: {}",
+                    int_bits
+                ));
             }
             i += 2;
         } else if arg == "--accel" || arg.starts_with("--accel=") {
@@ -420,23 +565,31 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
                 }
                 _ => {
                     return Err(format!(
-                        "invalid --accel value: '{}' (keyword-only | try-all | force | try-all-force)",
-                        val
-                    ))
+                    "invalid --accel value: '{}' (keyword-only | try-all | force | try-all-force)",
+                    val
+                ))
                 }
             });
             i += consumed;
         } else if arg == "--accel-cpu-fallback" {
-            let val = args.get(i + 1).ok_or("--accel-cpu-fallback requires a number argument (min work items for GPU)")?;
-            accel_cpu_fallback = Some(val.parse()
-                .map_err(|_| format!("invalid --accel-cpu-fallback value: '{}'", val))?);
+            let val = args.get(i + 1).ok_or(
+                "--accel-cpu-fallback requires a number argument (min work items for GPU)",
+            )?;
+            accel_cpu_fallback = Some(
+                val.parse()
+                    .map_err(|_| format!("invalid --accel-cpu-fallback value: '{}'", val))?,
+            );
             i += 2;
         } else if arg == "--disable-plugin" {
-            let name = args.get(i + 1).ok_or("--disable-plugin requires a plugin name argument")?;
+            let name = args
+                .get(i + 1)
+                .ok_or("--disable-plugin requires a plugin name argument")?;
             disable_plugins.push(name.clone());
             i += 2;
         } else if arg == "--enable-plugin" {
-            let name = args.get(i + 1).ok_or("--enable-plugin requires a plugin name argument")?;
+            let name = args
+                .get(i + 1)
+                .ok_or("--enable-plugin requires a plugin name argument")?;
             enable_plugins.push(name.clone());
             i += 2;
         } else if arg == "--allow-read" {
@@ -467,7 +620,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             diff_mode = true;
             i += 1;
         } else if arg == "--target" {
-            let val = args.get(i + 1).ok_or("--target requires a target name argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--target requires a target name argument")?;
             target_name = Some(val.clone());
             i += 2;
         } else if arg == "--all-targets" {
@@ -477,7 +632,9 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             all_targets = true;
             i += 1;
         } else if arg == "--triple" {
-            let val = args.get(i + 1).ok_or("--triple requires a triple argument (e.g., riscv64-unknown-none)")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--triple requires a triple argument (e.g., riscv64-unknown-none)")?;
             triple_override = Some(val.clone());
             i += 2;
         } else if arg == "--raw-bin" {
@@ -490,11 +647,15 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             no_link = true;
             i += 1;
         } else if arg == "--linker-script" {
-            let val = args.get(i + 1).ok_or("--linker-script requires a path argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--linker-script requires a path argument")?;
             linker_script_override = Some(val.clone());
             i += 2;
         } else if arg == "--sysquery" {
-            let val = args.get(i + 1).ok_or("--sysquery requires a key=value argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--sysquery requires a key=value argument")?;
             let parts: Vec<&str> = val.splitn(2, '=').collect();
             if parts.len() != 2 {
                 return Err(format!("--sysquery: expected key=value, got '{}'", val));
@@ -502,12 +663,17 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             sysquery_pairs.push((parts[0].to_string(), parts[1].to_string()));
             i += 2;
         } else if arg == "--sysquery-file" {
-            let val = args.get(i + 1).ok_or("--sysquery-file requires a file path argument")?;
+            let val = args
+                .get(i + 1)
+                .ok_or("--sysquery-file requires a file path argument")?;
             sysquery_files.push(val.clone());
             i += 2;
         } else if arg == "--macro-budget" {
-            let val = args.get(i + 1).ok_or("--macro-budget requires a number argument")?;
-            macro_budget = val.parse()
+            let val = args
+                .get(i + 1)
+                .ok_or("--macro-budget requires a number argument")?;
+            macro_budget = val
+                .parse()
                 .map_err(|_| format!("invalid --macro-budget value: '{}'", val))?;
             i += 2;
         } else if arg == "--warn-unresolved-trg" {
@@ -600,6 +766,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         raw_bin,
         no_link,
         web_page_key: None,
+        verify_bodies,
     })
 }
 
@@ -644,11 +811,7 @@ fn parse_bad_cli(args: &[String]) -> Result<BadCli, String> {
     parse_dialect_cli(args, "bad", ".bad")
 }
 
-fn parse_dialect_cli(
-    args: &[String],
-    dialect: &str,
-    ext: &str,
-) -> Result<BadCli, String> {
+fn parse_dialect_cli(args: &[String], dialect: &str, ext: &str) -> Result<BadCli, String> {
     let file_path = args.first().ok_or_else(|| {
         format!(
             "usage: {dialect} <file{ext}> [--target <triple>] [--emit-asm] [--with-libc] \
@@ -715,7 +878,8 @@ fn parse_dialect_cli(
 /// Preferred linker: the cross_ld row. For thumb/arm bare-metal (no
 /// arm-none-eabi-ld installed), ld.lld links the object directly.
 fn pick_ld_bin(
-    family: &str, regs: &briev_compiler::backend::bad::registry::BadRegisters,
+    family: &str,
+    regs: &briev_compiler::backend::bad::registry::BadRegisters,
 ) -> String {
     let responsive = |bin: &str| {
         std::process::Command::new(bin)
@@ -766,8 +930,9 @@ fn link_bad(
         })?;
         link.arg("-lc").arg("--dynamic-linker").arg(dl);
     }
-    let status =
-        link.status().map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
+    let status = link
+        .status()
+        .map_err(|e| format!("bad: cannot run `ld`: {e} - is binutils installed?"))?;
     if !status.success() {
         return Err(format!(
             "bad: linking failed for `{family}` - the program needs an entry label \
@@ -780,11 +945,13 @@ fn link_bad(
 
 /// objcopy -O binary: flat image from the linked ELF (or directly from
 /// the object under --no-link).
-fn objcopy_flat(
-    src: &std::path::Path, stem: &str, family: &str,
-) -> Result<(), String> {
+fn objcopy_flat(src: &std::path::Path, stem: &str, family: &str) -> Result<(), String> {
     let bin_img = std::path::PathBuf::from(format!("{stem}.bin"));
-    let oc = if family == "x86_64" { "objcopy" } else { "llvm-objcopy" };
+    let oc = if family == "x86_64" {
+        "objcopy"
+    } else {
+        "llvm-objcopy"
+    };
     let status = std::process::Command::new(oc)
         .arg("-O")
         .arg("binary")
@@ -834,7 +1001,9 @@ fn run_bad(args: &[String]) -> Result<(), String> {
     let cli = parse_bad_cli(args)?;
     let source = std::fs::read_to_string(&cli.file_path)
         .map_err(|e| format!("bad: cannot read '{}': {}", cli.file_path, e))?;
-    let base_dir = std::path::Path::new(&cli.file_path).parent().map(|p| p.to_path_buf());
+    let base_dir = std::path::Path::new(&cli.file_path)
+        .parent()
+        .map(|p| p.to_path_buf());
     let asm = if cli.warn_unused {
         let (asm, unused) = briev_compiler::backend::bad::generate_with_lints(
             &source,
@@ -874,8 +1043,15 @@ fn emit_asm_artifacts(asm: String, cli: &BadCli) -> Result<(), String> {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "program".to_string());
-    let family = cli.triple.split('-').next().unwrap_or(&cli.triple).to_string();
-    let s_path = std::path::Path::new(&cli.file_path).with_extension("s").to_path_buf();
+    let family = cli
+        .triple
+        .split('-')
+        .next()
+        .unwrap_or(&cli.triple)
+        .to_string();
+    let s_path = std::path::Path::new(&cli.file_path)
+        .with_extension("s")
+        .to_path_buf();
     std::fs::write(&s_path, &asm)
         .map_err(|e| format!("bad: cannot write '{}': {}", s_path.display(), e))?;
     println!("wrote {}", s_path.display());
@@ -883,7 +1059,9 @@ fn emit_asm_artifacts(asm: String, cli: &BadCli) -> Result<(), String> {
         return Ok(());
     }
 
-    let o_path = std::path::Path::new(&cli.file_path).with_extension("o").to_path_buf();
+    let o_path = std::path::Path::new(&cli.file_path)
+        .with_extension("o")
+        .to_path_buf();
     briev_compiler::backend::bad::assemble(&asm, &cli.triple, &o_path)
         .map_err(|e| format!("bad: {e}"))?;
     println!("wrote {}", o_path.display());
@@ -980,6 +1158,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         raw_bin: false,
         no_link: false,
         web_page_key: None,
+        verify_bodies: false,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
@@ -1003,8 +1182,8 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
     eprintln!("[bounty] Compiling tamer VM interpreter to .lair...");
     let tamer_source = std::fs::read_to_string("lib/tamer/main.bv")
         .map_err(|e| format!("cannot read lib/tamer/main.bv: {}", e))?;
-    let (tamer_items, tamer_universe) = compile::compile_to_typed(
-        "lib/tamer/main.bv", &tamer_source, &opts)?;
+    let (tamer_items, tamer_universe) =
+        compile::compile_to_typed("lib/tamer/main.bv", &tamer_source, &opts)?;
     let mut vm = briev_compiler::backend::vm::VmBackend::new();
     let tamer_lair = vm.generate(&tamer_items, &tamer_universe);
     eprintln!("[bounty]   tamer .lair: {} bytes", tamer_lair.len());
@@ -1015,7 +1194,9 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
     // out-of-surface constructs must be compile errors, never silent
     // install-time traps.
     let cap_errors = briev_compiler::backend::capabilities::validate_program(
-        &obfuscated_items, &briev_compiler::backend::vm::CAPABILITIES);
+        &obfuscated_items,
+        &briev_compiler::backend::vm::CAPABILITIES,
+    );
     if !cap_errors.is_empty() {
         return Err(cap_errors.join("\n"));
     }
@@ -1059,8 +1240,8 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         r#"{{"version":1,"entry_point":"main","entry_bc":{},"noise_seed":{}}}"#,
         user_entry_bc, noise_seed
     );
-    let bounty = briev_compiler::bounty::write_bounty_full(
-        &tamer_lair, &user_lair, &beastpack, &manifest);
+    let bounty =
+        briev_compiler::bounty::write_bounty_full(&tamer_lair, &user_lair, &beastpack, &manifest);
 
     // 6. Write .bounty file
     let output_path = file_path.replace(".bv", ".bounty");
@@ -1086,7 +1267,8 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // 2026-07-28: Phase E.2 — doppelganger resolution: .opt.bv > .derive.bv > .bv
     // Read source from the doppelganger if it exists, but pass opts.file_path
     // to compile functions so error messages and output paths use the original name.
-    let doppelganger_path = briev_compiler::derive::Doppelganger::resolve(std::path::Path::new(&opts.file_path));
+    let doppelganger_path =
+        briev_compiler::derive::Doppelganger::resolve(std::path::Path::new(&opts.file_path));
     let source = if doppelganger_path != std::path::Path::new(&opts.file_path) {
         eprintln!("[derive] using {}", doppelganger_path.display());
         std::fs::read_to_string(&doppelganger_path)
@@ -1104,7 +1286,8 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // SysQuery$ queries the real host (backward compatible).
 
     // Helper: merge a HashMap into the base, later values override earlier.
-    let merge_overrides = |incoming: HashMap<String, String>, base: &mut HashMap<String, String>| {
+    let merge_overrides = |incoming: HashMap<String, String>,
+                           base: &mut HashMap<String, String>| {
         for (k, v) in incoming {
             base.insert(k, v);
         }
@@ -1122,7 +1305,12 @@ fn run_build(args: &[String]) -> Result<(), String> {
             }
             let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
             if parts.len() != 2 {
-                return Err(format!("{}:{}: expected key=value, got '{}'", path, lineno + 1, trimmed));
+                return Err(format!(
+                    "{}:{}: expected key=value, got '{}'",
+                    path,
+                    lineno + 1,
+                    trimmed
+                ));
             }
             map.insert(parts[0].trim().to_string(), parts[1].trim().to_string());
         }
@@ -1132,39 +1320,59 @@ fn run_build(args: &[String]) -> Result<(), String> {
     // ── Determine what to build ──────────────────────────────────────
     // Each entry: (target_name, base_overrides_from_profile, isr_mechanism)
     let project_dir = std::path::Path::new(&opts.file_path)
-        .parent().map(|p| p.to_path_buf())
+        .parent()
+        .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let manifest = briev_compiler::manifest::find_manifest(&project_dir)
         .and_then(|p| briev_compiler::manifest::Manifest::load(&p).ok());
-    let target_profiles: Vec<(String, HashMap<String, String>, Option<String>)> = if opts.all_targets {
-        // --all-targets: build EVERY profile in folio.toml — one command,
-        // all binaries, from one universal source.
-        let manifest = manifest.as_ref().ok_or_else(|| {
-            "--all-targets requires a folio.toml with target profiles".to_string()
-        })?;
-        if manifest.target.is_empty() {
-            return Err("--all-targets: folio.toml has no [target.*] profiles".to_string());
-        }
-        let mut names: Vec<_> = manifest.target.keys().cloned().collect();
-        names.sort();
-        names.iter().map(|n| {
-            let p = &manifest.target[n];
-            (n.clone(), p.sysquery_overrides(), p.isr_mechanism.clone())
-        }).collect()
-    } else if let Some(ref target_name) = opts.target {
-        // --target <name>: single target from folio.toml
-        let manifest = manifest.as_ref().ok_or_else(|| {
-            format!("--target '{}' requires a folio.toml with target profiles", target_name)
-        })?;
-        let profile = manifest.target.get(target_name).ok_or_else(|| {
-            format!("target '{}' not found in folio.toml. Available targets: {}",
-                target_name, manifest.target.keys().cloned().collect::<Vec<_>>().join(", "))
-        })?;
-        vec![(target_name.clone(), profile.sysquery_overrides(), profile.isr_mechanism.clone())]
-    } else {
-        // Single default build (no --target)
-        vec![("default".to_string(), HashMap::new(), None)]
-    };
+    let target_profiles: Vec<(String, HashMap<String, String>, Option<String>)> =
+        if opts.all_targets {
+            // --all-targets: build EVERY profile in folio.toml — one command,
+            // all binaries, from one universal source.
+            let manifest = manifest.as_ref().ok_or_else(|| {
+                "--all-targets requires a folio.toml with target profiles".to_string()
+            })?;
+            if manifest.target.is_empty() {
+                return Err("--all-targets: folio.toml has no [target.*] profiles".to_string());
+            }
+            let mut names: Vec<_> = manifest.target.keys().cloned().collect();
+            names.sort();
+            names
+                .iter()
+                .map(|n| {
+                    let p = &manifest.target[n];
+                    (n.clone(), p.sysquery_overrides(), p.isr_mechanism.clone())
+                })
+                .collect()
+        } else if let Some(ref target_name) = opts.target {
+            // --target <name>: single target from folio.toml
+            let manifest = manifest.as_ref().ok_or_else(|| {
+                format!(
+                    "--target '{}' requires a folio.toml with target profiles",
+                    target_name
+                )
+            })?;
+            let profile = manifest.target.get(target_name).ok_or_else(|| {
+                format!(
+                    "target '{}' not found in folio.toml. Available targets: {}",
+                    target_name,
+                    manifest
+                        .target
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            vec![(
+                target_name.clone(),
+                profile.sysquery_overrides(),
+                profile.isr_mechanism.clone(),
+            )]
+        } else {
+            // Single default build (no --target)
+            vec![("default".to_string(), HashMap::new(), None)]
+        };
 
     // ── Compile each target ───────────────────────────────────────────
     for (target_name, profile_overrides, profile_isr_mechanism) in &target_profiles {
@@ -1173,7 +1381,7 @@ fn run_build(args: &[String]) -> Result<(), String> {
         }
 
         // Build sysquery_overrides with cascading precedence
-        let mut overrides = profile_overrides.clone();           // lowest: target profile
+        let mut overrides = profile_overrides.clone(); // lowest: target profile
 
         // Middle: --sysquery-file paths (load in order, later overrides earlier)
         for file_path in &opts.sysquery_files {
@@ -1211,9 +1419,12 @@ fn run_build(args: &[String]) -> Result<(), String> {
         let file_path = std::path::Path::new(&opts.file_path);
         target_opts.web_page_key = manifest
             .as_ref()
-            .and_then(|m| m.web.pages.iter().find(|(_, f)| {
-                std::path::Path::new(f).file_name() == file_path.file_name()
-            }))
+            .and_then(|m| {
+                m.web
+                    .pages
+                    .iter()
+                    .find(|(_, f)| std::path::Path::new(f).file_name() == file_path.file_name())
+            })
             .map(|(k, _)| k.clone());
 
         // Per-target output directory
@@ -1221,7 +1432,7 @@ fn run_build(args: &[String]) -> Result<(), String> {
             let orig = target_opts.out_dir.clone();
             target_opts.out_dir = Some(
                 orig.map(|d| format!("{}/{}", d, target_name))
-                    .unwrap_or_else(|| format!("bin/{}", target_name))
+                    .unwrap_or_else(|| format!("bin/{}", target_name)),
             );
         }
 
@@ -1262,7 +1473,10 @@ fn run_web(args: &[String]) -> Result<(), String> {
 
     // Deterministic build order: sort by page key (Rule: HashMap iteration must
     // be sorted for deterministic output).
-    let mut pages: Vec<(String, String)> = manifest.web.pages.iter()
+    let mut pages: Vec<(String, String)> = manifest
+        .web
+        .pages
+        .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     pages.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
@@ -1272,7 +1486,11 @@ fn run_web(args: &[String]) -> Result<(), String> {
     for (key, file) in &pages {
         let file_path = dir_path.join(file);
         if !file_path.exists() {
-            return Err(format!("page '{}' -> '{}' does not exist", key, file_path.display()));
+            return Err(format!(
+                "page '{}' -> '{}' does not exist",
+                key,
+                file_path.display()
+            ));
         }
         let source = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("page '{}': cannot read: {}", key, e))?;
@@ -1319,7 +1537,9 @@ fn run_web(args: &[String]) -> Result<(), String> {
 ///   --once     build once and exit (no watch loop) — for CI / testing the
 ///              rebuild path without a live watcher.
 fn run_watch(args: &[String]) -> Result<(), String> {
-    let dir = args.first().ok_or("usage: brievc watch <dir> [--split] [--once]")?;
+    let dir = args
+        .first()
+        .ok_or("usage: brievc watch <dir> [--split] [--once]")?;
     let split = args.iter().any(|a| a == "--split");
     let once = args.iter().any(|a| a == "--once");
     let dir_path = std::path::Path::new(dir);
@@ -1341,7 +1561,10 @@ fn run_watch(args: &[String]) -> Result<(), String> {
 
     // Deterministic build order: sort by page key (Rule: HashMap iteration
     // must be sorted for deterministic output).
-    let mut pages: Vec<(String, String)> = manifest.web.pages.iter()
+    let mut pages: Vec<(String, String)> = manifest
+        .web
+        .pages
+        .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     pages.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
@@ -1361,12 +1584,20 @@ fn run_watch(args: &[String]) -> Result<(), String> {
 
 /// 2026-10-08 (stabilise-for-use T3): build every page in the set (the Part 1
 /// seam) and return the (key, stem) pairs.
-fn built_pages(dir_path: &std::path::Path, pages: &[(String, String)], split: bool) -> Result<Vec<(String, String)>, String> {
+fn built_pages(
+    dir_path: &std::path::Path,
+    pages: &[(String, String)],
+    split: bool,
+) -> Result<Vec<(String, String)>, String> {
     let mut built: Vec<(String, String)> = Vec::new();
     for (key, file) in pages {
         let file_path = dir_path.join(file);
         if !file_path.exists() {
-            return Err(format!("page '{}' -> '{}' does not exist", key, file_path.display()));
+            return Err(format!(
+                "page '{}' -> '{}' does not exist",
+                key,
+                file_path.display()
+            ));
         }
         let source = std::fs::read_to_string(&file_path)
             .map_err(|e| format!("page '{}': cannot read: {}", key, e))?;
@@ -1398,9 +1629,15 @@ fn write_nav_into(dir: &std::path::Path, built: &[(String, String)]) -> Result<(
 
 /// 2026-10-08 (stabilise-for-use T3): the live watch loop — poll for a changed
 /// `.rbv` / `folio.toml` and rebuild (debounced to 300 ms).
-fn run_watch_loop(dir_path: &std::path::Path, pages: &[(String, String)], split: bool) -> Result<(), String> {
+fn run_watch_loop(
+    dir_path: &std::path::Path,
+    pages: &[(String, String)],
+    split: bool,
+) -> Result<(), String> {
     let manager = briev_compiler::watch::WatchManager::new(300);
-    manager.start(dir_path).map_err(|e| format!("watcher start failed: {}", e))?;
+    manager
+        .start(dir_path)
+        .map_err(|e| format!("watcher start failed: {}", e))?;
     println!("watching {} — press Ctrl-C to stop", dir_path.display());
 
     let nav_html_path = dir_path.join("nav.html");
@@ -1444,22 +1681,32 @@ fn rebuild_and_write_nav(
 /// 2026-10-08 (stabilise-for-use T3): find the most recently modified `.rbv`
 /// (or `folio.toml`) under `dir` that changed after `since`. None if no file
 /// changed. Used by the `brievc watch` loop to detect edits.
-fn find_changed_rbv(dir: &std::path::Path, since: &std::time::SystemTime) -> Option<std::path::PathBuf> {
+fn find_changed_rbv(
+    dir: &std::path::Path,
+    since: &std::time::SystemTime,
+) -> Option<std::path::PathBuf> {
     let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
     walk_rbv(dir, &mut newest);
-    newest.and_then(|(mtime, path)| {
-        if mtime > *since {
-            Some(path)
-        } else {
-            None
-        }
-    })
+    newest.and_then(
+        |(mtime, path)| {
+            if mtime > *since {
+                Some(path)
+            } else {
+                None
+            }
+        },
+    )
 }
 
 /// 2026-10-08 (stabilise-for-use T3): recursively find `.rbv` + `folio.toml`
 /// files, tracking the one with the newest mtime.
-fn walk_rbv(dir: &std::path::Path, newest: &mut Option<(std::time::SystemTime, std::path::PathBuf)>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+fn walk_rbv(
+    dir: &std::path::Path,
+    newest: &mut Option<(std::time::SystemTime, std::path::PathBuf)>,
+) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in rd.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -1503,7 +1750,10 @@ fn render_nav_html(pages: &[(String, String)]) -> String {
         .iter()
         .map(|(key, stem)| format!("<a href=\"{}.html\">{}</a>", stem, key))
         .collect();
-    format!("<nav class=\"briev-pages\">\n{}\n</nav>\n", links.join("\n"))
+    format!(
+        "<nav class=\"briev-pages\">\n{}\n</nav>\n",
+        links.join("\n")
+    )
 }
 
 fn run_check(args: &[String]) -> Result<(), String> {
@@ -1533,10 +1783,12 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let file_path = args.first().ok_or("usage: brievc memcheck <file.bv>")?;
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
-    let tokens = briev_compiler::lexer::tokenize(&source)
-        .map_err(|e| format!("lex failed: {}", e))?;
+    let tokens =
+        briev_compiler::lexer::tokenize(&source).map_err(|e| format!("lex failed: {}", e))?;
     let mut parser = briev_compiler::parser::Parser::new(tokens, &source);
-    let items = parser.parse_program().map_err(|e| format!("parse failed: {}", e))?;
+    let items = parser
+        .parse_program()
+        .map_err(|e| format!("parse failed: {}", e))?;
     let report = briev_compiler::macros::memcheck::run_memcheck(&items);
     briev_compiler::macros::memcheck::print_memcheck(&report);
     Ok(())
@@ -1550,8 +1802,8 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
 /// `src/` and `config/` (the two `include_str!` trees) and reports the
 /// offending file. Exit 0 = fresh, 1 = stale (rebuild required).
 fn run_freshness_check() -> Result<(), String> {
-    let bin = std::env::current_exe()
-        .map_err(|e| format!("cannot resolve current executable: {}", e))?;
+    let bin =
+        std::env::current_exe().map_err(|e| format!("cannot resolve current executable: {}", e))?;
     let bin_mtime = std::fs::metadata(&bin)
         .and_then(|m| m.modified())
         .map_err(|e| format!("cannot stat {}: {}", bin.display(), e))?;
@@ -1562,10 +1814,14 @@ fn run_freshness_check() -> Result<(), String> {
     let mut newest: Option<(i64, std::path::PathBuf)> = None;
     for dir in ["src", "config"] {
         let root = Path::new(dir);
-        if !root.exists() { continue; }
+        if !root.exists() {
+            continue;
+        }
         let mut stack = vec![root.to_path_buf()];
         while let Some(d) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
             for entry in rd.flatten() {
                 let p = entry.path();
                 if p.is_dir() {
@@ -1637,16 +1893,32 @@ fn run_ownership_cmd(args: &[String]) -> Result<(), String> {
     for name in export_names {
         let e = &ownership.exports[name];
         let params: Vec<String> = e.params.iter().map(|o| o.as_str().to_string()).collect();
-        let ret = e.ret.map(|o| o.as_str().to_string()).unwrap_or_else(|| "void".to_string());
-        println!("  export {:<24} params: [{}]  return: {}", name, params.join(", "), ret);
+        let ret = e
+            .ret
+            .map(|o| o.as_str().to_string())
+            .unwrap_or_else(|| "void".to_string());
+        println!(
+            "  export {:<24} params: [{}]  return: {}",
+            name,
+            params.join(", "),
+            ret
+        );
     }
     let mut frgn_names: Vec<&String> = ownership.frgns.keys().collect();
     frgn_names.sort();
     for name in frgn_names {
         let e = &ownership.frgns[name];
         let params: Vec<String> = e.params.iter().map(|o| o.as_str().to_string()).collect();
-        let ret = e.ret.map(|o| o.as_str().to_string()).unwrap_or_else(|| "void".to_string());
-        println!("  frgn   {:<24} params: [{}]  return: {}", name, params.join(", "), ret);
+        let ret = e
+            .ret
+            .map(|o| o.as_str().to_string())
+            .unwrap_or_else(|| "void".to_string());
+        println!(
+            "  frgn   {:<24} params: [{}]  return: {}",
+            name,
+            params.join(", "),
+            ret
+        );
     }
     Ok(())
 }
@@ -1657,13 +1929,21 @@ fn run_registry(args: &[String]) -> Result<(), String> {
     let sub = args.first().ok_or("expected 'add', 'list', or 'remove'")?;
     match sub.as_str() {
         "add" => {
-            let path = args.get(1).ok_or("missing path argument for 'registry add'")?;
+            let path = args
+                .get(1)
+                .ok_or("missing path argument for 'registry add'")?;
             let source = std::path::Path::new(path);
-            let name = args.get(2).and_then(|s| {
-                if s.starts_with("--name=") { Some(&s[7..]) } else { None }
-            }).or_else(|| {
-                source.file_stem().and_then(|s| s.to_str())
-            }).ok_or("could not infer registry name from path; use --name=<name>")?;
+            let name = args
+                .get(2)
+                .and_then(|s| {
+                    if s.starts_with("--name=") {
+                        Some(&s[7..])
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| source.file_stem().and_then(|s| s.to_str()))
+                .ok_or("could not infer registry name from path; use --name=<name>")?;
             briev_compiler::registry::add(source, name)?;
             Ok(())
         }
@@ -1690,11 +1970,16 @@ fn run_registry(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "remove" => {
-            let name = args.get(1).ok_or("missing name argument for 'registry remove'")?;
+            let name = args
+                .get(1)
+                .ok_or("missing name argument for 'registry remove'")?;
             briev_compiler::registry::remove(name)?;
             Ok(())
         }
-        _ => Err(format!("unknown registry subcommand '{}'. Use 'add', 'list', or 'remove'", sub)),
+        _ => Err(format!(
+            "unknown registry subcommand '{}'. Use 'add', 'list', or 'remove'",
+            sub
+        )),
     }
 }
 
@@ -1713,7 +1998,9 @@ fn run_derive(args: &[String]) -> Result<(), String> {
 
 fn run_accept(args: &[String]) -> Result<(), String> {
     let use_opt = args.iter().any(|a| a == "--opt");
-    let file_path = args.iter().find(|a| !a.starts_with("--"))
+    let file_path = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
         .ok_or("missing file argument\nusage: briev accept [--opt] <file.bv>")?;
     briev_compiler::derive::handle_accept_command(file_path, use_opt)
 }
@@ -1723,13 +2010,23 @@ fn run_accept(args: &[String]) -> Result<(), String> {
 fn load_target_config(config_dir: Option<&str>) -> TargetConfig {
     match config_dir {
         Some(dir) => {
-            match briev_compiler::dbriev::config_db::resolve_config_file(std::path::Path::new(dir), "targets") {
+            match briev_compiler::dbriev::config_db::resolve_config_file(
+                std::path::Path::new(dir),
+                "targets",
+            ) {
                 Some(path) => TargetConfig::load_from(&path).unwrap_or_else(|e| {
-                    eprintln!("warning: cannot load '{}': {} — using baked fallback", path.display(), e);
+                    eprintln!(
+                        "warning: cannot load '{}': {} — using baked fallback",
+                        path.display(),
+                        e
+                    );
                     TargetConfig::load()
                 }),
                 None => {
-                    eprintln!("warning: no targets config found in '{}' — using baked fallback", dir);
+                    eprintln!(
+                        "warning: no targets config found in '{}' — using baked fallback",
+                        dir
+                    );
                     TargetConfig::load()
                 }
             }
@@ -1763,27 +2060,41 @@ fn run_config(args: &[String]) -> Result<(), String> {
         }
         "show" => briev_compiler::config_resolver::show_active_profile(),
         "set" => {
-            let name = args.get(1).ok_or("usage: briev-compiler config set <profile-name>")?;
+            let name = args
+                .get(1)
+                .ok_or("usage: briev-compiler config set <profile-name>")?;
             briev_compiler::config_resolver::set_active_profile(name)
         }
         "init" => {
-            let name = args.get(1).ok_or("usage: briev-compiler config init <profile-name>")?;
+            let name = args
+                .get(1)
+                .ok_or("usage: briev-compiler config init <profile-name>")?;
             briev_compiler::config_resolver::init_profile(name)
         }
-        _ => Err(format!("unknown config subcommand '{}'. Use: list, show, set <name>, init <name>", sub)),
+        _ => Err(format!(
+            "unknown config subcommand '{}'. Use: list, show, set <name>, init <name>",
+            sub
+        )),
     }
 }
 
 /// `briev export <file.bv> <language> [--out <dir>]`
 /// 2026-07-22: Generate a GLUE bridge for the target language.
 fn run_export(args: &[String]) -> Result<(), String> {
-    let file_path = args.first().ok_or("usage: briev export <file.bv> <language> [--out <dir>]")?;
-    let language = args.get(1).ok_or("usage: briev export <file.bv> <language> [--out <dir>]")?;
+    let file_path = args
+        .first()
+        .ok_or("usage: briev export <file.bv> <language> [--out <dir>]")?;
+    let language = args
+        .get(1)
+        .ok_or("usage: briev export <file.bv> <language> [--out <dir>]")?;
     let mut out_dir = ".".to_string();
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--out" {
-            out_dir = args.get(i + 1).ok_or("--out requires a directory argument")?.clone();
+            out_dir = args
+                .get(i + 1)
+                .ok_or("--out requires a directory argument")?
+                .clone();
             i += 2;
         } else {
             return Err(format!("unknown flag: {}", args[i]));
@@ -1795,13 +2106,20 @@ fn run_export(args: &[String]) -> Result<(), String> {
 /// `briev extension <file.bv> <language> [--out <dir>]` — build a native
 /// host-language extension module (e.g. a CPython C-extension, no ctypes).
 fn run_extension(args: &[String]) -> Result<(), String> {
-    let file_path = args.first().ok_or("usage: briev extension <file.bv> <language> [--out <dir>]")?;
-    let language = args.get(1).ok_or("usage: briev extension <file.bv> <language> [--out <dir>]")?;
+    let file_path = args
+        .first()
+        .ok_or("usage: briev extension <file.bv> <language> [--out <dir>]")?;
+    let language = args
+        .get(1)
+        .ok_or("usage: briev extension <file.bv> <language> [--out <dir>]")?;
     let mut out_dir = ".".to_string();
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--out" {
-            out_dir = args.get(i + 1).ok_or("--out requires a directory argument")?.clone();
+            out_dir = args
+                .get(i + 1)
+                .ok_or("--out requires a directory argument")?
+                .clone();
             i += 2;
         } else {
             return Err(format!("unknown flag: {}", args[i]));
@@ -1813,13 +2131,20 @@ fn run_extension(args: &[String]) -> Result<(), String> {
 /// `briev bindings <file.bv> <language> [--out <dir>]` — render only the
 /// language's config-driven bindings templates (e.g. briev_types.h).
 fn run_bindings(args: &[String]) -> Result<(), String> {
-    let file_path = args.first().ok_or("usage: briev bindings <file.bv> <language> [--out <dir>]")?;
-    let language = args.get(1).ok_or("usage: briev bindings <file.bv> <language> [--out <dir>]")?;
+    let file_path = args
+        .first()
+        .ok_or("usage: briev bindings <file.bv> <language> [--out <dir>]")?;
+    let language = args
+        .get(1)
+        .ok_or("usage: briev bindings <file.bv> <language> [--out <dir>]")?;
     let mut out_dir = ".".to_string();
     let mut i = 2;
     while i < args.len() {
         if args[i] == "--out" {
-            out_dir = args.get(i + 1).ok_or("--out requires a directory argument")?.clone();
+            out_dir = args
+                .get(i + 1)
+                .ok_or("--out requires a directory argument")?
+                .clone();
             i += 2;
         } else {
             return Err(format!("unknown flag: {}", args[i]));
@@ -1858,7 +2183,10 @@ fn run_update() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     let git = deps.iter().filter(|d| d.rev.is_some()).count();
-    println!("updated {} dependencies ({git} git) — wrote folio.lock", deps.len());
+    println!(
+        "updated {} dependencies ({git} git) — wrote folio.lock",
+        deps.len()
+    );
     Ok(())
 }
 
@@ -1872,7 +2200,13 @@ struct AddFlags {
 }
 
 fn parse_add_flags(args: &[String]) -> Result<AddFlags, String> {
-    let mut f = AddFlags { git: None, path: None, tag: None, rev: None, branch: None };
+    let mut f = AddFlags {
+        git: None,
+        path: None,
+        tag: None,
+        rev: None,
+        branch: None,
+    };
     let mut i = 1;
     while i < args.len() {
         let next = args.get(i + 1).cloned();
@@ -1891,27 +2225,30 @@ fn parse_add_flags(args: &[String]) -> Result<AddFlags, String> {
 
 /// `brievc add <name> --git <url> [--tag|--rev|--branch <r>] | --path <dir>`
 fn run_add(args: &[String]) -> Result<(), String> {
-    let name = args.first().ok_or(
-        "usage: brievc add <name> --git <url> [--tag|--rev|--branch <r>] | --path <dir>",
-    )?;
+    let name = args
+        .first()
+        .ok_or("usage: brievc add <name> --git <url> [--tag|--rev|--branch <r>] | --path <dir>")?;
     let flags = parse_add_flags(args)?;
     let dep = match (flags.git, flags.path) {
-        (Some(url), None) => briev_compiler::manifest::Dependency::Git(
-            briev_compiler::manifest::GitDependency {
+        (Some(url), None) => {
+            briev_compiler::manifest::Dependency::Git(briev_compiler::manifest::GitDependency {
                 git: url,
                 rev: flags.rev,
                 tag: flags.tag,
                 branch: flags.branch,
-            },
-        ),
-        (None, Some(p)) => briev_compiler::manifest::Dependency::Path(
-            briev_compiler::manifest::PathDependency { path: PathBuf::from(p) },
-        ),
+            })
+        }
+        (None, Some(p)) => {
+            briev_compiler::manifest::Dependency::Path(briev_compiler::manifest::PathDependency {
+                path: PathBuf::from(p),
+            })
+        }
         _ => return Err("specify exactly one of --git <url> or --path <dir>".to_string()),
     };
 
     let cwd = std::env::current_dir().map_err(|e| format!("cannot determine cwd: {e}"))?;
-    let path = briev_compiler::manifest::find_manifest(&cwd).unwrap_or_else(|| cwd.join("folio.toml"));
+    let path =
+        briev_compiler::manifest::find_manifest(&cwd).unwrap_or_else(|| cwd.join("folio.toml"));
     let mut manifest = if path.exists() {
         briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?
     } else {
@@ -1934,9 +2271,13 @@ fn run_add(args: &[String]) -> Result<(), String> {
 fn run_remove(args: &[String]) -> Result<(), String> {
     let name = args.first().ok_or("usage: brievc remove <name>")?;
     let path = project_manifest_path()?;
-    let mut manifest = briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?;
+    let mut manifest =
+        briev_compiler::manifest::Manifest::load(&path).map_err(|e| e.to_string())?;
     if manifest.remove_dependency(name).is_none() {
-        return Err(format!("'{name}' is not a dependency in {}", path.display()));
+        return Err(format!(
+            "'{name}' is not a dependency in {}",
+            path.display()
+        ));
     }
     manifest.save(&path).map_err(|e| e.to_string())?;
     let root = path.parent().unwrap_or(Path::new("."));
@@ -1960,12 +2301,12 @@ fn run_init(name: Option<&str>) -> Result<(), String> {
     // filters a Briev defn named `main`, llvm/mod.rs:5380) and built to an
     // empty program. The entry uses `beginprogram` (SPEC §11.5.1) — no
     // compiler-special-cased `Main`.
-    let folio = format!(
-        "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.bv\"\n"
-    );
+    let folio =
+        format!("[project]\nname = \"{name}\"\nversion = \"0.1.0\"\nentry = \"src/main.bv\"\n");
     std::fs::write(dir.join("folio.toml"), folio)
         .map_err(|e| format!("cannot write folio.toml: {}", e))?;
-    let main_bv = "node entry [beginprogram][true] {\n    println!(\"Hello, Briev!\");\n    term;\n};\n";
+    let main_bv =
+        "node entry [beginprogram][true] {\n    println!(\"Hello, Briev!\");\n    term;\n};\n";
     std::fs::write(dir.join("src").join("main.bv"), main_bv)
         .map_err(|e| format!("cannot write main.bv: {}", e))?;
     println!("Created project '{name}'");
@@ -1996,7 +2337,11 @@ fn run_install_highlighter(args: &[String]) -> Result<(), String> {
             p.pop(); // target/
             p.pop(); // project root
             p.push("syntax-highlighter");
-            if p.join("package.json").exists() { Some(p) } else { None }
+            if p.join("package.json").exists() {
+                Some(p)
+            } else {
+                None
+            }
         })
         .or_else(|| {
             let cwd = std::env::current_dir().ok()?;
@@ -2005,14 +2350,23 @@ fn run_install_highlighter(args: &[String]) -> Result<(), String> {
                 cwd.clone(),
                 cwd.parent()?.join("syntax-highlighter"),
             ];
-            candidates.into_iter().find(|p| p.join("package.json").exists())
+            candidates
+                .into_iter()
+                .find(|p| p.join("package.json").exists())
         })
-        .ok_or_else(|| "cannot find syntax-highlighter/ directory (looked relative to executable and CWD)".to_string())?;
+        .ok_or_else(|| {
+            "cannot find syntax-highlighter/ directory (looked relative to executable and CWD)"
+                .to_string()
+        })?;
 
     eprintln!("Building highlighter .vsix in: {}", hl_dir.display());
 
     // Run `npx vsce package` (or plain `vsce` if on PATH)
-    let vsce_cmd = if std::process::Command::new("vsce").arg("--version").output().is_ok() {
+    let vsce_cmd = if std::process::Command::new("vsce")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         "vsce"
     } else {
         "npx"
@@ -2025,7 +2379,8 @@ fn run_install_highlighter(args: &[String]) -> Result<(), String> {
     }
     cmd.current_dir(&hl_dir);
 
-    let status = cmd.status()
+    let status = cmd
+        .status()
         .map_err(|e| format!("failed to run {}: {}", vsce_cmd, e))?;
     if !status.success() {
         return Err("vsce package failed — see output above".into());
@@ -2046,11 +2401,17 @@ fn run_install_highlighter(args: &[String]) -> Result<(), String> {
     }
 
     // Detect editor CLI: prefer codium over code
-    let editor = ["codium", "code", "code-insiders"].into_iter()
-        .find(|bin| std::process::Command::new(bin).arg("--version").output().is_ok())
+    let editor = ["codium", "code", "code-insiders"]
+        .into_iter()
+        .find(|bin| {
+            std::process::Command::new(bin)
+                .arg("--version")
+                .output()
+                .is_ok()
+        })
         .ok_or_else(|| {
-            "no editor CLI found (tried: codium, code, code-insiders). "
-                .to_string() + "Install the .vsix manually or use --vsix-only"
+            "no editor CLI found (tried: codium, code, code-insiders). ".to_string()
+                + "Install the .vsix manually or use --vsix-only"
         })?;
 
     let status = std::process::Command::new(&editor)
@@ -2059,7 +2420,10 @@ fn run_install_highlighter(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("failed to run {}: {}", editor, e))?;
 
     if status.success() {
-        eprintln!("Installed highlighter via {} — restart the editor to apply.", editor);
+        eprintln!(
+            "Installed highlighter via {} — restart the editor to apply.",
+            editor
+        );
     } else {
         return Err(format!("{} --install-extension failed", editor));
     }

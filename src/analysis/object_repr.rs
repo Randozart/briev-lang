@@ -12,8 +12,8 @@
 //    enum constructor whose object payload is inline (a byte copy).
 // Anything else keeps the boxed ABI.
 
-use crate::ast::{Expr, OutputType, Statement, TopLevel, Type};
 use crate::analysis::enum_layout::EnumLayoutPlanner;
+use crate::ast::{Expr, OutputType, Statement, TopLevel, Type};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Default)]
@@ -65,9 +65,10 @@ fn collect_object_names(items: &[TopLevel]) -> BTreeSet<String> {
                 out.insert(s.name.clone());
             }
             TopLevel::Export(export) => {
-                if let Some(name) = collect_object_names(std::slice::from_ref(export.inner.as_ref()))
-                    .into_iter()
-                    .next()
+                if let Some(name) =
+                    collect_object_names(std::slice::from_ref(export.inner.as_ref()))
+                        .into_iter()
+                        .next()
                 {
                     out.insert(name);
                 }
@@ -195,7 +196,8 @@ struct CallUseProof<'a> {
 
 impl<'a> CallUseProof<'a> {
     fn definition_is_clean(&mut self, body: &[Statement]) -> bool {
-        body.iter().all(|statement| self.statement_is_clean(statement))
+        body.iter()
+            .all(|statement| self.statement_is_clean(statement))
     }
 
     fn statement_is_clean(&mut self, statement: &Statement) -> bool {
@@ -334,7 +336,6 @@ fn parameter_is_non_retaining(
     });
     bare <= allowed
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -14,34 +14,59 @@ struct Effects {
 }
 
 #[derive(serde::Deserialize)]
-struct Conditional { number: i64, argument: usize, absent_mask: i64 }
+struct Conditional {
+    number: i64,
+    argument: usize,
+    absent_mask: i64,
+}
 
 fn effects() -> &'static Effects {
     static TABLE: std::sync::OnceLock<Effects> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
-        let config: toml::Value = toml::from_str(include_str!("../../../config/memory-effects.toml"))
-            .expect("bundled memory-effect table");
-        config["linux_x86_64"].clone().try_into().expect("platform memory effects")
+        let config: toml::Value =
+            toml::from_str(include_str!("../../../config/memory-effects.toml"))
+                .expect("bundled memory-effect table");
+        config["linux_x86_64"]
+            .clone()
+            .try_into()
+            .expect("platform memory effects")
     })
 }
 
 impl Graph {
     pub(super) fn syscall_borrows(&self, number: i64, args: &[Node]) -> bool {
         let table = effects();
-        if table.synchronous_borrowing.contains(&number) { return true; }
+        if table.synchronous_borrowing.contains(&number) {
+            return true;
+        }
         table.conditional_borrowing.iter().any(|rule| {
-            let Some(argument) = args.get(rule.argument) else { return false };
-            rule.number == number && !self.inexact_constants.contains(argument)
+            let Some(argument) = args.get(rule.argument) else {
+                return false;
+            };
+            rule.number == number
+                && !self.inexact_constants.contains(argument)
                 && !self.constants[*argument].is_empty()
-                && self.constants[*argument].iter().all(|value| value & rule.absent_mask == 0)
+                && self.constants[*argument]
+                    .iter()
+                    .all(|value| value & rule.absent_mask == 0)
         })
     }
 
     /// 2026-11-05: prove composed flags without dropping pointer provenance.
     /// Bound the lattice so loops cannot grow it indefinitely; saturation is
     /// unknown, never a proof. Retire with the general scalar fact engine.
-    pub(super) fn bitwise_facts(&mut self, operator: BinaryOpKind, left: Node, right: Node, result: Node) -> bool {
-        let before = (self.points[result].len(), self.constants[result].len(), self.inexact_constants.contains(&result));
+    pub(super) fn bitwise_facts(
+        &mut self,
+        operator: BinaryOpKind,
+        left: Node,
+        right: Node,
+        result: Node,
+    ) -> bool {
+        let before = (
+            self.points[result].len(),
+            self.constants[result].len(),
+            self.inexact_constants.contains(&result),
+        );
         let mut references = self.points[left].clone();
         references.union_with(&self.points[right]);
         self.points[result].union_with(&references);
@@ -49,15 +74,35 @@ impl Graph {
             self.inexact_constants.insert(result);
         }
         self.extend_bitwise_constants(operator, left, right, result);
-        before != (self.points[result].len(), self.constants[result].len(), self.inexact_constants.contains(&result))
+        before
+            != (
+                self.points[result].len(),
+                self.constants[result].len(),
+                self.inexact_constants.contains(&result),
+            )
     }
 
-    fn extend_bitwise_constants(&mut self, operator: BinaryOpKind, left: Node, right: Node, result: Node) {
-        if self.inexact_constants.contains(&result) { return; }
-        let values: BTreeSet<_> = self.constants[left].iter().flat_map(|lhs|
-            self.constants[right].iter().map(move |rhs| bitwise(operator, *lhs, *rhs))).collect();
+    fn extend_bitwise_constants(
+        &mut self,
+        operator: BinaryOpKind,
+        left: Node,
+        right: Node,
+        result: Node,
+    ) {
+        if self.inexact_constants.contains(&result) {
+            return;
+        }
+        let values: BTreeSet<_> = self.constants[left]
+            .iter()
+            .flat_map(|lhs| {
+                self.constants[right]
+                    .iter()
+                    .map(move |rhs| bitwise(operator, *lhs, *rhs))
+            })
+            .collect();
         if values.len() + self.constants[result].len() > 64 {
-            self.inexact_constants.insert(result); return;
+            self.inexact_constants.insert(result);
+            return;
         }
         self.constants[result].extend(values);
     }
@@ -82,8 +127,11 @@ mod proofs {
         let mut graph = Graph::default();
         let flags: i64 = kani::any();
         let unknown: bool = kani::any();
-        let node = graph.node(); graph.constants[node].insert(flags);
-        if unknown { graph.inexact_constants.insert(node); }
+        let node = graph.node();
+        graph.constants[node].insert(flags);
+        if unknown {
+            graph.inexact_constants.insert(node);
+        }
         if graph.syscall_borrows(44, &[node; 4]) {
             assert!(!unknown && flags & 67108864 == 0);
         }
@@ -111,15 +159,22 @@ mod tests {
             };
         "#;
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
-        let live = ["entropy", "unclassified"].map(String::from).into_iter().collect();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
+        let live = ["entropy", "unclassified"]
+            .map(String::from)
+            .into_iter()
+            .collect();
         let plan = super::super::analyze(&items, &live, None);
         assert!(plan.regions.contains("entropy"), "{plan:?}");
         assert!(plan.barriers.contains("unclassified"), "{plan:?}");
     }
 
     fn constant(graph: &mut Graph, value: i64) -> Node {
-        let node = graph.node(); graph.constants[node].insert(value); node
+        let node = graph.node();
+        graph.constants[node].insert(value);
+        node
     }
 
     #[test]
@@ -157,8 +212,13 @@ mod tests {
             };
         "#;
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
-        let live = ["send_copy", "send_retained", "send_dynamic"].map(String::from).into_iter().collect();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
+        let live = ["send_copy", "send_retained", "send_dynamic"]
+            .map(String::from)
+            .into_iter()
+            .collect();
         let plan = super::super::analyze(&items, &live, None);
         assert!(plan.regions.contains("send_copy"), "{plan:?}");
         assert!(!plan.regions.contains("send_retained"), "{plan:?}");
@@ -179,7 +239,8 @@ mod tests {
         graph.inexact_constants.insert(right);
         graph.bitwise_facts(BinaryOpKind::BitOr, left, right, result);
         assert!(!graph.syscall_borrows(44, &[result; 4]));
-        let broad = graph.node(); graph.constants[broad].extend(0..65);
+        let broad = graph.node();
+        graph.constants[broad].extend(0..65);
         let capped = graph.node();
         graph.bitwise_facts(BinaryOpKind::BitXor, broad, left, capped);
         assert!(graph.inexact_constants.contains(&capped));
@@ -211,8 +272,13 @@ mod tests {
             };
         "#;
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
-        let live = ["hidden", "inspect", "escaping", "shadowed"].map(String::from).into_iter().collect();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
+        let live = ["hidden", "inspect", "escaping", "shadowed"]
+            .map(String::from)
+            .into_iter()
+            .collect();
         let plan = super::super::analyze(&items, &live, None);
         assert!(plan.regions.contains("inspect"), "{plan:?}");
         assert!(!plan.regions.contains("escaping"), "{plan:?}");

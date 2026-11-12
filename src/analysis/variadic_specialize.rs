@@ -13,9 +13,9 @@
 // v1 scope (plan §Scope exclusions): defn + txn only (isr / op member
 // reject the rest at parse); the rest name is rewritten at its USE SITES
 // (`xs[i]`, `xs.Count#()`, bare `xs`) — no splice-apply into intrinsics.
-use crate::ast::{Statement, Expr};
-use crate::ast::top::{Definition, Transaction, TopLevel, VariadicParam};
+use crate::ast::top::{Definition, TopLevel, Transaction, VariadicParam};
 use crate::ast::Type;
+use crate::ast::{Expr, Statement};
 use std::collections::HashMap;
 
 /// Default rest bound when no explicit bound is given (warn-the-default /
@@ -86,9 +86,7 @@ fn unwrap_export_mut(item: &mut TopLevel) -> &mut TopLevel {
 /// call sites. The original declaration is retained (diagnostics + name
 /// resolution) with `variadic_param` cleared so the typechecker sees a
 /// fixed-arity signature.
-pub fn specialize_variadic(
-    items: &mut Vec<TopLevel>,
-) -> Result<(), String> {
+pub fn specialize_variadic(items: &mut Vec<TopLevel>) -> Result<(), String> {
     // Index the variadic declarations by name → (item index, is_txn).
     let mut variadics: HashMap<String, (usize, bool)> = HashMap::new();
     for (i, item) in items.iter().enumerate() {
@@ -187,12 +185,8 @@ fn fixed_count(ctx: &Ctx, name: &str) -> usize {
     let (i, is_txn) = ctx.variadics.get(name).copied().unwrap_or((0, false));
     let it = ctx.items.get(i);
     let (params, has_rest) = match (it, is_txn) {
-        (Some(TopLevel::Definition(d)), false) => {
-            (d.parameters.len(), d.variadic_param.is_some())
-        }
-        (Some(TopLevel::Transaction(t)), true) => {
-            (t.parameters.len(), t.variadic_param.is_some())
-        }
+        (Some(TopLevel::Definition(d)), false) => (d.parameters.len(), d.variadic_param.is_some()),
+        (Some(TopLevel::Transaction(t)), true) => (t.parameters.len(), t.variadic_param.is_some()),
         _ => return 0,
     };
     if has_rest {
@@ -206,11 +200,7 @@ fn fixed_count(ctx: &Ctx, name: &str) -> usize {
 /// declaration, rewrite the rest name at its use sites (`rest[i]` →
 /// `__va_i`, `rest.Count#()` → N, bare `rest` → the element list literal),
 /// and append it. Idempotent per (name, arity).
-fn ensure_instantiation(
-    ctx: &mut Ctx,
-    name: &str,
-    arity: usize,
-) -> Result<(), String> {
+fn ensure_instantiation(ctx: &mut Ctx, name: &str, arity: usize) -> Result<(), String> {
     // `inst_name` is the internal de-dup key (`name::arity`); `emit_name` is
     // the symbol that reaches the LLVM IR (`name__arity` — `::` is invalid in
     // an LLVM identifier). The two must stay in sync: the item name, the
@@ -221,21 +211,22 @@ fn ensure_instantiation(
     }
     let emit_name = emitted_instantiation_name(name, arity);
     let (i, is_txn) = ctx.variadics.get(name).copied().unwrap_or((0, false));
-    let (rest_name, elem_type, min, max) = match unwrap_export(&ctx.items[i]) {
-        TopLevel::Definition(d) => {
-            let vp = d.variadic_param.as_ref().ok_or_else(|| {
-                format!("'{name}' lost its rest parameter during specialization")
-            })?;
-            (vp.name.clone(), vp.element_type.clone(), vp.min, vp.max)
-        }
-        TopLevel::Transaction(t) => {
-            let vp = t.variadic_param.as_ref().ok_or_else(|| {
-                format!("'{name}' lost its rest parameter during specialization")
-            })?;
-            (vp.name.clone(), vp.element_type.clone(), vp.min, vp.max)
-        }
-        _ => return Err(format!("declaration '{name}' not found")),
-    };
+    let (rest_name, elem_type, min, max) =
+        match unwrap_export(&ctx.items[i]) {
+            TopLevel::Definition(d) => {
+                let vp = d.variadic_param.as_ref().ok_or_else(|| {
+                    format!("'{name}' lost its rest parameter during specialization")
+                })?;
+                (vp.name.clone(), vp.element_type.clone(), vp.min, vp.max)
+            }
+            TopLevel::Transaction(t) => {
+                let vp = t.variadic_param.as_ref().ok_or_else(|| {
+                    format!("'{name}' lost its rest parameter during specialization")
+                })?;
+                (vp.name.clone(), vp.element_type.clone(), vp.min, vp.max)
+            }
+            _ => return Err(format!("declaration '{name}' not found")),
+        };
     if arity < min {
         return Err(format!(
             "call to '{name}' with {arity} rest argument(s) is below the \
@@ -251,7 +242,10 @@ fn ensure_instantiation(
         ));
     }
     let elems: Vec<String> = (0..arity).map(|j| format!("__va_{j}")).collect();
-    let ec = ElemCtx { rest: &rest_name, elems: &elems };
+    let ec = ElemCtx {
+        rest: &rest_name,
+        elems: &elems,
+    };
 
     // Append the element params to the instantiation's parameter list:
     // [fixed…, __va_0, __va_1, …]. The body's `rest[i]` → `__va_i` rewrite
@@ -314,10 +308,7 @@ struct ElemCtx<'a> {
 /// Rewrite one `defn` in place: retarget its internal calls + clone its
 /// instantiation body (the clone is emitted into ctx.instantiations on
 /// first sighting).
-fn rewrite_definition(
-    d: &mut Definition,
-    ctx: &mut Ctx,
-) -> Result<(), String> {
+fn rewrite_definition(d: &mut Definition, ctx: &mut Ctx) -> Result<(), String> {
     // An emitted instantiation (name__arity) — never reprocessed. The `__`
     // is the emitted delimiter (see emitted_instantiation_name); user names
     // never carry it, so this is a safe liveness marker.
@@ -345,10 +336,7 @@ fn rewrite_definition(
 }
 
 /// Rewrite one `txn`/`node` in place (same shape as the defn path).
-fn rewrite_transaction(
-    t: &mut Transaction,
-    ctx: &mut Ctx,
-) -> Result<(), String> {
+fn rewrite_transaction(t: &mut Transaction, ctx: &mut Ctx) -> Result<(), String> {
     // An emitted instantiation (name__arity) — never reprocessed.
     if is_instantiation_name(t.name.as_str(), &ctx.variadics) {
         return Ok(());
@@ -488,7 +476,12 @@ fn rewrite_expr_calls_children(expr: &mut Expr, ctx: &mut Ctx) -> Result<(), Str
             rewrite_expr_calls(l, ctx)?;
             rewrite_expr_calls(r, ctx)?;
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rewrite_expr_calls(array, ctx)?;
             if let Some(s) = start {
                 rewrite_expr_calls(s, ctx)?;
@@ -786,7 +779,12 @@ fn rewrite_expr_elems_children(expr: &mut Expr, ec: &ElemCtx) -> Result<(), Stri
             rewrite_expr_elems(l, ec)?;
             rewrite_expr_elems(r, ec)?;
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rewrite_expr_elems(array, ec)?;
             if let Some(s) = start {
                 rewrite_expr_elems(s, ec)?;
@@ -953,7 +951,12 @@ fn rename_expr_children(expr: &mut Expr, from: &Expr, to: &str) {
             rename_expr(l, from, to);
             rename_expr(r, from, to);
         }
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             rename_expr(array, from, to);
             if let Some(s) = start {
                 rename_expr(s, from, to);
@@ -1034,8 +1037,8 @@ fn as_identifier(e: &Expr) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::BinaryOpKind;
     use crate::ast::top::Contract;
+    use crate::ast::BinaryOpKind;
     use std::collections::HashMap;
 
     fn contract() -> Contract {
@@ -1097,7 +1100,11 @@ mod tests {
     }
 
     fn call(name: &str, args: Vec<i64>) -> Expr {
-        Expr::Call(name.to_string(), args.into_iter().map(Expr::Decimal).collect(), None)
+        Expr::Call(
+            name.to_string(),
+            args.into_iter().map(Expr::Decimal).collect(),
+            None,
+        )
     }
 
     /// `total = total + rest[i]` accumulate chain over the given indices.
@@ -1167,7 +1174,11 @@ mod tests {
         ];
         specialize_variadic(&mut items).unwrap();
         // Caller retargeted at the emitted symbol.
-        match &items.iter().find(|it| matches!(it, TopLevel::Transaction(t) if t.name == "main")).unwrap() {
+        match &items
+            .iter()
+            .find(|it| matches!(it, TopLevel::Transaction(t) if t.name == "main"))
+            .unwrap()
+        {
             TopLevel::Transaction(t) => match &t.body[0] {
                 Statement::Term(Some(Expr::Call(n, _, _))) => assert_eq!(n, "sum__3"),
                 other => panic!("expected retargeted call, got {other:?}"),
@@ -1214,7 +1225,10 @@ mod tests {
             ),
         ];
         specialize_variadic(&mut items).unwrap();
-        assert_eq!(inst_names(&items).iter().filter(|n| *n == "sum__2").count(), 1);
+        assert_eq!(
+            inst_names(&items).iter().filter(|n| *n == "sum__2").count(),
+            1
+        );
     }
 
     #[test]
@@ -1332,12 +1346,15 @@ mod tests {
                         Box::new(Expr::Identifier("x".to_string())),
                     ),
                 )],
-            modifiers: vec![],
+                modifiers: vec![],
             },
         ];
         let mut items = vec![
             var_defn("sum", "xs", 0, 8, body),
-            plain_txn("main", vec![Statement::Term(Some(call("sum", vec![1, 2, 3])))]),
+            plain_txn(
+                "main",
+                vec![Statement::Term(Some(call("sum", vec![1, 2, 3])))],
+            ),
         ];
         specialize_variadic(&mut items).unwrap();
         let inst = items
@@ -1349,7 +1366,14 @@ mod tests {
             .expect("sum__3 emitted");
         let debug = format!("{:?}", inst.body);
         assert!(!debug.contains("\"x\""), "loop var leaked: {debug}");
-        assert_eq!(debug.matches("__va_0").count() + debug.matches("__va_1").count() + debug.matches("__va_2").count() >= 3, true, "unroll missing: {debug}");
+        assert_eq!(
+            debug.matches("__va_0").count()
+                + debug.matches("__va_1").count()
+                + debug.matches("__va_2").count()
+                >= 3,
+            true,
+            "unroll missing: {debug}"
+        );
     }
 
     #[test]

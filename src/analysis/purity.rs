@@ -151,17 +151,29 @@ fn collect_callables(items: &[TopLevel]) -> HashMap<String, (bool, &[Statement])
     for item in items {
         match item {
             TopLevel::Definition(d) => {
-                map.insert(d.name.clone(), (is_effective_void(&d.output_type), d.body.as_slice()));
+                map.insert(
+                    d.name.clone(),
+                    (is_effective_void(&d.output_type), d.body.as_slice()),
+                );
             }
             TopLevel::Transaction(t) => {
-                map.insert(t.name.clone(), (is_effective_void(&t.output_type), t.body.as_slice()));
+                map.insert(
+                    t.name.clone(),
+                    (is_effective_void(&t.output_type), t.body.as_slice()),
+                );
             }
             TopLevel::Export(e) => match e.inner.as_ref() {
                 TopLevel::Definition(d) => {
-                    map.insert(d.name.clone(), (is_effective_void(&d.output_type), d.body.as_slice()));
+                    map.insert(
+                        d.name.clone(),
+                        (is_effective_void(&d.output_type), d.body.as_slice()),
+                    );
                 }
                 TopLevel::Transaction(t) => {
-                    map.insert(t.name.clone(), (is_effective_void(&t.output_type), t.body.as_slice()));
+                    map.insert(
+                        t.name.clone(),
+                        (is_effective_void(&t.output_type), t.body.as_slice()),
+                    );
                 }
                 _ => {}
             },
@@ -324,10 +336,7 @@ mod tests {
         let tokens = crate::lexer::tokenize(src).unwrap();
         let mut p = crate::parser::Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
-        analyze(&items)
-            .into_iter()
-            .map(|b| b.render())
-            .collect()
+        analyze(&items).into_iter().map(|b| b.render()).collect()
     }
 
     const HARNESS: &str = r#"

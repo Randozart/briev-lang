@@ -11,13 +11,12 @@
 // Undo: delete this module and the `generalized` field on
 // `DestinationOwnershipPlan`; no other code depends on it.
 
-use crate::ast::{EnumVariant, TopLevel, Type};
-use crate::analysis::tail_carrier::build_recursive_carriers;
 use crate::analysis::destination_ownership::{
-    CallableKind, DestinationClass as LegacyDestinationClass,
-    DestinationOwnershipPlan, EscapeKind, ParamObligation, ResultDestination,
-    ValueOrigin,
+    CallableKind, DestinationClass as LegacyDestinationClass, DestinationOwnershipPlan, EscapeKind,
+    ParamObligation, ResultDestination, ValueOrigin,
 };
+use crate::analysis::tail_carrier::build_recursive_carriers;
+use crate::ast::{EnumVariant, TopLevel, Type};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable callable identity. The namespace keeps definition/transaction/member
@@ -745,10 +744,7 @@ impl GeneralizedDestinationOwnershipPlan {
 
     /// Proof-approved recursive carrier obligations. Unsupported argument
     /// arms and unproven lifetimes never become carrier slots.
-    pub fn recursive_carrier_obligations(
-        &self,
-        name: &str,
-    ) -> Vec<RecursiveCarrierValue> {
+    pub fn recursive_carrier_obligations(&self, name: &str) -> Vec<RecursiveCarrierValue> {
         self.recursive_carrier_plan(name)
             .map(|plan| {
                 plan.carriers
@@ -757,10 +753,7 @@ impl GeneralizedDestinationOwnershipPlan {
                         !carrier
                             .arg_classes
                             .contains(&RecursiveCarrierArgClass::Unsupported)
-                            && matches!(
-                                carrier.proof,
-                                ProofStatus::Proven { .. }
-                            )
+                            && matches!(carrier.proof, ProofStatus::Proven { .. })
                     })
                     .cloned()
                     .collect()
@@ -893,23 +886,25 @@ impl GeneralizedDestinationOwnershipPlan {
 /// `Unknown` ownership unless R1 proves a narrower fact, every non-primitive
 /// shape is opaque, every loop/boundary set is empty until dedicated walkers
 /// are added in later phases.
-pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> GeneralizedDestinationOwnershipPlan {
+pub fn build(
+    items: &[TopLevel],
+    legacy: &DestinationOwnershipPlan,
+) -> GeneralizedDestinationOwnershipPlan {
     let mut plan = GeneralizedDestinationOwnershipPlan::default();
     let shapes = callable_shapes(items, legacy);
 
     for (name, summary) in &legacy.callables {
         let (callable_plan, facts) = build_callable(name, summary, &shapes);
-        plan.values.extend(
-            facts
-                .into_iter()
-                .map(|fact| (fact.id.clone(), fact)),
-        );
-        plan.callables.insert(callable_plan.callable.clone(), callable_plan);
+        plan.values
+            .extend(facts.into_iter().map(|fact| (fact.id.clone(), fact)));
+        plan.callables
+            .insert(callable_plan.callable.clone(), callable_plan);
     }
 
     for (site_id, call) in &legacy.call_sites {
         let (call_plan, facts) = build_call(site_id, call);
-        plan.values.extend(facts.into_iter().map(|fact| (fact.id.clone(), fact)));
+        plan.values
+            .extend(facts.into_iter().map(|fact| (fact.id.clone(), fact)));
         plan.call_sites.insert(call_plan.site.clone(), call_plan);
     }
 
@@ -928,7 +923,8 @@ pub fn build(items: &[TopLevel], legacy: &DestinationOwnershipPlan) -> Generaliz
             )
         })
         .collect();
-    plan.values.extend(loop_facts.into_iter().map(|fact| (fact.id.clone(), fact)));
+    plan.values
+        .extend(loop_facts.into_iter().map(|fact| (fact.id.clone(), fact)));
     plan.enums = build_enum_definitions(items);
     plan.enum_callables = build_enum_callables(items, legacy, &plan.enums);
     mark_enum_value_shapes(&mut plan.values, &plan.enums);
@@ -992,24 +988,20 @@ pub fn attach_loop_engine_plans(
                         LoopStorage::Machine
                     };
                     let (representation, proof) = match class {
-                        crate::analysis::loop_carried::FieldClass::LoopCarried => {
-                            match storage {
-                                LoopStorage::Local => (
-                                    LoopFieldRepresentation::Phi,
-                                    ProofStatus::Proven {
-                                        reasons: BTreeSet::from([ProofReason::NonEscaping]),
-                                    },
-                                ),
-                                _ => (
-                                    LoopFieldRepresentation::StateCarrier,
-                                    ProofStatus::Proven {
-                                        reasons: BTreeSet::from([
-                                            ProofReason::StableCarrierLifetime,
-                                        ]),
-                                    },
-                                ),
-                            }
-                        }
+                        crate::analysis::loop_carried::FieldClass::LoopCarried => match storage {
+                            LoopStorage::Local => (
+                                LoopFieldRepresentation::Phi,
+                                ProofStatus::Proven {
+                                    reasons: BTreeSet::from([ProofReason::NonEscaping]),
+                                },
+                            ),
+                            _ => (
+                                LoopFieldRepresentation::StateCarrier,
+                                ProofStatus::Proven {
+                                    reasons: BTreeSet::from([ProofReason::StableCarrierLifetime]),
+                                },
+                            ),
+                        },
                         crate::analysis::loop_carried::FieldClass::LoopInvariant => (
                             LoopFieldRepresentation::LoopInvariant,
                             ProofStatus::Proven {
@@ -1087,7 +1079,9 @@ fn general_legacy_class(class: LegacyDestinationClass) -> GeneralDestinationClas
     }
 }
 
-fn legacy_semantic_value(fact: &crate::analysis::destination_ownership::ValueFact) -> SemanticValueId {
+fn legacy_semantic_value(
+    fact: &crate::analysis::destination_ownership::ValueFact,
+) -> SemanticValueId {
     semantic_value(
         &CallableId {
             namespace: CallableNamespace::Unknown,
@@ -1162,10 +1156,7 @@ fn build_tuple_plans(
         .callables_by_owner
         .values()
         .flat_map(|facts| facts.values.values())
-        .filter(|fact| {
-            fact.origins
-                .contains(&ValueOrigin::Composite)
-        })
+        .filter(|fact| fact.origins.contains(&ValueOrigin::Composite))
         .filter_map(|fact| {
             let element_count = fact.tuple_element_count?;
             let destination = DestinationId {
@@ -1466,9 +1457,7 @@ fn enum_callable_plan(
         };
     }
     match class.unwrap_or(crate::analysis::enum_repr::EnumRepresentation::Boxed) {
-        crate::analysis::enum_repr::EnumRepresentation::ReturnedSmallCandidate
-            if sret_safe =>
-        {
+        crate::analysis::enum_repr::EnumRepresentation::ReturnedSmallCandidate if sret_safe => {
             EnumCallablePlan {
                 callable: callable.clone(),
                 result_type: Some(result_type.clone()),
@@ -1495,18 +1484,16 @@ fn enum_callable_plan(
                 },
             }
         }
-        crate::analysis::enum_repr::EnumRepresentation::InlineLocalCandidate => {
-            EnumCallablePlan {
-                callable: callable.clone(),
-                result_type: Some(result_type.clone()),
-                representation: EnumResultRepresentation::InlineLocal,
-                agreement: ConstructorAgreement::Unknown,
-                hidden_destination: false,
-                proof: ProofStatus::Proven {
-                    reasons: BTreeSet::from([ProofReason::NonEscaping]),
-                },
-            }
-        }
+        crate::analysis::enum_repr::EnumRepresentation::InlineLocalCandidate => EnumCallablePlan {
+            callable: callable.clone(),
+            result_type: Some(result_type.clone()),
+            representation: EnumResultRepresentation::InlineLocal,
+            agreement: ConstructorAgreement::Unknown,
+            hidden_destination: false,
+            proof: ProofStatus::Proven {
+                reasons: BTreeSet::from([ProofReason::NonEscaping]),
+            },
+        },
         crate::analysis::enum_repr::EnumRepresentation::Boxed => EnumCallablePlan {
             callable: callable.clone(),
             result_type: Some(result_type.clone()),
@@ -1578,9 +1565,7 @@ fn build_callable_plan(
         .parameters
         .iter()
         .enumerate()
-        .map(|(index, obligation)| {
-            build_parameter(&callable, index, *obligation, type_shapes)
-        })
+        .map(|(index, obligation)| build_parameter(&callable, index, *obligation, type_shapes))
         .collect();
     let result_type = type_shapes.and_then(|shapes| shapes.result.clone());
     let result_value = result_destination(summary.result)
@@ -1613,7 +1598,9 @@ fn build_parameter(
 ) -> ParameterPlan {
     let source_path = format!("param/{index}/{index}");
     let value = semantic_value(callable, SemanticValueKind::Parameter, &source_path, 0);
-    let ty = shapes.and_then(|shapes| shapes.parameters.get(index)).and_then(Option::clone);
+    let ty = shapes
+        .and_then(|shapes| shapes.parameters.get(index))
+        .and_then(Option::clone);
     ParameterPlan {
         value,
         ty,
@@ -1695,19 +1682,20 @@ fn build_call(
     } else {
         ProofStatus::Unknown
     };
-    (CallPlan {
-        site: point.clone(),
-        callee,
-        arguments,
-        result,
-        may_overlap_inputs: call.may_alias_args,
-        proof,
-    }, facts)
+    (
+        CallPlan {
+            site: point.clone(),
+            callee,
+            arguments,
+            result,
+            may_overlap_inputs: call.may_alias_args,
+            proof,
+        },
+        facts,
+    )
 }
 
-fn build_loops(
-    legacy: &DestinationOwnershipPlan,
-) -> BTreeMap<DestinationId, LoopPlan> {
+fn build_loops(legacy: &DestinationOwnershipPlan) -> BTreeMap<DestinationId, LoopPlan> {
     legacy
         .callables_by_owner
         .iter()
@@ -1722,12 +1710,15 @@ fn build_loops(
                 path: "loop/0".to_string(),
             };
             let proof = loop_plan_proof(&values);
-            Some((loop_id.clone(), LoopPlan {
-                loop_id,
-                carrier_values: values,
-                iteration_local_values: Vec::new(),
-                proof,
-            }))
+            Some((
+                loop_id.clone(),
+                LoopPlan {
+                    loop_id,
+                    carrier_values: values,
+                    iteration_local_values: Vec::new(),
+                    proof,
+                },
+            ))
         })
         .collect()
 }
@@ -1739,7 +1730,10 @@ fn loop_values(
     facts
         .values
         .values()
-        .filter(|fact| fact.escapes.contains(&crate::analysis::destination_ownership::EscapeKind::LoopLifetime))
+        .filter(|fact| {
+            fact.escapes
+                .contains(&crate::analysis::destination_ownership::EscapeKind::LoopLifetime)
+        })
         // Loop-carried object temporaries are recorded for stack eligibility,
         // but only named bindings are carrier obligations. Unnamed temporaries
         // belong to the iteration, not the backedge state.
@@ -1787,9 +1781,7 @@ fn carrier_requires_backedge_copy(
     )
 }
 
-fn carrier_proof(
-    fact: &crate::analysis::destination_ownership::ValueFact,
-) -> ProofStatus {
+fn carrier_proof(fact: &crate::analysis::destination_ownership::ValueFact) -> ProofStatus {
     let known_binding = fact.source_name.is_some()
         && fact.class != crate::analysis::destination_ownership::DestinationClass::Unknown;
     if known_binding {
@@ -1928,19 +1920,22 @@ fn foreign_boundaries(items: &[TopLevel]) -> BTreeMap<DestinationId, BoundaryPla
                 owner: binding.foreign_name.clone(),
                 path: "boundary/foreign".to_string(),
             };
-            (boundary.clone(), BoundaryPlan {
-                boundary,
-                kind: BoundaryKind::ForeignCall,
-                direction: BoundaryDirection::Import,
-                internal_class,
-                external_class: GeneralDestinationClass::ScalarValue,
-                conversion: BoundaryConversion::None,
-                ownership: OwnershipClass::Unknown,
-                proof: ProofStatus::Conservative {
-                    reason: FallbackReason::ExternalBoundary,
+            (
+                boundary.clone(),
+                BoundaryPlan {
+                    boundary,
+                    kind: BoundaryKind::ForeignCall,
+                    direction: BoundaryDirection::Import,
+                    internal_class,
+                    external_class: GeneralDestinationClass::ScalarValue,
+                    conversion: BoundaryConversion::None,
+                    ownership: OwnershipClass::Unknown,
+                    proof: ProofStatus::Conservative {
+                        reason: FallbackReason::ExternalBoundary,
+                    },
+                    values,
                 },
-                values,
-            })
+            )
         })
         .collect()
 }
@@ -2023,21 +2018,16 @@ fn general_destination(result: ResultDestination) -> GeneralDestinationClass {
         ResultDestination::Void => GeneralDestinationClass::Unknown,
         ResultDestination::SsaValue => GeneralDestinationClass::ScalarValue,
         ResultDestination::CallerDestination => GeneralDestinationClass::CallerDestination,
-        ResultDestination::Boxed | ResultDestination::Unknown => {
-            GeneralDestinationClass::Boxed
-        }
+        ResultDestination::Boxed | ResultDestination::Unknown => GeneralDestinationClass::Boxed,
     }
 }
-
 
 fn result_destination(result: ResultDestination) -> GeneralResultDestination {
     match result {
         ResultDestination::Void => GeneralResultDestination::Void,
         ResultDestination::SsaValue => GeneralResultDestination::SsaValue,
         ResultDestination::CallerDestination => GeneralResultDestination::CallerDestination,
-        ResultDestination::Boxed | ResultDestination::Unknown => {
-            GeneralResultDestination::Boxed
-        }
+        ResultDestination::Boxed | ResultDestination::Unknown => GeneralResultDestination::Boxed,
     }
 }
 
@@ -2227,7 +2217,10 @@ fn shape_for_type(ty: Option<&Type>) -> ValueShape {
         Type::Dyn(_) => shape.external_abi = true,
         // Named/composite shapes require declaration/layout facts. D1 does not
         // guess from source type names.
-        Type::Custom(_) | Type::Generic(..) | Type::Applied(..) | Type::TypeVar(_)
+        Type::Custom(_)
+        | Type::Generic(..)
+        | Type::Applied(..)
+        | Type::TypeVar(_)
         | Type::Constrained(..) => {
             shape.kind = ValueShapeKind::Opaque;
         }
@@ -2242,7 +2235,12 @@ fn shape_for_type(ty: Option<&Type>) -> ValueShape {
 mod tests {
     use super::*;
 
-    fn analyze_items(src: &str) -> (DestinationOwnershipPlan, GeneralizedDestinationOwnershipPlan) {
+    fn analyze_items(
+        src: &str,
+    ) -> (
+        DestinationOwnershipPlan,
+        GeneralizedDestinationOwnershipPlan,
+    ) {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
         let mut parser = crate::parser::Parser::new(tokens, src);
         let items = parser.parse_program().expect("parse");
@@ -2253,14 +2251,8 @@ mod tests {
 
     #[test]
     fn generalized_schema_covers_callable_parameters_and_results() {
-        let (legacy, plan) = analyze_items(
-            "defn identity(value: Int) -> Int { term value; };\n",
-        );
-        let callable = plan
-            .callables
-            .values()
-            .next()
-            .expect("callable plan");
+        let (legacy, plan) = analyze_items("defn identity(value: Int) -> Int { term value; };\n");
+        let callable = plan.callables.values().next().expect("callable plan");
         assert_eq!(callable.parameters.len(), 1);
         assert_eq!(
             callable.result.destination,
@@ -2270,7 +2262,9 @@ mod tests {
         assert_eq!(parameter.obligation, ParamObligation::Value);
         assert!(parameter.ty.is_some());
         assert!(plan.values.contains_key(&parameter.value));
-        assert!(plan.values.contains_key(callable.result.value.as_ref().expect("result value")));
+        assert!(plan
+            .values
+            .contains_key(callable.result.value.as_ref().expect("result value")));
     }
 
     #[test]
@@ -2289,9 +2283,7 @@ defn call_unknown() -> Int {
         assert!(call.result.is_some());
         let result = call.result.as_ref().expect("result use");
         assert!(plan.values.contains_key(&result.value));
-        assert!(plan
-            .values
-            .contains_key(&call.arguments[0].value));
+        assert!(plan.values.contains_key(&call.arguments[0].value));
     }
 
     #[test]
@@ -2377,9 +2369,7 @@ defn drain(n: Int, q: List<Int>) -> Int {
 
     #[test]
     fn exported_callables_create_boundary_plans() {
-        let (_, plan) = analyze_items(
-            "export defn add(a: Int, b: Int) -> Int { term a + b; };\n",
-        );
+        let (_, plan) = analyze_items("export defn add(a: Int, b: Int) -> Int { term a + b; };\n");
         let boundary = plan.boundaries.values().next().expect("boundary plan");
         assert_eq!(boundary.kind, BoundaryKind::Export);
         assert_eq!(boundary.direction, BoundaryDirection::Export);
@@ -2392,12 +2382,16 @@ defn drain(n: Int, q: List<Int>) -> Int {
                 && value.conversion == BoundaryConversion::None
         }));
         assert_eq!(
-            boundary.values.iter().filter(|value| value.role == BoundaryRole::Result).count(),
+            boundary
+                .values
+                .iter()
+                .filter(|value| value.role == BoundaryRole::Result)
+                .count(),
             1
         );
     }
 
-        #[test]
+    #[test]
     fn every_foreign_binding_has_a_lookupable_boundary() {
         let (_, plan) = analyze_items(
             r#"
@@ -2422,9 +2416,7 @@ frgn two(s: String) from "libc";
 
     #[test]
     fn foreign_binding_creates_import_boundary_values() {
-        let (_, plan) = analyze_items(
-            r#"frgn strlen(s: String) -> Int from "libc";"#,
-        );
+        let (_, plan) = analyze_items(r#"frgn strlen(s: String) -> Int from "libc";"#);
         let boundary = plan
             .boundaries
             .values()
@@ -2434,18 +2426,12 @@ frgn two(s: String) from "libc";
         assert_eq!(boundary.values.len(), 2);
         assert_eq!(boundary.values[0].role, BoundaryRole::Parameter);
         assert_eq!(boundary.values[1].role, BoundaryRole::Result);
-        assert_eq!(
-            boundary.values[1].ownership,
-            OwnershipClass::Owned
-        );
+        assert_eq!(boundary.values[1].ownership, OwnershipClass::Owned);
         assert_eq!(
             boundary.values[1].internal_class,
             GeneralDestinationClass::ScalarValue
         );
-        assert_eq!(
-            boundary.values[1].conversion,
-            BoundaryConversion::None
-        );
+        assert_eq!(boundary.values[1].conversion, BoundaryConversion::None);
     }
 
     #[test]
@@ -2491,10 +2477,7 @@ defn make(x: Int) -> R { term Ok(x); };
             .find(|plan| plan.callable.name == "make")
             .and_then(|plan| plan.result.value.clone())
             .expect("result value");
-        assert_eq!(
-            plan.values[&result_value].shape.kind,
-            ValueShapeKind::Enum
-        );
+        assert_eq!(plan.values[&result_value].shape.kind, ValueShapeKind::Enum);
     }
 
     #[test]
@@ -2589,10 +2572,7 @@ defn read(x: Int) -> Int {
             .find(|value| value.object == "P")
             .expect("object value");
         assert!(!value.requires_materialization);
-        assert_eq!(
-            value.class,
-            GeneralDestinationClass::ScalarReplacedObject
-        );
+        assert_eq!(value.class, GeneralDestinationClass::ScalarReplacedObject);
         assert_eq!(
             value.proof,
             ProofStatus::Proven {
@@ -2618,9 +2598,7 @@ defn caller(x: Int) -> Int {
             .values()
             .find(|value| value.object == "P" && value.requires_materialization)
             .expect("escaping object value");
-        assert!(escaped
-            .escapes
-            .contains(&EscapeKind::UnknownCallLifetime));
+        assert!(escaped.escapes.contains(&EscapeKind::UnknownCallLifetime));
     }
 
     #[test]
@@ -2685,8 +2663,7 @@ defn address(x: Int) -> Int {
             .object_values
             .values()
             .find(|value| {
-                value.object == "P"
-                    && value.escapes.contains(&EscapeKind::AddressLifetime)
+                value.object == "P" && value.escapes.contains(&EscapeKind::AddressLifetime)
             })
             .expect("addressed object");
         assert!(escaped.requires_materialization);
@@ -2714,7 +2691,9 @@ defn make(n: Int) -> Parent {
         let child = plan
             .object_values
             .values()
-            .find(|value| value.object == "Child" && value.escapes.contains(&EscapeKind::ObjectLifetime))
+            .find(|value| {
+                value.object == "Child" && value.escapes.contains(&EscapeKind::ObjectLifetime)
+            })
             .expect("loop-assigned field child");
         assert!(child.requires_materialization);
         assert!(!plan
@@ -2903,10 +2882,12 @@ defn loop(n: Int, state: S, sum: Int) -> Int {
                 RecursiveCarrierArgClass::ExistingCarrier,
             ]
         );
-        assert_eq!(recursive.carriers[0].class, GeneralDestinationClass::StableCarrier);
+        assert_eq!(
+            recursive.carriers[0].class,
+            GeneralDestinationClass::StableCarrier
+        );
         let callable_plan = &plan.callables[callable];
         assert_eq!(callable_plan.hidden_abi.tail_carriers, 1);
-
     }
 
     #[test]

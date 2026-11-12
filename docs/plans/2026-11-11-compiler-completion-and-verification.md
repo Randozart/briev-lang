@@ -130,8 +130,8 @@ ledger. Rides on:
    canonical parity suites (7/4/6). All three backend consumers flip under
    `BRIEV_HIR_EMIT` with `PartialEq` debug oracles. Coalescing diagnostics are
    name-sorted on both paths (HashMap order was process-seeded; the Intel
-   g0_minmax fixture exposed it). Remaining GPU-family work: `region`,
-   `electronics`.
+   g0_minmax fixture exposed it). Remaining H5: `electronics` (11k), then
+   AST-arm deletion after the opt-out release.
 
 **Reclamation parity catch-up (2026-11-11).** Main gained two AST facts after
 the R4 flip: `seed_incoming_storage` (incoming parameter storage is
@@ -259,3 +259,29 @@ oracle armed; release A/B byte-identical; determinism clean.
 
 **R is complete.** Next: V2 wasm corpus gate, P4 seeds, P6 cvise wrapper, P7
 additions; then the large H5 ports.
+
+**Region HIR port (2026-11-11, port DONE; consumer flip pending).**
+`src/hir/region.rs` is an HIR-native port of the reactive-region analysis:
+declarations/constants/triggers, dependence + rev-dependence, frontier
+classification, regions/components, value-set sizing, linear chains,
+iteration bounds, region scoring, budget planning, chain composition, final
+value precomputation. AST-vs-HIR parity: 16 tests. `compute_link_vars` now
+sorts shared write candidates (the AST path previously chose by HashSet
+order, so composed-body substitution could vary per process).
+
+**Consumer flip (2026-11-11).** `AnalysisResults.region_analyzer` is now the
+HIR analyzer (the only implementation; the AST analyzer remains the debug
+oracle while `BRIEV_HIR_EMIT` is on). `AnalysisResults` already carried the HIR
+program, so `collect_final_values` takes `&analysis.hir`. The oracle compares a
+deterministic consumer fingerprint (regions, chains, triggers, iteration
+bounds, scores, budget plan, composed chains); `quick`/sweep/release A-B and
+determinism are green.
+
+**Parallel-work checkpoint (2026-11-11).** Committed the in-progress
+body-verification lane (`analysis/verify_bodies.rs` + plan) and its analysis
+refactors on owner instruction. The checkpoint did not build: it called
+`combine_and`/`combine_or` before defining them. Added the Kleene helpers
+(violated conjunct refutes; one proven disjunct proves; otherwise undecided).
+Region was then integrated on top with a single `compute_link_vars` conflict
+resolved to the deterministic version. Gates: quick 41/41; region 16; sweep
+143/0; release A/B byte-identical.

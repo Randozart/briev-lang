@@ -91,30 +91,26 @@ pub fn classify_predicate(cond: &Expr) -> PredicateClass {
     match cond {
         Expr::Bool(true) => PredicateClass::AlwaysTrue,
         Expr::Bool(false) => PredicateClass::AlwaysFalse,
-        Expr::BinaryOp(BinaryOpKind::Eq, l, r) => {
-            match (const_value(l), const_value(r)) {
-                (Some(a), Some(b)) => {
-                    if a == b {
-                        PredicateClass::AlwaysTrue
-                    } else {
-                        PredicateClass::AlwaysFalse
-                    }
+        Expr::BinaryOp(BinaryOpKind::Eq, l, r) => match (const_value(l), const_value(r)) {
+            (Some(a), Some(b)) => {
+                if a == b {
+                    PredicateClass::AlwaysTrue
+                } else {
+                    PredicateClass::AlwaysFalse
                 }
-                _ => PredicateClass::Runtime,
             }
-        }
-        Expr::BinaryOp(BinaryOpKind::Neq, l, r) => {
-            match (const_value(l), const_value(r)) {
-                (Some(a), Some(b)) => {
-                    if a != b {
-                        PredicateClass::AlwaysTrue
-                    } else {
-                        PredicateClass::AlwaysFalse
-                    }
+            _ => PredicateClass::Runtime,
+        },
+        Expr::BinaryOp(BinaryOpKind::Neq, l, r) => match (const_value(l), const_value(r)) {
+            (Some(a), Some(b)) => {
+                if a != b {
+                    PredicateClass::AlwaysTrue
+                } else {
+                    PredicateClass::AlwaysFalse
                 }
-                _ => PredicateClass::Runtime,
             }
-        }
+            _ => PredicateClass::Runtime,
+        },
         _ => PredicateClass::Runtime,
     }
 }
@@ -151,7 +147,10 @@ mod tests {
             Statement::Assign(Expr::Identifier("a".to_string()), Expr::Decimal(1)),
             Statement::Guarded(
                 Expr::Identifier("cond".to_string()),
-                vec![Statement::Assign(Expr::Identifier("b".to_string()), Expr::Decimal(2))],
+                vec![Statement::Assign(
+                    Expr::Identifier("b".to_string()),
+                    Expr::Decimal(2),
+                )],
             ),
             Statement::Assign(Expr::Identifier("c".to_string()), Expr::Decimal(3)),
         ];
@@ -164,8 +163,14 @@ mod tests {
 
     #[test]
     fn test_classify_literals() {
-        assert_eq!(classify_predicate(&Expr::Bool(true)), PredicateClass::AlwaysTrue);
-        assert_eq!(classify_predicate(&Expr::Bool(false)), PredicateClass::AlwaysFalse);
+        assert_eq!(
+            classify_predicate(&Expr::Bool(true)),
+            PredicateClass::AlwaysTrue
+        );
+        assert_eq!(
+            classify_predicate(&Expr::Bool(false)),
+            PredicateClass::AlwaysFalse
+        );
         assert_eq!(
             classify_predicate(&Expr::BinaryOp(
                 BinaryOpKind::Eq,
@@ -195,7 +200,10 @@ mod tests {
             Expr::Identifier("c1".to_string()),
             vec![Statement::Guarded(
                 Expr::Identifier("c2".to_string()),
-                vec![Statement::Assign(Expr::Identifier("x".to_string()), Expr::Decimal(1))],
+                vec![Statement::Assign(
+                    Expr::Identifier("x".to_string()),
+                    Expr::Decimal(1),
+                )],
             )],
         )];
         let segs = split_into_segments(&body);

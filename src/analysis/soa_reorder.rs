@@ -36,7 +36,8 @@ pub(crate) struct FloatField {
     pub(crate) expr: Option<Expr>,
 }
 
-pub fn reorder_fields(items: &[TopLevel]) -> Vec<TopLevel> {    let mut float_fields: Vec<FloatField> = Vec::new();
+pub fn reorder_fields(items: &[TopLevel]) -> Vec<TopLevel> {
+    let mut float_fields: Vec<FloatField> = Vec::new();
     let mut non_float_indices: HashSet<usize> = HashSet::new();
 
     for (i, item) in items.iter().enumerate() {
@@ -83,7 +84,8 @@ pub fn reorder_fields(items: &[TopLevel]) -> Vec<TopLevel> {    let mut float_fi
     let mut result: Vec<TopLevel> = Vec::with_capacity(items.len());
 
     // Collect float field items in original order for lookup
-    let original_items: HashMap<usize, &TopLevel> = float_fields.iter()
+    let original_items: HashMap<usize, &TopLevel> = float_fields
+        .iter()
         .map(|f| (f.item_index, &items[f.item_index]))
         .collect();
 
@@ -186,7 +188,9 @@ pub(crate) fn try_extract_float_field(item: &TopLevel, index: usize) -> Option<F
 
 /// Check if a Briev type is reorderable (float or double).
 pub(crate) fn is_reorderable_float_type(ty: &Type) -> bool {
-    ty == &Type::float() || ty == &Type::float64() || ty.to_string() == "Float32"
+    ty == &Type::float()
+        || ty == &Type::float64()
+        || ty.to_string() == "Float32"
         || ty.to_string() == "Float64"
 }
 
@@ -301,12 +305,12 @@ mod tests {
 
     #[test]
     fn test_no_float_fields_returns_original() {
-        let items = vec![
-            TopLevel::Constant(crate::ast::top::Constant {
-                name: "pi".to_string(), ty: Type::float(), expr: Expr::Float(3.14),
-                section: None,
-            }),
-        ];
+        let items = vec![TopLevel::Constant(crate::ast::top::Constant {
+            name: "pi".to_string(),
+            ty: Type::float(),
+            expr: Expr::Float(3.14),
+            section: None,
+        })];
         let result = reorder_fields(&items);
         assert_eq!(result.len(), 1);
         assert_eq!(name_of(&result[0]), "pi");
@@ -315,14 +319,22 @@ mod tests {
     #[test]
     fn test_independent_bx_group() {
         let items = vec![
-            state_let("bx0", Expr::BinaryOp(
-                BinaryOpKind::Add, Box::new(Expr::Identifier("bx0".to_string())),
-                Box::new(Expr::Decimal(1)),
-            )),
-            state_let("bx1", Expr::BinaryOp(
-                BinaryOpKind::Add, Box::new(Expr::Identifier("bx1".to_string())),
-                Box::new(Expr::Decimal(1)),
-            )),
+            state_let(
+                "bx0",
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("bx0".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            ),
+            state_let(
+                "bx1",
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("bx1".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            ),
         ];
         let result = reorder_fields(&items);
         assert_eq!(result.len(), 2);
@@ -333,10 +345,14 @@ mod tests {
     #[test]
     fn test_dependent_group_not_reordered() {
         let items = vec![
-            state_let("bx1", Expr::BinaryOp(
-                BinaryOpKind::Add, Box::new(Expr::Identifier("bx1".to_string())),
-                Box::new(Expr::Decimal(1)),
-            )),
+            state_let(
+                "bx1",
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("bx1".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            ),
             state_let("bx0", Expr::Identifier("bx1".to_string())),
         ];
         let result = reorder_fields(&items);
@@ -348,9 +364,7 @@ mod tests {
 
     #[test]
     fn test_single_field_not_reordered() {
-        let items = vec![
-            state_let("bx0", Expr::Identifier("bx0".to_string())),
-        ];
+        let items = vec![state_let("bx0", Expr::Identifier("bx0".to_string()))];
         let result = reorder_fields(&items);
         assert_eq!(result.len(), 1);
         assert_eq!(name_of(&result[0]), "bx0");
@@ -377,20 +391,29 @@ mod tests {
         let reference = reorder_fields(&items);
         let briev = reorder_fields_briev(&items);
         assert_eq!(
-            briev.len(), reference.len(),
-            "Briev reorder length diverged for {}", rel,
+            briev.len(),
+            reference.len(),
+            "Briev reorder length diverged for {}",
+            rel,
         );
         // Compare the ORDER of item names.
         for (i, (b, r)) in briev.iter().zip(reference.iter()).enumerate() {
             assert_eq!(
-                name_of_item(b), name_of_item(r),
-                "Briev reorder diverged at position {} for {}", i, rel,
+                name_of_item(b),
+                name_of_item(r),
+                "Briev reorder diverged at position {} for {}",
+                i,
+                rel,
             );
         }
         // The real nbody has AoS fields — the reorder must move them.
         let names: Vec<String> = reference.iter().map(name_of_item).collect();
-        assert!(names.iter().position(|n| n == "bx0").unwrap() < names.iter().position(|n| n == "by0").unwrap(),
-            "expected SoA (bx0 before by0) in {}", rel);
+        assert!(
+            names.iter().position(|n| n == "bx0").unwrap()
+                < names.iter().position(|n| n == "by0").unwrap(),
+            "expected SoA (bx0 before by0) in {}",
+            rel
+        );
     }
 
     fn name_of_item(item: &TopLevel) -> String {

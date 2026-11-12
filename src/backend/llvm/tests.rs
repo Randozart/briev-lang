@@ -1,7 +1,7 @@
-use std::collections::HashMap;
-use super::*;
 use super::reclamation::contains_heap_allocation;
+use super::*;
 use crate::ast::*;
+use std::collections::HashMap;
 
 fn empty_program() -> Vec<TopLevel> {
     vec![]
@@ -12,7 +12,10 @@ fn empty_program() -> Vec<TopLevel> {
 fn accel_kernel_program() -> Vec<TopLevel> {
     let array_state = TopLevel::StateDecl(StateDecl {
         name: "a".to_string(),
-        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(16)]),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(16)],
+        ),
         span: None,
     });
     let n_state = TopLevel::StateDecl(StateDecl {
@@ -50,10 +53,14 @@ fn accel_kernel_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: true,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(
-                Expr::Index(Box::new(Expr::Identifier("a".to_string())), Box::new(Expr::Identifier("i".to_string()))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("a".to_string())),
+                    Box::new(Expr::Identifier("i".to_string())),
+                ),
                 Expr::Identifier("i".to_string()),
             ),
             Statement::Assign(
@@ -76,7 +83,10 @@ fn accel_kernel_program() -> Vec<TopLevel> {
         ],
         metadata: HashMap::new(),
         derivation: None,
-        modifiers: vec![Annotation { name: "accel".to_string(), value: None }],
+        modifiers: vec![Annotation {
+            name: "accel".to_string(),
+            value: None,
+        }],
         span: None,
         doc: None,
     });
@@ -89,7 +99,8 @@ fn test_accel_kernel_module_emits_projected_state() {
     // SPIR-V kernel module by REUSING the host emitter against a kernel-scoped
     // `%State` (the minimal buffer/scalar projection). The IR text is the
     // deterministic contract — SPIR-V blob compilation (llc) is machine-gated.
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = accel_kernel_program();
     let _host = backend.generate(&program, None); // populates field maps
     let analysis = crate::backend::analyze_program(
@@ -100,20 +111,45 @@ fn test_accel_kernel_module_emits_projected_state() {
         None,
     );
     let entry = analysis.accel.get("force").expect("accel entry for force");
-    assert!(entry.shape.eligible, "kernel shape must be eligible: {:?}", entry.shape.reasons);
-    let ir = backend.emit_kernel_module("force", &entry.shape).expect("kernel module emits");
-    assert!(ir.contains("target triple = \"spirv64-unknown-unknown\""), "kernel triple");
-    assert!(ir.contains("declare i64 @_Z13get_global_idj(i32)"), "global-id decl");
-    assert!(ir.contains("%State = type { [16 x float] }"), "projected state struct: {ir}");
-    assert!(ir.contains("define spir_kernel void @main(ptr %state, i64 %n)"), "kernel sig");
-    assert!(ir.contains("call i64 @_Z13get_global_idj(i32 0)"), "work-item id");
-    assert!(ir.contains("getelementptr inbounds %State, ptr %state, i32 0, i32 0"), "buffer GEP");
+    assert!(
+        entry.shape.eligible,
+        "kernel shape must be eligible: {:?}",
+        entry.shape.reasons
+    );
+    let ir = backend
+        .emit_kernel_module("force", &entry.shape)
+        .expect("kernel module emits");
+    assert!(
+        ir.contains("target triple = \"spirv64-unknown-unknown\""),
+        "kernel triple"
+    );
+    assert!(
+        ir.contains("declare i64 @_Z13get_global_idj(i32)"),
+        "global-id decl"
+    );
+    assert!(
+        ir.contains("%State = type { [16 x float] }"),
+        "projected state struct: {ir}"
+    );
+    assert!(
+        ir.contains("define spir_kernel void @main(ptr %state, i64 %n)"),
+        "kernel sig"
+    );
+    assert!(
+        ir.contains("call i64 @_Z13get_global_idj(i32 0)"),
+        "work-item id"
+    );
+    assert!(
+        ir.contains("getelementptr inbounds %State, ptr %state, i32 0, i32 0"),
+        "buffer GEP"
+    );
 }
 
 #[test]
 fn test_no_accel_no_kernel_blob() {
     // 2026-08-06 (accel plan): without accel request, no kernel blob embeds.
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![state_count(), make_txn("plain", vec![])];
     let output = backend.generate(&program, None);
     assert!(
@@ -139,7 +175,8 @@ fn make_txn(name: &str, modifiers: Vec<Annotation>) -> TopLevel {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(Expr::Identifier("count".to_string()), Expr::Decimal(1)),
             Statement::Term(None),
@@ -229,10 +266,10 @@ export defn loop(n: Int, s: S) -> Int { term 0; };
     let mut backend = LlvmBackend::new()
         .with_force_emit_all(true)
         .with_type_universe(crate::type_universe::TypeUniverse::new());
-    backend
-        .ctx
-        .defn_return_types
-        .insert("step".to_string(), vec![crate::ast::Type::Custom("R".to_string())]);
+    backend.ctx.defn_return_types.insert(
+        "step".to_string(),
+        vec![crate::ast::Type::Custom("R".to_string())],
+    );
     backend
         .ctx
         .defn_hoisted_sret
@@ -240,8 +277,8 @@ export defn loop(n: Int, s: S) -> Int { term 0; };
 
     use crate::analysis::destination_model::{
         CallableId, CallableNamespace, DestinationId, ProofReason, ProofStatus,
-        RecursiveCarrierArgClass, RecursiveCarrierPlan, RecursiveCarrierValue,
-        SemanticValueId, SemanticValueKind,
+        RecursiveCarrierArgClass, RecursiveCarrierPlan, RecursiveCarrierValue, SemanticValueId,
+        SemanticValueKind,
     };
     let callable = CallableId {
         namespace: CallableNamespace::Definition,
@@ -266,35 +303,32 @@ export defn loop(n: Int, s: S) -> Int { term 0; };
         class: crate::analysis::destination_model::GeneralDestinationClass::StableCarrier,
         requires_backedge_copy: true,
         proof: ProofStatus::Proven {
-            reasons: std::collections::BTreeSet::from([
-                ProofReason::StableCarrierLifetime,
-            ]),
+            reasons: std::collections::BTreeSet::from([ProofReason::StableCarrierLifetime]),
         },
     };
-    backend.ctx.generalized_destination_ownership.recursive_carriers.insert(
-        callable.clone(),
-        RecursiveCarrierPlan {
-            callable,
-            carriers: vec![carrier],
-            proof: ProofStatus::Proven {
-                reasons: std::collections::BTreeSet::from([
-                    ProofReason::StableCarrierLifetime,
-                ]),
+    backend
+        .ctx
+        .generalized_destination_ownership
+        .recursive_carriers
+        .insert(
+            callable.clone(),
+            RecursiveCarrierPlan {
+                callable,
+                carriers: vec![carrier],
+                proof: ProofStatus::Proven {
+                    reasons: std::collections::BTreeSet::from([ProofReason::StableCarrierLifetime]),
+                },
             },
-        },
-    );
+        );
 
     let mut out = String::new();
-    backend.emit_top_level_export_wrapper(
-        &mut out,
-        &d,
-        "loop__briev_internal",
-        false,
-    );
+    backend.emit_top_level_export_wrapper(&mut out, &d, "loop__briev_internal", false);
     assert!(out.contains("%hsrt0 = alloca i64, i64 2"), "{out}");
     assert!(out.contains("%carrier_slot0 = alloca i64, i64 2"), "{out}");
     assert!(
-        out.contains("i64 @loop__briev_internal(ptr %hsrt0, ptr %carrier_slot0, i64 %arg0, i64 %arg1)"),
+        out.contains(
+            "i64 @loop__briev_internal(ptr %hsrt0, ptr %carrier_slot0, i64 %arg0, i64 %arg1)"
+        ),
         "hidden slot call order drifted:\n{out}"
     );
 }
@@ -340,7 +374,10 @@ defn read(x: Int) -> Int {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let output = backend.generate(&items, None);
     let start = output.find("define i64 @read(").expect("read emitted");
-    let end = output[start..].find("\ndefine ").map(|n| start + n).unwrap_or(output.len());
+    let end = output[start..]
+        .find("\ndefine ")
+        .map(|n| start + n)
+        .unwrap_or(output.len());
     let function = &output[start..end];
     assert!(
         function.contains("alloca i8, i64 16"),
@@ -378,7 +415,10 @@ defn assign(w: Wrap) -> Void {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let output = backend.generate(&items, None);
     let start = output.find("define void @assign(").expect("assign emitted");
-    let end = output[start..].find("\ndefine ").map(|n| start + n).unwrap_or(output.len());
+    let end = output[start..]
+        .find("\ndefine ")
+        .map(|n| start + n)
+        .unwrap_or(output.len());
     let function = &output[start..end];
     assert!(
         contains_heap_allocation(function, 8),
@@ -427,7 +467,8 @@ fn test_init_emits_global_seeding_and_read() {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "x".to_string(),
@@ -446,9 +487,18 @@ fn test_init_emits_global_seeding_and_read() {
     });
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&[init, node], None);
-    assert!(output.contains("@BufSize = global i64 0"), "init must emit a mutable global");
-    assert!(output.contains("store i64"), "init seeding must store to the global");
-    assert!(output.contains("load i64, ptr @BufSize"), "init read must load the global");
+    assert!(
+        output.contains("@BufSize = global i64 0"),
+        "init must emit a mutable global"
+    );
+    assert!(
+        output.contains("store i64"),
+        "init seeding must store to the global"
+    );
+    assert!(
+        output.contains("load i64, ptr @BufSize"),
+        "init read must load the global"
+    );
 }
 
 /// 2026-08-09 (init kind, Phase 3): a bounded-counter loop whose bound is a
@@ -494,7 +544,8 @@ fn test_init_bound_loop_folds_against_seeded_global() {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(
                 Expr::Identifier("count".to_string()),
@@ -528,7 +579,10 @@ fn mask_index_program() -> Vec<TopLevel> {
         name: "data".to_string(),
         names: vec![],
         ty: Some(Type::Custom("Blob".to_string())),
-        expr: Some(Expr::TaggedQuotedLiteral(vec![1, 2, 3, 4, 5], "b".to_string())),
+        expr: Some(Expr::TaggedQuotedLiteral(
+            vec![1, 2, 3, 4, 5],
+            "b".to_string(),
+        )),
         modifiers: vec![],
     }));
     let node = TopLevel::Transaction(Transaction {
@@ -546,7 +600,8 @@ fn mask_index_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "masked".to_string(),
@@ -577,12 +632,18 @@ fn mask_index_program() -> Vec<TopLevel> {
 fn test_mask_index_emits_gather_and_bmask_constant() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&mask_index_program(), None);
-    assert!(output.contains("@briev_mask_select"),
-        "mask index must call the runtime gather helper");
-    assert!(output.contains("@bmask.0"),
-        "a constant Boolean mask must be interned as a @bmask global");
-    assert!(output.contains("[3 x i64]"),
-        "the mask constant must use i64 slots matching Bool-vector state fields");
+    assert!(
+        output.contains("@briev_mask_select"),
+        "mask index must call the runtime gather helper"
+    );
+    assert!(
+        output.contains("@bmask.0"),
+        "a constant Boolean mask must be interned as a @bmask global"
+    );
+    assert!(
+        output.contains("[3 x i64]"),
+        "the mask constant must use i64 slots matching Bool-vector state fields"
+    );
 }
 
 /// A program with `let m: List<Int> = v[[true, false]]` where `v: Int[2]` —
@@ -591,7 +652,10 @@ fn mask_index_typed_program() -> Vec<TopLevel> {
     let v_state = TopLevel::Statement(Box::new(Statement::Let {
         name: "v".to_string(),
         names: vec![],
-        ty: Some(Type::Vector(Box::new(Type::int()), vec![crate::ast::Dimension::Anonymous(2)])),
+        ty: Some(Type::Vector(
+            Box::new(Type::int()),
+            vec![crate::ast::Dimension::Anonymous(2)],
+        )),
         expr: None,
         modifiers: vec![],
     }));
@@ -610,7 +674,8 @@ fn mask_index_typed_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "m".to_string(),
@@ -637,10 +702,14 @@ fn mask_index_typed_program() -> Vec<TopLevel> {
 fn test_mask_index_typed_emits_select64() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&mask_index_typed_program(), None);
-    assert!(output.contains("@briev_mask_select64"),
-        "an Int-vector mask index must call the typed gather helper");
-    assert!(output.contains("ptrtoint ptr"),
-        "the List result must be boxed to an i64 handle like emit_heap_seq");
+    assert!(
+        output.contains("@briev_mask_select64"),
+        "an Int-vector mask index must call the typed gather helper"
+    );
+    assert!(
+        output.contains("ptrtoint ptr"),
+        "the List result must be boxed to an i64 handle like emit_heap_seq"
+    );
 }
 
 /// 2026-08-16 (slice-6 deletion + mask-list fix): a mask index over a
@@ -667,8 +736,10 @@ node s [done == 0][done == 1] {
         .expect("plugin stage failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let output = backend.generate(&items, None);
-    assert!(output.contains("call ptr @briev_mask_select64"),
-        "the List mask index must call the typed gather helper; got:\n{output}");
+    assert!(
+        output.contains("call ptr @briev_mask_select64"),
+        "the List mask index must call the typed gather helper; got:\n{output}"
+    );
 }
 
 /// A program with `let m: List<Float> = v[[true, false]]` where `v: Float[2]`
@@ -677,7 +748,10 @@ fn mask_index_f32_program() -> Vec<TopLevel> {
     let v_state = TopLevel::Statement(Box::new(Statement::Let {
         name: "v".to_string(),
         names: vec![],
-        ty: Some(Type::Vector(Box::new(Type::float()), vec![crate::ast::Dimension::Anonymous(2)])),
+        ty: Some(Type::Vector(
+            Box::new(Type::float()),
+            vec![crate::ast::Dimension::Anonymous(2)],
+        )),
         expr: None,
         modifiers: vec![],
     }));
@@ -696,7 +770,8 @@ fn mask_index_f32_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "m".to_string(),
@@ -723,10 +798,14 @@ fn mask_index_f32_program() -> Vec<TopLevel> {
 fn test_mask_index_f32_emits_float_gather() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&mask_index_f32_program(), None);
-    assert!(output.contains("@briev_mask_select_f32"),
-        "a Float vector mask must call the f32 gather helper");
-    assert!(output.contains("ptrtoint ptr"),
-        "the List<Float> result must be boxed to an i64 handle");
+    assert!(
+        output.contains("@briev_mask_select_f32"),
+        "a Float vector mask must call the f32 gather helper"
+    );
+    assert!(
+        output.contains("ptrtoint ptr"),
+        "the List<Float> result must be boxed to an i64 handle"
+    );
 }
 
 /// A program with `foreach(i in 0..=5) { acc = acc + i; }` — exercises the
@@ -747,7 +826,8 @@ fn foreach_range_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "acc".to_string(),
@@ -771,7 +851,7 @@ fn foreach_range_program() -> Vec<TopLevel> {
                         Box::new(Expr::Identifier("i".to_string())),
                     ),
                 )],
-            modifiers: vec![],
+                modifiers: vec![],
             },
             Statement::Term(None),
         ],
@@ -788,12 +868,18 @@ fn foreach_range_program() -> Vec<TopLevel> {
 fn test_foreach_range_emits_counted_loop() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&foreach_range_program(), None);
-    assert!(output.contains("foreach.hdr"),
-        "foreach must emit a loop header");
-    assert!(output.contains("icmp sle"),
-        "an inclusive range must compare with sle");
-    assert!(output.contains("foreach.end"),
-        "foreach must emit a loop exit label");
+    assert!(
+        output.contains("foreach.hdr"),
+        "foreach must emit a loop header"
+    );
+    assert!(
+        output.contains("icmp sle"),
+        "an inclusive range must compare with sle"
+    );
+    assert!(
+        output.contains("foreach.end"),
+        "foreach must emit a loop exit label"
+    );
 }
 
 /// 2026-09-08 (audit): a foreach-local assigned inside a `Mutex`/`Barrier`/
@@ -825,7 +911,7 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
                     Box::new(Expr::Identifier("i".to_string())),
                 ),
             )])],
-        modifiers: vec![],
+            modifiers: vec![],
         },
         Statement::Term(None),
     ];
@@ -844,7 +930,8 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body,
         metadata: HashMap::new(),
         derivation: None,
@@ -870,11 +957,20 @@ fn test_foreach_assigned_inside_mutex_gets_alloca() {
             let l = l.trim();
             let rest = l.strip_prefix('%')?;
             let name = rest.split(' ').next()?;
-            if l.contains("alloca i64") { Some(name.to_string()) } else { None }
+            if l.contains("alloca i64") {
+                Some(name.to_string())
+            } else {
+                None
+            }
         })
         .collect();
-    assert!(!pre_allocas.is_empty(), "loop-carried alloca must be seeded before the header; got:\n{output}");
-    let body_load = pre_allocas.iter().any(|r| after_body.contains(&format!("load i64, ptr %{r}")));
+    assert!(
+        !pre_allocas.is_empty(),
+        "loop-carried alloca must be seeded before the header; got:\n{output}"
+    );
+    let body_load = pre_allocas
+        .iter()
+        .any(|r| after_body.contains(&format!("load i64, ptr %{r}")));
     assert!(body_load,
         "loop body must LOAD from a pre-header alloca (accumulation, not stale-read); got:\n{output}");
 }
@@ -897,7 +993,8 @@ fn foreach_break_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "acc".to_string(),
@@ -920,14 +1017,11 @@ fn foreach_break_program() -> Vec<TopLevel> {
                         Box::new(Expr::Decimal(3)),
                     ),
                     vec![
-                        Statement::Assign(
-                            Expr::Identifier("acc".to_string()),
-                            Expr::Decimal(42),
-                        ),
+                        Statement::Assign(Expr::Identifier("acc".to_string()), Expr::Decimal(42)),
                         Statement::Break,
                     ],
                 )],
-            modifiers: vec![],
+                modifiers: vec![],
             },
             Statement::Term(None),
         ],
@@ -944,12 +1038,18 @@ fn foreach_break_program() -> Vec<TopLevel> {
 fn test_foreach_break_emits_exit_branch() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&foreach_break_program(), None);
-    assert!(output.contains("foreach.hdr"),
-        "foreach must emit a loop header");
-    assert!(output.contains("br label %foreach.end"),
-        "a `break` must branch to the innermost foreach end label");
-    assert!(output.contains("foreach.end"),
-        "foreach must emit a loop exit label");
+    assert!(
+        output.contains("foreach.hdr"),
+        "foreach must emit a loop header"
+    );
+    assert!(
+        output.contains("br label %foreach.end"),
+        "a `break` must branch to the innermost foreach end label"
+    );
+    assert!(
+        output.contains("foreach.end"),
+        "foreach must emit a loop exit label"
+    );
 }
 
 /// 2026-08-16 (slice-6 deletion): `foreach x in list` over a `coll obj` uses
@@ -978,10 +1078,14 @@ node s [done == 0][done == 1] {
         .expect("plugin stage failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let output = backend.generate(&items, None);
-    assert!(output.contains("icmp slt"),
-        "a collection iteration compares the counter against the length");
-    assert!(output.contains("getelementptr i64, ptr"),
-        "the tier iteration must GEP each element slot from the data pointer");
+    assert!(
+        output.contains("icmp slt"),
+        "a collection iteration compares the counter against the length"
+    );
+    assert!(
+        output.contains("getelementptr i64, ptr"),
+        "the tier iteration must GEP each element slot from the data pointer"
+    );
 }
 
 /// 2026-08-14 (String unification): `foreach c in s` on a `String` operand
@@ -1008,10 +1112,14 @@ fn test_foreach_string_emits_char_decode_lane() {
         .expect("plugin stage failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let output = backend.generate(&items, None);
-    assert!(output.contains("briev_str_next_char"),
-        "a String foreach must call the char decode lane; got:\n{output}");
-    assert!(output.contains("trunc i64"),
-        "the decoded codepoint must be truncated to Char's native i32; got:\n{output}");
+    assert!(
+        output.contains("briev_str_next_char"),
+        "a String foreach must call the char decode lane; got:\n{output}"
+    );
+    assert!(
+        output.contains("trunc i64"),
+        "the decoded codepoint must be truncated to Char's native i32; got:\n{output}"
+    );
 }
 
 /// 2026-10-23 (tail-loop lowering): the loop-carried nested-enum shape
@@ -1049,13 +1157,29 @@ node run [tick < 1][tick == 1] {
     let items = parser.parse_program().unwrap();
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&items, None);
-    assert!(ir.contains(".tail_header_"), "carrier tail recursion must emit a loop header; got:\n{ir}");
-    let fn_start = ir.find("define i64 @loop(").expect("lowered function must be emitted");
-    let fn_end = fn_start + ir[fn_start..].find("\n}\n").expect("lowered function must close");
+    assert!(
+        ir.contains(".tail_header_"),
+        "carrier tail recursion must emit a loop header; got:\n{ir}"
+    );
+    let fn_start = ir
+        .find("define i64 @loop(")
+        .expect("lowered function must be emitted");
+    let fn_end = fn_start
+        + ir[fn_start..]
+            .find("\n}\n")
+            .expect("lowered function must close");
     let fn_ir = &ir[fn_start..fn_end];
-    assert!(!fn_ir.contains("call i64 @loop("), "the lowered function must contain no recursive self-call; got:\n{fn_ir}");
-    let plain_start = ir.find("define i64 @plain(").expect("plain recursive function must be emitted");
-    let plain_end = plain_start + ir[plain_start..].find("\n}\n").expect("plain function must close");
+    assert!(
+        !fn_ir.contains("call i64 @loop("),
+        "the lowered function must contain no recursive self-call; got:\n{fn_ir}"
+    );
+    let plain_start = ir
+        .find("define i64 @plain(")
+        .expect("plain recursive function must be emitted");
+    let plain_end = plain_start
+        + ir[plain_start..]
+            .find("\n}\n")
+            .expect("plain function must close");
     assert!(
         !ir[plain_start..plain_end].contains(".tail_header_"),
         "plain tail recursion must stay on LLVM TCO (ws_frame regression gate)"
@@ -1084,11 +1208,19 @@ node run [tick < 1][tick == 1] {
         .expect("parse_and_check failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    let start = ir.find("define void @init_state(").expect("init_state must be emitted");
+    let start = ir
+        .find("define void @init_state(")
+        .expect("init_state must be emitted");
     let end = start + ir[start..].find("\n}\n").expect("init_state must close");
     let init = &ir[start..end];
-    assert!(!init.contains("alloca i8"), "state list header must not be stack-allocated; got:\n{init}");
-    assert!(init.contains("call ptr @malloc"), "state list header must be heap-allocated; got:\n{init}");
+    assert!(
+        !init.contains("alloca i8"),
+        "state list header must not be stack-allocated; got:\n{init}"
+    );
+    assert!(
+        init.contains("call ptr @malloc"),
+        "state list header must be heap-allocated; got:\n{init}"
+    );
 }
 
 #[test]
@@ -1108,10 +1240,22 @@ node report [a > 0][true] {
     let items = p.parse_program().unwrap();
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("llvm.ctpop"), "Popcount# must emit llvm.ctpop; got:\n{ir}");
-    assert!(ir.contains("llvm.ctlz"), "LeadingZeros# must emit llvm.ctlz; got:\n{ir}");
-    assert!(ir.contains("llvm.cttz"), "TrailingZeros# must emit llvm.cttz; got:\n{ir}");
-    assert!(ir.contains("llvm.bitreverse"), "BitReverse# must emit llvm.bitreverse; got:\n{ir}");
+    assert!(
+        ir.contains("llvm.ctpop"),
+        "Popcount# must emit llvm.ctpop; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("llvm.ctlz"),
+        "LeadingZeros# must emit llvm.ctlz; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("llvm.cttz"),
+        "TrailingZeros# must emit llvm.cttz; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("llvm.bitreverse"),
+        "BitReverse# must emit llvm.bitreverse; got:\n{ir}"
+    );
 }
 
 /// 2026-08-14 (boundary plan): `Abs#` emits `llvm.abs` (int path) — the
@@ -1130,7 +1274,10 @@ node report [a < 0][true] {
     let items = p.parse_program().unwrap();
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("llvm.abs"), "Abs# must emit llvm.abs; got:\n{ir}");
+    assert!(
+        ir.contains("llvm.abs"),
+        "Abs# must emit llvm.abs; got:\n{ir}"
+    );
 }
 
 /// 2026-10-05 (BUGS.md int-literal-float-init): a DECLARED-type let with an
@@ -1207,7 +1354,10 @@ fn test_float_tuple_destructure_unboxes_f32_elements() {
         body.contains("trunc i64") && body.contains("to float"),
         "f32 tuple elements must be unboxed from their i64 slots: {body}"
     );
-    assert!(body.contains("fadd fast float"), "float add expected: {body}");
+    assert!(
+        body.contains("fadd fast float"),
+        "float add expected: {body}"
+    );
     assert_no_i64_in_float_positions(&ir);
 }
 
@@ -1223,7 +1373,10 @@ fn test_float_tuple_destructure_unboxes_f64_elements() {
         body.contains("bitcast i64") && body.contains("to double"),
         "f64 tuple elements must be unboxed from their i64 slots: {body}"
     );
-    assert!(body.contains("fadd fast double"), "double add expected: {body}");
+    assert!(
+        body.contains("fadd fast double"),
+        "double add expected: {body}"
+    );
     assert_no_i64_in_float_positions(&ir);
 }
 
@@ -1370,7 +1523,10 @@ node report [beginprogram][true] {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
     let f = function_body(&ir, "@sum_to(");
-    assert!(f.contains("loop:"), "txn must have a convergence loop:\n{f}");
+    assert!(
+        f.contains("loop:"),
+        "txn must have a convergence loop:\n{f}"
+    );
     assert!(
         f.contains("br i1") && f.contains("label %done, label %loop"),
         "postcondition must gate done/loop:\n{f}"
@@ -1408,9 +1564,11 @@ node report [beginprogram][true] {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
     let f = function_body(&ir, "@gated(");
-    let alloca = f.find("= alloca i64")
+    let alloca = f
+        .find("= alloca i64")
         .unwrap_or_else(|| panic!("@gated: no alloca:\n{f}"));
-    let guard = f.find("guard.then")
+    let guard = f
+        .find("guard.then")
         .unwrap_or_else(|| panic!("@gated: no guard:\n{f}"));
     assert!(
         alloca < guard,
@@ -1443,7 +1601,10 @@ node report [beginprogram][true] {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
     let widen = function_body(&ir, "@widen(");
-    assert!(widen.contains("zext i32"), "Char→Int must zext i32 to i64:\n{widen}");
+    assert!(
+        widen.contains("zext i32"),
+        "Char→Int must zext i32 to i64:\n{widen}"
+    );
     assert!(
         !widen.contains("trunc i64"),
         "a native Char local must not be trunc'd from i64:\n{widen}"
@@ -1452,7 +1613,10 @@ node report [beginprogram][true] {
 
 /// Extract a function's IR body (`define … @name(…){ … }`).
 fn function_body(ir: &str, sig: &str) -> String {
-    let start = ir.find(sig).and_then(|p| ir[..p].rfind("define ")).unwrap_or(0);
+    let start = ir
+        .find(sig)
+        .and_then(|p| ir[..p].rfind("define "))
+        .unwrap_or(0);
     let rest = &ir[start..];
     let end = rest.find("\n}").map(|e| e + 2).unwrap_or(rest.len());
     rest[..end].to_string()
@@ -1544,7 +1708,10 @@ node report [beginprogram][true] {
     let rewrap = function_body(&ir, "@rewrap(");
     // The Err arm loads the String payload and inttoptr's it to a ptr before
     // re-boxing; without the unbox it would `ptrtoint ptr <i64>` (invalid).
-    assert!(rewrap.contains("inttoptr"), "String payload must inttoptr:\n{rewrap}");
+    assert!(
+        rewrap.contains("inttoptr"),
+        "String payload must inttoptr:\n{rewrap}"
+    );
 }
 
 /// 2026-11-03 (Proof 3 condition 2, I11 root cause): an enum image stored into
@@ -1660,8 +1827,7 @@ node run [tick == 0][tick == 1] {
 /// defined as i64 may never feed a float-typed operand or store. Register
 /// names repeat across functions, so defs reset at each `define`.
 fn assert_no_i64_in_float_positions(ir: &str) {
-    let mut def_ty: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut def_ty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for line in ir.lines() {
         let t = line.trim();
         if t.starts_with("define ") {
@@ -1694,18 +1860,11 @@ fn is_float_position(t: &str) -> bool {
 fn check_float_operands(t: &str, def_ty: &std::collections::HashMap<String, String>) {
     t.split(&[' ', ',', '[', ']', '(', ')'][..])
         .map(|tok| tok.trim_start_matches('%'))
-        .filter(|tok| {
-            !tok.is_empty()
-                && tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        })
+        .filter(|tok| !tok.is_empty() && tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
         .for_each(|tok| check_one_operand(tok, t, def_ty));
 }
 
-fn check_one_operand(
-    tok: &str,
-    line: &str,
-    def_ty: &std::collections::HashMap<String, String>,
-) {
+fn check_one_operand(tok: &str, line: &str, def_ty: &std::collections::HashMap<String, String>) {
     if let Some(def) = def_ty.get(tok) {
         assert!(
             def != "i64",
@@ -1717,23 +1876,22 @@ fn check_one_operand(
 /// Record one instruction's DEF type (`%reg = kind ...` → the result LLVM
 /// type) into the verifier map.
 fn record_reg_def(t: &str, def_ty: &mut std::collections::HashMap<String, String>) {
-    let Some((reg, rest)) = t.split_once(" = ") else { return };
+    let Some((reg, rest)) = t.split_once(" = ") else {
+        return;
+    };
     let reg = reg.trim_start_matches('%').to_string();
     let kind = rest.split_whitespace().next().unwrap_or("");
     let def = match kind {
         "load" => rest.split_whitespace().nth(1).unwrap_or("i64").to_string(),
-        "zext" | "trunc" | "sitofp" | "fptosi" | "sext" | "bitcast" | "fpext"
-        | "fptrunc" => rest
+        "zext" | "trunc" | "sitofp" | "fptosi" | "sext" | "bitcast" | "fpext" | "fptrunc" => rest
             .rsplit(" to ")
             .next()
             .unwrap_or("i64")
             .trim()
             .to_string(),
-        "add" | "sub" | "mul" | "phi" | "fadd" | "fsub" | "fmul" | "select" => rest
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("i64")
-            .to_string(),
+        "add" | "sub" | "mul" | "phi" | "fadd" | "fsub" | "fmul" | "select" => {
+            rest.split_whitespace().nth(1).unwrap_or("i64").to_string()
+        }
         _ => return,
     };
     def_ty.insert(reg, def);
@@ -1759,8 +1917,14 @@ defn f(n: Int) [n >= 0] -> Int {
     crate::typechecker::check_program(&mut items, &universe).expect("checks");
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&items, None);
-    assert!(!ir.contains("guard.then"), "proven guard emitted a branch:\n{ir}");
-    assert!(!ir.contains("call void @llvm.trap"), "proven guard emitted a trap:\n{ir}");
+    assert!(
+        !ir.contains("guard.then"),
+        "proven guard emitted a branch:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call void @llvm.trap"),
+        "proven guard emitted a trap:\n{ir}"
+    );
 }
 
 #[test]
@@ -1784,7 +1948,10 @@ node report [n > 0][n > 0] {
     // Four unrolled element adds (one per index), in declaration order.
     let adds = ir.matches("add i64").count();
     assert!(adds >= 4, "expected >= 4 unrolled adds, got {adds}:\n{ir}");
-    assert!(!ir.contains("Wildcard"), "no wildcard may reach the IR:\n{ir}");
+    assert!(
+        !ir.contains("Wildcard"),
+        "no wildcard may reach the IR:\n{ir}"
+    );
 }
 
 /// A program with a `Int[2][3]` state field written and read at `[1][2]` —
@@ -1795,7 +1962,10 @@ fn multidim_program() -> Vec<TopLevel> {
         names: vec![],
         ty: Some(Type::Vector(
             Box::new(Type::int()),
-            vec![crate::ast::Dimension::Anonymous(2), crate::ast::Dimension::Anonymous(3)],
+            vec![
+                crate::ast::Dimension::Anonymous(2),
+                crate::ast::Dimension::Anonymous(3),
+            ],
         )),
         expr: None,
         modifiers: vec![],
@@ -1815,7 +1985,8 @@ fn multidim_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(
                 Expr::Index(
@@ -1842,8 +2013,10 @@ fn multidim_program() -> Vec<TopLevel> {
 fn test_multidim_field_emits_nested_geps() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&multidim_program(), None);
-    assert!(output.contains("[2 x [3 x i64]]"),
-        "a 2-dim field must lay out as [2 x [3 x i64]]");
+    assert!(
+        output.contains("[2 x [3 x i64]]"),
+        "a 2-dim field must lay out as [2 x [3 x i64]]"
+    );
 }
 
 /// An `obj Box<T, M> { data: T[M]; total: Int; ... }` with a top-level
@@ -1857,26 +2030,40 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
     let obj_decl = TopLevel::TypeDef(Box::new(crate::ast::top::TypeDef {
         name: "Box".to_string(),
         type_params: vec![
-            crate::ast::top::TypeParam { name: "T".to_string(), bound: None },
-            crate::ast::top::TypeParam { name: "M".to_string(), bound: None },
+            crate::ast::top::TypeParam {
+                name: "T".to_string(),
+                bound: None,
+            },
+            crate::ast::top::TypeParam {
+                name: "M".to_string(),
+                bound: None,
+            },
         ],
         parent: None,
         protocol: None,
         traits: vec![],
         bit_range: None,
-            coll: false,
-            ports_in: Vec::new(),
-            ports_out: Vec::new(),
-            seq: false,
+        coll: false,
+        ports_in: Vec::new(),
+        ports_out: Vec::new(),
+        seq: false,
         body: crate::ast::top::TypeDefBody {
             pins: Vec::new(),
             reference: None,
             slots: vec![
-                crate::ast::top::TypeDefSlot { name: "data".to_string(), ty: Type::Vector(
-                    Box::new(Type::Custom("T".to_string())),
-                    vec![crate::ast::Dimension::Named("M".to_string(), 0)],
-                ), bit_range: None },
-                crate::ast::top::TypeDefSlot { name: "total".to_string(), ty: Type::int(), bit_range: None },
+                crate::ast::top::TypeDefSlot {
+                    name: "data".to_string(),
+                    ty: Type::Vector(
+                        Box::new(Type::Custom("T".to_string())),
+                        vec![crate::ast::Dimension::Named("M".to_string(), 0)],
+                    ),
+                    bit_range: None,
+                },
+                crate::ast::top::TypeDefSlot {
+                    name: "total".to_string(),
+                    ty: Type::int(),
+                    bit_range: None,
+                },
             ],
             metadata: HashMap::new(),
             projections: vec![],
@@ -1899,10 +2086,16 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
-                    Statement::Assign(Expr::Identifier("data".to_string()),
-                        Expr::Index(Box::new(Expr::Identifier("data".to_string())), Box::new(Expr::Decimal(0)))),
+                    Statement::Assign(
+                        Expr::Identifier("data".to_string()),
+                        Expr::Index(
+                            Box::new(Expr::Identifier("data".to_string())),
+                            Box::new(Expr::Decimal(0)),
+                        ),
+                    ),
                     Statement::Assign(Expr::Identifier("total".to_string()), Expr::Decimal(1)),
                     Statement::Term(None),
                 ],
@@ -1913,17 +2106,18 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
-            hold_laws: vec![], modes: vec![],
+            hold_laws: vec![],
+            modes: vec![],
         },
         span: None,
     }));
     let inst = TopLevel::Statement(Box::new(Statement::Let {
         name: "b".to_string(),
         names: vec![],
-        ty: Some(Type::Applied("Box".to_string(), vec![
-            Type::int(),
-            crate::ast::Type::Number(5),
-        ])),
+        ty: Some(Type::Applied(
+            "Box".to_string(),
+            vec![Type::int(), crate::ast::Type::Number(5)],
+        )),
         expr: Some(Expr::Decimal(0)),
         modifiers: vec![],
     }));
@@ -1942,16 +2136,23 @@ fn unpacked_instance_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(
                 Expr::Index(
-                    Box::new(Expr::Field(Box::new(Expr::Identifier("b".to_string())), "data".to_string())),
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Identifier("b".to_string())),
+                        "data".to_string(),
+                    )),
                     Box::new(Expr::Decimal(2)),
                 ),
                 Expr::Decimal(42),
             ),
-            Statement::Term(Some(Expr::Field(Box::new(Expr::Identifier("b".to_string())), "total".to_string()))),
+            Statement::Term(Some(Expr::Field(
+                Box::new(Expr::Identifier("b".to_string())),
+                "total".to_string(),
+            ))),
         ],
         metadata: HashMap::new(),
         derivation: None,
@@ -1980,24 +2181,36 @@ node step [c.value == 0][c.value == 1] {
         .expect("parse_and_check failed");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    let call = ir.find("call i64 @make_counter").expect("assignment call must be emitted");
+    let call = ir
+        .find("call i64 @make_counter")
+        .expect("assignment call must be emitted");
     let tail = &ir[call..(call + 4000).min(ir.len())];
-    assert!(tail.contains("getelementptr inbounds %State"),
-        "instance assignment must address the unpacked state columns; got:\n{tail}");
-    assert!(tail.contains("store i64"),
-        "instance assignment must store the returned member into its column; got:\n{tail}");
+    assert!(
+        tail.contains("getelementptr inbounds %State"),
+        "instance assignment must address the unpacked state columns; got:\n{tail}"
+    );
+    assert!(
+        tail.contains("store i64"),
+        "instance assignment must store the returned member into its column; got:\n{tail}"
+    );
 }
 
 #[test]
 fn test_unpacked_instance_emits_prefixed_slots() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&unpacked_instance_program(), None);
-    assert!(output.contains("[5 x i64]"),
-        "the member-array must unpack into a [5 x i64] top-level slot");
-    assert!(output.contains("define void @txn_s"),
-        "the node must compile");
-    assert!(output.contains("getelementptr [5 x i64], ptr"),
-        "b.data[2] must GEP the unpacked slot's array");
+    assert!(
+        output.contains("[5 x i64]"),
+        "the member-array must unpack into a [5 x i64] top-level slot"
+    );
+    assert!(
+        output.contains("define void @txn_s"),
+        "the node must compile"
+    );
+    assert!(
+        output.contains("getelementptr [5 x i64], ptr"),
+        "b.data[2] must GEP the unpacked slot's array"
+    );
 }
 
 /// A countdown node that spawns a Counter + calls its member — the spawned
@@ -2013,14 +2226,18 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
         protocol: None,
         traits: vec![],
         bit_range: None,
-            coll: false,
-            ports_in: Vec::new(),
-            ports_out: Vec::new(),
-            seq: false,
+        coll: false,
+        ports_in: Vec::new(),
+        ports_out: Vec::new(),
+        seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
+            slots: vec![TypeDefSlot {
+                name: "count".to_string(),
+                ty: Type::int(),
+                bit_range: None,
+            }],
             metadata: HashMap::new(),
             projections: vec![],
             bindings: vec![],
@@ -2042,7 +2259,8 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
                     Statement::Assign(
                         Expr::Identifier("count".to_string()),
@@ -2061,7 +2279,8 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
                 doc: None,
             })],
             span: None,
-            hold_laws: vec![], modes: vec![],
+            hold_laws: vec![],
+            modes: vec![],
         },
         span: None,
     }));
@@ -2102,13 +2321,18 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "h".to_string(),
                 names: vec![],
                 ty: Some(Type::Custom("Counter".to_string())),
-                expr: Some(Expr::Spawn { type_name: "Counter".to_string(), args: vec![], storage: crate::ast::SpawnStorage::Pooled }),
+                expr: Some(Expr::Spawn {
+                    type_name: "Counter".to_string(),
+                    args: vec![],
+                    storage: crate::ast::SpawnStorage::Pooled,
+                }),
                 modifiers: vec![],
             },
             Statement::Expression(Expr::MethodCall(
@@ -2144,17 +2368,25 @@ fn spawn_countdown_program() -> Vec<TopLevel> {
 fn test_spawn_member_call_uses_column_row() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&spawn_countdown_program(), None);
-    assert!(output.contains("getelementptr [3 x i64], ptr"),
-        "the countdown loop body must GEP the count column at the handle's row");
-    assert!(!output.contains("inttoptr"),
-        "a spawned handle's member body must NOT fall back to the boxed self path");
-    assert!(output.contains("llvm.loop.disable_nonforced"),
-        "a loop with an observable call (the Print# term) must not be folded by LLVM");
+    assert!(
+        output.contains("getelementptr [3 x i64], ptr"),
+        "the countdown loop body must GEP the count column at the handle's row"
+    );
+    assert!(
+        !output.contains("inttoptr"),
+        "a spawned handle's member body must NOT fall back to the boxed self path"
+    );
+    assert!(
+        output.contains("llvm.loop.disable_nonforced"),
+        "a loop with an observable call (the Print# term) must not be folded by LLVM"
+    );
     // 2026-08-08 (literal-bound countdown fix): the countdown `[ticks < 2]`
     // must loop to the literal 2, not the `add i64 0, 1` fallback that ran
     // every literal-bound loop once and silently dropped spawns.
-    assert!(output.contains("add i64 0, 2"),
-        "the literal countdown bound (2) must be emitted, not the fallback 1: {output}");
+    assert!(
+        output.contains("add i64 0, 2"),
+        "the literal countdown bound (2) must be emitted, not the fallback 1: {output}"
+    );
 }
 
 /// A countdown whose bound is a RUNTIME state field (`N`), spawning a
@@ -2168,7 +2400,11 @@ fn spawn_dependent_countdown_program() -> Vec<TopLevel> {
         name: "N".to_string(),
         names: vec![],
         ty: Some(Type::int()),
-        expr: Some(Expr::Call("get_env_int!".to_string(), vec![Expr::Quoted(b"BOUND".to_vec())], None)),
+        expr: Some(Expr::Call(
+            "get_env_int!".to_string(),
+            vec![Expr::Quoted(b"BOUND".to_vec())],
+            None,
+        )),
         modifiers: vec![],
     }));
     spawn_pool_countdown_program(n_item)
@@ -2214,14 +2450,18 @@ fn spawn_pool_countdown_program_storage(
         protocol: None,
         traits: vec![],
         bit_range: None,
-            coll: false,
-            ports_in: Vec::new(),
-            ports_out: Vec::new(),
-            seq: false,
+        coll: false,
+        ports_in: Vec::new(),
+        ports_out: Vec::new(),
+        seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
+            slots: vec![TypeDefSlot {
+                name: "count".to_string(),
+                ty: Type::int(),
+                bit_range: None,
+            }],
             metadata: HashMap::new(),
             projections: vec![],
             bindings: vec![],
@@ -2243,7 +2483,8 @@ fn spawn_pool_countdown_program_storage(
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
                     Statement::Assign(
                         Expr::Identifier("count".to_string()),
@@ -2262,7 +2503,8 @@ fn spawn_pool_countdown_program_storage(
                 doc: None,
             })],
             span: None,
-            hold_laws: vec![], modes: vec![],
+            hold_laws: vec![],
+            modes: vec![],
         },
         span: None,
     }));
@@ -2304,13 +2546,18 @@ fn spawn_pool_countdown_program_storage(
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "h".to_string(),
                 names: vec![],
                 ty: Some(Type::Custom("Counter".to_string())),
-                expr: Some(Expr::Spawn { type_name: "Counter".to_string(), args: vec![], storage }),
+                expr: Some(Expr::Spawn {
+                    type_name: "Counter".to_string(),
+                    args: vec![],
+                    storage,
+                }),
                 modifiers: vec![],
             },
             Statement::Expression(Expr::MethodCall(
@@ -2346,25 +2593,36 @@ fn spawn_pool_countdown_program_storage(
 fn test_dependent_spawn_pool_heap_buffer() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&spawn_dependent_countdown_program(), None);
-    assert!(output.contains("= call ptr @malloc"),
-        "a DEPENDENT pool must allocate a runtime-sized heap buffer at init: missing malloc");
-    assert!(output.contains("inttoptr i64"),
-        "the heap buffer address must be stored as an i64 slot and re-pointed on access");
-    assert!(!output.contains("getelementptr [3 x i64], ptr"),
-        "a DEPENDENT pool must NOT emit the static [capacity x T] column");
+    assert!(
+        output.contains("= call ptr @malloc"),
+        "a DEPENDENT pool must allocate a runtime-sized heap buffer at init: missing malloc"
+    );
+    assert!(
+        output.contains("inttoptr i64"),
+        "the heap buffer address must be stored as an i64 slot and re-pointed on access"
+    );
+    assert!(
+        !output.contains("getelementptr [3 x i64], ptr"),
+        "a DEPENDENT pool must NOT emit the static [capacity x T] column"
+    );
     // 2026-08-08 (Bug 3): the buffer holds total + 1 rows — the allocator
     // counter starts at row 1, so the last spawned row is index `total`; the
     // malloc size must be (bound + 1) * elem_size, else the final spawn writes
     // one-past-the-end (hidden only by malloc slop in spr.bv). The size
     // computation sits immediately before the malloc call: the +1 add, the
     // elem_size multiply, then malloc.
-    let malloc_pos = output.find("= call ptr @malloc")
+    let malloc_pos = output
+        .find("= call ptr @malloc")
         .expect("malloc must follow the size computation: {output}");
     let before = &output[malloc_pos.saturating_sub(200)..malloc_pos];
-    assert!(before.contains(", 1") && before.contains("add i64") && before.contains("mul i64"),
-        "size = (bound + 1) * elem must be computed right before malloc: {output}");
-    assert!(output.contains("llvm.loop.disable_nonforced"),
-        "observable spawn work loop must not be folded");
+    assert!(
+        before.contains(", 1") && before.contains("add i64") && before.contains("mul i64"),
+        "size = (bound + 1) * elem must be computed right before malloc: {output}"
+    );
+    assert!(
+        output.contains("llvm.loop.disable_nonforced"),
+        "observable spawn work loop must not be folded"
+    );
 }
 
 /// 2026-08-09 (init kind, Phase 4): a bounded-init countdown sizes its pool
@@ -2450,14 +2708,18 @@ fn counter_type_def() -> TopLevel {
         protocol: None,
         traits: vec![],
         bit_range: None,
-            coll: false,
-            ports_in: Vec::new(),
-            ports_out: Vec::new(),
-            seq: false,
+        coll: false,
+        ports_in: Vec::new(),
+        ports_out: Vec::new(),
+        seq: false,
         body: TypeDefBody {
             pins: Vec::new(),
             reference: None,
-            slots: vec![TypeDefSlot { name: "count".to_string(), ty: Type::int(), bit_range: None }],
+            slots: vec![TypeDefSlot {
+                name: "count".to_string(),
+                ty: Type::int(),
+                bit_range: None,
+            }],
             metadata: HashMap::new(),
             projections: vec![],
             bindings: vec![],
@@ -2479,7 +2741,8 @@ fn counter_type_def() -> TopLevel {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
                     Statement::Assign(
                         Expr::Identifier("count".to_string()),
@@ -2537,13 +2800,18 @@ fn spawn_work_state_and_node() -> [TopLevel; 2] {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Let {
                 name: "h".to_string(),
                 names: vec![],
                 ty: Some(Type::Custom("Counter".to_string())),
-                expr: Some(Expr::Spawn { type_name: "Counter".to_string(), args: vec![], storage: crate::ast::SpawnStorage::Pooled }),
+                expr: Some(Expr::Spawn {
+                    type_name: "Counter".to_string(),
+                    args: vec![],
+                    storage: crate::ast::SpawnStorage::Pooled,
+                }),
                 modifiers: vec![],
             },
             Statement::Expression(Expr::MethodCall(
@@ -2572,7 +2840,7 @@ fn spawn_work_state_and_node() -> [TopLevel; 2] {
         span: None,
         doc: None,
     });
-      [ticks, node]
+    [ticks, node]
 }
 
 fn spawn_only_base_items() -> [TopLevel; 3] {
@@ -2604,7 +2872,6 @@ fn test_spawn_only_base_registers_pool() {
     );
 }
 
-
 /// A reactive node whose term is a match over the `n` state field:
 /// `1..=5 => 7`, `_ => 0`. Exercises the codegen match lowering
 /// (2026-08-06, Phase 7).
@@ -2629,7 +2896,8 @@ fn match_range_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![Statement::Term(Some(Expr::Match(
             Box::new(Expr::Identifier("n".to_string())),
             vec![
@@ -2658,10 +2926,19 @@ fn match_range_program() -> Vec<TopLevel> {
 fn test_match_emits_arm_chain_and_phi() {
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&match_range_program(), None);
-    assert!(output.contains(".match_arm_"), "match arms must be emitted as blocks");
-    assert!(output.contains("phi i64"), "match results must merge in a phi");
+    assert!(
+        output.contains(".match_arm_"),
+        "match arms must be emitted as blocks"
+    );
+    assert!(
+        output.contains("phi i64"),
+        "match results must merge in a phi"
+    );
     assert!(output.contains("icmp sle"), "inclusive range must use sle");
-    assert!(output.contains("icmp sge"), "range lower bound must use sge");
+    assert!(
+        output.contains("icmp sge"),
+        "range lower bound must use sge"
+    );
 }
 
 #[test]
@@ -2673,12 +2950,18 @@ fn test_webstack_enabled_emits_flush_state() {
         .with_int_bits(32)
         .with_target_triple("wasm32-unknown-wasi");
     let output = backend.generate(&empty_program(), None);
-    assert!(output.contains("__web_flush_state"),
-        "should declare __web_flush_state import");
-    assert!(output.contains("state_layout"),
-        "should export state_layout function");
-    assert!(output.contains("__web_generation"),
-        "should emit generation counter global");
+    assert!(
+        output.contains("__web_flush_state"),
+        "should declare __web_flush_state import"
+    );
+    assert!(
+        output.contains("state_layout"),
+        "should export state_layout function"
+    );
+    assert!(
+        output.contains("__web_generation"),
+        "should emit generation counter global"
+    );
 }
 
 #[test]
@@ -2688,10 +2971,14 @@ fn test_webstack_disabled_omits_flush_state() {
         .with_int_bits(32)
         .with_target_triple("wasm32-unknown-wasi");
     let output = backend.generate(&empty_program(), None);
-    assert!(!output.contains("__web_flush_state"),
-        "should NOT declare __web_flush_state without webstack enabled");
-    assert!(!output.contains("state_layout"),
-        "should NOT export state_layout without webstack enabled");
+    assert!(
+        !output.contains("__web_flush_state"),
+        "should NOT declare __web_flush_state without webstack enabled"
+    );
+    assert!(
+        !output.contains("state_layout"),
+        "should NOT export state_layout without webstack enabled"
+    );
 }
 
 #[test]
@@ -2710,8 +2997,10 @@ fn test_webstack_emits_flush_at_term() {
         make_txn("increment", vec![]),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("__web_flush_state"),
-        "transactions should call __web_flush_state at term");
+    assert!(
+        output.contains("__web_flush_state"),
+        "transactions should call __web_flush_state at term"
+    );
 }
 
 #[test]
@@ -2722,17 +3011,20 @@ fn test_webstack_bv_logic_only() {
         .with_webstack(true)
         .with_int_bits(32)
         .with_target_triple("wasm32-unknown-wasi");
-    let program = vec![
-        state_count(),
-        make_txn("compute", vec![]),
-    ];
+    let program = vec![state_count(), make_txn("compute", vec![])];
     let output = backend.generate(&program, None);
-    assert!(output.contains("wasm32-unknown-wasi"),
-        "should use wasm32 target triple in .bv webstack mode");
-    assert!(output.contains("__web_flush_state"),
-        "should emit flush state for webstack even with logic-only .bv");
-    assert!(output.contains("state_layout"),
-        "should export state_layout function");
+    assert!(
+        output.contains("wasm32-unknown-wasi"),
+        "should use wasm32 target triple in .bv webstack mode"
+    );
+    assert!(
+        output.contains("__web_flush_state"),
+        "should emit flush state for webstack even with logic-only .bv"
+    );
+    assert!(
+        output.contains("state_layout"),
+        "should export state_layout function"
+    );
 }
 
 /// 2026-08-11 (wasm32 obj-member fix): a Ptr-indexed store `data[i] = v` at
@@ -2767,13 +3059,11 @@ txn store [i < 8][true] {
 #[test]
 fn test_llvm_generates_state_type() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::StateDecl(StateDecl {
-            name: "counter".to_string(),
-            ty: Type::int(),
-            span: None,
-        }),
-    ];
+    let program = vec![TopLevel::StateDecl(StateDecl {
+        name: "counter".to_string(),
+        ty: Type::int(),
+        span: None,
+    })];
     let output = backend.generate(&program, None);
     assert!(output.contains("%State"));
     assert!(output.contains("i64"));
@@ -2800,7 +3090,14 @@ fn test_llvm_generates_transaction() {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Assign(Expr::Identifier("count".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("count".to_string())), Box::new(Expr::Decimal(1)))),
+                Statement::Assign(
+                    Expr::Identifier("count".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("count".to_string())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -2895,12 +3192,27 @@ fn test_llvm_has_noalias() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("noalias"), "Transaction should have noalias");
-    assert!(output.contains("nocapture"), "Transaction should have nocapture");
-    assert!(output.contains("local_unnamed_addr"), "Should have local_unnamed_addr");
-    assert!(output.contains("attributes #0"), "Should have attribute block");
+    assert!(
+        output.contains("noalias"),
+        "Transaction should have noalias"
+    );
+    assert!(
+        output.contains("nocapture"),
+        "Transaction should have nocapture"
+    );
+    assert!(
+        output.contains("local_unnamed_addr"),
+        "Should have local_unnamed_addr"
+    );
+    assert!(
+        output.contains("attributes #0"),
+        "Should have attribute block"
+    );
     assert!(output.contains("mustprogress"), "Should have mustprogress");
-    assert!(output.contains("llvm.assume"), "Should declare llvm.assume intrinsic");
+    assert!(
+        output.contains("llvm.assume"),
+        "Should declare llvm.assume intrinsic"
+    );
 }
 
 #[test]
@@ -2915,10 +3227,19 @@ fn test_inline_directive_emits_alwaysinline() {
     let mut backend = LlvmBackend::new();
     let program = vec![
         state_count(),
-        make_txn("inline_txn", vec![Annotation { name: "inline".to_string(), value: Some(Expr::Bool(true)) }]),
+        make_txn(
+            "inline_txn",
+            vec![Annotation {
+                name: "inline".to_string(),
+                value: Some(Expr::Bool(true)),
+            }],
+        ),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("alwaysinline"), "#inline should emit alwaysinline");
+    assert!(
+        output.contains("alwaysinline"),
+        "#inline should emit alwaysinline"
+    );
 }
 
 #[test]
@@ -2926,21 +3247,30 @@ fn test_speculative_inline_emits_inlinehint() {
     let mut backend = LlvmBackend::new();
     let program = vec![
         state_count(),
-        make_txn("hinted_txn", vec![Annotation { name: "?inline".to_string(), value: Some(Expr::Bool(true)) }]),
+        make_txn(
+            "hinted_txn",
+            vec![Annotation {
+                name: "?inline".to_string(),
+                value: Some(Expr::Bool(true)),
+            }],
+        ),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("inlinehint"), "#?inline should emit inlinehint");
+    assert!(
+        output.contains("inlinehint"),
+        "#?inline should emit inlinehint"
+    );
 }
 
 #[test]
 fn test_inline_directive_absent_no_extra_attr() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        state_count(),
-        make_txn("plain_txn", vec![]),
-    ];
+    let program = vec![state_count(), make_txn("plain_txn", vec![])];
     let output = backend.generate(&program, None);
-    assert!(output.contains("alwaysinline"), "cycle-free txn should have alwaysinline by default");
+    assert!(
+        output.contains("alwaysinline"),
+        "cycle-free txn should have alwaysinline by default"
+    );
 }
 
 // ── 2026-10-16 (absolute-limit addendum part 1): frame-limit check ──────────
@@ -2966,7 +3296,10 @@ fn test_frame_limit_breach_rejects_with_fix() {
     // what/why/fix, not a downstream LLVM/linker mystery.
     let big_state = TopLevel::StateDecl(StateDecl {
         name: "big".to_string(),
-        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(100000)]),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(100000)],
+        ),
         span: None,
     });
     let mut backend = LlvmBackend::new().with_target_triple("thumbv7m-none-eabi");
@@ -2985,7 +3318,10 @@ fn test_frame_limit_breach_rejects_with_fix() {
         body: vec![
             Statement::Assign(
                 Expr::Identifier("count".to_string()),
-                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("big".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                ),
             ),
             Statement::Term(None),
         ],
@@ -3001,10 +3337,14 @@ fn test_frame_limit_breach_rejects_with_fix() {
     let err = result.expect_err("frame breach must reject");
     let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("frame limit"), "message states what: {msg}");
-    assert!(msg.contains("400000") || msg.contains("409600") || msg.contains("bytes"),
-        "message states the measured frame: {msg}");
-    assert!(msg.contains("Malloc#") && msg.contains("frame_limit_bytes"),
-        "message supplies the concrete fix: {msg}");
+    assert!(
+        msg.contains("400000") || msg.contains("409600") || msg.contains("bytes"),
+        "message states the measured frame: {msg}"
+    );
+    assert!(
+        msg.contains("Malloc#") && msg.contains("frame_limit_bytes"),
+        "message supplies the concrete fix: {msg}"
+    );
 }
 
 #[test]
@@ -3013,7 +3353,10 @@ fn test_frame_limit_silent_when_under() {
     // emitted untouched.
     let big_state = TopLevel::StateDecl(StateDecl {
         name: "big".to_string(),
-        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(100000)]),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(100000)],
+        ),
         span: None,
     });
     let mut backend = LlvmBackend::new();
@@ -3030,7 +3373,10 @@ fn test_frame_limit_silent_when_under() {
         body: vec![
             Statement::Assign(
                 Expr::Identifier("count".to_string()),
-                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("big".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                ),
             ),
             Statement::Term(None),
         ],
@@ -3045,27 +3391,36 @@ fn test_frame_limit_silent_when_under() {
 }
 
 #[test]
-fn test_aggregate_zero_init_memset_threshold() {    // 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at/above
+fn test_aggregate_zero_init_memset_threshold() {
+    // 2026-10-16 (cpp-vs-briev P1, flaw 1): aggregate zero-init at/above
     // `aggregate_zero_init_memset_bytes` (default 4096) lowers to
     // llvm.memset instead of one multi-megabyte aggregate store (LLVM 17's
     // X86 IS crashed on `store [1586126 x float] zeroinitializer`); below
     // the threshold the emission is byte-identical to the old store.
     let big_state = TopLevel::StateDecl(StateDecl {
         name: "big".to_string(),
-        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(1586126)]),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(1586126)],
+        ),
         span: None,
     });
     let small_state = TopLevel::StateDecl(StateDecl {
         name: "small".to_string(),
-        ty: Type::Vector(Box::new(Type::Custom("Float".to_string())), vec![crate::ast::Dimension::Anonymous(16)]),
+        ty: Type::Vector(
+            Box::new(Type::Custom("Float".to_string())),
+            vec![crate::ast::Dimension::Anonymous(16)],
+        ),
         span: None,
     });
     // 2026-11-03: element widths now use the registered numeric protocols.
     // Supply the same universe as a real compilation instead of relying on
     // a type-name exception in the array emitter.
     let (_, universe) = crate::library::parse_and_check(
-        "scratch/aggregate_widths.bv", "let floating: Float = 0.0;",
-    ).expect("numeric type universe");
+        "scratch/aggregate_widths.bv",
+        "let floating: Float = 0.0;",
+    )
+    .expect("numeric type universe");
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     // A txn is required so the program takes the standard init-state emission
     // path (a state-only program emits no init stores), and the arrays must
@@ -3083,11 +3438,20 @@ fn test_aggregate_zero_init_memset_threshold() {    // 2026-10-16 (cpp-vs-briev 
         body: vec![
             Statement::Assign(
                 Expr::Identifier("count".to_string()),
-                Expr::Index(Box::new(Expr::Identifier("big".to_string())), Box::new(Expr::Decimal(0))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("big".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                ),
             ),
             Statement::Assign(
-                Expr::Index(Box::new(Expr::Identifier("small".to_string())), Box::new(Expr::Decimal(1))),
-                Expr::Index(Box::new(Expr::Identifier("small".to_string())), Box::new(Expr::Decimal(0))),
+                Expr::Index(
+                    Box::new(Expr::Identifier("small".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+                Expr::Index(
+                    Box::new(Expr::Identifier("small".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                ),
             ),
             Statement::Term(None),
         ],
@@ -3114,7 +3478,8 @@ fn test_aggregate_zero_init_memset_threshold() {    // 2026-10-16 (cpp-vs-briev 
 }
 
 #[test]
-fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {    // 2026-10-16 (cpp-vs-briev flaw 4, BUGS.md): a node-body let assigned
+fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {
+    // 2026-10-16 (cpp-vs-briev flaw 4, BUGS.md): a node-body let assigned
     // inside a guard and read after it must have its alloca in the function
     // ENTRY. The reactive `@txn_<name>` and `@async_body_<name>` emitters
     // skipped the reassigned-let pre-declaration, demoting the alloca into
@@ -3170,13 +3535,20 @@ fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {    // 2026-10-16 (c
         let start = output
             .find(&format!("define void @{}(", fname))
             .unwrap_or_else(|| panic!("missing function @{}", fname));
-        let end = output[start..].find("\n}").map(|e| start + e).unwrap_or(output.len());
+        let end = output[start..]
+            .find("\n}")
+            .map(|e| start + e)
+            .unwrap_or(output.len());
         output[start..end].to_string()
     };
     for fname in ["txn_guarded_let", "async_body_guarded_let"] {
         let f = slice(fname);
-        let alloca = f.find("= alloca ").unwrap_or_else(|| panic!("@{}: no alloca", fname));
-        let guard = f.find("guard.then").unwrap_or_else(|| panic!("@{}: no guard", fname));
+        let alloca = f
+            .find("= alloca ")
+            .unwrap_or_else(|| panic!("@{}: no alloca", fname));
+        let guard = f
+            .find("guard.then")
+            .unwrap_or_else(|| panic!("@{}: no guard", fname));
         assert!(
             alloca < guard,
             "@{}: reassigned-let alloca must precede the guard block (entry, not guard.then)",
@@ -3185,14 +3557,14 @@ fn test_reassigned_let_in_reactive_txn_gets_entry_alloca() {    // 2026-10-16 (c
     }
 }
 
-
 #[test]
 fn test_atomic_add_at_lowers_to_element_atomicrmw() {
     // 2026-10-01 (plan 2026-10-01-atomic-element-rmw.md A1): the
     // element-addressed atomic — state-GEP + element GEP + one atomicrmw
     // at the slot. Int-arrays-only v1 (the storage-split note lives in
     // the panic message).
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     backend.ctx.field_index_map.insert("total".to_string(), 0);
     backend.ctx.field_types.push("[8 x i64]".to_string());
     backend.ctx.field_briev_types.push(Type::Vector(
@@ -3214,7 +3586,10 @@ fn test_atomic_add_at_lowers_to_element_atomicrmw() {
         "  ",
     );
     assert_eq!(reg.ty, Type::int());
-    assert!(out.contains("getelementptr [8 x i64]"), "element GEP:\n{out}");
+    assert!(
+        out.contains("getelementptr [8 x i64]"),
+        "element GEP:\n{out}"
+    );
     assert!(
         out.contains("atomicrmw add ptr"),
         "the atomic is the WHOLE op:\n{out}"
@@ -3286,7 +3661,8 @@ fn test_accel_descriptors_emit() {
     // with each field's HOST offset (kernel field order), so the runtime's
     // generic pack matches the kernel's %State GEPs. Tested directly — SPIR-V
     // blob compilation (llc) is machine-gated.
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     backend.ctx.field_index_map.insert("a".to_string(), 0);
     backend.ctx.field_types.push("[16 x float]".to_string());
     backend.ctx.field_briev_types.push(Type::Vector(
@@ -3327,13 +3703,22 @@ fn test_accel_descriptors_emit() {
         "kernel type (full 15-member BrievKernelDesc): {ir}"
     );
     assert!(ir.contains("@briev_accel_descs"), "descs table");
-    assert!(ir.contains("declare i32 @briev_accel_init(ptr, i32)"), "init decl");
-    assert!(ir.contains("declare i32 @briev_accel_launch(i32, ptr, i64)"), "launch decl");
+    assert!(
+        ir.contains("declare i32 @briev_accel_init(ptr, i32)"),
+        "init decl"
+    );
+    assert!(
+        ir.contains("declare i32 @briev_accel_launch(i32, ptr, i64)"),
+        "launch decl"
+    );
     // a: array, host_offset 0 (fidx 0), elem 4 (float), count 16, write,
     // proj_offset 0 (a is first — already 16B-aligned). 2026-09-02: the
     // field-entry order matches the C BrievField layout exactly
     // (kind, host_offset, elem_bytes, count, is_write, proj_offset).
-    assert!(ir.contains("i32 1, i64 0, i64 4, i64 16, i32 1, i64 0"), "field entry: {ir}");
+    assert!(
+        ir.contains("i32 1, i64 0, i64 4, i64 16, i32 1, i64 0"),
+        "field entry: {ir}"
+    );
     // 2026-09-24: descriptor entry tail = documented zero contract for every
     // member this lane cannot fill (images/block_threads/shared_bytes/
     // program_bytes/seed table/PTX/block_per_workitem).
@@ -3405,13 +3790,11 @@ fn llvm_rejects_inline_asm_statement_via_capability_gate() {
     // 2026-11-08 (P0 sibling audit): `asm "..."` statements have no LLVM
     // lowering; the capability gate must reject them (never a silent drop in
     // the statement emitter). The sanctioned path is the `Asm#` intrinsic.
-    let item = crate::ast::TopLevel::Statement(Box::new(
-        crate::ast::Statement::InlineAsm {
-            asm_string: "nop".to_string(),
-            clobbers: vec![],
-            span: None,
-        },
-    ));
+    let item = crate::ast::TopLevel::Statement(Box::new(crate::ast::Statement::InlineAsm {
+        asm_string: "nop".to_string(),
+        clobbers: vec![],
+        span: None,
+    }));
     let errs = crate::backend::capabilities::validate_program(
         &[item],
         &crate::backend::llvm::CAPABILITIES,
@@ -3432,7 +3815,8 @@ fn test_kernel_desc_abi_layout() {
     // driver a garbage blob size and memcpy'd out of bounds
     // (nbody_newton_accel SIGSEGV). Expected: sizeof 96, ptx at 80 —
     // mirrored by test_briev_kernel_desc_abi_pinned (src/accel_rt.rs).
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     backend.ctx.field_index_map.insert("a".to_string(), 0);
     backend.ctx.field_types.push("[16 x float]".to_string());
     backend.ctx.field_briev_types.push(Type::Vector(
@@ -3466,18 +3850,21 @@ fn test_kernel_desc_abi_layout() {
         "ptr", "ptr", "i32", "i32", "ptr", "i32", "ptr", "i32", "i32", "i64", "ptr", "i32", "ptr",
         "i32", "i32", "ptr", "i32",
     ];
-    let expected_line = format!(
-        "%briev.kernel = type {{ {} }}",
-        expected.join(", ")
-    );
+    let expected_line = format!("%briev.kernel = type {{ {} }}", expected.join(", "));
     assert_eq!(
-        ir.lines().find(|l| l.starts_with("%briev.kernel")).unwrap_or(""),
+        ir.lines()
+            .find(|l| l.starts_with("%briev.kernel"))
+            .unwrap_or(""),
         expected_line,
         "emitted type must match BrievKernelDesc member-for-member"
     );
     // The Rust/C reader side: pin the byte offsets the runtime depends on.
     use std::mem::{align_of, offset_of, size_of};
-    assert_eq!(size_of::<crate::accel_rt::BrievKernelDesc>(), 112, "C sizeof");
+    assert_eq!(
+        size_of::<crate::accel_rt::BrievKernelDesc>(),
+        112,
+        "C sizeof"
+    );
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, n_images), 32);
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx), 80);
     assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, ptx_size), 88);
@@ -3485,8 +3872,14 @@ fn test_kernel_desc_abi_layout() {
         offset_of!(crate::accel_rt::BrievKernelDesc, block_per_workitem),
         92
     );
-    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, opencl_spirv), 96);
-    assert_eq!(offset_of!(crate::accel_rt::BrievKernelDesc, opencl_size), 104);
+    assert_eq!(
+        offset_of!(crate::accel_rt::BrievKernelDesc, opencl_spirv),
+        96
+    );
+    assert_eq!(
+        offset_of!(crate::accel_rt::BrievKernelDesc, opencl_size),
+        104
+    );
     assert_eq!(align_of::<crate::accel_rt::BrievKernelDesc>(), 8);
 }
 
@@ -3506,14 +3899,32 @@ fn test_accel_wrapper_emits_dispatch() {
     backend.accel_entries.insert("force".to_string(), entry);
     let mut out = String::new();
     backend.emit_accel_dispatch_wrapper(&mut out, "force", false);
-    assert!(out.contains("define void @txn_force("), "wrapper define: {out}");
-    assert!(out.contains("@briev_accel_init(ptr @briev_accel_descs, i32 1)"), "lazy init");
-    assert!(out.contains("load i32, ptr @briev_accel_verdict"), "probe verdict gate");
-    assert!(out.contains("call i32 @briev_accel_launch(i32 0, ptr %state, i64 16)"), "launch call: {out}");
+    assert!(
+        out.contains("define void @txn_force("),
+        "wrapper define: {out}"
+    );
+    assert!(
+        out.contains("@briev_accel_init(ptr @briev_accel_descs, i32 1)"),
+        "lazy init"
+    );
+    assert!(
+        out.contains("load i32, ptr @briev_accel_verdict"),
+        "probe verdict gate"
+    );
+    assert!(
+        out.contains("call i32 @briev_accel_launch(i32 0, ptr %state, i64 16)"),
+        "launch call: {out}"
+    );
     // Design A: one dispatch covers all N work-items → fast-forward i to 16 so
     // the `[i < N]` counted loop exits after this single firing.
-    assert!(out.contains("store i64 16, ptr %"), "counter fast-forward: {out}");
-    assert!(out.contains("call void @txn_force_cpu(ptr %state)"), "cpu fallback");
+    assert!(
+        out.contains("store i64 16, ptr %"),
+        "counter fast-forward: {out}"
+    );
+    assert!(
+        out.contains("call void @txn_force_cpu(ptr %state)"),
+        "cpu fallback"
+    );
 }
 
 fn accel_test_entry(buffer: &str, write: bool) -> crate::analysis::accel::AccelEntry {
@@ -3537,8 +3948,8 @@ fn accel_test_entry(buffer: &str, write: bool) -> crate::analysis::accel::AccelE
         reduction: None,
         deferred_normalize: None,
         idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+        approx_declared: false,
+        exact_declared: false,
     };
     AccelEntry {
         mode: AccelMode::TryKeyword,
@@ -3566,17 +3977,40 @@ fn test_accel_probe_functions_emit() {
         Box::new(Type::Custom("Float".to_string())),
         vec![crate::ast::Dimension::Anonymous(4)],
     ));
-    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", true));
+    backend
+        .accel_entries
+        .insert("force".to_string(), accel_test_entry("a", true));
     let mut out = String::new();
     backend.emit_accel_probe_functions(&mut out, "force", false);
-    assert!(out.contains("define void @briev_accel_probe_cpu_force(ptr %state)"), "cpu lane: {out}");
-    assert!(out.contains("call void @txn_force_cpu(ptr %state)"), "cpu lane runs the loop");
-    assert!(out.contains("define void @briev_accel_probe_gpu_force(ptr %state)"), "gpu lane: {out}");
-    assert!(out.contains("call i32 @briev_accel_launch(i32 0, ptr %state, i64 16)"), "gpu lane launch");
-    assert!(out.contains("define i8 @briev_accel_gpu_ok_force(ptr %a, ptr %b, double %tol)"), "gate: {out}");
+    assert!(
+        out.contains("define void @briev_accel_probe_cpu_force(ptr %state)"),
+        "cpu lane: {out}"
+    );
+    assert!(
+        out.contains("call void @txn_force_cpu(ptr %state)"),
+        "cpu lane runs the loop"
+    );
+    assert!(
+        out.contains("define void @briev_accel_probe_gpu_force(ptr %state)"),
+        "gpu lane: {out}"
+    );
+    assert!(
+        out.contains("call i32 @briev_accel_launch(i32 0, ptr %state, i64 16)"),
+        "gpu lane launch"
+    );
+    assert!(
+        out.contains("define i8 @briev_accel_gpu_ok_force(ptr %a, ptr %b, double %tol)"),
+        "gate: {out}"
+    );
     assert!(out.contains("fcmp oge float"), "float tolerance compare");
-    assert!(out.contains("define void @briev_accel_run_probe_force(ptr %state)"), "run_probe: {out}");
-    assert!(out.contains("store i32 %v, ptr @briev_accel_verdict_force"), "verdict commit");
+    assert!(
+        out.contains("define void @briev_accel_run_probe_force(ptr %state)"),
+        "run_probe: {out}"
+    );
+    assert!(
+        out.contains("store i32 %v, ptr @briev_accel_verdict_force"),
+        "verdict commit"
+    );
 }
 
 #[test]
@@ -3596,12 +4030,20 @@ fn test_accel_probe_gate_uses_loop_for_large_arrays() {
         Box::new(Type::Custom("Int".to_string())),
         vec![crate::ast::Dimension::Anonymous(1048576)],
     ));
-    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", true));
+    backend
+        .accel_entries
+        .insert("force".to_string(), accel_test_entry("a", true));
     let mut out = String::new();
     backend.emit_accel_probe_functions(&mut out, "force", false);
 
-    assert!(out.contains("phi i64"), "array compare must be a loop:\n{out}");
-    assert!(out.contains("icmp uge i64"), "loop bound check missing:\n{out}");
+    assert!(
+        out.contains("phi i64"),
+        "array compare must be a loop:\n{out}"
+    );
+    assert!(
+        out.contains("icmp uge i64"),
+        "loop bound check missing:\n{out}"
+    );
     assert!(out.contains("1048576"), "bound must be the array count");
     assert!(
         out.len() < 20_000,
@@ -3628,7 +4070,9 @@ fn test_accel_run_probe_sandboxes_beginprogram_flag() {
     backend.ctx.field_index_map.insert("i".to_string(), 0);
     backend.ctx.field_types.push("i64".to_string());
     backend.ctx.field_briev_types.push(Type::int());
-    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", false));
+    backend
+        .accel_entries
+        .insert("force".to_string(), accel_test_entry("a", false));
     let mut out = String::new();
     backend.emit_accel_probe_functions(&mut out, "force", true);
     assert!(
@@ -3653,7 +4097,9 @@ fn test_accel_run_probe_sandboxes_beginprogram_flag() {
     backend.ctx.field_index_map.insert("i".to_string(), 0);
     backend.ctx.field_types.push("i64".to_string());
     backend.ctx.field_briev_types.push(Type::int());
-    backend.accel_entries.insert("force".to_string(), accel_test_entry("a", false));
+    backend
+        .accel_entries
+        .insert("force".to_string(), accel_test_entry("a", false));
     let mut out = String::new();
     backend.emit_accel_probe_functions(&mut out, "force", false);
     assert!(
@@ -3690,9 +4136,18 @@ fn test_endprogram_emits_process_exit() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("declare void @__exit(i64)"), "exit declare: {output}");
-    assert!(output.contains("call void @__exit(i64"), "exit call: {output}");
-    assert!(output.contains("unreachable"), "unreachable after exit: {output}");
+    assert!(
+        output.contains("declare void @__exit(i64)"),
+        "exit declare: {output}"
+    );
+    assert!(
+        output.contains("call void @__exit(i64"),
+        "exit call: {output}"
+    );
+    assert!(
+        output.contains("unreachable"),
+        "unreachable after exit: {output}"
+    );
 }
 
 #[test]
@@ -3751,7 +4206,10 @@ fn test_endprogram_calls_exit_prog_when_defn_present() {
         !output.contains("call void @__exit(i64"),
         "C-fallback exit must not fire when exit_prog is present: {output}"
     );
-    assert!(output.contains("unreachable"), "unreachable after exit: {output}");
+    assert!(
+        output.contains("unreachable"),
+        "unreachable after exit: {output}"
+    );
 }
 
 #[test]
@@ -3843,7 +4301,8 @@ fn test_beginprogram_entry_loop_emits_flag_and_goal_clear() {
             watchdog: None,
             explicit: true,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
             Statement::Assign(
                 Expr::Identifier("i".to_string()),
@@ -3878,7 +4337,10 @@ fn test_escape_non_ascii_string() {
     assert!(output.contains("\\c3"), "Should hex-escape byte C3");
     assert!(output.contains("\\a9"), "Should hex-escape byte A9");
     assert!(output.contains("h"), "ASCII 'h' should be preserved");
-    assert!(output.contains("llo"), "ASCII 'llo' should be preserved after escape bytes");
+    assert!(
+        output.contains("llo"),
+        "ASCII 'llo' should be preserved after escape bytes"
+    );
 }
 
 #[test]
@@ -3900,13 +4362,17 @@ fn test_no_range_lower_bound_defaults_to_i64_min() {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
-                    Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(100))),
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Decimal(100)),
+                ),
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             metadata: HashMap::new(),
             derivation: None,
@@ -3916,8 +4382,10 @@ fn test_no_range_lower_bound_defaults_to_i64_min() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("-9223372036854775808"),
-        "Range with no lower bound should use i64::MIN");
+    assert!(
+        output.contains("-9223372036854775808"),
+        "Range with no lower bound should use i64::MIN"
+    );
 }
 
 #[test]
@@ -3944,17 +4412,34 @@ fn test_binop_no_nuw_nsw() {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::And,
-                    Box::new(Expr::BinaryOp(BinaryOpKind::Ge, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(0)))),
-                    Box::new(Expr::BinaryOp(BinaryOpKind::Lt,
-                        Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(10))))),
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::And,
+                    Box::new(Expr::BinaryOp(
+                        BinaryOpKind::Ge,
+                        Box::new(Expr::Identifier("x".to_string())),
+                        Box::new(Expr::Decimal(0)),
+                    )),
+                    Box::new(Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("x".to_string())),
+                        Box::new(Expr::Decimal(10)),
+                    )),
+                ),
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
-                Statement::Assign(Expr::Identifier("x".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Identifier("y".to_string())))),
+                Statement::Assign(
+                    Expr::Identifier("x".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("x".to_string())),
+                        Box::new(Expr::Identifier("y".to_string())),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -3994,13 +4479,17 @@ fn test_range_metadata_suppressed_for_written_field() {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
-                    Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(1))),
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("x".to_string()), Expr::Decimal(1)),
                 Statement::Term(None),
@@ -4017,12 +4506,16 @@ fn test_range_metadata_suppressed_for_written_field() {
     // field loads. The inline `!range !{0, bound}` reload emitted by
     // emit_precondition_check is sound (fresh read inside the guard's safe path)
     // and is allowed to remain.
-    let module_level_range_on_x_load = output.contains("!range !50")
-        || output.contains("!range !51");
-    assert!(!module_level_range_on_x_load,
-        "precondition-derived !range must not attach to loads of a written field\n{output}");
-    assert!(!output.contains("!5 = !{ i64 -9223372036854775808, i64 1 }"),
-        "the module-level range node for the written field must not be emitted\n{output}");
+    let module_level_range_on_x_load =
+        output.contains("!range !50") || output.contains("!range !51");
+    assert!(
+        !module_level_range_on_x_load,
+        "precondition-derived !range must not attach to loads of a written field\n{output}"
+    );
+    assert!(
+        !output.contains("!5 = !{ i64 -9223372036854775808, i64 1 }"),
+        "the module-level range node for the written field must not be emitted\n{output}"
+    );
 }
 
 #[test]
@@ -4046,13 +4539,17 @@ fn test_range_metadata_kept_for_read_only_field() {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
-                    Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(100))),
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Decimal(100)),
+                ),
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             metadata: HashMap::new(),
             derivation: None,
@@ -4062,8 +4559,10 @@ fn test_range_metadata_kept_for_read_only_field() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("!range !") || output.contains("!range !{"),
-        "read-only field should keep precondition-derived range metadata\n{output}");
+    assert!(
+        output.contains("!range !") || output.contains("!range !{"),
+        "read-only field should keep precondition-derived range metadata\n{output}"
+    );
 }
 
 #[test]
@@ -4087,7 +4586,14 @@ fn test_float_binary_add() {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Assign(Expr::Identifier("x".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Float(2.0)))),
+                Statement::Assign(
+                    Expr::Identifier("x".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("x".to_string())),
+                        Box::new(Expr::Float(2.0)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -4101,8 +4607,10 @@ fn test_float_binary_add() {
     // 2026-07-17: Float literal + Float field → fmul/fadd float (32-bit), not double.
     // The typechecker assigns Type::float() to Float literals and the constant
     // emitter stores Float as "float" in LLVM IR. Operations use the correct width.
-    assert!(output.contains("fadd fast float"),
-        "Float binary add should emit fadd fast float");
+    assert!(
+        output.contains("fadd fast float"),
+        "Float binary add should emit fadd fast float"
+    );
 }
 
 #[test]
@@ -4111,13 +4619,19 @@ fn stale_expected_enum_does_not_override_constructor_owner() {
         TopLevel::Enum(EnumDefinition {
             name: "AdmissionError".to_string(),
             type_params: vec![],
-            variants: vec![EnumVariant::Tuple("Rejected".to_string(), vec![Type::int()])],
+            variants: vec![EnumVariant::Tuple(
+                "Rejected".to_string(),
+                vec![Type::int()],
+            )],
             span: None,
         }),
         TopLevel::Enum(EnumDefinition {
             name: "OperationJob".to_string(),
             type_params: vec![],
-            variants: vec![EnumVariant::Tuple("OwnedOperationJob".to_string(), vec![Type::int()])],
+            variants: vec![EnumVariant::Tuple(
+                "OwnedOperationJob".to_string(),
+                vec![Type::int()],
+            )],
             span: None,
         }),
     ];
@@ -4133,17 +4647,15 @@ fn stale_expected_enum_does_not_override_constructor_owner() {
 #[test]
 fn test_enum_type_registered_and_variant_disc() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Enum(EnumDefinition {
-            name: "Option".to_string(),
-            type_params: vec![],
-            variants: vec![
-                EnumVariant::Unit("None".to_string()),
-                EnumVariant::Tuple("Some".to_string(), vec![Type::int()]),
-            ],
-            span: None,
-        }),
-    ];
+    let program = vec![TopLevel::Enum(EnumDefinition {
+        name: "Option".to_string(),
+        type_params: vec![],
+        variants: vec![
+            EnumVariant::Unit("None".to_string()),
+            EnumVariant::Tuple("Some".to_string(), vec![Type::int()]),
+        ],
+        span: None,
+    })];
     let _ = backend.generate(&program, None);
     assert_eq!(
         backend.ctx.enum_lowering.variant_ctor("None"),
@@ -4164,17 +4676,15 @@ fn test_enum_type_registered_and_variant_disc() {
 #[test]
 fn test_enum_multi_variant_discriminants() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Enum(EnumDefinition {
-            name: "Tree".to_string(),
-            type_params: vec![],
-            variants: vec![
-                EnumVariant::Unit("Leaf".to_string()),
-                EnumVariant::Tuple("Node".to_string(), vec![Type::int(), Type::int()]),
-            ],
-            span: None,
-        }),
-    ];
+    let program = vec![TopLevel::Enum(EnumDefinition {
+        name: "Tree".to_string(),
+        type_params: vec![],
+        variants: vec![
+            EnumVariant::Unit("Leaf".to_string()),
+            EnumVariant::Tuple("Node".to_string(), vec![Type::int(), Type::int()]),
+        ],
+        span: None,
+    })];
     let _ = backend.generate(&program, None);
     assert_eq!(
         backend.ctx.enum_lowering.variant_ctor("Leaf"),
@@ -4189,32 +4699,45 @@ fn test_enum_multi_variant_discriminants() {
         .enum_lowering
         .entry(&Type::Custom("Tree".to_string()))
         .expect("Tree entry");
-    assert_eq!(tree.variants[1].payload, Some(Type::Tuple(vec![Type::int(), Type::int()])));
+    assert_eq!(
+        tree.variants[1].payload,
+        Some(Type::Tuple(vec![Type::int(), Type::int()]))
+    );
 }
 
 #[test]
 fn test_struct_type_registered() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Obj(StructDefinition {
-            name: "Point".to_string(),
-            type_params: vec![],
-            parent: None,
-            fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-            ],
-            transactions: vec![],
-            view_html: None,
-            span: None,
-            modifiers: vec![],
-            variants: vec![],
-        }),
-    ];
+    let program = vec![TopLevel::Obj(StructDefinition {
+        name: "Point".to_string(),
+        type_params: vec![],
+        parent: None,
+        fields: vec![
+            StructField {
+                name: "x".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+            StructField {
+                name: "y".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+        ],
+        transactions: vec![],
+        view_html: None,
+        span: None,
+        modifiers: vec![],
+        variants: vec![],
+    })];
     let output = backend.generate(&program, None);
     assert!(output.contains("ModuleID"), "Output should be valid IR");
-    assert!(backend.ctx.struct_types.contains_key("Point"),
-        "Struct 'Point' should be registered");
+    assert!(
+        backend.ctx.struct_types.contains_key("Point"),
+        "Struct 'Point' should be registered"
+    );
     assert_eq!(backend.ctx.struct_types["Point"].len(), 2);
 }
 
@@ -4290,9 +4813,11 @@ obj Holder { prefix: Int; flags: Flags; tail: Int; last: Flags; };
 obj Flags { first: Bool; second: Bool; third: Bool; fourth: Bool; };
 "#;
     let tokens = crate::lexer::tokenize(src).expect("tokenize");
-    let items = crate::parser::Parser::new(tokens, src).parse_program().expect("parse");
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let items = crate::parser::Parser::new(tokens, src)
+        .parse_program()
+        .expect("parse");
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let _ = backend.generate(&items, None);
     assert_eq!(backend.struct_type_size("Flags"), 4);
     assert_eq!(backend.lookup_field_offset("Holder", "flags"), 8);
@@ -4306,62 +4831,79 @@ obj Flags { first: Bool; second: Bool; third: Bool; fourth: Bool; };
 fn nested_object_layout_uses_target_handles_for_recursive_fields() {
     let src = "obj Link { next: Link; flag: Bool; };";
     let tokens = crate::lexer::tokenize(src).expect("tokenize");
-    let items = crate::parser::Parser::new(tokens, src).parse_program().expect("parse");
+    let items = crate::parser::Parser::new(tokens, src)
+        .parse_program()
+        .expect("parse");
     for bits in [32, 64] {
-        let mut backend = LlvmBackend::new()
-            .with_type_universe(crate::type_universe::TypeUniverse::new());
+        let mut backend =
+            LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
         backend.ctx.int_bits = bits;
         let _ = backend.generate(&items, None);
         let bytes = u64::from(bits / 8);
         assert_eq!(backend.lookup_field_offset("Link", "flag"), bytes);
         assert_eq!(backend.struct_type_size("Link"), bytes + 1);
-        assert_eq!(backend.llvm_type(&Type::Custom("Link".into())), format!("i{bits}"));
+        assert_eq!(
+            backend.llvm_type(&Type::Custom("Link".into())),
+            format!("i{bits}")
+        );
     }
 }
 
 #[test]
 fn test_struct_type_declaration_in_ir() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Obj(StructDefinition {
-            name: "Point".to_string(),
-            type_params: vec![],
-            parent: None,
-            fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-            ],
-            transactions: vec![],
-            view_html: None,
-            span: None,
-            modifiers: vec![],
-            variants: vec![],
-        }),
-    ];
+    let program = vec![TopLevel::Obj(StructDefinition {
+        name: "Point".to_string(),
+        type_params: vec![],
+        parent: None,
+        fields: vec![
+            StructField {
+                name: "x".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+            StructField {
+                name: "y".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+        ],
+        transactions: vec![],
+        view_html: None,
+        span: None,
+        modifiers: vec![],
+        variants: vec![],
+    })];
     let output = backend.generate(&program, None);
-    assert!(output.contains("%Point = type { i64, i64 }"),
-        "Struct type declaration should appear in IR.\nGot:\n{}", output);
+    assert!(
+        output.contains("%Point = type { i64, i64 }"),
+        "Struct type declaration should appear in IR.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
 fn test_struct_type_declaration_empty_struct() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Obj(StructDefinition {
-            name: "Empty".to_string(),
-            type_params: vec![],
-            parent: None,
-            fields: vec![],
-            transactions: vec![],
-            view_html: None,
-            span: None,
-            modifiers: vec![],
-            variants: vec![],
-        }),
-    ];
+    let program = vec![TopLevel::Obj(StructDefinition {
+        name: "Empty".to_string(),
+        type_params: vec![],
+        parent: None,
+        fields: vec![],
+        transactions: vec![],
+        view_html: None,
+        span: None,
+        modifiers: vec![],
+        variants: vec![],
+    })];
     let output = backend.generate(&program, None);
-    assert!(output.contains("%Empty = type {}"),
-        "Empty struct should emit %Empty = type {{}}.\nGot:\n{}", output);
+    assert!(
+        output.contains("%Empty = type {}"),
+        "Empty struct should emit %Empty = type {{}}.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -4369,77 +4911,31 @@ fn test_struct_type_declaration_sorted_order() {
     let mut backend = LlvmBackend::new();
     let program = vec![
         TopLevel::Obj(StructDefinition {
-            name: "Zebra".to_string(), type_params: vec![], parent: None,
-            fields: vec![StructField { name: "s".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public }],
-            transactions: vec![], view_html: None, span: None, modifiers: vec![], variants: vec![],
-        }),
-        TopLevel::Obj(StructDefinition {
-            name: "Alpha".to_string(), type_params: vec![], parent: None,
-            fields: vec![StructField { name: "s".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public }],
-            transactions: vec![], view_html: None, span: None, modifiers: vec![], variants: vec![],
-        }),
-    ];
-    let output = backend.generate(&program, None);
-    let alpha_pos = output.find("%Alpha = type { i64 }").unwrap();
-    let zebra_pos = output.find("%Zebra = type { i64 }").unwrap();
-    assert!(alpha_pos < zebra_pos,
-        "Struct declarations should be sorted: Alpha before Zebra. Got:\n{}", output);
-}
-
-#[test]
-fn test_type_with_slots_populates_struct_types() {
-    let program = vec![
-        TopLevel::TypeDef(Box::new(TypeDef {
-            name: "MyBuffer".to_string(),
+            name: "Zebra".to_string(),
             type_params: vec![],
             parent: None,
-            protocol: None,
-            traits: vec![],
-            bit_range: None,
-            coll: false,
-            ports_in: Vec::new(),
-            ports_out: Vec::new(),
-            seq: false,
-            body: TypeDefBody {
-                pins: Vec::new(),
-                reference: None,
-                slots: vec![
-                    TypeDefSlot { name: "ptr".to_string(), ty: Type::Applied("Ptr".to_string(), vec![Type::Custom("UInt8".to_string())]), bit_range: None },
-                    TypeDefSlot { name: "len".to_string(), ty: Type::Custom("Int".to_string()), bit_range: None },
-                ],
-                metadata: HashMap::new(),
-                projections: vec![],
-                bindings: vec![],
-                operators: vec![], op_bindings: vec![],
-                constraints: vec![],
-                members: vec![],
-                hold_laws: vec![],
-                modes: vec![],
-                span: None,
-            },
+            fields: vec![StructField {
+                name: "s".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            }],
+            transactions: vec![],
+            view_html: None,
             span: None,
-        })),
-    ];
-    let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_type_universe(tu);
-    let output = backend.generate(&program, None);
-    assert!(output.contains("ModuleID"), "Output should be valid IR");
-    assert!(backend.ctx.struct_types.contains_key("MyBuffer"),
-        "Type with slots 'MyBuffer' should be registered in struct_types");
-    assert_eq!(backend.ctx.struct_types["MyBuffer"].len(), 2);
-}
-
-#[test]
-fn test_struct_auto_registered_in_type_universe() {
-    let program = vec![
+            modifiers: vec![],
+            variants: vec![],
+        }),
         TopLevel::Obj(StructDefinition {
-            name: "Point".to_string(),
+            name: "Alpha".to_string(),
             type_params: vec![],
             parent: None,
-            fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-            ],
+            fields: vec![StructField {
+                name: "s".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            }],
             transactions: vec![],
             view_html: None,
             span: None,
@@ -4447,12 +4943,102 @@ fn test_struct_auto_registered_in_type_universe() {
             variants: vec![],
         }),
     ];
+    let output = backend.generate(&program, None);
+    let alpha_pos = output.find("%Alpha = type { i64 }").unwrap();
+    let zebra_pos = output.find("%Zebra = type { i64 }").unwrap();
+    assert!(
+        alpha_pos < zebra_pos,
+        "Struct declarations should be sorted: Alpha before Zebra. Got:\n{}",
+        output
+    );
+}
+
+#[test]
+fn test_type_with_slots_populates_struct_types() {
+    let program = vec![TopLevel::TypeDef(Box::new(TypeDef {
+        name: "MyBuffer".to_string(),
+        type_params: vec![],
+        parent: None,
+        protocol: None,
+        traits: vec![],
+        bit_range: None,
+        coll: false,
+        ports_in: Vec::new(),
+        ports_out: Vec::new(),
+        seq: false,
+        body: TypeDefBody {
+            pins: Vec::new(),
+            reference: None,
+            slots: vec![
+                TypeDefSlot {
+                    name: "ptr".to_string(),
+                    ty: Type::Applied("Ptr".to_string(), vec![Type::Custom("UInt8".to_string())]),
+                    bit_range: None,
+                },
+                TypeDefSlot {
+                    name: "len".to_string(),
+                    ty: Type::Custom("Int".to_string()),
+                    bit_range: None,
+                },
+            ],
+            metadata: HashMap::new(),
+            projections: vec![],
+            bindings: vec![],
+            operators: vec![],
+            op_bindings: vec![],
+            constraints: vec![],
+            members: vec![],
+            hold_laws: vec![],
+            modes: vec![],
+            span: None,
+        },
+        span: None,
+    }))];
+    let tu = crate::type_universe::TypeUniverse::new();
+    let mut backend = LlvmBackend::new().with_type_universe(tu);
+    let output = backend.generate(&program, None);
+    assert!(output.contains("ModuleID"), "Output should be valid IR");
+    assert!(
+        backend.ctx.struct_types.contains_key("MyBuffer"),
+        "Type with slots 'MyBuffer' should be registered in struct_types"
+    );
+    assert_eq!(backend.ctx.struct_types["MyBuffer"].len(), 2);
+}
+
+#[test]
+fn test_struct_auto_registered_in_type_universe() {
+    let program = vec![TopLevel::Obj(StructDefinition {
+        name: "Point".to_string(),
+        type_params: vec![],
+        parent: None,
+        fields: vec![
+            StructField {
+                name: "x".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+            StructField {
+                name: "y".to_string(),
+                ty: Type::int(),
+                default: None,
+                visibility: Visibility::Public,
+            },
+        ],
+        transactions: vec![],
+        view_html: None,
+        span: None,
+        modifiers: vec![],
+        variants: vec![],
+    })];
     let tu = crate::type_universe::TypeUniverse::new();
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     let _output = backend.generate(&program, None);
     if let Some(ref universe) = backend.ctx.type_universe {
-        assert!(universe.types.contains_key("Point"),
-            "Struct 'Point' should be auto-registered in TypeUniverse");
+        assert!(
+            universe.types.contains_key("Point"),
+            "Struct 'Point' should be auto-registered in TypeUniverse"
+        );
         let rt = universe.types.get("Point").unwrap();
         assert_eq!(rt.bytes, 16);
         // 2026-08-15 (fundamentals): every type's base is Data (the universal
@@ -4470,8 +5056,18 @@ fn make_point_program(body: Vec<Statement>) -> Vec<TopLevel> {
             type_params: vec![],
             parent: None,
             fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
+                StructField {
+                    name: "x".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
             ],
             transactions: vec![],
             view_html: None,
@@ -4481,7 +5077,8 @@ fn make_point_program(body: Vec<Statement>) -> Vec<TopLevel> {
         }),
         TopLevel::StateDecl(StateDecl {
             name: "pt".to_string(),
-            ty: Type::int(), span: None,
+            ty: Type::int(),
+            span: None,
         }),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
@@ -4523,7 +5120,8 @@ fn test_string_state_init_not_null() {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "_".to_string(),
                     ty: None,
                     expr: Some(Expr::Identifier("s".to_string())),
@@ -4539,8 +5137,11 @@ fn test_string_state_init_not_null() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(!output.contains("store ptr null, ptr"),
-        "String state field should NOT be null. Got: {}", output);
+    assert!(
+        !output.contains("store ptr null, ptr"),
+        "String state field should NOT be null. Got: {}",
+        output
+    );
 }
 
 #[test]
@@ -4612,20 +5213,21 @@ fn test_local_float_binding() {
     // 2026-07-29: Float literal emits bitcast i32 <hex> to float (32-bit).
     // The add+i32 + bitcast + fadd wrapper was removed — a single bitcast
     // from the hex i32 bit pattern produces the float value.
-    assert!(output.contains("bitcast i32"),
-        "Float literal should emit bitcast i32 to float: {}", output);
+    assert!(
+        output.contains("bitcast i32"),
+        "Float literal should emit bitcast i32 to float: {}",
+        output
+    );
 }
 
 #[test]
 fn test_tfd_sfd_nonblock_constants() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::StateDecl(StateDecl {
-            name: "x".to_string(),
-            ty: Type::int(),
-            span: None,
-        }),
-    ];
+    let program = vec![TopLevel::StateDecl(StateDecl {
+        name: "x".to_string(),
+        ty: Type::int(),
+        span: None,
+    })];
     let output = backend.generate(&program, None);
     assert!(!output.is_empty());
 }
@@ -4655,17 +5257,30 @@ fn make_wake_program_no_triggers() -> Vec<TopLevel> {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::And,
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::And,
                     Box::new(Expr::Bool(true)),
-                    Box::new(Expr::BinaryOp(BinaryOpKind::Lt,
-                        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string()))))),
+                    Box::new(Expr::BinaryOp(
+                        BinaryOpKind::Lt,
+                        Box::new(Expr::Identifier("ops".to_string())),
+                        Box::new(Expr::Identifier("N".to_string())),
+                    )),
+                ),
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
-                Statement::Assign(Expr::Identifier("ops".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Decimal(1)))),
+                Statement::Assign(
+                    Expr::Identifier("ops".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("ops".to_string())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -4688,14 +5303,23 @@ fn test_main_and_reactor_use_non_willreturn_attr() {
         let has_correct_main = output.contains("define i32 @main() local_unnamed_addr #3")
             || output.contains("define i32 @main() local_unnamed_addr #5")
             || output.contains("define i32 @main() local_unnamed_addr #9");
-        assert!(has_correct_main,
+        assert!(
+            has_correct_main,
             "main() should use #3/#5/#9, got: {:?}",
-            output.lines().find(|l| l.contains("define i32 @main")).unwrap_or("(not found)"));
+            output
+                .lines()
+                .find(|l| l.contains("define i32 @main"))
+                .unwrap_or("(not found)")
+        );
     }
-    assert!(output.contains("attributes #0"),
-        "attributes #0 should still be present for terminating functions");
-    assert!(output.contains("define void @init_state(ptr noundef"),
-        "init_state() should still use #0 with noundef");
+    assert!(
+        output.contains("attributes #0"),
+        "attributes #0 should still be present for terminating functions"
+    );
+    assert!(
+        output.contains("define void @init_state(ptr noundef"),
+        "init_state() should still use #0 with noundef"
+    );
 }
 
 // ── Exit condition tests ──────────────────────────────────
@@ -4723,10 +5347,15 @@ fn make_exit_program(exit_expr: Option<Expr>, is_wake: bool) -> Vec<TopLevel> {
             span: None,
         }));
     }
-    let pre = Expr::BinaryOp(BinaryOpKind::And,
+    let pre = Expr::BinaryOp(
+        BinaryOpKind::And,
         Box::new(Expr::Bool(true)),
-        Box::new(Expr::BinaryOp(BinaryOpKind::Lt,
-            Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())))));
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Identifier("ops".to_string())),
+            Box::new(Expr::Identifier("N".to_string())),
+        )),
+    );
     let txn = Transaction {
         variadic_param: None,
         name: "work".to_string(),
@@ -4742,9 +5371,17 @@ fn make_exit_program(exit_expr: Option<Expr>, is_wake: bool) -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![
-            Statement::Assign(Expr::Identifier("ops".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Decimal(1)))),
+            Statement::Assign(
+                Expr::Identifier("ops".to_string()),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("ops".to_string())),
+                    Box::new(Expr::Decimal(1)),
+                ),
+            ),
             Statement::Term(None),
         ],
         metadata: HashMap::new(),
@@ -4759,52 +5396,71 @@ fn make_exit_program(exit_expr: Option<Expr>, is_wake: bool) -> Vec<TopLevel> {
 
 #[test]
 fn test_exit_pragma_in_wake_main() {
-    let exit_cond = Expr::BinaryOp(BinaryOpKind::Eq,
-        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())));
+    let exit_cond = Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier("ops".to_string())),
+        Box::new(Expr::Identifier("N".to_string())),
+    );
     let program = make_exit_program(Some(exit_cond.clone()), true);
     let output = LlvmBackend::new().generate(&program, Some(Box::new(exit_cond)));
-    assert!(output.contains("trunc i64"),
-        "Exit condition should trunc i64 to i1");
-    assert!(output.contains("br i1"),
-        "Exit condition should branch on icmp result");
-    assert!(output.contains(".end:"),
-        "Exit condition should emit .end label");
-    assert!(output.contains("ret i32 0"),
-        ".end label should return 0");
+    assert!(
+        output.contains("trunc i64"),
+        "Exit condition should trunc i64 to i1"
+    );
+    assert!(
+        output.contains("br i1"),
+        "Exit condition should branch on icmp result"
+    );
+    assert!(
+        output.contains(".end:"),
+        "Exit condition should emit .end label"
+    );
+    assert!(output.contains("ret i32 0"), ".end label should return 0");
 }
 
 #[test]
 fn test_exit_pragma_without_wake_no_change() {
-    let exit_cond = Expr::BinaryOp(BinaryOpKind::Eq,
-        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())));
+    let exit_cond = Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier("ops".to_string())),
+        Box::new(Expr::Identifier("N".to_string())),
+    );
     let program = make_exit_program(Some(exit_cond.clone()), false);
     let output = LlvmBackend::new().generate(&program, Some(Box::new(exit_cond)));
-    assert!(output.contains("trunc i64"),
-        "Exit condition should trunc i64 to i1 even without wake");
-    assert!(output.contains("br i1"),
-        "Exit condition should branch");
-    assert!(output.contains(".end:"),
-        "Exit condition should emit .end label");
-    assert!(output.contains("ret i32 0"),
-        "done label should return 0");
+    assert!(
+        output.contains("trunc i64"),
+        "Exit condition should trunc i64 to i1 even without wake"
+    );
+    assert!(output.contains("br i1"), "Exit condition should branch");
+    assert!(
+        output.contains(".end:"),
+        "Exit condition should emit .end label"
+    );
+    assert!(output.contains("ret i32 0"), "done label should return 0");
 }
 
 #[test]
 fn test_no_exit_without_pragma() {
     let program = make_exit_program(None, true);
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(!output.contains("wait:"),
-        "No wait label without exit condition in this path");
+    assert!(
+        !output.contains("wait:"),
+        "No wait label without exit condition in this path"
+    );
 }
 
 #[test]
 fn test_exit_in_enum_main() {
-    let exit_cond = Expr::BinaryOp(BinaryOpKind::Eq,
-        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())));
+    let exit_cond = Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier("ops".to_string())),
+        Box::new(Expr::Identifier("N".to_string())),
+    );
     let program = make_exit_program(Some(exit_cond.clone()), false);
-    let output = LlvmBackend::new().with_optimize_budget(256).generate(&program, Some(Box::new(exit_cond)));
-    assert!(output.contains("ret i32 0"),
-        "Should return 0");
+    let output = LlvmBackend::new()
+        .with_optimize_budget(256)
+        .generate(&program, Some(Box::new(exit_cond)));
+    assert!(output.contains("ret i32 0"), "Should return 0");
 }
 
 // ── Exit diagnostic tests ──────────────────────────────────
@@ -4813,28 +5469,48 @@ fn test_exit_in_enum_main() {
 fn test_check_exit_condition_idents_valid() {
     let mut backend = LlvmBackend::new();
     backend.ctx.field_index_map.insert("ops".to_string(), 0);
-    backend.ctx.constants.insert("N".to_string(), (Type::int(), Expr::Decimal(100)));
+    backend
+        .ctx
+        .constants
+        .insert("N".to_string(), (Type::int(), Expr::Decimal(100)));
 
-    let expr = Expr::BinaryOp(BinaryOpKind::Eq,
-        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("N".to_string())));
+    let expr = Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier("ops".to_string())),
+        Box::new(Expr::Identifier("N".to_string())),
+    );
     let errors = backend.check_exit_condition_idents(&expr);
-    assert!(errors.is_empty(),
-        "No errors for known identifiers: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "No errors for known identifiers: {:?}",
+        errors
+    );
 }
 
 #[test]
 fn test_check_exit_condition_idents_invalid() {
     let mut backend = LlvmBackend::new();
     backend.ctx.field_index_map.insert("ops".to_string(), 0);
-    backend.ctx.constants.insert("N".to_string(), (Type::int(), Expr::Decimal(100)));
+    backend
+        .ctx
+        .constants
+        .insert("N".to_string(), (Type::int(), Expr::Decimal(100)));
 
-    let expr = Expr::BinaryOp(BinaryOpKind::Eq,
-        Box::new(Expr::Identifier("ops".to_string())), Box::new(Expr::Identifier("bogus_var".to_string())));
+    let expr = Expr::BinaryOp(
+        BinaryOpKind::Eq,
+        Box::new(Expr::Identifier("ops".to_string())),
+        Box::new(Expr::Identifier("bogus_var".to_string())),
+    );
     let errors = backend.check_exit_condition_idents(&expr);
-    assert!(!errors.is_empty(),
-        "Should report error for unknown identifier");
-    assert!(errors[0].contains("bogus_var"),
-        "Error should reference the unknown name: {}", errors[0]);
+    assert!(
+        !errors.is_empty(),
+        "Should report error for unknown identifier"
+    );
+    assert!(
+        errors[0].contains("bogus_var"),
+        "Error should reference the unknown name: {}",
+        errors[0]
+    );
 }
 
 // ── Natural death tests ───────────────────────────────────
@@ -4846,8 +5522,10 @@ fn test_natural_death_exits_foldable_program() {
     let _output = backend.generate(&program, None);
     // 2026-07-14: Natural death creates a synthetic exit condition, so the
     // "no exit path" warning is not emitted (there IS an exit path now).
-    assert!(backend.ctx.has_natural_exit,
-        "Foldable wake program should have natural exit");
+    assert!(
+        backend.ctx.has_natural_exit,
+        "Foldable wake program should have natural exit"
+    );
 }
 
 #[test]
@@ -4857,11 +5535,14 @@ fn test_natural_death_skipped_for_persistent_txn() {
     let _output = backend.generate(&program, None);
     // 2026-07-14: Natural death creates a synthetic exit condition, so
     // the "no exit path" warning is no longer emitted.
-    let has_warning = backend.warnings().iter().any(|w| {
-        w.contains("has wake triggers but no exit path")
-    });
-    assert!(!has_warning,
-        "Persistent program without #!exit — natural death creates exit condition");
+    let has_warning = backend
+        .warnings()
+        .iter()
+        .any(|w| w.contains("has wake triggers but no exit path"));
+    assert!(
+        !has_warning,
+        "Persistent program without #!exit — natural death creates exit condition"
+    );
 }
 
 // ── 2026-09-30 (BUGS.md): emission determinism across instances ──────────
@@ -4937,13 +5618,19 @@ fn test_multi_txn_emission_is_byte_stable_across_instances() {
     let out1 = b1.generate(&program, None);
     let mut b2 = LlvmBackend::new();
     let out2 = b2.generate(&program, None);
-    assert!(b1.ctx.has_natural_exit,
-        "Two bounded reactive counters must derive a synthetic exit");
-    assert!(out1.contains(".exit_check:"),
-        "The combined exit check is emitted in main:\n{out1}");
-    assert_eq!(out1, out2,
+    assert!(
+        b1.ctx.has_natural_exit,
+        "Two bounded reactive counters must derive a synthetic exit"
+    );
+    assert!(
+        out1.contains(".exit_check:"),
+        "The combined exit check is emitted in main:\n{out1}"
+    );
+    assert_eq!(
+        out1, out2,
         "Two fresh backends must emit byte-identical .ll for the same program \
-         (HashMap-ordered exit AND chain / sa-slot allocas would differ)");
+         (HashMap-ordered exit AND chain / sa-slot allocas would differ)"
+    );
 }
 
 // ── 2026-08-26 (bug sweep B4): undispatched plain-txn warning ────────────
@@ -4983,17 +5670,16 @@ fn make_dead_txn_program(with_reactive_node: bool) -> Vec<TopLevel> {
                 watchdog: None,
                 explicit: true,
                 span: None,
-            post_authority: false},
-            body: vec![
-                Statement::Assign(
-                    Expr::Identifier("i".to_string()),
-                    Expr::BinaryOp(
-                        BinaryOpKind::Add,
-                        Box::new(Expr::Identifier("i".to_string())),
-                        Box::new(Expr::Decimal(1)),
-                    ),
+                post_authority: false,
+            },
+            body: vec![Statement::Assign(
+                Expr::Identifier("i".to_string()),
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(1)),
                 ),
-            ],
+            )],
             metadata: HashMap::new(),
             derivation: None,
             modifiers: vec![],
@@ -5017,7 +5703,8 @@ fn make_dead_txn_program(with_reactive_node: bool) -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![],
         metadata: HashMap::new(),
         derivation: None,
@@ -5035,7 +5722,10 @@ fn dead_plain_txn_warns_with_and_without_reactive_node() {
         let mut backend = LlvmBackend::new();
         let _ = backend.generate(&program, None);
         assert!(
-            backend.warnings().iter().any(|w| w.contains("'unused_helper' is never dispatched")),
+            backend
+                .warnings()
+                .iter()
+                .any(|w| w.contains("'unused_helper' is never dispatched")),
             "with_node={with_node}: plain unreferenced txn must be named in a warning"
         );
     }
@@ -5047,7 +5737,10 @@ fn library_mode_silences_undispatched_txn_warning() {
     let mut backend = LlvmBackend::new().with_library_mode(true);
     let _ = backend.generate(&program, None);
     assert!(
-        !backend.warnings().iter().any(|w| w.contains("never dispatched")),
+        !backend
+            .warnings()
+            .iter()
+            .any(|w| w.contains("never dispatched")),
         "library shim exports plain txns as symbols — silence is correct"
     );
 }
@@ -5079,7 +5772,11 @@ fn make_node_plus_dead_callable_program() -> Vec<TopLevel> {
             name: "N".to_string(),
             names: vec![],
             ty: Some(Type::int()),
-            expr: Some(Expr::Call("get_env_int!".to_string(), vec![Expr::Quoted(b"BOUND".to_vec())], None)),
+            expr: Some(Expr::Call(
+                "get_env_int!".to_string(),
+                vec![Expr::Quoted(b"BOUND".to_vec())],
+                None,
+            )),
             modifiers: vec![],
         })),
         TopLevel::Definition(Definition {
@@ -5175,8 +5872,14 @@ fn make_node_plus_dead_callable_program() -> Vec<TopLevel> {
         name: "iter_take_loop".to_string(),
         is_reactive: false,
         is_async: false,
-        type_params: vec![crate::ast::top::TypeParam { name: "T".to_string(), bound: None }],
-        parameters: vec![("n".to_string(), Type::int()), ("i".to_string(), Type::int())],
+        type_params: vec![crate::ast::top::TypeParam {
+            name: "T".to_string(),
+            bound: None,
+        }],
+        parameters: vec![
+            ("n".to_string(), Type::int()),
+            ("i".to_string(), Type::int()),
+        ],
         output_type: None,
         outputs: vec![],
         contract: default_contract(),
@@ -5196,20 +5899,29 @@ fn dead_callable_txn_does_not_break_single_node_fold() {
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&program, None);
     assert!(
-        backend.warnings().iter().any(|w| w.contains("dispatched via per-field phi")),
+        backend
+            .warnings()
+            .iter()
+            .any(|w| w.contains("dispatched via per-field phi")),
         "the single reactive node must keep the per-field-phi fold despite the \
          dead callable txn, got: {:?}",
         backend.warnings()
     );
     // The counter engine is the only watchdog emitter: the `.cmwd_` check and
     // the on-fire call must both be present in main.
-    assert!(ir.contains(".cmwd_"), "watchdog check missing from the folded loop:\n{ir}");
+    assert!(
+        ir.contains(".cmwd_"),
+        "watchdog check missing from the folded loop:\n{ir}"
+    );
     assert!(
         ir.contains("call i64 @report"),
         "watchdog on-fire call missing from the folded loop:\n{ir}"
     );
     assert!(
-        !backend.warnings().iter().any(|w| w.contains("direct SSA loop")),
+        !backend
+            .warnings()
+            .iter()
+            .any(|w| w.contains("direct SSA loop")),
         "the dead callable must not knock dispatch onto the SSA loop: {:?}",
         backend.warnings()
     );
@@ -5217,7 +5929,11 @@ fn dead_callable_txn_does_not_break_single_node_fold() {
 
 // ── SLP Hazard Detection Tests ────────────────────────────
 
-fn make_slp_float_program(n_floats: usize, cross_body: Vec<Statement>, precondition: Option<Expr>) -> Vec<TopLevel> {
+fn make_slp_float_program(
+    n_floats: usize,
+    cross_body: Vec<Statement>,
+    precondition: Option<Expr>,
+) -> Vec<TopLevel> {
     let mut items: Vec<TopLevel> = Vec::new();
     for i in 0..n_floats {
         items.push(TopLevel::StateDecl(StateDecl {
@@ -5251,7 +5967,8 @@ fn make_slp_float_program(n_floats: usize, cross_body: Vec<Statement>, precondit
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: cross_body,
         metadata: HashMap::new(),
         derivation: None,
@@ -5270,16 +5987,20 @@ fn make_cross_float_body(n_floats: usize, cross_count: usize) -> Vec<Statement> 
         let c = ((i * 3) + 2) % n_floats;
         stmts.push(Statement::Assign(
             Expr::Identifier(format!("f{}", a)),
-            Expr::BinaryOp(BinaryOpKind::Mul,
+            Expr::BinaryOp(
+                BinaryOpKind::Mul,
                 Box::new(Expr::Identifier(format!("f{}", b))),
-                Box::new(Expr::Identifier(format!("f{}", c)))),
+                Box::new(Expr::Identifier(format!("f{}", c))),
+            ),
         ));
     }
     stmts.push(Statement::Assign(
         Expr::Identifier("count".to_string()),
-        Expr::BinaryOp(BinaryOpKind::Add,
+        Expr::BinaryOp(
+            BinaryOpKind::Add,
             Box::new(Expr::Identifier("count".to_string())),
-            Box::new(Expr::Decimal(1))),
+            Box::new(Expr::Decimal(1)),
+        ),
     ));
     stmts
 }
@@ -5289,8 +6010,10 @@ fn test_slp_hazard_no_floats() {
     let program = make_slp_float_program(0, make_cross_float_body(0, 0), None);
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&program, None);
-    assert!(!output.contains("disable-slp-vectorize"),
-        "No float fields should produce no SLP-disabled attributes");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "No float fields should produce no SLP-disabled attributes"
+    );
 }
 
 #[test]
@@ -5299,8 +6022,10 @@ fn test_slp_hazard_small_field_count() {
     let program = make_slp_float_program(4, body, None);
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&program, None);
-    assert!(!output.contains("disable-slp-vectorize"),
-        "4 float fields with 6 ops should not trigger SLP disable");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "4 float fields with 6 ops should not trigger SLP disable"
+    );
 }
 
 #[test]
@@ -5312,8 +6037,10 @@ fn test_slp_hazard_large_field_count() {
     // 2026-07-27: SLP hazard attribute emission removed — manual SLP vector
     // codegen was disabled so there's no conflict with LLVM's auto-vectorizer.
     // The hazard analysis still runs but produces no attribute output.
-    assert!(!output.contains("disable-slp-vectorize"),
-        "SLP hazard attributes no longer emitted after SLP codegen removal");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "SLP hazard attributes no longer emitted after SLP codegen removal"
+    );
 }
 
 #[test]
@@ -5322,22 +6049,28 @@ fn test_slp_hazard_independent_channels() {
     for i in 0..12 {
         body.push(Statement::Assign(
             Expr::Identifier(format!("f{}", i)),
-            Expr::BinaryOp(BinaryOpKind::Add,
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier(format!("f{}", i))),
-                Box::new(Expr::Float(1.0))),
+                Box::new(Expr::Float(1.0)),
+            ),
         ));
     }
     body.push(Statement::Assign(
         Expr::Identifier("count".to_string()),
-        Expr::BinaryOp(BinaryOpKind::Add,
+        Expr::BinaryOp(
+            BinaryOpKind::Add,
             Box::new(Expr::Identifier("count".to_string())),
-            Box::new(Expr::Decimal(1))),
+            Box::new(Expr::Decimal(1)),
+        ),
     ));
     let program = make_slp_float_program(12, body, None);
     let mut backend = LlvmBackend::new();
     let output = backend.generate(&program, None);
-    assert!(!output.contains("disable-slp-vectorize"),
-        "12 independent float fields should NOT disable SLP");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "12 independent float fields should NOT disable SLP"
+    );
 }
 
 #[test]
@@ -5359,8 +6092,10 @@ fn test_slp_hazard_with_target_spec() {
     };
     backend = backend.with_spec(spec);
     let output = backend.generate(&program, None);
-    assert!(!output.contains("disable-slp-vectorize"),
-        "AArch64 with 32 registers and ASR 2.4 > 1.5 should allow SLP for 12 fields");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "AArch64 with 32 registers and ASR 2.4 > 1.5 should allow SLP for 12 fields"
+    );
 }
 
 #[test]
@@ -5384,8 +6119,10 @@ fn test_slp_hazard_avx_target() {
     let output = backend.generate(&program, None);
     // 2026-07-27: SLP hazard attribute emission removed — same rationale as
     // test_slp_hazard_large_field_count.
-    assert!(!output.contains("disable-slp-vectorize"),
-        "SLP hazard attributes no longer emitted after SLP codegen removal");
+    assert!(
+        !output.contains("disable-slp-vectorize"),
+        "SLP hazard attributes no longer emitted after SLP codegen removal"
+    );
 }
 
 // ── Schema alias tests ────────────────────────────────────
@@ -5404,13 +6141,11 @@ fn test_schema_aliases_loaded() {
 #[test]
 fn test_no_schema_import_no_validation() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::StateDecl(StateDecl {
-            name: "count".to_string(),
-            ty: Type::int(),
-            span: None,
-        }),
-    ];
+    let program = vec![TopLevel::StateDecl(StateDecl {
+        name: "count".to_string(),
+        ty: Type::int(),
+        span: None,
+    })];
     let _output = backend.generate(&program, None);
     // 2026-10-15 (lifecycle laws): the termination warning now fires for a
     // program with no reachable terminator — this test's program is a bare
@@ -5475,10 +6210,16 @@ fn test_imported_alias_is_mmio() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("inttoptr i64 1073741824"),
-        "led_0 with schema import should be MMIO (inttoptr). Got: {}", output);
-    assert!(output.contains("store volatile i64"),
-        "led_0 with schema import should use volatile store. Got: {}", output);
+    assert!(
+        output.contains("inttoptr i64 1073741824"),
+        "led_0 with schema import should be MMIO (inttoptr). Got: {}",
+        output
+    );
+    assert!(
+        output.contains("store volatile i64"),
+        "led_0 with schema import should use volatile store. Got: {}",
+        output
+    );
 }
 
 #[test]
@@ -5508,7 +6249,8 @@ fn test_unimported_alias_not_mmio() {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "_".to_string(),
                     ty: None,
                     expr: Some(Expr::Identifier("led_0".to_string())),
@@ -5524,153 +6266,165 @@ fn test_unimported_alias_not_mmio() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(!output.contains("inttoptr i64 1073741824"),
-        "led_0 NOT in schema should NOT be MMIO (no inttoptr for 0x40000000). Got: {}", output);
-    assert!(output.contains("getelementptr inbounds %State"),
-        "led_0 NOT in schema should use struct GEP. Got: {}", output);
+    assert!(
+        !output.contains("inttoptr i64 1073741824"),
+        "led_0 NOT in schema should NOT be MMIO (no inttoptr for 0x40000000). Got: {}",
+        output
+    );
+    assert!(
+        output.contains("getelementptr inbounds %State"),
+        "led_0 NOT in schema should use struct GEP. Got: {}",
+        output
+    );
 }
 
 // ── Intrinsic tests ──────────────────────────────────────
 
 fn make_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
-    vec![
-        TopLevel::Transaction(Transaction {
-            variadic_param: None,
-            name: "main".to_string(),
-            is_reactive: true,
-            is_async: false,
-            type_params: vec![],
-            parameters: vec![],
-            output_type: None,
-            outputs: vec![],
-            contract: default_contract(),
-            body: vec![
-                Statement::Let { names: vec![], 
-                    name: "r".to_string(),
-                    ty: Some(Type::int()),
-                    expr: Some(intrinsic),
-                    modifiers: vec![],
-                },
-                Statement::Term(None),
-            ],
-            metadata: HashMap::new(),
-            derivation: None,
-            modifiers: vec![],
-            span: None,
-            doc: None,
-        }),
-    ]
+    vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "main".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Let {
+                names: vec![],
+                name: "r".to_string(),
+                ty: Some(Type::int()),
+                expr: Some(intrinsic),
+                modifiers: vec![],
+            },
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    })]
 }
 
 fn make_float_intrinsic_program(intrinsic: Expr) -> Vec<TopLevel> {
-    vec![
-        TopLevel::Transaction(Transaction {
-            variadic_param: None,
-            name: "main".to_string(),
-            is_reactive: true,
-            is_async: false,
-            type_params: vec![],
-            parameters: vec![],
-            output_type: None,
-            outputs: vec![],
-            contract: default_contract(),
-            body: vec![
-                Statement::Let { names: vec![], 
-                    name: "r".to_string(),
-                    ty: Some(Type::float()),
-                    expr: Some(intrinsic),
-                    modifiers: vec![],
-                },
-                Statement::Term(None),
-            ],
-            metadata: HashMap::new(),
-            derivation: None,
-            modifiers: vec![],
-            span: None,
-            doc: None,
-        }),
-    ]
+    vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "main".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Let {
+                names: vec![],
+                name: "r".to_string(),
+                ty: Some(Type::float()),
+                expr: Some(intrinsic),
+                modifiers: vec![],
+            },
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    })]
 }
 
 #[test]
 fn test_emit_cast_int_to_string() {
     // The direct-cast path resolves String membership via the universe (the
     // real pipeline always has one), so the bare-backend test must set it.
-    let mut backend = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
-    let program = vec![
-        TopLevel::Transaction(Transaction {
-            variadic_param: None,
-            name: "main".to_string(),
-            is_reactive: true,
-            is_async: false,
-            type_params: vec![],
-            parameters: vec![],
-            output_type: None,
-            outputs: vec![],
-            contract: default_contract(),
-            body: vec![
-                Statement::Let { names: vec![], 
-                    name: "r".to_string(),
-                    ty: Some(Type::string()),
-                    expr: Some(Expr::Cast(Box::new(Expr::Decimal(42)), Type::string())),
-                    modifiers: vec![],
-                },
-                Statement::Term(None),
-            ],
-            metadata: HashMap::new(),
-            derivation: None,
-            modifiers: vec![],
-            span: None,
-            doc: None,
-        }),
-    ];
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
+    let program = vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "main".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Let {
+                names: vec![],
+                name: "r".to_string(),
+                ty: Some(Type::string()),
+                expr: Some(Expr::Cast(Box::new(Expr::Decimal(42)), Type::string())),
+                modifiers: vec![],
+            },
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    })];
     let output = backend.generate(&program, None);
     // 2026-08-04 (Phase 3): the hardcoded `__int_to_str__` fallback arm was
     // removed — the casting graph's `Int -> String` ExtCall lane is the sole
     // path. Assert ONLY the graph lane is emitted.
-    assert!(output.contains("call ptr @int_to_str(i64"),
-        "Cast Int -> String must resolve through the casting graph lane. Got:\n{}", output);
-    assert!(!output.contains("call ptr @__int_to_str__("),
-        "The hardcoded __int_to_str__ fallback must be gone. Got:\n{}", output);
+    assert!(
+        output.contains("call ptr @int_to_str(i64"),
+        "Cast Int -> String must resolve through the casting graph lane. Got:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("call ptr @__int_to_str__("),
+        "The hardcoded __int_to_str__ fallback must be gone. Got:\n{}",
+        output
+    );
 }
 
 #[test]
 fn test_emit_cast_string_to_int() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::Transaction(Transaction {
-            variadic_param: None,
-            name: "main".to_string(),
-            is_reactive: true,
-            is_async: false,
-            type_params: vec![],
-            parameters: vec![],
-            output_type: None,
-            outputs: vec![],
-            contract: default_contract(),
-            body: vec![
-                Statement::Let { names: vec![], 
-                    name: "r".to_string(),
-                    ty: Some(Type::int()),
-                    expr: Some(Expr::Cast(Box::new(Expr::Quoted("42".into())), Type::int())),
-                    modifiers: vec![],
-                },
-                Statement::Term(None),
-            ],
-            metadata: HashMap::new(),
-            derivation: None,
-            modifiers: vec![],
-            span: None,
-            doc: None,
-        }),
-    ];
+    let program = vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "main".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Let {
+                names: vec![],
+                name: "r".to_string(),
+                ty: Some(Type::int()),
+                expr: Some(Expr::Cast(Box::new(Expr::Quoted("42".into())), Type::int())),
+                modifiers: vec![],
+            },
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    })];
     let output = backend.generate(&program, None);
     // 2026-07-30: Protocol-based cast path replaces __str_to_int.
     // String→Int now goes through protocol dispatch, not __str_to_int.
     // 2026-07-30: Check that __str_to_int is NOT called (only declared as extern).
     // The extern declaration is always emitted for known runtime functions.
-    assert!(!output.contains("call i64 @__str_to_int"),
-        "Cast String -> Int should NOT call __str_to_int (protocol path). Got:\n{}", output);
+    assert!(
+        !output.contains("call i64 @__str_to_int"),
+        "Cast String -> Int should NOT call __str_to_int (protocol path). Got:\n{}",
+        output
+    );
 }
 
 // ── List tests ───────────────────────────────────────────
@@ -5682,24 +6436,42 @@ fn test_tuple_emits_2slot_header() {
     let mut backend = LlvmBackend::new();
     let program = vec![
         TopLevel::StateDecl(StateDecl {
-            name: "t".to_string(), ty: Type::int(), span: None,
+            name: "t".to_string(),
+            ty: Type::int(),
+            span: None,
         }),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "mktup".to_string(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![],
-            output_type: None, outputs: vec![],
+            name: "mktup".to_string(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
             contract: default_contract(),
-            body: vec![
-                Statement::Assign(Expr::Identifier("t".to_string()), Expr::Tuple(vec![Expr::Decimal(1), Expr::Decimal(2), Expr::Decimal(3)])),
-            ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None,
+            body: vec![Statement::Assign(
+                Expr::Identifier("t".to_string()),
+                Expr::Tuple(vec![Expr::Decimal(1), Expr::Decimal(2), Expr::Decimal(3)]),
+            )],
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
             doc: None,
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("call ptr @malloc(i64 40)"), "3-elem tuple = 40 bytes (5 slots × 8). Got: {}", output);
-    assert!(output.contains("store i64 3, ptr"), "Length should be 3. Got: {}", output);
+    assert!(
+        output.contains("call ptr @malloc(i64 40)"),
+        "3-elem tuple = 40 bytes (5 slots × 8). Got: {}",
+        output
+    );
+    assert!(
+        output.contains("store i64 3, ptr"),
+        "Length should be 3. Got: {}",
+        output
+    );
 }
 
 // ── Optimization report & chain composition ──────────────
@@ -5726,8 +6498,11 @@ fn make_chain_program(
         }));
     }
     for (txn_name, body) in txns {
-        let pre = Expr::BinaryOp(BinaryOpKind::Lt,
-            Box::new(Expr::Identifier("count".to_string())), Box::new(Expr::Identifier("total".to_string())));
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Identifier("count".to_string())),
+            Box::new(Expr::Identifier("total".to_string())),
+        );
         items.push(TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: txn_name.to_string(),
@@ -5743,7 +6518,8 @@ fn make_chain_program(
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -5755,162 +6531,311 @@ fn make_chain_program(
     items
 }
 
-fn ident_s(s: &str) -> Expr { Expr::Identifier(s.to_string()) }
-fn int_s(v: i64) -> Expr { Expr::Decimal(v) }
+fn ident_s(s: &str) -> Expr {
+    Expr::Identifier(s.to_string())
+}
+fn int_s(v: i64) -> Expr {
+    Expr::Decimal(v)
+}
 
 #[test]
 fn test_report_shows_ranking() {
     let program = make_chain_program(
-        vec![("t1", vec![
-            Statement::Assign(ident_s("x"), ident_s("sensor")),
-            Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-        ])],
+        vec![(
+            "t1",
+            vec![
+                Statement::Assign(ident_s("x"), ident_s("sensor")),
+                Statement::Assign(
+                    ident_s("count"),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("count")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
+            ],
+        )],
         &[("total", 100)],
         &[("count", 0), ("x", 0)],
     );
     let mut backend = LlvmBackend::new()
-        .with_optimize_budget(256).with_optimize_report(true);
+        .with_optimize_budget(256)
+        .with_optimize_report(true);
     let _output = backend.generate(&program, None);
     let report: Vec<&str> = backend.report().iter().map(|s| s.as_str()).collect();
     let joined = report.join("\n");
     // 2026-07-14: With full analysis wired, check that the report has
     // substantive optimization content.
     assert!(!report.is_empty(), "Report should contain content");
-    assert!(joined.contains("Budget plan") || joined.contains("Linear transaction")
-        || joined.contains("Optimization priority"),
-        "Report should contain optimization analysis");
+    assert!(
+        joined.contains("Budget plan")
+            || joined.contains("Linear transaction")
+            || joined.contains("Optimization priority"),
+        "Report should contain optimization analysis"
+    );
 }
 
 #[test]
 fn test_report_shows_budget() {
     let program = make_chain_program(
-        vec![("t1", vec![
-            Statement::Assign(ident_s("x"), ident_s("sensor")),
-            Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-        ])],
+        vec![(
+            "t1",
+            vec![
+                Statement::Assign(ident_s("x"), ident_s("sensor")),
+                Statement::Assign(
+                    ident_s("count"),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("count")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
+            ],
+        )],
         &[("total", 100)],
         &[("count", 0), ("x", 0)],
     );
     let mut backend = LlvmBackend::new()
-        .with_optimize_budget(10).with_optimize_report(true);
+        .with_optimize_budget(10)
+        .with_optimize_report(true);
     let _output = backend.generate(&program, None);
     let report: Vec<&str> = backend.report().iter().map(|s| s.as_str()).collect();
     let joined = report.join("\n");
-    assert!(joined.contains("Budget plan"),
-        "Report should contain budget plan section");
+    assert!(
+        joined.contains("Budget plan"),
+        "Report should contain budget plan section"
+    );
 }
 
 #[test]
 fn test_report_shows_size() {
     let program = make_chain_program(
-        vec![("t1", vec![
-            Statement::Assign(ident_s("x"), ident_s("sensor")),
-            Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-        ])],
+        vec![(
+            "t1",
+            vec![
+                Statement::Assign(ident_s("x"), ident_s("sensor")),
+                Statement::Assign(
+                    ident_s("count"),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("count")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
+            ],
+        )],
         &[("total", 100)],
         &[("count", 0), ("x", 0)],
     );
     let mut backend = LlvmBackend::new()
-        .with_optimize_budget(256).with_optimize_report(true)
+        .with_optimize_budget(256)
+        .with_optimize_report(true)
         .with_optimize_size(10000);
     let _output = backend.generate(&program, None);
     let report: Vec<&str> = backend.report().iter().map(|s| s.as_str()).collect();
     let joined = report.join("\n");
     // 2026-07-14: Size estimation requires triggers for enumerable dispatch.
     // The report still contains chain analysis and budget info.
-    assert!(joined.contains("Budget plan") || joined.contains("Linear transaction"),
-        "Report should contain optimization info");
+    assert!(
+        joined.contains("Budget plan") || joined.contains("Linear transaction"),
+        "Report should contain optimization info"
+    );
 }
 
 #[test]
 fn test_report_shows_chains() {
     let program = make_chain_program(
         vec![
-            ("step_a", vec![
-                Statement::Assign(ident_s("x"), ident_s("sensor")),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
-            ("step_b", vec![
-                Statement::Assign(ident_s("y"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("x")), Box::new(int_s(1)))),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
+            (
+                "step_a",
+                vec![
+                    Statement::Assign(ident_s("x"), ident_s("sensor")),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
+            (
+                "step_b",
+                vec![
+                    Statement::Assign(
+                        ident_s("y"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("x")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
         ],
         &[("total", 100)],
         &[("count", 0), ("x", 0), ("y", 0)],
     );
     let mut backend = LlvmBackend::new()
-        .with_optimize_budget(256).with_optimize_report(true);
+        .with_optimize_budget(256)
+        .with_optimize_report(true);
     let _output = backend.generate(&program, None);
     let report: Vec<&str> = backend.report().iter().map(|s| s.as_str()).collect();
     let joined = report.join("\n");
-    assert!(joined.contains("Linear transaction chains")
-        || joined.contains("Composed chains"),
-        "Report should detect multi-txn chains");
+    assert!(
+        joined.contains("Linear transaction chains") || joined.contains("Composed chains"),
+        "Report should detect multi-txn chains"
+    );
 }
 
 #[test]
 fn test_precompute_pure_counter() {
     let program = make_chain_program(
         vec![
-            ("step_a", vec![
-                Statement::Assign(ident_s("x"), int_s(42)),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
-            ("step_b", vec![
-                Statement::Assign(ident_s("y"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("x")), Box::new(int_s(1)))),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
+            (
+                "step_a",
+                vec![
+                    Statement::Assign(ident_s("x"), int_s(42)),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
+            (
+                "step_b",
+                vec![
+                    Statement::Assign(
+                        ident_s("y"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("x")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
         ],
         &[("total", 100)],
         &[("count", 0), ("x", 0), ("y", 0)],
     );
-    let output = LlvmBackend::new().with_optimize_budget(256).generate(&program, None);
-    assert!(output.contains("ret i32 0"),
-        "Should return normally");
+    let output = LlvmBackend::new()
+        .with_optimize_budget(256)
+        .generate(&program, None);
+    assert!(output.contains("ret i32 0"), "Should return normally");
 }
 
 #[test]
 fn test_precompute_budget_exceeded_fallback() {
     let program = make_chain_program(
         vec![
-            ("step_a", vec![
-                Statement::Assign(ident_s("x"), int_s(42)),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
-            ("step_b", vec![
-                Statement::Assign(ident_s("y"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("x")), Box::new(int_s(1)))),
-                Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-            ]),
+            (
+                "step_a",
+                vec![
+                    Statement::Assign(ident_s("x"), int_s(42)),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
+            (
+                "step_b",
+                vec![
+                    Statement::Assign(
+                        ident_s("y"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("x")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                    Statement::Assign(
+                        ident_s("count"),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
+                            Box::new(ident_s("count")),
+                            Box::new(int_s(1)),
+                        ),
+                    ),
+                ],
+            ),
         ],
         &[("total", 100)],
         &[("count", 0), ("x", 0), ("y", 0)],
     );
-    let output = LlvmBackend::new().with_optimize_budget(0).generate(&program, None);
-    assert!(output.contains("getelementptr inbounds %State, ptr %state, i32 0, i32"),
-        "All-convergent program should use per-field GEP loads");
-    assert!(!output.contains("@reactor_tick"),
-        "All-convergent program should not emit reactor_tick");
+    let output = LlvmBackend::new()
+        .with_optimize_budget(0)
+        .generate(&program, None);
+    assert!(
+        output.contains("getelementptr inbounds %State, ptr %state, i32 0, i32"),
+        "All-convergent program should use per-field GEP loads"
+    );
+    assert!(
+        !output.contains("@reactor_tick"),
+        "All-convergent program should not emit reactor_tick"
+    );
 }
 
 #[test]
 fn test_iir_filter_folded_path_regression() {
     let program = make_chain_program(
-        vec![("process", vec![
-            Statement::Assign(ident_s("x"), int_s(42)),
-            Statement::Assign(ident_s("count"), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("count")), Box::new(int_s(1)))),
-        ])],
+        vec![(
+            "process",
+            vec![
+                Statement::Assign(ident_s("x"), int_s(42)),
+                Statement::Assign(
+                    ident_s("count"),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("count")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
+            ],
+        )],
         &[("total", 50000000)],
         &[("count", 0), ("x", 0)],
     );
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(!output.contains("switch i64"),
-        "Single-txn convergence should use folded path, not enum dispatch");
-    assert!(!output.contains("@reactor_tick"),
-        "Single-txn convergence should use folded path, not standard reactor");
-    assert!(output.contains("store i64 50000000"),
-        "Effectively-pure body should emit O(1) store i64 total, not a while-loop");
-    assert!(output.contains("ret i32 0"),
-        "Should return after store");
+    assert!(
+        !output.contains("switch i64"),
+        "Single-txn convergence should use folded path, not enum dispatch"
+    );
+    assert!(
+        !output.contains("@reactor_tick"),
+        "Single-txn convergence should use folded path, not standard reactor"
+    );
+    assert!(
+        output.contains("store i64 50000000"),
+        "Effectively-pure body should emit O(1) store i64 total, not a while-loop"
+    );
+    assert!(output.contains("ret i32 0"), "Should return after store");
     let main_idx = output.find("define i32 @main()").unwrap_or(0);
     let store_in_main = output[main_idx..].contains("store i64 50000000");
     assert!(store_in_main, "store must be in main, not in process");
@@ -5941,7 +6866,14 @@ fn make_async_pair_program() -> Vec<TopLevel> {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Assign(Expr::Identifier("a".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("a")), Box::new(int_s(1)))),
+                Statement::Assign(
+                    Expr::Identifier("a".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("a")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -5961,7 +6893,14 @@ fn make_async_pair_program() -> Vec<TopLevel> {
             outputs: vec![],
             contract: default_contract(),
             body: vec![
-                Statement::Assign(Expr::Identifier("b".to_string()), Expr::BinaryOp(BinaryOpKind::Add, Box::new(ident_s("b")), Box::new(int_s(1)))),
+                Statement::Assign(
+                    Expr::Identifier("b".to_string()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
+                        Box::new(ident_s("b")),
+                        Box::new(int_s(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
             metadata: HashMap::new(),
@@ -5977,10 +6916,14 @@ fn make_async_pair_program() -> Vec<TopLevel> {
 fn test_async_body_functions_emitted() {
     let program = make_async_pair_program();
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains("@async_body_inc_a"),
-        "Async body function for inc_a should be emitted");
-    assert!(output.contains("@async_body_inc_b"),
-        "Async body function for inc_b should be emitted");
+    assert!(
+        output.contains("@async_body_inc_a"),
+        "Async body function for inc_a should be emitted"
+    );
+    assert!(
+        output.contains("@async_body_inc_b"),
+        "Async body function for inc_b should be emitted"
+    );
 }
 
 // 2026-09-10 (Family H): the pthread pool is replaced by direct
@@ -5990,16 +6933,26 @@ fn test_async_body_functions_emitted() {
 fn test_async_bodies_called_in_main() {
     let program = make_async_pair_program();
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains("call void @async_body_inc_a(ptr noalias nocapture %state)"),
-        "Main should call the inc_a body directly");
-    assert!(output.contains("call void @async_body_inc_b(ptr noalias nocapture %state)"),
-        "Main should call the inc_b body directly");
-    assert!(!output.contains("@__thread_pool_init__"),
-        "The pthread pool is deleted — no init call");
-    assert!(!output.contains("@__barrier_release__"),
-        "The barriers are deleted");
-    assert!(!output.contains("@__barrier_wait__"),
-        "The barriers are deleted");
+    assert!(
+        output.contains("call void @async_body_inc_a(ptr noalias nocapture %state)"),
+        "Main should call the inc_a body directly"
+    );
+    assert!(
+        output.contains("call void @async_body_inc_b(ptr noalias nocapture %state)"),
+        "Main should call the inc_b body directly"
+    );
+    assert!(
+        !output.contains("@__thread_pool_init__"),
+        "The pthread pool is deleted — no init call"
+    );
+    assert!(
+        !output.contains("@__barrier_release__"),
+        "The barriers are deleted"
+    );
+    assert!(
+        !output.contains("@__barrier_wait__"),
+        "The barriers are deleted"
+    );
 }
 
 // 2026-09-30 (async call order nondeterminism): the async-body calls in
@@ -6029,12 +6982,18 @@ fn test_async_body_call_order_is_sorted() {
 fn test_no_thread_pool_without_async_txns() {
     let program = make_exit_program(None, false);
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(!output.contains("@llvm.thread_pool"),
-        "No thread pool metadata without async txns");
-    assert!(!output.contains("call void @__barrier__"),
-        "No barrier calls without async txns");
-    assert!(!output.contains("call void @__thread_pool_init__"),
-        "No thread pool init without async txns");
+    assert!(
+        !output.contains("@llvm.thread_pool"),
+        "No thread pool metadata without async txns"
+    );
+    assert!(
+        !output.contains("call void @__barrier__"),
+        "No barrier calls without async txns"
+    );
+    assert!(
+        !output.contains("call void @__thread_pool_init__"),
+        "No thread pool init without async txns"
+    );
 }
 
 // ── Struct param tests ───────────────────────────────────
@@ -6048,8 +7007,18 @@ fn test_struct_param_uses_ptr_in_signature() {
             type_params: vec![],
             parent: None,
             fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
+                StructField {
+                    name: "x".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
             ],
             transactions: vec![],
             view_html: None,
@@ -6065,10 +7034,11 @@ fn test_struct_param_uses_ptr_in_signature() {
             outputs: vec![Type::bool_()],
             output_type: None,
             contract: default_contract(),
-            body: vec![
-                Statement::Term(Some(Expr::Bool(true))),
-            ],
-            modifiers: vec![Annotation { name: "export".to_string(), value: Some(Expr::Bool(true)) }],
+            body: vec![Statement::Term(Some(Expr::Bool(true)))],
+            modifiers: vec![Annotation {
+                name: "export".to_string(),
+                value: Some(Expr::Bool(true)),
+            }],
             metadata: HashMap::new(),
             derivation: None,
             annotations: vec![],
@@ -6077,8 +7047,11 @@ fn test_struct_param_uses_ptr_in_signature() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("define i64 @process(i64 %arg0"),
-        "Struct param should be the boxed i64 handle in the function signature.\nGot:\n{}", output);
+    assert!(
+        output.contains("define i64 @process(i64 %arg0"),
+        "Struct param should be the boxed i64 handle in the function signature.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6090,8 +7063,18 @@ fn test_struct_param_ptrtoint_at_entry() {
             type_params: vec![],
             parent: None,
             fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
+                StructField {
+                    name: "x".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
             ],
             transactions: vec![],
             view_html: None,
@@ -6107,10 +7090,11 @@ fn test_struct_param_ptrtoint_at_entry() {
             outputs: vec![Type::bool_()],
             output_type: None,
             contract: default_contract(),
-            body: vec![
-                Statement::Term(Some(Expr::Bool(true))),
-            ],
-            modifiers: vec![Annotation { name: "export".to_string(), value: Some(Expr::Bool(true)) }],
+            body: vec![Statement::Term(Some(Expr::Bool(true)))],
+            modifiers: vec![Annotation {
+                name: "export".to_string(),
+                value: Some(Expr::Bool(true)),
+            }],
             metadata: HashMap::new(),
             derivation: None,
             annotations: vec![],
@@ -6122,10 +7106,16 @@ fn test_struct_param_ptrtoint_at_entry() {
     // 2026-08-13 (obj value ABI): a struct PARAM arrives as the boxed i64
     // handle directly — no ptrtoint boxing at entry (the old ptr-param ABI
     // boxed a `ptr` param to i64 for SSA). Field access inttoprs the handle.
-    assert!(!output.contains("ptrtoint ptr %arg0"),
-        "Struct param arrives boxed — no ptrtoint at entry.\nGot:\n{}", output);
-    assert!(output.contains("i64 %arg0"),
-        "Struct param is the boxed i64 handle.\nGot:\n{}", output);
+    assert!(
+        !output.contains("ptrtoint ptr %arg0"),
+        "Struct param arrives boxed — no ptrtoint at entry.\nGot:\n{}",
+        output
+    );
+    assert!(
+        output.contains("i64 %arg0"),
+        "Struct param is the boxed i64 handle.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6156,13 +7146,11 @@ fn test_call_with_ptr_arg_passes_canonical_ptr() {
             outputs: vec![Type::int()],
             output_type: None,
             contract: default_contract(),
-            body: vec![
-                Statement::Term(Some(Expr::Call(
-                    "callee".to_string(),
-                    vec![Expr::Identifier("p".to_string())],
-                    None,
-                ))),
-            ],
+            body: vec![Statement::Term(Some(Expr::Call(
+                "callee".to_string(),
+                vec![Expr::Identifier("p".to_string())],
+                None,
+            )))],
             metadata: HashMap::new(),
             derivation: None,
             modifiers: vec![],
@@ -6179,7 +7167,6 @@ fn test_call_with_ptr_arg_passes_canonical_ptr() {
     );
 }
 
-
 #[test]
 fn test_struct_param_field_access_works() {
     let mut backend = LlvmBackend::new();
@@ -6189,8 +7176,18 @@ fn test_struct_param_field_access_works() {
             type_params: vec![],
             parent: None,
             fields: vec![
-                StructField { name: "x".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
-                StructField { name: "y".to_string(), ty: Type::int(), default: None, visibility: Visibility::Public },
+                StructField {
+                    name: "x".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: Type::int(),
+                    default: None,
+                    visibility: Visibility::Public,
+                },
             ],
             transactions: vec![],
             view_html: None,
@@ -6206,10 +7203,14 @@ fn test_struct_param_field_access_works() {
             outputs: vec![Type::int()],
             output_type: None,
             contract: default_contract(),
-            body: vec![
-                Statement::Term(Some(Expr::Field(Box::new(Expr::Identifier("p".to_string())), "x".to_string()))),
-            ],
-            modifiers: vec![Annotation { name: "export".to_string(), value: Some(Expr::Quoted("get_x".into())) }],
+            body: vec![Statement::Term(Some(Expr::Field(
+                Box::new(Expr::Identifier("p".to_string())),
+                "x".to_string(),
+            )))],
+            modifiers: vec![Annotation {
+                name: "export".to_string(),
+                value: Some(Expr::Quoted("get_x".into())),
+            }],
             metadata: HashMap::new(),
             derivation: None,
             annotations: vec![],
@@ -6218,10 +7219,16 @@ fn test_struct_param_field_access_works() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("getelementptr"),
-        "Field access on struct param should emit GEP.\nGot:\n{}", output);
-    assert!(!output.contains("not found on object"),
-        "Field access on struct param should succeed.\nGot:\n{}", output);
+    assert!(
+        output.contains("getelementptr"),
+        "Field access on struct param should emit GEP.\nGot:\n{}",
+        output
+    );
+    assert!(
+        !output.contains("not found on object"),
+        "Field access on struct param should succeed.\nGot:\n{}",
+        output
+    );
 }
 
 // ── Event model / Trigger (basic) tests ──────────────────
@@ -6254,10 +7261,11 @@ fn test_event_model_trigger_handling() {
         }),
     ];
     let output = backend.generate(&program, None);
-    assert!(output.contains("%State"),
-        "Should generate state type");
-    assert!(output.contains("define void @init_state"),
-        "Should have init_state");
+    assert!(output.contains("%State"), "Should generate state type");
+    assert!(
+        output.contains("define void @init_state"),
+        "Should have init_state"
+    );
 }
 
 // ── First-class function ptr test ────────────────────────
@@ -6296,119 +7304,132 @@ fn make_fn_ptr_program() -> Vec<TopLevel> {
 fn test_fn_ptr_not_crashes() {
     let program = make_fn_ptr_program();
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains("define i32 @main"),
-        "Should emit main function");
+    assert!(
+        output.contains("define i32 @main"),
+        "Should emit main function"
+    );
 }
 
 #[test]
 fn test_emit_address_of() {
     // AddressOf#("uart") should emit inttoptr with uart's address (0xFFE01000)
-    let program = vec![
-        TopLevel::Transaction(Transaction {
-            variadic_param: None,
-            name: "main".to_string(),
-            is_reactive: true,
-            is_async: false,
-            type_params: vec![],
-            parameters: vec![],
-            output_type: None,
-            outputs: vec![],
-            contract: default_contract(),
-            body: vec![
-                Statement::Assign(
-                    Expr::Identifier("ptr".to_string()),
-                    Expr::Call("AddressOf#".to_string(), vec![Expr::Quoted(b"uart".to_vec())], None),
+    let program = vec![TopLevel::Transaction(Transaction {
+        variadic_param: None,
+        name: "main".to_string(),
+        is_reactive: true,
+        is_async: false,
+        type_params: vec![],
+        parameters: vec![],
+        output_type: None,
+        outputs: vec![],
+        contract: default_contract(),
+        body: vec![
+            Statement::Assign(
+                Expr::Identifier("ptr".to_string()),
+                Expr::Call(
+                    "AddressOf#".to_string(),
+                    vec![Expr::Quoted(b"uart".to_vec())],
+                    None,
                 ),
-                Statement::Term(None),
-            ],
-            metadata: HashMap::new(),
-            derivation: None,
-            modifiers: vec![],
-            span: None,
-            doc: None,
-        }),
-    ];
+            ),
+            Statement::Term(None),
+        ],
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
+    })];
     let output = LlvmBackend::new().generate(&program, None);
     // uart = 0xFFE01000 in config/address-map.dbvl
     assert!(output.contains("inttoptr"), "Should emit inttoptr");
     // Resolve the expected address from the shared resolver
     let expected_addr = crate::address_resolver::resolve_address("uart");
     let expected_str = expected_addr.to_string();
-    assert!(output.contains(&expected_str), "Should contain uart address {} (= 0x{:X})", expected_str, expected_addr);
+    assert!(
+        output.contains(&expected_str),
+        "Should contain uart address {} (= 0x{:X})",
+        expected_str,
+        expected_addr
+    );
 }
 
 #[test]
 fn test_frgn_ptr_declare() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::ForeignBinding(ForeignBinding {
-            foreign_name: "test_fn".to_string(),
-            briev_name: None,
-            from: FromSpec::CompilerRegistry("c".to_string()),
-            target: ForeignTarget::C,
-            inputs: vec![("arg".to_string(), Type::Ptr(Box::new(Type::int())))],
-            success_output: vec![("".to_string(), Type::int())],
-            error_type: String::new(),
-            error_fields: vec![],
-            input_layout: None,
-            output_layout: None,
-            precondition: None,
-            postcondition: None,
-            buffer_mode: None,
-            default_watchdog: None,
-            wasm_impl: None,
-            wasm_setup: None,
-            span: None,
-            is_optional: false,
-            is_fire_forget: false,
-            is_delivery: false,
-            is_variadic: false,
-            doc: None,
-        }),
-    ];
+    let program = vec![TopLevel::ForeignBinding(ForeignBinding {
+        foreign_name: "test_fn".to_string(),
+        briev_name: None,
+        from: FromSpec::CompilerRegistry("c".to_string()),
+        target: ForeignTarget::C,
+        inputs: vec![("arg".to_string(), Type::Ptr(Box::new(Type::int())))],
+        success_output: vec![("".to_string(), Type::int())],
+        error_type: String::new(),
+        error_fields: vec![],
+        input_layout: None,
+        output_layout: None,
+        precondition: None,
+        postcondition: None,
+        buffer_mode: None,
+        default_watchdog: None,
+        wasm_impl: None,
+        wasm_setup: None,
+        span: None,
+        is_optional: false,
+        is_fire_forget: false,
+        is_delivery: false,
+        is_variadic: false,
+        doc: None,
+    })];
     let output = backend.generate(&program, None);
-    assert!(output.contains("declare i64 @test_fn(ptr)"),
-        "Ptr param should produce 'ptr' in declare, not 'i64'.\nGot:\n{}", output);
+    assert!(
+        output.contains("declare i64 @test_fn(ptr)"),
+        "Ptr param should produce 'ptr' in declare, not 'i64'.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
 fn test_frgn_ptr_return() {
     let mut backend = LlvmBackend::new();
-    let program = vec![
-        TopLevel::ForeignBinding(ForeignBinding {
-            foreign_name: "make_ptr".to_string(),
-            briev_name: None,
-            from: FromSpec::CompilerRegistry("c".to_string()),
-            target: ForeignTarget::C,
-            inputs: vec![("n".to_string(), Type::int())],
-            success_output: vec![("".to_string(), Type::Ptr(Box::new(Type::int())))],
-            error_type: String::new(),
-            error_fields: vec![],
-            input_layout: None,
-            output_layout: None,
-            precondition: None,
-            postcondition: None,
-            buffer_mode: None,
-            default_watchdog: None,
-            wasm_impl: None,
-            wasm_setup: None,
-            span: None,
-            is_optional: false,
-            is_fire_forget: false,
-            is_delivery: false,
-            is_variadic: false,
-            doc: None,
-        }),
-    ];
+    let program = vec![TopLevel::ForeignBinding(ForeignBinding {
+        foreign_name: "make_ptr".to_string(),
+        briev_name: None,
+        from: FromSpec::CompilerRegistry("c".to_string()),
+        target: ForeignTarget::C,
+        inputs: vec![("n".to_string(), Type::int())],
+        success_output: vec![("".to_string(), Type::Ptr(Box::new(Type::int())))],
+        error_type: String::new(),
+        error_fields: vec![],
+        input_layout: None,
+        output_layout: None,
+        precondition: None,
+        postcondition: None,
+        buffer_mode: None,
+        default_watchdog: None,
+        wasm_impl: None,
+        wasm_setup: None,
+        span: None,
+        is_optional: false,
+        is_fire_forget: false,
+        is_delivery: false,
+        is_variadic: false,
+        doc: None,
+    })];
     let output = backend.generate(&program, None);
-    assert!(output.contains("declare ptr @make_ptr(i64)"),
-        "Ptr return should produce 'ptr' in declare, not 'i64'.\nGot:\n{}", output);
+    assert!(
+        output.contains("declare ptr @make_ptr(i64)"),
+        "Ptr return should produce 'ptr' in declare, not 'i64'.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
 fn test_struct_literal_field_offsets() {
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(tu);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -6434,7 +7455,8 @@ fn test_struct_literal_field_offsets() {
             output_type: None,
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "x".to_string(),
                     ty: None,
                     expr: Some(Expr::StructLiteral {
@@ -6460,12 +7482,21 @@ fn test_struct_literal_field_offsets() {
     ];
     let output = backend.generate(&program, None);
     // Field layout (pack=1): a(Int=8B)@0, b(Bool=1B)@8, c(Char=4B)@9
-    assert!(output.contains("getelementptr i8, ptr %t1, i64 0"),
-        "Field 'a' should be at offset 0.\nGot:\n{}", output);
-    assert!(output.contains("getelementptr i8, ptr %t1, i64 8"),
-        "Field 'b' (Bool) should be at offset 8.\nGot:\n{}", output);
-    assert!(output.contains("getelementptr i8, ptr %t1, i64 9"),
-        "Field 'c' (Char) should be at offset 9.\nGot:\n{}", output);
+    assert!(
+        output.contains("getelementptr i8, ptr %t1, i64 0"),
+        "Field 'a' should be at offset 0.\nGot:\n{}",
+        output
+    );
+    assert!(
+        output.contains("getelementptr i8, ptr %t1, i64 8"),
+        "Field 'b' (Bool) should be at offset 8.\nGot:\n{}",
+        output
+    );
+    assert!(
+        output.contains("getelementptr i8, ptr %t1, i64 9"),
+        "Field 'c' (Char) should be at offset 9.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6519,7 +7550,8 @@ fn test_addr_of_struct_literal() {
             output_type: None,
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "pt".to_string(),
                     ty: None,
                     expr: Some(Expr::StructLiteral {
@@ -6553,13 +7585,22 @@ fn test_addr_of_struct_literal() {
     // function ptr. 2026-08-13 (struct value lifetime): the struct literal is
     // HEAP-allocated (a stack alloca's handle dangles once the constructing
     // function returns), so the assertion is malloc, not `alloca`.
-    assert!(contains_heap_allocation(&output, 16),
-        "Struct literal should malloc 16 bytes (2 x 8B fields).\nGot:\n{}", output);
-    assert!(output.contains("ptrtoint ptr %t"),
-        "Should emit ptrtoint of the struct allocation for &pt.\nGot:\n{}", output);
+    assert!(
+        contains_heap_allocation(&output, 16),
+        "Struct literal should malloc 16 bytes (2 x 8B fields).\nGot:\n{}",
+        output
+    );
+    assert!(
+        output.contains("ptrtoint ptr %t"),
+        "Should emit ptrtoint of the struct allocation for &pt.\nGot:\n{}",
+        output
+    );
     // Should NOT reference @pt as a function symbol
-    assert!(!output.contains("ptrtoint ptr @pt"),
-        "Should NOT emit ptrtoint of @pt as if it were a function.\nGot:\n{}", output);
+    assert!(
+        !output.contains("ptrtoint ptr @pt"),
+        "Should NOT emit ptrtoint of @pt as if it were a function.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6613,7 +7654,8 @@ fn test_frgn_ptr_param_inttoptr() {
             output_type: None,
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "pt".to_string(),
                     ty: None,
                     expr: Some(Expr::StructLiteral {
@@ -6644,11 +7686,17 @@ fn test_frgn_ptr_param_inttoptr() {
     let output = backend.generate(&program, None);
     // When calling a frgn with Ptr param, the i64 address should be converted
     // via inttoptr so the LLVM call uses ptr type matching the declare.
-    assert!(output.contains("inttoptr i64"),
-        "Should emit inttoptr to convert i64 to ptr for Ptr param.\nGot:\n{}", output);
+    assert!(
+        output.contains("inttoptr i64"),
+        "Should emit inttoptr to convert i64 to ptr for Ptr param.\nGot:\n{}",
+        output
+    );
     // The call should use ptr type for the Ptr param
-    assert!(output.contains("call i64 @use_ptr(ptr"),
-        "Call to use_ptr(ptr) should use 'ptr' type for the first param.\nGot:\n{}", output);
+    assert!(
+        output.contains("call i64 @use_ptr(ptr"),
+        "Call to use_ptr(ptr) should use 'ptr' type for the first param.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6685,7 +7733,8 @@ fn test_trg_deref_error_flag() {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             metadata: HashMap::new(),
             derivation: None,
@@ -6697,8 +7746,14 @@ fn test_trg_deref_error_flag() {
     let output = LlvmBackend::new()
         .with_trg_unresolved_action(crate::backend::llvm::TrgUnresolvedAction::Error)
         .generate(&program, None);
-    assert!(output.contains("icmp eq ptr"), "Should emit null check for error mode");
-    assert!(output.contains("unreachable"), "Should emit unreachable for error mode");
+    assert!(
+        output.contains("icmp eq ptr"),
+        "Should emit null check for error mode"
+    );
+    assert!(
+        output.contains("unreachable"),
+        "Should emit unreachable for error mode"
+    );
 }
 
 #[test]
@@ -6730,7 +7785,8 @@ fn test_trg_deref_warn_default_no_null_check() {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
             metadata: HashMap::new(),
             derivation: None,
@@ -6744,7 +7800,10 @@ fn test_trg_deref_warn_default_no_null_check() {
     // For pointer operands, icmp eq ptr is valid — update assertion to match.
     // If the output contains "icmp eq ptr" that's fine (no null check flag).
     // The null check flag is "null_check" in the IR comments, not icmp.
-    assert!(!output.contains("null_check"), "Default mode should not emit null check");
+    assert!(
+        !output.contains("null_check"),
+        "Default mode should not emit null check"
+    );
 }
 
 #[test]
@@ -6777,7 +7836,8 @@ fn test_struct_array_list_literal() {
             output_type: None,
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "pts".to_string(),
                     ty: None,
                     expr: Some(Expr::List(vec![
@@ -6812,17 +7872,29 @@ fn test_struct_array_list_literal() {
     ];
     let output = backend.generate(&program, None);
     // Should allocate 32 bytes (2 elements * 16 bytes each)
-    assert!(output.contains("alloca i8, i64 32"),
-        "Should allocate 32 bytes for 2-element Point array.\nGot:\n{}", output);
+    assert!(
+        output.contains("alloca i8, i64 32"),
+        "Should allocate 32 bytes for 2-element Point array.\nGot:\n{}",
+        output
+    );
     // First element at offset 0: x=10, y=20
-    assert!(output.contains("getelementptr i8, ptr %t"),
-        "Should emit GEP for first element's first field at offset 0.\nGot:\n{}", output);
+    assert!(
+        output.contains("getelementptr i8, ptr %t"),
+        "Should emit GEP for first element's first field at offset 0.\nGot:\n{}",
+        output
+    );
     // Should NOT call malloc (no heap allocation)
-    assert!(!output.contains("call @malloc"),
-        "Should NOT emit malloc call for struct array list.\nGot:\n{}", output);
+    assert!(
+        !output.contains("call @malloc"),
+        "Should NOT emit malloc call for struct array list.\nGot:\n{}",
+        output
+    );
     // Should emit ptrtoint (the handle is the pointer to the stack array)
-    assert!(output.contains("ptrtoint ptr"),
-        "Should emit ptrtoint to produce i64 handle.\nGot:\n{}", output);
+    assert!(
+        output.contains("ptrtoint ptr"),
+        "Should emit ptrtoint to produce i64 handle.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6879,24 +7951,25 @@ fn test_struct_array_addr_of_and_frgn_call() {
             output_type: None,
             contract: default_contract(),
             body: vec![
-                Statement::Let { names: vec![], 
+                Statement::Let {
+                    names: vec![],
                     name: "methods".to_string(),
                     ty: None,
-                    expr: Some(Expr::List(vec![
-                        Expr::StructLiteral {
-                            type_name: "PyMethodDef".to_string(),
-                            fields: vec![
-                                ("name".to_string(), Expr::Decimal(1)),
-                                ("flags".to_string(), Expr::Decimal(2)),
-                            ],
-                            specs: Vec::new(),
-                        },
-                    ])),
+                    expr: Some(Expr::List(vec![Expr::StructLiteral {
+                        type_name: "PyMethodDef".to_string(),
+                        fields: vec![
+                            ("name".to_string(), Expr::Decimal(1)),
+                            ("flags".to_string(), Expr::Decimal(2)),
+                        ],
+                        specs: Vec::new(),
+                    }])),
                     modifiers: vec![],
                 },
                 Statement::Expression(Expr::Call(
                     "use_methods".to_string(),
-                    vec![Expr::AddrOf(Box::new(Expr::Identifier("methods".to_string())))],
+                    vec![Expr::AddrOf(Box::new(Expr::Identifier(
+                        "methods".to_string(),
+                    )))],
                     None,
                 )),
                 Statement::Term(Some(Expr::Decimal(0))),
@@ -6911,17 +7984,29 @@ fn test_struct_array_addr_of_and_frgn_call() {
     ];
     let output = backend.generate(&program, None);
     // Should allocate 16 bytes (1 element * 16 bytes = 2 x i64)
-    assert!(output.contains("alloca i8, i64 16"),
-        "Should allocate 16 bytes for 1-element PyMethodDef array.\nGot:\n{}", output);
+    assert!(
+        output.contains("alloca i8, i64 16"),
+        "Should allocate 16 bytes for 1-element PyMethodDef array.\nGot:\n{}",
+        output
+    );
     // Should NOT call malloc
-    assert!(!output.contains("call @malloc"),
-        "Should NOT emit malloc call.\nGot:\n{}", output);
+    assert!(
+        !output.contains("call @malloc"),
+        "Should NOT emit malloc call.\nGot:\n{}",
+        output
+    );
     // Should emit inttoptr for passing the struct array pointer to the frgn
-    assert!(output.contains("inttoptr i64"),
-        "Should emit inttoptr for Ptr param.\nGot:\n{}", output);
+    assert!(
+        output.contains("inttoptr i64"),
+        "Should emit inttoptr for Ptr param.\nGot:\n{}",
+        output
+    );
     // The call should use ptr type for the Ptr param
-    assert!(output.contains("call i64 @use_methods(ptr"),
-        "Should call use_methods with ptr type.\nGot:\n{}", output);
+    assert!(
+        output.contains("call i64 @use_methods(ptr"),
+        "Should call use_methods with ptr type.\nGot:\n{}",
+        output
+    );
 }
 
 #[test]
@@ -6997,8 +8082,9 @@ fn test_shape_vector_groups_no_overlap() {
         "float".to_string(),
         "float".to_string(),
     ];
-    let write_set: HashSet<String> =
-        ["f0".to_string(), "f1".to_string(), "f2".to_string()].into_iter().collect();
+    let write_set: HashSet<String> = ["f0".to_string(), "f1".to_string(), "f2".to_string()]
+        .into_iter()
+        .collect();
     let groups = vec![
         crate::analysis::loop_shape::VectorGroup {
             name: "g0".to_string(),
@@ -7037,15 +8123,22 @@ fn test_modulo_partition_drives_rotated_loop() {
         }),
     ];
     for (i, name) in ["even".to_string(), "odd".to_string()].iter().enumerate() {
-        let pre = Expr::BinaryOp(BinaryOpKind::And,
-            Box::new(Expr::BinaryOp(BinaryOpKind::Lt,
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::And,
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("count".to_string())),
-                Box::new(Expr::Identifier("total".to_string())))),
-            Box::new(Expr::BinaryOp(BinaryOpKind::Eq,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+                Box::new(Expr::Identifier("total".to_string())),
+            )),
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mod,
                     Box::new(Expr::Identifier("count".to_string())),
-                    Box::new(Expr::Decimal(2)))),
-                Box::new(Expr::Decimal(i as i64)))),
+                    Box::new(Expr::Decimal(2)),
+                )),
+                Box::new(Expr::Decimal(i as i64)),
+            )),
         );
         program.push(TopLevel::Transaction(Transaction {
             variadic_param: None,
@@ -7058,19 +8151,24 @@ fn test_modulo_partition_drives_rotated_loop() {
             outputs: vec![],
             contract: Contract {
                 pre_condition: pre,
-                post_condition: Expr::BinaryOp(BinaryOpKind::Eq,
+                post_condition: Expr::BinaryOp(
+                    BinaryOpKind::Eq,
                     Box::new(Expr::Identifier("count".to_string())),
-                    Box::new(Expr::Identifier("total".to_string()))),
+                    Box::new(Expr::Identifier("total".to_string())),
+                ),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(
                     Expr::Identifier("count".to_string()),
-                    Expr::BinaryOp(BinaryOpKind::Add,
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
                         Box::new(Expr::Identifier("count".to_string())),
-                        Box::new(Expr::Decimal(1))),
+                        Box::new(Expr::Decimal(1)),
+                    ),
                 ),
                 Statement::Term(None),
             ],
@@ -7082,8 +8180,11 @@ fn test_modulo_partition_drives_rotated_loop() {
         }));
     }
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains(".mr_loop"),
-        "modulo-bounded set must use the rotated loop, got:\n{}", &output[..output.len().min(12000)]);
+    assert!(
+        output.contains(".mr_loop"),
+        "modulo-bounded set must use the rotated loop, got:\n{}",
+        &output[..output.len().min(12000)]
+    );
     assert!(output.contains("srem i64"));
 }
 
@@ -7091,13 +8192,15 @@ fn test_modulo_partition_drives_rotated_loop() {
 /// be downgraded to `#0` because the frontend density measurement is > 4.0.
 fn density_consumer_declarations() -> Vec<TopLevel> {
     let mut declarations: Vec<TopLevel>;
-    let float_field = |name: &str| TopLevel::Statement(Box::new(Statement::Let {
-        name: name.to_string(),
-        names: vec![],
-        ty: Some(Type::Custom("Float".to_string())),
-        expr: Some(Expr::Float(0.0)),
-        modifiers: vec![],
-    }));
+    let float_field = |name: &str| {
+        TopLevel::Statement(Box::new(Statement::Let {
+            name: name.to_string(),
+            names: vec![],
+            ty: Some(Type::Custom("Float".to_string())),
+            expr: Some(Expr::Float(0.0)),
+            modifiers: vec![],
+        }))
+    };
     declarations = vec![
         TopLevel::StateDecl(StateDecl {
             name: "count".to_string(),
@@ -7132,20 +8235,44 @@ fn density_consumer_body() -> Vec<Statement> {
             name: "nx0".to_string(),
             names: vec![],
             ty: Some(Type::Custom("Float".to_string())),
-            expr: Some(add(add(
-                mul(Expr::Identifier("a00".to_string()), Expr::Identifier("x0".to_string())),
-                mul(Expr::Identifier("a01".to_string()), Expr::Identifier("x1".to_string())),
-            ), mul(Expr::Identifier("a02".to_string()), Expr::Identifier("x2".to_string())))),
+            expr: Some(add(
+                add(
+                    mul(
+                        Expr::Identifier("a00".to_string()),
+                        Expr::Identifier("x0".to_string()),
+                    ),
+                    mul(
+                        Expr::Identifier("a01".to_string()),
+                        Expr::Identifier("x1".to_string()),
+                    ),
+                ),
+                mul(
+                    Expr::Identifier("a02".to_string()),
+                    Expr::Identifier("x2".to_string()),
+                ),
+            )),
             modifiers: vec![],
         },
         Statement::Let {
             name: "ap00".to_string(),
             names: vec![],
             ty: Some(Type::Custom("Float".to_string())),
-            expr: Some(add(add(
-                mul(Expr::Identifier("a00".to_string()), Expr::Identifier("p00".to_string())),
-                mul(Expr::Identifier("a01".to_string()), Expr::Identifier("p10".to_string())),
-            ), mul(Expr::Identifier("a02".to_string()), Expr::Identifier("p20".to_string())))),
+            expr: Some(add(
+                add(
+                    mul(
+                        Expr::Identifier("a00".to_string()),
+                        Expr::Identifier("p00".to_string()),
+                    ),
+                    mul(
+                        Expr::Identifier("a01".to_string()),
+                        Expr::Identifier("p10".to_string()),
+                    ),
+                ),
+                mul(
+                    Expr::Identifier("a02".to_string()),
+                    Expr::Identifier("p20".to_string()),
+                ),
+            )),
             modifiers: vec![],
         },
         Statement::Assign(
@@ -7154,18 +8281,28 @@ fn density_consumer_body() -> Vec<Statement> {
         ),
         Statement::Assign(
             Expr::Identifier("count".to_string()),
-            Expr::BinaryOp(BinaryOpKind::Add,
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier("count".to_string())),
-                Box::new(Expr::Decimal(1))),
+                Box::new(Expr::Decimal(1)),
+            ),
         ),
         // Guarded FFI → outlined (cold function), so the density check fires.
         Statement::Guarded(
-            Expr::BinaryOp(BinaryOpKind::Eq,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mod,
                     Box::new(Expr::Identifier("count".to_string())),
-                    Box::new(Expr::Decimal(5)))),
-                Box::new(Expr::Decimal(0))),
-            vec![Statement::Expression(Expr::Call("PrintLn#".to_string(), vec![], None))],
+                    Box::new(Expr::Decimal(5)),
+                )),
+                Box::new(Expr::Decimal(0)),
+            ),
+            vec![Statement::Expression(Expr::Call(
+                "PrintLn#".to_string(),
+                vec![],
+                None,
+            ))],
         ),
         Statement::Term(None),
     ];
@@ -7184,16 +8321,21 @@ fn density_consumer_program() -> Vec<TopLevel> {
         output_type: None,
         outputs: vec![],
         contract: Contract {
-            pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+            pre_condition: Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("count".to_string())),
-                Box::new(Expr::Identifier("total".to_string()))),
-            post_condition: Expr::BinaryOp(BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("total".to_string())),
+            ),
+            post_condition: Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("count".to_string())),
-                Box::new(Expr::Identifier("total".to_string()))),
+                Box::new(Expr::Identifier("total".to_string())),
+            ),
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: density_consumer_body(),
         metadata: HashMap::new(),
         derivation: None,
@@ -7208,12 +8350,16 @@ fn density_consumer_program() -> Vec<TopLevel> {
 fn test_density_consumer_downgrades_dense_txn() {
     let program = density_consumer_program();
     let output = LlvmBackend::new().generate(&program, None);
-    let txn_line = output.lines()
+    let txn_line = output
+        .lines()
         .find(|l| l.contains("define void @txn_propagate"))
         .unwrap_or("(not found)");
-    assert!(txn_line.contains("#0"),
+    assert!(
+        txn_line.contains("#0"),
         "dense txn must be downgraded to #0 via the density measurement, got: {}\n{}",
-        txn_line, &output[..output.len().min(1500)]);
+        txn_line,
+        &output[..output.len().min(1500)]
+    );
 }
 
 // ── Batch-loop dispatch (plan 2026-07-31-regain-kalman-float-math-parity) ──
@@ -7226,10 +8372,24 @@ fn test_batch_loop_dispatch_post_increment() {
     // Dense body (≥ 40 arithmetic ops — the batch cost-model gate) on a set of
     // float fields, kalman-style. 12 fields each updated by a 3-term multiply
     // chain gives ~50+ ops, so the batch dispatch fires.
-    let fld = |n: &str| TopLevel::StateDecl(StateDecl { name: n.into(), ty: Type::float(), span: None });
+    let fld = |n: &str| {
+        TopLevel::StateDecl(StateDecl {
+            name: n.into(),
+            ty: Type::float(),
+            span: None,
+        })
+    };
     let mut program = vec![
-        TopLevel::StateDecl(StateDecl { name: "count".into(), ty: Type::int(), span: None }),
-        TopLevel::StateDecl(StateDecl { name: "total".into(), ty: Type::int(), span: None }),
+        TopLevel::StateDecl(StateDecl {
+            name: "count".into(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "total".into(),
+            ty: Type::int(),
+            span: None,
+        }),
     ];
     for i in 0..12 {
         program.push(fld(&format!("f{}", i)));
@@ -7239,23 +8399,45 @@ fn test_batch_loop_dispatch_post_increment() {
     let mut body: Vec<Statement> = Vec::new();
     // Each f_i update = f_i*a + f_(i+1)%12*b + f_(i+2)%12*c  (5 ops each → 60 total).
     for i in 0..12 {
-        let rhs = add(add(
-            mul(Expr::Identifier(format!("f{}", i)), Expr::Float(0.5)),
-            mul(Expr::Identifier(format!("f{}", (i + 1) % 12)), Expr::Float(0.25)),
-        ), mul(Expr::Identifier(format!("f{}", (i + 2) % 12)), Expr::Float(0.125)));
+        let rhs = add(
+            add(
+                mul(Expr::Identifier(format!("f{}", i)), Expr::Float(0.5)),
+                mul(
+                    Expr::Identifier(format!("f{}", (i + 1) % 12)),
+                    Expr::Float(0.25),
+                ),
+            ),
+            mul(
+                Expr::Identifier(format!("f{}", (i + 2) % 12)),
+                Expr::Float(0.125),
+            ),
+        );
         body.push(Statement::Assign(Expr::Identifier(format!("f{}", i)), rhs));
     }
-    body.push(Statement::Assign(Expr::Identifier("count".into()),
-        Expr::BinaryOp(BinaryOpKind::Add,
+    body.push(Statement::Assign(
+        Expr::Identifier("count".into()),
+        Expr::BinaryOp(
+            BinaryOpKind::Add,
             Box::new(Expr::Identifier("count".into())),
-            Box::new(Expr::Decimal(1)))));
+            Box::new(Expr::Decimal(1)),
+        ),
+    ));
     body.push(Statement::Guarded(
-        Expr::BinaryOp(BinaryOpKind::Eq,
-            Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+        Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Mod,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Decimal(100)))),
-            Box::new(Expr::Decimal(0))),
-        vec![Statement::Expression(Expr::Call("print_float".into(), vec![Expr::Identifier("f0".into())], None))]));
+                Box::new(Expr::Decimal(100)),
+            )),
+            Box::new(Expr::Decimal(0)),
+        ),
+        vec![Statement::Expression(Expr::Call(
+            "print_float".into(),
+            vec![Expr::Identifier("f0".into())],
+            None,
+        ))],
+    ));
     body.push(Statement::Term(None));
     program.push(TopLevel::Transaction(Transaction {
         variadic_param: None,
@@ -7267,26 +8449,46 @@ fn test_batch_loop_dispatch_post_increment() {
         output_type: None,
         outputs: vec![],
         contract: Contract {
-            pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+            pre_condition: Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Identifier("total".into()))),
-            post_condition: Expr::BinaryOp(BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("total".into())),
+            ),
+            post_condition: Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Identifier("total".into()))),
-            watchdog: None, explicit: false, span: None,
-        post_authority: false},
+                Box::new(Expr::Identifier("total".into())),
+            ),
+            watchdog: None,
+            explicit: false,
+            span: None,
+            post_authority: false,
+        },
         body,
-        metadata: HashMap::new(), derivation: None, modifiers: vec![],
-        span: None, doc: None,
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
     }));
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(output.contains(".cd_"), "post-increment periodic guard must use the countdown loop, got:\n{}", &output[..output.len().min(1200)]);
-    assert!(output.contains(".cdg_"), "countdown loop must have a cold guard block");
+    assert!(
+        output.contains(".cd_"),
+        "post-increment periodic guard must use the countdown loop, got:\n{}",
+        &output[..output.len().min(1200)]
+    );
+    assert!(
+        output.contains(".cdg_"),
+        "countdown loop must have a cold guard block"
+    );
     // The per-iteration modulo must be GONE from the body (it fires only when
     // the countdown %rem hits 0).
     let body = output.split(".cdb_").nth(1).unwrap_or("");
     let body_seg = body.split(".cdg_").next().unwrap_or("");
-    assert!(!body_seg.contains("urem"), "countdown body must not compute count % N per iteration");
+    assert!(
+        !body_seg.contains("urem"),
+        "countdown body must not compute count % N per iteration"
+    );
 }
 
 /// 2026-08-16 (sweep parity): the countdown's float-field backedge copies must
@@ -7296,33 +8498,68 @@ fn test_batch_loop_dispatch_post_increment() {
 /// mid 1.08x, dense 1.48x). `fast` lets instcombine fold the value rename.
 #[test]
 fn test_countdown_field_backedge_copies_are_fast() {
-    let fld = |n: &str| TopLevel::StateDecl(StateDecl { name: n.into(), ty: Type::float(), span: None });
+    let fld = |n: &str| {
+        TopLevel::StateDecl(StateDecl {
+            name: n.into(),
+            ty: Type::float(),
+            span: None,
+        })
+    };
     let mut program = vec![
-        TopLevel::StateDecl(StateDecl { name: "count".into(), ty: Type::int(), span: None }),
-        TopLevel::StateDecl(StateDecl { name: "total".into(), ty: Type::int(), span: None }),
+        TopLevel::StateDecl(StateDecl {
+            name: "count".into(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "total".into(),
+            ty: Type::int(),
+            span: None,
+        }),
         fld("f0"),
         fld("f1"),
     ];
     let mul = |l: Expr, r: Expr| Expr::BinaryOp(BinaryOpKind::Mul, Box::new(l), Box::new(r));
     let add = |l: Expr, r: Expr| Expr::BinaryOp(BinaryOpKind::Add, Box::new(l), Box::new(r));
     let body = vec![
-        Statement::Assign(Expr::Identifier("f0".into()),
-            add(mul(Expr::Identifier("f0".into()), Expr::Float(0.5)),
-                mul(Expr::Identifier("f1".into()), Expr::Float(0.25)))),
-        Statement::Assign(Expr::Identifier("f1".into()),
-            add(mul(Expr::Identifier("f1".into()), Expr::Float(0.5)),
-                mul(Expr::Identifier("f0".into()), Expr::Float(0.25)))),
-        Statement::Assign(Expr::Identifier("count".into()),
-            Expr::BinaryOp(BinaryOpKind::Add,
+        Statement::Assign(
+            Expr::Identifier("f0".into()),
+            add(
+                mul(Expr::Identifier("f0".into()), Expr::Float(0.5)),
+                mul(Expr::Identifier("f1".into()), Expr::Float(0.25)),
+            ),
+        ),
+        Statement::Assign(
+            Expr::Identifier("f1".into()),
+            add(
+                mul(Expr::Identifier("f1".into()), Expr::Float(0.5)),
+                mul(Expr::Identifier("f0".into()), Expr::Float(0.25)),
+            ),
+        ),
+        Statement::Assign(
+            Expr::Identifier("count".into()),
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Decimal(1)))),
+                Box::new(Expr::Decimal(1)),
+            ),
+        ),
         Statement::Guarded(
-            Expr::BinaryOp(BinaryOpKind::Eq,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mod,
                     Box::new(Expr::Identifier("count".into())),
-                    Box::new(Expr::Decimal(100)))),
-                Box::new(Expr::Decimal(0))),
-            vec![Statement::Expression(Expr::Call("print_float".into(), vec![Expr::Identifier("f0".into())], None))]),
+                    Box::new(Expr::Decimal(100)),
+                )),
+                Box::new(Expr::Decimal(0)),
+            ),
+            vec![Statement::Expression(Expr::Call(
+                "print_float".into(),
+                vec![Expr::Identifier("f0".into())],
+                None,
+            ))],
+        ),
         Statement::Term(None),
     ];
     program.push(TopLevel::Transaction(Transaction {
@@ -7335,27 +8572,49 @@ fn test_countdown_field_backedge_copies_are_fast() {
         output_type: None,
         outputs: vec![],
         contract: Contract {
-            pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+            pre_condition: Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Identifier("total".into()))),
-            post_condition: Expr::BinaryOp(BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("total".into())),
+            ),
+            post_condition: Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("count".into())),
-                Box::new(Expr::Identifier("total".into()))),
-            watchdog: None, explicit: false, span: None,
-        post_authority: false},
+                Box::new(Expr::Identifier("total".into())),
+            ),
+            watchdog: None,
+            explicit: false,
+            span: None,
+            post_authority: false,
+        },
         body,
-        metadata: HashMap::new(), derivation: None, modifiers: vec![],
-        span: None, doc: None,
+        metadata: HashMap::new(),
+        derivation: None,
+        modifiers: vec![],
+        span: None,
+        doc: None,
     }));
-    let output = LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new())
+    let output = LlvmBackend::new()
+        .with_type_universe(crate::type_universe::TypeUniverse::new())
         .generate(&program, None);
-    assert!(output.contains(".cd_"), "post-increment periodic guard must use the countdown loop, got:\n{}", &output[..output.len().min(1200)]);
-    assert!(output.contains("fadd fast float 0.0"),
-        "countdown field backedge copies must be fast-math value renames (foldable), got:\n{}", &output[..output.len().min(12000)]);
-    assert!(!output.contains("fadd float 0.0"),
-        "countdown must never emit a bare non-fast fadd float 0.0 copy: {output}");
-    assert!(!output.contains("fadd double 0.0"),
-        "countdown must never emit a bare non-fast fadd double 0.0 copy: {output}");
+    assert!(
+        output.contains(".cd_"),
+        "post-increment periodic guard must use the countdown loop, got:\n{}",
+        &output[..output.len().min(1200)]
+    );
+    assert!(
+        output.contains("fadd fast float 0.0"),
+        "countdown field backedge copies must be fast-math value renames (foldable), got:\n{}",
+        &output[..output.len().min(12000)]
+    );
+    assert!(
+        !output.contains("fadd float 0.0"),
+        "countdown must never emit a bare non-fast fadd float 0.0 copy: {output}"
+    );
+    assert!(
+        !output.contains("fadd double 0.0"),
+        "countdown must never emit a bare non-fast fadd double 0.0 copy: {output}"
+    );
 }
 
 /// A pre-increment periodic guard (knucleotide pattern) is NOT batched — it
@@ -7363,9 +8622,21 @@ fn test_countdown_field_backedge_copies_are_fast() {
 #[test]
 fn test_batch_loop_rejects_pre_increment() {
     let program = vec![
-        TopLevel::StateDecl(StateDecl { name: "count".into(), ty: Type::int(), span: None }),
-        TopLevel::StateDecl(StateDecl { name: "total".into(), ty: Type::int(), span: None }),
-        TopLevel::StateDecl(StateDecl { name: "acc".into(), ty: Type::int(), span: None }),
+        TopLevel::StateDecl(StateDecl {
+            name: "count".into(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "total".into(),
+            ty: Type::int(),
+            span: None,
+        }),
+        TopLevel::StateDecl(StateDecl {
+            name: "acc".into(),
+            ty: Type::int(),
+            span: None,
+        }),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: "tick".into(),
@@ -7376,39 +8647,69 @@ fn test_batch_loop_rejects_pre_increment() {
             output_type: None,
             outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                pre_condition: Expr::BinaryOp(
+                    BinaryOpKind::Lt,
                     Box::new(Expr::Identifier("count".into())),
-                    Box::new(Expr::Identifier("total".into()))),
-                post_condition: Expr::BinaryOp(BinaryOpKind::Eq,
+                    Box::new(Expr::Identifier("total".into())),
+                ),
+                post_condition: Expr::BinaryOp(
+                    BinaryOpKind::Eq,
                     Box::new(Expr::Identifier("count".into())),
-                    Box::new(Expr::Identifier("total".into()))),
-                watchdog: None, explicit: false, span: None,
-            post_authority: false},
+                    Box::new(Expr::Identifier("total".into())),
+                ),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 // Guard BEFORE the increment (pre-increment semantics).
                 Statement::Guarded(
-                    Expr::BinaryOp(BinaryOpKind::Eq,
-                        Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+                    Expr::BinaryOp(
+                        BinaryOpKind::Eq,
+                        Box::new(Expr::BinaryOp(
+                            BinaryOpKind::Mod,
                             Box::new(Expr::Identifier("count".into())),
-                            Box::new(Expr::Decimal(100)))),
-                        Box::new(Expr::Decimal(0))),
-                    vec![Statement::Expression(Expr::Call("print_int".into(), vec![Expr::Identifier("acc".into())], None))]),
-                Statement::Assign(Expr::Identifier("acc".into()),
-                    Expr::BinaryOp(BinaryOpKind::Add,
+                            Box::new(Expr::Decimal(100)),
+                        )),
+                        Box::new(Expr::Decimal(0)),
+                    ),
+                    vec![Statement::Expression(Expr::Call(
+                        "print_int".into(),
+                        vec![Expr::Identifier("acc".into())],
+                        None,
+                    ))],
+                ),
+                Statement::Assign(
+                    Expr::Identifier("acc".into()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
                         Box::new(Expr::Identifier("acc".into())),
-                        Box::new(Expr::Decimal(1)))),
-                Statement::Assign(Expr::Identifier("count".into()),
-                    Expr::BinaryOp(BinaryOpKind::Add,
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
+                Statement::Assign(
+                    Expr::Identifier("count".into()),
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
                         Box::new(Expr::Identifier("count".into())),
-                        Box::new(Expr::Decimal(1)))),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![],
-            span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let output = LlvmBackend::new().generate(&program, None);
-    assert!(!output.contains(".cd_"), "pre-increment guard must NOT use the countdown loop");
+    assert!(
+        !output.contains(".cd_"),
+        "pre-increment guard must NOT use the countdown loop"
+    );
 }
 
 // ── FFI regression guard (2026-08-01, Phase 0-1 of the plugin/macro rework) ──
@@ -7447,10 +8748,14 @@ fn parse_bv_source(src: &str) -> Vec<TopLevel> {
             _ => continue,
         };
         if let Some(error) = crate::proof_engine::detect_tautology(
-            &contract.pre_condition, &contract.post_condition, contract.explicit,
+            &contract.pre_condition,
+            &contract.post_condition,
+            contract.explicit,
         ) {
-            panic!("fixture contract rejected by the proof engine (this source \
-                would not compile via `brievc build`): {name} — {error}");
+            panic!(
+                "fixture contract rejected by the proof engine (this source \
+                would not compile via `brievc build`): {name} — {error}"
+            );
         }
     }
     items
@@ -7458,10 +8763,10 @@ fn parse_bv_source(src: &str) -> Vec<TopLevel> {
 
 #[test]
 fn fixture_gate_accepts_before_after_transition() {
-    let items = parse_bv_source(
-        "let done: Bool = false; node run [!done][done] { done = true; };",
-    );
-    assert!(items.iter().any(|item| matches!(item, TopLevel::Transaction(_))));
+    let items = parse_bv_source("let done: Bool = false; node run [!done][done] { done = true; };");
+    assert!(items
+        .iter()
+        .any(|item| matches!(item, TopLevel::Transaction(_))));
 }
 
 #[test]
@@ -7473,7 +8778,9 @@ fn fixture_gate_rejects_definition_tautology() {
 #[test]
 #[should_panic(expected = "fixture contract rejected by the proof engine")]
 fn fixture_gate_rejects_functional_tautology() {
-    parse_bv_source("let value: Int = 0; node run [value == value][value == value] { value = 1; };");
+    parse_bv_source(
+        "let value: Int = 0; node run [value == value][value == value] { value = 1; };",
+    );
 }
 
 /// 2026-10-16 (stability): the fixture-legality gate in `parse_bv_source`
@@ -7489,10 +8796,8 @@ node report [true][true] {
     term;
 };
 "#;
-    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        parse_bv_source(src)
-    }))
-    .expect_err("tautology fixture must be rejected at the choke point");
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse_bv_source(src)))
+        .expect_err("tautology fixture must be rejected at the choke point");
     let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("proof engine"), "names the gate: {msg}");
     // The ProofError layer's canonical wording (the friendlier "true ⇒ true
@@ -7505,7 +8810,8 @@ node report [true][true] {
 }
 
 #[test]
-fn test_print_plugin_emits_direct_ffi_calls() {    let src = r#"
+fn test_print_plugin_emits_direct_ffi_calls() {
+    let src = r#"
         let x: Int = 5;
         defn show(v: Int) -> Int {
             println!(v);
@@ -7641,7 +8947,7 @@ fn test_out_let_computation_survives() {
 /// 2026-08-04 (Phase 4, .ebv heap reframe): an embedded target with String
 /// state must NOT error — the static bump arena (@embedded_heap) provides a
 /// heap without @malloc/briev_rt.c. The old hard rejection was a vestige of
-    /// the pre-split .ebv/.sbv entanglement; the heap rejection belongs to .sbv
+/// the pre-split .ebv/.sbv entanglement; the heap rejection belongs to .sbv
 /// (CIRCT synthesizes hardware), not .ebv (LLVM embedded).
 #[test]
 fn test_embedded_string_state_uses_static_heap() {
@@ -7696,7 +9002,10 @@ fn test_embedded_string_state_warns_not_errors() {
         .with_embedded_mode(true);
     let _ = backend.generate(&items, None);
     assert!(
-        backend.warnings().iter().any(|w| w.contains("TargetWarning") && w.contains("static bump arena")),
+        backend
+            .warnings()
+            .iter()
+            .any(|w| w.contains("TargetWarning") && w.contains("static bump arena")),
         "embedded String state must be a warning, not an error; got {:?}",
         backend.warnings()
     );
@@ -8162,16 +9471,6 @@ fn test_string_len_and_bytes_reflect() {
     );
 }
 
-
-
-
-
-
-
-
-
-
-
 // ── Phase 3: consumptive operators + arrow (2026-08-01) ────────────────
 
 /// A `~=` move-assign and a `~+` consumptive add in a defn must emit the op
@@ -8304,7 +9603,10 @@ fn test_redundant_keep_warns() {
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let _ir = backend.generate(&items, None);
     assert!(
-        backend.warnings().iter().any(|w| w.contains("redundant") && w.contains("count")),
+        backend
+            .warnings()
+            .iter()
+            .any(|w| w.contains("redundant") && w.contains("count")),
         "keep on a non-schedulable field must warn; warnings: {:?}",
         backend.warnings()
     );
@@ -8575,7 +9877,8 @@ node go [done == 0][done == 1] {
     // data-flow check to the caller carrying the seed, so an unrelated
     // function's reused register number cannot masquerade as its store.
     // Retire this structural check when the fixture uses native execution.
-    let ir = ir.split("\ndefine ")
+    let ir = ir
+        .split("\ndefine ")
         .find(|function| function.contains("add i64 0, 600"))
         .expect("a caller must carry the member argument");
     let seed_reg = ir
@@ -8602,19 +9905,16 @@ node go [done == 0][done == 1] {
         .map(|r| format!("store i64 {r}, ptr "))
         .collect();
     let field_store = ir.lines().find(|l| {
-        add_regs
-            .iter()
-            .any(|needle| l.contains(needle.as_str()))
-            && {
-                let tgt = l
-                    .split("store i64")
-                    .nth(1)
-                    .and_then(|s| s.split("ptr").nth(1))
-                    .map(|s| s.trim().to_string())
-                    .expect("store must name a target");
-                !ir.lines()
-                    .any(|al| al.contains(&format!("{tgt} = alloca ")))
-            }
+        add_regs.iter().any(|needle| l.contains(needle.as_str())) && {
+            let tgt = l
+                .split("store i64")
+                .nth(1)
+                .and_then(|s| s.split("ptr").nth(1))
+                .map(|s| s.trim().to_string())
+                .expect("store must name a target");
+            !ir.lines()
+                .any(|al| al.contains(&format!("{tgt} = alloca ")))
+        }
     });
     assert!(
         field_store.is_none(),
@@ -8718,8 +10018,8 @@ fn test_hashmap_capacity_seed_and_break_probe() {
         .lines()
         .find(|l| l.contains("add i64 0, 40"))
         .and_then(|l| l.split('=').next().map(|s| s.trim().to_string()));
-    let seed_reg = seed_reg.expect("the capacity seed (40) must be emitted; got:\n{ir}");    // 2. `match capacity { 0 => 256, _ => capacity }` → the seed and the 256
-    //    fallback must meet in a phi (the fallback feeds the table size).
+    let seed_reg = seed_reg.expect("the capacity seed (40) must be emitted; got:\n{ir}"); // 2. `match capacity { 0 => 256, _ => capacity }` → the seed and the 256
+                                                                                          //    fallback must meet in a phi (the fallback feeds the table size).
     let phi_lines: Vec<&str> = ir
         .lines()
         .filter(|l| l.contains("phi") && l.contains(&seed_reg))
@@ -8760,7 +10060,8 @@ fn test_hashmap_capacity_seed_and_break_probe() {
     //    %foreach.end{label}` from inside the body (the `break`), distinct
     //    from the header backedge. Without `break` the loop scans the full cap.
     assert!(
-        ir.lines().any(|l| l.trim().starts_with("br label %foreach.end")),
+        ir.lines()
+            .any(|l| l.trim().starts_with("br label %foreach.end")),
         "the probe loops must break early (unconditional branch to foreach.end); got:\n{ir}"
     );
 }
@@ -8856,10 +10157,15 @@ fn test_arrow_push_binds_returned_list_and_pooled_member_field() {
     // 2026-11-03: validate each emitted function separately because SSA
     // register names may repeat across functions. Both copies still count;
     // remove this split only with an execution-based replacement gate.
-    let callers: Vec<&str> = ir.split("\ndefine ").skip(1)
-        .filter(|function| function.contains("call i64 @__print_int")).collect();
+    let callers: Vec<&str> = ir
+        .split("\ndefine ")
+        .skip(1)
+        .filter(|function| function.contains("call i64 @__print_int"))
+        .collect();
     assert_eq!(callers.len(), 2, "both emitted callers must be checked");
-    for caller in callers { assert_arrow_push_caller_ir(caller); }
+    for caller in callers {
+        assert_arrow_push_caller_ir(caller);
+    }
 }
 
 // 2026-11-03: keep SSA checks local to one emitted function; register names
@@ -8881,9 +10187,16 @@ fn assert_arrow_push_caller_ir(ir: &str) {
         .filter(|l| l.contains("getelementptr i8, ptr") && l.contains("i64 16"))
         .filter_map(|l| l.split('=').next().map(|s| s.trim().to_string()))
         .collect();
-    assert!(!len_geps.is_empty(), "no List len fields emitted; got:\n{ir}");
+    assert!(
+        !len_geps.is_empty(),
+        "no List len fields emitted; got:\n{ir}"
+    );
     let constant_one_seed_store = lines.iter().find(|l| {
-        let Some(v) = l.trim_start().strip_prefix("store i64 ").and_then(|s| s.split(',').next().map(|s| s.trim().to_string())) else {
+        let Some(v) = l
+            .trim_start()
+            .strip_prefix("store i64 ")
+            .and_then(|s| s.split(',').next().map(|s| s.trim().to_string()))
+        else {
             return false;
         };
         let Some(gep) = l.split("ptr").nth(1).map(|s| s.trim().to_string()) else {
@@ -8909,16 +10222,20 @@ fn assert_arrow_push_caller_ir(ir: &str) {
         .iter()
         .cloned()
         .filter(|l| {
-            let Some(v) = l.trim_start().strip_prefix("store i64 ").and_then(|s| s.split(',').next().map(|s| s.trim().to_string())) else {
+            let Some(v) = l
+                .trim_start()
+                .strip_prefix("store i64 ")
+                .and_then(|s| s.split(',').next().map(|s| s.trim().to_string()))
+            else {
                 return false;
             };
             let Some(gep) = l.split("ptr").nth(1).map(|s| s.trim().to_string()) else {
                 return false;
             };
             len_geps.contains(&gep)
-                && lines.iter().any(|dl| {
-                    dl.trim().starts_with(&format!("{v} = add nsw i64"))
-                })
+                && lines
+                    .iter()
+                    .any(|dl| dl.trim().starts_with(&format!("{v} = add nsw i64")))
         })
         .collect();
     assert_eq!(
@@ -8933,7 +10250,9 @@ fn assert_arrow_push_caller_ir(ir: &str) {
         .iter()
         .filter(|l| l.contains("call i64 @__print_int"))
         .filter_map(|l| {
-            l.split("__print_int(i64 ").nth(1).and_then(|s| s.split(')').next().map(|r| r.trim().to_string()))
+            l.split("__print_int(i64 ")
+                .nth(1)
+                .and_then(|s| s.split(')').next().map(|r| r.trim().to_string()))
         })
         .collect();
     for p in &prints {
@@ -8944,7 +10263,11 @@ fn assert_arrow_push_caller_ir(ir: &str) {
             "the printed value {p} must be a load (the returned/member list length); got:\n{ir}"
         );
     }
-    assert_eq!(prints.len(), 2, "expected two prints per caller; got:\n{ir}");
+    assert_eq!(
+        prints.len(),
+        2,
+        "expected two prints per caller; got:\n{ir}"
+    );
 }
 
 /// 2026-08-18 (Phase E, BUGS.md SSA-main destructure): a FOREACH loop variable
@@ -8998,10 +10321,7 @@ node go [done == false][done == true] {
     // SysCall#). These tests only need OBSERVABLE OUTPUT, so link a tiny
     // printf stub instead of the (shrinking) runtime.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let rt = std::env::temp_dir().join(format!(
-        "briev_print_stub_{}.c",
-        std::process::id()
-    ));
+    let rt = std::env::temp_dir().join(format!("briev_print_stub_{}.c", std::process::id()));
     std::fs::write(&rt, "#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t __briev_coll_resize(int64_t handle, int64_t new_cap) {\n    if (!handle || new_cap < 0) return 1;\n    int64_t* block = (int64_t*)handle;\n    int64_t old_data = block[0];\n    int64_t len = block[2];\n    if (new_cap == 0) { free((void*)old_data); block[0] = 0; block[1] = 0; return 0; }\n    int64_t* nd = (int64_t*)malloc((size_t)(new_cap * 8));\n    if (!nd) return 1;\n    int64_t copy_n = len < new_cap ? len : new_cap;\n    if (old_data && copy_n > 0) memcpy(nd, (void*)old_data, (size_t)(copy_n * 8));\n    if (old_data) free((void*)old_data);\n    block[0] = (int64_t)nd;\n    block[1] = new_cap;\n    return 0;\n}\n").expect("write stub");
     let out = std::env::temp_dir().join(format!(
         "briev_foreach_destructure_{}_{}",
@@ -9018,7 +10338,10 @@ node go [done == false][done == true] {
     // entity position).
     let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
     let ir = if let Some(pos) = ir.find("target triple") {
-        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        let end = ir[pos..]
+            .find('\n')
+            .map(|e| pos + e + 1)
+            .unwrap_or(ir.len());
         format!("{}{}{}", &ir[..end], prelude, &ir[end..])
     } else {
         format!("{prelude}{ir}")
@@ -9096,10 +10419,7 @@ node go [done == false][done == true] {
     // SysCall#). These tests only need OBSERVABLE OUTPUT, so link a tiny
     // printf stub instead of the (shrinking) runtime.
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let rt = std::env::temp_dir().join(format!(
-        "briev_print_stub_{}.c",
-        std::process::id()
-    ));
+    let rt = std::env::temp_dir().join(format!("briev_print_stub_{}.c", std::process::id()));
     std::fs::write(&rt, "#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\nint64_t __print_int(int64_t n) { printf(\"%ld\", (long)n); return 0; }\nint64_t __print_char(int64_t c) { putchar((int)c); return 0; }\nint64_t __briev_coll_resize(int64_t handle, int64_t new_cap) {\n    if (!handle || new_cap < 0) return 1;\n    int64_t* block = (int64_t*)handle;\n    int64_t old_data = block[0];\n    int64_t len = block[2];\n    if (new_cap == 0) { free((void*)old_data); block[0] = 0; block[1] = 0; return 0; }\n    int64_t* nd = (int64_t*)malloc((size_t)(new_cap * 8));\n    if (!nd) return 1;\n    int64_t copy_n = len < new_cap ? len : new_cap;\n    if (old_data && copy_n > 0) memcpy(nd, (void*)old_data, (size_t)(copy_n * 8));\n    if (old_data) free((void*)old_data);\n    block[0] = (int64_t)nd;\n    block[1] = new_cap;\n    return 0;\n}\n").expect("write stub");
     let out = std::env::temp_dir().join(format!(
         "briev_arrow_consume_{}_{}",
@@ -9114,7 +10434,10 @@ node go [done == false][done == true] {
     // not the FFI declarations).
     let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
     let ir = if let Some(pos) = ir.find("target triple") {
-        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        let end = ir[pos..]
+            .find('\n')
+            .map(|e| pos + e + 1)
+            .unwrap_or(ir.len());
         format!("{}{}{}", &ir[..end], prelude, &ir[end..])
     } else {
         format!("{prelude}{ir}")
@@ -9817,9 +11140,12 @@ fn test_counter_loop_guard_read_uses_phi_not_state() {
     // register (a value defined by a `phi` instruction), not a GEP+load from
     // %State. The unused always-inline `txn_report` body still carries the
     // naive state load, but the folded @main is what runs.
-    let body = ir.split(".fmain.body:").nth(1)
+    let body = ir
+        .split(".fmain.body:")
+        .nth(1)
         .unwrap_or("")
-        .split(".fmain.latch:").next()
+        .split(".fmain.latch:")
+        .next()
         .unwrap_or("");
     assert!(
         body.contains("call i64 @__print_int(i64 %flc"),
@@ -9832,9 +11158,12 @@ fn test_counter_loop_guard_read_uses_phi_not_state() {
     );
     // The counter advances through the phi latch (add on the phi) in the same
     // main function.
-    let main = ir.split(".fmain.header:").nth(1)
+    let main = ir
+        .split(".fmain.header:")
+        .nth(1)
         .unwrap_or("")
-        .split(".fmain.end:").next()
+        .split(".fmain.end:")
+        .next()
         .unwrap_or("");
     assert!(
         main.contains("add nuw nsw i64 %flc6, 1"),
@@ -10099,7 +11428,6 @@ node t [done == false][done == true] {
     );
 }
 
-
 // ── Fix 4 (2026-08-06): escaping closures — env + indirect call ────
 
 #[test]
@@ -10207,7 +11535,11 @@ fn test_web_llvm_byte_size_arrays_and_unknown() {
     use crate::backend::llvm::web_llvm_byte_size;
     assert_eq!(web_llvm_byte_size("[1024 x i64]"), 8 * 1024);
     assert_eq!(web_llvm_byte_size("[8 x float]"), 4 * 8);
-    assert_eq!(web_llvm_byte_size("i128"), 0, ">i64 words not stored in %State");
+    assert_eq!(
+        web_llvm_byte_size("i128"),
+        0,
+        ">i64 words not stored in %State"
+    );
     assert_eq!(web_llvm_byte_size("bogus"), 0);
 }
 
@@ -10218,8 +11550,14 @@ fn test_web_generator_type_tag_from_protocol_category() {
     assert_eq!(TypeTag::from_protocol_category(Some("UInt")), TypeTag::Int);
     assert_eq!(TypeTag::from_protocol_category(Some("Float")), TypeTag::Int);
     assert_eq!(TypeTag::from_protocol_category(Some("Bool")), TypeTag::Bool);
-    assert_eq!(TypeTag::from_protocol_category(Some("String")), TypeTag::String);
-    assert_eq!(TypeTag::from_protocol_category(Some("Char")), TypeTag::String);
+    assert_eq!(
+        TypeTag::from_protocol_category(Some("String")),
+        TypeTag::String
+    );
+    assert_eq!(
+        TypeTag::from_protocol_category(Some("Char")),
+        TypeTag::String
+    );
     assert_eq!(TypeTag::from_protocol_category(None), TypeTag::Int);
 }
 
@@ -10267,35 +11605,66 @@ fn test_webstack_flush_batch_covers_written_fields() {
         .with_target_triple("wasm32-unknown-wasi");
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
     // Buffer must be declared and the call must pass its address (not 0).
-    assert!(ir.contains("@__web_flush_buf = private global"),
-        "flush buffer must be declared; got:\n{ir}");
-    assert!(ir.contains("call void @__web_flush_state(i32 ptrtoint (ptr @__web_flush_buf to i32), i32 1)"),
-        "flush call must pass the buffer with 1 record; got:\n{ir}");
-    assert!(!ir.contains("call void @__web_flush_state(i32 0, i32 0)"),
-        "stub call must be gone; got:\n{ir}");
+    assert!(
+        ir.contains("@__web_flush_buf = private global"),
+        "flush buffer must be declared; got:\n{ir}"
+    );
+    assert!(
+        ir.contains(
+            "call void @__web_flush_state(i32 ptrtoint (ptr @__web_flush_buf to i32), i32 1)"
+        ),
+        "flush call must pass the buffer with 1 record; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call void @__web_flush_state(i32 0, i32 0)"),
+        "stub call must be gone; got:\n{ir}"
+    );
     // The written field's record: handle 0, value_len 8 (i64 word).
-    assert!(ir.contains("store i32 0, ptr %t") && ir.contains("store i32 8, ptr %t"),
-        "record must carry handle 0 and len 8; got:\n{ir}");
+    assert!(
+        ir.contains("store i32 0, ptr %t") && ir.contains("store i32 8, ptr %t"),
+        "record must carry handle 0 and len 8; got:\n{ir}"
+    );
     // Generation counter must bump after the flush.
-    assert!(ir.contains("add i32") && ir.contains("store i32 %t") && ir.contains("@__web_generation"),
-        "generation must be incremented; got:\n{ir}");
+    assert!(
+        ir.contains("add i32") && ir.contains("store i32 %t") && ir.contains("@__web_generation"),
+        "generation must be incremented; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10308,21 +11677,42 @@ fn test_webstack_flush_empty_write_set_is_noop() {
         .with_target_triple("wasm32-unknown-wasi");
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "tick".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "tick".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![Statement::Term(None)],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("call void @__web_flush_state(i32 0, i32 0)"),
-        "empty write_set must flush the no-op path; got:\n{ir}");
+    assert!(
+        ir.contains("call void @__web_flush_state(i32 0, i32 0)"),
+        "empty write_set must flush the no-op path; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10336,28 +11726,53 @@ fn test_webstack_layout_header_describes_real_buffer() {
         .with_target_triple("wasm32-unknown-wasi");
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("i32 ptrtoint (ptr @__web_generation to i32)"),
-        "header must reference the real generation counter; got:\n{ir}");
-    assert!(ir.contains("i32 ptrtoint (ptr @__web_flush_buf to i32)"),
-        "header must reference the real flush buffer; got:\n{ir}");
-    assert!(!ir.contains("i32 0, i32 64, i32 16"),
-        "hardcoded stub header must be gone; got:\n{ir}");
+    assert!(
+        ir.contains("i32 ptrtoint (ptr @__web_generation to i32)"),
+        "header must reference the real generation counter; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("i32 ptrtoint (ptr @__web_flush_buf to i32)"),
+        "header must reference the real flush buffer; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("i32 0, i32 64, i32 16"),
+        "hardcoded stub header must be gone; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10371,38 +11786,76 @@ fn test_web_state_layout_carries_field_names() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "label".into(), ty: Some(Type::string()), expr: None,
-            modifiers: vec![], names: vec![],
+            name: "label".into(),
+            ty: Some(Type::string()),
+            expr: None,
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 // reference label so the String field stays live (not pruned)
                 Statement::Let {
-                    name: "tmp".into(), ty: None,
-                    expr: Some(Expr::Call("Len#".into(), vec![Expr::Identifier("label".into())], None)),
-                    modifiers: vec![], names: vec![],
+                    name: "tmp".into(),
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "Len#".into(),
+                        vec![Expr::Identifier("label".into())],
+                        None,
+                    )),
+                    modifiers: vec![],
+                    names: vec![],
                 },
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     backend.generate(&program, None);
     let layout = backend.web_state_layout("test_app");
-    assert!(layout.fields.len() >= 3, "count + label (+ synthetic cycle_count); got: {:?}", layout.fields);
-    let count = layout.fields.iter().find(|f| f.name == "count")
+    assert!(
+        layout.fields.len() >= 3,
+        "count + label (+ synthetic cycle_count); got: {:?}",
+        layout.fields
+    );
+    let count = layout
+        .fields
+        .iter()
+        .find(|f| f.name == "count")
         .expect("count field present");
     assert_eq!(count.field_handle, 0, "count is the first field");
-    let label = layout.fields.iter().find(|f| f.name == "label")
+    let label = layout
+        .fields
+        .iter()
+        .find(|f| f.name == "label")
         .expect("label field present");
     assert_eq!(label.field_handle, 1, "label is the second field");
     assert_eq!(count.type_tag, crate::glue::web_generator::TypeTag::Int);
@@ -10422,27 +11875,50 @@ fn test_webstack_ssa_precondition_emits_valid_bool_branch() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
     // The SSA-loop guard must truncate the i8 Bool literal to i1 before br.
-    assert!(ir.contains("trunc i8 %t") && ir.contains("br i1 %tb"),
-        "precondition must trunc i8 → i1 before br; got:\n{ir}");
-    assert!(!ir.contains("br i1 %t5,"),
-        "no raw i8 reg may feed br i1; got:\n{ir}");
+    assert!(
+        ir.contains("trunc i8 %t") && ir.contains("br i1 %tb"),
+        "precondition must trunc i8 → i1 before br; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("br i1 %t5,"),
+        "no raw i8 reg may feed br i1; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10457,26 +11933,49 @@ fn test_webstack_int_literal_emits_target_width() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("add i32 0, 1"),
-        "Int literal must emit at i32 for wasm32; got:\n{ir}");
-    assert!(!ir.contains("add i64 0, 1"),
-        "Int literal must not hardcode i64; got:\n{ir}");
+    assert!(
+        ir.contains("add i32 0, 1"),
+        "Int literal must emit at i32 for wasm32; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("add i64 0, 1"),
+        "Int literal must not hardcode i64; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10495,12 +11994,18 @@ txn run [seen == LIMIT][true] { seen = LIMIT; term; };
         .with_target_triple("wasm32-unknown-wasi")
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("@LIMIT = constant i32 7"),
-        "Int constant global must be i32 on wasm32:\n{ir}");
-    assert!(ir.contains("load i32, ptr @LIMIT"),
-        "Int constant read must be i32 on wasm32:\n{ir}");
-    assert!(!ir.contains("load i64, ptr @LIMIT"),
-        "Int constant read must not hardcode i64:\n{ir}");
+    assert!(
+        ir.contains("@LIMIT = constant i32 7"),
+        "Int constant global must be i32 on wasm32:\n{ir}"
+    );
+    assert!(
+        ir.contains("load i32, ptr @LIMIT"),
+        "Int constant read must be i32 on wasm32:\n{ir}"
+    );
+    assert!(
+        !ir.contains("load i64, ptr @LIMIT"),
+        "Int constant read must not hardcode i64:\n{ir}"
+    );
 }
 
 #[test]
@@ -10514,33 +12019,67 @@ fn test_webstack_state_int_slots_are_target_width() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "label".into(), ty: Some(Type::string()), expr: None,
-            modifiers: vec![], names: vec![],
+            name: "label".into(),
+            ty: Some(Type::string()),
+            expr: None,
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
-                Statement::Let { name: "tmp".into(), ty: None,
-                    expr: Some(Expr::Call("Len#".into(), vec![Expr::Identifier("label".into())], None)),
-                    modifiers: vec![], names: vec![] },
+                Statement::Let {
+                    name: "tmp".into(),
+                    ty: None,
+                    expr: Some(Expr::Call(
+                        "Len#".into(),
+                        vec![Expr::Identifier("label".into())],
+                        None,
+                    )),
+                    modifiers: vec![],
+                    names: vec![],
+                },
                 Statement::Assign(Expr::Identifier("count".into()), Expr::Decimal(1)),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
     // Int slot → i32; String slot stays i64 (boxed ptr).
-    assert!(ir.contains("%State = type { i32, i64 }") || ir.contains("%StateChunk0 = type { i32, i64 }")
-        || ir.contains("%State = type { i32, i64, i64 }") || ir.contains("%StateChunk0 = type { i32, i64, i64 }"),
-        "Int slot must be i32 on wasm32, String i64; got:\n{ir}");
+    assert!(
+        ir.contains("%State = type { i32, i64 }")
+            || ir.contains("%StateChunk0 = type { i32, i64 }")
+            || ir.contains("%State = type { i32, i64, i64 }")
+            || ir.contains("%StateChunk0 = type { i32, i64, i64 }"),
+        "Int slot must be i32 on wasm32, String i64; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10555,33 +12094,64 @@ fn test_webstack_folded_loop_is_width_consistent() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "count".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "count".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "increment".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
+            name: "increment".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
             contract: Contract {
-                pre_condition: Expr::BinaryOp(crate::ast::BinaryOpKind::Lt,
-                    Box::new(Expr::Identifier("count".into())), Box::new(Expr::Decimal(100))),
-                post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+                pre_condition: Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("count".into())),
+                    Box::new(Expr::Decimal(100)),
+                ),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
-                Statement::Assign(Expr::Identifier("count".into()),
-                    Expr::BinaryOp(crate::ast::BinaryOpKind::Add,
-                        Box::new(Expr::Identifier("count".into())), Box::new(Expr::Decimal(1)))),
+                Statement::Assign(
+                    Expr::Identifier("count".into()),
+                    Expr::BinaryOp(
+                        crate::ast::BinaryOpKind::Add,
+                        Box::new(Expr::Identifier("count".into())),
+                        Box::new(Expr::Decimal(1)),
+                    ),
+                ),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("phi i32"),
-        "folded loop counter phi must be i32 on wasm32; got:\n{ir}");
-    assert!(ir.contains("add nuw nsw i32"),
-        "folded loop backedge must be i32; got:\n{ir}");
-    assert!(ir.contains("sext i32") && ir.contains("icmp slt i64"),
-        "bound compare must sext i32 → i64; got:\n{ir}");
+    assert!(
+        ir.contains("phi i32"),
+        "folded loop counter phi must be i32 on wasm32; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("add nuw nsw i32"),
+        "folded loop backedge must be i32; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("sext i32") && ir.contains("icmp slt i64"),
+        "bound compare must sext i32 → i64; got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10595,43 +12165,66 @@ fn test_webstack_array_field_store_gep_widens_index() {
         .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::Statement(Box::new(Statement::Let {
-            name: "idx".into(), ty: Some(Type::int()), expr: Some(Expr::Decimal(0)),
-            modifiers: vec![], names: vec![],
+            name: "idx".into(),
+            ty: Some(Type::int()),
+            expr: Some(Expr::Decimal(0)),
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Statement(Box::new(Statement::Let {
             name: "buf".into(),
-            ty: Some(Type::Vector(Box::new(Type::int()),
-                vec![crate::ast::Dimension::Anonymous(4)])),
+            ty: Some(Type::Vector(
+                Box::new(Type::int()),
+                vec![crate::ast::Dimension::Anonymous(4)],
+            )),
             expr: None,
-            modifiers: vec![], names: vec![],
+            modifiers: vec![],
+            names: vec![],
         })),
         TopLevel::Transaction(Transaction {
             variadic_param: None,
-            name: "fill".into(), is_reactive: true, is_async: false,
-            type_params: vec![], parameters: vec![], output_type: None, outputs: vec![],
-            contract: Contract { pre_condition: Expr::Bool(true), post_condition: Expr::Bool(true), watchdog: None, explicit: false, span: None, post_authority: false},
+            name: "fill".into(),
+            is_reactive: true,
+            is_async: false,
+            type_params: vec![],
+            parameters: vec![],
+            output_type: None,
+            outputs: vec![],
+            contract: Contract {
+                pre_condition: Expr::Bool(true),
+                post_condition: Expr::Bool(true),
+                watchdog: None,
+                explicit: false,
+                span: None,
+                post_authority: false,
+            },
             body: vec![
                 Statement::Assign(
-                    Expr::Index(Box::new(Expr::Identifier("buf".into())),
-                        Box::new(Expr::Identifier("idx".into()))),
-                    Expr::Decimal(1)),
+                    Expr::Index(
+                        Box::new(Expr::Identifier("buf".into())),
+                        Box::new(Expr::Identifier("idx".into())),
+                    ),
+                    Expr::Decimal(1),
+                ),
                 Statement::Term(None),
             ],
-            metadata: HashMap::new(), derivation: None, modifiers: vec![], span: None, doc: None,
+            metadata: HashMap::new(),
+            derivation: None,
+            modifiers: vec![],
+            span: None,
+            doc: None,
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("sext i32") && ir.contains("getelementptr [4 x i32]"),
-        "array store GEP index must sext i32 → i64; got:\n{ir}");
+    assert!(
+        ir.contains("sext i32") && ir.contains("getelementptr [4 x i32]"),
+        "array store GEP index must sext i32 → i64; got:\n{ir}"
+    );
 }
 
 // ── pack struct (layout-keywords plan Phase 2) ────────────────────────
 
-fn packed_struct_def(
-    name: &str,
-    fields: Vec<(&str, Type)>,
-    endian: Option<&str>,
-) -> StructDef {
+fn packed_struct_def(name: &str, fields: Vec<(&str, Type)>, endian: Option<&str>) -> StructDef {
     let mut metadata = HashMap::new();
     if let Some(e) = endian {
         metadata.insert(
@@ -10642,7 +12235,10 @@ fn packed_struct_def(
     StructDef {
         type_params: vec![],
         name: name.to_string(),
-        fields: fields.into_iter().map(|(n, t)| (n.to_string(), t)).collect(),
+        fields: fields
+            .into_iter()
+            .map(|(n, t)| (n.to_string(), t))
+            .collect(),
         metadata,
         seq: false,
         pack: true,
@@ -10659,7 +12255,10 @@ fn struct_literal_stmt(name: &str, bind: &str, fields: Vec<(&str, Expr)>) -> Sta
         ty: None,
         expr: Some(Expr::StructLiteral {
             type_name: name.to_string(),
-            fields: fields.into_iter().map(|(n, e)| (n.to_string(), e)).collect(),
+            fields: fields
+                .into_iter()
+                .map(|(n, e)| (n.to_string(), e))
+                .collect(),
             specs: Vec::new(),
         }),
         modifiers: vec![],
@@ -10708,7 +12307,9 @@ fn test_packed_whole_byte_emits_native_aggregate() {
     // 2026-08-13 (pack): whole-byte packed structs (every field % 8 == 0)
     // declare LLVM's native packed type `<{ ... }>` and keep byte-offset GEP +
     // aligned loads/stores — the rule-19-validated native path.
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "Eth",
@@ -10733,19 +12334,27 @@ fn test_packed_whole_byte_emits_native_aggregate() {
         ]),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("%Eth = type <{ i48, i48, i16 }>"),
-        "whole-byte packed struct must emit the native packed aggregate; got:\n{ir}");
-    assert!(ir.contains("store i48") && ir.contains("align 1"),
-        "whole-byte packed stores must be i48 with align 1; got:\n{ir}");
-    assert!(ir.contains("load i48, ptr") && ir.contains("align 1"),
-        "whole-byte packed reads must be aligned i48 loads; got:\n{ir}");
+    assert!(
+        ir.contains("%Eth = type <{ i48, i48, i16 }>"),
+        "whole-byte packed struct must emit the native packed aggregate; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("store i48") && ir.contains("align 1"),
+        "whole-byte packed stores must be i48 with align 1; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("load i48, ptr") && ir.contains("align 1"),
+        "whole-byte packed reads must be aligned i48 loads; got:\n{ir}"
+    );
 }
 
 #[test]
 fn test_packed_sub_byte_le_emits_byte_array_and_slices() {
     // 2026-08-13 (pack): sub-byte packed structs hide behind a byte array
     // `{ [N x i8] }`; fields read via load-shift-trunc (LE: shift = bit pos).
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "Nib",
@@ -10771,21 +12380,31 @@ fn test_packed_sub_byte_le_emits_byte_array_and_slices() {
         ]),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("%Nib = type { [3 x i8] }"),
-        "sub-byte packed struct must hide fields behind a byte array; got:\n{ir}");
-    assert!(ir.contains("lshr i8") && ir.contains("trunc i8") && ir.contains("to i4"),
-        "LE sub-byte read must shift the byte and truncate to i4; got:\n{ir}");
-    assert!(ir.contains("lshr i16") || ir.contains("trunc i16") && ir.contains("to i12"),
-        "LE 12-bit cross-byte read must handle the i16 covering load; got:\n{ir}");
-    assert!(ir.contains("and i8") && ir.contains("or i8"),
-        "sub-byte store must clear+insert (and/or) in the byte; got:\n{ir}");
+    assert!(
+        ir.contains("%Nib = type { [3 x i8] }"),
+        "sub-byte packed struct must hide fields behind a byte array; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("lshr i8") && ir.contains("trunc i8") && ir.contains("to i4"),
+        "LE sub-byte read must shift the byte and truncate to i4; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("lshr i16") || ir.contains("trunc i16") && ir.contains("to i12"),
+        "LE 12-bit cross-byte read must handle the i16 covering load; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("and i8") && ir.contains("or i8"),
+        "sub-byte store must clear+insert (and/or) in the byte; got:\n{ir}"
+    );
 }
 
 #[test]
 fn test_packed_be_sub_byte_byte_reverses() {
     // 2026-08-13 (pack): Big-endian packed fields read the COVERED bytes
     // little-endian, mirror the byte order, then shift (cov*8 - bits).
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(crate::type_universe::TypeUniverse::new());
     let program = vec![
         TopLevel::StaticStruct(packed_struct_def(
             "BigP",
@@ -10803,14 +12422,22 @@ fn test_packed_be_sub_byte_byte_reverses() {
         ]),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("%BigP = type { [2 x i8] }"),
-        "12+4 bits must collapse to a 2-byte array; got:\n{ir}");
-    assert!(ir.contains("lshr i16") && ir.contains("to i12"),
-        "BE 12-bit read must reverse bytes then shift; got:\n{ir}");
-    assert!(ir.contains("shl i16") || ir.contains("trunc i16"),
-        "BE read must place the high byte into the low position; got:\n{ir}");
-    assert!(ir.contains("trunc i8") && ir.contains("to i4"),
-        "BE single-byte low-nibble read truncs the byte (shift 0); got:\n{ir}");
+    assert!(
+        ir.contains("%BigP = type { [2 x i8] }"),
+        "12+4 bits must collapse to a 2-byte array; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("lshr i16") && ir.contains("to i12"),
+        "BE 12-bit read must reverse bytes then shift; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("shl i16") || ir.contains("trunc i16"),
+        "BE read must place the high byte into the low position; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("trunc i8") && ir.contains("to i4"),
+        "BE single-byte low-nibble read truncs the byte (shift 0); got:\n{ir}"
+    );
 }
 
 #[test]
@@ -10820,7 +12447,10 @@ fn test_packed_struct_rejects_overwide_at_parse() {
     let src = "pack struct W { wide: Bits<128>; };";
     let tokens = crate::lexer::tokenize(src).unwrap();
     let mut p = crate::parser::Parser::new(tokens, src);
-    assert!(p.parse_program().is_err(), "Bits<128> packed field must not parse");
+    assert!(
+        p.parse_program().is_err(),
+        "Bits<128> packed field must not parse"
+    );
 }
 
 // ── trap (layout-keywords plan Phase 4) ───────────────────────────────
@@ -10836,10 +12466,14 @@ fn test_trap_statement_emits_llvm_trap() {
         Statement::Term(Some(Expr::Decimal(0))),
     ])];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("declare void @llvm.trap() noreturn"),
-        "module must declare @llvm.trap; got:\n{ir}");
-    assert!(ir.contains("call void @llvm.trap()") && ir.contains("unreachable"),
-        "trap; must emit call void @llvm.trap() then unreachable; got:\n{ir}");
+    assert!(
+        ir.contains("declare void @llvm.trap() noreturn"),
+        "module must declare @llvm.trap; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("call void @llvm.trap()") && ir.contains("unreachable"),
+        "trap; must emit call void @llvm.trap() then unreachable; got:\n{ir}"
+    );
 }
 
 // ── atomic field modifier (layout-keywords plan Phase 5) ───────────────
@@ -10855,18 +12489,26 @@ fn test_memcpy_memset_intrinsics_declared() {
     // pointer form, and must NOT emit the legacy p0i8 / malformed p0p0
     // manglings that predated the fix.
     let mut backend = LlvmBackend::new().with_force_emit_all(true);
-    let program = vec![packed_main_def(vec![
-        Statement::Term(Some(Expr::Decimal(0))),
-    ])];
+    let program = vec![packed_main_def(vec![Statement::Term(Some(Expr::Decimal(
+        0,
+    )))])];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)"),
-        "module must declare llvm.memcpy; got:\\n{ir}");
-    assert!(ir.contains("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)"),
-        "module must declare llvm.memset; got:\\n{ir}");
-    assert!(!ir.contains("memcpy.p0i8"),
-        "legacy p0i8 memcpy mangling must not be emitted; got:\\n{ir}");
-    assert!(!ir.contains("memcpy.p0p0"),
-        "malformed p0p0 memcpy mangling must not be emitted; got:\\n{ir}");
+    assert!(
+        ir.contains("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)"),
+        "module must declare llvm.memcpy; got:\\n{ir}"
+    );
+    assert!(
+        ir.contains("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)"),
+        "module must declare llvm.memset; got:\\n{ir}"
+    );
+    assert!(
+        !ir.contains("memcpy.p0i8"),
+        "legacy p0i8 memcpy mangling must not be emitted; got:\\n{ir}"
+    );
+    assert!(
+        !ir.contains("memcpy.p0p0"),
+        "malformed p0p0 memcpy mangling must not be emitted; got:\\n{ir}"
+    );
 }
 
 #[test]
@@ -10875,7 +12517,9 @@ fn test_atomic_field_load_store_rmw() {
     // ops; `obj.f = obj.f + c` lowers to atomicrmw add; plain fields stay on
     // the default non-atomic path (no `atomic` in their ops).
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(tu);
     let mut meta = HashMap::new();
     meta.insert(
         "atomic_fields".to_string(),
@@ -10915,7 +12559,10 @@ fn test_atomic_field_load_store_rmw() {
                     Expr::Field(Box::new(Expr::Identifier("c".into())), "count".into()),
                     Expr::BinaryOp(
                         crate::ast::BinaryOpKind::Add,
-                        Box::new(Expr::Field(Box::new(Expr::Identifier("c".into())), "count".into())),
+                        Box::new(Expr::Field(
+                            Box::new(Expr::Identifier("c".into())),
+                            "count".into(),
+                        )),
                         Box::new(Expr::Decimal(1)),
                     ),
                 ),
@@ -10933,14 +12580,22 @@ fn test_atomic_field_load_store_rmw() {
         }),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("load atomic i64, ptr") && ir.contains("seq_cst"),
-        "atomic field read must be an atomic load; got:\n{ir}");
-    assert!(ir.contains("atomicrmw add"),
-        "c.count = c.count + 1 must lower to atomicrmw add; got:\n{ir}");
-    assert!(ir.contains("store atomic i64"),
-        "atomic struct-literal field store must be atomic; got:\n{ir}");
-    assert!(ir.contains("load i64, ptr"),
-        "plain field read stays on the default (non-atomic) path; got:\n{ir}");
+    assert!(
+        ir.contains("load atomic i64, ptr") && ir.contains("seq_cst"),
+        "atomic field read must be an atomic load; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("atomicrmw add"),
+        "c.count = c.count + 1 must lower to atomicrmw add; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("store atomic i64"),
+        "atomic struct-literal field store must be atomic; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("load i64, ptr"),
+        "plain field read stays on the default (non-atomic) path; got:\n{ir}"
+    );
 }
 
 // ── union (layout-keywords plan Phase 6) ───────────────────────────────
@@ -10950,7 +12605,9 @@ fn test_union_emits_byte_array_and_offset_zero() {
     // 2026-08-13 (Phase 6): a union materializes as a byte array of its
     // largest aligned field storage; every field overlays at offset 0.
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(tu);
     let program = vec![
         TopLevel::StaticStruct(StructDef {
             type_params: vec![],
@@ -10972,10 +12629,14 @@ fn test_union_emits_byte_array_and_offset_zero() {
         ]),
     ];
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("%Word = type { [8 x i8] }"),
-        "union must materialize as a byte array of the largest field; got:\n{ir}");
-    assert!(ir.contains("getelementptr i8, ptr") && ir.contains("i64 0"),
-        "union field access must GEP at offset 0; got:\n{ir}");
+    assert!(
+        ir.contains("%Word = type { [8 x i8] }"),
+        "union must materialize as a byte array of the largest field; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("getelementptr i8, ptr") && ir.contains("i64 0"),
+        "union field access must GEP at offset 0; got:\n{ir}"
+    );
 }
 
 // ── reactor struct-slot loop (2026-08-13 fix) ─────────────────────────
@@ -10994,22 +12655,37 @@ fn test_struct_literal_alloca_deferred_in_loop() {
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     backend.ctx.struct_types.insert(
         "Point".to_string(),
-        vec![("x".to_string(), Type::int()), ("y".to_string(), Type::int())],
+        vec![
+            ("x".to_string(), Type::int()),
+            ("y".to_string(), Type::int()),
+        ],
     );
     let mut out = String::new();
     backend.fun.defer_struct_allocas = true;
     let reg = backend.emit_struct_literal(
-        &mut out, "%v", "Point",
-        &[("x".to_string(), Expr::Decimal(1)), ("y".to_string(), Expr::Decimal(2))],
+        &mut out,
+        "%v",
+        "Point",
+        &[
+            ("x".to_string(), Expr::Decimal(1)),
+            ("y".to_string(), Expr::Decimal(2)),
+        ],
         "  ",
     );
-    assert!(!out.contains("malloc"),
-        "with defer_struct_allocas set, the allocation must NOT be emitted inline; got:\n{out}");
-    assert_eq!(backend.fun.pending_struct_allocas.len(), 1,
-        "the allocation must be deferred to pending_struct_allocas");
+    assert!(
+        !out.contains("malloc"),
+        "with defer_struct_allocas set, the allocation must NOT be emitted inline; got:\n{out}"
+    );
+    assert_eq!(
+        backend.fun.pending_struct_allocas.len(),
+        1,
+        "the allocation must be deferred to pending_struct_allocas"
+    );
     backend.flush_pending_struct_allocas(&mut out);
-    assert!(contains_heap_allocation(&out, 16),
-        "flush_pending_struct_allocas must write the malloc call; got:\n{out}");
+    assert!(
+        contains_heap_allocation(&out, 16),
+        "flush_pending_struct_allocas must write the malloc call; got:\n{out}"
+    );
     let _ = reg;
 }
 
@@ -11022,22 +12698,31 @@ fn test_dynamic_struct_literal_allocation_stays_in_loop() {
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     backend.ctx.struct_types.insert(
         "Item".to_string(),
-        vec![("id".to_string(), Type::int()), ("title".to_string(), Type::string())],
+        vec![
+            ("id".to_string(), Type::int()),
+            ("title".to_string(), Type::string()),
+        ],
     );
     let mut out = String::new();
     backend.fun.defer_struct_allocas = true;
     backend.emit_struct_literal(
-        &mut out, "%v", "Item",
+        &mut out,
+        "%v",
+        "Item",
         &[
             ("id".to_string(), Expr::Identifier("i".to_string())),
             ("title".to_string(), Expr::Quoted(b"x".to_vec())),
         ],
         "  ",
     );
-    assert!(out.contains("call ptr @malloc"),
-        "dynamic struct literal must allocate per evaluation; got:\n{out}");
-    assert!(backend.fun.pending_struct_allocas.is_empty(),
-        "dynamic struct literal must not defer its allocation");
+    assert!(
+        out.contains("call ptr @malloc"),
+        "dynamic struct literal must allocate per evaluation; got:\n{out}"
+    );
+    assert!(
+        backend.fun.pending_struct_allocas.is_empty(),
+        "dynamic struct literal must not defer its allocation"
+    );
 }
 
 // ── typed !range metadata (2026-08-13 fix) ────────────────────────────
@@ -11063,9 +12748,18 @@ fn test_volatile_intrinsics_emit_typed_accesses() {
     let tu = crate::type_universe::TypeUniverse::new();
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("store volatile"), "volatile store must be emitted:\n{ir}");
-    assert!(ir.contains("load volatile i64"), "volatile load at pointee width expected:\n{ir}");
-    assert!(ir.contains("inttoptr"), "boxed-address re-materialization expected:\n{ir}");
+    assert!(
+        ir.contains("store volatile"),
+        "volatile store must be emitted:\n{ir}"
+    );
+    assert!(
+        ir.contains("load volatile i64"),
+        "volatile load at pointee width expected:\n{ir}"
+    );
+    assert!(
+        ir.contains("inttoptr"),
+        "boxed-address re-materialization expected:\n{ir}"
+    );
 }
 
 /// 2026-09-14 (rv64-finish plan Phase 5): VolatileStore# width-adapts the
@@ -11090,9 +12784,18 @@ fn test_volatile_store_narrows_to_32_bit_pointee() {
     let tu = crate::type_universe::TypeUniverse::new();
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("store volatile i32"), "32-bit volatile store expected:\n{ir}");
-    assert!(!ir.contains("zext i64"), "invalid widening must not appear:\n{ir}");
-    assert!(ir.contains("trunc i64"), "i64 -> i32 narrowing must trunc:\n{ir}");
+    assert!(
+        ir.contains("store volatile i32"),
+        "32-bit volatile store expected:\n{ir}"
+    );
+    assert!(
+        !ir.contains("zext i64"),
+        "invalid widening must not appear:\n{ir}"
+    );
+    assert!(
+        ir.contains("trunc i64"),
+        "i64 -> i32 narrowing must trunc:\n{ir}"
+    );
 }
 
 /// 2026-09-14 (rv64-finish plan Phase 5): Asm#("raw", …) emits the output
@@ -11116,8 +12819,10 @@ fn test_asm_raw_earlyclobber_constraint() {
     let tu = crate::type_universe::TypeUniverse::new();
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("\"=&r,r,~{memory}\""),
-        "earlyclobber output constraint expected:\n{ir}");
+    assert!(
+        ir.contains("\"=&r,r,~{memory}\""),
+        "earlyclobber output constraint expected:\n{ir}"
+    );
 }
 
 #[test]
@@ -11136,10 +12841,14 @@ fn test_range_metadata_bounds_are_typed() {
     let tu = crate::type_universe::TypeUniverse::new();
     let mut backend = LlvmBackend::new().with_type_universe(tu);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("!range !{ i64 0, i64 10 }"),
-        "range bounds must be typed i64; got:\n{ir}");
-    assert!(!ir.contains("!range !{ 0, 10 }"),
-        "the untyped legacy range form must not be emitted; got:\n{ir}");
+    assert!(
+        ir.contains("!range !{ i64 0, i64 10 }"),
+        "range bounds must be typed i64; got:\n{ir}"
+    );
+    assert!(
+        !ir.contains("!range !{ 0, 10 }"),
+        "the untyped legacy range form must not be emitted; got:\n{ir}"
+    );
 }
 
 /// 2026-08-17 (tuple correctness, plan 2026-08-17-hashmap-storage-tuple-correctness.md):
@@ -11220,7 +12929,8 @@ fn stmt_match_program() -> Vec<TopLevel> {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false},
+            post_authority: false,
+        },
         body: vec![Statement::Match {
             expr: Box::new(Expr::Identifier("op".to_string())),
             arms: vec![
@@ -11260,13 +12970,25 @@ fn test_statement_match_emits_arm_blocks_in_callable_txn() {
     );
     // Arm conditions materialize each literal (add i64 0, N) and icmp
     // against the scrutinee register.
-    assert!(output.contains("add i64 0, 1"), "arm 1 literal materialized");
-    assert!(output.contains("add i64 0, 2"), "arm 2 literal materialized");
-    assert!(output.contains("icmp eq i64"), "literal compare against scrutinee");
+    assert!(
+        output.contains("add i64 0, 1"),
+        "arm 1 literal materialized"
+    );
+    assert!(
+        output.contains("add i64 0, 2"),
+        "arm 2 literal materialized"
+    );
+    assert!(
+        output.contains("icmp eq i64"),
+        "literal compare against scrutinee"
+    );
     // …and every arm's result store reaches the IR (three %result stores
     // after the match chain — one per arm).
     let arm_stores = output.matches("store i64 %t").count();
-    assert!(arm_stores >= 3, "all three arms must store their result:\n{output}");
+    assert!(
+        arm_stores >= 3,
+        "all three arms must store their result:\n{output}"
+    );
 }
 
 /// 2026-09-24 (BUGS.md void-match phi, enemy_swarm): a statement-position
@@ -11386,7 +13108,6 @@ defn add(a: Int, b: Int) -> Int {
     );
 }
 
-
 #[test]
 fn enum_value_repr_metadata_is_available_without_ir_change() {
     // Groundwork gate: concrete layout must expose the hybrid value class
@@ -11416,7 +13137,10 @@ defn make() -> Option {
         Some(crate::analysis::enum_layout::EnumValueRepr::ScalarValue)
     );
     let mut fun = crate::backend::llvm::context::FunctionContext::new();
-    fun.set_enum_register_repr("%r", crate::analysis::enum_layout::EnumValueRepr::PackedMemory);
+    fun.set_enum_register_repr(
+        "%r",
+        crate::analysis::enum_layout::EnumValueRepr::PackedMemory,
+    );
     assert_eq!(
         fun.enum_register_repr("%r"),
         Some(crate::analysis::enum_layout::EnumValueRepr::PackedMemory)
@@ -11478,7 +13202,10 @@ defn make() -> Option {
         "constructor-returning defn should use the sret enum slot:\n{}",
         &ir[..ir.len().min(4000)]
     );
-    assert!(!contains_heap_allocation(&ir, 16), "enum result should be unboxed");
+    assert!(
+        !contains_heap_allocation(&ir, 16),
+        "enum result should be unboxed"
+    );
 }
 
 /// 2026-09-24 (stateless-defn × arena): in a program whose %State carries
@@ -11509,7 +13236,10 @@ node go [tick < 1][tick == 1] { let r: R = outer(1); tick = 1; term; };
     crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
     let mut backend = LlvmBackend::new().with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    let outer = ir.split("define i64 @outer").nth(1).expect("outer definition");
+    let outer = ir
+        .split("define i64 @outer")
+        .nth(1)
+        .expect("outer definition");
     let body = outer.split("\n}").next().unwrap();
     assert!(
         contains_heap_allocation(&body, 16),
@@ -11577,13 +13307,22 @@ fn test_mmio_pin_reads_volatile_and_skips_dispatch() {
     let mut p = crate::parser::Parser::new(tokens, src);
     let items = p.parse_program().unwrap();
     let tu = crate::type_universe::TypeUniverse::new();
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(tu);
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(tu);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("inttoptr i64 4096 to ptr"),
-        "pin address must materialize:\n{ir}");
-    assert!(ir.contains("load volatile i64, ptr"), "volatile pin read:\n{ir}");
-    assert!(!ir.contains("@txn_sensor"),
-        "value-pin must not event-dispatch to a nonexistent body txn:\n{ir}");
+    assert!(
+        ir.contains("inttoptr i64 4096 to ptr"),
+        "pin address must materialize:\n{ir}"
+    );
+    assert!(
+        ir.contains("load volatile i64, ptr"),
+        "volatile pin read:\n{ir}"
+    );
+    assert!(
+        !ir.contains("@txn_sensor"),
+        "value-pin must not event-dispatch to a nonexistent body txn:\n{ir}"
+    );
 }
 
 /// 2026-09-02 (plan fundamental-parent-membership): Float16 arithmetic
@@ -11609,7 +13348,9 @@ txn add16 [y < 100][y <= 100] {
     let items = p.parse_program().unwrap();
     let mut universe = crate::type_universe::TypeUniverse::new();
     crate::backend::register_types::register_typedefs(&items, &mut universe, 64).unwrap();
-    let mut backend = LlvmBackend::new().with_force_emit_all(true).with_type_universe(universe);
+    let mut backend = LlvmBackend::new()
+        .with_force_emit_all(true)
+        .with_type_universe(universe);
     let ir = backend.generate(&items, None);
     assert!(
         ir.contains("fadd fast half"),
@@ -11642,25 +13383,42 @@ fn test_isr_vector_table_layout() {
         .with_type_universe(crate::type_universe::TypeUniverse::new())
         .with_isr_mechanism(None);
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("define void @tick() nounwind \"interrupt\"=\"IRQ\" {"),
-        "wrapper carries the mechanism's calling convention:\n{ir}");
-    assert!(ir.contains("define void @__isr_body_tick(ptr"), "body takes the shared state");
-    assert!(ir.contains("call void @__isr_body_tick(ptr @__briev_state)"),
-        "wrapper passes the shared state global");
-    assert!(ir.contains("@__briev_state = global %State zeroinitializer"),
-        "ISR programs share state through a global");
+    assert!(
+        ir.contains("define void @tick() nounwind \"interrupt\"=\"IRQ\" {"),
+        "wrapper carries the mechanism's calling convention:\n{ir}"
+    );
+    assert!(
+        ir.contains("define void @__isr_body_tick(ptr"),
+        "body takes the shared state"
+    );
+    assert!(
+        ir.contains("call void @__isr_body_tick(ptr @__briev_state)"),
+        "wrapper passes the shared state global"
+    );
+    assert!(
+        ir.contains("@__briev_state = global %State zeroinitializer"),
+        "ISR programs share state through a global"
+    );
     assert!(ir.contains("@__vector_table_arm_cortex_m = global [3 x i32] [ i32 0, i32 ptrtoint (ptr @tick to i32), i32 ptrtoint (ptr @Default_Handler to i32) ], section \".isr_vector\", align 4"),
         "golden table layout (SP slot 0, handler, gap→default):\n{ir}");
-    assert!(ir.contains("define void @Default_Handler() nounwind {"), "default handler emitted");
+    assert!(
+        ir.contains("define void @Default_Handler() nounwind {"),
+        "default handler emitted"
+    );
     // main aliases the global instead of alloca.
-    assert!(ir.contains("%state = getelementptr %State, ptr @__briev_state, i64 0"),
-        "main aliases the shared state global");
-    let alloca_lines: Vec<&str> = ir.lines()
+    assert!(
+        ir.contains("%state = getelementptr %State, ptr @__briev_state, i64 0"),
+        "main aliases the shared state global"
+    );
+    let alloca_lines: Vec<&str> = ir
+        .lines()
         .filter(|l| l.contains("%state = alloca %State") && !l.trim_start().starts_with(';'))
         .collect();
-    assert!(alloca_lines.is_empty(),
+    assert!(
+        alloca_lines.is_empty(),
         "alloca must not coexist with the global alias: {:?}\n{ir}",
-        alloca_lines);
+        alloca_lines
+    );
 }
 
 #[test]
@@ -11669,11 +13427,17 @@ fn test_isr_no_handlers_uses_plain_alloca() {
     let src = "node tick [true][done == true] { done = true; term; };\n\
                let done: Bool = false;\n";
     let program = parse_isr_program(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("%state = alloca %State"), "non-ISR programs keep the alloca");
-    assert!(!ir.contains("@__briev_state"), "no shared-state global without handlers");
+    assert!(
+        ir.contains("%state = alloca %State"),
+        "non-ISR programs keep the alloca"
+    );
+    assert!(
+        !ir.contains("@__briev_state"),
+        "no shared-state global without handlers"
+    );
 }
 
 // ── halt; statement (2026-09-06 slice) ─────────────────────────────────
@@ -11690,9 +13454,18 @@ fn test_halt_embedded_arm_emits_wfi_spin() {
         .with_embedded_mode(true)
         .with_target_triple("thumbv7em-none-eabihf");
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("br label %halt_wait_"), "branch into the wait loop:\n{ir}");
-    assert!(ir.contains("call void asm sideeffect \"wfi\", \"\"()"), "the wfi wait");
-    assert!(!ir.contains("call void @llvm.trap()"), "no trap on the ARM path");
+    assert!(
+        ir.contains("br label %halt_wait_"),
+        "branch into the wait loop:\n{ir}"
+    );
+    assert!(
+        ir.contains("call void asm sideeffect \"wfi\", \"\"()"),
+        "the wfi wait"
+    );
+    assert!(
+        !ir.contains("call void @llvm.trap()"),
+        "no trap on the ARM path"
+    );
 }
 
 #[test]
@@ -11707,7 +13480,10 @@ fn test_halt_x86_triple_emits_trap() {
         .with_type_universe(crate::type_universe::TypeUniverse::new())
         .with_embedded_mode(true);
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("call void @llvm.trap()"), "trap on non-ARM triples:\n{ir}");
+    assert!(
+        ir.contains("call void @llvm.trap()"),
+        "trap on non-ARM triples:\n{ir}"
+    );
     assert!(!ir.contains("wfi"), "no wfi under an x86 triple");
 }
 
@@ -11719,13 +13495,17 @@ fn test_section_placement_ir() {
                node tick [true][n == 42] { n = startup(); term; };\n\
                let n: Int = 0;\n";
     let program = parse_isr_program(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("@TABLE = constant i64 5 section \".rodata\""),
-        "const global carries its section:\n{ir}");
-    assert!(ir.contains("section \".init\""),
-        "sectioned defn carries its section:\n{ir}");
+    assert!(
+        ir.contains("@TABLE = constant i64 5 section \".rodata\""),
+        "const global carries its section:\n{ir}"
+    );
+    assert!(
+        ir.contains("section \".init\""),
+        "sectioned defn carries its section:\n{ir}"
+    );
     // A section-less defn must NOT carry a section attribute.
     assert!(!ir.contains("section \".rodata\" }"), "no stray attrs");
 }
@@ -11741,20 +13521,32 @@ fn test_riscv_isr_full_context_scaffold() {
     let src = "isr<riscv_machine> handler @ 7: tick() [true][n >= 0] { n = n; };\n\
                let n: Int = 0;\n";
     let program = parse_isr_program(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
-    assert!(ir.contains(
-        "define void @tick() naked noinline align 4 {"),
-        "riscv wrapper: naked scaffold + align 4 (mtvec base):\n{ir}");
-    assert!(ir.contains("csrrw tp, mscratch, tp"), "frame base via mscratch↔tp:\n{ir}");
+    assert!(
+        ir.contains("define void @tick() naked noinline align 4 {"),
+        "riscv wrapper: naked scaffold + align 4 (mtvec base):\n{ir}"
+    );
+    assert!(
+        ir.contains("csrrw tp, mscratch, tp"),
+        "frame base via mscratch↔tp:\n{ir}"
+    );
     assert!(ir.contains("sd x1, 0(tp);"), "saves x1 first");
     assert!(ir.contains("ld x31, 240(tp);"), "restores x31 last");
-    assert!(ir.contains("ld sp, 248(tp);"), "kernel stack from frame slot 31");
-    assert!(ir.contains("call __isr_body_tick"), "calls the typed body:\n{ir}");
+    assert!(
+        ir.contains("ld sp, 248(tp);"),
+        "kernel stack from frame slot 31"
+    );
+    assert!(
+        ir.contains("call __isr_body_tick"),
+        "calls the typed body:\n{ir}"
+    );
     assert!(ir.contains("mret"), "returns via mret:\n{ir}");
-    assert!(ir.contains("@__briev_trap_frame = global [32 x i64] zeroinitializer"),
-        "compiler-owned trap frame:\n{ir}");
+    assert!(
+        ir.contains("@__briev_trap_frame = global [32 x i64] zeroinitializer"),
+        "compiler-owned trap frame:\n{ir}"
+    );
     // riscv mechanism: no link-time table (runtime-built mtvec).
     assert!(!ir.contains("@tick_vec"), "no link-time table for riscv");
 }
@@ -11785,7 +13577,10 @@ fn test_trap_frame_survives_fixpoint_round() {
         ir.contains("@__briev_trap_frame = global [32 x i64] zeroinitializer"),
         "trap frame global must be re-emitted in the surviving round:\n{ir}"
     );
-    assert!(ir.contains("define void @tick()"), "scaffold still emitted:\n{ir}");
+    assert!(
+        ir.contains("define void @tick()"),
+        "scaffold still emitted:\n{ir}"
+    );
 }
 
 #[test]
@@ -11801,9 +13596,14 @@ fn test_embedded_equilibrium_parks_in_wfi() {
         .with_embedded_mode(true)
         .with_target_triple("riscv64-unknown-none");
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("call void asm sideeffect \"wfi\", \"~{memory}\"()"),
-        "equilibrium wfi with memory clobber:\n{ir}");
-    assert!(ir.contains("br label %.ss_main_loop"), "park re-enters the dispatch loop:\n{ir}");
+    assert!(
+        ir.contains("call void asm sideeffect \"wfi\", \"~{memory}\"()"),
+        "equilibrium wfi with memory clobber:\n{ir}"
+    );
+    assert!(
+        ir.contains("br label %.ss_main_loop"),
+        "park re-enters the dispatch loop:\n{ir}"
+    );
 }
 
 /// 2026-09-14 (rv64-finish plan Phase 4b): an address-wired (reactor-pass)
@@ -11826,10 +13626,14 @@ fn test_address_wired_node_spins_not_parks() {
     let ir = backend.generate(&program, None);
     // The address-wired node's pre is a state obligation; if it ever reads
     // false, the reactor must re-read every pass rather than sleep.
-    assert!(ir.contains(".end:\n  br label %.ss_main_loop"),
-        "external frontier must spin, not park:\n{ir}");
-    assert!(!ir.contains(".end:\n  call void asm sideeffect \"wfi\""),
-        "no wfi park with an external frontier:\n{ir}");
+    assert!(
+        ir.contains(".end:\n  br label %.ss_main_loop"),
+        "external frontier must spin, not park:\n{ir}"
+    );
+    assert!(
+        !ir.contains(".end:\n  call void asm sideeffect \"wfi\""),
+        "no wfi park with an external frontier:\n{ir}"
+    );
 }
 
 /// The parser classifies `node n @ *ptr` as a reactor-pass Transaction (not
@@ -11843,16 +13647,37 @@ fn test_address_wired_node_parses_as_reactive_txn() {
                    last = 1;\n\
                };\n";
     let program = parse_isr_program(src);
-    let txns: Vec<&crate::ast::top::Transaction> = program.iter()
-        .filter_map(|i| match i { crate::ast::TopLevel::Transaction(t) => Some(t), _ => None })
+    let txns: Vec<&crate::ast::top::Transaction> = program
+        .iter()
+        .filter_map(|i| match i {
+            crate::ast::TopLevel::Transaction(t) => Some(t),
+            _ => None,
+        })
         .collect();
-    assert_eq!(txns.len(), 1, "address-wired node is one reactive transaction");
+    assert_eq!(
+        txns.len(),
+        1,
+        "address-wired node is one reactive transaction"
+    );
     let t = txns[0];
     assert_eq!(t.name, "poll");
-    assert!(t.metadata.contains_key("address_wired"), "address-wired marker set");
-    assert!(t.contract.explicit, "contract brackets survive parse (not eaten as index)");
-    assert!(!matches!(program.iter().find(|i| matches!(i, crate::ast::TopLevel::IsrHandler(_))),
-        Some(crate::ast::TopLevel::IsrHandler(_))), "not a machine-serviced handler");
+    assert!(
+        t.metadata.contains_key("address_wired"),
+        "address-wired marker set"
+    );
+    assert!(
+        t.contract.explicit,
+        "contract brackets survive parse (not eaten as index)"
+    );
+    assert!(
+        !matches!(
+            program
+                .iter()
+                .find(|i| matches!(i, crate::ast::TopLevel::IsrHandler(_))),
+            Some(crate::ast::TopLevel::IsrHandler(_))
+        ),
+        "not a machine-serviced handler"
+    );
 }
 
 #[test]
@@ -11862,11 +13687,13 @@ fn test_sync_wrapped_beginprogram_node_emits_flag() {
     // global (clang: use of undefined value '@briev_begin_<name>').
     let src = "sync<timer> node boot [beginprogram][true] { term; };\n";
     let program = parse_isr_program(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("@briev_begin_boot = private global i1 1"),
-        "sync-wrapped entry node emits its flag:\n{ir}");
+    assert!(
+        ir.contains("@briev_begin_boot = private global i1 1"),
+        "sync-wrapped entry node emits its flag:\n{ir}"
+    );
 }
 
 // ── 2026-09-14 (machine-entry plan): `bootstrap node` ──────────────────
@@ -11880,20 +13707,25 @@ fn test_bootstrap_body_inlines_at_main_head_and_stays_out_of_dispatch() {
                bootstrap node reset [armed == true] { armed = true; };\n\
                node reporter [armed][done == true] { done = true; term; };\n";
     let program = parse_isr_program(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&program, None);
     let loop_pos = ir.find(".ss_main_loop:").expect("dispatch loop present");
     // Bool fields lower to i8; the body's `armed = true` materializes the
     // constant then stores it through the field gep. The FIRST occurrence
     // is the bootstrap's (main head) — the reporter's sits after the loop.
-    let body_pos = ir.find("add i8 0, 1")
+    let body_pos = ir
+        .find("add i8 0, 1")
         .unwrap_or_else(|| panic!("bootstrap body store present:\n{ir}"));
-    assert!(body_pos < loop_pos,
-        "the bootstrap body must run BEFORE the dispatch loop:\n{ir}");
+    assert!(
+        body_pos < loop_pos,
+        "the bootstrap body must run BEFORE the dispatch loop:\n{ir}"
+    );
     // Not reactor-dispatched: no per-tick precheck block for the bootstrap.
-    assert!(!ir.contains(".ssb_reset"),
-        "bootstrap must stay out of the dispatch list:\n{ir}");
+    assert!(
+        !ir.contains(".ssb_reset"),
+        "bootstrap must stay out of the dispatch list:\n{ir}"
+    );
     // Ordinary nodes still dispatch.
     assert!(ir.contains(".ssb_reporter"), "reporter dispatches:\n{ir}");
 }
@@ -11911,9 +13743,14 @@ fn test_node_at_vector_dissolves_isr_keyword() {
         .with_type_universe(crate::type_universe::TypeUniverse::new())
         .with_isr_mechanism(Some("riscv_machine".to_string()));
     let ir = backend.generate(&program, None);
-    assert!(ir.contains("define void @tick() naked noinline align 4 {"),
-        "wired node emits the service scaffold:\n{ir}");
-    assert!(ir.contains("call __isr_body_tick"), "typed body called:\n{ir}");
+    assert!(
+        ir.contains("define void @tick() naked noinline align 4 {"),
+        "wired node emits the service scaffold:\n{ir}"
+    );
+    assert!(
+        ir.contains("call __isr_body_tick"),
+        "typed body called:\n{ir}"
+    );
     assert!(ir.contains("mret"), "returns via mret:\n{ir}");
 }
 
@@ -11948,8 +13785,8 @@ node run [i < 1][i == 1] {
 };
 "#;
     let items = parse_bv_source(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&items, None);
     // The thunk fn for (Greeter, Dog, greet) is emitted with the impl body
     // inlined (Self-first, i64 %self, i64 %targ0).
@@ -11959,7 +13796,9 @@ node run [i < 1][i == 1] {
     );
     // The thunk table holds the fn pointer (declaration order = 1 slot).
     assert!(
-        ir.contains("@__dyn_Greeter_Dog = private constant [1 x ptr] [ptr @__dyn_Greeter_Dog_greet]"),
+        ir.contains(
+            "@__dyn_Greeter_Dog = private constant [1 x ptr] [ptr @__dyn_Greeter_Dog_greet]"
+        ),
         "thunk table missing:\n{ir}"
     );
     // 2026-10-09 (dyn derive-don't-fix, Phase B): the single-concrete case is
@@ -12014,8 +13853,8 @@ node run [i < 1][i == 1] {
 };
 "#;
     let items = parse_bv_source(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     // This MUST NOT panic (the strided slice previously panicked at
     // emit_expr.rs:1863). The strided slice lowers to the strided gather.
     let ir = backend.generate(&items, None);
@@ -12069,7 +13908,8 @@ node run [done == false][done == true] {
     let ir = backend.generate(&items, None);
     // The view builds a 24-byte header block ({ base, len, len }).
     assert!(
-        ir.contains("call ptr @malloc(i64 24)") || ir.contains("call ptr @__briev_region_malloc(i64 24)"),
+        ir.contains("call ptr @malloc(i64 24)")
+            || ir.contains("call ptr @__briev_region_malloc(i64 24)"),
         "the contiguous slice view must allocate the header block:\n{ir}"
     );
     // The view's base pointer GEPs the state column (no copy).
@@ -12118,8 +13958,8 @@ node run [i < 1][i == 1] {
 };
 "#;
     let items = parse_bv_source(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     let ir = backend.generate(&items, None);
     // Both concretes conform (each provides `greet`), so two thunk tables are
     // emitted (the Vtable fallback is available).
@@ -12139,14 +13979,13 @@ node run [i < 1][i == 1] {
     );
     // The tag is loaded from the fat pointer's TAG slot (slot 1 of [3 x i64]).
     assert!(
-        ir.contains("getelementptr inbounds [3 x i64], ptr %")
-            && ir.contains("i32 1"),
+        ir.contains("getelementptr inbounds [3 x i64], ptr %") && ir.contains("i32 1"),
         "the Switch form must load the tag from the fat pointer's tag slot:\n{ir}"
     );
     // Both impl bodies are inlined (Dog's `*100`, Cat's `*10`) — no indirect
     // call through a thunk table.
     assert!(
-        ir.contains("mul nsw i64") ,
+        ir.contains("mul nsw i64"),
         "the Switch form must inline both impl bodies (the math is present):\n{ir}"
     );
     // NOT the Vtable fallback: no thunk-table fn-pointer load.
@@ -12219,20 +14058,33 @@ node go [done == false][done == true] {
     let out = std::env::temp_dir().join(format!(
         "briev_dynlist_{}_{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     let ll = out.with_extension("ll");
     // wait_for_trigger/watchdog_fail are emitted by the SSA loop's equilibrium
     // path — declare them for the standalone link (compile.rs normally does).
     let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\ndeclare void @wait_for_trigger(ptr)\ndeclare i64 @watchdog_fail(ptr)\n";
     if let Some(pos) = ir.find("target triple") {
-        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        let end = ir[pos..]
+            .find('\n')
+            .map(|e| pos + e + 1)
+            .unwrap_or(ir.len());
         ir.insert_str(end, prelude);
     } else {
         ir.insert_str(0, prelude);
     }
     std::fs::write(&ll, &ir).expect("write .ll");
-    let compile = Command::new("clang").args(["-O3", "-flto"]).arg(&ll).arg(&rt).args(["-lm", "-o"]).arg(&out).output().unwrap();
+    let compile = Command::new("clang")
+        .args(["-O3", "-flto"])
+        .arg(&ll)
+        .arg(&rt)
+        .args(["-lm", "-o"])
+        .arg(&out)
+        .output()
+        .unwrap();
     assert!(
         compile.status.success(),
         "link failed: {}",
@@ -12240,7 +14092,11 @@ node go [done == false][done == true] {
     );
     let run = Command::new(&out).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
-    let _ = (std::fs::remove_file(&ll), std::fs::remove_file(&out), std::fs::remove_file(&rt));
+    let _ = (
+        std::fs::remove_file(&ll),
+        std::fs::remove_file(&out),
+        std::fs::remove_file(&rt),
+    );
     assert!(
         run.status.success(),
         "program crashed (the differing-field dispatch must not trap): {}\n---\n{ir}",
@@ -12307,13 +14163,19 @@ node go [done == false][done == true] {
     let out = std::env::temp_dir().join(format!(
         "briev_dynlocal_{}_{}",
         std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     let ll = out.with_extension("ll");
     let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\n";
     let mut ir_full = ir.clone();
     if let Some(pos) = ir.find("target triple") {
-        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        let end = ir[pos..]
+            .find('\n')
+            .map(|e| pos + e + 1)
+            .unwrap_or(ir.len());
         ir_full.insert_str(end, prelude);
     } else {
         ir_full.insert_str(0, prelude);
@@ -12322,7 +14184,15 @@ node go [done == false][done == true] {
     // The -O0 link is the IR-validity gate: an undefined table symbol
     // (@__dyn_<Trait>_<Trait> — the trait-name fallback bug) passes -O3 -flto
     // (dead store, LTO-materialized) but fails -O0 outright.
-    let compile = Command::new("clang").arg("-O0").arg(&ll).arg(&rt).arg("-lm").arg("-o").arg(&out).output().unwrap();
+    let compile = Command::new("clang")
+        .arg("-O0")
+        .arg(&ll)
+        .arg(&rt)
+        .arg("-lm")
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
     assert!(
         compile.status.success(),
         "link failed (the IR must be valid at -O0 — no undefined table symbols): {}",
@@ -12330,7 +14200,11 @@ node go [done == false][done == true] {
     );
     let run = Command::new(&out).output().unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
-    let _ = (std::fs::remove_file(&ll), std::fs::remove_file(&out), std::fs::remove_file(&rt));
+    let _ = (
+        std::fs::remove_file(&ll),
+        std::fs::remove_file(&out),
+        std::fs::remove_file(&rt),
+    );
     assert!(
         run.status.success(),
         "local dyn list dispatch must not trap: {}\n---\n{ir}",
@@ -12374,8 +14248,8 @@ node run [i < 1][i == 1] {
 };
 "#;
     let items = parse_bv_source(src);
-    let mut backend = LlvmBackend::new()
-        .with_type_universe(crate::type_universe::TypeUniverse::new());
+    let mut backend =
+        LlvmBackend::new().with_type_universe(crate::type_universe::TypeUniverse::new());
     // This MUST NOT panic (the flowed `dyn`'s concrete is resolvable via the
     // single-concrete Inline form, independent of the name-keyed map).
     let ir = backend.generate(&items, None);
@@ -12431,7 +14305,8 @@ node work [count < 3][count == 3] {
         "plain lets must lower to module-scope globals:\n{ir}"
     );
     assert!(
-        !ir.contains("@stdout_buf, ptr %state") && !ir.contains("%State, ptr %state, i32 0, i32 0, ptr @stdout"),
+        !ir.contains("@stdout_buf, ptr %state")
+            && !ir.contains("%State, ptr %state, i32 0, i32 0, ptr @stdout"),
         "plain storage must not alias into %State:\n{ir}"
     );
     // The needs-state verdict for the plumbing defn: its function signature
@@ -12459,7 +14334,9 @@ node work [count < 3][count == 3] {
         &std::collections::HashSet::new(),
     );
     assert!(
-        errors.iter().any(|e| e.contains("'orphan' is declared `state`")),
+        errors
+            .iter()
+            .any(|e| e.contains("'orphan' is declared `state`")),
         "a `state` declaration nothing proves over must error: {errors:?}"
     );
 }
@@ -12481,7 +14358,9 @@ node work [count < 3][count == 3 && tracked >= 0] {
         &std::collections::HashSet::new(),
     );
     assert!(
-        errors.iter().any(|e| e.contains("'tracked' is declared `plain`")),
+        errors
+            .iter()
+            .any(|e| e.contains("'tracked' is declared `plain`")),
         "a `plain` declaration the proof surface references must error: {errors:?}"
     );
 }
@@ -12626,7 +14505,10 @@ fn run_with_print_stub(src: &str, test_tag: &str) -> String {
     let ll = out.with_extension("ll");
     let prelude = "declare i64 @__print_int(i64)\ndeclare i64 @__print_char(i64)\ndeclare void @wait_for_trigger(ptr)\ndeclare i64 @watchdog_fail(ptr)\n";
     let ir = if let Some(pos) = ir.find("target triple") {
-        let end = ir[pos..].find('\n').map(|e| pos + e + 1).unwrap_or(ir.len());
+        let end = ir[pos..]
+            .find('\n')
+            .map(|e| pos + e + 1)
+            .unwrap_or(ir.len());
         format!("{}{}{}", &ir[..end], prelude, &ir[end..])
     } else {
         format!("{prelude}{ir}")
@@ -12636,13 +14518,24 @@ fn run_with_print_stub(src: &str, test_tag: &str) -> String {
     // call main (same convention as the printf-stub tests above).
     let ir = match ir.find("define void @_start()") {
         Some(pos) => {
-            let end = ir[pos..].find("\n}\n").map(|e| pos + e + 3).unwrap_or(ir.len());
+            let end = ir[pos..]
+                .find("\n}\n")
+                .map(|e| pos + e + 3)
+                .unwrap_or(ir.len());
             format!("{}{}", &ir[..pos], &ir[end..])
         }
         None => ir,
     };
     std::fs::write(&ll, &ir).expect("write .ll");
-    let compile = Command::new("clang").arg("-O0").arg(&ll).arg(&rt).arg("-lm").arg("-o").arg(&out).output().unwrap();
+    let compile = Command::new("clang")
+        .arg("-O0")
+        .arg(&ll)
+        .arg(&rt)
+        .arg("-lm")
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
     assert!(
         compile.status.success(),
         "link failed: {}",
@@ -12817,11 +14710,15 @@ defn title() -> Int {
         .with_target_triple("wasm32-unknown-wasi")
         .with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    let start = ir.find("define i32 @title()").expect("title defn must be emitted");
+    let start = ir
+        .find("define i32 @title()")
+        .expect("title defn must be emitted");
     let end = start + ir[start..].find("\n}\n").expect("title defn must close");
     let function_ir = &ir[start..end];
-    assert!(!function_ir.contains("@__web_flush_state"),
-        "stateful defn must not flush transaction state; got:\n{function_ir}");
+    assert!(
+        !function_ir.contains("@__web_flush_state"),
+        "stateful defn must not flush transaction state; got:\n{function_ir}"
+    );
 }
 
 #[test]
@@ -12850,13 +14747,19 @@ node run [tick == 0][tick == 1] {
         .with_type_universe(universe);
     backend.ctx.collection_iterables.insert("items".to_string());
     let ir = backend.generate(&items, None);
-    let start = ir.find("define i32 @__view_items_items(").expect("view materializer");
+    let start = ir
+        .find("define i32 @__view_items_items(")
+        .expect("view materializer");
     let end = start + ir[start..].find("\n}\n").expect("materializer close");
     let function_ir = &ir[start..end];
-    assert!(function_ir.contains("%view_rows = mul i64 %view_count, 2"),
-        "snapshot must reserve id+total words per item; got:\n{function_ir}");
-    assert!(function_ir.contains("%view_slots = add i64 %view_rows, 1"),
-        "snapshot must include the header word; got:\n{function_ir}");
+    assert!(
+        function_ir.contains("%view_rows = mul i64 %view_count, 2"),
+        "snapshot must reserve id+total words per item; got:\n{function_ir}"
+    );
+    assert!(
+        function_ir.contains("%view_slots = add i64 %view_rows, 1"),
+        "snapshot must include the header word; got:\n{function_ir}"
+    );
 }
 
 #[test]
@@ -12885,11 +14788,19 @@ node run [tick == 0][tick == 1] {
         .with_target_triple("wasm32-unknown-wasi")
         .with_type_universe(universe);
     let ir = backend.generate(&items, None);
-    assert!(ir.contains("inttoptr i32"), "TaskCall args must use i32 pointers:\n{ir}");
-    assert!(ir.contains("call i32"), "TaskCall result must be i32:\n{ir}");
-    assert!(!ir.contains("call i64 %"), "stale i64 TaskCall remains:\n{ir}");
+    assert!(
+        ir.contains("inttoptr i32"),
+        "TaskCall args must use i32 pointers:\n{ir}"
+    );
+    assert!(
+        ir.contains("call i32"),
+        "TaskCall result must be i32:\n{ir}"
+    );
+    assert!(
+        !ir.contains("call i64 %"),
+        "stale i64 TaskCall remains:\n{ir}"
+    );
 }
-
 
 #[test]
 fn defn_may_trap_is_not_willreturn() {
@@ -12908,12 +14819,23 @@ node entry [beginprogram][true] {
     let mut backend = LlvmBackend::new();
     let ir = backend.generate(&program, None);
     for name in ["boom", "caller"] {
-        let line = ir.lines().find(|l| l.contains("define") && l.contains(&format!("@{name}")))
+        let line = ir
+            .lines()
+            .find(|l| l.contains("define") && l.contains(&format!("@{name}")))
             .unwrap_or_else(|| panic!("missing @{name}:\n{ir}"));
-        assert!(line.contains("#15"), "may-trap defn must use the non-willreturn group: {line}");
-        assert!(!line.contains("#8"), "may-trap defn must not claim memory(read): {line}");
+        assert!(
+            line.contains("#15"),
+            "may-trap defn must use the non-willreturn group: {line}"
+        );
+        assert!(
+            !line.contains("#8"),
+            "may-trap defn must not claim memory(read): {line}"
+        );
     }
-    assert!(ir.contains("call i64 @caller"), "the unused may-trap call must survive: {ir}");
+    assert!(
+        ir.contains("call i64 @caller"),
+        "the unused may-trap call must survive: {ir}"
+    );
 }
 
 #[test]
@@ -12921,17 +14843,28 @@ fn bit_encoding_override_receives_canonical_storage_word() {
     for width in [8, 32, 64, 128] {
         let mut backend = LlvmBackend::new()
             .with_type_universe(crate::type_universe::TypeUniverse::new())
-            .with_cast_from_bit_overrides(std::collections::HashMap::from([
-                ("String".to_string(), "decode_bits".to_string()),
-            ]));
-        let source = super::TypedRegister { name: "%raw".to_string(), ty: Type::Bits(width) };
+            .with_cast_from_bit_overrides(std::collections::HashMap::from([(
+                "String".to_string(),
+                "decode_bits".to_string(),
+            )]));
+        let source = super::TypedRegister {
+            name: "%raw".to_string(),
+            ty: Type::Bits(width),
+        };
         let mut ir = String::new();
-        backend.emit_cast_path(&mut ir, "%decoded", &source, &Type::string(), "")
+        backend
+            .emit_cast_path(&mut ir, "%decoded", &source, &Type::string(), "")
             .expect("raw bits have an encoding route");
-        assert!(ir.contains("call ptr @decode_bits(i64 "), "constructor ABI: {ir}");
+        assert!(
+            ir.contains("call ptr @decode_bits(i64 "),
+            "constructor ABI: {ir}"
+        );
         if width != 64 {
             let op = if width < 64 { "zext" } else { "trunc" };
-            assert!(ir.contains(&format!("{op} i{width} %raw to i64")), "storage-word conversion: {ir}");
+            assert!(
+                ir.contains(&format!("{op} i{width} %raw to i64")),
+                "storage-word conversion: {ir}"
+            );
         }
     }
 }
@@ -12945,32 +14878,102 @@ fn hir_native_literal_family_matches_ast_emission() {
     let mut backend = LlvmBackend::new();
     let cases: Vec<(HirExpr, Expr)> = vec![
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(42)) },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Literal(HirLiteral::Int(42)),
+            },
             Expr::Decimal(42),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Bool(true)) },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Literal(HirLiteral::Bool(true)),
+            },
             Expr::Bool(true),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Float(3.5)) },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Literal(HirLiteral::Float(3.5)),
+            },
             Expr::Float(3.5),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Bytes(b"hi".to_vec())) },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Literal(HirLiteral::Bytes(b"hi".to_vec())),
+            },
             Expr::Quoted(b"hi".to_vec()),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Cast { inner: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(5)) }), to: crate::ast::Type::float(), via: None } },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Cast {
+                    inner: Box::new(HirExpr {
+                        id: crate::hir::ids::NodeId(0),
+                        span: None,
+                        ty: None,
+                        kind: HirExprKind::Literal(HirLiteral::Int(5)),
+                    }),
+                    to: crate::ast::Type::float(),
+                    via: None,
+                },
+            },
             Expr::Cast(Box::new(Expr::Decimal(5)), crate::ast::Type::float()),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Unary { op: crate::ast::UnaryOpKind::Neg, inner: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(7)) }) } },
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Unary {
+                    op: crate::ast::UnaryOpKind::Neg,
+                    inner: Box::new(HirExpr {
+                        id: crate::hir::ids::NodeId(0),
+                        span: None,
+                        ty: None,
+                        kind: HirExprKind::Literal(HirLiteral::Int(7)),
+                    }),
+                },
+            },
             Expr::UnaryOp(crate::ast::UnaryOpKind::Neg, Box::new(Expr::Decimal(7))),
         ),
         (
-            HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Binary { op: crate::ast::BinaryOpKind::Add, left: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(2)) }), right: Box::new(HirExpr { id: crate::hir::ids::NodeId(0), span: None, ty: None, kind: HirExprKind::Literal(HirLiteral::Int(3)) }) } },
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(Expr::Decimal(2)), Box::new(Expr::Decimal(3))),
+            HirExpr {
+                id: crate::hir::ids::NodeId(0),
+                span: None,
+                ty: None,
+                kind: HirExprKind::Binary {
+                    op: crate::ast::BinaryOpKind::Add,
+                    left: Box::new(HirExpr {
+                        id: crate::hir::ids::NodeId(0),
+                        span: None,
+                        ty: None,
+                        kind: HirExprKind::Literal(HirLiteral::Int(2)),
+                    }),
+                    right: Box::new(HirExpr {
+                        id: crate::hir::ids::NodeId(0),
+                        span: None,
+                        ty: None,
+                        kind: HirExprKind::Literal(HirLiteral::Int(3)),
+                    }),
+                },
+            },
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Add,
+                Box::new(Expr::Decimal(2)),
+                Box::new(Expr::Decimal(3)),
+            ),
         ),
     ];
     let norm = |s: &str| {
@@ -12980,9 +14983,14 @@ fn hir_native_literal_family_matches_ast_emission() {
                 let mut out = String::new();
                 let mut skip = false;
                 for ch in l.chars() {
-                    if ch == '%' { skip = true; continue; }
+                    if ch == '%' {
+                        skip = true;
+                        continue;
+                    }
                     if skip {
-                        if ch.is_ascii_alphanumeric() || ch == '_' { continue; }
+                        if ch.is_ascii_alphanumeric() || ch == '_' {
+                            continue;
+                        }
                         skip = false;
                     }
                     out.push(ch);
@@ -12995,9 +15003,62 @@ fn hir_native_literal_family_matches_ast_emission() {
     for (hir, ast) in cases {
         let mut hir_out = String::new();
         let mut ast_out = String::new();
-        let hr = backend.emit_hir_expr(&mut hir_out, &hir, "").expect("native family");
+        let hr = backend
+            .emit_hir_expr(&mut hir_out, &hir, "")
+            .expect("native family");
         let ar = backend.emit_expr(&mut ast_out, &ast, "");
-        assert_eq!(norm(&hir_out), norm(&ast_out), "IR text drift for {:?}", ast);
+        assert_eq!(
+            norm(&hir_out),
+            norm(&ast_out),
+            "IR text drift for {:?}",
+            ast
+        );
         assert_eq!(hr.ty, ar.ty);
     }
+}
+
+/// 2026-11-11 (verify-bodies): a defn whose EVERY path terminates inside
+/// `when` guards (no trailing `term`) left `last_expr_reg` allocated but never
+/// defined, so the implicit-return fallback emitted `ret i64 %tN` for an
+/// undefined register — `opt` rejected the module ("use of undefined value").
+/// The fallthrough must now emit the typed zero, and no `ret` may name a
+/// register the function never defines.
+#[test]
+fn guards_only_terminating_body_returns_defined_value() {
+    let src = r#"
+defn guards_only(a: Int) [a >= 0][term >= 0] -> Int {
+    when a > 5 { term a; };
+    when a <= 5 { term 0; };
+};
+let tick: Int = 0;
+let sink: Int = 0;
+node run [tick == 0][tick == 1] { sink = guards_only(7); tick = 1; term; };
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let body = function_body(&ir, "@guards_only(");
+    // Every returned TEMPORARY must be defined in this function (parameters
+    // come from the signature and define no `%x = ` line).
+    for line in body.lines() {
+        let Some(rest) = line.trim().strip_prefix("ret i64 %") else {
+            continue;
+        };
+        let reg = format!("%{}", rest.split_whitespace().next().unwrap_or(""));
+        if reg.starts_with("%arg") {
+            continue;
+        }
+        assert!(
+            body.contains(&format!("{reg} = ")),
+            "return of undefined {reg} (invalid IR):\n{body}"
+        );
+    }
+    // The (logically unreachable) fallthrough uses the typed zero.
+    assert!(
+        body.contains("ret i64 0"),
+        "fallthrough must return the typed zero:\n{body}"
+    );
 }

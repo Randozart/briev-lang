@@ -49,10 +49,7 @@ pub fn enforce(items: &[TopLevel], mc: &MemcheckReport) -> Result<(), String> {
     if lines.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "strict profile rejections:\n{}",
-            lines.join("\n")
-        ))
+        Err(format!("strict profile rejections:\n{}", lines.join("\n")))
     }
 }
 
@@ -139,7 +136,10 @@ mod tests {
     fn scalar_fields_never_violate() {
         let items = parse("let n: Int = 3;");
         let mc = crate::macros::memcheck::run_memcheck(&items);
-        assert!(enforce(&items, &mc).is_ok(), "scalars are not heap fallbacks");
+        assert!(
+            enforce(&items, &mc).is_ok(),
+            "scalars are not heap fallbacks"
+        );
     }
 
     #[test]

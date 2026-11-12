@@ -16,8 +16,8 @@
 // callable txn exceeds 6 params and the weight bound caps body size, so the
 // param gate adds no signal (verified against lib/std in Phase 2).
 
-use crate::ast::{Expr, Statement, Transaction};
 use crate::analysis::region::has_ffi_or_trigger_stmt_in_chain;
+use crate::ast::{Expr, Statement, Transaction};
 
 /// Whether a callable txn should be emitted with `alwaysinline`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +39,9 @@ pub fn callable_inline_decision(txn: &Transaction) -> InlineDecision {
     if has_ffi_or_trigger_stmt_in_chain(&txn.body) {
         return InlineDecision::No;
     }
-    if weight_of_body(&txn.body) <= crate::config_tuning::ir_lowering().callable_inline_weight_threshold {
+    if weight_of_body(&txn.body)
+        <= crate::config_tuning::ir_lowering().callable_inline_weight_threshold
+    {
         InlineDecision::AlwaysInline
     } else {
         InlineDecision::No
@@ -61,7 +63,8 @@ pub fn callable_inline_decision(txn: &Transaction) -> InlineDecision {
 /// rationale does not apply; only size disqualifies. Explicit `#inline` /
 /// `#?inline` directives always win over this decision (backend).
 pub fn node_inline_decision(txn: &Transaction) -> InlineDecision {
-    if weight_of_body(&txn.body) <= crate::config_tuning::ir_lowering().node_inline_weight_threshold {
+    if weight_of_body(&txn.body) <= crate::config_tuning::ir_lowering().node_inline_weight_threshold
+    {
         InlineDecision::AlwaysInline
     } else {
         InlineDecision::No
@@ -106,7 +109,12 @@ fn weight_of_expr(expr: &Expr) -> u32 {
         Expr::Identifier(_) => 1,
         Expr::Index(a, i) => 1 + weight_of_expr(a) + weight_of_expr(i),
         Expr::Field(o, _) => 1 + weight_of_expr(o),
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             1 + weight_of_expr(array)
                 + start.as_ref().map_or(0, |b| weight_of_expr(b))
                 + end.as_ref().map_or(0, |b| weight_of_expr(b))
@@ -167,7 +175,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -254,7 +263,10 @@ mod tests {
     /// ffi-like, emit_toplevel.rs:2199).
     #[test]
     fn term_statement_blocks_inline() {
-        let body = vec![stmt_let("v", add(id("i"), id("j"))), Statement::Term(Some(id("v")))];
+        let body = vec![
+            stmt_let("v", add(id("i"), id("j"))),
+            Statement::Term(Some(id("v"))),
+        ];
         let t = txn("term", body);
         assert_eq!(callable_inline_decision(&t), InlineDecision::No);
     }

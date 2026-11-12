@@ -361,8 +361,7 @@ pub struct DestinationOwnershipPlan {
     pub diagnostics: BTreeSet<DestinationDiagnostic>,
     /// 2026-10-30 (Phase D1): generalized all-domain schema. Analysis-only;
     /// no backend consumes this yet.
-    pub generalized:
-        crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
+    pub generalized: crate::analysis::destination_model::GeneralizedDestinationOwnershipPlan,
 }
 
 /// Internal callable signature/body. Bodies are cloned once for analysis.
@@ -404,10 +403,7 @@ pub fn analyze(items: &[TopLevel]) -> DestinationOwnershipPlan {
     plan
 }
 
-fn insert_member_specs(
-    specs: &mut BTreeMap<String, CallableSpec>,
-    td: &crate::ast::TypeDef,
-) {
+fn insert_member_specs(specs: &mut BTreeMap<String, CallableSpec>, td: &crate::ast::TypeDef) {
     for member in &td.body.members {
         let Some(spec) = member_spec(td, member) else {
             continue;
@@ -524,9 +520,7 @@ fn exported_spec(item: &TopLevel) -> Option<CallableSpec> {
             body: t.body.clone(),
             exported: true,
         }),
-        TopLevel::CompileTimeDefn(d) => {
-            Some(spec_from_defn(d, CallableKind::InternalDefn, true))
-        }
+        TopLevel::CompileTimeDefn(d) => Some(spec_from_defn(d, CallableKind::InternalDefn, true)),
         TopLevel::CompileTimeTxn(t) => Some(CallableSpec {
             owner: format!("ctxn:{}", t.name),
             name: t.name.clone(),
@@ -1131,12 +1125,10 @@ defn call_mystery() -> Int {
             ),
             "unknown call result must use a conservative destination class"
         );
-        assert!(
-            owner
-                .diagnostics
-                .iter()
-                .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult)
-        );
+        assert!(owner
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DestinationDiagnosticCode::UnknownCallResult));
     }
 
     #[test]
@@ -1154,12 +1146,10 @@ defn save(value: Int) { saved = value; };
             .find(|fact| fact.source_name.as_deref() == Some("value"))
             .expect("parameter value");
         assert!(value_fact.escapes.contains(&EscapeKind::StateLifetime));
-        assert!(
-            value_fact
-                .sinks
-                .get(&SinkKind::StateStore)
-                .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/")))
-        );
+        assert!(value_fact
+            .sinks
+            .get(&SinkKind::StateStore)
+            .is_some_and(|sites| sites.iter().any(|site| site.contains("/stmt/"))));
         assert!(
             value_fact
                 .copy_points

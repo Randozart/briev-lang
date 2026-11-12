@@ -1,0 +1,21 @@
+# .mailmap — canonical author identity for this repository.
+#
+# Several historical commits were authored under variations of the same
+# person's identity (a student address, display-name variants, and the GitHub
+# noreply address). This file folds them into one canonical identity for
+# `git log`, `git shortlog`, `git blame` and forge UIs WITHOUT rewriting
+# history — commit hashes, signatures and CI references stay intact.
+#
+# Format: Canonical Name <canonical@email> Commit Name <commit@email>
+# Docs:   git help mailmap
+
+Randy Smits-Schreuder Goedheijt <randozart@gmail.com> <r.s.s.goedheijt@student.tue.nl>
+Randy Smits-Schreuder Goedheijt <randozart@gmail.com> Randozart <randozart@gmail.com>
+Randy Smits-Schreuder Goedheijt <randozart@gmail.com> Randozart <Randozart@gmail.com>
+Randy Smits-Schreuder Goedheijt <randozart@gmail.com> <83884921+Randozart@users.noreply.github.com>
+
+# External contributors are intentionally NOT mapped: their commits remain
+# attributed to them.
+#   Otto Westerlund <wotto92@hotmail.com>            (72)
+#   Otto Westerlund <westerlundotto@gmail.com>       (44)
+#   mikelsr <mikelsr@pm.me>                          (1)

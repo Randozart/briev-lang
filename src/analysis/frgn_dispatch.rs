@@ -106,13 +106,9 @@ pub fn resolve_single_frgn(
         if proto == "#System" {
             let protocol_config = crate::target::ProtocolConfig::load();
             let default_triple = "x86_64-linux";
-            let lib = protocol_config.resolve(default_triple, proto).map_err(|e| {
-                format!(
-                    "frgn '{}': {}",
-                    fb.effective_briev_name(),
-                    e
-                )
-            })?;
+            let lib = protocol_config
+                .resolve(default_triple, proto)
+                .map_err(|e| format!("frgn '{}': {}", fb.effective_briev_name(), e))?;
             return Ok(ResolvedFrgn::Inline {
                 symbol: fb.foreign_name.clone(),
                 compile_source: false,
@@ -251,7 +247,9 @@ pub fn compute_protocol_path(
     if let Some(u) = universe {
         let briev_key = type_to_key(briev_type);
         let foreign_key = type_to_key(_foreign_type);
-        if let Some(path) = crate::analysis::layout_optimizer::find_cast_path(u, &briev_key, &foreign_key) {
+        if let Some(path) =
+            crate::analysis::layout_optimizer::find_cast_path(u, &briev_key, &foreign_key)
+        {
             let steps = path_to_protocol_steps(&path);
             if !steps.is_empty() {
                 return Ok(steps);
@@ -282,7 +280,9 @@ fn resolve_host_module_frgn(
     fb: &ForeignBinding,
     backend: BackendKind,
 ) -> Option<Result<ResolvedFrgn, String>> {
-    let FromSpec::Literal(path) = &fb.from else { return None };
+    let FromSpec::Literal(path) = &fb.from else {
+        return None;
+    };
     let is_js = path.extension().and_then(|e| e.to_str()) == Some("js");
     if !is_js || backend != BackendKind::Webstack {
         return None;
@@ -309,18 +309,26 @@ fn bridge_protocol_paths(
     target: &GlueTarget,
     universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> Result<(Vec<ProtocolStep>, Option<ProtocolStep>), String> {
-    let param_paths: Vec<ProtocolStep> = fb.inputs.iter()
+    let param_paths: Vec<ProtocolStep> = fb
+        .inputs
+        .iter()
         .map(|(_, briev_type)| {
             let foreign_type = lookup_foreign_type(briev_type, &target.protocols, universe);
-            compute_protocol_path(briev_type, &foreign_type, universe)
-                .and_then(|steps| steps.into_iter().next().ok_or_else(|| "empty path".to_string()))
+            compute_protocol_path(briev_type, &foreign_type, universe).and_then(|steps| {
+                steps
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "empty path".to_string())
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let return_path: Option<ProtocolStep> = fb.success_output.first()
-        .and_then(|(_, ty)| {
-            let foreign_type = lookup_foreign_type(ty, &target.protocols, universe);
-            compute_protocol_path(ty, &foreign_type, universe).ok()?.into_iter().next()
-        });
+    let return_path: Option<ProtocolStep> = fb.success_output.first().and_then(|(_, ty)| {
+        let foreign_type = lookup_foreign_type(ty, &target.protocols, universe);
+        compute_protocol_path(ty, &foreign_type, universe)
+            .ok()?
+            .into_iter()
+            .next()
+    });
     Ok((param_paths, return_path))
 }
 
@@ -426,51 +434,60 @@ mod tests {
 
     fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         let mut map = HashMap::new();
-        map.insert("web".to_string(), GlueTarget {
-            language: "web".to_string(),
-            types_module: PathBuf::from("glue/web/types.bv"),
-            extension: "mjs".to_string(),
-            bridge_kind: "wasm_runtime".to_string(),
-            calling_convention: "wasm_import".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: crate::glue::config::Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
-        map.insert("python".to_string(), GlueTarget {
-            language: "python".to_string(),
-            types_module: PathBuf::from("glue/python/types.bv"),
-            extension: "py".to_string(),
-            bridge_kind: "native_module".to_string(),
-            calling_convention: "c_abi".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: crate::glue::config::Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
-        map.insert("rust".to_string(), GlueTarget {
-            language: "rust".to_string(),
-            types_module: PathBuf::from("glue/rust/types.bv"),
-            extension: "rs".to_string(),
-            bridge_kind: "extern_c_crate".to_string(),
-            calling_convention: "lto".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: crate::glue::config::Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
+        map.insert(
+            "web".to_string(),
+            GlueTarget {
+                language: "web".to_string(),
+                types_module: PathBuf::from("glue/web/types.bv"),
+                extension: "mjs".to_string(),
+                bridge_kind: "wasm_runtime".to_string(),
+                calling_convention: "wasm_import".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: crate::glue::config::Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
+        map.insert(
+            "python".to_string(),
+            GlueTarget {
+                language: "python".to_string(),
+                types_module: PathBuf::from("glue/python/types.bv"),
+                extension: "py".to_string(),
+                bridge_kind: "native_module".to_string(),
+                calling_convention: "c_abi".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: crate::glue::config::Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
+        map.insert(
+            "rust".to_string(),
+            GlueTarget {
+                language: "rust".to_string(),
+                types_module: PathBuf::from("glue/rust/types.bv"),
+                extension: "rs".to_string(),
+                bridge_kind: "extern_c_crate".to_string(),
+                calling_convention: "lto".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: crate::glue::config::Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
         map
     }
 
@@ -480,7 +497,11 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "c", &targets, BackendKind::Llvm, None).unwrap();
         match result {
-            ResolvedFrgn::Inline { symbol, compile_source, .. } => {
+            ResolvedFrgn::Inline {
+                symbol,
+                compile_source,
+                ..
+            } => {
                 assert_eq!(symbol, "my_func");
                 assert!(compile_source);
             }
@@ -561,7 +582,11 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "so", &targets, BackendKind::Llvm, None).unwrap();
         match result {
-            ResolvedFrgn::Inline { symbol, compile_source, .. } => {
+            ResolvedFrgn::Inline {
+                symbol,
+                compile_source,
+                ..
+            } => {
                 assert_eq!(symbol, "native_fn");
                 assert!(!compile_source);
             }
@@ -581,11 +606,18 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "", &targets, BackendKind::Llvm, None).unwrap();
         match result {
-            ResolvedFrgn::Inline { symbol, compile_source, protocol_lib } => {
+            ResolvedFrgn::Inline {
+                symbol,
+                compile_source,
+                protocol_lib,
+            } => {
                 assert_eq!(symbol, "printf");
                 assert!(!compile_source, "protocol frgn should not need compilation");
-                assert_eq!(protocol_lib, Some("c".to_string()),
-                    "#System on x86_64-linux should resolve to 'c'");
+                assert_eq!(
+                    protocol_lib,
+                    Some("c".to_string()),
+                    "#System on x86_64-linux should resolve to 'c'"
+                );
             }
             other => panic!("Expected Inline, got {:?}", other),
         }
@@ -604,10 +636,16 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "", &targets, BackendKind::Llvm, None);
         let err = result.unwrap_err();
-        assert!(err.contains("not a valid provenance"),
-            "should reject the unknown protocol (got: '{}')", err);
-        assert!(err.contains("#System"),
-            "should name the only valid protocol hashword (got: '{}')", err);
+        assert!(
+            err.contains("not a valid provenance"),
+            "should reject the unknown protocol (got: '{}')",
+            err
+        );
+        assert!(
+            err.contains("#System"),
+            "should name the only valid protocol hashword (got: '{}')",
+            err
+        );
     }
 
     #[test]
@@ -624,7 +662,11 @@ mod tests {
             ForeignTarget::Native,
         );
         let err = resolve_single_frgn(&old, "", &targets, BackendKind::Llvm, None).unwrap_err();
-        assert!(err.contains("retired"), "should report #Web retired (got: '{}')", err);
+        assert!(
+            err.contains("retired"),
+            "should report #Web retired (got: '{}')",
+            err
+        );
 
         let host = ForeignBinding::new(
             "now".to_string(),
@@ -652,11 +694,18 @@ mod tests {
         let targets = sample_glue_targets();
         let result = resolve_single_frgn(&fb, "", &targets, BackendKind::Llvm, None).unwrap();
         match result {
-            ResolvedFrgn::Inline { symbol, compile_source, protocol_lib } => {
+            ResolvedFrgn::Inline {
+                symbol,
+                compile_source,
+                protocol_lib,
+            } => {
                 assert_eq!(symbol, "compress");
                 assert!(!compile_source, "#Link frgn should not need compilation");
-                assert_eq!(protocol_lib, Some("z".to_string()),
-                    "#Link<z> should resolve to protocol_lib = Some('z')");
+                assert_eq!(
+                    protocol_lib,
+                    Some("z".to_string()),
+                    "#Link<z> should resolve to protocol_lib = Some('z')"
+                );
             }
             other => panic!("Expected Inline, got {:?}", other),
         }

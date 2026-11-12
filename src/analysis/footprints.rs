@@ -103,7 +103,10 @@ fn build_footprint(line_no: usize, id: &str, nums: &[f64]) -> Footprint {
             size: c[2],
         })
         .collect();
-    Footprint { pads, outline: (w, h) }
+    Footprint {
+        pads,
+        outline: (w, h),
+    }
 }
 
 #[cfg(test)]
@@ -113,7 +116,9 @@ mod tests {
     #[test]
     fn footprints_dbvl_parses_all_packages() {
         let lib = footprints();
-        for pkg in ["0603", "0402", "0805", "SMD", "SOT-25", "QFN-32", "DFN-4", "HDR-2x5"] {
+        for pkg in [
+            "0603", "0402", "0805", "SMD", "SOT-25", "QFN-32", "DFN-4", "HDR-2x5",
+        ] {
             assert!(lib.contains_key(pkg), "missing footprint for {pkg}");
         }
         let f = &lib["0603"];

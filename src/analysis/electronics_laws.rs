@@ -30,12 +30,18 @@ impl LawDimension {
 
     /// Compose dimensions under multiplication.
     fn mul(self, other: Self) -> Self {
-        Self { volts: self.volts + other.volts, amps: self.amps + other.amps }
+        Self {
+            volts: self.volts + other.volts,
+            amps: self.amps + other.amps,
+        }
     }
 
     /// Compose dimensions under division.
     fn div(self, other: Self) -> Self {
-        Self { volts: self.volts - other.volts, amps: self.amps - other.amps }
+        Self {
+            volts: self.volts - other.volts,
+            amps: self.amps - other.amps,
+        }
     }
 
     /// Canonical diagnostic name; derived exponents stay explicit and honest.
@@ -91,7 +97,11 @@ pub struct LinearExpression {
 impl LinearExpression {
     /// The zero expression in `dimension`.
     fn zero(dimension: LawDimension) -> Self {
-        Self { constant: 0.0, dimension, terms: Vec::new() }
+        Self {
+            constant: 0.0,
+            dimension,
+            terms: Vec::new(),
+        }
     }
 
     /// Combine coefficients and canonicalize order for deterministic IR and
@@ -175,17 +185,29 @@ struct BuiltExpression {
 
 impl BuiltExpression {
     fn constant(value: f64, dimension: LawDimension) -> Self {
-        Self { constant: value, dimension, terms: Vec::new() }
+        Self {
+            constant: value,
+            dimension,
+            terms: Vec::new(),
+        }
     }
 
     /// Exact zero expressed in `dimension` (polymorphic-zero result).
     fn zero_expression(dimension: LawDimension) -> Self {
-        Self { constant: 0.0, dimension, terms: Vec::new() }
+        Self {
+            constant: 0.0,
+            dimension,
+            terms: Vec::new(),
+        }
     }
 
     fn variable(variable: LawVariable) -> Self {
         let dimension = variable.dimension();
-        Self { constant: 0.0, dimension, terms: vec![(variable, 1.0)] }
+        Self {
+            constant: 0.0,
+            dimension,
+            terms: vec![(variable, 1.0)],
+        }
     }
 
     fn has_variable(&self) -> bool {
@@ -242,11 +264,7 @@ pub fn elaborate_component_laws(items: &[TopLevel], ctx: &LawContext<'_>) -> Law
 }
 
 /// Elaborate one type's laws on every instance of that type.
-fn elaborate_type_laws(
-    td: &crate::ast::TypeDef,
-    ctx: &LawContext<'_>,
-    ir: &mut LawIr,
-) {
+fn elaborate_type_laws(td: &crate::ast::TypeDef, ctx: &LawContext<'_>, ir: &mut LawIr) {
     for (inst_name, inst) in ctx.instances {
         if inst.type_name != td.name {
             continue;
@@ -275,7 +293,11 @@ fn instance_type_laws(
     let mut errors = Vec::new();
     // Named modes and guarded branches are separate authority mechanisms.
     // Always-active laws are ordinary facts shared by every mode.
-    let has_guarded_law = td.body.hold_laws.iter().any(|law| !matches!(law.guard, crate::ast::Expr::Bool(true)));
+    let has_guarded_law = td
+        .body
+        .hold_laws
+        .iter()
+        .any(|law| !matches!(law.guard, crate::ast::Expr::Bool(true)));
     if !td.body.modes.is_empty() && has_guarded_law {
         errors.push(format!(
             "component type '{}' declares both named modes and guarded `when` laws — pick one \
@@ -312,7 +334,13 @@ fn instance_type_laws(
             Err(error) => errors.push(error),
         }
     }
-    if td.body.modes.is_empty() && td.body.hold_laws.iter().any(|law| matches!(law.guard, crate::ast::Expr::Identifier(_))) {
+    if td.body.modes.is_empty()
+        && td
+            .body
+            .hold_laws
+            .iter()
+            .any(|law| matches!(law.guard, crate::ast::Expr::Identifier(_)))
+    {
         // Reserved for future named guards; ordinary identifiers are rejected
         // by the expression elaborator below, so no silent behavior exists.
     }
@@ -327,11 +355,17 @@ fn elaborate_law(
     ctx: &LawContext<'_>,
     source: &str,
 ) -> Result<ElaboratedLaw, String> {
-    let site = ExpressionSite { instance, ctx, source };
+    let site = ExpressionSite {
+        instance,
+        ctx,
+        source,
+    };
     let guard = elaborate_guard(guard, &site)?;
     let mut equations = Vec::new();
     for fact in facts {
-        let Some((lhs, rhs)) = equation_sides(fact) else { continue };
+        let Some((lhs, rhs)) = equation_sides(fact) else {
+            continue;
+        };
         let left = build_expression(lhs, &site)?;
         let right = build_expression(rhs, &site)?;
         equations.push(linear_equation(left, right, source)?);
@@ -342,7 +376,11 @@ fn elaborate_law(
         ));
     }
     reject_duplicate_equations(&mut equations)?;
-    Ok(ElaboratedLaw { guard, equations, source: source.to_string() })
+    Ok(ElaboratedLaw {
+        guard,
+        equations,
+        source: source.to_string(),
+    })
 }
 
 /// Elaborate one named mode. Its facts are exactly law equations; there is
@@ -353,10 +391,16 @@ fn elaborate_mode(
     ctx: &LawContext<'_>,
     source: &str,
 ) -> Result<ElaboratedMode, String> {
-    let site = ExpressionSite { instance, ctx, source };
+    let site = ExpressionSite {
+        instance,
+        ctx,
+        source,
+    };
     let mut equations = Vec::new();
     for fact in &raw.facts {
-        let Some((lhs, rhs)) = equation_sides(fact) else { continue };
+        let Some((lhs, rhs)) = equation_sides(fact) else {
+            continue;
+        };
         let left = build_expression(lhs, &site)?;
         let right = build_expression(rhs, &site)?;
         equations.push(linear_equation(left, right, source)?);
@@ -367,7 +411,11 @@ fn elaborate_mode(
         ));
     }
     reject_duplicate_equations(&equations)?;
-    Ok(ElaboratedMode { name: raw.name.clone(), equations, source: source.to_string() })
+    Ok(ElaboratedMode {
+        name: raw.name.clone(),
+        equations,
+        source: source.to_string(),
+    })
 }
 
 /// Accept `lhs = rhs` fact syntax and `lhs == rhs` expression syntax.
@@ -417,7 +465,11 @@ fn elaborate_guard(guard: &Expr, site: &ExpressionSite<'_>) -> Result<LawGuard, 
             right.dimension.name()
         ));
     }
-    Ok(LawGuard::Comparison { left: left.into_linear(), op: *op, right: right.into_linear() })
+    Ok(LawGuard::Comparison {
+        left: left.into_linear(),
+        op: *op,
+        right: right.into_linear(),
+    })
 }
 
 /// Build one side of an equation recursively.
@@ -474,14 +526,11 @@ fn spec_constant(name: &str, site: &ExpressionSite<'_>) -> Result<BuiltExpressio
     let Some(inst) = ctx.instances.get(instance) else {
         return Err(format!("{source} names missing instance '{instance}'"));
     };
-    let quantity = inst
-        .specs
-        .get(storage_key.as_str())
-        .or_else(|| {
-            ctx.type_info
-                .get(&inst.type_name)
-                .and_then(|info| info.spec_defaults.get(storage_key.as_str()))
-        });
+    let quantity = inst.specs.get(storage_key.as_str()).or_else(|| {
+        ctx.type_info
+            .get(&inst.type_name)
+            .and_then(|info| info.spec_defaults.get(storage_key.as_str()))
+    });
     let Some(crate::ast::PropertyValue::Quantity { si, dimension }) = quantity else {
         return Err(format!(
             "{source} references spec '{name}', but instance '{instance}' supplies no value — add `spec {name}: <quantity>;`"
@@ -513,8 +562,9 @@ fn pin_variable(
     };
     // Bare type-body pin references were qualified per instance before this
     // pass. Resolve them with the same pin path logic as contracts.
-    let resolved = resolve_law_pin(base, site)
-        .ok_or_else(|| format!("{source} references a pin that is not declared on instance '{instance}'"))?;
+    let resolved = resolve_law_pin(base, site).ok_or_else(|| {
+        format!("{source} references a pin that is not declared on instance '{instance}'")
+    })?;
     let variable = if property == "voltage" {
         LawVariable::Voltage(resolved)
     } else {
@@ -538,8 +588,12 @@ fn resolve_law_pin(base: &Expr, site: &ExpressionSite<'_>) -> Option<PinRef> {
             number: *number,
         });
     }
-    let Expr::Field(qualifier, pin) = base else { return None };
-    let Expr::Identifier(actual_instance) = qualifier.as_ref() else { return None };
+    let Expr::Field(qualifier, pin) = base else {
+        return None;
+    };
+    let Expr::Identifier(actual_instance) = qualifier.as_ref() else {
+        return None;
+    };
     let inst = ctx.instances.get(actual_instance)?;
     let pins = ctx.type_pins.get(&inst.type_name)?;
     let (_, number) = pins.iter().find(|(name, _)| name == pin)?;
@@ -576,7 +630,11 @@ fn binary_expression(
 
 /// Add two linear expressions of the same dimension. A literal dimensionless
 /// zero is polymorphic (`current == 0`), but a nonzero constant is not.
-fn add_expressions(left: BuiltExpression, right: BuiltExpression, source: &str) -> Result<BuiltExpression, String> {
+fn add_expressions(
+    left: BuiltExpression,
+    right: BuiltExpression,
+    source: &str,
+) -> Result<BuiltExpression, String> {
     let left = polymorphic_zero(left, right.dimension);
     let right = polymorphic_zero(right, left.dimension);
     if left.dimension != right.dimension {
@@ -618,11 +676,21 @@ fn multiply_expressions(
     }
     let dimension = left.dimension.mul(right.dimension);
     let (scaled, constant) = if left.has_variable() {
-        (scale_terms(left.terms, right.constant), left.constant * right.constant)
+        (
+            scale_terms(left.terms, right.constant),
+            left.constant * right.constant,
+        )
     } else {
-        (scale_terms(right.terms, left.constant), left.constant * right.constant)
+        (
+            scale_terms(right.terms, left.constant),
+            left.constant * right.constant,
+        )
     };
-    Ok(BuiltExpression { constant, dimension, terms: scaled })
+    Ok(BuiltExpression {
+        constant,
+        dimension,
+        terms: scaled,
+    })
 }
 
 /// Divide by a constant. Division by a variable is nonlinear and rejected.
@@ -649,7 +717,10 @@ fn divide_expressions(
 
 /// Scale all variable coefficients by a constant.
 fn scale_terms(terms: Vec<(LawVariable, f64)>, scale: f64) -> Vec<(LawVariable, f64)> {
-    terms.into_iter().map(|(var, coeff)| (var, coeff * scale)).collect()
+    terms
+        .into_iter()
+        .map(|(var, coeff)| (var, coeff * scale))
+        .collect()
 }
 
 /// A literal `0` means zero in the other side's dimension. This is notation,
@@ -682,7 +753,10 @@ fn linear_equation(
     }
     let negated = negate(right);
     let combined = add_expressions(left, negated, source)?.into_linear();
-    Ok(LawEquation { expression: combined, source: source.to_string() })
+    Ok(LawEquation {
+        expression: combined,
+        source: source.to_string(),
+    })
 }
 
 /// Duplicate equations carry no independent behavior; rejecting them prevents
@@ -713,13 +787,19 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut parser = Parser::new(tokens, src);
         let items = parser.parse_program().unwrap();
-        let (type_pins, type_info, _) = crate::analysis::electronics::collect_type_pins_for_laws(&items);
-        let instances = crate::analysis::electronics::collect_instances_for_laws(&items, &type_pins);
+        let (type_pins, type_info, _) =
+            crate::analysis::electronics::collect_type_pins_for_laws(&items);
+        let instances =
+            crate::analysis::electronics::collect_instances_for_laws(&items, &type_pins);
         let instances: BTreeMap<String, &ComponentInstance> =
             instances.iter().map(|c| (c.name.clone(), c)).collect();
         elaborate_component_laws(
             &items,
-            &LawContext { instances: &instances, type_info: &type_info, type_pins: &type_pins },
+            &LawContext {
+                instances: &instances,
+                type_info: &type_info,
+                type_pins: &type_pins,
+            },
         )
     }
 
@@ -774,7 +854,11 @@ mod tests {
         let ir = laws(src);
         assert!(ir.components.is_empty());
         assert_eq!(ir.errors.len(), 1, "{:?}", ir.errors);
-        assert!(ir.errors[0].contains("volt") && ir.errors[0].contains("amp"), "{}", ir.errors[0]);
+        assert!(
+            ir.errors[0].contains("volt") && ir.errors[0].contains("amp"),
+            "{}",
+            ir.errors[0]
+        );
     }
 
     #[test]
@@ -848,4 +932,3 @@ mod tests {
         assert_eq!(*op, BinaryOpKind::Ge);
     }
 }
-

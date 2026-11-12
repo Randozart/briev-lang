@@ -44,7 +44,14 @@ struct Track {
 
 impl Track {
     fn new(cap: i64, base: &str, is_local: bool) -> Track {
-        Track { cap, len: 0, max: 0, known: true, base: base.to_string(), is_local }
+        Track {
+            cap,
+            len: 0,
+            max: 0,
+            known: true,
+            base: base.to_string(),
+            is_local,
+        }
     }
     fn push(&mut self) {
         if !self.known {
@@ -218,7 +225,10 @@ fn shared_writers(
     for item in items {
         if let TopLevel::Transaction(t) = item {
             for name in colls_written_by_txn(&t.body, state_inits) {
-                writers.entry(name.clone()).or_default().insert(t.name.clone());
+                writers
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(t.name.clone());
             }
         }
     }
@@ -463,7 +473,10 @@ fn expr_contains_push(e: &Expr, coll: &str) -> bool {
 fn walk_body(body: &[Statement], tracks: &mut HashMap<String, Track>, coll_obj: &HashSet<String>) {
     for stmt in body {
         walk_stmt(stmt, tracks, coll_obj);
-        if matches!(stmt, Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)) {
+        if matches!(
+            stmt,
+            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
+        ) {
             break;
         }
     }
@@ -544,7 +557,10 @@ fn walk_stmt(stmt: &Statement, tracks: &mut HashMap<String, Track>, coll_obj: &H
             walk_body(body, &mut fired, coll_obj);
             join_max(tracks, &fired, &before);
         }
-        Statement::Block(b) | Statement::Defer(b) | Statement::Mutex(b) | Statement::SyncBlock(b) => {
+        Statement::Block(b)
+        | Statement::Defer(b)
+        | Statement::Mutex(b)
+        | Statement::SyncBlock(b) => {
             walk_body(b, tracks, coll_obj);
         }
         Statement::Foreach { list, body, .. } => {
@@ -554,7 +570,12 @@ fn walk_stmt(stmt: &Statement, tracks: &mut HashMap<String, Track>, coll_obj: &H
     }
 }
 
-fn walk_foreach(list: &Expr, body: &[Statement], tracks: &mut HashMap<String, Track>, coll_obj: &HashSet<String>) {
+fn walk_foreach(
+    list: &Expr,
+    body: &[Statement],
+    tracks: &mut HashMap<String, Track>,
+    coll_obj: &HashSet<String>,
+) {
     let n = range_len(list);
     let before = tracks.clone();
     let mut iter = before.clone();
@@ -583,9 +604,8 @@ fn walk_foreach(list: &Expr, body: &[Statement], tracks: &mut HashMap<String, Tr
 /// A conditional (`when`) that touches a coll makes the per-iteration
 /// delta len-dependent — not a constant transform.
 fn foreach_body_is_conditional(body: &[Statement]) -> bool {
-    body.iter().any(|s| {
-        matches!(s, Statement::Guarded(..)) && stmt_has_coll_op(s)
-    })
+    body.iter()
+        .any(|s| matches!(s, Statement::Guarded(..)) && stmt_has_coll_op(s))
 }
 
 fn fail_changed(tracks: &mut HashMap<String, Track>, before: &HashMap<String, Track>) {
@@ -641,7 +661,11 @@ fn stmt_has_coll_op(s: &Statement) -> bool {
 /// Statically-known `N` for a `0..N` / `0..=N` range literal; None otherwise.
 fn range_len(e: &Expr) -> Option<i64> {
     match e {
-        Expr::Range { start, end, inclusive } => {
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             let s = match start.as_ref() {
                 Expr::Decimal(v) => *v,
                 _ => return None,

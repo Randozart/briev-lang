@@ -231,8 +231,14 @@ impl RegionAnalyzer {
                     }
                 }
 
-                self.txn_reads.entry(txn.name.clone()).or_default().extend(txn_read_vars);
-                self.txn_writes.entry(txn.name.clone()).or_default().extend(txn_write_vars);
+                self.txn_reads
+                    .entry(txn.name.clone())
+                    .or_default()
+                    .extend(txn_read_vars);
+                self.txn_writes
+                    .entry(txn.name.clone())
+                    .or_default()
+                    .extend(txn_write_vars);
             }
         }
     }
@@ -245,15 +251,21 @@ impl RegionAnalyzer {
         while let Some(e) = work.pop() {
             match e {
                 Expr::Identifier(name) => {
-                    self.deps.entry(rf.clone()).or_default().insert(name.clone());
-                    self.rev_deps.entry(name.clone()).or_default().insert(rf.clone());
+                    self.deps
+                        .entry(rf.clone())
+                        .or_default()
+                        .insert(name.clone());
+                    self.rev_deps
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(rf.clone());
                 }
                 Expr::Call(_, args, _) => {
                     for arg in args.iter().rev() {
                         work.push(arg);
                     }
                 }
-                 Expr::Tuple(elems) => {
+                Expr::Tuple(elems) => {
                     for e in elems.iter().rev() {
                         work.push(e);
                     }
@@ -277,13 +289,17 @@ impl RegionAnalyzer {
                 }
                 Expr::Match(value, arms) => {
                     for arm in arms.iter().rev() {
-                        if let Some(g) = &arm.guard { work.push(g); }
+                        if let Some(g) = &arm.guard {
+                            work.push(g);
+                        }
                         work.push(&arm.body);
                     }
                     work.push(value.as_ref());
                 }
                 Expr::List(elems) => {
-                    for e in elems.iter().rev() { work.push(e); }
+                    for e in elems.iter().rev() {
+                        work.push(e);
+                    }
                 }
                 _ => {}
             }
@@ -335,11 +351,12 @@ impl RegionAnalyzer {
             if let Some(readers) = self.rev_deps.get(&frontier_var).cloned() {
                 for reader in readers {
                     // Skip unregistered vars (e.g. transaction params, foreign bindings)
-                    let Some(reader_info) = self.var_info.get(&reader) else { continue; };
+                    let Some(reader_info) = self.var_info.get(&reader) else {
+                        continue;
+                    };
                     let cur_class = &reader_info.classification;
                     let needs_update = *cur_class == VarClass::Pure
-                        || (frontier_class == VarClass::Opaque
-                            && *cur_class == VarClass::Bounded);
+                        || (frontier_class == VarClass::Opaque && *cur_class == VarClass::Bounded);
                     if needs_update {
                         if let Some(info) = self.var_info.get_mut(&reader) {
                             info.classification = if frontier_class == VarClass::Opaque {
@@ -386,7 +403,11 @@ impl RegionAnalyzer {
                 let mut neighbors: Vec<String> = Vec::new();
                 if let Some(deps) = self.deps.get(&var) {
                     for n in deps.iter() {
-                        if self.var_info.get(n).map(|i| i.classification != VarClass::Pure).unwrap_or(false)
+                        if self
+                            .var_info
+                            .get(n)
+                            .map(|i| i.classification != VarClass::Pure)
+                            .unwrap_or(false)
                         {
                             neighbors.push(n.clone());
                         }
@@ -394,7 +415,11 @@ impl RegionAnalyzer {
                 }
                 if let Some(revs) = self.rev_deps.get(&var) {
                     for n in revs.iter() {
-                        if self.var_info.get(n).map(|i| i.classification != VarClass::Pure).unwrap_or(false)
+                        if self
+                            .var_info
+                            .get(n)
+                            .map(|i| i.classification != VarClass::Pure)
+                            .unwrap_or(false)
                         {
                             neighbors.push(n.clone());
                         }
@@ -446,7 +471,11 @@ impl RegionAnalyzer {
                 // Pure variables: if constant → size 1, if interval → size of interval
                 if let Some(ref iv) = info.interval {
                     let s = iv.size();
-                    if s > 0 { Some(s) } else { None }
+                    if s > 0 {
+                        Some(s)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -520,7 +549,11 @@ impl RegionAnalyzer {
                         .iter()
                         .filter(|tn| {
                             *tn != txn
-                                && self.txn_reads.get(*tn).map(|r| r.contains(written)).unwrap_or(false)
+                                && self
+                                    .txn_reads
+                                    .get(*tn)
+                                    .map(|r| r.contains(written))
+                                    .unwrap_or(false)
                         })
                         .collect();
 
@@ -534,14 +567,19 @@ impl RegionAnalyzer {
                                 Some(l) => l.clone(),
                                 None => break,
                             };
-                            let cur_writes = self.txn_writes.get(&last).cloned().unwrap_or_default();
+                            let cur_writes =
+                                self.txn_writes.get(&last).cloned().unwrap_or_default();
                             let mut extended = false;
                             for cw in &cur_writes {
                                 let further: Vec<String> = txn_names
                                     .iter()
                                     .filter(|tn| {
                                         !chain.contains(tn)
-                                            && self.txn_reads.get(*tn).map(|r| r.contains(cw)).unwrap_or(false)
+                                            && self
+                                                .txn_reads
+                                                .get(*tn)
+                                                .map(|r| r.contains(cw))
+                                                .unwrap_or(false)
                                     })
                                     .cloned()
                                     .collect();
@@ -551,7 +589,9 @@ impl RegionAnalyzer {
                                     break;
                                 }
                             }
-                            if !extended { break; }
+                            if !extended {
+                                break;
+                            }
                         }
 
                         self.linear_chains.push(chain);
@@ -618,8 +658,7 @@ impl RegionAnalyzer {
 
     fn extract_bound_from_pre(pre: &Expr) -> Option<(String, String)> {
         match pre {
-            Expr::BinaryOp(BinaryOpKind::Le, a, b)
-            | Expr::BinaryOp(BinaryOpKind::Lt, a, b) => {
+            Expr::BinaryOp(BinaryOpKind::Le, a, b) | Expr::BinaryOp(BinaryOpKind::Lt, a, b) => {
                 match (a.as_ref(), b.as_ref()) {
                     (Expr::Identifier(var), Expr::Identifier(bound)) => {
                         Some((var.clone(), bound.clone()))
@@ -635,7 +674,9 @@ impl RegionAnalyzer {
         for item in program {
             match item {
                 TopLevel::Constant(c) if c.name == bound_var => {
-                    if let Expr::Decimal(n) = c.expr { return Some(n as u64); }
+                    if let Expr::Decimal(n) = c.expr {
+                        return Some(n as u64);
+                    }
                 }
                 TopLevel::StateDecl(d) if d.name == bound_var => {
                     // StateDecl no longer has an expr field
@@ -712,7 +753,9 @@ impl RegionAnalyzer {
 
                 // iteration count
                 let iter = self.iter_bounds.get(tn).copied().unwrap_or(1);
-                if iter > max_iter { max_iter = iter; }
+                if iter > max_iter {
+                    max_iter = iter;
+                }
 
                 // value set size
                 if let Some(reads) = self.txn_reads.get(tn) {
@@ -764,7 +807,8 @@ impl RegionAnalyzer {
         let mut map = HashMap::new();
         for rid in 1..=self.regions.len() {
             if let Some(region) = self.regions.get(rid - 1) {
-                let txn_in_region: Vec<&String> = self.txn_writes
+                let txn_in_region: Vec<&String> = self
+                    .txn_writes
                     .iter()
                     .filter(|(_, writes)| writes.iter().any(|w| region.contains(w)))
                     .map(|(tn, _)| tn)
@@ -799,7 +843,11 @@ impl RegionAnalyzer {
             }
             let cost = score.value_set_size.unwrap_or(u64::MAX);
             if cost == u64::MAX || cost > remaining {
-                skipped.push((score.region_id, score.complexity.clone(), cost.min(remaining)));
+                skipped.push((
+                    score.region_id,
+                    score.complexity.clone(),
+                    cost.min(remaining),
+                ));
             } else {
                 remaining = remaining.saturating_sub(cost);
                 allocated.push((
@@ -826,28 +874,58 @@ impl RegionAnalyzer {
 
     // ── Chain composition (Phase 4.2) ─────────────────────────────
 
+
+    /// 2026-11-11: deterministic fingerprint of the consumer-visible facts —
+    /// the debug oracle for the HIR consumer flip (HashMaps are sorted).
+    pub fn consumer_fingerprint(&self) -> String {
+        let mut regions = self.regions.clone();
+        regions.sort();
+        let mut chains = self.linear_chains.clone();
+        chains.sort();
+        let mut triggers: Vec<&String> = self.trigger_vars.iter().collect();
+        triggers.sort();
+        let bounds: std::collections::BTreeMap<&str, u64> =
+            self.iter_bounds.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        format!(
+            "{regions:?}|{chains:?}|{triggers:?}|{bounds:?}|{:?}|{:?}|{:?}",
+            self.region_scores, self.budget_plan, self.composed_chains
+        )
+    }
+
     pub fn compose_chains(&mut self) {
         self.composed_chains.clear();
         let chains = self.linear_chains.clone();
         let all_txn_names: HashSet<String> = self.txn_reads.keys().cloned().collect();
 
         for chain in &chains {
-            if chain.len() < 2 { continue; }
+            if chain.len() < 2 {
+                continue;
+            }
 
             let link_vars = self.compute_link_vars(chain);
-            if link_vars.is_empty() { continue; }
+            if link_vars.is_empty() {
+                continue;
+            }
 
-            if !self.chain_is_composable(chain, &all_txn_names) { continue; }
+            if !self.chain_is_composable(chain, &all_txn_names) {
+                continue;
+            }
 
-            let root_triggers: Vec<String> = self.txn_reads
+            let root_triggers: Vec<String> = self
+                .txn_reads
                 .get(&chain[0])
-                .map(|reads| reads.iter()
-                    .filter(|r| self.trigger_vars.contains(*r))
-                    .cloned()
-                    .collect())
+                .map(|reads| {
+                    reads
+                        .iter()
+                        .filter(|r| self.trigger_vars.contains(*r))
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default();
 
-            let all_internal = link_vars.iter().all(|lv| self.var_is_chain_internal(lv, chain, &all_txn_names));
+            let all_internal = link_vars
+                .iter()
+                .all(|lv| self.var_is_chain_internal(lv, chain, &all_txn_names));
 
             if root_triggers.is_empty() {
                 self.push_composed_chain(chain, &link_vars, &root_triggers, None, all_internal);
@@ -859,10 +937,22 @@ impl RegionAnalyzer {
                         let hi = iv.lo.saturating_add((bound - 1) as i64).min(iv.hi);
                         for val in iv.lo..=hi {
                             let tv = vec![(trg.clone(), val)];
-                            self.push_composed_chain(chain, &link_vars, &root_triggers, Some(&tv), all_internal);
+                            self.push_composed_chain(
+                                chain,
+                                &link_vars,
+                                &root_triggers,
+                                Some(&tv),
+                                all_internal,
+                            );
                         }
                     } else {
-                        self.push_composed_chain(chain, &link_vars, &root_triggers, None, all_internal);
+                        self.push_composed_chain(
+                            chain,
+                            &link_vars,
+                            &root_triggers,
+                            None,
+                            all_internal,
+                        );
                     }
                 } else {
                     self.push_composed_chain(chain, &link_vars, &root_triggers, None, all_internal);
@@ -909,7 +999,10 @@ impl RegionAnalyzer {
         total <= budget
     }
 
-    pub fn collect_final_values(&self, program: &[TopLevel]) -> Option<Vec<(Vec<String>, HashMap<String, i64>)>> {
+    pub fn collect_final_values(
+        &self,
+        program: &[TopLevel],
+    ) -> Option<Vec<(Vec<String>, HashMap<String, i64>)>> {
         let mut all_bindings = Vec::new();
         for cc in &self.composed_chains {
             let mut bindings = Self::initial_bindings(program);
@@ -983,7 +1076,9 @@ impl RegionAnalyzer {
                 if let Some(val) = Self::eval_expr_simple(expr, bindings) {
                     bindings.insert(name.clone(), val);
                     true
-                } else { false }
+                } else {
+                    false
+                }
             }
             // 2026-08-09 (Bug 3): an INDEXED assignment (`a[i] = ...`) writes
             // into an array element the i64 binding model cannot represent —
@@ -1005,20 +1100,24 @@ impl RegionAnalyzer {
                 }
                 true
             }
-            Statement::Expression(e) => {
-                Self::eval_expr_simple(e, bindings).is_some()
-            }
+            Statement::Expression(e) => Self::eval_expr_simple(e, bindings).is_some(),
             Statement::Guarded(condition, statements) => {
                 if let Some(cond) = Self::eval_expr_simple(condition, bindings) {
                     if cond != 0 {
                         for s in statements {
-                            if !Self::eval_stmt(s, bindings) { return false; }
+                            if !Self::eval_stmt(s, bindings) {
+                                return false;
+                            }
                         }
                     }
                     true
-                } else { false }
+                } else {
+                    false
+                }
             }
-            Statement::Term(None) | Statement::EndProgram(None) | Statement::InlineAsm { .. } => false,
+            Statement::Term(None) | Statement::EndProgram(None) | Statement::InlineAsm { .. } => {
+                false
+            }
             _ => true,
         }
     }
@@ -1028,11 +1127,42 @@ impl RegionAnalyzer {
     fn eval_expr_simple(expr: &Expr, bindings: &HashMap<String, i64>) -> Option<i64> {
         // Stack: (left_expr, right_expr, op_to_apply)
         // Post-order: push children first, then combine results.
-        enum Op { Add, Sub, Mul, Div, Mod, And, Or, Eq, Ne, Lt, Le, Gt, Ge,
-                  BitAnd, BitOr, BitXor, Shl, Shr, Not, Neg, BitNot, Cast, Id }
-        struct Frame<'a> { expr: &'a Expr, state: u8, left: Option<i64> }
+        enum Op {
+            Add,
+            Sub,
+            Mul,
+            Div,
+            Mod,
+            And,
+            Or,
+            Eq,
+            Ne,
+            Lt,
+            Le,
+            Gt,
+            Ge,
+            BitAnd,
+            BitOr,
+            BitXor,
+            Shl,
+            Shr,
+            Not,
+            Neg,
+            BitNot,
+            Cast,
+            Id,
+        }
+        struct Frame<'a> {
+            expr: &'a Expr,
+            state: u8,
+            left: Option<i64>,
+        }
 
-        let mut stack: Vec<Frame> = vec![Frame { expr, state: 0, left: None }];
+        let mut stack: Vec<Frame> = vec![Frame {
+            expr,
+            state: 0,
+            left: None,
+        }];
         let mut results: Vec<i64> = vec![];
 
         while let Some(mut f) = stack.pop() {
@@ -1041,46 +1171,142 @@ impl RegionAnalyzer {
                     Expr::Decimal(n) => results.push(*n),
                     Expr::Bool(b) => results.push(if *b { 1 } else { 0 }),
                     Expr::Identifier(n) => {
-                        if let Some(&v) = bindings.get(n) { results.push(v); }
-                        else { return None; }
+                        if let Some(&v) = bindings.get(n) {
+                            results.push(v);
+                        } else {
+                            return None;
+                        }
                     }
                     Expr::BinaryOp(_, a, b) => {
                         f.state = 1;
                         stack.push(f);
-                        stack.push(Frame { expr: b, state: 0, left: None });
-                        stack.push(Frame { expr: a, state: 0, left: None });
+                        stack.push(Frame {
+                            expr: b,
+                            state: 0,
+                            left: None,
+                        });
+                        stack.push(Frame {
+                            expr: a,
+                            state: 0,
+                            left: None,
+                        });
                     }
                     Expr::UnaryOp(_, a) | Expr::Cast(a, _) => {
                         f.state = 1;
                         stack.push(f);
-                        stack.push(Frame { expr: a, state: 0, left: None });
+                        stack.push(Frame {
+                            expr: a,
+                            state: 0,
+                            left: None,
+                        });
                     }
                     _ => return None,
                 },
                 1 => match f.expr {
-                    Expr::BinaryOp(BinaryOpKind::Add, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l.wrapping_add(r)); }
-                    Expr::BinaryOp(BinaryOpKind::Sub, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l.wrapping_sub(r)); }
-                    Expr::BinaryOp(BinaryOpKind::Mul, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l.wrapping_mul(r)); }
-                    Expr::BinaryOp(BinaryOpKind::Div, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l / r); }
-                    Expr::BinaryOp(BinaryOpKind::Mod, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l % r); }
-                    Expr::BinaryOp(BinaryOpKind::And, _, _) => { let rv = results.pop()?; let lv = results.pop()?; results.push(if lv != 0 && rv != 0 { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Or, _, _) => { let rv = results.pop()?; let lv = results.pop()?; results.push(if lv != 0 || rv != 0 { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Eq, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l == r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Neq, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l != r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Lt, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l < r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Le, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l <= r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Gt, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l > r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::Ge, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(if l >= r { 1 } else { 0 }); }
-                    Expr::BinaryOp(BinaryOpKind::BitAnd, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l & r); }
-                    Expr::BinaryOp(BinaryOpKind::BitOr, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l | r); }
-                    Expr::BinaryOp(BinaryOpKind::BitXor, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l ^ r); }
-                    Expr::BinaryOp(BinaryOpKind::Shl, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l << (r as u32 & 63)); }
-                    Expr::BinaryOp(BinaryOpKind::Shr, _, _) => { let r = results.pop()?; let l = results.pop()?; results.push(l >> (r as u32 & 63)); }
-                    Expr::UnaryOp(UnaryOpKind::Not, _) => { let v = results.pop()?; results.push(if v == 0 { 1 } else { 0 }); }
-                    Expr::UnaryOp(UnaryOpKind::Neg, _) => { let v = results.pop()?; results.push(-v); }
-                    Expr::UnaryOp(UnaryOpKind::BitNot, _) => { let v = results.pop()?; results.push(!v); }
+                    Expr::BinaryOp(BinaryOpKind::Add, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l.wrapping_add(r));
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Sub, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l.wrapping_sub(r));
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Mul, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l.wrapping_mul(r));
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Div, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l / r);
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Mod, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l % r);
+                    }
+                    Expr::BinaryOp(BinaryOpKind::And, _, _) => {
+                        let rv = results.pop()?;
+                        let lv = results.pop()?;
+                        results.push(if lv != 0 && rv != 0 { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Or, _, _) => {
+                        let rv = results.pop()?;
+                        let lv = results.pop()?;
+                        results.push(if lv != 0 || rv != 0 { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Eq, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l == r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Neq, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l != r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Lt, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l < r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Le, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l <= r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Gt, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l > r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Ge, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(if l >= r { 1 } else { 0 });
+                    }
+                    Expr::BinaryOp(BinaryOpKind::BitAnd, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l & r);
+                    }
+                    Expr::BinaryOp(BinaryOpKind::BitOr, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l | r);
+                    }
+                    Expr::BinaryOp(BinaryOpKind::BitXor, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l ^ r);
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Shl, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l << (r as u32 & 63));
+                    }
+                    Expr::BinaryOp(BinaryOpKind::Shr, _, _) => {
+                        let r = results.pop()?;
+                        let l = results.pop()?;
+                        results.push(l >> (r as u32 & 63));
+                    }
+                    Expr::UnaryOp(UnaryOpKind::Not, _) => {
+                        let v = results.pop()?;
+                        results.push(if v == 0 { 1 } else { 0 });
+                    }
+                    Expr::UnaryOp(UnaryOpKind::Neg, _) => {
+                        let v = results.pop()?;
+                        results.push(-v);
+                    }
+                    Expr::UnaryOp(UnaryOpKind::BitNot, _) => {
+                        let v = results.pop()?;
+                        results.push(!v);
+                    }
                     Expr::Cast(_, _) => {} // result already on stack
-                    _ => {} // identity: result already on stack
+                    _ => {}                // identity: result already on stack
                 },
                 _ => unreachable!(),
             }
@@ -1095,7 +1321,8 @@ impl RegionAnalyzer {
             Expr::BinaryOp(BinaryOpKind::And, ge_expr, le_expr) => {
                 if let Expr::BinaryOp(BinaryOpKind::Ge, ge_lhs, lo_expr) = ge_expr.as_ref() {
                     if let Expr::Identifier(l1) = ge_lhs.as_ref() {
-                        if let Expr::BinaryOp(BinaryOpKind::Le, le_lhs, hi_expr) = le_expr.as_ref() {
+                        if let Expr::BinaryOp(BinaryOpKind::Le, le_lhs, hi_expr) = le_expr.as_ref()
+                        {
                             if let Expr::Identifier(l2) = le_lhs.as_ref() {
                                 if l1 == "_" && l2 == "_" {
                                     return Some((lo_expr.as_ref(), hi_expr.as_ref()));
@@ -1110,14 +1337,25 @@ impl RegionAnalyzer {
         }
     }
 
-    fn var_is_chain_internal(&self, var: &str, chain: &[String], all_txn_names: &HashSet<String>) -> bool {
+    fn var_is_chain_internal(
+        &self,
+        var: &str,
+        chain: &[String],
+        all_txn_names: &HashSet<String>,
+    ) -> bool {
         for txn in all_txn_names {
-            if chain.contains(txn) { continue; }
+            if chain.contains(txn) {
+                continue;
+            }
             if let Some(reads) = self.txn_reads.get(txn) {
-                if reads.contains(var) { return false; }
+                if reads.contains(var) {
+                    return false;
+                }
             }
             if let Some(writes) = self.txn_writes.get(txn) {
-                if writes.contains(var) { return false; }
+                if writes.contains(var) {
+                    return false;
+                }
             }
         }
         true
@@ -1129,17 +1367,27 @@ impl RegionAnalyzer {
             let a = &chain[i];
             if let Some(writes_a) = self.txn_writes.get(a) {
                 if let Some(reads_next) = self.txn_reads.get(&chain[i + 1]) {
-                    let shared: Vec<_> = writes_a.iter().filter(|w| reads_next.contains(*w)).collect();
+                    let shared: Vec<_> = writes_a
+                        .iter()
+                        .filter(|w| reads_next.contains(*w))
+                        .collect();
                     for sv in &shared {
-                        if self.is_chain_counter_var(chain, sv) { continue; }
-                        let writer_count: usize = chain.iter()
+                        if self.is_chain_counter_var(chain, sv) {
+                            continue;
+                        }
+                        let writer_count: usize = chain
+                            .iter()
                             .filter(|tn| {
                                 if let Some(w) = self.txn_writes.get(*tn) {
                                     w.contains(*sv)
-                                } else { false }
+                                } else {
+                                    false
+                                }
                             })
                             .count();
-                        if writer_count > 1 { return false; }
+                        if writer_count > 1 {
+                            return false;
+                        }
                     }
                 }
             }
@@ -1162,7 +1410,9 @@ impl RegionAnalyzer {
                 let cv = find_counter_var(body);
                 if let Some(ref v) = cv {
                     if let Some(ref pv) = common_pre_var {
-                        if pv != v { return false; }
+                        if pv != v {
+                            return false;
+                        }
                     } else {
                         common_pre_var = Some(v.clone());
                     }
@@ -1172,7 +1422,9 @@ impl RegionAnalyzer {
             }
             if let Some(bv) = self.iter_bounds.get(tn) {
                 if let Some(ref cb) = common_bound_var {
-                    if format!("{}", bv) != *cb { return false; }
+                    if format!("{}", bv) != *cb {
+                        return false;
+                    }
                 } else {
                     common_bound_var = Some(format!("{}", bv));
                 }
@@ -1192,11 +1444,15 @@ impl RegionAnalyzer {
     ) {
         let composed = self.build_composed_body(chain, link_vars, trigger_values);
 
-        let counter_var = self.iter_bounds.get(&chain[0])
+        let counter_var = self
+            .iter_bounds
+            .get(&chain[0])
             .map(|_| {
                 if let Some(body) = self.txn_bodies.get(&chain[0]) {
                     find_counter_var(body)
-                } else { None }
+                } else {
+                    None
+                }
             })
             .flatten();
 
@@ -1219,7 +1475,9 @@ impl RegionAnalyzer {
             if let Some(body) = self.txn_bodies.get(tn) {
                 let cv = find_counter_var(body);
                 cv.as_deref() == Some(var)
-            } else { false }
+            } else {
+                false
+            }
         })
     }
 
@@ -1229,11 +1487,13 @@ impl RegionAnalyzer {
             let a = &chain[i];
             let b = &chain[i + 1];
             if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b)) {
-                for w in writes_a {
-                    if reads_b.contains(w) {
-                        links.push(w.clone());
-                        break;
-                    }
+                // Deterministic choice: a write set is unordered, and the link
+                // variable feeds visible composed-body substitution.
+                let mut shared: Vec<&String> =
+                    writes_a.iter().filter(|w| reads_b.contains(*w)).collect();
+                shared.sort();
+                if let Some(w) = shared.first() {
+                    links.push((*w).clone());
                 }
             }
         }
@@ -1282,7 +1542,11 @@ impl RegionAnalyzer {
                                 if let Some(ref we) = write_expr {
                                     let mut subs = we.clone();
                                     for (trg_name, trg_val) in tv {
-                                        subs = substitute_expr(&subs, trg_name, &Expr::Decimal(*trg_val));
+                                        subs = substitute_expr(
+                                            &subs,
+                                            trg_name,
+                                            &Expr::Decimal(*trg_val),
+                                        );
                                     }
                                     write_expr = Some(subs);
                                 }
@@ -1300,8 +1564,12 @@ impl RegionAnalyzer {
             for s in &stmts {
                 let is_counter = if let Some(ref cv) = counter_var {
                     is_counter_bump_stmt(s, cv)
-                } else { false };
-                if i > 0 && is_counter { continue; }
+                } else {
+                    false
+                };
+                if i > 0 && is_counter {
+                    continue;
+                }
                 result.push(s.clone());
             }
         }
@@ -1334,14 +1602,34 @@ fn collect_var_ids(expr: &Expr, vars: &mut HashSet<String>) {
     let mut work: Vec<&Expr> = vec![expr];
     while let Some(e) = work.pop() {
         match e {
-            Expr::Identifier(n) => { vars.insert(n.clone()); }
-            Expr::BinaryOp(_, l, r) => { work.push(r); work.push(l); }
-            Expr::UnaryOp(_, e) => { work.push(e); }
-            Expr::Call(_, args, _) => { work.extend(args.iter().rev()); }
-            Expr::Tuple(elems) => { work.extend(elems.iter().rev()); }
-            Expr::Index(l, i) => { work.push(i.as_ref()); work.push(l.as_ref()); }
-            Expr::Field(o, _) => { work.push(o); }
-            Expr::List(elems) => { for e in elems.iter().rev() { work.push(e); } }
+            Expr::Identifier(n) => {
+                vars.insert(n.clone());
+            }
+            Expr::BinaryOp(_, l, r) => {
+                work.push(r);
+                work.push(l);
+            }
+            Expr::UnaryOp(_, e) => {
+                work.push(e);
+            }
+            Expr::Call(_, args, _) => {
+                work.extend(args.iter().rev());
+            }
+            Expr::Tuple(elems) => {
+                work.extend(elems.iter().rev());
+            }
+            Expr::Index(l, i) => {
+                work.push(i.as_ref());
+                work.push(l.as_ref());
+            }
+            Expr::Field(o, _) => {
+                work.push(o);
+            }
+            Expr::List(elems) => {
+                for e in elems.iter().rev() {
+                    work.push(e);
+                }
+            }
             _ => {}
         }
     }
@@ -1376,7 +1664,9 @@ fn has_ffi_or_terminator_stmt(stmt: &Statement) -> bool {
     let mut work: Vec<&Statement> = vec![stmt];
     while let Some(s) = work.pop() {
         match s {
-            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
+            Statement::Term(_)
+            | Statement::EndProgram(_)
+            | Statement::Tail(_)
             | Statement::InlineAsm { .. } => return true,
             // 2026-11-02 (precompute observability): ANY call blocks
             // precomputation. The old non-`#` rule assumed every intrinsic was
@@ -1386,11 +1676,17 @@ fn has_ffi_or_terminator_stmt(stmt: &Statement) -> bool {
             // optimization; correctness of observable effects wins.
             Statement::Assign(_, expr) if expr_has_call(expr) => return true,
             Statement::Let { expr, .. } => {
-                if let Some(e) = expr { if expr_has_call(e) { return true; } }
+                if let Some(e) = expr {
+                    if expr_has_call(e) {
+                        return true;
+                    }
+                }
             }
             Statement::Expression(e) if expr_has_call(e) => return true,
             Statement::Guarded(condition, statements) => {
-                if expr_has_call(condition) { return true; }
+                if expr_has_call(condition) {
+                    return true;
+                }
                 work.extend(statements.iter().rev());
             }
             Statement::Foreach { body, .. } => {
@@ -1412,21 +1708,33 @@ fn has_ffi_or_trigger_stmt(stmt: &Statement, trigger_vars: &HashSet<String>) -> 
     let mut work: Vec<&Statement> = vec![stmt];
     while let Some(s) = work.pop() {
         match s {
-            Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_)
+            Statement::Term(_)
+            | Statement::EndProgram(_)
+            | Statement::Tail(_)
             | Statement::InlineAsm { .. } => return true,
             Statement::Assign(lhs, expr) => {
-                if expr_has_call(expr) { return true; }
+                if expr_has_call(expr) {
+                    return true;
+                }
                 // Also check if lhs references a trigger variable
                 if let Expr::Identifier(n) = lhs {
-                    if trigger_vars.contains(n) { return true; }
+                    if trigger_vars.contains(n) {
+                        return true;
+                    }
                 }
             }
             Statement::Let { expr, .. } => {
-                if let Some(e) = expr { if expr_has_call(e) { return true; } }
+                if let Some(e) = expr {
+                    if expr_has_call(e) {
+                        return true;
+                    }
+                }
             }
             Statement::Expression(e) if expr_has_call(e) => return true,
             Statement::Guarded(condition, statements) => {
-                if expr_has_call(condition) { return true; }
+                if expr_has_call(condition) {
+                    return true;
+                }
                 work.extend(statements.iter().rev());
             }
             Statement::Foreach { body, .. } => {
@@ -1452,7 +1760,10 @@ fn expr_has_call(expr: &Expr) -> bool {
     crate::ast::visit::walk_expr(expr, &mut |e| {
         if matches!(
             e,
-            Expr::Call(..) | Expr::MethodCall(..) | Expr::Spawn { .. } | Expr::PluginIntercept { .. }
+            Expr::Call(..)
+                | Expr::MethodCall(..)
+                | Expr::Spawn { .. }
+                | Expr::PluginIntercept { .. }
         ) {
             found = true;
         }
@@ -1461,10 +1772,13 @@ fn expr_has_call(expr: &Expr) -> bool {
 }
 
 fn has_term_or_unify_escape(body: &[Statement]) -> bool {
-    body.iter().any(|s| matches!(s,
-//         Statement::Term(None) | Statement::EndProgram(None) | Statement::Unification { .. }
-        | Statement::Rollback(_) | Statement::InlineAsm { .. }
-    ))
+    body.iter().any(|s| {
+        matches!(
+            s,
+            //         Statement::Term(None) | Statement::EndProgram(None) | Statement::Unification { .. }
+            |Statement::Rollback(_)| Statement::InlineAsm { .. }
+        )
+    })
 }
 
 fn is_counter_bump_stmt(stmt: &Statement, counter_var: &str) -> bool {
@@ -1472,8 +1786,12 @@ fn is_counter_bump_stmt(stmt: &Statement, counter_var: &str) -> bool {
         Statement::Assign(Expr::Identifier(n), _) => Some(n.as_str()),
         _ => None,
     };
-    let Some(name) = lhs_name else { return false; };
-    if name != counter_var { return false; }
+    let Some(name) = lhs_name else {
+        return false;
+    };
+    if name != counter_var {
+        return false;
+    }
     if let Statement::Assign(_, expr) = stmt {
         if let Expr::BinaryOp(BinaryOpKind::Add, a, b) = expr {
             let lhs_in_a = matches!(a.as_ref(), Expr::Identifier(n) if n == counter_var);
@@ -1491,7 +1809,9 @@ fn find_counter_var(body: &[Statement]) -> Option<String> {
             Statement::Assign(Expr::Identifier(n), expr) => (Some(n.clone()), expr),
             _ => continue,
         };
-        let Some(name) = lhs_name else { continue; };
+        let Some(name) = lhs_name else {
+            continue;
+        };
         if let Expr::BinaryOp(BinaryOpKind::Add, a, b) = expr {
             let lhs_in_a = matches!(a.as_ref(), Expr::Identifier(an) if *an == name);
             let lhs_in_b = matches!(b.as_ref(), Expr::Identifier(bn) if *bn == name);
@@ -1522,7 +1842,9 @@ fn find_write_expr(body: &[Statement], var: &str) -> Option<Expr> {
 }
 
 fn substitute_var(body: &[Statement], old_var: &str, new_expr: &Expr) -> Vec<Statement> {
-    body.iter().map(|s| substitute_stmt(s, old_var, new_expr)).collect()
+    body.iter()
+        .map(|s| substitute_stmt(s, old_var, new_expr))
+        .collect()
 }
 
 fn substitute_stmt(stmt: &Statement, old_var: &str, new_expr: &Expr) -> Statement {
@@ -1530,28 +1852,28 @@ fn substitute_stmt(stmt: &Statement, old_var: &str, new_expr: &Expr) -> Statemen
         Statement::Assign(lhs, expr) => {
             Statement::Assign(lhs.clone(), substitute_expr(expr, old_var, new_expr))
         }
-        Statement::Let { name, expr, .. } => {
-            Statement::Let {
-                names: vec![],
-                name: name.clone(),
-                ty: None,
-                expr: expr.as_ref().map(|e| substitute_expr(e, old_var, new_expr)),
-                modifiers: vec![],
-            }
-        }
-        Statement::Guarded(condition, statements) => {
-            Statement::Guarded(
-                substitute_expr(condition, old_var, new_expr),
-                substitute_var(statements, old_var, new_expr),
-            )
-        }
+        Statement::Let { name, expr, .. } => Statement::Let {
+            names: vec![],
+            name: name.clone(),
+            ty: None,
+            expr: expr.as_ref().map(|e| substitute_expr(e, old_var, new_expr)),
+            modifiers: vec![],
+        },
+        Statement::Guarded(condition, statements) => Statement::Guarded(
+            substitute_expr(condition, old_var, new_expr),
+            substitute_var(statements, old_var, new_expr),
+        ),
         Statement::Expression(e) => Statement::Expression(substitute_expr(e, old_var, new_expr)),
         Statement::Term(Some(e)) => Statement::Term(Some(substitute_expr(e, old_var, new_expr))),
         Statement::Tail(e) => Statement::Tail(substitute_expr(e, old_var, new_expr)),
         Statement::Term(None) => Statement::Term(None),
-        Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(substitute_expr(e, old_var, new_expr))),
+        Statement::EndProgram(Some(e)) => {
+            Statement::EndProgram(Some(substitute_expr(e, old_var, new_expr)))
+        }
         Statement::EndProgram(None) => Statement::EndProgram(None),
-        Statement::Rollback(Some(e)) => Statement::Rollback(Some(substitute_expr(e, old_var, new_expr))),
+        Statement::Rollback(Some(e)) => {
+            Statement::Rollback(Some(substitute_expr(e, old_var, new_expr)))
+        }
         Statement::Rollback(None) => Statement::Rollback(None),
         Statement::SyncBlock(body) => Statement::SyncBlock(body.clone()),
         other => other.clone(),
@@ -1565,28 +1887,72 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
     let owned_old = old_var.to_string();
 
     // ── Helper function pointers for binary/unary ops ──
-    fn add(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Add, Box::new(l), Box::new(r)) }
-    fn sub(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Sub, Box::new(l), Box::new(r)) }
-    fn mul(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Mul, Box::new(l), Box::new(r)) }
-    fn div(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Div, Box::new(l), Box::new(r)) }
-    fn modop(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Mod, Box::new(l), Box::new(r)) }
-    fn eq(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Eq, Box::new(l), Box::new(r)) }
-    fn ne(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Neq, Box::new(l), Box::new(r)) }
-    fn lt(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Lt, Box::new(l), Box::new(r)) }
-    fn le(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Le, Box::new(l), Box::new(r)) }
-    fn gt(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Gt, Box::new(l), Box::new(r)) }
-    fn ge(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Ge, Box::new(l), Box::new(r)) }
-    fn and(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::And, Box::new(l), Box::new(r)) }
-    fn or(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Or, Box::new(l), Box::new(r)) }
-    fn bitand(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::BitAnd, Box::new(l), Box::new(r)) }
-    fn bitor(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::BitOr, Box::new(l), Box::new(r)) }
-    fn bitxor(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::BitXor, Box::new(l), Box::new(r)) }
-    fn shl(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Shl, Box::new(l), Box::new(r)) }
-    fn shr(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Shr, Box::new(l), Box::new(r)) }
-    fn concat(l: Expr, r: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Concat, Box::new(l), Box::new(r)) }
-    fn not(v: Expr) -> Expr { Expr::UnaryOp(UnaryOpKind::Not, Box::new(v)) }
-    fn neg(v: Expr) -> Expr { Expr::UnaryOp(UnaryOpKind::Neg, Box::new(v)) }
-    fn bitnot(v: Expr) -> Expr { Expr::UnaryOp(UnaryOpKind::BitNot, Box::new(v)) }
+    fn add(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Add, Box::new(l), Box::new(r))
+    }
+    fn sub(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Sub, Box::new(l), Box::new(r))
+    }
+    fn mul(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Mul, Box::new(l), Box::new(r))
+    }
+    fn div(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Div, Box::new(l), Box::new(r))
+    }
+    fn modop(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Mod, Box::new(l), Box::new(r))
+    }
+    fn eq(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Eq, Box::new(l), Box::new(r))
+    }
+    fn ne(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Neq, Box::new(l), Box::new(r))
+    }
+    fn lt(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Lt, Box::new(l), Box::new(r))
+    }
+    fn le(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Le, Box::new(l), Box::new(r))
+    }
+    fn gt(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Gt, Box::new(l), Box::new(r))
+    }
+    fn ge(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Ge, Box::new(l), Box::new(r))
+    }
+    fn and(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::And, Box::new(l), Box::new(r))
+    }
+    fn or(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Or, Box::new(l), Box::new(r))
+    }
+    fn bitand(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::BitAnd, Box::new(l), Box::new(r))
+    }
+    fn bitor(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::BitOr, Box::new(l), Box::new(r))
+    }
+    fn bitxor(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::BitXor, Box::new(l), Box::new(r))
+    }
+    fn shl(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Shl, Box::new(l), Box::new(r))
+    }
+    fn shr(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Shr, Box::new(l), Box::new(r))
+    }
+    fn concat(l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Concat, Box::new(l), Box::new(r))
+    }
+    fn not(v: Expr) -> Expr {
+        Expr::UnaryOp(UnaryOpKind::Not, Box::new(v))
+    }
+    fn neg(v: Expr) -> Expr {
+        Expr::UnaryOp(UnaryOpKind::Neg, Box::new(v))
+    }
+    fn bitnot(v: Expr) -> Expr {
+        Expr::UnaryOp(UnaryOpKind::BitNot, Box::new(v))
+    }
 
     // Work stack entries
     enum W {
@@ -1631,8 +1997,10 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
                 Expr::Identifier(n) if n == owned_old => {
                     results.push(owned_new.clone());
                 }
-                Expr::Identifier(n) => { results.push(Expr::Identifier(n)); }
-                   Expr::Bool(_) => {
+                Expr::Identifier(n) => {
+                    results.push(Expr::Identifier(n));
+                }
+                Expr::Bool(_) => {
                     results.push(e);
                 }
                 Expr::BinaryOp(BinaryOpKind::Add, a, b) => binop!(work, add, *a, *b),
@@ -1659,7 +2027,10 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
                 Expr::UnaryOp(UnaryOpKind::BitNot, a) => unop!(work, bitnot, *a),
                 Expr::Cast(a, t) => {
                     let t2 = t;
-                    work.push(W::Args(1, Box::new(move |v| Expr::Cast(Box::new(v[0].clone()), t2.clone()))));
+                    work.push(W::Args(
+                        1,
+                        Box::new(move |v| Expr::Cast(Box::new(v[0].clone()), t2.clone())),
+                    ));
                     work.push(W::Proc(*a));
                 }
                 Expr::Call(name, args, _) => {
@@ -1686,17 +2057,27 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
                 }
                 Expr::Field(obj, f) => {
                     let f2 = f;
-                    work.push(W::Args(1, Box::new(move |v| Expr::Field(Box::new(v[0].clone()), f2.clone()))));
+                    work.push(W::Args(
+                        1,
+                        Box::new(move |v| Expr::Field(Box::new(v[0].clone()), f2.clone())),
+                    ));
                     work.push(W::Proc(*obj));
                 }
                 Expr::Index(l, i) => {
-                    work.push(W::Args(2, Box::new(|v| Expr::Index(Box::new(v[0].clone()), Box::new(v[1].clone())))));
+                    work.push(W::Args(
+                        2,
+                        Box::new(|v| Expr::Index(Box::new(v[0].clone()), Box::new(v[1].clone()))),
+                    ));
                     work.push(W::Proc(*i));
                     work.push(W::Proc(*l));
                 }
-                other => { results.push(other); }
+                other => {
+                    results.push(other);
+                }
             },
-            W::B0(e) => { results.push(e); }
+            W::B0(e) => {
+                results.push(e);
+            }
             W::B1(f) => {
                 let a = results.pop().expect("B1: no result");
                 results.push(f(a));
@@ -1715,6 +2096,267 @@ fn substitute_expr(expr: &Expr, old_var: &str, new_expr: &Expr) -> Expr {
     }
 
     results.pop().expect("substitute_expr: no result")
+}
+
+/// Test-only canonical dump shared by the AST and HIR parity harnesses.
+///
+/// Region ids are canonicalised from the sorted member sets (the analysis
+/// assigns them from `HashMap` order), map-keyed data is emitted in sorted
+/// order, and tie-ordered lists are sorted. Everything semantically relevant
+/// — membership, classification, intervals, value-set sizes, iteration
+/// bounds, scores, budgets, and composed bodies — is compared exactly.
+#[cfg(test)]
+pub(crate) struct CanonicalParts<'a> {
+    pub var_info: &'a HashMap<String, VarInfo>,
+    pub trigger_vars: &'a HashSet<String>,
+    pub regions: &'a [Vec<String>],
+    pub linear_chains: &'a [Vec<String>],
+    pub iter_bounds: &'a HashMap<String, u64>,
+    pub region_scores: &'a [RegionScore],
+    pub budget_plan: &'a Option<BudgetPlan>,
+    pub composed_chains: &'a [ComposedChain],
+}
+
+#[cfg(test)]
+pub(crate) fn canonical_dump_parts(
+    parts: CanonicalParts<'_>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::BTreeMap;
+
+    let (canon_regions, canon_var, rid_map) = canonical_regions(parts.regions);
+    let mut out = BTreeMap::new();
+    dump_variables(&mut out, parts.var_info, &canon_var);
+    dump_trigger_names(&mut out, parts.trigger_vars);
+    dump_regions(&mut out, &canon_regions);
+    dump_linear_chains(&mut out, parts.linear_chains);
+    dump_iter_bounds(&mut out, parts.iter_bounds);
+    dump_scores(&mut out, parts.region_scores, &rid_map);
+    dump_budget(&mut out, parts.budget_plan, &rid_map);
+    dump_composed(&mut out, parts.composed_chains);
+    out
+}
+
+#[cfg(test)]
+fn dump_variables(
+    out: &mut std::collections::BTreeMap<String, String>,
+    var_info: &HashMap<String, VarInfo>,
+    canon_var: &HashMap<String, usize>,
+) {
+    let mut names: Vec<&String> = var_info.keys().collect();
+    names.sort();
+    for name in names {
+        let info = &var_info[name];
+        let region = if info.classification == VarClass::Pure {
+            0
+        } else {
+            *canon_var.get(name).unwrap_or(&0)
+        };
+        out.insert(
+            format!("var.{name}"),
+            format!(
+                "class={:?}|interval={:?}|vset={:?}|region={region}",
+                info.classification, info.interval, info.value_set_size
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn dump_trigger_names(
+    out: &mut std::collections::BTreeMap<String, String>,
+    trigger_vars: &HashSet<String>,
+) {
+    let mut triggers: Vec<&String> = trigger_vars.iter().collect();
+    triggers.sort();
+    out.insert(
+        "triggers".to_string(),
+        triggers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+    );
+}
+
+#[cfg(test)]
+fn dump_regions(
+    out: &mut std::collections::BTreeMap<String, String>,
+    regions: &[Vec<String>],
+) {
+    for (i, region) in regions.iter().enumerate() {
+        out.insert(format!("region.{}", i + 1), region.join(","));
+    }
+}
+
+#[cfg(test)]
+fn dump_linear_chains(
+    out: &mut std::collections::BTreeMap<String, String>,
+    chains: &[Vec<String>],
+) {
+    let mut chains = chains.to_vec();
+    chains.sort();
+    for (i, chain) in chains.iter().enumerate() {
+        out.insert(format!("linear.{i}"), chain.join("->"));
+    }
+}
+
+#[cfg(test)]
+fn dump_iter_bounds(
+    out: &mut std::collections::BTreeMap<String, String>,
+    iter_bounds: &HashMap<String, u64>,
+) {
+    let mut bounds: Vec<(&String, &u64)> = iter_bounds.iter().collect();
+    bounds.sort_by_key(|(name, _)| (*name).clone());
+    for (name, value) in bounds {
+        out.insert(format!("iter.{name}"), value.to_string());
+    }
+}
+
+#[cfg(test)]
+fn dump_scores(
+    out: &mut std::collections::BTreeMap<String, String>,
+    scores: &[RegionScore],
+    rid_map: &HashMap<usize, usize>,
+) {
+    let mut sorted: Vec<&RegionScore> = scores.iter().collect();
+    sorted.sort_by_key(|s| sorted_txns(&s.txn_names).join("+"));
+    for score in sorted {
+        let txns = sorted_txns(&score.txn_names);
+        let region = canonical_rid(score.region_id, rid_map);
+        out.insert(
+            format!("score.{}", txns.join("+")),
+            format!(
+                "region={region}|txns={}|class={:?}|weight={}|iter={}|vset={:?}|opt={:.6}|composed={}|gpu={}",
+                txns.join(","),
+                score.complexity,
+                score.body_weight,
+                score.iteration_count,
+                score.value_set_size,
+                score.optimization_score,
+                score.chain_composed,
+                score.gpu_eligible
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn dump_budget(
+    out: &mut std::collections::BTreeMap<String, String>,
+    plan: &Option<BudgetPlan>,
+    rid_map: &HashMap<usize, usize>,
+) {
+    let Some(plan) = plan else { return };
+    out.insert("budget.total".to_string(), plan.total_budget.to_string());
+    out.insert("budget.residual".to_string(), plan.residual_budget.to_string());
+    let mut allocated: Vec<String> = plan
+        .allocated
+        .iter()
+        .map(|(rid, class, cost, score)| {
+            format!("{}:{class:?}:{cost}:{score:.6}", canonical_rid(*rid, rid_map))
+        })
+        .collect();
+    allocated.sort();
+    out.insert("budget.allocated".to_string(), allocated.join("|"));
+    let mut skipped: Vec<String> = plan
+        .skipped
+        .iter()
+        .map(|(rid, class, cost)| format!("{}:{class:?}:{cost}", canonical_rid(*rid, rid_map)))
+        .collect();
+    skipped.sort();
+    out.insert("budget.skipped".to_string(), skipped.join("|"));
+}
+
+#[cfg(test)]
+fn dump_composed(
+    out: &mut std::collections::BTreeMap<String, String>,
+    composed_chains: &[ComposedChain],
+) {
+    let mut composed: Vec<&ComposedChain> = composed_chains.iter().collect();
+    composed.sort_by_key(|cc| {
+        (
+            cc.chain.join("->"),
+            format!("{:?}", cc.trigger_values),
+            cc.link_vars.join(","),
+        )
+    });
+    for (i, cc) in composed.iter().enumerate() {
+        let mut roots = cc.root_triggers.clone();
+        roots.sort();
+        let mut links = cc.link_vars.clone();
+        links.sort();
+        out.insert(
+            format!("composed.{i}"),
+            format!(
+                "chain={}|links={}|roots={}|body={:#?}|counter={:?}|weight={}|trigvals={:?}|internal={}",
+                cc.chain.join("->"),
+                links.join(","),
+                roots.join(","),
+                cc.composed_body,
+                cc.counter_var,
+                cc.fused_weight,
+                cc.trigger_values,
+                cc.all_internal
+            ),
+        );
+    }
+}
+
+#[cfg(test)]
+fn canonical_regions(
+    regions: &[Vec<String>],
+) -> (Vec<Vec<String>>, HashMap<String, usize>, HashMap<usize, usize>) {
+    let mut entries: Vec<(usize, Vec<String>)> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, region)| {
+            let mut members = region.clone();
+            members.sort();
+            (i + 1, members)
+        })
+        .collect();
+    entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut canon = Vec::new();
+    let mut var_map = HashMap::new();
+    let mut rid_map = HashMap::new();
+    for (new_idx, (old_rid, members)) in entries.into_iter().enumerate() {
+        for name in &members {
+            var_map.insert(name.clone(), new_idx + 1);
+        }
+        rid_map.insert(old_rid, new_idx + 1);
+        canon.push(members);
+    }
+    (canon, var_map, rid_map)
+}
+
+#[cfg(test)]
+fn canonical_rid(rid: usize, rid_map: &HashMap<usize, usize>) -> usize {
+    if rid == 0 {
+        0
+    } else {
+        *rid_map.get(&rid).unwrap_or(&rid)
+    }
+}
+
+#[cfg(test)]
+fn sorted_txns(txns: &[String]) -> Vec<String> {
+    let mut sorted = txns.to_vec();
+    sorted.sort();
+    sorted
+}
+
+/// Test-only AST dump (mirrors `hir::region::canonical_dump`).
+#[cfg(test)]
+pub(crate) fn canonical_dump(
+    analyzer: &RegionAnalyzer,
+) -> std::collections::BTreeMap<String, String> {
+    canonical_dump_parts(CanonicalParts {
+        var_info: &analyzer.var_info,
+        trigger_vars: &analyzer.trigger_vars,
+        regions: &analyzer.regions,
+        linear_chains: &analyzer.linear_chains,
+        iter_bounds: &analyzer.iter_bounds,
+        region_scores: &analyzer.region_scores,
+        budget_plan: &analyzer.budget_plan,
+        composed_chains: &analyzer.composed_chains,
+    })
 }
 
 #[cfg(test)]
@@ -1738,12 +2380,7 @@ mod tests {
         })
     }
 
-    fn make_txn(
-        name: &str,
-        pre: Expr,
-        post: Expr,
-        body: Vec<Statement>,
-    ) -> TopLevel {
+    fn make_txn(name: &str, pre: Expr, post: Expr, body: Vec<Statement>) -> TopLevel {
         TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: name.to_string(),
@@ -1757,7 +2394,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: HashMap::new(),
@@ -1766,7 +2404,7 @@ mod tests {
             output_type: None,
             derivation: None,
             doc: None,
-     })
+        })
     }
 
     fn assign(lhs: &str, expr: Expr) -> Statement {
@@ -1836,12 +2474,18 @@ mod tests {
             make_trigger("trg_b", Type::bool_()),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("trg_a")),
-            ]),
-            make_txn("tx_b", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("y", ident("trg_b")),
-            ]),
+            make_txn(
+                "tx_a",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("trg_a"))],
+            ),
+            make_txn(
+                "tx_b",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("y", ident("trg_b"))],
+            ),
         ]);
         let ra = RegionAnalyzer::analyze(&program);
         // Both triggers are Opaque, both x and y are Opaque
@@ -1903,7 +2547,11 @@ mod tests {
             make_state("total", int(100)),
             make_txn(
                 "proc",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![assign("count", add(ident("count"), int(1)))],
             ),
@@ -1968,11 +2616,14 @@ mod tests {
             make_trigger("btn", Type::bool_()),
             make_state("a", int(0)),
             make_state("b", int(0)),
-            make_txn_with_body("proc", vec![
-                assign("a", ident("btn")),
-                assign("b", int(2)),
-                assign("a", add(ident("a"), int(3))),
-            ]),
+            make_txn_with_body(
+                "proc",
+                vec![
+                    assign("a", ident("btn")),
+                    assign("b", int(2)),
+                    assign("a", add(ident("a"), int(3))),
+                ],
+            ),
         ]);
         let ra = RegionAnalyzer::analyze(&program);
         assert!(ra.region_scores.len() > 0);
@@ -1984,10 +2635,10 @@ mod tests {
         let program = mk_program(vec![
             make_trigger("btn", Type::bool_()),
             make_state("x", int(0)),
-            make_txn_with_body("exit", vec![
-                assign("x", ident("btn")),
-                Statement::Term(Some(int(0))),
-            ]),
+            make_txn_with_body(
+                "exit",
+                vec![assign("x", ident("btn")), Statement::Term(Some(int(0)))],
+            ),
         ]);
         let ra = RegionAnalyzer::analyze(&program);
         assert!(ra.region_scores.len() > 0);
@@ -2000,12 +2651,18 @@ mod tests {
             make_trigger("trg", Type::bool_()),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("t1", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("trg")),
-            ]),
-            make_txn("t2", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("y", add(ident("x"), int(1))),
-            ]),
+            make_txn(
+                "t1",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("trg"))],
+            ),
+            make_txn(
+                "t2",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("y", add(ident("x"), int(1)))],
+            ),
         ]);
         let ra = RegionAnalyzer::analyze(&program);
         assert!(!ra.region_scores.is_empty());
@@ -2020,12 +2677,18 @@ mod tests {
             make_trigger("tb", Type::bool_()),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("ta")),
-            ]),
-            make_txn("tx_b", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("y", ident("tb")),
-            ]),
+            make_txn(
+                "tx_a",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("ta"))],
+            ),
+            make_txn(
+                "tx_b",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("y", ident("tb"))],
+            ),
         ]);
         let ra = RegionAnalyzer::analyze(&program);
         assert_eq!(ra.region_scores.len(), 2);
@@ -2038,13 +2701,18 @@ mod tests {
             make_state("y", int(0)),
             make_const("a_val", 1),
             make_const("b_val", 2),
-            make_txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("a_val")),
-            ]),
-            make_txn("tx_b", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("a_val")),
-                assign("y", ident("b_val")),
-            ]),
+            make_txn(
+                "tx_a",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("a_val"))],
+            ),
+            make_txn(
+                "tx_b",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("a_val")), assign("y", ident("b_val"))],
+            ),
         ]);
         let mut ra = RegionAnalyzer::analyze(&program);
         ra.build_budget_plan(10);
@@ -2058,9 +2726,12 @@ mod tests {
         let program = mk_program(vec![
             make_trigger("ta", Type::bool_()),
             make_state("x", int(0)),
-            make_txn("tx_a", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("ta")),
-            ]),
+            make_txn(
+                "tx_a",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("ta"))],
+            ),
         ]);
         let mut ra = RegionAnalyzer::analyze(&program);
         ra.build_budget_plan(0);
@@ -2086,16 +2757,26 @@ mod tests {
             make_state("count", int(0)),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("step_a",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_a",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("x", int(42)),
                     assign("count", add(ident("count"), int(1))),
                 ],
             ),
-            make_txn("step_b",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_b",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("y", add(ident("x"), int(1))),
@@ -2118,12 +2799,18 @@ mod tests {
             make_trigger("sensor", Type::bool_()),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("step_a", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("sensor")),
-            ]),
-            make_txn("step_b", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("y", add(ident("x"), int(1))),
-            ]),
+            make_txn(
+                "step_a",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("sensor"))],
+            ),
+            make_txn(
+                "step_b",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("y", add(ident("x"), int(1)))],
+            ),
         ]);
         let mut ra = RegionAnalyzer::analyze(&program);
         ra.compose_chains();
@@ -2141,8 +2828,13 @@ mod tests {
             make_state("b", int(0)),
             make_state("c", int(0)),
             make_state("count", int(0)),
-            make_txn("heavy",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "heavy",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("a", int(1)),
@@ -2169,8 +2861,13 @@ mod tests {
             make_const("total", 100),
             make_state("a", int(0)),
             make_state("count", int(0)),
-            make_txn("with_term",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "with_term",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("a", int(1)),
@@ -2197,16 +2894,26 @@ mod tests {
             make_state("count", int(0)),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("step_a",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_a",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("x", int(42)),
                     assign("count", add(ident("count"), int(1))),
                 ],
             ),
-            make_txn("step_b",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_b",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("y", add(ident("x"), int(1))),
@@ -2225,9 +2932,12 @@ mod tests {
         let program = mk_program(vec![
             make_trigger("btn", Type::bool_()),
             make_state("x", int(0)),
-            make_txn("t1", Expr::Bool(true), Expr::Bool(true), vec![
-                assign("x", ident("btn")),
-            ]),
+            make_txn(
+                "t1",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                vec![assign("x", ident("btn"))],
+            ),
         ]);
         let mut ra = RegionAnalyzer::analyze(&program);
         ra.compose_chains();
@@ -2240,8 +2950,13 @@ mod tests {
             make_const("total", 100),
             make_state("count", int(0)),
             make_state("x", int(0)),
-            make_txn("heavy",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "heavy",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("x", int(1)),
@@ -2257,13 +2972,11 @@ mod tests {
 
     #[test]
     fn print_inside_block_blocks_precomputation() {
-        let print = Statement::Expression(Expr::Block(vec![
-            Statement::Expression(Expr::Call(
-                "Print#".into(),
-                vec![Expr::Identifier("count".into())],
-                None,
-            )),
-        ]));
+        let print = Statement::Expression(Expr::Block(vec![Statement::Expression(Expr::Call(
+            "Print#".into(),
+            vec![Expr::Identifier("count".into())],
+            None,
+        ))]));
         assert!(
             has_ffi_or_trigger_stmt_in_chain(&[print]),
             "a Print# call nested in a block is observable"
@@ -2277,16 +2990,26 @@ mod tests {
             make_const("count", 0),
             make_const("x", 0),
             make_const("y", 0),
-            make_txn("step_a",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_a",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("x", int(42)),
                     assign("count", add(ident("count"), int(1))),
                 ],
             ),
-            make_txn("step_b",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_b",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("y", add(ident("x"), int(1))),
@@ -2301,7 +3024,11 @@ mod tests {
         let bindings = result.unwrap();
         assert!(!bindings.is_empty());
         let found_count = bindings.iter().any(|(_, m)| m.get("count") == Some(&100));
-        assert!(found_count, "Final count should equal bound (100), got {:?}", bindings);
+        assert!(
+            found_count,
+            "Final count should equal bound (100), got {:?}",
+            bindings
+        );
     }
 
     #[test]
@@ -2312,15 +3039,19 @@ mod tests {
             make_state("count", int(0)),
             make_state("x", int(0)),
             make_state("y", int(0)),
-            make_txn("step_a",
+            make_txn(
+                "step_a",
                 Expr::Bool(true),
                 Expr::Bool(true),
-                vec![
-                    assign("x", ident("sensor")),
-                ],
+                vec![assign("x", ident("sensor"))],
             ),
-            make_txn("step_b",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "step_b",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     assign("y", add(ident("x"), int(1))),
@@ -2343,8 +3074,13 @@ mod tests {
             make_const("total", 4),
             make_state("count", int(0)),
             make_state("a", int(0)),
-            make_txn("go",
-                Expr::BinaryOp(BinaryOpKind::Lt, Box::new(ident("count")), Box::new(ident("total"))),
+            make_txn(
+                "go",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(ident("count")),
+                    Box::new(ident("total")),
+                ),
                 Expr::Bool(true),
                 vec![
                     // a[count] = 1.5 — an indexed write the model can't track.

@@ -9,7 +9,6 @@
 /// (duplicate ids / OperandExceeded). The separate TypeCache id space is
 /// gone — one id counter, one source of truth.
 /// To undo: restore TypeCache + arena + flush_types (git history).
-
 use rspirv::dr::{Builder, Operand};
 use std::collections::HashMap;
 
@@ -17,7 +16,7 @@ use crate::ast::Type;
 use crate::casting::graph::{CastingGraph, SpirvShape};
 use crate::type_universe::TypeUniverse;
 use rspirv::binary::Assemble;
-use rspirv::spirv::{self, Word, ExecutionModel};
+use rspirv::spirv::{self, ExecutionModel, Word};
 
 /// 2026-11-08 (Intel G1.5 Stage F): the vendor projection of one frontend
 /// plan (D3). Vulkan is the working lane; OpenCL unblocks Level Zero / NEO
@@ -77,10 +76,7 @@ impl SpirvBuilder {
         match flavor {
             SpirvFlavor::Vulkan => {
                 b.capability(spirv::Capability::Shader);
-                b.memory_model(
-                    spirv::AddressingModel::Logical,
-                    spirv::MemoryModel::GLSL450,
-                );
+                b.memory_model(spirv::AddressingModel::Logical, spirv::MemoryModel::GLSL450);
             }
             SpirvFlavor::OpenCL => {
                 // Stage E blueprint (clang --target=spirv64 -x cl): Kernel +
@@ -298,7 +294,14 @@ impl SpirvBuilder {
     /// `glsl_fma` with a caller-chosen result id — loop phis reserve the
     /// back-edge id before the header is emitted, and the body must define
     /// its value INTO that id.
-    pub fn glsl_fma_with_id(&mut self, result_id: Word, result_ty: Word, a: Word, b: Word, c: Word) {
+    pub fn glsl_fma_with_id(
+        &mut self,
+        result_id: Word,
+        result_ty: Word,
+        a: Word,
+        b: Word,
+        c: Word,
+    ) {
         let set = self.ext_set();
         self.builder
             .ext_inst(
@@ -306,11 +309,7 @@ impl SpirvBuilder {
                 Some(result_id),
                 set,
                 self.ext_op(spirv::GLOp::Fma, spirv::CLOp::fma),
-                [
-                    Operand::IdRef(a),
-                    Operand::IdRef(b),
-                    Operand::IdRef(c),
-                ],
+                [Operand::IdRef(a), Operand::IdRef(b), Operand::IdRef(c)],
             )
             .expect("Fma emission inside a function block");
     }
@@ -375,11 +374,25 @@ impl SpirvBuilder {
         let id = self.gen_id();
         let set = self.ext_set();
         let op = self.ext_op(
-            if max { spirv::GLOp::FMax } else { spirv::GLOp::FMin },
-            if max { spirv::CLOp::fmax } else { spirv::CLOp::fmin },
+            if max {
+                spirv::GLOp::FMax
+            } else {
+                spirv::GLOp::FMin
+            },
+            if max {
+                spirv::CLOp::fmax
+            } else {
+                spirv::CLOp::fmin
+            },
         );
         self.builder
-            .ext_inst(result_ty, Some(id), set, op, [Operand::IdRef(a), Operand::IdRef(b)])
+            .ext_inst(
+                result_ty,
+                Some(id),
+                set,
+                op,
+                [Operand::IdRef(a), Operand::IdRef(b)],
+            )
             .expect("FMax/FMin emission inside a function block");
         id
     }
@@ -392,11 +405,25 @@ impl SpirvBuilder {
         let id = self.gen_id();
         let set = self.ext_set();
         let op = self.ext_op(
-            if max { spirv::GLOp::SMax } else { spirv::GLOp::SMin },
-            if max { spirv::CLOp::s_max } else { spirv::CLOp::s_min },
+            if max {
+                spirv::GLOp::SMax
+            } else {
+                spirv::GLOp::SMin
+            },
+            if max {
+                spirv::CLOp::s_max
+            } else {
+                spirv::CLOp::s_min
+            },
         );
         self.builder
-            .ext_inst(result_ty, Some(id), set, op, [Operand::IdRef(a), Operand::IdRef(b)])
+            .ext_inst(
+                result_ty,
+                Some(id),
+                set,
+                op,
+                [Operand::IdRef(a), Operand::IdRef(b)],
+            )
             .expect("SMax/SMin emission inside a function block");
         id
     }
@@ -570,13 +597,15 @@ impl SpirvBuilder {
     /// after `is_float_type`.
     pub fn float_bits_of(&mut self, ty: &Type) -> Result<u32, String> {
         match ty {
-            Type::Custom(_) | Type::Applied(_, _) => match self
-                .casting_graph
-                .resolve_spirv_shape(&self.universe, ty, self.int_bits)?
-            {
-                SpirvShape::Float { bits } => Ok(bits),
-                _ => self.float_shape_err(ty),
-            },
+            Type::Custom(_) | Type::Applied(_, _) => {
+                match self
+                    .casting_graph
+                    .resolve_spirv_shape(&self.universe, ty, self.int_bits)?
+                {
+                    SpirvShape::Float { bits } => Ok(bits),
+                    _ => self.float_shape_err(ty),
+                }
+            }
             _ => self.float_shape_err(ty),
         }
     }
@@ -608,7 +637,10 @@ impl SpirvBuilder {
     pub fn shape_of(&mut self, ty: &Type) -> Result<SpirvShape, String> {
         match ty {
             Type::Bits(1) => Ok(SpirvShape::Bool),
-            Type::Bits(n) => Ok(SpirvShape::Int { bits: *n as u32, signed: false }),
+            Type::Bits(n) => Ok(SpirvShape::Int {
+                bits: *n as u32,
+                signed: false,
+            }),
             Type::Custom(_) | Type::Applied(_, _) => {
                 self.casting_graph
                     .resolve_spirv_shape(&self.universe, ty, self.int_bits)
@@ -659,7 +691,6 @@ impl SpirvBuilder {
         id
     }
 
-
     /// BuiltIn decoration (requires the BuiltIn literal operand).
     pub fn decorate_builtin(&mut self, target: Word, builtin: spirv::BuiltIn) {
         self.decorate_raw(
@@ -697,12 +728,8 @@ impl SpirvBuilder {
             );
             return;
         }
-        self.builder.entry_point(
-            execution_model,
-            func_id,
-            name,
-            interface.to_vec(),
-        );
+        self.builder
+            .entry_point(execution_model, func_id, name, interface.to_vec());
     }
 
     /// Add execution mode via builder.
@@ -752,7 +779,10 @@ impl SpirvBuilder {
             spirv::Op::Store,
             None,
             None,
-            vec![rspirv::dr::Operand::IdRef(ptr), rspirv::dr::Operand::IdRef(val)],
+            vec![
+                rspirv::dr::Operand::IdRef(ptr),
+                rspirv::dr::Operand::IdRef(val),
+            ],
         );
         self.emit(inst);
     }
@@ -781,17 +811,14 @@ impl SpirvBuilder {
     /// `Device` (1), semantics `SequentiallyConsistent` (0x10). The
     /// VulkanMemoryModel coopmat path re-encodes; atomics there are
     /// future work and would need the 0x40 constant.
-    pub fn atomic_rmw(
-        &mut self, result_ty: Word, ptr: Word, val: Word, op: spirv::Op,
-    ) -> Word {
+    pub fn atomic_rmw(&mut self, result_ty: Word, ptr: Word, val: Word, op: spirv::Op) -> Word {
         // 64-bit buffer atomics capability — declared HERE (not in new())
         // so kernels without atomics keep byte-identical modules (the
         // gemm_h byte-identity gate caught the unconditional form). The
         // RUNTIME half is the shaderBufferInt64Atomics feature in the C
         // probe chain. dr sections serialize capabilities before
         // functions regardless of emission order.
-        self.builder
-            .capability(spirv::Capability::Int64Atomics);
+        self.builder.capability(spirv::Capability::Int64Atomics);
         // scope Device (1), semantics SequentiallyConsistent (0x10,
         // GLSL450 model — see the doc above). Scope and semantics are
         // OBJECT operands: 32-bit OpConstants, not literals (spirv-val
@@ -816,11 +843,8 @@ impl SpirvBuilder {
     /// <equal-sem> <unequal-sem> <value> <comparator>` (value FIRST,
     /// then the comparator; two semantics operands — both ride the
     /// requested ordering here, default seq_cst).
-    pub fn atomic_cas(
-        &mut self, result_ty: Word, ptr: Word, val: Word, cmp: Word,
-    ) -> Word {
-        self.builder
-            .capability(spirv::Capability::Int64Atomics);
+    pub fn atomic_cas(&mut self, result_ty: Word, ptr: Word, val: Word, cmp: Word) -> Word {
+        self.builder.capability(spirv::Capability::Int64Atomics);
         let scope = self.u32_const(1);
         let semantics = self.u32_const(0x10);
         self.instr(
@@ -839,9 +863,12 @@ impl SpirvBuilder {
     }
 
     pub fn load(&mut self, result_ty: Word, ptr: Word) -> Word {
-        self.instr(spirv::Op::Load, Some(result_ty), None, vec![
-            rspirv::dr::Operand::IdRef(ptr),
-        ])
+        self.instr(
+            spirv::Op::Load,
+            Some(result_ty),
+            None,
+            vec![rspirv::dr::Operand::IdRef(ptr)],
+        )
     }
 
     /// 2026-08-23: read-only module view for tests/inspection.
@@ -872,13 +899,7 @@ impl SpirvBuilder {
     }
 
     /// LoopMerge + conditional branch pair (typed — closes the header block).
-    pub fn loop_header_tail(
-        &mut self,
-        cond: Word,
-        merge: Word,
-        continue_target: Word,
-        body: Word,
-    ) {
+    pub fn loop_header_tail(&mut self, cond: Word, merge: Word, continue_target: Word, body: Word) {
         self.builder
             .loop_merge(merge, continue_target, spirv::LoopControl::empty(), [])
             .expect("loop_merge");

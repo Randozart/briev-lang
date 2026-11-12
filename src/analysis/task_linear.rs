@@ -72,7 +72,14 @@ pub fn analyze(items: &[TopLevel]) -> Vec<String> {
                 check_list(&t.name, &t.body, &bodies, &mut scope, &mut errors, true);
             }
             TopLevel::Statement(stmt) => {
-                check_list("top-level", std::slice::from_ref(stmt.as_ref()), &bodies, &mut top_scope, &mut errors, false);
+                check_list(
+                    "top-level",
+                    std::slice::from_ref(stmt.as_ref()),
+                    &bodies,
+                    &mut top_scope,
+                    &mut errors,
+                    false,
+                );
             }
             _ => {}
         }
@@ -94,7 +101,11 @@ fn check_list(
 ) {
     for stmt in body {
         match stmt {
-            Statement::Let { name, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 if let Expr::Spawn { type_name, .. } = e {
                     if bodies.contains_key(type_name.as_str()) {
                         scope.live.insert(name.clone(), type_name.clone());
@@ -115,9 +126,7 @@ fn check_list(
             }
             Statement::Assign(lhs, rhs) => {
                 if let Expr::Identifier(src) = rhs {
-                    if let (Some(target), Expr::Identifier(name)) =
-                        (scope.live.remove(src), lhs)
-                    {
+                    if let (Some(target), Expr::Identifier(name)) = (scope.live.remove(src), lhs) {
                         scope.live.insert(name.clone(), target);
                         continue;
                     }
@@ -173,12 +182,7 @@ fn check_list(
     }
 }
 
-fn consume_await(
-    owner: &str,
-    e: &Expr,
-    scope: &mut Scope,
-    errors: &mut Vec<String>,
-) {
+fn consume_await(owner: &str, e: &Expr, scope: &mut Scope, errors: &mut Vec<String>) {
     if let Expr::Identifier(name) = e {
         if scope.live.remove(name).is_some() {
             // Consumed — any later await of the same binding is a
@@ -198,16 +202,16 @@ fn consume_await(
 /// complete by construction, no inference. Foreign calls are never
 /// interruption points, so the cancellation-safe-FFI clause holds by
 /// construction too.
-fn has_checkpoint(
-    fn_name: &str,
-    bodies: &std::collections::HashMap<&str, &[Statement]>,
-) -> bool {
+fn has_checkpoint(fn_name: &str, bodies: &std::collections::HashMap<&str, &[Statement]>) -> bool {
     let Some(body) = bodies.get(fn_name) else {
         return false;
     };
     fn walk(body: &[Statement]) -> bool {
         body.iter().any(|stmt| match stmt {
-            Statement::Yield | Statement::Term(_) | Statement::EndProgram(_) | Statement::Tail(_) => true,
+            Statement::Yield
+            | Statement::Term(_)
+            | Statement::EndProgram(_)
+            | Statement::Tail(_) => true,
             Statement::Guarded(_, b) | Statement::Block(b) => walk(b),
             _ => false,
         })
@@ -234,28 +238,30 @@ mod tests {
              let b = await t;",
         );
         let errs = analyze(&items);
-        assert!(errs.iter().any(|e| e.contains("after it was consumed")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("after it was consumed")),
+            "{errs:?}"
+        );
     }
 
     #[test]
     fn dropped_live_handle_is_an_error() {
         let items = parse("defn job(n: Int) -> Int { term n; };\nlet t = spawn job(5);");
         let errs = analyze(&items);
-        assert!(errs.iter().any(|e| e.contains("drops a live task handle")), "{errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("drops a live task handle")),
+            "{errs:?}"
+        );
     }
 
     #[test]
     fn free_requires_cancellation_point_in_spawn_body() {
         // term IS a checkpoint — free passes.
-        let ok = parse(
-            "let t = spawn job(5);\nfree t;\ndefn job(n: Int) -> Int { term n; };",
-        );
+        let ok = parse("let t = spawn job(5);\nfree t;\ndefn job(n: Int) -> Int { term n; };");
         assert!(analyze(&ok).is_empty(), "{:?}", analyze(&ok));
         // A body without yield/term cannot be freed.
         // (Body-less defns are staged; use a void txn-shaped body instead.)
-        let bad = parse(
-            "let t = spawn go();\nfree t;\ndefn go() { let x: Int = 1; };",
-        );
+        let bad = parse("let t = spawn go();\nfree t;\ndefn go() { let x: Int = 1; };");
         let errs = analyze(&bad);
         assert!(
             errs.iter().any(|e| e.contains("no cancellation point")),

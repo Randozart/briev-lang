@@ -66,12 +66,10 @@ pub fn optimize_layouts(
         // 2026-07-22: Only optimize bridge-path frgns (GLUE-mediated calls).
         // Inline frgns and unsupported ones are skipped.
         let target = match resolved_frgns.get(&fb.foreign_name) {
-            Some(ResolvedFrgn::Bridge { language, .. }) => {
-                match glue_targets.get(language) {
-                    Some(t) => t,
-                    None => continue,
-                }
-            }
+            Some(ResolvedFrgn::Bridge { language, .. }) => match glue_targets.get(language) {
+                Some(t) => t,
+                None => continue,
+            },
             _ => continue,
         };
 
@@ -93,7 +91,9 @@ pub fn optimize_layouts(
             let foreign_ty_name = match protocol_cat {
                 Some(cat) => {
                     let protocol_key = format!("#{}", cat);
-                    target.protocols.get(&protocol_key)
+                    target
+                        .protocols
+                        .get(&protocol_key)
                         .and_then(|e| e.c_abi.clone())
                         .unwrap_or_else(|| derive_foreign_type_name(param_ty, &target.language))
                 }
@@ -102,10 +102,11 @@ pub fn optimize_layouts(
 
             // 2026-07-22: Get the foreign type's layout. If the foreign type
             // isn't in the universe (e.g., types.bv wasn't loaded), skip.
-            let (foreign_bytes, foreign_alignment) = match get_type_layout(universe, &foreign_ty_name) {
-                Some(l) => l,
-                None => continue,
-            };
+            let (foreign_bytes, foreign_alignment) =
+                match get_type_layout(universe, &foreign_ty_name) {
+                    Some(l) => l,
+                    None => continue,
+                };
 
             // 2026-07-22: If layouts are already identical, no optimization.
             if current.bytes == foreign_bytes && current.alignment == foreign_alignment {
@@ -324,13 +325,22 @@ mod tests {
     // ── Helpers ──────────────────────────────────────────────────────────
 
     // Type shorthand helpers
-    fn ti() -> Type { Type::int() }
-    fn tf() -> Type { Type::float() }
-    fn tb() -> Type { Type::bool_() }
-    fn ts() -> Type { Type::string() }
+    fn ti() -> Type {
+        Type::int()
+    }
+    fn tf() -> Type {
+        Type::float()
+    }
+    fn tb() -> Type {
+        Type::bool_()
+    }
+    fn ts() -> Type {
+        Type::string()
+    }
 
     fn make_frgn(name: &str, ext: &str, param_types: Vec<(&str, Type)>) -> TopLevel {
-        let inputs: Vec<(String, Type)> = param_types.into_iter()
+        let inputs: Vec<(String, Type)> = param_types
+            .into_iter()
             .map(|(n, t)| (n.to_string(), t))
             .collect();
         let mut fb = ForeignBinding::new(
@@ -345,53 +355,62 @@ mod tests {
 
     fn sample_glue_targets() -> HashMap<String, GlueTarget> {
         let mut map = HashMap::new();
-        map.insert("python".to_string(), GlueTarget {
-            language: "python".to_string(),
-            types_module: PathBuf::from("glue/python/types.bv"),
-            extension: "py".to_string(),
-            bridge_kind: "native_module".to_string(),
-            calling_convention: "c_abi".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: crate::glue::config::Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
-        map.insert("rust".to_string(), GlueTarget {
-            language: "rust".to_string(),
-            types_module: PathBuf::from("glue/rust/types.bv"),
-            extension: "rs".to_string(),
-            bridge_kind: "extern_c_crate".to_string(),
-            calling_convention: "lto".to_string(),
-            module_init: false,
-            protocols: HashMap::new(),
-            templates: HashMap::new(),
-            conversions: crate::glue::config::Conversions::default(),
-            state: crate::glue::config::StateAbi::default(),
-            param_decl: "{name}: {type}".to_string(),
-            fn_param_decl: "{name}: {type}".to_string(),
-            ..Default::default()
-        });
+        map.insert(
+            "python".to_string(),
+            GlueTarget {
+                language: "python".to_string(),
+                types_module: PathBuf::from("glue/python/types.bv"),
+                extension: "py".to_string(),
+                bridge_kind: "native_module".to_string(),
+                calling_convention: "c_abi".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: crate::glue::config::Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
+        map.insert(
+            "rust".to_string(),
+            GlueTarget {
+                language: "rust".to_string(),
+                types_module: PathBuf::from("glue/rust/types.bv"),
+                extension: "rs".to_string(),
+                bridge_kind: "extern_c_crate".to_string(),
+                calling_convention: "lto".to_string(),
+                module_init: false,
+                protocols: HashMap::new(),
+                templates: HashMap::new(),
+                conversions: crate::glue::config::Conversions::default(),
+                state: crate::glue::config::StateAbi::default(),
+                param_decl: "{name}: {type}".to_string(),
+                fn_param_decl: "{name}: {type}".to_string(),
+                ..Default::default()
+            },
+        );
         map
     }
 
     fn make_universe_with_types(pairs: &[(&str, u64, u64)]) -> TypeUniverse {
         let mut u = TypeUniverse::new();
         for &(name, bytes, alignment) in pairs {
-            u.types.insert(name.to_string(), crate::type_universe::ResolvedType {
-                type_params: vec![],
-                name: name.to_string(),
-                base: "Data".to_string(),
-                bytes,
-                min_bits: bytes * 8,
-                max_bits: bytes * 8,
-                alignment,
-                properties: std::collections::HashMap::new(),
-                fields: vec![],
-            });
+            u.types.insert(
+                name.to_string(),
+                crate::type_universe::ResolvedType {
+                    type_params: vec![],
+                    name: name.to_string(),
+                    base: "Data".to_string(),
+                    bytes,
+                    min_bits: bytes * 8,
+                    max_bits: bytes * 8,
+                    alignment,
+                    properties: std::collections::HashMap::new(),
+                    fields: vec![],
+                },
+            );
         }
         u
     }
@@ -399,7 +418,10 @@ mod tests {
     fn make_type_def(name: &str, bytes: u64, alignment: u64) -> TopLevel {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert("maxbits".to_string(), PropertyValue::Int(bytes as i64 * 8));
-        metadata.insert("alignment".to_string(), PropertyValue::Int(alignment as i64));
+        metadata.insert(
+            "alignment".to_string(),
+            PropertyValue::Int(alignment as i64),
+        );
         TopLevel::TypeDef(Box::new(TypeDef {
             name: name.to_string(),
             type_params: vec![],
@@ -418,7 +440,8 @@ mod tests {
                 metadata,
                 projections: vec![],
                 bindings: vec![],
-                operators: vec![], op_bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
                 constraints: vec![],
                 members: vec![],
                 hold_laws: vec![],
@@ -440,7 +463,10 @@ mod tests {
         let targets = sample_glue_targets();
 
         let changes = optimize_layouts(&items, &universe, &resolved_frgns, &targets).unwrap();
-        assert!(changes.is_empty(), "expected no changes with no frgn declarations");
+        assert!(
+            changes.is_empty(),
+            "expected no changes with no frgn declarations"
+        );
     }
 
     /// A frgn with an existing identity meld → no layout change needed.
@@ -450,16 +476,22 @@ mod tests {
         let items = vec![frgn];
         let universe = TypeUniverse::new();
         let mut resolved_frgns = HashMap::new();
-        resolved_frgns.insert("py_func".to_string(), ResolvedFrgn::Bridge {
-            language: "python".to_string(),
-            param_paths: Vec::new(),
-            return_path: None,
-        });
+        resolved_frgns.insert(
+            "py_func".to_string(),
+            ResolvedFrgn::Bridge {
+                language: "python".to_string(),
+                param_paths: Vec::new(),
+                return_path: None,
+            },
+        );
 
         let targets = sample_glue_targets();
 
         let changes = optimize_layouts(&items, &universe, &resolved_frgns, &targets).unwrap();
-        assert!(changes.is_empty(), "expected no changes when foreign type is absent");
+        assert!(
+            changes.is_empty(),
+            "expected no changes when foreign type is absent"
+        );
     }
 
     /// A frgn with a different foreign layout → proposes layout change.
@@ -467,21 +499,24 @@ mod tests {
     fn test_layout_optimizer_adopt_foreign_layout() {
         let frgn = make_frgn("py_func", "py", vec![("x", ti())]);
         let items = vec![frgn];
-        let universe = make_universe_with_types(&[
-            ("Int", 8, 8),
-            ("PyInt", 16, 8),
-        ]);
+        let universe = make_universe_with_types(&[("Int", 8, 8), ("PyInt", 16, 8)]);
         let mut resolved_frgns = HashMap::new();
-        resolved_frgns.insert("py_func".to_string(), ResolvedFrgn::Bridge {
-            language: "python".to_string(),
-            param_paths: Vec::new(),
-            return_path: None,
-        });
+        resolved_frgns.insert(
+            "py_func".to_string(),
+            ResolvedFrgn::Bridge {
+                language: "python".to_string(),
+                param_paths: Vec::new(),
+                return_path: None,
+            },
+        );
         let targets = sample_glue_targets();
 
         let changes = optimize_layouts(&items, &universe, &resolved_frgns, &targets).unwrap();
 
-        assert!(!changes.is_empty(), "expected layout change for different foreign layout");
+        assert!(
+            !changes.is_empty(),
+            "expected layout change for different foreign layout"
+        );
         assert_eq!(changes[0].type_name, "Int");
         assert_eq!(changes[0].new_bytes, 16);
         assert_eq!(changes[0].new_alignment, 8);
@@ -495,19 +530,24 @@ mod tests {
     fn test_layout_optimizer_foreign_type_absent() {
         let frgn = make_frgn("py_func", "py", vec![("x", ti())]);
         let items = vec![frgn];
-        let universe = TypeUniverse::new();  // No PyInt registered
+        let universe = TypeUniverse::new(); // No PyInt registered
         let mut resolved_frgns = HashMap::new();
-        resolved_frgns.insert("py_func".to_string(), ResolvedFrgn::Bridge {
-            language: "python".to_string(),
-            param_paths: Vec::new(),
-            return_path: None,
-        });
+        resolved_frgns.insert(
+            "py_func".to_string(),
+            ResolvedFrgn::Bridge {
+                language: "python".to_string(),
+                param_paths: Vec::new(),
+                return_path: None,
+            },
+        );
         let targets = sample_glue_targets();
 
         let changes = optimize_layouts(&items, &universe, &resolved_frgns, &targets).unwrap();
         // PyInt is not in the universe → optimizer skips this parameter
-        assert!(changes.is_empty(),
-            "expected no changes when foreign type is not in the universe");
+        assert!(
+            changes.is_empty(),
+            "expected no changes when foreign type is not in the universe"
+        );
     }
 
     /// verify that apply_layout_change modifies a TypeDef's metadata.
@@ -527,7 +567,7 @@ mod tests {
         if let TopLevel::TypeDef(td) = &items[0] {
             let maxbits = td.body.metadata.get("maxbits").unwrap();
             let alignment = td.body.metadata.get("alignment").unwrap();
-            assert_eq!(*maxbits, PropertyValue::Int(128));  // 16 bytes * 8
+            assert_eq!(*maxbits, PropertyValue::Int(128)); // 16 bytes * 8
             assert_eq!(*alignment, PropertyValue::Int(8));
         } else {
             panic!("expected TypeDef");
@@ -589,7 +629,8 @@ mod tests {
         let mut universe = make_universe_with_types(&[("A", 8, 8), ("B", 8, 8)]);
         // Add Cast.B to A
         if let Some(ref mut rt) = universe.types.get_mut("A") {
-            rt.properties.insert("Cast.B".to_string(), PropertyValue::Bool(true));
+            rt.properties
+                .insert("Cast.B".to_string(), PropertyValue::Bool(true));
         }
         let path = find_cast_path(&universe, "A", "B");
 
@@ -605,7 +646,11 @@ mod tests {
         let mut resolved_frgns = HashMap::new();
         resolved_frgns.insert(
             "inline_func".to_string(),
-            ResolvedFrgn::Inline { symbol: "inline_func".to_string(), compile_source: true, protocol_lib: None },
+            ResolvedFrgn::Inline {
+                symbol: "inline_func".to_string(),
+                compile_source: true,
+                protocol_lib: None,
+            },
         );
         let targets = sample_glue_targets();
 

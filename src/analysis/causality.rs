@@ -67,8 +67,7 @@ pub fn run(items: &[TopLevel]) -> CausalGraph {
     let mut edges = Vec::new();
     for a in &nodes {
         for b in &nodes {
-            let overlap: BTreeSet<String> =
-                a.writes.intersection(&b.reads).cloned().collect();
+            let overlap: BTreeSet<String> = a.writes.intersection(&b.reads).cloned().collect();
             if overlap.is_empty() {
                 continue;
             }
@@ -77,12 +76,20 @@ pub fn run(items: &[TopLevel]) -> CausalGraph {
             } else {
                 EdgeProof::Weak
             };
-            edges.push(CausalEdge { from: a.name.clone(), to: b.name.clone(), proof });
+            edges.push(CausalEdge {
+                from: a.name.clone(),
+                to: b.name.clone(),
+                proof,
+            });
         }
     }
     edges.sort_by(|x, y| (&x.from, &x.to).cmp(&(&y.from, &y.to)));
 
-    let mut graph = CausalGraph { nodes, edges, refusals: Vec::new() };
+    let mut graph = CausalGraph {
+        nodes,
+        edges,
+        refusals: Vec::new(),
+    };
     check_cycles(&mut graph);
     graph
 }
@@ -109,14 +116,12 @@ fn collect_nodes(items: &[TopLevel]) -> Vec<CausalNode> {
             },
             _ => continue,
         };
-        let writes: BTreeSet<String> =
-            crate::backend::collect_assigned_identifiers(&txn.body)
-                .into_iter()
-                .collect();
-        let mut reads: BTreeSet<String> =
-            crate::backend::collect_read_identifiers(&txn.body)
-                .into_iter()
-                .collect();
+        let writes: BTreeSet<String> = crate::backend::collect_assigned_identifiers(&txn.body)
+            .into_iter()
+            .collect();
+        let mut reads: BTreeSet<String> = crate::backend::collect_read_identifiers(&txn.body)
+            .into_iter()
+            .collect();
         expr_identifiers(&txn.contract.pre_condition, &mut reads);
         expr_identifiers(&txn.contract.post_condition, &mut reads);
         let post = &txn.contract.post_condition;
@@ -162,8 +167,7 @@ fn check_cycles(g: &mut CausalGraph) {
         }
         let any_completion = comp.iter().any(|&i| g.nodes[i].post_declares_completion);
         if !any_completion {
-            let mut names: Vec<&str> =
-                comp.iter().map(|&i| g.nodes[i].name.as_str()).collect();
+            let mut names: Vec<&str> = comp.iter().map(|&i| g.nodes[i].name.as_str()).collect();
             names.sort_unstable();
             g.refusals.push(format!(
                 "the reactive cycle ({}) has no provable convergence and no liveness \
@@ -267,7 +271,9 @@ pub fn field_facts(expr: &Expr) -> Vec<FieldFact> {
 }
 
 fn as_field_fact(e: &Expr) -> Option<FieldFact> {
-    let Expr::BinaryOp(op, l, r) = e else { return None };
+    let Expr::BinaryOp(op, l, r) = e else {
+        return None;
+    };
     let cmp = matches!(
         op,
         BinaryOpKind::Eq
@@ -290,7 +296,11 @@ fn as_field_fact(e: &Expr) -> Option<FieldFact> {
         }
         _ => return None,
     };
-    Some(FieldFact { field, op: *op, value: lit })
+    Some(FieldFact {
+        field,
+        op: *op,
+        value: lit,
+    })
 }
 
 /// Conservative structural entailment: every `next` conjunct must be
@@ -380,7 +390,11 @@ pub fn explain(graph: &CausalGraph) -> Vec<String> {
             n.name,
             join_or(proven),
             join_or(weak),
-            if n.post_declares_completion { "declares" } else { "declares no" }
+            if n.post_declares_completion {
+                "declares"
+            } else {
+                "declares no"
+            }
         ));
     }
     lines
@@ -452,8 +466,16 @@ mod tests {
             { mode = 0; }
         "#;
         let g = graph(src);
-        assert!(g.refusals.is_empty(), "hysteresis declares completions: {:?}", g.refusals);
-        let e = g.edges.iter().find(|e| e.from == "idle" && e.to == "alarm").expect("idle->alarm edge");
+        assert!(
+            g.refusals.is_empty(),
+            "hysteresis declares completions: {:?}",
+            g.refusals
+        );
+        let e = g
+            .edges
+            .iter()
+            .find(|e| e.from == "idle" && e.to == "alarm")
+            .expect("idle->alarm edge");
         assert_eq!(e.proof, EdgeProof::Weak, "temp<75 is not entailed");
     }
 
@@ -478,7 +500,11 @@ mod tests {
         let g = graph(src);
         assert!(g.refusals.is_empty());
         for (a, b) in [("arm", "commit"), ("commit", "shutdown")] {
-            let e = g.edges.iter().find(|e| e.from == a && e.to == b).expect("edge");
+            let e = g
+                .edges
+                .iter()
+                .find(|e| e.from == a && e.to == b)
+                .expect("edge");
             assert_eq!(e.proof, EdgeProof::Proven, "{a}->{b} should be proven");
         }
     }
@@ -494,8 +520,15 @@ mod tests {
         "#;
         let g = graph(src);
         assert_eq!(g.refusals.len(), 1, "oscillator must be refused");
-        assert!(g.refusals[0].contains("flip"), "names the node: {}", g.refusals[0]);
-        assert!(g.refusals[0].contains("liveness"), "states the missing obligation");
+        assert!(
+            g.refusals[0].contains("flip"),
+            "names the node: {}",
+            g.refusals[0]
+        );
+        assert!(
+            g.refusals[0].contains("liveness"),
+            "states the missing obligation"
+        );
         assert!(g.refusals[0].contains("fix:"), "gives the fix");
     }
 
@@ -509,7 +542,11 @@ mod tests {
             { x = 1; endprogram; }
         "#;
         let g = graph(src);
-        assert!(g.refusals.is_empty(), "endprogram must satisfy liveness: {:?}", g.refusals);
+        assert!(
+            g.refusals.is_empty(),
+            "endprogram must satisfy liveness: {:?}",
+            g.refusals
+        );
     }
 
     #[test]
@@ -553,8 +590,16 @@ mod tests {
             g.refusals
         );
         let t = g.nodes.iter().find(|n| n.name == "ws_tick").unwrap();
-        assert!(t.writes.contains("phase"), "nested when write must count: {:?}", t.writes);
-        assert!(t.writes.contains("passes"), "deeply nested when write must count: {:?}", t.writes);
+        assert!(
+            t.writes.contains("phase"),
+            "nested when write must count: {:?}",
+            t.writes
+        );
+        assert!(
+            t.writes.contains("passes"),
+            "deeply nested when write must count: {:?}",
+            t.writes
+        );
         assert!(t.writes.contains("tick"));
     }
 
@@ -580,7 +625,11 @@ mod tests {
         "#;
         let g = graph(src);
         let f = g.nodes.iter().find(|n| n.name == "fill").unwrap();
-        assert!(f.writes.contains("buf"), "indexed store must count as a write of buf: {:?}", f.writes);
+        assert!(
+            f.writes.contains("buf"),
+            "indexed store must count as a write of buf: {:?}",
+            f.writes
+        );
         assert!(f.writes.contains("i"));
     }
 
@@ -595,7 +644,11 @@ mod tests {
             { x = x + 1; done = x > 3; }
         "#;
         let g = graph(src);
-        assert!(g.refusals.is_empty(), "completion declared: {:?}", g.refusals);
+        assert!(
+            g.refusals.is_empty(),
+            "completion declared: {:?}",
+            g.refusals
+        );
     }
 
     #[test]
@@ -633,7 +686,11 @@ mod tests {
         "#;
         let g = graph(src);
         assert!(g.refusals.is_empty());
-        let e = g.edges.iter().find(|e| e.from == "producer" && e.to == "consumer").expect("edge");
+        let e = g
+            .edges
+            .iter()
+            .find(|e| e.from == "producer" && e.to == "consumer")
+            .expect("edge");
         assert_eq!(e.proof, EdgeProof::Proven, "[y==1] post entails [y==1] pre");
     }
 
@@ -656,7 +713,11 @@ mod tests {
             { }
         "#;
         let g = graph(src);
-        let e = g.edges.iter().find(|e| e.from == "a" && e.to == "b").expect("a->b edge");
+        let e = g
+            .edges
+            .iter()
+            .find(|e| e.from == "a" && e.to == "b")
+            .expect("a->b edge");
         assert_eq!(
             e.proof,
             EdgeProof::Weak,
@@ -681,7 +742,11 @@ mod tests {
         let r1 = explain(&g);
         let r2 = explain(&g);
         assert_eq!(r1, r2, "report is deterministic");
-        assert!(r1[0].starts_with("node arm"), "sorted by node name: {}", r1[0]);
+        assert!(
+            r1[0].starts_with("node arm"),
+            "sorted by node name: {}",
+            r1[0]
+        );
     }
 
     #[test]
@@ -694,7 +759,10 @@ mod tests {
             { }
         "#;
         let g = graph(src);
-        assert!(g.nodes.is_empty(), "plain txn is a contract carrier, not a node");
+        assert!(
+            g.nodes.is_empty(),
+            "plain txn is a contract carrier, not a node"
+        );
         assert!(g.refusals.is_empty());
     }
 }

@@ -112,11 +112,7 @@ fn common_index_divisor(
     for stmt in stmts {
         collect_index_divisors_stmt(stmt, index_var, consts, &mut mods, &mut divs);
     }
-    let shared: Vec<i64> = mods
-        .iter()
-        .filter(|k| divs.contains(k))
-        .copied()
-        .collect();
+    let shared: Vec<i64> = mods.iter().filter(|k| divs.contains(k)).copied().collect();
     let first = *shared.first()?;
     (shared.iter().all(|k| *k == first)).then_some(first)
 }
@@ -225,9 +221,7 @@ fn state_arrays(items: &[TopLevel]) -> HashMap<String, (Type, i64)> {
             TopLevel::StateDecl(sd) => (sd.name.clone(), sd.ty.clone()),
             TopLevel::Statement(stmt) => match stmt.as_ref() {
                 Statement::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } => (name.clone(), ty.clone()),
                 _ => continue,
             },
@@ -393,13 +387,9 @@ mod tests {
         // Replace the R32 array with a plain Float array — no format property.
         items[2] = TopLevel::StateDecl(StateDecl {
             name: "img".into(),
-            ty: Type::Vector(
-                Box::new(Type::float()),
-                vec![Dimension::Anonymous(4096)],
-            ),
+            ty: Type::Vector(Box::new(Type::float()), vec![Dimension::Anonymous(4096)]),
             span: None,
         });
         assert!(detect(&items, &accel, Some(&universe), true).is_empty());
     }
-
 }

@@ -15,7 +15,11 @@ use std::collections::HashSet;
 
 /// 2026-07-15: Normalize AST for SPIR-V backend emission.
 /// 2026-07-20: No TOML config — hashword protocol replaces op dispatch.
-pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bits: u64) -> Result<(), String> {
+pub fn normalize(
+    items: &mut Vec<TopLevel>,
+    universe: &mut TypeUniverse,
+    int_bits: u64,
+) -> Result<(), String> {
     // 2026-08-10: shared type registration — uniform universe population.
     register_typedefs(items, universe, int_bits)?;
 
@@ -23,7 +27,8 @@ pub fn normalize(items: &mut Vec<TopLevel>, universe: &mut TypeUniverse, int_bit
     for item in items.iter_mut() {
         if let TopLevel::Transaction(txn) = item {
             if is_kernel_txn(txn) {
-                txn.metadata.insert("is_kernel".into(), PropertyValue::Bool(true));
+                txn.metadata
+                    .insert("is_kernel".into(), PropertyValue::Bool(true));
             }
         }
     }
@@ -71,23 +76,51 @@ fn is_kernel_txn(txn: &crate::ast::top::Transaction) -> bool {
 fn build_supported_ops() -> HashSet<String> {
     [
         // ALU / comparison / bitwise (lower.rs elementwise).
-        "Add#", "Sub#", "Mul#", "Div#", "Eq#", "Lt#", "Gt#",
-        "BitAnd#", "BitOr#", "BitXor#", "Shl#", "Shr#",
+        "Add#",
+        "Sub#",
+        "Mul#",
+        "Div#",
+        "Eq#",
+        "Lt#",
+        "Gt#",
+        "BitAnd#",
+        "BitOr#",
+        "BitXor#",
+        "Shl#",
+        "Shr#",
         // Scalar math + FMA.
-        "Exp#", "Sqrt#", "Fabs#", "Fma#", "Max#", "Min#",
+        "Exp#",
+        "Sqrt#",
+        "Fabs#",
+        "Fma#",
+        "Max#",
+        "Min#",
         // Memory / observability.
-        "Malloc#", "Free#", "Load#", "Store#", "Print#",
+        "Malloc#",
+        "Free#",
+        "Load#",
+        "Store#",
+        "Print#",
         // Element-addressed atomics (plan 2026-10-01-atomic-element-rmw
         // A4/A5 — atomic_inc.abv pins the lane).
-        "AtomicAddAt#", "AtomicSubAt#", "AtomicXchgAt#", "AtomicCasAt#",
+        "AtomicAddAt#",
+        "AtomicSubAt#",
+        "AtomicXchgAt#",
+        "AtomicCasAt#",
         // Lane coordination (2026-09-01 cooperative-row-kernels +
         // warp-slice work): shuffles, ballot, broadcast, subgroup
         // reductions — OpGroupNonUniform*/subgroup ops.
-        "ShuffleDown#", "ShuffleXor#", "SubgroupBallot#",
-        "SubgroupBroadcast#", "SubgroupFAdd#", "SubgroupFMax#",
+        "ShuffleDown#",
+        "ShuffleXor#",
+        "SubgroupBallot#",
+        "SubgroupBroadcast#",
+        "SubgroupFAdd#",
+        "SubgroupFMax#",
         "SubgroupFMin#",
         // Kernel builtins + launch geometry.
-        "GetGlobalId#", "GetLocalId#", "WorkgroupSize#",
+        "GetGlobalId#",
+        "GetLocalId#",
+        "WorkgroupSize#",
     ]
     .iter()
     .map(|n| n.to_string())
@@ -115,9 +148,14 @@ mod tests {
             body: TypeDefBody {
                 pins: Vec::new(),
                 reference: None,
-                slots: slots.into_iter().map(|(n, ty)| TypeDefSlot {
-                    name: n.to_string(), ty, bit_range: None,
-                }).collect(),
+                slots: slots
+                    .into_iter()
+                    .map(|(n, ty)| TypeDefSlot {
+                        name: n.to_string(),
+                        ty,
+                        bit_range: None,
+                    })
+                    .collect(),
                 metadata: HashMap::new(),
                 projections: vec![],
                 bindings: vec![],
@@ -137,7 +175,10 @@ mod tests {
     #[test]
     fn test_spirv_register_typedefs() {
         let mut u = TypeUniverse::new();
-        let items = vec![make_type_def("Point", vec![("x", Type::int()), ("y", Type::int())])];
+        let items = vec![make_type_def(
+            "Point",
+            vec![("x", Type::int()), ("y", Type::int())],
+        )];
         normalize(&mut items.clone(), &mut u, 32).unwrap();
         let rt = u.get("Point").expect("typedef registered");
         assert_eq!(rt.bytes, 16);

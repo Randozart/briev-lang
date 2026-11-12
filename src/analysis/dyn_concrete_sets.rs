@@ -77,7 +77,9 @@ pub(crate) fn collection_dyn_trait(ty: &crate::ast::Type) -> Option<String> {
         crate::ast::Type::Applied(_, args) | crate::ast::Type::Generic(_, args) => args,
         _ => return None,
     };
-    let arg = args.iter().find(|a| matches!(a, crate::ast::Type::Dyn(_)))?;
+    let arg = args
+        .iter()
+        .find(|a| matches!(a, crate::ast::Type::Dyn(_)))?;
     match arg {
         crate::ast::Type::Dyn(inner) => Some(match inner.as_ref() {
             crate::ast::Type::Custom(n) => n.clone(),
@@ -132,11 +134,7 @@ fn concrete_of_scalar_dyn(ty: &crate::ast::Type) -> Option<String> {
 /// secondary signal only: the parser places a lone `type X: T` in the PARENT
 /// slot (the single non-fundamental parent), so `td.traits` is often empty
 /// (llvm/mod.rs:6277) — the impl path is the source of truth.
-fn conforms(
-    items: &[crate::ast::TopLevel],
-    concrete: &str,
-    trait_name: &str,
-) -> bool {
+fn conforms(items: &[crate::ast::TopLevel], concrete: &str, trait_name: &str) -> bool {
     let trait_slots = collect_trait_slots(items, trait_name);
     if trait_slots.is_empty() {
         // No declared requirement slots to check — fall back to the
@@ -190,7 +188,13 @@ fn top_level_declared_types(items: &[crate::ast::TopLevel]) -> HashMap<String, c
     let mut out = HashMap::new();
     for item in items {
         if let crate::ast::TopLevel::Statement(s) = item {
-            if let crate::ast::Statement::Let { name, ty, expr: Some(_), .. } = s.as_ref() {
+            if let crate::ast::Statement::Let {
+                name,
+                ty,
+                expr: Some(_),
+                ..
+            } = s.as_ref()
+            {
                 if let Some(t) = ty {
                     out.insert(name.clone(), t.clone());
                 }
@@ -232,7 +236,9 @@ fn analyze_let(
     out: &mut HashMap<String, DynCollectionInfo>,
 ) {
     let Some(ty) = ty else { return };
-    let Some(trait_name) = collection_dyn_trait(ty) else { return };
+    let Some(trait_name) = collection_dyn_trait(ty) else {
+        return;
+    };
     // Non-literal initializer: the concrete set is open — any conforming
     // concrete may arrive, so every use-site dispatches via the vtable.
     let elems = match expr {
@@ -279,7 +285,9 @@ mod tests {
 
     fn prog(src: &str) -> Vec<TopLevel> {
         let tokens = crate::lexer::tokenize(src).unwrap();
-        crate::parser::Parser::new(tokens, src).parse_program().unwrap()
+        crate::parser::Parser::new(tokens, src)
+            .parse_program()
+            .unwrap()
     }
 
     fn trait_and_types() -> &'static str {
@@ -300,7 +308,10 @@ impl Cat {
 
     #[test]
     fn heterogeneous_two_elements_yield_switch() {
-        let src = format!("{}let handlers: List<dyn Greeter> = [Dog {{ base: 7 }}, Cat {{ lives: 9 }}];", trait_and_types());
+        let src = format!(
+            "{}let handlers: List<dyn Greeter> = [Dog {{ base: 7 }}, Cat {{ lives: 9 }}];",
+            trait_and_types()
+        );
         let items = prog(&src);
         let info = analyze(&items);
         let h = info.get("handlers").expect("handlers analyzed");
@@ -313,7 +324,10 @@ impl Cat {
 
     #[test]
     fn single_element_yields_inline() {
-        let src = format!("{}let only: List<dyn Greeter> = [Dog {{ base: 1 }}];", trait_and_types());
+        let src = format!(
+            "{}let only: List<dyn Greeter> = [Dog {{ base: 1 }}];",
+            trait_and_types()
+        );
         let items = prog(&src);
         let info = analyze(&items);
         let h = info.get("only").expect("only analyzed");

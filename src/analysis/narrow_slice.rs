@@ -6,7 +6,7 @@
 //
 // Flat control flow: max 2 levels, guard clauses, early returns.
 
-use crate::ast::{Expr, TopLevel, Statement};
+use crate::ast::{Expr, Statement, TopLevel};
 
 /// Narrow all constant-bounds Expr::Slice nodes in a program.
 pub fn narrow_slices(items: &mut [TopLevel]) {
@@ -48,11 +48,22 @@ fn walk_stmts(stmts: &mut [Statement]) {
 
 fn walk_expr(expr: &mut Expr) {
     match expr {
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             walk_expr(array);
-            if let Some(s) = start { walk_expr(s); }
-            if let Some(e) = end { walk_expr(e); }
-            if let Some(s) = stride { walk_expr(s); }
+            if let Some(s) = start {
+                walk_expr(s);
+            }
+            if let Some(e) = end {
+                walk_expr(e);
+            }
+            if let Some(s) = stride {
+                walk_expr(s);
+            }
 
             let stride_val = stride.as_ref().and_then(|e| expr_as_i64(e)).unwrap_or(1i64);
             if stride_val != 1 {
@@ -73,30 +84,54 @@ fn walk_expr(expr: &mut Expr) {
             let _ = (array, start, end, stride);
             return;
         }
-        Expr::BinaryOp(_, a, b) => { walk_expr(a); walk_expr(b); }
-        Expr::UnaryOp(_, a) => { walk_expr(a); }
-        Expr::Call(_, args, _) => { for a in args { walk_expr(a); } }
-        Expr::Index(arr, idx) => { walk_expr(arr); walk_expr(idx); }
-        Expr::Field(obj, _) => { walk_expr(obj); }
+        Expr::BinaryOp(_, a, b) => {
+            walk_expr(a);
+            walk_expr(b);
+        }
+        Expr::UnaryOp(_, a) => {
+            walk_expr(a);
+        }
+        Expr::Call(_, args, _) => {
+            for a in args {
+                walk_expr(a);
+            }
+        }
+        Expr::Index(arr, idx) => {
+            walk_expr(arr);
+            walk_expr(idx);
+        }
+        Expr::Field(obj, _) => {
+            walk_expr(obj);
+        }
         Expr::If(c, t, e) => {
             walk_expr(c);
             walk_expr(t);
-            if let Some(el) = e { walk_expr(el); }
+            if let Some(el) = e {
+                walk_expr(el);
+            }
         }
         Expr::Match(val, arms) => {
             walk_expr(val);
-            for arm in arms { walk_expr(&mut arm.body); }
+            for arm in arms {
+                walk_expr(&mut arm.body);
+            }
         }
         Expr::Tuple(items) | Expr::List(items) => {
-            for item in items { walk_expr(item); }
+            for item in items {
+                walk_expr(item);
+            }
         }
         Expr::Block(stmts) => walk_stmts(stmts),
         Expr::Lambda(_, body) => walk_expr(body),
         Expr::StructLiteral { fields, .. } => {
-            for (_, f) in fields { walk_expr(f); }
+            for (_, f) in fields {
+                walk_expr(f);
+            }
         }
         Expr::PluginIntercept { args, .. } => {
-            for a in args { walk_expr(a); }
+            for a in args {
+                walk_expr(a);
+            }
         }
         _ => {}
     }

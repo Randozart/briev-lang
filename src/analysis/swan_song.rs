@@ -33,13 +33,19 @@ use std::collections::{HashMap, HashSet};
 /// hoisted swan song would be silently dropped by the pure counter fold, so
 /// the fold must be blocked exactly when a hoist fires.
 pub fn has_swan_song(body: &[Statement]) -> bool {
-    let stmts: Vec<&Statement> = body.iter()
-        .filter(|s| !matches!(s, Statement::Term(..) | Statement::EndProgram(..) | Statement::Tail(_)))
+    let stmts: Vec<&Statement> = body
+        .iter()
+        .filter(|s| {
+            !matches!(
+                s,
+                Statement::Term(..) | Statement::EndProgram(..) | Statement::Tail(_)
+            )
+        })
         .collect();
     match stmts.last() {
-        Some(Statement::Guarded(_, statements)) => {
-            statements.iter().any(|s| matches!(s, Statement::EndProgram(..)))
-        }
+        Some(Statement::Guarded(_, statements)) => statements
+            .iter()
+            .any(|s| matches!(s, Statement::EndProgram(..))),
         _ => false,
     }
 }
@@ -61,7 +67,8 @@ pub fn hoist_swan_song(
     body: &[Statement],
     state_fields: &HashSet<String>,
 ) -> (Vec<Statement>, Vec<Vec<Statement>>) {
-    let mut stmts: Vec<&Statement> = body.iter()
+    let mut stmts: Vec<&Statement> = body
+        .iter()
         .filter(|s| !matches!(s, Statement::EndProgram(..) | Statement::Term(None)))
         .collect();
     // 2026-07-05: Build let-to-state-field mapping from body assignments.
@@ -82,7 +89,9 @@ pub fn hoist_swan_song(
     let mut hoist: Vec<Vec<Statement>> = Vec::new();
     while let Some(last_idx) = stmts.len().checked_sub(1) {
         if let Statement::Guarded(_, statements) = &stmts[last_idx] {
-            let is_terminating = statements.iter().any(|s| matches!(s, Statement::EndProgram(..)));
+            let is_terminating = statements
+                .iter()
+                .any(|s| matches!(s, Statement::EndProgram(..)));
             if !is_terminating {
                 break;
             }
@@ -90,7 +99,8 @@ pub fn hoist_swan_song(
             // into a Vec<Statement> that the post-loop block can re-emit.
             // This handles both simple field-print patterns (original hoisting)
             // and let-binding-based patterns (nbody: energy computation + print).
-            let mut body_stmts: Vec<Statement> = statements.iter()
+            let mut body_stmts: Vec<Statement> = statements
+                .iter()
                 .filter(|s| !matches!(s, Statement::EndProgram(..)))
                 .cloned()
                 .collect();
@@ -279,8 +289,11 @@ mod tests {
             panic!("hoisted swan song should be an Expression call");
         };
         // nesc must be remapped to the state field escapes.
-        assert!(matches!(&args[0], Expr::Identifier(n) if n == "escapes"),
-            "let-to-field remap failed: {:?}", args[0]);
+        assert!(
+            matches!(&args[0], Expr::Identifier(n) if n == "escapes"),
+            "let-to-field remap failed: {:?}",
+            args[0]
+        );
     }
 
     #[test]
@@ -306,8 +319,11 @@ mod tests {
         let Statement::Expression(Expr::Call(_, args, _)) = &song[0] else {
             panic!("hoisted swan song should be an Expression call");
         };
-        assert!(matches!(&args[0], Expr::Identifier(n) if n == "nesc"),
-            "non-state-field assignment must not remap: {:?}", args[0]);
+        assert!(
+            matches!(&args[0], Expr::Identifier(n) if n == "nesc"),
+            "non-state-field assignment must not remap: {:?}",
+            args[0]
+        );
     }
 
     #[test]

@@ -10,8 +10,12 @@ pub(super) fn register_defaults(graph: &mut Graph, items: &[TopLevel]) {
     for item in items {
         match item {
             TopLevel::Trait(trait_def) => register_trait(graph, trait_def),
-            TopLevel::Export(export) => register_defaults(graph, std::slice::from_ref(&export.inner)),
-            TopLevel::SyncGroup { item, .. } | TopLevel::Fuzzed { item, .. } => register_defaults(graph, std::slice::from_ref(item)),
+            TopLevel::Export(export) => {
+                register_defaults(graph, std::slice::from_ref(&export.inner))
+            }
+            TopLevel::SyncGroup { item, .. } | TopLevel::Fuzzed { item, .. } => {
+                register_defaults(graph, std::slice::from_ref(item))
+            }
             _ => {}
         }
     }
@@ -19,23 +23,36 @@ pub(super) fn register_defaults(graph: &mut Graph, items: &[TopLevel]) {
 
 fn register_trait(graph: &mut Graph, trait_def: &crate::ast::TraitDef) {
     for method in &trait_def.functions {
-        if method.body.is_empty() || graph.callables.contains_key(&method.name) || graph.generics.contains_key(&method.name) { continue; }
+        if method.body.is_empty()
+            || graph.callables.contains_key(&method.name)
+            || graph.generics.contains_key(&method.name)
+        {
+            continue;
+        }
         let mut generic = method.clone();
         generic.type_params = vec![crate::ast::top::TypeParam {
-            name: "Self".into(), bound: Some(crate::ast::Type::Custom(trait_def.name.clone())),
+            name: "Self".into(),
+            bound: Some(crate::ast::Type::Custom(trait_def.name.clone())),
         }];
         graph.generics.insert(method.name.clone(), generic);
     }
 }
 
-pub(super) fn substitute_output(output: &mut crate::ast::OutputType, substitution: &std::collections::HashMap<String, crate::ast::Type>) {
+pub(super) fn substitute_output(
+    output: &mut crate::ast::OutputType,
+    substitution: &std::collections::HashMap<String, crate::ast::Type>,
+) {
     use crate::ast::OutputType;
     match output {
         OutputType::Single(ty) => *ty = crate::typechecker::substitute_type(ty, substitution),
         OutputType::Union(items) | OutputType::Tuple(items) => {
-            for item in items { substitute_output(item, substitution); }
+            for item in items {
+                substitute_output(item, substitution);
+            }
         }
-        OutputType::Array(inner) | OutputType::Named(_, inner) => substitute_output(inner, substitution),
+        OutputType::Array(inner) | OutputType::Named(_, inner) => {
+            substitute_output(inner, substitution)
+        }
     }
 }
 
@@ -45,13 +62,16 @@ mod tests {
 
     fn plan(source: &str) -> crate::analysis::reclamation::ReclamationPlan {
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
         crate::analysis::reclamation::analyze(&items, &Default::default(), None)
     }
 
     #[test]
     fn defaults_follow_concrete_effects_through_chains_and_free_calls() {
-        let result = plan(r#"
+        let result = plan(
+            r#"
             trait Access {
                 defn read(value: Self) -> Int;
                 defn identity(value: Self) -> Self { term value; };
@@ -77,7 +97,8 @@ mod tests {
                 let value: Captured = Captured { ptr: Malloc#(8) };
                 term value.identity().twice();
             };
-        "#);
+        "#,
+        );
         assert!(result.regions.contains("closed"), "{result:?}");
         assert!(result.regions.contains("free_call"), "{result:?}");
         assert!(result.barriers.contains("escaping"), "{result:?}");
@@ -86,7 +107,8 @@ mod tests {
 
     #[test]
     fn concrete_and_top_level_shadowing_keep_their_actual_effects() {
-        let result = plan(r#"
+        let result = plan(
+            r#"
             trait Access { defn consume(value: Self) -> Int { term 0; }; };
             obj Captured {
                 ptr: Ptr;
@@ -101,7 +123,8 @@ mod tests {
                 let value: Captured = Captured { ptr: Malloc#(8) };
                 term consume(value);
             };
-        "#);
+        "#,
+        );
         assert!(result.barriers.contains("member"), "{result:?}");
         assert!(result.regions.contains("free_call"), "{result:?}");
     }

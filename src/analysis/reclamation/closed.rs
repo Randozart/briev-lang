@@ -12,7 +12,11 @@ use std::collections::BTreeSet;
 
 impl Graph {
     pub(super) fn closed_regions(&self, plan: &ReclamationPlan) -> BTreeSet<String> {
-        plan.regions.iter().filter(|name| self.is_closed_region(name, plan)).cloned().collect()
+        plan.regions
+            .iter()
+            .filter(|name| self.is_closed_region(name, plan))
+            .cloned()
+            .collect()
     }
 
     /// A region is closed when every allocation owned by its complete call
@@ -22,16 +26,34 @@ impl Graph {
     /// not depend on an intrinsic whose helper effects are unmodeled.
     fn is_closed_region(&self, name: &str, plan: &ReclamationPlan) -> bool {
         let closure = self.call_closure(name, &BTreeSet::new());
-        if closure.is_disjoint(&plan.barriers) && closure.is_disjoint(&self.growers) { return false; }
-        if !closure.is_disjoint(&self.unmodeled_helpers) { return false; }
-        let allocations: BTreeSet<_> = self.allocation_owner.iter()
-            .filter(|(_, owner)| closure.contains(*owner)).map(|(root, _)| *root).collect();
-        if allocations.is_empty() { return false; }
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        if closure.is_disjoint(&plan.barriers) && closure.is_disjoint(&self.growers) {
+            return false;
+        }
+        if !closure.is_disjoint(&self.unmodeled_helpers) {
+            return false;
+        }
+        let allocations: BTreeSet<_> = self
+            .allocation_owner
+            .iter()
+            .filter(|(_, owner)| closure.contains(*owner))
+            .map(|(root, _)| *root)
+            .collect();
+        if allocations.is_empty() {
+            return false;
+        }
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
-        if !allocations.is_disjoint(&escaped) { return false; }
+        if !allocations.is_disjoint(&escaped) {
+            return false;
+        }
         let callable = &self.callables[name];
-        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
+        let incoming = callable
+            .params
+            .iter()
+            .flat_map(|param| self.points[*param].iter());
         let roots = incoming.chain(self.points[callable.result].iter());
         self.reachable(roots).is_disjoint(&allocations)
     }
@@ -50,15 +72,27 @@ mod tests {
         let result = graph.node();
         let container = graph.allocation("outer");
         let payload = graph.allocation("grow");
-        graph.callables.insert("outer".into(), Callable {
-            params: vec![incoming], result, calls: BTreeSet::from(["grow".into()]),
-        });
+        graph.callables.insert(
+            "outer".into(),
+            Callable {
+                params: vec![incoming],
+                result,
+                calls: BTreeSet::from(["grow".into()]),
+            },
+        );
         let helper_result = graph.node();
-        graph.callables.insert("grow".into(), Callable {
-            params: vec![container], result: helper_result, calls: BTreeSet::new(),
-        });
+        graph.callables.insert(
+            "grow".into(),
+            Callable {
+                params: vec![container],
+                result: helper_result,
+                calls: BTreeSet::new(),
+            },
+        );
         graph.incoming_store_owners.insert("grow".into());
-        graph.constraints.push(Constraint::Store(container, payload));
+        graph
+            .constraints
+            .push(Constraint::Store(container, payload));
         (graph, incoming, result, payload)
     }
 
@@ -78,13 +112,25 @@ mod tests {
         for escape in 0..4 {
             let (mut graph, incoming, result, payload) = local_publication();
             match escape {
-                0 => graph.constraints.push(Constraint::FieldStore(incoming, "saved".into(), payload)),
+                0 => graph.constraints.push(Constraint::FieldStore(
+                    incoming,
+                    "saved".into(),
+                    payload,
+                )),
                 1 => graph.copy(payload, result),
-                2 => { let global = graph.global("saved"); graph.constraints.push(Constraint::Store(global, payload)); }
-                _ => { graph.escaped.insert(payload); }
+                2 => {
+                    let global = graph.global("saved");
+                    graph.constraints.push(Constraint::Store(global, payload));
+                }
+                _ => {
+                    graph.escaped.insert(payload);
+                }
             }
             graph.solve();
-            assert!(!graph.plan().closed_regions.contains("outer"), "escape {escape}");
+            assert!(
+                !graph.plan().closed_regions.contains("outer"),
+                "escape {escape}"
+            );
         }
     }
 
@@ -95,7 +141,12 @@ mod tests {
         graph.solve();
         assert!(!graph.plan().closed_regions.contains("outer"));
         graph.unmodeled_helpers.clear();
-        graph.callables.get_mut("grow").unwrap().calls.insert("outer".into());
+        graph
+            .callables
+            .get_mut("grow")
+            .unwrap()
+            .calls
+            .insert("outer".into());
         assert!(!graph.plan().closed_regions.contains("outer"));
     }
 
@@ -105,7 +156,9 @@ mod tests {
         graph.external_storage(incoming);
         let member = graph.node();
         let address = graph.node();
-        graph.constraints.push(Constraint::FieldLoad(incoming, "storage".into(), member));
+        graph
+            .constraints
+            .push(Constraint::FieldLoad(incoming, "storage".into(), member));
         graph.constraints.push(Constraint::Load(member, address));
         graph.constraints.push(Constraint::Store(address, payload));
         graph.solve();

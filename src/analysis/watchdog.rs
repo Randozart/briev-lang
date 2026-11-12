@@ -14,10 +14,18 @@ impl std::fmt::Display for WatchdogError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WatchdogError::UnknownTrigger(txn, trigger) => {
-                write!(f, "Watchdog in '{}': @{} is not a declared frgn trg", txn, trigger)
+                write!(
+                    f,
+                    "Watchdog in '{}': @{} is not a declared frgn trg",
+                    txn, trigger
+                )
             }
             WatchdogError::NoHandler(txn, trigger) => {
-                write!(f, "Watchdog in '{}': no transaction guards on @{}", txn, trigger)
+                write!(
+                    f,
+                    "Watchdog in '{}': no transaction guards on @{}",
+                    txn, trigger
+                )
             }
             WatchdogError::NoConflict(txn, trigger, var) => {
                 write!(f, "Watchdog in '{}': @{} handler writes to '{}' but no conflict with precondition", txn, trigger, var)
@@ -26,7 +34,11 @@ impl std::fmt::Display for WatchdogError {
                 write!(f, "Watchdog in '{}': @{} handler writes to '{}' but does not falsify precondition", txn, trigger, var)
             }
             WatchdogError::HandlerRestoresPrecondition(txn, trigger, var) => {
-                write!(f, "Watchdog in '{}': @{} handler chain restores '{}' — loop would restart", txn, trigger, var)
+                write!(
+                    f,
+                    "Watchdog in '{}': @{} handler chain restores '{}' — loop would restart",
+                    txn, trigger, var
+                )
             }
         }
     }
@@ -71,7 +83,8 @@ pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
 
                     if let Some(ref trg) = trigger_name {
                         if !trigger_names.contains(trg) {
-                            errors.push(WatchdogError::UnknownTrigger(txn_name.clone(), trg.clone()));
+                            errors
+                                .push(WatchdogError::UnknownTrigger(txn_name.clone(), trg.clone()));
                             continue;
                         }
 
@@ -84,10 +97,8 @@ pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
                         let handler_writes = collect_handler_writes(items, &handlers);
                         let pre_vars = extract_variables(&txn.contract.pre_condition);
 
-                        let intersecting: Vec<String> = handler_writes
-                            .intersection(&pre_vars)
-                            .cloned()
-                            .collect();
+                        let intersecting: Vec<String> =
+                            handler_writes.intersection(&pre_vars).cloned().collect();
 
                         if intersecting.is_empty() {
                             if !watchdog.is_required {
@@ -98,17 +109,26 @@ pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
                                     }
                                 }
                             }
-                            let handler_writes_any_pre_var = pre_vars.iter().any(|v| handler_writes.contains(v));
+                            let handler_writes_any_pre_var =
+                                pre_vars.iter().any(|v| handler_writes.contains(v));
                             if handler_writes_any_pre_var {
                                 for var in pre_vars.iter() {
                                     if handler_writes.contains(var) {
-                                        errors.push(WatchdogError::NoConflict(txn_name.clone(), trg.clone(), var.clone()));
+                                        errors.push(WatchdogError::NoConflict(
+                                            txn_name.clone(),
+                                            trg.clone(),
+                                            var.clone(),
+                                        ));
                                     }
                                 }
                             } else if watchdog.is_required {
                                 let vars_list: Vec<String> = pre_vars.iter().cloned().collect();
                                 let vars_str = vars_list.join(", ");
-                                errors.push(WatchdogError::NoConflict(txn_name.clone(), trg.clone(), vars_str));
+                                errors.push(WatchdogError::NoConflict(
+                                    txn_name.clone(),
+                                    trg.clone(),
+                                    vars_str,
+                                ));
                             }
                             continue;
                         }
@@ -116,13 +136,21 @@ pub fn analyze(items: &[TopLevel]) -> WatchdogResult {
                         for var in &intersecting {
                             let falsifies = check_falsifies(items, &handlers, &txn.contract, var);
                             if !falsifies {
-                                errors.push(WatchdogError::HandlerDoesNotFalsify(txn_name.clone(), trg.clone(), var.clone()));
+                                errors.push(WatchdogError::HandlerDoesNotFalsify(
+                                    txn_name.clone(),
+                                    trg.clone(),
+                                    var.clone(),
+                                ));
                                 continue;
                             }
 
                             let restores = check_restores(items, &handlers, &txn.contract, var);
                             if restores {
-                                errors.push(WatchdogError::HandlerRestoresPrecondition(txn_name.clone(), trg.clone(), var.clone()));
+                                errors.push(WatchdogError::HandlerRestoresPrecondition(
+                                    txn_name.clone(),
+                                    trg.clone(),
+                                    var.clone(),
+                                ));
                             }
                         }
                     }
@@ -220,7 +248,8 @@ fn find_handlers(items: &[TopLevel], trigger_name: &str) -> Vec<String> {
 fn contains_trigger_in_guard(expr: &Expr, trigger_name: &str) -> bool {
     match expr {
         Expr::Identifier(name) => name == trigger_name,
-        Expr::BinaryOp(BinaryOpKind::And, left, right) | Expr::BinaryOp(BinaryOpKind::Or, left, right) => {
+        Expr::BinaryOp(BinaryOpKind::And, left, right)
+        | Expr::BinaryOp(BinaryOpKind::Or, left, right) => {
             contains_trigger_in_guard(left, trigger_name)
                 || contains_trigger_in_guard(right, trigger_name)
         }
@@ -328,7 +357,12 @@ fn collect_vars(expr: &Expr, vars: &mut HashSet<String>) {
     }
 }
 
-fn check_falsifies(items: &[TopLevel], handler_names: &[String], contract: &Contract, var: &str) -> bool {
+fn check_falsifies(
+    items: &[TopLevel],
+    handler_names: &[String],
+    contract: &Contract,
+    var: &str,
+) -> bool {
     let handler_set: HashSet<String> = handler_names.iter().cloned().collect();
 
     for item in items {
@@ -350,7 +384,8 @@ fn check_falsifies_in_body(body: &[Statement], contract: &Contract, var: &str) -
                 if let Expr::Identifier(name) = lhs {
                     if name == var {
                         match &contract.pre_condition {
-                            Expr::BinaryOp(BinaryOpKind::Eq, _, _) | Expr::BinaryOp(BinaryOpKind::Neq, _, _) => {
+                            Expr::BinaryOp(BinaryOpKind::Eq, _, _)
+                            | Expr::BinaryOp(BinaryOpKind::Neq, _, _) => {
                                 if evaluate_literal(expr).is_some() {
                                     return true;
                                 }
@@ -390,7 +425,12 @@ fn check_falsifies_in_body(body: &[Statement], contract: &Contract, var: &str) -
     false
 }
 
-fn check_restores(items: &[TopLevel], handler_names: &[String], contract: &Contract, var: &str) -> bool {
+fn check_restores(
+    items: &[TopLevel],
+    handler_names: &[String],
+    contract: &Contract,
+    var: &str,
+) -> bool {
     let handler_set: HashSet<String> = handler_names.iter().cloned().collect();
 
     for item in items {
@@ -466,8 +506,14 @@ fn evaluate_literal(expr: &Expr) -> Option<bool> {
 
 fn check_convergent_loop(contract: &Contract) -> bool {
     match (&contract.pre_condition, &contract.post_condition) {
-        (Expr::BinaryOp(BinaryOpKind::Lt, _, _) | Expr::BinaryOp(BinaryOpKind::Le, _, _) | Expr::BinaryOp(BinaryOpKind::Gt, _, _) | Expr::BinaryOp(BinaryOpKind::Ge, _, _) | Expr::BinaryOp(BinaryOpKind::Neq, _, _), 
-         Expr::BinaryOp(BinaryOpKind::Eq, _, _)) => true,
+        (
+            Expr::BinaryOp(BinaryOpKind::Lt, _, _)
+            | Expr::BinaryOp(BinaryOpKind::Le, _, _)
+            | Expr::BinaryOp(BinaryOpKind::Gt, _, _)
+            | Expr::BinaryOp(BinaryOpKind::Ge, _, _)
+            | Expr::BinaryOp(BinaryOpKind::Neq, _, _),
+            Expr::BinaryOp(BinaryOpKind::Eq, _, _),
+        ) => true,
         _ => false,
     }
 }
@@ -489,7 +535,13 @@ mod tests {
         })
     }
 
-    fn make_txn(name: &str, pre: Expr, post: Expr, watchdog: Option<WatchdogSpec>, body: Vec<Statement>) -> TopLevel {
+    fn make_txn(
+        name: &str,
+        pre: Expr,
+        post: Expr,
+        watchdog: Option<WatchdogSpec>,
+        body: Vec<Statement>,
+    ) -> TopLevel {
         TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: name.to_string(),
@@ -499,7 +551,14 @@ mod tests {
             parameters: vec![],
             output_type: None,
             outputs: vec![],
-            contract: Contract { pre_condition: pre, post_condition: post, watchdog, span: None, explicit: false, post_authority: false},
+            contract: Contract {
+                pre_condition: pre,
+                post_condition: post,
+                watchdog,
+                span: None,
+                explicit: false,
+                post_authority: false,
+            },
             body,
             metadata: HashMap::new(),
             derivation: None,
@@ -529,10 +588,13 @@ mod tests {
 
     #[test]
     fn test_unknown_trigger() {
-        let program = make_program(vec![
-            make_txn("main", Expr::Bool(true), Expr::Bool(true),
-                Some(watchdog_spec("nonexistent", true)), vec![]),
-        ]);
+        let program = make_program(vec![make_txn(
+            "main",
+            Expr::Bool(true),
+            Expr::Bool(true),
+            Some(watchdog_spec("nonexistent", true)),
+            vec![],
+        )]);
         let errors = analyze(&program);
         assert_eq!(errors.len(), 1);
         assert!(matches!(&errors[0], WatchdogError::UnknownTrigger(..)));
@@ -542,8 +604,13 @@ mod tests {
     fn test_no_handler() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("main", Expr::Bool(true), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "main",
+                Expr::Bool(true),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
         assert_eq!(errors.len(), 1);
@@ -554,94 +621,184 @@ mod tests {
     fn test_handler_writes_no_conflict() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("unrelated", Expr::Decimal(42))]),
-            make_txn("main", Expr::Identifier("ready".to_string()), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("unrelated", Expr::Decimal(42))],
+            ),
+            make_txn(
+                "main",
+                Expr::Identifier("ready".to_string()),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 1, "Required watchdog: handler writes unrelated var, can't preempt [ready]");
-        assert!(matches!(&errors[0], WatchdogError::NoConflict(..)), "Expected NoConflict when handler can't affect precondition");
+        assert_eq!(
+            errors.len(),
+            1,
+            "Required watchdog: handler writes unrelated var, can't preempt [ready]"
+        );
+        assert!(
+            matches!(&errors[0], WatchdogError::NoConflict(..)),
+            "Expected NoConflict when handler can't affect precondition"
+        );
     }
 
     #[test]
     fn test_handler_does_not_falsify() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("ready", Expr::Bool(true))]),
-            make_txn("main", Expr::Identifier("ready".to_string()), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("ready", Expr::Bool(true))],
+            ),
+            make_txn(
+                "main",
+                Expr::Identifier("ready".to_string()),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], WatchdogError::HandlerDoesNotFalsify(..)));
+        assert!(matches!(
+            &errors[0],
+            WatchdogError::HandlerDoesNotFalsify(..)
+        ));
     }
 
     #[test]
     fn test_handler_falsifies_ok() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("ready", Expr::Bool(false))]),
-            make_txn("main", Expr::Identifier("ready".to_string()), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("ready", Expr::Bool(false))],
+            ),
+            make_txn(
+                "main",
+                Expr::Identifier("ready".to_string()),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 0, "Handler sets ready=false, precondition is [ready], should pass");
+        assert_eq!(
+            errors.len(),
+            0,
+            "Handler sets ready=false, precondition is [ready], should pass"
+        );
     }
 
     #[test]
     fn test_handler_restores_precondition() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![
                     assign("ready", Expr::Bool(false)),
                     assign("ready", Expr::Bool(true)),
-                ]),
-            make_txn("main", Expr::Identifier("ready".to_string()), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+                ],
+            ),
+            make_txn(
+                "main",
+                Expr::Identifier("ready".to_string()),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], WatchdogError::HandlerRestoresPrecondition(..)));
+        assert!(matches!(
+            &errors[0],
+            WatchdogError::HandlerRestoresPrecondition(..)
+        ));
     }
 
     #[test]
     fn test_convergent_loop_skips_optional() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("unrelated", Expr::Decimal(1))]),
-            make_txn("main", Expr::BinaryOp(BinaryOpKind::Lt, 
-                Box::new(Expr::Identifier("i".to_string())),
-                Box::new(Expr::Decimal(10)),
-            ), Expr::BinaryOp(BinaryOpKind::Eq, 
-                Box::new(Expr::Identifier("i".to_string())),
-                Box::new(Expr::Decimal(10)),
-            ), Some(watchdog_spec("btn", false)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("unrelated", Expr::Decimal(1))],
+            ),
+            make_txn(
+                "main",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+                Expr::BinaryOp(
+                    BinaryOpKind::Eq,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+                Some(watchdog_spec("btn", false)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 0, "Optional watchdog on convergent loop should skip");
+        assert_eq!(
+            errors.len(),
+            0,
+            "Optional watchdog on convergent loop should skip"
+        );
     }
 
     #[test]
     fn test_required_watchdog_on_convergent_loop() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("unrelated", Expr::Decimal(1))]),
-            make_txn("main", Expr::BinaryOp(BinaryOpKind::Lt, 
-                Box::new(Expr::Identifier("i".to_string())),
-                Box::new(Expr::Decimal(10)),
-            ), Expr::BinaryOp(BinaryOpKind::Eq, 
-                Box::new(Expr::Identifier("i".to_string())),
-                Box::new(Expr::Decimal(10)),
-            ), Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("unrelated", Expr::Decimal(1))],
+            ),
+            make_txn(
+                "main",
+                Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+                Expr::BinaryOp(
+                    BinaryOpKind::Eq,
+                    Box::new(Expr::Identifier("i".to_string())),
+                    Box::new(Expr::Decimal(10)),
+                ),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert!(errors.len() > 0, "Required watchdog still needs preemptibility proof");
+        assert!(
+            errors.len() > 0,
+            "Required watchdog still needs preemptibility proof"
+        );
         assert!(matches!(&errors[0], WatchdogError::NoConflict(..)));
     }
 
@@ -680,14 +837,16 @@ mod tests {
 
     #[test]
     fn test_contains_trigger_in_guard() {
-        let guard = Expr::BinaryOp(BinaryOpKind::And, 
+        let guard = Expr::BinaryOp(
+            BinaryOpKind::And,
             Box::new(Expr::Identifier("btn".to_string())),
             Box::new(Expr::Identifier("ready".to_string())),
         );
         assert!(contains_trigger_in_guard(&guard, "btn"));
         assert!(!contains_trigger_in_guard(&guard, "other"));
 
-        let guard_or = Expr::BinaryOp(BinaryOpKind::Or, 
+        let guard_or = Expr::BinaryOp(
+            BinaryOpKind::Or,
             Box::new(Expr::Identifier("a".to_string())),
             Box::new(Expr::Identifier("b".to_string())),
         );
@@ -702,25 +861,31 @@ mod tests {
         assert_eq!(evaluate_literal(&Expr::Bool(false)), Some(false));
         assert_eq!(evaluate_literal(&Expr::Decimal(0)), Some(false));
         assert_eq!(evaluate_literal(&Expr::Decimal(1)), Some(true));
-        assert_eq!(evaluate_literal(&Expr::UnaryOp(UnaryOpKind::Not, Box::new(Expr::Bool(true)))), Some(false));
+        assert_eq!(
+            evaluate_literal(&Expr::UnaryOp(UnaryOpKind::Not, Box::new(Expr::Bool(true)))),
+            Some(false)
+        );
         assert_eq!(evaluate_literal(&Expr::Identifier("x".to_string())), None);
     }
 
     #[test]
     fn test_check_convergent_loop() {
         let contract = Contract {
-            pre_condition: Expr::BinaryOp(BinaryOpKind::Lt, 
+            pre_condition: Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("i".to_string())),
                 Box::new(Expr::Decimal(10)),
             ),
-            post_condition: Expr::BinaryOp(BinaryOpKind::Eq, 
+            post_condition: Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("i".to_string())),
                 Box::new(Expr::Decimal(10)),
             ),
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false};
+            post_authority: false,
+        };
         assert!(check_convergent_loop(&contract));
 
         let contract_flat = Contract {
@@ -729,15 +894,18 @@ mod tests {
             watchdog: None,
             explicit: false,
             span: None,
-        post_authority: false};
+            post_authority: false,
+        };
         assert!(!check_convergent_loop(&contract_flat));
     }
 
     #[test]
     fn test_collect_vars_from_precondition() {
-        let pre = Expr::BinaryOp(BinaryOpKind::And, 
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::And,
             Box::new(Expr::Identifier("a".to_string())),
-            Box::new(Expr::BinaryOp(BinaryOpKind::Gt, 
+            Box::new(Expr::BinaryOp(
+                BinaryOpKind::Gt,
                 Box::new(Expr::Identifier("b".to_string())),
                 Box::new(Expr::Decimal(0)),
             )),
@@ -752,67 +920,107 @@ mod tests {
     fn test_collect_handler_writes_guarded() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![
-                    Statement::Guarded(
-                        Expr::Identifier("btn".to_string()),
-                        vec![assign("ready", Expr::Bool(false))],
-                    ),
-                ]),
-            make_txn("main", Expr::Identifier("ready".to_string()), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![Statement::Guarded(
+                    Expr::Identifier("btn".to_string()),
+                    vec![assign("ready", Expr::Bool(false))],
+                )],
+            ),
+            make_txn(
+                "main",
+                Expr::Identifier("ready".to_string()),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 0, "Handler writes inside Guarded block should be detected");
+        assert_eq!(
+            errors.len(),
+            0,
+            "Handler writes inside Guarded block should be detected"
+        );
     }
 
     #[test]
     fn test_precondition_not_var_not_handled_as_conflict() {
         let program = make_program(vec![
             make_trigger("btn"),
-            make_txn("handler", Expr::Identifier("btn".to_string()), Expr::Bool(true),
-                None, vec![assign("counter", Expr::Decimal(0))]),
-            make_txn("main", Expr::BinaryOp(BinaryOpKind::Eq, 
-                Box::new(Expr::Identifier("counter".to_string())),
-                Box::new(Expr::Decimal(0)),
-            ), Expr::Bool(true),
-                Some(watchdog_spec("btn", true)), vec![]),
+            make_txn(
+                "handler",
+                Expr::Identifier("btn".to_string()),
+                Expr::Bool(true),
+                None,
+                vec![assign("counter", Expr::Decimal(0))],
+            ),
+            make_txn(
+                "main",
+                Expr::BinaryOp(
+                    BinaryOpKind::Eq,
+                    Box::new(Expr::Identifier("counter".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                ),
+                Expr::Bool(true),
+                Some(watchdog_spec("btn", true)),
+                vec![],
+            ),
         ]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 0, "Handler sets counter=0, precondition is [counter==0], falsifies");
+        assert_eq!(
+            errors.len(),
+            0,
+            "Handler sets counter=0, precondition is [counter==0], falsifies"
+        );
     }
 
     #[test]
     fn test_no_trigger_watchdog_not_analyzed() {
-        let program = make_program(vec![
-            make_txn("main", Expr::Identifier("timeout".to_string()), Expr::Bool(true),
-                Some(WatchdogSpec {
-                    cycles_bound: None,
-                    seconds_bound: None,
-                    deadline_ns: None,
-                    is_proven: false,
-                    retries: 0,
-                    fallback: None,
-                    condition: Expr::Bool(true), is_required: true,
-                    on_fire: None,
-                }),
-                vec![]),
-        ]);
+        let program = make_program(vec![make_txn(
+            "main",
+            Expr::Identifier("timeout".to_string()),
+            Expr::Bool(true),
+            Some(WatchdogSpec {
+                cycles_bound: None,
+                seconds_bound: None,
+                deadline_ns: None,
+                is_proven: false,
+                retries: 0,
+                fallback: None,
+                condition: Expr::Bool(true),
+                is_required: true,
+                on_fire: None,
+            }),
+            vec![],
+        )]);
         let errors = analyze(&program);
-        assert_eq!(errors.len(), 0, "Non-trigger watchdogs are runtime only, not analyzed");
+        assert_eq!(
+            errors.len(),
+            0,
+            "Non-trigger watchdogs are runtime only, not analyzed"
+        );
     }
 
     #[test]
     fn test_handler_natural_death_without_watchdog() {
-        let program = make_program(vec![
-            make_txn("main", Expr::BinaryOp(BinaryOpKind::Lt, 
+        let program = make_program(vec![make_txn(
+            "main",
+            Expr::BinaryOp(
+                BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("i".to_string())),
                 Box::new(Expr::Decimal(5)),
-            ), Expr::BinaryOp(BinaryOpKind::Eq, 
+            ),
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("i".to_string())),
                 Box::new(Expr::Decimal(5)),
-            ), None, vec![]),
-        ]);
+            ),
+            None,
+            vec![],
+        )]);
         let errors = analyze(&program);
         assert_eq!(errors.len(), 0, "No watchdog spec means no analysis");
     }

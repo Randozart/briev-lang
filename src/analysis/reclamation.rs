@@ -11,16 +11,16 @@
 use crate::ast::{Expr, Statement, TopLevel};
 use std::collections::{BTreeMap, BTreeSet};
 
-mod walk;
 mod closed;
-mod storage;
-mod socket_effects;
 mod node_set;
+mod socket_effects;
+mod storage;
+mod walk;
 use node_set::NodeSet;
 #[cfg(test)]
-mod structured_tests;
-#[cfg(test)]
 mod solver_tests;
+#[cfg(test)]
+mod structured_tests;
 
 type Node = usize;
 
@@ -119,10 +119,38 @@ struct Graph {
 
 impl Default for Graph {
     fn default() -> Self {
-        Self { universe: crate::type_universe::TypeUniverse::new(), casts: crate::casting::graph::CastingGraph::new(),
-            return_types: BTreeMap::new(), generics: BTreeMap::new(), bodies: BTreeMap::new(), built: BTreeSet::new(), handle_returns: BTreeSet::new(), default_encoding_targets: BTreeSet::new(), entry_nodes: BTreeSet::new(), user_operators: BTreeSet::new(), points: Vec::new(), constants: Vec::new(), memory: Vec::new(),
-            inexact_constants: BTreeSet::new(), named_memory: BTreeMap::new(), constraints: Vec::new(), allocation_owner: BTreeMap::new(), callables: BTreeMap::new(),
-            globals: BTreeMap::new(), global_types: BTreeMap::new(), constructors: BTreeSet::new(), variant_types: BTreeMap::new(), escaped: BTreeSet::new(), unsupported: BTreeSet::new(), methods: BTreeMap::new(), incoming_store_owners: BTreeSet::new(), publish_receiver_param: BTreeMap::new(), publish_call_args: BTreeMap::new(), unmodeled_helpers: BTreeSet::new(), growers: BTreeSet::new() }
+        Self {
+            universe: crate::type_universe::TypeUniverse::new(),
+            casts: crate::casting::graph::CastingGraph::new(),
+            return_types: BTreeMap::new(),
+            generics: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            built: BTreeSet::new(),
+            handle_returns: BTreeSet::new(),
+            default_encoding_targets: BTreeSet::new(),
+            entry_nodes: BTreeSet::new(),
+            user_operators: BTreeSet::new(),
+            points: Vec::new(),
+            constants: Vec::new(),
+            memory: Vec::new(),
+            inexact_constants: BTreeSet::new(),
+            named_memory: BTreeMap::new(),
+            constraints: Vec::new(),
+            allocation_owner: BTreeMap::new(),
+            callables: BTreeMap::new(),
+            globals: BTreeMap::new(),
+            global_types: BTreeMap::new(),
+            constructors: BTreeSet::new(),
+            variant_types: BTreeMap::new(),
+            escaped: BTreeSet::new(),
+            unsupported: BTreeSet::new(),
+            methods: BTreeMap::new(),
+            incoming_store_owners: BTreeSet::new(),
+            publish_receiver_param: BTreeMap::new(),
+            publish_call_args: BTreeMap::new(),
+            unmodeled_helpers: BTreeSet::new(),
+            growers: BTreeSet::new(),
+        }
     }
 }
 
@@ -179,7 +207,9 @@ impl Graph {
     }
 
     fn global(&mut self, name: &str) -> Node {
-        if let Some(node) = self.globals.get(name) { return *node; }
+        if let Some(node) = self.globals.get(name) {
+            return *node;
+        }
         let node = self.root();
         self.external_storage(node);
         self.inexact_constants.insert(node);
@@ -191,8 +221,13 @@ impl Graph {
         while self.propagate_once() {}
         for constraint in self.constraints.clone() {
             match constraint {
-                Constraint::Syscall(number, args) => { self.syscall(number, &args); }
-                Constraint::EscapeContents(value) => { let refs = self.contents(value); self.escaped.extend(refs.iter()); }
+                Constraint::Syscall(number, args) => {
+                    self.syscall(number, &args);
+                }
+                Constraint::EscapeContents(value) => {
+                    let refs = self.contents(value);
+                    self.escaped.extend(refs.iter());
+                }
                 _ => {}
             }
         }
@@ -200,18 +235,25 @@ impl Graph {
 
     fn propagate_once(&mut self) -> bool {
         let mut changed = false;
-        for constraint in self.constraints.clone() { changed |= self.apply(constraint); }
+        for constraint in self.constraints.clone() {
+            changed |= self.apply(constraint);
+        }
         changed
     }
 
     fn apply(&mut self, constraint: Constraint) -> bool {
         match constraint {
-            Constraint::Bitwise(operator, left, right, result) => self.bitwise_facts(operator, left, right, result),
+            Constraint::Bitwise(operator, left, right, result) => {
+                self.bitwise_facts(operator, left, right, result)
+            }
             Constraint::Copy(source, target) => {
                 let refs = self.points[source].clone();
                 let constants = self.constants[source].clone();
-                let inexact = self.inexact_constants.contains(&source) && self.inexact_constants.insert(target);
-                self.points[target].union_with(&refs) | extend(&mut self.constants[target], constants) | inexact
+                let inexact = self.inexact_constants.contains(&source)
+                    && self.inexact_constants.insert(target);
+                self.points[target].union_with(&refs)
+                    | extend(&mut self.constants[target], constants)
+                    | inexact
             }
             Constraint::Load(base, result) => {
                 let refs = self.contents(base);
@@ -222,12 +264,17 @@ impl Graph {
             Constraint::Syscall(..) => false,
             Constraint::EscapeContents(_) => false,
             Constraint::FieldLoad(base, field, target) => {
-                let refs = self.field_contents(base, &field); self.points[target].union_with(&refs) | self.inexact_constants.insert(target)
+                let refs = self.field_contents(base, &field);
+                self.points[target].union_with(&refs) | self.inexact_constants.insert(target)
             }
             Constraint::FieldStore(base, field, value) => {
                 let mut changed = false;
                 for root in self.points[base].clone().iter() {
-                    changed |= self.named_memory.entry((root, field.clone())).or_default().union_with(&self.points[value]);
+                    changed |= self
+                        .named_memory
+                        .entry((root, field.clone()))
+                        .or_default()
+                        .union_with(&self.points[value]);
                 }
                 changed
             }
@@ -254,12 +301,18 @@ impl Graph {
         // The platform table describes synchronous borrowing interfaces. An
         // unknown number remains capturing; this is never a helper-name rule.
         let numbers = &self.constants[number];
-        let borrowed = !self.inexact_constants.contains(&number) && !numbers.is_empty() && numbers.iter().all(|number| {
-            self.syscall_borrows(*number, args)
-        });
+        let borrowed = !self.inexact_constants.contains(&number)
+            && !numbers.is_empty()
+            && numbers
+                .iter()
+                .all(|number| self.syscall_borrows(*number, args));
         let mut refs = NodeSet::new();
         for arg in args {
-            let values = if borrowed { self.contents(*arg) } else { self.points[*arg].clone() };
+            let values = if borrowed {
+                self.contents(*arg)
+            } else {
+                self.points[*arg].clone()
+            };
             refs.union_with(&values);
         }
         extend(&mut self.escaped, refs.iter())
@@ -269,21 +322,35 @@ impl Graph {
         let mut found = BTreeSet::new();
         let mut pending: Vec<_> = roots.into_iter().collect();
         while let Some(root) = pending.pop() {
-            if found.insert(root) { pending.extend(self.root_contents(root).iter()); }
+            if found.insert(root) {
+                pending.extend(self.root_contents(root).iter());
+            }
         }
         found
     }
 
     fn plan(&self) -> ReclamationPlan {
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
         let escaped = self.reachable(global_roots.chain(self.escaped.iter().copied()));
-        let mut plan = ReclamationPlan { known: self.callables.keys().cloned().collect(), ..Default::default() };
+        let mut plan = ReclamationPlan {
+            known: self.callables.keys().cloned().collect(),
+            ..Default::default()
+        };
         for root in &escaped {
-            if let Some(owner) = self.allocation_owner.get(root) { plan.escape_barriers.insert(owner.clone()); }
+            if let Some(owner) = self.allocation_owner.get(root) {
+                plan.escape_barriers.insert(owner.clone());
+            }
         }
-        plan.escape_barriers.extend(self.unsupported.iter().cloned());
+        plan.escape_barriers
+            .extend(self.unsupported.iter().cloned());
         let publishers: BTreeSet<String> = self.incoming_store_owners.iter().cloned().collect();
-        plan.publish_only = publishers.difference(&plan.escape_barriers).cloned().collect();
+        plan.publish_only = publishers
+            .difference(&plan.escape_barriers)
+            .cloned()
+            .collect();
         // Preserve the existing classification inputs: publishers remain barriers
         // here. analyze() may drop a publisher proven safe at every call site.
         plan.barriers = plan.escape_barriers.clone();
@@ -301,48 +368,98 @@ impl Graph {
     /// that caller (not global-reachable, not returned). Only then may the
     /// caller's region own the published storage.
     fn publish_safety(&self) -> BTreeMap<String, Vec<bool>> {
-        self.publish_call_args.iter().map(|(publisher, sites)| {
-            let safety = sites.iter().map(|(owner, local)| self.site_is_safe(owner, *local)).collect();
-            (publisher.clone(), safety)
-        }).collect()
+        self.publish_call_args
+            .iter()
+            .map(|(publisher, sites)| {
+                let safety = sites
+                    .iter()
+                    .map(|(owner, local)| self.site_is_safe(owner, *local))
+                    .collect();
+                (publisher.clone(), safety)
+            })
+            .collect()
     }
 
     fn site_is_safe(&self, owner: &str, local: Option<Node>) -> bool {
         let Some(local) = local else { return false };
-        let global_roots = self.globals.values().flat_map(|node| self.points[*node].iter());
-        if self.reachable(global_roots.chain(self.escaped.iter().copied())).contains(&local) { return false; }
-        let Some(callable) = self.callables.get(owner) else { return false };
-        !self.reachable(self.points[callable.result].iter()).contains(&local)
+        let global_roots = self
+            .globals
+            .values()
+            .flat_map(|node| self.points[*node].iter());
+        if self
+            .reachable(global_roots.chain(self.escaped.iter().copied()))
+            .contains(&local)
+        {
+            return false;
+        }
+        let Some(callable) = self.callables.get(owner) else {
+            return false;
+        };
+        !self
+            .reachable(self.points[callable.result].iter())
+            .contains(&local)
     }
 
     fn classify(&self, name: &str, callable: &Callable, plan: &mut ReclamationPlan) {
-        if plan.barriers.contains(name) { return; }
-        if callable.calls.iter().any(|callee| self.call_closure(callee, &BTreeSet::new()).contains(name)) {
+        if plan.barriers.contains(name) {
+            return;
+        }
+        if callable
+            .calls
+            .iter()
+            .any(|callee| self.call_closure(callee, &BTreeSet::new()).contains(name))
+        {
             // 2026-11-04: an added return epilogue would block LLVM tail-call
             // elimination and turn a bounded sampling loop into stack growth.
             // Nested proved scopes still reclaim each iteration's values.
             // Retire this fallback with a proved recursive-iteration consumer.
-            plan.reasons.insert(name.into(), "recursive region needs an iteration-boundary consumer".into()); return;
-        }
-        if self.handle_returns.contains(name) {
-            plan.reasons.insert(name.into(), "result image or payload can be caller-owned".into()); return;
-        }
-        if !self.call_closure(name, &BTreeSet::new()).is_disjoint(&self.unsupported) {
-            plan.reasons.insert(name.into(), "callee effects are not classified".into()); return;
-        }
-        let owners = self.call_closure(name, &plan.barriers);
-        let allocations: BTreeSet<_> = self.allocation_owner.iter()
-            .filter(|(_, owner)| owners.contains(*owner)).map(|(root, _)| *root).collect();
-        if allocations.is_empty() { return; }
-        let returned = self.reachable(self.points[callable.result].iter());
-        if !returned.is_disjoint(&allocations) {
-            plan.reasons.insert(name.into(), "allocation reaches the returned value".into());
+            plan.reasons.insert(
+                name.into(),
+                "recursive region needs an iteration-boundary consumer".into(),
+            );
             return;
         }
-        let incoming = callable.params.iter().flat_map(|param| self.points[*param].iter());
+        if self.handle_returns.contains(name) {
+            plan.reasons.insert(
+                name.into(),
+                "result image or payload can be caller-owned".into(),
+            );
+            return;
+        }
+        if !self
+            .call_closure(name, &BTreeSet::new())
+            .is_disjoint(&self.unsupported)
+        {
+            plan.reasons
+                .insert(name.into(), "callee effects are not classified".into());
+            return;
+        }
+        let owners = self.call_closure(name, &plan.barriers);
+        let allocations: BTreeSet<_> = self
+            .allocation_owner
+            .iter()
+            .filter(|(_, owner)| owners.contains(*owner))
+            .map(|(root, _)| *root)
+            .collect();
+        if allocations.is_empty() {
+            return;
+        }
+        let returned = self.reachable(self.points[callable.result].iter());
+        if !returned.is_disjoint(&allocations) {
+            plan.reasons
+                .insert(name.into(), "allocation reaches the returned value".into());
+            return;
+        }
+        let incoming = callable
+            .params
+            .iter()
+            .flat_map(|param| self.points[*param].iter());
         let retained = self.reachable(incoming);
         if !retained.is_disjoint(&allocations) {
-            let owners: BTreeSet<_> = retained.intersection(&allocations).filter_map(|root| self.allocation_owner.get(root)).collect();
+            let owners: BTreeSet<_> = retained
+                .intersection(&allocations)
+                .filter_map(|root| self.allocation_owner.get(root))
+                .collect();
             // 2026-11-07: when THIS callable's own allocation survives in
             // incoming storage it is not reclaimable with this frame. Mark the
             // owner a BARRIER, not merely "not a region": a non-region,
@@ -358,7 +475,10 @@ impl Graph {
             if owners.iter().any(|owner| owner.as_str() == name) {
                 plan.barriers.insert(name.into());
             }
-            plan.reasons.insert(name.into(), format!("allocation may survive in incoming storage: {owners:?}"));
+            plan.reasons.insert(
+                name.into(),
+                format!("allocation may survive in incoming storage: {owners:?}"),
+            );
             return;
         }
         plan.regions.insert(name.into());
@@ -368,8 +488,12 @@ impl Graph {
         let mut found = BTreeSet::new();
         let mut pending = vec![name.to_string()];
         while let Some(name) = pending.pop() {
-            if barriers.contains(&name) || !found.insert(name.clone()) { continue; }
-            if let Some(callable) = self.callables.get(&name) { pending.extend(callable.calls.iter().cloned()); }
+            if barriers.contains(&name) || !found.insert(name.clone()) {
+                continue;
+            }
+            if let Some(callable) = self.callables.get(&name) {
+                pending.extend(callable.calls.iter().cloned());
+            }
         }
         found
     }
@@ -448,7 +572,10 @@ fn dump_constraints(index: &Graph) -> BTreeMap<String, Vec<String>> {
             .inexact_constants
             .extend(graph.callables[owner].params.iter().copied());
         walk::build_owner(&mut graph, owner);
-        dumped.insert(owner.clone(), render_constraints_for_test(&graph.constraints));
+        dumped.insert(
+            owner.clone(),
+            render_constraints_for_test(&graph.constraints),
+        );
     }
     let mut calls_graph = index.clone();
     for owner in &owners {
@@ -510,12 +637,27 @@ fn render_constraint(constraint: &Constraint, names: &mut BTreeMap<Node, usize>)
     }
 }
 
-pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, universe: Option<&crate::type_universe::TypeUniverse>) -> ReclamationPlan {
+pub fn analyze(
+    items: &[TopLevel],
+    live: &std::collections::HashSet<String>,
+    universe: Option<&crate::type_universe::TypeUniverse>,
+) -> ReclamationPlan {
     let mut index = Graph::default();
-    if let Some(universe) = universe { index.universe = universe.clone(); }
-    for item in items { if let TopLevel::ProtocolDef(protocol) = item { index.casts.register_protocol_def(protocol); } }
+    if let Some(universe) = universe {
+        index.universe = universe.clone();
+    }
+    for item in items {
+        if let TopLevel::ProtocolDef(protocol) = item {
+            index.casts.register_protocol_def(protocol);
+        }
+    }
     walk::register(&mut index, items, live);
-    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation declared user operators: {:?}", index.user_operators); }
+    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+        eprintln!(
+            "reclamation declared user operators: {:?}",
+            index.user_operators
+        );
+    }
     let owners: Vec<_> = index.bodies.keys().cloned().collect();
     let mut result = ReclamationPlan::default();
     let mut accumulator = Accumulator::default();
@@ -528,9 +670,13 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         accumulator.absorb(&owner, &graph, &plan, &mut result);
     }
     accumulator.reclassify_safe_publishers(&mut result);
-    result.regions.retain(|owner| !result.barriers.contains(owner));
+    result
+        .regions
+        .retain(|owner| !result.barriers.contains(owner));
     result.closed_regions = std::mem::take(&mut accumulator.closed_regions);
-    result.closed_regions.retain(|owner| result.regions.contains(owner));
+    result
+        .closed_regions
+        .retain(|owner| result.regions.contains(owner));
     // Main also executes global initialization. Until those allocations have
     // explicit global lifetime facts, only closed scalar initializers license
     // an entry scope. Helper proofs remain independent of this fallback.
@@ -538,10 +684,14 @@ pub fn analyze(items: &[TopLevel], live: &std::collections::HashSet<String>, uni
         let owner = index.entry_nodes.iter().next().unwrap();
         result.entry_region = result.regions.contains(owner);
     }
-    result.regions.retain(|owner| !index.entry_nodes.contains(owner));
+    result
+        .regions
+        .retain(|owner| !index.entry_nodes.contains(owner));
     // Entry-node names are not callable ABI names. Main's existing entry proof
     // remains authoritative until it has a separate closed-initializer proof.
-    result.closed_regions.retain(|owner| result.regions.contains(owner));
+    result
+        .closed_regions
+        .retain(|owner| result.regions.contains(owner));
     accumulator.finish_mutating(&mut result);
     result
 }
@@ -558,19 +708,45 @@ struct Accumulator {
 }
 
 impl Accumulator {
-    fn absorb(&mut self, owner: &str, graph: &Graph, plan: &ReclamationPlan, result: &mut ReclamationPlan) {
-        self.allocating.extend(graph.allocation_owner.values().cloned());
+    fn absorb(
+        &mut self,
+        owner: &str,
+        graph: &Graph,
+        plan: &ReclamationPlan,
+        result: &mut ReclamationPlan,
+    ) {
+        self.allocating
+            .extend(graph.allocation_owner.values().cloned());
         record_dependencies(graph, &mut self.dependencies);
-        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation root {owner}: barriers={:?}, closed={:?}, regions={:?}, reasons={:?}, unsupported={:?}", plan.barriers, plan.closed_regions, plan.regions, plan.reasons, graph.unsupported); }
-        if plan.regions.contains(owner) { result.regions.insert(owner.to_string()); }
-        if plan.closed_regions.contains(owner) { self.closed_regions.insert(owner.to_string()); }
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+            eprintln!(
+                "reclamation root {owner}: barriers={:?}, closed={:?}, regions={:?}, reasons={:?}, unsupported={:?}",
+                plan.barriers, plan.closed_regions, plan.regions, plan.reasons, graph.unsupported
+            );
+        }
+        if plan.regions.contains(owner) {
+            result.regions.insert(owner.to_string());
+        }
+        if plan.closed_regions.contains(owner) {
+            self.closed_regions.insert(owner.to_string());
+        }
         result.barriers.extend(plan.barriers.iter().cloned());
         self.publish_only.extend(plan.publish_only.iter().cloned());
-        self.escape_barriers.extend(plan.escape_barriers.iter().cloned());
-        for (publisher, sites) in &plan.publish_sites { self.publish_sites.entry(publisher.clone()).or_default().extend(sites.iter().copied()); }
+        self.escape_barriers
+            .extend(plan.escape_barriers.iter().cloned());
+        for (publisher, sites) in &plan.publish_sites {
+            self.publish_sites
+                .entry(publisher.clone())
+                .or_default()
+                .extend(sites.iter().copied());
+        }
         result.known.extend(plan.known.iter().cloned());
-        result.default_encoding_targets.extend(graph.default_encoding_targets.iter().cloned());
-        if let Some(reason) = plan.reasons.get(owner) { result.reasons.insert(owner.to_string(), reason.clone()); }
+        result
+            .default_encoding_targets
+            .extend(graph.default_encoding_targets.iter().cloned());
+        if let Some(reason) = plan.reasons.get(owner) {
+            result.reasons.insert(owner.to_string(), reason.clone());
+        }
     }
 
     /// 2026-11-09: a publisher barriered only for publish-into-incoming may be
@@ -580,27 +756,39 @@ impl Accumulator {
     fn reclassify_safe_publishers(&self, result: &mut ReclamationPlan) {
         let safe = self.safe_publishers();
         result.barriers.retain(|name| {
-            !(safe.contains(name) && self.publish_only.contains(name) && !self.escape_barriers.contains(name))
+            !(safe.contains(name)
+                && self.publish_only.contains(name)
+                && !self.escape_barriers.contains(name))
         });
     }
 
     fn safe_publishers(&self) -> BTreeSet<String> {
-        self.publish_sites.iter()
+        self.publish_sites
+            .iter()
             .filter(|(_, sites)| !sites.is_empty() && sites.iter().all(|safe| *safe))
-            .map(|(publisher, _)| publisher.clone()).collect()
+            .map(|(publisher, _)| publisher.clone())
+            .collect()
     }
 
     fn finish_mutating(self, result: &mut ReclamationPlan) {
         let mut allocating = self.allocating;
         allocating.extend(result.regions.iter().cloned());
         allocating.extend(result.barriers.iter().cloned());
-        result.mutating = self.dependencies.into_iter().filter(|(_, calls)| !calls.is_disjoint(&allocating)).map(|(owner, _)| owner).collect();
+        result.mutating = self
+            .dependencies
+            .into_iter()
+            .filter(|(_, calls)| !calls.is_disjoint(&allocating))
+            .map(|(owner, _)| owner)
+            .collect();
     }
 }
 
 fn record_dependencies(graph: &Graph, dependencies: &mut BTreeMap<String, BTreeSet<String>>) {
     for built in &graph.built {
-        dependencies.entry(built.clone()).or_default().extend(graph.call_closure(built, &BTreeSet::new()));
+        dependencies
+            .entry(built.clone())
+            .or_default()
+            .extend(graph.call_closure(built, &BTreeSet::new()));
     }
 }
 
@@ -614,13 +802,27 @@ mod kani_full_tests {
         let mut graph = Graph::default();
         let incoming = graph.root();
         let result = graph.node();
-        graph.callables.insert("proof".into(), Callable { params: vec![incoming], result, calls: BTreeSet::new() });
+        graph.callables.insert(
+            "proof".into(),
+            Callable {
+                params: vec![incoming],
+                result,
+                calls: BTreeSet::new(),
+            },
+        );
         let owned = graph.allocation("proof");
         let alias = graph.node();
         graph.copy(owned, alias);
-        if kani::any::<bool>() { graph.constraints.push(Constraint::Store(owned, alias)); }
-        if kani::any::<bool>() { graph.copy(alias, result); }
-        else { graph.constraints.push(Constraint::FieldStore(incoming, "saved".into(), alias)); }
+        if kani::any::<bool>() {
+            graph.constraints.push(Constraint::Store(owned, alias));
+        }
+        if kani::any::<bool>() {
+            graph.copy(alias, result);
+        } else {
+            graph
+                .constraints
+                .push(Constraint::FieldStore(incoming, "saved".into(), alias));
+        }
         graph.solve();
         assert!(!graph.plan().regions.contains("proof"));
     }
@@ -631,10 +833,20 @@ mod kani_full_tests {
         let mut graph = Graph::default();
         let incoming = graph.root();
         let result = graph.node();
-        graph.callables.insert("proof".into(), Callable { params: vec![incoming], result, calls: BTreeSet::new() });
+        graph.callables.insert(
+            "proof".into(),
+            Callable {
+                params: vec![incoming],
+                result,
+                calls: BTreeSet::new(),
+            },
+        );
         let owned = graph.allocation("proof");
-        let alias = graph.node(); graph.copy(owned, alias);
-        if kani::any::<bool>() { graph.constraints.push(Constraint::Store(owned, alias)); }
+        let alias = graph.node();
+        graph.copy(owned, alias);
+        if kani::any::<bool>() {
+            graph.constraints.push(Constraint::Store(owned, alias));
+        }
         graph.solve();
         assert!(graph.plan().regions.contains("proof"));
     }
@@ -646,7 +858,9 @@ mod tests {
 
     #[test]
     fn nested_incoming_publication_is_not_a_closed_region() {
-        let plan = derive(include_str!("../../tests/fixtures/load/reclamation_incoming_storage.bv"));
+        let plan = derive(include_str!(
+            "../../tests/fixtures/load/reclamation_incoming_storage.bv"
+        ));
         assert!(!plan.closed_regions.contains("publish_nested"), "{plan:?}");
         assert!(plan.barriers.contains("publish_storage"), "{plan:?}");
         assert!(plan.closed_regions.is_subset(&plan.regions));
@@ -654,75 +868,95 @@ mod tests {
 
     #[test]
     fn unclassified_global_initialization_prevents_an_entry_region() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             let retained: Ptr = Malloc#(32);
             node entry [true][true] {
                 let local: Ptr = Malloc#(32);
                 Store#(local,42,8);
                 endprogram;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.entry_region, "{plan:?}");
     }
 
     #[test]
     fn an_unknown_reactor_condition_prevents_an_entry_region() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             node entry [external_condition()][true] {
                 let local: Ptr = Malloc#(32);
                 Store#(local,42,8);
                 endprogram;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.entry_region, "{plan:?}");
     }
 
     #[test]
     fn computed_or_partly_unknown_syscall_numbers_never_prove_borrowing() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn inspect(number: Int) -> Bool {
                 let pointer: Ptr = Malloc#(32);
                 SysCall#(number+1,pointer);
                 term true;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("inspect"), "{plan:?}");
         let mut graph = Graph::default();
-        let known = graph.node(); graph.constants[known].insert(1);
+        let known = graph.node();
+        graph.constants[known].insert(1);
         let unknown = graph.unknown_value();
-        let merged = graph.node(); graph.copy(known, merged); graph.copy(unknown, merged);
+        let merged = graph.node();
+        graph.copy(known, merged);
+        graph.copy(unknown, merged);
         let pointer = graph.allocation("proof");
-        graph.constraints.push(Constraint::Syscall(merged, vec![pointer]));
+        graph
+            .constraints
+            .push(Constraint::Syscall(merged, vec![pointer]));
         graph.solve();
         assert!(graph.escaped.contains(&pointer));
     }
 
     #[test]
     fn process_entry_region_does_not_depend_on_a_source_node_name() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             let done: Bool = false;
             node arbitrary_entry [!done][done] {
                 let pointer: Ptr = Malloc#(32);
                 Store#(pointer,42,8);
                 endprogram;
             };
-        "#);
+        "#,
+        );
         assert!(plan.entry_region, "{plan:?}");
         assert!(!plan.regions.contains("arbitrary_entry"));
     }
 
     fn derive(source: &str) -> ReclamationPlan {
         let tokens = crate::lexer::tokenize(source).unwrap();
-        let items = crate::parser::Parser::new(tokens, source).parse_program().unwrap();
-        let live = items.iter().filter_map(|item| match item {
-            TopLevel::Definition(definition) => Some(definition.name.clone()), _ => None,
-        }).collect();
+        let items = crate::parser::Parser::new(tokens, source)
+            .parse_program()
+            .unwrap();
+        let live = items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::Definition(definition) => Some(definition.name.clone()),
+                _ => None,
+            })
+            .collect();
         analyze(&items, &live, None)
     }
 
     #[test]
     fn tuple_types_preserve_closed_regions_and_returned_aliases() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn pair(value: Int) -> (Int,Bool) { term (value,true); };
             defn inspect(value: Int) -> Bool {
                 let (number,flag) = pair(value);
@@ -736,9 +970,13 @@ mod tests {
                 let (pointer,flag) = values;
                 term pointer;
             };
-        "#);
+        "#,
+        );
         assert!(plan.regions.contains("inspect"), "{plan:?}");
-        assert!(!plan.regions.contains("escape"), "returned tuple payload must survive: {plan:?}");
+        assert!(
+            !plan.regions.contains("escape"),
+            "returned tuple payload must survive: {plan:?}"
+        );
     }
 
     #[test]
@@ -749,14 +987,16 @@ mod tests {
         // region whose memory is freed on return. Before the fix the store was
         // attributed to a content-less intermediate field-load node, so the
         // allocation looked reclaimable and its handle dangled.
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             obj Inner { fd: Int; };
             obj Mid { a: Int; inner: Inner; b: Int; };
             obj Wrap { marker: Int; mid: Mid; };
             defn assign(w: Wrap) -> Void {
                 w.mid.inner = Inner { fd: 3 };
             };
-        "#);
+        "#,
+        );
         assert!(
             !plan.regions.contains("assign"),
             "a nested field store must keep the allocation alive: {plan:?}"
@@ -774,13 +1014,15 @@ mod tests {
         // (neither region nor barrier) keeps the caller's region active, so the
         // allocation is adopted by that region and freed when the caller
         // returns.
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             obj Inner { fd: Int; };
             obj Mid { a: Int; inner: Inner; b: Int; };
             defn store(m: Mid) -> Void {
                 m.inner = Inner { fd: 3 };
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("store"), "{plan:?}");
         assert!(plan.barriers.contains("store"), "{plan:?}");
     }
@@ -790,7 +1032,8 @@ mod tests {
         // 2026-11-09: when EVERY call site passes a non-escaping local of the
         // caller, the caller's region legitimately owns the published storage,
         // so the publisher need not suspend it. This is the leak fix.
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             obj Holder { addr: Ptr; };
             defn make() -> Ptr { term Malloc#(16); };
             defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
@@ -799,21 +1042,30 @@ mod tests {
                 let ok: Bool = publish(h);
                 term Load#(h.addr,8);
             };
-        "#);
-        assert!(!plan.barriers.contains("publish"), "a non-escaping local receiver must not barrier the publisher: {plan:?}");
+        "#,
+        );
+        assert!(
+            !plan.barriers.contains("publish"),
+            "a non-escaping local receiver must not barrier the publisher: {plan:?}"
+        );
     }
 
     #[test]
     fn publisher_with_parameter_receiver_stays_a_barrier() {
         // The receiver is a parameter that can outlive the frame, so the barrier
         // (and its UAF protection) must remain.
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             obj Holder { addr: Ptr; };
             defn make() -> Ptr { term Malloc#(16); };
             defn publish(h: Holder) -> Bool { h.addr = make(); term true; };
             defn caller(h: Holder) -> Int { let ok: Bool = publish(h); term Load#(h.addr,8); };
-        "#);
-        assert!(plan.barriers.contains("publish"), "a parameter receiver must stay a barrier: {plan:?}");
+        "#,
+        );
+        assert!(
+            plan.barriers.contains("publish"),
+            "a parameter receiver must stay a barrier: {plan:?}"
+        );
     }
 
     #[test]
@@ -825,7 +1077,8 @@ mod tests {
         // its teardown freed the WebSocket key the caller still read (Valgrind
         // UAF in ws_accept_key). The allocation-provenance and projection-argument
         // propagation must mark the whole chain as barriers.
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             obj T { key: String; flag: Int; };
             obj W { t: T; n: Int; };
             defn enc(n: Int) -> String { term "a" + n as String; };
@@ -848,29 +1101,39 @@ mod tests {
                 start_upgrade(w, port);
                 term w.t.key .^Length;
             };
-        "#);
+        "#,
+        );
         for name in ["upgrade", "start_upgrade", "poll"] {
-            assert!(plan.barriers.contains(name), "{name} must be a barrier: {plan:?}");
-            assert!(!plan.regions.contains(name), "{name} must not be a region: {plan:?}");
+            assert!(
+                plan.barriers.contains(name),
+                "{name} must be a barrier: {plan:?}"
+            );
+            assert!(
+                !plan.regions.contains(name),
+                "{name} must not be a region: {plan:?}"
+            );
         }
     }
 
     #[test]
     fn all_local_aliases_fit_one_region() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn inspect() -> Bool {
                 let first: Ptr = Malloc#(32);
                 let second: Ptr = first;
                 Store#(second,42,8);
                 term Load#(first,8) == 42;
             };
-        "#);
+        "#,
+        );
         assert!(plan.regions.contains("inspect"), "{plan:?}");
     }
 
     #[test]
     fn returned_storage_survives_until_its_consuming_caller_exits() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn create() -> Ptr { term Malloc#(32); };
             defn inspect() -> Bool {
                 let value: Ptr = create();
@@ -878,38 +1141,44 @@ mod tests {
                 Store#(value,42,8);
                 term Load#(alias,8) == 42;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("create"));
         assert!(plan.regions.contains("inspect"), "{plan:?}");
     }
 
     #[test]
     fn writing_fresh_storage_into_a_borrowed_destination_is_an_escape() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn retain(destination: Ptr) -> Bool {
                 let value: Ptr = Malloc#(32);
                 Store#(destination,value,8);
                 term true;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("retain"));
         assert!(plan.reasons["retain"].contains("incoming storage"));
     }
 
     #[test]
     fn a_pointer_returned_through_an_integer_is_not_a_scalar_lifetime() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn create() -> Int {
                 let value: Ptr = Malloc#(32);
                 term value as Int;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("create"), "{plan:?}");
     }
 
     #[test]
     fn recursive_return_edges_reach_the_fixed_point() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn create(depth: Int) -> Ptr {
                 when depth == 0 { term Malloc#(32); };
                 term create(depth-1);
@@ -919,14 +1188,16 @@ mod tests {
                 Store#(value,42,8);
                 term Load#(value,8) == 42;
             };
-        "#);
+        "#,
+        );
         assert!(!plan.regions.contains("create"));
         assert!(plan.regions.contains("inspect"), "{plan:?}");
     }
 
     #[test]
     fn incoming_and_new_instances_of_one_allocation_site_are_distinct() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             defn create() -> Ptr { term Malloc#(32); };
             defn inspect(prior: Ptr) -> Bool {
                 let current: Ptr = create();
@@ -939,13 +1210,15 @@ mod tests {
                 inspect(prior);
                 endprogram;
             };
-        "#);
+        "#,
+        );
         assert!(plan.regions.contains("inspect"), "{plan:?}");
     }
 
     #[test]
     fn scalar_field_projection_does_not_retain_an_unrelated_owned_field() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             let observed: Int = 0;
             obj Record { buffer: Ptr; count: Int; };
             defn inspect() -> Bool {
@@ -955,14 +1228,16 @@ mod tests {
                 Store#(record.buffer,42,8);
                 term Load#(pointer,8) == 42;
             };
-        "#);
+        "#,
+        );
         assert!(plan.regions.contains("inspect"), "{plan:?}");
         assert!(!plan.barriers.contains("inspect"));
     }
 
     #[test]
     fn inactive_enum_payloads_do_not_escape_through_a_scalar_arm() {
-        let plan = derive(r#"
+        let plan = derive(
+            r#"
             let observed: Int = 0;
             enum Tagged { Reference(Ptr), Count(Int) };
             defn scalar(value: Tagged) -> Int {
@@ -975,7 +1250,8 @@ mod tests {
                 Store#(pointer,42,8);
                 term Load#(pointer,8) == 42;
             };
-        "#);
+        "#,
+        );
         assert!(plan.regions.contains("inspect"), "{plan:?}");
         assert!(!plan.barriers.contains("inspect"));
     }

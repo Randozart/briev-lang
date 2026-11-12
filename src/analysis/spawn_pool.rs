@@ -59,9 +59,7 @@ impl PoolBound {
         match self {
             PoolBound::Literal(n) => Expr::Decimal(*n),
             PoolBound::Var(n) => Expr::Identifier(n.clone()),
-            PoolBound::Field(base, name) => {
-                Expr::Field(Box::new(base.to_expr()), name.clone())
-            }
+            PoolBound::Field(base, name) => Expr::Field(Box::new(base.to_expr()), name.clone()),
             PoolBound::Mul(a, b) => Expr::BinaryOp(
                 crate::ast::BinaryOpKind::Mul,
                 Box::new(a.to_expr()),
@@ -77,7 +75,9 @@ pub fn expr_bound(e: &Expr) -> Option<PoolBound> {
     match e {
         Expr::Decimal(n) => Some(PoolBound::Literal(*n)),
         Expr::Identifier(n) => Some(PoolBound::Var(n.clone())),
-        Expr::Field(base, name) => expr_bound(base).map(|b| PoolBound::Field(Box::new(b), name.clone())),
+        Expr::Field(base, name) => {
+            expr_bound(base).map(|b| PoolBound::Field(Box::new(b), name.clone()))
+        }
         _ => None,
     }
 }
@@ -104,7 +104,9 @@ pub struct DependentTerm {
 /// rows 1..(a+b) on ONE counter — `max(a,b)` columns would overflow. And
 /// `free`/`keep` do NOT shrink the pool: without reclamation a free never
 /// returns a row, so decrementing here would under-allocate.
-pub fn analyze(items: &[TopLevel]) -> (
+pub fn analyze(
+    items: &[TopLevel],
+) -> (
     HashMap<String, usize>,
     HashMap<String, Vec<DependentTerm>>,
     Vec<String>,
@@ -134,7 +136,10 @@ pub fn analyze(items: &[TopLevel]) -> (
                 let firing = node_firing(t, &init_maxes);
                 let mut live: HashMap<String, i64> = HashMap::new();
                 let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
-                let mut ctx = WalkCtx { firing: &firing, bound_terms: &[] };
+                let mut ctx = WalkCtx {
+                    firing: &firing,
+                    bound_terms: &[],
+                };
                 walk_stmts(&t.body, 1, &mut ctx, &mut live, &mut terms, &mut errors);
                 merge_total(&mut capacities, &live);
                 for (base, ts) in terms {
@@ -144,7 +149,10 @@ pub fn analyze(items: &[TopLevel]) -> (
             TopLevel::Definition(d) => {
                 let mut live: HashMap<String, i64> = HashMap::new();
                 let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
-                let mut ctx = WalkCtx { firing: &Firing::Static(1), bound_terms: &[] };
+                let mut ctx = WalkCtx {
+                    firing: &Firing::Static(1),
+                    bound_terms: &[],
+                };
                 walk_stmts(&d.body, 1, &mut ctx, &mut live, &mut terms, &mut errors);
                 merge_total(&mut capacities, &live);
                 for (base, ts) in terms {
@@ -154,7 +162,10 @@ pub fn analyze(items: &[TopLevel]) -> (
             TopLevel::Statement(stmt) => {
                 let mut live: HashMap<String, i64> = HashMap::new();
                 let mut terms: HashMap<String, Vec<DependentTerm>> = HashMap::new();
-                let mut ctx = WalkCtx { firing: &Firing::Static(1), bound_terms: &[] };
+                let mut ctx = WalkCtx {
+                    firing: &Firing::Static(1),
+                    bound_terms: &[],
+                };
                 walk_stmt(stmt, 1, &mut ctx, &mut live, &mut terms, &mut errors);
                 merge_total(&mut capacities, &live);
                 for (base, ts) in terms {
@@ -214,7 +225,9 @@ fn walk_stmt_for_storage(
             }
             walk_expr_for_storage(value, out);
         }
-        crate::ast::Statement::Term(Some(e)) | crate::ast::Statement::EndProgram(Some(e)) | crate::ast::Statement::Tail(e) => {
+        crate::ast::Statement::Term(Some(e))
+        | crate::ast::Statement::EndProgram(Some(e))
+        | crate::ast::Statement::Tail(e) => {
             walk_expr_for_storage(e, out);
         }
         crate::ast::Statement::Expression(e) | crate::ast::Statement::Gate(e) => {
@@ -237,7 +250,9 @@ fn walk_stmt_for_storage(
 /// Record any non-pooled `box`/`spill` spawn in an expression (recursively).
 fn walk_expr_for_storage(e: &Expr, out: &mut HashMap<String, crate::ast::SpawnStorage>) {
     match e {
-        Expr::Spawn { type_name, storage, .. } if *storage != crate::ast::SpawnStorage::Pooled => {
+        Expr::Spawn {
+            type_name, storage, ..
+        } if *storage != crate::ast::SpawnStorage::Pooled => {
             out.entry(type_name.clone()).or_insert(*storage);
         }
         Expr::Spawn { args, .. }
@@ -252,8 +267,12 @@ fn walk_expr_for_storage(e: &Expr, out: &mut HashMap<String, crate::ast::SpawnSt
             walk_expr_for_storage(l, out);
             walk_expr_for_storage(r, out);
         }
-        Expr::UnaryOp(_, i) | Expr::Deref(i) | Expr::AddrOf(i) | Expr::Cast(i, _)
-        | Expr::Consume(i) | Expr::IsType(i, _) => walk_expr_for_storage(i, out),
+        Expr::UnaryOp(_, i)
+        | Expr::Deref(i)
+        | Expr::AddrOf(i)
+        | Expr::Cast(i, _)
+        | Expr::Consume(i)
+        | Expr::IsType(i, _) => walk_expr_for_storage(i, out),
         Expr::Field(o, _) | Expr::Index(o, _) | Expr::Reflect(o, _, _) => {
             walk_expr_for_storage(o, out)
         }
@@ -279,7 +298,13 @@ fn walk_expr_for_storage(e: &Expr, out: &mut HashMap<String, crate::ast::SpawnSt
                 walk_expr_for_storage(&arm.body, out);
             }
         }
-        Expr::Slice { array, start, end, stride, .. } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+            ..
+        } => {
             walk_expr_for_storage(array, out);
             for b in [start, end, stride].into_iter().flatten() {
                 walk_expr_for_storage(b, out);
@@ -326,10 +351,14 @@ fn node_firing(t: &crate::ast::Transaction, init_maxes: &HashMap<String, i64>) -
     }
     match &t.contract.pre_condition {
         Expr::Bool(true) => Firing::Unprovable,
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Lt, _, r) | Expr::BinaryOp(crate::ast::BinaryOpKind::Le, _, r) => {
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Lt, _, r)
+        | Expr::BinaryOp(crate::ast::BinaryOpKind::Le, _, r) => {
             match r.as_ref() {
                 Expr::Decimal(n) if *n >= 0 => {
-                    let inclusive = matches!(t.contract.pre_condition, Expr::BinaryOp(crate::ast::BinaryOpKind::Le, _, _));
+                    let inclusive = matches!(
+                        t.contract.pre_condition,
+                        Expr::BinaryOp(crate::ast::BinaryOpKind::Le, _, _)
+                    );
                     Firing::Static(if inclusive { n + 1 } else { *n })
                 }
                 Expr::Identifier(name) => match init_maxes.get(name) {
@@ -406,7 +435,11 @@ fn walk_stmt(
     match stmt {
         Statement::Foreach { list, body, .. } => {
             let count = match list.as_ref() {
-                Expr::Range { start, end, inclusive } => match (start.as_ref(), end.as_ref()) {
+                Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } => match (start.as_ref(), end.as_ref()) {
                     (Expr::Decimal(s), Expr::Decimal(e)) if *s <= *e => {
                         Some((if *inclusive { e - s + 1 } else { e - s }).max(0))
                     }
@@ -424,8 +457,15 @@ fn walk_stmt(
                     // so inner spawns accumulate it.
                     if let Some(bound) = foreach_bound(list.as_ref()) {
                         let nested = ctx.bound_terms;
-                        let extended: Vec<PoolBound> = nested.iter().cloned().chain(std::iter::once(bound)).collect();
-                        let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
+                        let extended: Vec<PoolBound> = nested
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(bound))
+                            .collect();
+                        let mut inner_ctx = WalkCtx {
+                            firing: ctx.firing,
+                            bound_terms: &extended,
+                        };
                         walk_stmts(body, multiplier, &mut inner_ctx, live, terms, errors);
                     } else {
                         // A foreach we cannot bound (a value-carrying list).
@@ -434,8 +474,18 @@ fn walk_stmt(
                         let mut inner_errors = Vec::new();
                         let nested = ctx.bound_terms;
                         let extended: Vec<PoolBound> = nested.to_vec();
-                        let mut inner_ctx = WalkCtx { firing: ctx.firing, bound_terms: &extended };
-                        walk_stmts(body, 0, &mut inner_ctx, &mut inner_live, &mut inner_terms, &mut inner_errors);
+                        let mut inner_ctx = WalkCtx {
+                            firing: ctx.firing,
+                            bound_terms: &extended,
+                        };
+                        walk_stmts(
+                            body,
+                            0,
+                            &mut inner_ctx,
+                            &mut inner_live,
+                            &mut inner_terms,
+                            &mut inner_errors,
+                        );
                         // An unprovable firing context (not a countdown) inside
                         // such a loop is still an error.
                         for e in inner_errors {
@@ -456,7 +506,9 @@ fn walk_stmt(
         Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
             walk_expr(e, multiplier, ctx, live, terms, errors);
         }
-        Statement::Expression(e) | Statement::Gate(e) => walk_expr(e, multiplier, ctx, live, terms, errors),
+        Statement::Expression(e) | Statement::Gate(e) => {
+            walk_expr(e, multiplier, ctx, live, terms, errors)
+        }
         // 2026-08-08 (pool lifecycle, Bug 1): `free h;` / `keep h;` do NOT
         // shrink the pool. The `__spawn_next_<base>` allocator is monotonic —
         // without row reclamation (the free-list phase) a free never returns a
@@ -479,7 +531,11 @@ fn walk_expr(
     errors: &mut Vec<String>,
 ) {
     match expr {
-        Expr::Spawn { type_name, args, storage } => {
+        Expr::Spawn {
+            type_name,
+            args,
+            storage,
+        } => {
             // 2026-08-09 (Phase 5): `box`/`spill` spawns are NOT pool rows —
             // box is per-instance-heap (each instance its own allocation),
             // spill is a growable buffer. Neither consumes static/dependent
@@ -501,9 +557,12 @@ fn walk_expr(
                     // const firing count times the runtime loop bounds.
                     let bound = product(ctx.bound_terms);
                     let entry = terms.entry(type_name.clone()).or_default();
-                    entry.push(DependentTerm { multiplier: multiplier * (*n).max(1), bound });
+                    entry.push(DependentTerm {
+                        multiplier: multiplier * (*n).max(1),
+                        bound,
+                    });
                 }
-                                Firing::Dependent(countdown_bound) => {
+                Firing::Dependent(countdown_bound) => {
                     // The countdown bound N is the runtime firing count; each
                     // enclosing runtime-bound foreach multiplies it.
                     let mut bounds: Vec<PoolBound> = Vec::with_capacity(ctx.bound_terms.len() + 1);
@@ -535,7 +594,11 @@ fn walk_expr(
                 walk_expr(a, multiplier, ctx, live, terms, errors);
             }
         }
-        Expr::Cast(i, _) | Expr::IsType(i, _) | Expr::Consume(i) | Expr::Deref(i) | Expr::AddrOf(i) => {
+        Expr::Cast(i, _)
+        | Expr::IsType(i, _)
+        | Expr::Consume(i)
+        | Expr::Deref(i)
+        | Expr::AddrOf(i) => {
             walk_expr(i, multiplier, ctx, live, terms, errors);
         }
         Expr::Field(o, _) | Expr::Index(o, _) | Expr::Reflect(o, _, _) => {
@@ -563,7 +626,13 @@ fn walk_expr(
                 walk_expr(&arm.body, multiplier, ctx, live, terms, errors);
             }
         }
-        Expr::Slice { array, start, end, stride, .. } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+            ..
+        } => {
             walk_expr(array, multiplier, ctx, live, terms, errors);
             for b in [start, end, stride].into_iter().flatten() {
                 walk_expr(b, multiplier, ctx, live, terms, errors);
@@ -627,7 +696,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             metadata: std::collections::HashMap::new(),
             derivation: None,
@@ -642,7 +712,11 @@ mod tests {
             name: "h".to_string(),
             names: vec![],
             ty: None,
-            expr: Some(Expr::Spawn { type_name: base.to_string(), args: vec![], storage: crate::ast::SpawnStorage::Pooled }),
+            expr: Some(Expr::Spawn {
+                type_name: base.to_string(),
+                args: vec![],
+                storage: crate::ast::SpawnStorage::Pooled,
+            }),
             modifiers: vec![],
         }
     }
@@ -650,12 +724,16 @@ mod tests {
     fn countdown(bound: Expr) -> TopLevel {
         txn(
             "work",
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Lt,
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("ticks".into())),
-                Box::new(bound)),
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Eq,
+                Box::new(bound),
+            ),
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("ticks".into())),
-                Box::new(Expr::Decimal(0))),
+                Box::new(Expr::Decimal(0)),
+            ),
             vec![spawn("Counter")],
         )
     }
@@ -678,7 +756,9 @@ mod tests {
         let (caps, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
         assert!(!caps.contains_key("Counter"));
-        let terms = dependent.get("Counter").expect("a runtime-bound spawn must be dependent");
+        let terms = dependent
+            .get("Counter")
+            .expect("a runtime-bound spawn must be dependent");
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].multiplier, 1);
         assert!(matches!(terms[0].bound, PoolBound::Var(ref n) if n == "N"));
@@ -696,9 +776,12 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![spawn("Counter")],
-        modifiers: vec![],
+            modifiers: vec![],
         };
-        let program = vec![countdown_with_body(Expr::Identifier("N".into()), vec![foreach])];
+        let program = vec![countdown_with_body(
+            Expr::Identifier("N".into()),
+            vec![foreach],
+        )];
         let (_, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
         let terms = dependent.get("Counter").expect("dependent pool expected");
@@ -710,12 +793,16 @@ mod tests {
     fn countdown_with_body(bound: Expr, body: Vec<Statement>) -> TopLevel {
         txn(
             "work",
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Lt,
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Lt,
                 Box::new(Expr::Identifier("ticks".into())),
-                Box::new(bound)),
-            Expr::BinaryOp(crate::ast::BinaryOpKind::Eq,
+                Box::new(bound),
+            ),
+            Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Eq,
                 Box::new(Expr::Identifier("ticks".into())),
-                Box::new(Expr::Decimal(0))),
+                Box::new(Expr::Decimal(0)),
+            ),
             body,
         )
     }
@@ -756,8 +843,11 @@ mod tests {
         let program = vec![countdown_with_body(Expr::Decimal(3), body)];
         let (caps, _, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
-        assert_eq!(caps.get("Counter"), Some(&3),
-            "keep must not reduce the pool: capacity = total spawn count (3 firings)");
+        assert_eq!(
+            caps.get("Counter"),
+            Some(&3),
+            "keep must not reduce the pool: capacity = total spawn count (3 firings)"
+        );
     }
 
     // 2026-08-08 (pool lifecycle, Bug 2): capacity is a SUM across nodes —
@@ -771,8 +861,11 @@ mod tests {
         let program = vec![node_a, node_b];
         let (caps, _, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
-        assert_eq!(caps.get("Counter"), Some(&8),
-            "two nodes spawning Counter need the SUM (3 + 5 = 8) on the shared counter");
+        assert_eq!(
+            caps.get("Counter"),
+            Some(&8),
+            "two nodes spawning Counter need the SUM (3 + 5 = 8) on the shared counter"
+        );
     }
 
     // ── 2026-08-09 (init kind, Phase 4): bounded-init pool capacity ────
@@ -805,10 +898,15 @@ mod tests {
         let program = vec![init, countdown(Expr::Identifier("N".into()))];
         let (caps, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
-        assert!(dependent.is_empty(),
-            "a bounded init must not use the dependent-heap path, got {dependent:?}");
-        assert_eq!(caps.get("Counter"), Some(&64),
-            "pool must be sized to the max of the bound set (64)");
+        assert!(
+            dependent.is_empty(),
+            "a bounded init must not use the dependent-heap path, got {dependent:?}"
+        );
+        assert_eq!(
+            caps.get("Counter"),
+            Some(&64),
+            "pool must be sized to the max of the bound set (64)"
+        );
     }
 
     /// A bounded init with a literal range `[64 | lo..hi]` — the max is the
@@ -829,8 +927,11 @@ mod tests {
         let (caps, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
         assert!(dependent.is_empty());
-        assert_eq!(caps.get("Counter"), Some(&64),
-            "range max (hi=54) and the single 64 both contribute — max is 64");
+        assert_eq!(
+            caps.get("Counter"),
+            Some(&64),
+            "range max (hi=54) and the single 64 both contribute — max is 64"
+        );
     }
 
     /// An init bound set containing a NAME reference is not statically
@@ -850,9 +951,13 @@ mod tests {
         let program = vec![init, countdown(Expr::Identifier("N".into()))];
         let (caps, dependent, errors, _) = analyze(&program);
         assert!(errors.is_empty(), "expected no errors, got {errors:?}");
-        assert!(!caps.contains_key("Counter"),
-            "a ref-containing bound set is not statically bounded");
-        let terms = dependent.get("Counter").expect("must use the dependent path");
+        assert!(
+            !caps.contains_key("Counter"),
+            "a ref-containing bound set is not statically bounded"
+        );
+        let terms = dependent
+            .get("Counter")
+            .expect("must use the dependent path");
         assert!(matches!(&terms[0].bound, PoolBound::Var(n) if n == "N"));
     }
 
@@ -863,7 +968,11 @@ mod tests {
             name: "h".to_string(),
             names: vec![],
             ty: None,
-            expr: Some(Expr::Spawn { type_name: "Counter".to_string(), args: vec![], storage }),
+            expr: Some(Expr::Spawn {
+                type_name: "Counter".to_string(),
+                args: vec![],
+                storage,
+            }),
             modifiers: vec![],
         }
     }
@@ -881,7 +990,10 @@ mod tests {
         )];
         let (caps, dependent, errors, storage) = analyze(&program);
         // The firing is unprovable ([true]) but box legalizes it — no error.
-        assert!(errors.is_empty(), "box spawn must not error, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "box spawn must not error, got {errors:?}"
+        );
         assert!(caps.is_empty(), "a box spawn consumes no pool capacity");
         assert!(dependent.is_empty(), "a box spawn is not a dependent pool");
         assert_eq!(storage.get("Counter"), Some(&crate::ast::SpawnStorage::Box));
@@ -897,9 +1009,15 @@ mod tests {
             vec![spawn_with_storage(crate::ast::SpawnStorage::Spill)],
         )];
         let (caps, dependent, errors, storage) = analyze(&program);
-        assert!(errors.is_empty(), "spill spawn must not error, got {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "spill spawn must not error, got {errors:?}"
+        );
         assert!(caps.is_empty(), "a spill spawn consumes no pool capacity");
-        assert_eq!(storage.get("Counter"), Some(&crate::ast::SpawnStorage::Spill));
+        assert_eq!(
+            storage.get("Counter"),
+            Some(&crate::ast::SpawnStorage::Spill)
+        );
     }
 
     /// A plain (pooled) spawn in an unprovable context is STILL an error —
@@ -913,9 +1031,14 @@ mod tests {
             vec![spawn_with_storage(crate::ast::SpawnStorage::Pooled)],
         )];
         let (_, _, errors, storage) = analyze(&program);
-        assert!(!errors.is_empty(), "a pooled spawn in an unprovable node must error");
+        assert!(
+            !errors.is_empty(),
+            "a pooled spawn in an unprovable node must error"
+        );
         assert!(errors[0].contains("not statically bounded"));
-        assert!(storage.is_empty(), "a rejected pooled spawn has no storage class");
+        assert!(
+            storage.is_empty(),
+            "a rejected pooled spawn has no storage class"
+        );
     }
 }
-

@@ -14,9 +14,21 @@ struct TreeFacts {
 impl TreeFacts {
     fn capture(graph: &Graph) -> Self {
         Self {
-            points: graph.points.iter().map(|set| set.iter().collect()).collect(),
-            memory: graph.memory.iter().map(|set| set.iter().collect()).collect(),
-            named: graph.named_memory.iter().map(|(key, set)| (key.clone(), set.iter().collect())).collect(),
+            points: graph
+                .points
+                .iter()
+                .map(|set| set.iter().collect())
+                .collect(),
+            memory: graph
+                .memory
+                .iter()
+                .map(|set| set.iter().collect())
+                .collect(),
+            named: graph
+                .named_memory
+                .iter()
+                .map(|(key, set)| (key.clone(), set.iter().collect()))
+                .collect(),
         }
     }
 
@@ -30,9 +42,11 @@ impl TreeFacts {
     }
 
     fn named_values(&self, root: Node, field: Option<&str>) -> BTreeSet<Node> {
-        self.named.iter().filter(|((owner, name), _)|
-            *owner == root && field.is_none_or(|field| field == name))
-            .flat_map(|(_, values)| values.iter().copied()).collect()
+        self.named
+            .iter()
+            .filter(|((owner, name), _)| *owner == root && field.is_none_or(|field| field == name))
+            .flat_map(|(_, values)| values.iter().copied())
+            .collect()
     }
 
     fn store(&mut self, base: Node, field: Option<&str>, values: BTreeSet<Node>) {
@@ -48,19 +62,31 @@ impl TreeFacts {
     fn apply(&mut self, constraint: &Constraint) {
         match constraint {
             Constraint::Copy(source, target) => {
-                let values = self.points[*source].clone(); self.points[*target].extend(values);
-            }
-            Constraint::Bitwise(_, left, right, target) => {
-                let values = self.points[*left].union(&self.points[*right]).copied().collect::<Vec<_>>();
+                let values = self.points[*source].clone();
                 self.points[*target].extend(values);
             }
-            Constraint::Load(base, target) => { let values = self.read(*base, None); self.points[*target].extend(values); }
+            Constraint::Bitwise(_, left, right, target) => {
+                let values = self.points[*left]
+                    .union(&self.points[*right])
+                    .copied()
+                    .collect::<Vec<_>>();
+                self.points[*target].extend(values);
+            }
+            Constraint::Load(base, target) => {
+                let values = self.read(*base, None);
+                self.points[*target].extend(values);
+            }
             Constraint::FieldLoad(base, field, target) => {
-                let values = self.read(*base, Some(field)); self.points[*target].extend(values);
+                let values = self.read(*base, Some(field));
+                self.points[*target].extend(values);
             }
             Constraint::Store(base, value) => self.store(*base, None, self.points[*value].clone()),
-            Constraint::FieldStore(base, field, value) => self.store(*base, Some(field), self.points[*value].clone()),
-            Constraint::CopyMemory(source, target) => self.store(*target, None, self.read(*source, None)),
+            Constraint::FieldStore(base, field, value) => {
+                self.store(*base, Some(field), self.points[*value].clone())
+            }
+            Constraint::CopyMemory(source, target) => {
+                self.store(*target, None, self.read(*source, None))
+            }
             Constraint::EscapeContents(_) | Constraint::Syscall(..) => {}
         }
     }
@@ -69,12 +95,16 @@ impl TreeFacts {
         loop {
             let before = self.clone();
             self.propagate(constraints);
-            if *self == before { return; }
+            if *self == before {
+                return;
+            }
         }
     }
 
     fn propagate(&mut self, constraints: &[Constraint]) {
-        for constraint in constraints { self.apply(constraint); }
+        for constraint in constraints {
+            self.apply(constraint);
+        }
     }
 }
 
@@ -94,7 +124,9 @@ fn cyclic_memory_constraints_match_elementwise_fixed_point() {
 
 fn cyclic_graph(mut seed: usize) -> Graph {
     let mut graph = Graph::default();
-    for _ in 0..130 { graph.root(); }
+    for _ in 0..130 {
+        graph.root();
+    }
     for index in 0..260 {
         seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
         let first = seed % 130;

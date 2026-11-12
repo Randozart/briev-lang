@@ -67,11 +67,7 @@ impl ParameterRanges {
     }
 
     /// Recursively extract bounds from precondition expressions
-    fn extract_bounds_from_expr(
-        &self,
-        expr: &Expr,
-        ranges: &mut HashMap<String, Range>,
-    ) {
+    fn extract_bounds_from_expr(&self, expr: &Expr, ranges: &mut HashMap<String, Range>) {
         match expr {
             Expr::BinaryOp(BinaryOpKind::And, l, r) => {
                 self.extract_bounds_from_expr(l, ranges);
@@ -152,7 +148,11 @@ impl ParameterRanges {
             (Bound::Unbounded, _) => bound,
             (Bound::Inclusive(a), Bound::Inclusive(b)) => Bound::Inclusive((*a).max(*b)),
             (Bound::Inclusive(a), Bound::Exclusive(b)) => {
-                if *a > *b { range.lower.clone() } else { bound }
+                if *a > *b {
+                    range.lower.clone()
+                } else {
+                    bound
+                }
             }
             _ => bound,
         };
@@ -163,7 +163,11 @@ impl ParameterRanges {
             (Bound::Unbounded, _) => bound,
             (Bound::Inclusive(a), Bound::Inclusive(b)) => Bound::Inclusive((*a).min(*b)),
             (Bound::Inclusive(a), Bound::Exclusive(b)) => {
-                if *a < *b { range.upper.clone() } else { bound }
+                if *a < *b {
+                    range.upper.clone()
+                } else {
+                    bound
+                }
             }
             _ => bound,
         };
@@ -189,20 +193,26 @@ impl ParameterRanges {
 
     /// Get the minimum value of a parameter (if bounded)
     pub fn min_value(&self, txn_name: &str, param_name: &str) -> Option<i64> {
-        self.ranges.get(txn_name).and_then(|r| r.get(param_name)).and_then(|r| match r.lower {
-            Bound::Inclusive(v) => Some(v),
-            Bound::Exclusive(v) => Some(v + 1),
-            Bound::Unbounded => None,
-        })
+        self.ranges
+            .get(txn_name)
+            .and_then(|r| r.get(param_name))
+            .and_then(|r| match r.lower {
+                Bound::Inclusive(v) => Some(v),
+                Bound::Exclusive(v) => Some(v + 1),
+                Bound::Unbounded => None,
+            })
     }
 
     /// Get the maximum value of a parameter (if bounded)
     pub fn max_value(&self, txn_name: &str, param_name: &str) -> Option<i64> {
-        self.ranges.get(txn_name).and_then(|r| r.get(param_name)).and_then(|r| match r.upper {
-            Bound::Inclusive(v) => Some(v),
-            Bound::Exclusive(v) => Some(v - 1),
-            Bound::Unbounded => None,
-        })
+        self.ranges
+            .get(txn_name)
+            .and_then(|r| r.get(param_name))
+            .and_then(|r| match r.upper {
+                Bound::Inclusive(v) => Some(v),
+                Bound::Exclusive(v) => Some(v - 1),
+                Bound::Unbounded => None,
+            })
     }
 }
 
@@ -210,23 +220,23 @@ impl ParameterRanges {
 mod tests {
     use super::*;
 
-    fn make_txn_with_precondition(
-        name: &str,
-        param_names: &[&str],
-        pre: Expr,
-    ) -> TopLevel {
+    fn make_txn_with_precondition(name: &str, param_names: &[&str], pre: Expr) -> TopLevel {
         TopLevel::Transaction(Transaction {
             variadic_param: None,
             name: name.to_string(),
             type_params: vec![],
-            parameters: param_names.iter().map(|n| (n.to_string(), Type::int())).collect(),
+            parameters: param_names
+                .iter()
+                .map(|n| (n.to_string(), Type::int()))
+                .collect(),
             contract: Contract {
                 pre_condition: pre,
                 post_condition: Expr::Bool(true),
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: vec![],
             is_async: false,
             is_reactive: false,
@@ -250,7 +260,8 @@ mod tests {
 
     #[test]
     fn test_single_unbounded_param() {
-        let program: Vec<TopLevel> = vec![make_txn_with_precondition("f", &["x"], Expr::Bool(true))];
+        let program: Vec<TopLevel> =
+            vec![make_txn_with_precondition("f", &["x"], Expr::Bool(true))];
         let mut pr = ParameterRanges::new();
         pr.analyze(&program);
         assert!(!pr.has_lower_bound("f", "x"));
@@ -262,7 +273,11 @@ mod tests {
         let program: Vec<TopLevel> = vec![make_txn_with_precondition(
             "f",
             &["x"],
-            Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(0))),
+            Expr::BinaryOp(
+                BinaryOpKind::Gt,
+                Box::new(Expr::Identifier("x".to_string())),
+                Box::new(Expr::Decimal(0)),
+            ),
         )];
         let mut pr = ParameterRanges::new();
         pr.analyze(&program);
@@ -276,7 +291,11 @@ mod tests {
         let program: Vec<TopLevel> = vec![make_txn_with_precondition(
             "f",
             &["x"],
-            Expr::BinaryOp(BinaryOpKind::Le, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(10))),
+            Expr::BinaryOp(
+                BinaryOpKind::Le,
+                Box::new(Expr::Identifier("x".to_string())),
+                Box::new(Expr::Decimal(10)),
+            ),
         )];
         let mut pr = ParameterRanges::new();
         pr.analyze(&program);
@@ -290,9 +309,18 @@ mod tests {
         let program: Vec<TopLevel> = vec![make_txn_with_precondition(
             "f",
             &["x"],
-            Expr::BinaryOp(BinaryOpKind::And,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Gt, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(0)))),
-                Box::new(Expr::BinaryOp(BinaryOpKind::Lt, Box::new(Expr::Identifier("x".to_string())), Box::new(Expr::Decimal(100)))),
+            Expr::BinaryOp(
+                BinaryOpKind::And,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Gt,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Decimal(0)),
+                )),
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Lt,
+                    Box::new(Expr::Identifier("x".to_string())),
+                    Box::new(Expr::Decimal(100)),
+                )),
             ),
         )];
         let mut pr = ParameterRanges::new();

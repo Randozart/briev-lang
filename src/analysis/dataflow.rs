@@ -62,8 +62,7 @@ impl<'a> DataflowAnalyzer<'a> {
                             }
                         }
                     }
-                    if !has_writer && !reads.is_empty() {
-                    }
+                    if !has_writer && !reads.is_empty() {}
                 }
             }
         }
@@ -91,10 +90,19 @@ impl<'a> DataflowAnalyzer<'a> {
 
     fn extract_ids_recursive(&self, expr: &Expr, ids: &mut HashSet<String>) {
         match expr {
-            Expr::Identifier(name) => { ids.insert(name.clone()); }
+            Expr::Identifier(name) => {
+                ids.insert(name.clone());
+            }
             // 2026-09-28 (E3): the `[*]` selector is a leaf — no ids inside.
             Expr::Wildcard => {}
-            Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Char(_) | Expr::Float(_) | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) | Expr::Bool(_) | Expr::BeginProgram => {}
+            Expr::Decimal(_)
+            | Expr::TaggedLiteral(_, _)
+            | Expr::Char(_)
+            | Expr::Float(_)
+            | Expr::Quoted(_)
+            | Expr::TaggedQuotedLiteral(_, _)
+            | Expr::Bool(_)
+            | Expr::BeginProgram => {}
             Expr::BinaryOp(_, l, r) => {
                 self.extract_ids_recursive(l, ids);
                 self.extract_ids_recursive(r, ids);
@@ -102,7 +110,10 @@ impl<'a> DataflowAnalyzer<'a> {
             Expr::UnaryOp(_, inner) | Expr::Cast(inner, _) | Expr::IsType(inner, _) => {
                 self.extract_ids_recursive(inner, ids);
             }
-            Expr::Call(_, args, _) | Expr::Tuple(args) | Expr::List(args) | Expr::Spawn { args, .. } => {
+            Expr::Call(_, args, _)
+            | Expr::Tuple(args)
+            | Expr::List(args)
+            | Expr::Spawn { args, .. } => {
                 for arg in args {
                     self.extract_ids_recursive(arg, ids);
                 }
@@ -111,7 +122,10 @@ impl<'a> DataflowAnalyzer<'a> {
                 self.extract_ids_recursive(list, ids);
                 self.extract_ids_recursive(idx, ids);
             }
-            Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => {
+            Expr::Deref(inner)
+            | Expr::AddrOf(inner)
+            | Expr::Consume(inner)
+            | Expr::Await(inner) => {
                 self.extract_ids_recursive(inner, ids);
             }
             Expr::Field(obj, _) => {
@@ -149,25 +163,47 @@ impl<'a> DataflowAnalyzer<'a> {
             }
             Expr::MethodCall(recv, _, args, _) => {
                 self.extract_ids_recursive(recv, ids);
-                for a in args { self.extract_ids_recursive(a, ids); }
+                for a in args {
+                    self.extract_ids_recursive(a, ids);
+                }
             }
-            Expr::FormattingAnnotation(_) | Expr::DerivationBlock(_) | Expr::StructLiteral { .. } => {}
+            Expr::FormattingAnnotation(_)
+            | Expr::DerivationBlock(_)
+            | Expr::StructLiteral { .. } => {}
             Expr::PluginIntercept { args, .. } => {
-                for a in args { self.extract_ids_recursive(a, ids); }
+                for a in args {
+                    self.extract_ids_recursive(a, ids);
+                }
             }
-            Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-            Expr::Slice { array, start, end, stride } => {
+            Expr::Exists(_) => {
+                unreachable!("fn? only in stage eval")
+            }
+            Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 self.extract_ids_recursive(array, ids);
-                if let Some(e) = start.as_deref() { self.extract_ids_recursive(e, ids); }
-                if let Some(e) = end.as_deref() { self.extract_ids_recursive(e, ids); }
-                if let Some(e) = stride.as_deref() { self.extract_ids_recursive(e, ids); }
+                if let Some(e) = start.as_deref() {
+                    self.extract_ids_recursive(e, ids);
+                }
+                if let Some(e) = end.as_deref() {
+                    self.extract_ids_recursive(e, ids);
+                }
+                if let Some(e) = stride.as_deref() {
+                    self.extract_ids_recursive(e, ids);
+                }
             }
-            Expr::Range { start, end, inclusive: _ } => {
+            Expr::Range {
+                start,
+                end,
+                inclusive: _,
+            } => {
                 self.extract_ids_recursive(start, ids);
                 self.extract_ids_recursive(end, ids);
             }
             Expr::UnitLiteral { .. } => {}
-
         }
     }
 
@@ -194,7 +230,9 @@ impl<'a> DataflowAnalyzer<'a> {
                 ids.insert(name.clone());
             }
             Statement::Let { expr, .. } => {
-                if let Some(e) = expr { self.extract_ids_recursive(e, ids); }
+                if let Some(e) = expr {
+                    self.extract_ids_recursive(e, ids);
+                }
             }
             Statement::Guarded(condition, statements) => {
                 self.extract_ids_recursive(condition, ids);
@@ -247,8 +285,10 @@ impl<'a> DataflowAnalyzer<'a> {
                     self.extract_ids_from_statement(s, ids);
                 }
             }
-            Statement::InlineAsm { .. } | Statement::TrgBinding { .. }
-            | Statement::MetadataAssignment(..) | Statement::InlineDefn(_)
+            Statement::InlineAsm { .. }
+            | Statement::TrgBinding { .. }
+            | Statement::MetadataAssignment(..)
+            | Statement::InlineDefn(_)
             | Statement::Match { .. } => {}
             // 2026-09-22 (D16 p3b): `open` — collect ids from its
             // expressions.
@@ -263,12 +303,12 @@ impl<'a> DataflowAnalyzer<'a> {
         let mut writes = HashSet::new();
         for stmt in body {
             match stmt {
-            Statement::Assign(lhs, _) => {
-                if let Expr::Identifier(name) = lhs {
-                    writes.insert(name.clone());
+                Statement::Assign(lhs, _) => {
+                    if let Expr::Identifier(name) = lhs {
+                        writes.insert(name.clone());
+                    }
                 }
-            }
-            Statement::Guarded(_, statements) => {
+                Statement::Guarded(_, statements) => {
                     writes.extend(self.extract_writes(statements));
                 }
                 _ => {}
@@ -313,11 +353,10 @@ impl<'a> DataflowAnalyzer<'a> {
         for item in self.items {
             if let TopLevel::Transaction(txn) = item {
                 let writes = self.extract_writes(&txn.body);
-                if writes.iter().any(|w|
-                    w.contains("weight") ||
-                    w.contains("buf") ||
-                    w.contains("buffer")
-                ) {
+                if writes
+                    .iter()
+                    .any(|w| w.contains("weight") || w.contains("buf") || w.contains("buffer"))
+                {
                     txns.push(txn.name.clone());
                 }
             }
@@ -330,11 +369,12 @@ impl<'a> DataflowAnalyzer<'a> {
         for item in self.items {
             if let TopLevel::Transaction(txn) = item {
                 let body_str = format!("{:?}", txn.body);
-                if body_str.contains("acc") ||
-                   body_str.contains("result") ||
-                   body_str.contains("compute") ||
-                   body_str.contains("multiply") ||
-                   body_str.contains("add") {
+                if body_str.contains("acc")
+                    || body_str.contains("result")
+                    || body_str.contains("compute")
+                    || body_str.contains("multiply")
+                    || body_str.contains("add")
+                {
                     txns.push(txn.name.clone());
                 }
             }
@@ -382,9 +422,16 @@ pub enum ProtocolError {
 impl std::fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProtocolError::PreconditionNotMet { transaction, required, missing } => {
-                write!(f, "Transaction '{}' requires {} but {} was not set",
-                       transaction, required, missing)
+            ProtocolError::PreconditionNotMet {
+                transaction,
+                required,
+                missing,
+            } => {
+                write!(
+                    f,
+                    "Transaction '{}' requires {} but {} was not set",
+                    transaction, required, missing
+                )
             }
         }
     }

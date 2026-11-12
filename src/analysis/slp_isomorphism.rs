@@ -21,16 +21,10 @@ pub struct VectorPhiCandidate {
 /// The mapping maps variable names from expression `a` to expression `b`.
 /// Returns true if the expressions have the same structure (same BinaryOp kinds,
 /// same literals) up to the variable renaming defined by `mapping`.
-pub fn exprs_isomorphic(
-    a: &Expr,
-    b: &Expr,
-    mapping: &HashMap<String, String>,
-) -> bool {
+pub fn exprs_isomorphic(a: &Expr, b: &Expr, mapping: &HashMap<String, String>) -> bool {
     match (a, b) {
         (Expr::BinaryOp(k1, l1, r1), Expr::BinaryOp(k2, l2, r2)) => {
-            k1 == k2
-                && exprs_isomorphic(l1, l2, mapping)
-                && exprs_isomorphic(r1, r2, mapping)
+            k1 == k2 && exprs_isomorphic(l1, l2, mapping) && exprs_isomorphic(r1, r2, mapping)
         }
         (Expr::UnaryOp(k1, e1), Expr::UnaryOp(k2, e2)) => {
             k1 == k2 && exprs_isomorphic(e1, e2, mapping)
@@ -38,15 +32,11 @@ pub fn exprs_isomorphic(
         (Expr::Decimal(n1), Expr::Decimal(n2)) => n1 == n2,
         (Expr::Float(n1), Expr::Float(n2)) => (n1 - n2).abs() < 1e-10,
         (Expr::Bool(b1), Expr::Bool(b2)) => b1 == b2,
-        (Expr::Identifier(n1), Expr::Identifier(n2)) => {
-            match mapping.get(n1) {
-                Some(mapped) => mapped == n2,
-                None => n1 == n2,
-            }
-        }
-        (Expr::Cast(e1, t1), Expr::Cast(e2, t2)) => {
-            t1 == t2 && exprs_isomorphic(e1, e2, mapping)
-        }
+        (Expr::Identifier(n1), Expr::Identifier(n2)) => match mapping.get(n1) {
+            Some(mapped) => mapped == n2,
+            None => n1 == n2,
+        },
+        (Expr::Cast(e1, t1), Expr::Cast(e2, t2)) => t1 == t2 && exprs_isomorphic(e1, e2, mapping),
         (Expr::Field(obj1, f1), Expr::Field(obj2, f2)) => {
             f1 == f2 && exprs_isomorphic(obj1, obj2, mapping)
         }
@@ -56,10 +46,7 @@ pub fn exprs_isomorphic(
 
 /// Build a variable mapping from two expressions by finding the first identifier
 /// difference and using it to create the mapping.
-pub fn build_mapping(
-    a: &Expr,
-    b: &Expr,
-) -> Option<HashMap<String, String>> {
+pub fn build_mapping(a: &Expr, b: &Expr) -> Option<HashMap<String, String>> {
     let mut mapping = HashMap::new();
     if try_build_mapping(a, b, &mut mapping) {
         Some(mapping)
@@ -68,16 +55,10 @@ pub fn build_mapping(
     }
 }
 
-fn try_build_mapping(
-    a: &Expr,
-    b: &Expr,
-    mapping: &mut HashMap<String, String>,
-) -> bool {
+fn try_build_mapping(a: &Expr, b: &Expr, mapping: &mut HashMap<String, String>) -> bool {
     match (a, b) {
         (Expr::BinaryOp(k1, l1, r1), Expr::BinaryOp(k2, l2, r2)) => {
-            k1 == k2
-                && try_build_mapping(l1, l2, mapping)
-                && try_build_mapping(r1, r2, mapping)
+            k1 == k2 && try_build_mapping(l1, l2, mapping) && try_build_mapping(r1, r2, mapping)
         }
         (Expr::UnaryOp(k1, e1), Expr::UnaryOp(k2, e2)) => {
             k1 == k2 && try_build_mapping(e1, e2, mapping)
@@ -100,9 +81,7 @@ fn try_build_mapping(
                 }
             }
         }
-        (Expr::Cast(e1, t1), Expr::Cast(e2, t2)) => {
-            t1 == t2 && try_build_mapping(e1, e2, mapping)
-        }
+        (Expr::Cast(e1, t1), Expr::Cast(e2, t2)) => t1 == t2 && try_build_mapping(e1, e2, mapping),
         (Expr::Field(obj1, f1), Expr::Field(obj2, f2)) => {
             f1 == f2 && try_build_mapping(obj1, obj2, mapping)
         }
@@ -111,14 +90,25 @@ fn try_build_mapping(
 }
 
 /// Check if two statements are structurally isomorphic.
-pub fn statements_isomorphic(
-    a: &Statement,
-    b: &Statement,
-) -> Option<HashMap<String, String>> {
+pub fn statements_isomorphic(a: &Statement, b: &Statement) -> Option<HashMap<String, String>> {
     match (a, b) {
-        (Statement::Let { name: n1, ty: t1, expr: e1, .. },
-         Statement::Let { name: n2, ty: t2, expr: e2, .. }) => {
-            if t1 != t2 { return None; }
+        (
+            Statement::Let {
+                name: n1,
+                ty: t1,
+                expr: e1,
+                ..
+            },
+            Statement::Let {
+                name: n2,
+                ty: t2,
+                expr: e2,
+                ..
+            },
+        ) => {
+            if t1 != t2 {
+                return None;
+            }
             let mapping = build_mapping(e1.as_ref()?, e2.as_ref()?)?;
             Some(mapping)
         }
@@ -145,14 +135,12 @@ pub fn statements_isomorphic(
     }
 }
 
-fn try_build_mapping_lhs(
-    a: &Expr,
-    b: &Expr,
-    mapping: &mut HashMap<String, String>,
-) -> bool {
+fn try_build_mapping_lhs(a: &Expr, b: &Expr, mapping: &mut HashMap<String, String>) -> bool {
     match (a, b) {
         (Expr::Identifier(n1), Expr::Identifier(n2)) => {
-            if n1 == n2 { return true; }
+            if n1 == n2 {
+                return true;
+            }
             if mapping.contains_key(n1) {
                 mapping[n1] == *n2
             } else {
@@ -168,10 +156,7 @@ fn try_build_mapping_lhs(
 }
 
 /// Find groups of isomorphic statements starting at start_idx.
-fn find_isomorphic_groups(
-    body: &[Statement],
-    start_idx: usize,
-) -> Vec<VectorPhiCandidate> {
+fn find_isomorphic_groups(body: &[Statement], start_idx: usize) -> Vec<VectorPhiCandidate> {
     let mut groups = Vec::new();
     if start_idx >= body.len() {
         return groups;
@@ -257,11 +242,16 @@ fn expr_signature_inner(expr: &Expr, sig: &mut Vec<u8>) {
         Expr::BinaryOp(kind, l, r) => {
             sig.push(1);
             sig.push(match kind {
-                BinaryOpKind::Add => 1, BinaryOpKind::Sub => 2,
-                BinaryOpKind::Mul => 3, BinaryOpKind::Div => 4,
-                BinaryOpKind::Eq => 5, BinaryOpKind::Neq => 6,
-                BinaryOpKind::Lt => 7, BinaryOpKind::Gt => 8,
-                BinaryOpKind::Le => 9, BinaryOpKind::Ge => 10,
+                BinaryOpKind::Add => 1,
+                BinaryOpKind::Sub => 2,
+                BinaryOpKind::Mul => 3,
+                BinaryOpKind::Div => 4,
+                BinaryOpKind::Eq => 5,
+                BinaryOpKind::Neq => 6,
+                BinaryOpKind::Lt => 7,
+                BinaryOpKind::Gt => 8,
+                BinaryOpKind::Le => 9,
+                BinaryOpKind::Ge => 10,
                 _ => 0,
             });
             expr_signature_inner(l, sig);
@@ -270,26 +260,35 @@ fn expr_signature_inner(expr: &Expr, sig: &mut Vec<u8>) {
         Expr::UnaryOp(kind, e) => {
             sig.push(2);
             sig.push(match kind {
-                UnaryOpKind::Neg => 1, UnaryOpKind::Not => 2,
+                UnaryOpKind::Neg => 1,
+                UnaryOpKind::Not => 2,
                 _ => 0,
             });
             expr_signature_inner(e, sig);
         }
-        Expr::Identifier(_) => { sig.push(3); }
+        Expr::Identifier(_) => {
+            sig.push(3);
+        }
         Expr::Decimal(n) => {
             sig.push(4);
-            for &b in &n.to_le_bytes() { sig.push(b); }
+            for &b in &n.to_le_bytes() {
+                sig.push(b);
+            }
         }
         Expr::Float(f) => {
             sig.push(5);
             let bits = f.to_bits();
-            for &b in &bits.to_le_bytes() { sig.push(b); }
+            for &b in &bits.to_le_bytes() {
+                sig.push(b);
+            }
         }
         Expr::Bool(b) => {
             sig.push(6);
             sig.push(if *b { 1 } else { 0 });
         }
-        _ => { sig.push(0); }
+        _ => {
+            sig.push(0);
+        }
     }
 }
 
@@ -314,9 +313,13 @@ fn build_def_sites(body: &[Statement]) -> HashMap<String, usize> {
     let mut defs = HashMap::new();
     for (i, stmt) in body.iter().enumerate() {
         match stmt {
-            Statement::Let { name, .. } => { defs.insert(name.clone(), i); }
+            Statement::Let { name, .. } => {
+                defs.insert(name.clone(), i);
+            }
             Statement::Assign(lhs, _) => {
-                if let Expr::Identifier(n) = &*lhs { defs.insert(n.clone(), i); }
+                if let Expr::Identifier(n) = &*lhs {
+                    defs.insert(n.clone(), i);
+                }
             }
             _ => {}
         }
@@ -327,7 +330,10 @@ fn build_def_sites(body: &[Statement]) -> HashMap<String, usize> {
 fn collect_expr_vars(expr: &Expr, out: &mut Vec<String>) {
     match expr {
         Expr::Identifier(n) => out.push(n.clone()),
-        Expr::BinaryOp(_, l, r) => { collect_expr_vars(l, out); collect_expr_vars(r, out); }
+        Expr::BinaryOp(_, l, r) => {
+            collect_expr_vars(l, out);
+            collect_expr_vars(r, out);
+        }
         Expr::UnaryOp(_, e) => collect_expr_vars(e, out),
         Expr::Field(obj, _) => collect_expr_vars(obj, out),
         Expr::Cast(e, _) => collect_expr_vars(e, out),
@@ -335,14 +341,12 @@ fn collect_expr_vars(expr: &Expr, out: &mut Vec<String>) {
     }
 }
 
-fn all_deps_available(
-    body: &[Statement],
-    field_name: &str,
-    template_base_index: usize,
-) -> bool {
+fn all_deps_available(body: &[Statement], field_name: &str, template_base_index: usize) -> bool {
     let def_sites = build_def_sites(body);
     let stmt = body.get(template_base_index);
-    let Some(stmt) = stmt else { return false; };
+    let Some(stmt) = stmt else {
+        return false;
+    };
     let rhs = match stmt {
         Statement::Let { expr: Some(e), .. } => &*e,
         Statement::Assign(_, e) => &*e,
@@ -409,18 +413,24 @@ fn merge_groups(body: &[Statement], groups: Vec<VectorPhiCandidate>) -> Vec<Vect
             });
             // Keep only groups where dependencies are available at template position
             let template_base = sorted[0].fields.first().cloned().unwrap_or_default();
-            let template_base_idx = body.iter().position(|s| match s {
-                Statement::Let { name, .. } => *name == template_base,
-                Statement::Assign(Expr::Identifier(n), _) => *n == template_base,
-                _ => false,
-            }).unwrap_or(0);
+            let template_base_idx = body
+                .iter()
+                .position(|s| match s {
+                    Statement::Let { name, .. } => *name == template_base,
+                    Statement::Assign(Expr::Identifier(n), _) => *n == template_base,
+                    _ => false,
+                })
+                .unwrap_or(0);
             sorted.retain(|g| {
                 let first = g.fields.first().cloned().unwrap_or_default();
-                let pos = body.iter().position(|s| match s {
-                    Statement::Let { name, .. } => *name == first,
-                    Statement::Assign(Expr::Identifier(n), _) => *n == first,
-                    _ => false,
-                }).unwrap_or(0);
+                let pos = body
+                    .iter()
+                    .position(|s| match s {
+                        Statement::Let { name, .. } => *name == first,
+                        Statement::Assign(Expr::Identifier(n), _) => *n == first,
+                        _ => false,
+                    })
+                    .unwrap_or(0);
                 pos == template_base_idx || all_deps_available(body, &first, pos)
             });
             if sorted.len() < 2 {
@@ -474,7 +484,9 @@ pub fn analyze_body(body: &[Statement], min_width: usize) -> Vec<VectorPhiCandid
                 }
                 i += 1;
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -487,7 +499,10 @@ pub fn analyze_body(body: &[Statement], min_width: usize) -> Vec<VectorPhiCandid
     }
 
     // Only return groups that are wide enough to justify vector phi overhead.
-    groups.into_iter().filter(|g| g.width >= min_width).collect()
+    groups
+        .into_iter()
+        .filter(|g| g.width >= min_width)
+        .collect()
 }
 
 #[cfg(test)]
@@ -495,11 +510,21 @@ mod tests {
     use super::*;
     use crate::ast::{BinaryOpKind, Expr, Statement};
 
-    fn float_expr(val: f64) -> Expr { Expr::Float(val) }
-    fn ident(n: &str) -> Expr { Expr::Identifier(n.to_string()) }
-    fn add_expr(a: Expr, b: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Add, Box::new(a), Box::new(b)) }
-    fn sub_expr(a: Expr, b: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Sub, Box::new(a), Box::new(b)) }
-    fn mul_expr(a: Expr, b: Expr) -> Expr { Expr::BinaryOp(BinaryOpKind::Mul, Box::new(a), Box::new(b)) }
+    fn float_expr(val: f64) -> Expr {
+        Expr::Float(val)
+    }
+    fn ident(n: &str) -> Expr {
+        Expr::Identifier(n.to_string())
+    }
+    fn add_expr(a: Expr, b: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Add, Box::new(a), Box::new(b))
+    }
+    fn sub_expr(a: Expr, b: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Sub, Box::new(a), Box::new(b))
+    }
+    fn mul_expr(a: Expr, b: Expr) -> Expr {
+        Expr::BinaryOp(BinaryOpKind::Mul, Box::new(a), Box::new(b))
+    }
 
     #[test]
     fn test_isomorphic_simple_add() {
@@ -515,7 +540,10 @@ mod tests {
         let a = mul_expr(add_expr(ident("x"), ident("y")), float_expr(0.5));
         let b = mul_expr(add_expr(ident("a"), ident("b")), float_expr(0.5));
         let mapping = build_mapping(&a, &b);
-        assert!(mapping.is_some(), "0.5*(x+y) vs 0.5*(a+b) should be isomorphic");
+        assert!(
+            mapping.is_some(),
+            "0.5*(x+y) vs 0.5*(a+b) should be isomorphic"
+        );
     }
 
     #[test]
@@ -571,26 +599,50 @@ mod tests {
             },
         ];
         let result = analyze_body(&body, 4);
-        assert!(result.is_empty(),
-            "dx01/dy01/dz01 width=3 should be filtered (width < 4)");
+        assert!(
+            result.is_empty(),
+            "dx01/dy01/dz01 width=3 should be filtered (width < 4)"
+        );
 
         // Now test with 4 lanes (bx0..bx3)
         let body4 = vec![
-            Statement::Let { names: vec![], name: "bx0".to_string(), ty: Some(Type::float()),
-                expr: Some(add_expr(ident("ax"), ident("ay"))), modifiers: vec![] },
-            Statement::Let { names: vec![], name: "bx1".to_string(), ty: Some(Type::float()),
-                expr: Some(add_expr(ident("ax"), ident("ay"))), modifiers: vec![] },
-            Statement::Let { names: vec![], name: "bx2".to_string(), ty: Some(Type::float()),
-                expr: Some(add_expr(ident("ax"), ident("ay"))), modifiers: vec![] },
-            Statement::Let { names: vec![], name: "bx3".to_string(), ty: Some(Type::float()),
-                expr: Some(add_expr(ident("ax"), ident("ay"))), modifiers: vec![] },
+            Statement::Let {
+                names: vec![],
+                name: "bx0".to_string(),
+                ty: Some(Type::float()),
+                expr: Some(add_expr(ident("ax"), ident("ay"))),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                names: vec![],
+                name: "bx1".to_string(),
+                ty: Some(Type::float()),
+                expr: Some(add_expr(ident("ax"), ident("ay"))),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                names: vec![],
+                name: "bx2".to_string(),
+                ty: Some(Type::float()),
+                expr: Some(add_expr(ident("ax"), ident("ay"))),
+                modifiers: vec![],
+            },
+            Statement::Let {
+                names: vec![],
+                name: "bx3".to_string(),
+                ty: Some(Type::float()),
+                expr: Some(add_expr(ident("ax"), ident("ay"))),
+                modifiers: vec![],
+            },
         ];
         let result4 = analyze_body(&body4, 4);
         // 2026-07-29: analyze_body no longer processes Statement::Let (temporary
         // locals are not loop-carried state). Only Statement::Assign groups are
         // returned. Let-based groups are skipped.
-        assert!(result4.is_empty(),
-            "analyze_body skips Statement::Let — no groups expected");
+        assert!(
+            result4.is_empty(),
+            "analyze_body skips Statement::Let — no groups expected"
+        );
     }
 
     #[test]
@@ -607,8 +659,10 @@ mod tests {
             Expr::Identifier("nvx1".to_string()),
         );
         let mapping = statements_isomorphic(&a, &b);
-        assert!(mapping.is_some(),
-            "vx0=nvx0 vs vx1=nvx1 should be isomorphic");
+        assert!(
+            mapping.is_some(),
+            "vx0=nvx0 vs vx1=nvx1 should be isomorphic"
+        );
         assert_eq!(mapping.unwrap().get("vx0"), Some(&"vx1".to_string()));
     }
 
@@ -617,29 +671,46 @@ mod tests {
         // 5 consecutive scalar velocity assignments: vx0=nvx0..vx4=nvx4
         // Should form a width-5 group via analyze_body.
         let body = vec![
-            Statement::Assign(Expr::Identifier("vx0".to_string()),
-                Expr::Identifier("nvx0".to_string())),
-            Statement::Assign(Expr::Identifier("vx1".to_string()),
-                Expr::Identifier("nvx1".to_string())),
-            Statement::Assign(Expr::Identifier("vx2".to_string()),
-                Expr::Identifier("nvx2".to_string())),
-            Statement::Assign(Expr::Identifier("vx3".to_string()),
-                Expr::Identifier("nvx3".to_string())),
-            Statement::Assign(Expr::Identifier("vx4".to_string()),
-                Expr::Identifier("nvx4".to_string())),
+            Statement::Assign(
+                Expr::Identifier("vx0".to_string()),
+                Expr::Identifier("nvx0".to_string()),
+            ),
+            Statement::Assign(
+                Expr::Identifier("vx1".to_string()),
+                Expr::Identifier("nvx1".to_string()),
+            ),
+            Statement::Assign(
+                Expr::Identifier("vx2".to_string()),
+                Expr::Identifier("nvx2".to_string()),
+            ),
+            Statement::Assign(
+                Expr::Identifier("vx3".to_string()),
+                Expr::Identifier("nvx3".to_string()),
+            ),
+            Statement::Assign(
+                Expr::Identifier("vx4".to_string()),
+                Expr::Identifier("nvx4".to_string()),
+            ),
         ];
         let result = analyze_body(&body, 4);
-        assert!(!result.is_empty(),
-            "5 consecutive isomorphic scalar assigns should form groups");
-        assert_eq!(result[0].width, 5,
-            "first group should have width 5");
+        assert!(
+            !result.is_empty(),
+            "5 consecutive isomorphic scalar assigns should form groups"
+        );
+        assert_eq!(result[0].width, 5, "first group should have width 5");
         assert_eq!(result[0].fields, vec!["vx0", "vx1", "vx2", "vx3", "vx4"]);
     }
 
     #[test]
     fn test_infer_group_name() {
-        assert_eq!(infer_group_name(&["bx0".into(), "bx1".into(), "bx2".into()]), "bx");
-        assert_eq!(infer_group_name(&["vx".into(), "vy".into(), "vz".into()]), "g");
+        assert_eq!(
+            infer_group_name(&["bx0".into(), "bx1".into(), "bx2".into()]),
+            "bx"
+        );
+        assert_eq!(
+            infer_group_name(&["vx".into(), "vy".into(), "vz".into()]),
+            "g"
+        );
         assert_eq!(infer_group_name(&["a".into(), "b".into()]), "g");
     }
 }

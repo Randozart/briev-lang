@@ -281,7 +281,10 @@ mod tests {
             "defn f(n: Int) -> Int { when n <= 0 { term 0; }; when n > 0 { term f(n - 1); }; };\n",
         );
         let plan = build_tail_loop_plan(&items);
-        assert!(plan.is_lowerable("f"), "a term inside a when-block is still a tail edge");
+        assert!(
+            plan.is_lowerable("f"),
+            "a term inside a when-block is still a tail edge"
+        );
     }
 
     #[test]

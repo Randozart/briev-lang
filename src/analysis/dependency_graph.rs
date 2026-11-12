@@ -103,9 +103,15 @@ impl DependencyGraph {
                     .collect();
                 if let Some(lhs) = lhs_name {
                     if self.all_vars.contains(&lhs) && !rhs_ids.is_empty() {
-                        self.dependencies.entry(lhs.clone()).or_default().extend(rhs_ids.clone());
+                        self.dependencies
+                            .entry(lhs.clone())
+                            .or_default()
+                            .extend(rhs_ids.clone());
                         for dep in &rhs_ids {
-                            self.dependents.entry(dep.clone()).or_default().push(lhs.clone());
+                            self.dependents
+                                .entry(dep.clone())
+                                .or_default()
+                                .push(lhs.clone());
                         }
                     }
                 }
@@ -117,9 +123,15 @@ impl DependencyGraph {
                         .filter(|r| self.all_vars.contains(r))
                         .collect();
                     if self.all_vars.contains(name) && !rhs_ids.is_empty() {
-                        self.dependencies.entry(name.clone()).or_default().extend(rhs_ids.clone());
+                        self.dependencies
+                            .entry(name.clone())
+                            .or_default()
+                            .extend(rhs_ids.clone());
                         for dep in &rhs_ids {
-                            self.dependents.entry(dep.clone()).or_default().push(name.clone());
+                            self.dependents
+                                .entry(dep.clone())
+                                .or_default()
+                                .push(name.clone());
                         }
                     }
                 }
@@ -282,7 +294,14 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
             collect_expr_ids_inner(inner, ids);
         }
         // Literal leaves — no identifiers
-        Expr::Decimal(_) | Expr::TaggedLiteral(_, _) | Expr::Char(_) | Expr::Float(_) | Expr::Quoted(_) | Expr::TaggedQuotedLiteral(_, _) | Expr::Bool(_) | Expr::BeginProgram => {}
+        Expr::Decimal(_)
+        | Expr::TaggedLiteral(_, _)
+        | Expr::Char(_)
+        | Expr::Float(_)
+        | Expr::Quoted(_)
+        | Expr::TaggedQuotedLiteral(_, _)
+        | Expr::Bool(_)
+        | Expr::BeginProgram => {}
         Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => {
             collect_expr_ids_inner(inner, ids);
         }
@@ -291,25 +310,45 @@ fn collect_expr_ids_inner(expr: &Expr, ids: &mut Vec<String>) {
         }
         Expr::MethodCall(recv, _, args, _) => {
             collect_expr_ids_inner(recv, ids);
-            for a in args { collect_expr_ids_inner(a, ids); }
+            for a in args {
+                collect_expr_ids_inner(a, ids);
+            }
         }
         Expr::FormattingAnnotation(_) | Expr::DerivationBlock(_) | Expr::StructLiteral { .. } => {}
         Expr::PluginIntercept { args, .. } => {
-            for a in args { collect_expr_ids_inner(a, ids); }
+            for a in args {
+                collect_expr_ids_inner(a, ids);
+            }
         }
-        Expr::Exists(_) => { unreachable!("fn? only in stage eval") },
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Exists(_) => {
+            unreachable!("fn? only in stage eval")
+        }
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_expr_ids_inner(array, ids);
-            if let Some(e) = start.as_deref() { collect_expr_ids_inner(e, ids); }
-            if let Some(e) = end.as_deref() { collect_expr_ids_inner(e, ids); }
-            if let Some(e) = stride.as_deref() { collect_expr_ids_inner(e, ids); }
+            if let Some(e) = start.as_deref() {
+                collect_expr_ids_inner(e, ids);
+            }
+            if let Some(e) = end.as_deref() {
+                collect_expr_ids_inner(e, ids);
+            }
+            if let Some(e) = stride.as_deref() {
+                collect_expr_ids_inner(e, ids);
+            }
         }
-        Expr::Range { start, end, inclusive: _ } => {
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
             collect_expr_ids_inner(start, ids);
             collect_expr_ids_inner(end, ids);
         }
         Expr::UnitLiteral { .. } => {}
-
     }
 }
 
@@ -370,8 +409,15 @@ mod tests {
         let rhs_expr = if rhs.len() == 1 {
             Expr::Identifier(rhs[0].to_string())
         } else {
-            let binary = rhs.iter().map(|n| Expr::Identifier(n.to_string())).collect::<Vec<_>>();
-            Expr::BinaryOp(BinaryOpKind::Add, Box::new(binary[0].clone()), Box::new(binary[1].clone()))
+            let binary = rhs
+                .iter()
+                .map(|n| Expr::Identifier(n.to_string()))
+                .collect::<Vec<_>>();
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(binary[0].clone()),
+                Box::new(binary[1].clone()),
+            )
         };
         TopLevel::Transaction(Transaction {
             variadic_param: None,
@@ -383,7 +429,10 @@ mod tests {
             output_type: None,
             outputs: vec![],
             contract: Contract::new(Expr::Bool(true), Expr::Bool(true)),
-            body: vec![Statement::Assign(Expr::Identifier(lhs.to_string()), rhs_expr)],
+            body: vec![Statement::Assign(
+                Expr::Identifier(lhs.to_string()),
+                rhs_expr,
+            )],
             metadata: HashMap::new(),
             derivation: None,
             modifiers: vec![],
@@ -401,9 +450,7 @@ mod tests {
 
     #[test]
     fn test_trg_variable_only() {
-        let graph = DependencyGraph::build(&[
-            make_trigger("sensor", Type::int()),
-        ]).unwrap();
+        let graph = DependencyGraph::build(&[make_trigger("sensor", Type::int())]).unwrap();
         assert_eq!(graph.topo_order.len(), 1);
         assert!(graph.is_trg.contains("sensor"));
         assert_eq!(graph.bit_index["sensor"], 0);
@@ -415,10 +462,15 @@ mod tests {
             make_trigger("sensor", Type::int()),
             make_state_decl("derived", Type::int()),
             make_txn_assign("derived", &["sensor"]),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(graph.topo_order.len(), 2);
         let sensor_pos = graph.topo_order.iter().position(|v| v == "sensor").unwrap();
-        let derived_pos = graph.topo_order.iter().position(|v| v == "derived").unwrap();
+        let derived_pos = graph
+            .topo_order
+            .iter()
+            .position(|v| v == "derived")
+            .unwrap();
         assert!(sensor_pos < derived_pos, "trg must come before dependent");
         assert_eq!(graph.bit_index["sensor"], 0);
         assert_eq!(graph.bit_index["derived"], 1);
@@ -432,7 +484,8 @@ mod tests {
             make_state_decl("c", Type::int()),
             make_txn_assign("b", &["a"]),
             make_txn_assign("c", &["b"]),
-        ]).unwrap();
+        ])
+        .unwrap();
         let pos_a = graph.topo_order.iter().position(|v| v == "a").unwrap();
         let pos_b = graph.topo_order.iter().position(|v| v == "b").unwrap();
         let pos_c = graph.topo_order.iter().position(|v| v == "c").unwrap();
@@ -460,7 +513,8 @@ mod tests {
             make_trigger("b", Type::int()),
             make_state_decl("sum", Type::int()),
             make_txn_assign("sum", &["a", "b"]),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(graph.topo_order.len(), 3);
         assert!(graph.bit_index["a"] < graph.bit_index["sum"]);
         assert!(graph.bit_index["b"] < graph.bit_index["sum"]);
@@ -471,7 +525,8 @@ mod tests {
         let graph = DependencyGraph::build(&[
             make_trigger("x", Type::int()),
             make_state_decl("y", Type::int()),
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(graph.topo_order.len(), 2);
     }
     #[test]
@@ -483,7 +538,9 @@ mod tests {
             make_trigger("alpha", Type::int()),
         ];
         let graph = DependencyGraph::build(&items).unwrap();
-        assert_eq!(graph.topo_order, vec!["alpha".to_string(), "zeta".to_string()]);
+        assert_eq!(
+            graph.topo_order,
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
     }
-
 }

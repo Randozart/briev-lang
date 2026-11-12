@@ -51,7 +51,11 @@ pub struct ReactorTransitionGraph {
 }
 
 impl ReactorTransitionGraph {
-    pub fn build(items: &[TopLevel], exit_condition: &Option<Box<Expr>>, out_pragmas: &[String]) -> Self {
+    pub fn build(
+        items: &[TopLevel],
+        exit_condition: &Option<Box<Expr>>,
+        out_pragmas: &[String],
+    ) -> Self {
         let mut nodes = Vec::new();
         let mut has_triggers = false;
 
@@ -63,74 +67,91 @@ impl ReactorTransitionGraph {
         // the reactor dispatch empty (nothing fired).
         for txn in crate::analysis::effective_txns(items) {
             let body_no_term: Vec<Statement> = {
-                        let mut filtered: Vec<&Statement> = txn.body.iter()
-                            .filter(|s| !matches!(s, Statement::Term(None) | Statement::EndProgram(None) | Statement::Tail(_)))
-                            .collect();
-                        while filtered.last().map_or(false, |s| {
-                            if let Statement::Guarded(_, statements) = s {
-                                statements.iter().any(|s| matches!(s, Statement::EndProgram(None)))
-                            } else { false }
-                        }) {
-                            filtered.pop();
-                        }
-                        filtered.into_iter().cloned().collect()
-                    };
-                    let simplified_body = simplify_body(&body_no_term);
-                    let increments = detect_increments(&simplified_body)
-                        .or_else(|| detect_popcount_decay(&simplified_body));
-                    // 2026-07-17: detect_increments returns the FIRST match,
-                    // which may not be the bounded_pre's var (e.g. tail before ops).
-                    // If the first increment doesn't match, collect ALL increments
-                    // and try each one, updating increments to the matching one.
-                    let (bounded_pre, increments) = {
-                        let bp = extract_valid_bounded_pre(&txn.contract.pre_condition, &increments);
-                        if let Some(ref bp_val) = bp {
-                            (Some(bp_val.clone()), increments)
-                        } else {
-                            let all_incs = detect_all_increments(&simplified_body);
-                            let matched = all_incs.iter().find_map(|inc| {
-                                let bp = extract_valid_bounded_pre(&txn.contract.pre_condition, &Some(inc.clone()));
-                                bp.map(|b| (b, inc.clone()))
-                            });
-                            match matched {
-                                Some((bp_val, inc_val)) => (Some(bp_val), Some(inc_val)),
-                                None => (None, increments),
-                            }
-                        }
-                    };
-                    // 2026-07-17: Collect state field names from both StateDecl
-                    // (hand-constructed ASTs in tests) and Statement::Let (parser
-                    // output for top-level `let name: Type = expr;`).
-                    let state_field_names: HashSet<String> = items
-                        .iter()
-                        .filter_map(|i| {
-                            match i {
-                                TopLevel::StateDecl(s) => Some(s.name.clone()),
-                                TopLevel::Statement(stmt) => {
-                                    if let Statement::Let { name, .. } = stmt.as_ref() {
-                                        Some(name.clone())
-                                    } else { None }
-                                }
-                                _ => None,
-                            }
-                        })
-                        .collect();
-                    let is_pure = is_pure_body(&simplified_body, &state_field_names, &increments);
-                    let write_set = extract_write_set(&simplified_body, &state_field_names);
-                    let lexicographic_vars = detect_lexicographic_ranking(&txn.contract.pre_condition, &simplified_body);
-
-                    nodes.push(ReactorNode {
-                        name: txn.name.clone(),
-                        is_reactive: txn.is_reactive,
-                        precondition: txn.contract.pre_condition.clone(),
-                        body: simplified_body,
-                        bounded_pre,
-                        increments,
-                        is_pure_body: is_pure,
-                        write_set,
-                        is_effectively_pure: false,
-                        lexicographic_vars,
+                let mut filtered: Vec<&Statement> = txn
+                    .body
+                    .iter()
+                    .filter(|s| {
+                        !matches!(
+                            s,
+                            Statement::Term(None)
+                                | Statement::EndProgram(None)
+                                | Statement::Tail(_)
+                        )
+                    })
+                    .collect();
+                while filtered.last().map_or(false, |s| {
+                    if let Statement::Guarded(_, statements) = s {
+                        statements
+                            .iter()
+                            .any(|s| matches!(s, Statement::EndProgram(None)))
+                    } else {
+                        false
+                    }
+                }) {
+                    filtered.pop();
+                }
+                filtered.into_iter().cloned().collect()
+            };
+            let simplified_body = simplify_body(&body_no_term);
+            let increments = detect_increments(&simplified_body)
+                .or_else(|| detect_popcount_decay(&simplified_body));
+            // 2026-07-17: detect_increments returns the FIRST match,
+            // which may not be the bounded_pre's var (e.g. tail before ops).
+            // If the first increment doesn't match, collect ALL increments
+            // and try each one, updating increments to the matching one.
+            let (bounded_pre, increments) = {
+                let bp = extract_valid_bounded_pre(&txn.contract.pre_condition, &increments);
+                if let Some(ref bp_val) = bp {
+                    (Some(bp_val.clone()), increments)
+                } else {
+                    let all_incs = detect_all_increments(&simplified_body);
+                    let matched = all_incs.iter().find_map(|inc| {
+                        let bp = extract_valid_bounded_pre(
+                            &txn.contract.pre_condition,
+                            &Some(inc.clone()),
+                        );
+                        bp.map(|b| (b, inc.clone()))
                     });
+                    match matched {
+                        Some((bp_val, inc_val)) => (Some(bp_val), Some(inc_val)),
+                        None => (None, increments),
+                    }
+                }
+            };
+            // 2026-07-17: Collect state field names from both StateDecl
+            // (hand-constructed ASTs in tests) and Statement::Let (parser
+            // output for top-level `let name: Type = expr;`).
+            let state_field_names: HashSet<String> = items
+                .iter()
+                .filter_map(|i| match i {
+                    TopLevel::StateDecl(s) => Some(s.name.clone()),
+                    TopLevel::Statement(stmt) => {
+                        if let Statement::Let { name, .. } = stmt.as_ref() {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+            let is_pure = is_pure_body(&simplified_body, &state_field_names, &increments);
+            let write_set = extract_write_set(&simplified_body, &state_field_names);
+            let lexicographic_vars =
+                detect_lexicographic_ranking(&txn.contract.pre_condition, &simplified_body);
+
+            nodes.push(ReactorNode {
+                name: txn.name.clone(),
+                is_reactive: txn.is_reactive,
+                precondition: txn.contract.pre_condition.clone(),
+                body: simplified_body,
+                bounded_pre,
+                increments,
+                is_pure_body: is_pure,
+                write_set,
+                is_effectively_pure: false,
+                lexicographic_vars,
+            });
         }
 
         // Trigger scan (kept separate — effective_txns yields only txns).
@@ -149,7 +170,10 @@ impl ReactorTransitionGraph {
         let mut live_fields = live_fields;
         for item in items {
             if let TopLevel::Statement(stmt) = item {
-                if let Statement::Let { name, modifiers, .. } = stmt.as_ref() {
+                if let Statement::Let {
+                    name, modifiers, ..
+                } = stmt.as_ref()
+                {
                     if modifiers.iter().any(|m| m.name == "out" || m.name == "vol") {
                         live_fields.insert(name.clone());
                     }
@@ -201,8 +225,13 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
                     direction: ConvergeDirection::Increasing,
                     bound_literal: Some(*n),
                 }),
-                (Expr::Identifier(var), Expr::UnaryOp(UnaryOpKind::Neg, bn)) if matches!(bn.as_ref(), Expr::Decimal(_)) => {
-                    let n = match bn.as_ref() { Expr::Decimal(n) => -n, _ => 0 };
+                (Expr::Identifier(var), Expr::UnaryOp(UnaryOpKind::Neg, bn))
+                    if matches!(bn.as_ref(), Expr::Decimal(_)) =>
+                {
+                    let n = match bn.as_ref() {
+                        Expr::Decimal(n) => -n,
+                        _ => 0,
+                    };
                     Some(BoundedPre {
                         var: var.clone(),
                         bound_var: format!("__lit__{}", var),
@@ -219,7 +248,9 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
                             direction: ConvergeDirection::Increasing,
                             bound_literal: None,
                         })
-                    } else { None }
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
@@ -238,8 +269,13 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
                     direction: ConvergeDirection::Decreasing,
                     bound_literal: Some(*n),
                 }),
-                (Expr::Identifier(var), Expr::UnaryOp(UnaryOpKind::Neg, bn)) if matches!(bn.as_ref(), Expr::Decimal(_)) => {
-                    let n = match bn.as_ref() { Expr::Decimal(n) => -n, _ => 0 };
+                (Expr::Identifier(var), Expr::UnaryOp(UnaryOpKind::Neg, bn))
+                    if matches!(bn.as_ref(), Expr::Decimal(_)) =>
+                {
+                    let n = match bn.as_ref() {
+                        Expr::Decimal(n) => -n,
+                        _ => 0,
+                    };
                     Some(BoundedPre {
                         var: var.clone(),
                         bound_var: format!("__lit__{}", var),
@@ -256,7 +292,9 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
                             direction: ConvergeDirection::Decreasing,
                             bound_literal: Some(0),
                         })
-                    } else { None }
+                    } else {
+                        None
+                    }
                 }
                 // len(list) > N — list drains to N
                 (Expr::Field(list, target), Expr::Decimal(n)) if target == "Size" && *n > 0 => {
@@ -267,23 +305,23 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
                             direction: ConvergeDirection::Decreasing,
                             bound_literal: Some(*n),
                         })
-                    } else { None }
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             }
         }
         // reg != N — treat as reg > N (decreasing toward N) or reg < N
-        Expr::BinaryOp(BinaryOpKind::Neq, l, r) => {
-            match (l.as_ref(), r.as_ref()) {
-                (Expr::Identifier(var), Expr::Decimal(n)) => Some(BoundedPre {
-                    var: var.clone(),
-                    bound_var: format!("__lit__{}", var),
-                    direction: ConvergeDirection::Decreasing,
-                    bound_literal: Some(*n),
-                }),
-                _ => None,
-            }
-        }
+        Expr::BinaryOp(BinaryOpKind::Neq, l, r) => match (l.as_ref(), r.as_ref()) {
+            (Expr::Identifier(var), Expr::Decimal(n)) => Some(BoundedPre {
+                var: var.clone(),
+                bound_var: format!("__lit__{}", var),
+                direction: ConvergeDirection::Decreasing,
+                bound_literal: Some(*n),
+            }),
+            _ => None,
+        },
         Expr::BinaryOp(BinaryOpKind::And, l, r) => {
             // 2026-07-17: Try both sides and prefer variable-bound comparison
             // over literal-bound. For `bound > 0 && ops < bound`, the left
@@ -294,7 +332,11 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
             // extract_valid_bounded_pre sees the correct var/inc match.
             match (extract_bounded_pre(l), extract_bounded_pre(r)) {
                 (Some(lp), Some(rp)) => {
-                    if lp.bound_literal.is_some() { Some(rp) } else { Some(lp) }
+                    if lp.bound_literal.is_some() {
+                        Some(rp)
+                    } else {
+                        Some(lp)
+                    }
                 }
                 (Some(lp), None) => Some(lp),
                 (None, Some(rp)) => Some(rp),
@@ -308,108 +350,125 @@ fn extract_bounded_pre(pre: &Expr) -> Option<BoundedPre> {
 fn extract_valid_bounded_pre(pre: &Expr, inc: &Option<IncrementInfo>) -> Option<BoundedPre> {
     let bp = extract_bounded_pre(pre)?;
     let is_mutated = inc.as_ref().map_or(false, |i| i.var == bp.var);
-    if is_mutated { Some(bp) } else { None }
+    if is_mutated {
+        Some(bp)
+    } else {
+        None
+    }
 }
 
 fn simplify_expr(expr: &Expr) -> Expr {
     let expr = match expr {
-        Expr::BinaryOp(BinaryOpKind::Add, a, b) => Expr::BinaryOp(BinaryOpKind::Add,
+        Expr::BinaryOp(BinaryOpKind::Add, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Add,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Sub, a, b) => Expr::BinaryOp(BinaryOpKind::Sub,
+        Expr::BinaryOp(BinaryOpKind::Sub, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Sub,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Mul, a, b) => Expr::BinaryOp(BinaryOpKind::Mul,
+        Expr::BinaryOp(BinaryOpKind::Mul, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Mul,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Div, a, b) => Expr::BinaryOp(BinaryOpKind::Div,
+        Expr::BinaryOp(BinaryOpKind::Div, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Div,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Mod, a, b) => Expr::BinaryOp(BinaryOpKind::Mod,
+        Expr::BinaryOp(BinaryOpKind::Mod, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Mod,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Eq, a, b) => Expr::BinaryOp(BinaryOpKind::Eq,
+        Expr::BinaryOp(BinaryOpKind::Eq, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Eq,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Neq, a, b) => Expr::BinaryOp(BinaryOpKind::Neq,
+        Expr::BinaryOp(BinaryOpKind::Neq, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Neq,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Lt, a, b) => Expr::BinaryOp(BinaryOpKind::Lt,
+        Expr::BinaryOp(BinaryOpKind::Lt, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Lt,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Le, a, b) => Expr::BinaryOp(BinaryOpKind::Le,
+        Expr::BinaryOp(BinaryOpKind::Le, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Le,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Gt, a, b) => Expr::BinaryOp(BinaryOpKind::Gt,
+        Expr::BinaryOp(BinaryOpKind::Gt, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Gt,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Ge, a, b) => Expr::BinaryOp(BinaryOpKind::Ge,
+        Expr::BinaryOp(BinaryOpKind::Ge, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Ge,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::And, a, b) => Expr::BinaryOp(BinaryOpKind::And,
+        Expr::BinaryOp(BinaryOpKind::And, a, b) => Expr::BinaryOp(
+            BinaryOpKind::And,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Or, a, b) => Expr::BinaryOp(BinaryOpKind::Or,
+        Expr::BinaryOp(BinaryOpKind::Or, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Or,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::BitAnd, a, b) => Expr::BinaryOp(BinaryOpKind::BitAnd,
+        Expr::BinaryOp(BinaryOpKind::BitAnd, a, b) => Expr::BinaryOp(
+            BinaryOpKind::BitAnd,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::BitOr, a, b) => Expr::BinaryOp(BinaryOpKind::BitOr,
+        Expr::BinaryOp(BinaryOpKind::BitOr, a, b) => Expr::BinaryOp(
+            BinaryOpKind::BitOr,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::BitXor, a, b) => Expr::BinaryOp(BinaryOpKind::BitXor,
+        Expr::BinaryOp(BinaryOpKind::BitXor, a, b) => Expr::BinaryOp(
+            BinaryOpKind::BitXor,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Shl, a, b) => Expr::BinaryOp(BinaryOpKind::Shl,
+        Expr::BinaryOp(BinaryOpKind::Shl, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Shl,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Shr, a, b) => Expr::BinaryOp(BinaryOpKind::Shr,
+        Expr::BinaryOp(BinaryOpKind::Shr, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Shr,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::BinaryOp(BinaryOpKind::Concat, a, b) => Expr::BinaryOp(BinaryOpKind::Concat,
+        Expr::BinaryOp(BinaryOpKind::Concat, a, b) => Expr::BinaryOp(
+            BinaryOpKind::Concat,
             Box::new(simplify_expr(a)),
             Box::new(simplify_expr(b)),
         ),
-        Expr::UnaryOp(UnaryOpKind::Not, a) => Expr::UnaryOp(UnaryOpKind::Not, Box::new(simplify_expr(a))),
-        Expr::UnaryOp(UnaryOpKind::Neg, a) => Expr::UnaryOp(UnaryOpKind::Neg, Box::new(simplify_expr(a))),
-        Expr::UnaryOp(UnaryOpKind::BitNot, a) => Expr::UnaryOp(UnaryOpKind::BitNot, Box::new(simplify_expr(a))),
+        Expr::UnaryOp(UnaryOpKind::Not, a) => {
+            Expr::UnaryOp(UnaryOpKind::Not, Box::new(simplify_expr(a)))
+        }
+        Expr::UnaryOp(UnaryOpKind::Neg, a) => {
+            Expr::UnaryOp(UnaryOpKind::Neg, Box::new(simplify_expr(a)))
+        }
+        Expr::UnaryOp(UnaryOpKind::BitNot, a) => {
+            Expr::UnaryOp(UnaryOpKind::BitNot, Box::new(simplify_expr(a)))
+        }
         Expr::Cast(a, t) => Expr::Cast(Box::new(simplify_expr(a)), t.clone()),
-        Expr::Index(a, b) => Expr::Index(
-            Box::new(simplify_expr(a)),
-            Box::new(simplify_expr(b)),
-        ),
-        Expr::Field(obj, f) => Expr::Field(
-            Box::new(simplify_expr(obj)),
-            f.clone(),
-        ),
-        Expr::List(elems) => Expr::List(
-            elems.iter().map(|e| simplify_expr(e)).collect(),
-        ),
-        Expr::Tuple(elems) => Expr::Tuple(
-            elems.iter().map(|e| simplify_expr(e)).collect(),
-        ),
-        Expr::Block(stmts) => Expr::Block(
-            stmts.iter().map(|s| simplify_stmt(s)).collect(),
-        ),
+        Expr::Index(a, b) => Expr::Index(Box::new(simplify_expr(a)), Box::new(simplify_expr(b))),
+        Expr::Field(obj, f) => Expr::Field(Box::new(simplify_expr(obj)), f.clone()),
+        Expr::List(elems) => Expr::List(elems.iter().map(|e| simplify_expr(e)).collect()),
+        Expr::Tuple(elems) => Expr::Tuple(elems.iter().map(|e| simplify_expr(e)).collect()),
+        Expr::Block(stmts) => Expr::Block(stmts.iter().map(|s| simplify_stmt(s)).collect()),
         other => other.clone(),
     };
 
@@ -432,18 +491,28 @@ fn simplify_expr(expr: &Expr) -> Expr {
                 }
             }
             // R3: (a + b) - (a + c) → b - c
-            if let (Expr::BinaryOp(BinaryOpKind::Add, a1, b1), Expr::BinaryOp(BinaryOpKind::Add, a2, b2)) = (sub_lhs.as_ref(), sub_rhs.as_ref()) {
+            if let (
+                Expr::BinaryOp(BinaryOpKind::Add, a1, b1),
+                Expr::BinaryOp(BinaryOpKind::Add, a2, b2),
+            ) = (sub_lhs.as_ref(), sub_rhs.as_ref())
+            {
                 if vars_match(a1.as_ref(), a2.as_ref()) && !vars_match(b1.as_ref(), b2.as_ref()) {
-                    return Expr::BinaryOp(BinaryOpKind::Sub,
+                    return Expr::BinaryOp(
+                        BinaryOpKind::Sub,
                         Box::new(b1.as_ref().clone()),
                         Box::new(b2.as_ref().clone()),
                     );
                 }
             }
             // R5: (a - b) - (c - b) → a - c
-            if let (Expr::BinaryOp(BinaryOpKind::Sub, sa, sb1), Expr::BinaryOp(BinaryOpKind::Sub, sc, sb2)) = (sub_lhs.as_ref(), sub_rhs.as_ref()) {
+            if let (
+                Expr::BinaryOp(BinaryOpKind::Sub, sa, sb1),
+                Expr::BinaryOp(BinaryOpKind::Sub, sc, sb2),
+            ) = (sub_lhs.as_ref(), sub_rhs.as_ref())
+            {
                 if vars_match(sb1.as_ref(), sb2.as_ref()) {
-                    return Expr::BinaryOp(BinaryOpKind::Sub,
+                    return Expr::BinaryOp(
+                        BinaryOpKind::Sub,
                         Box::new(sa.as_ref().clone()),
                         Box::new(sc.as_ref().clone()),
                     );
@@ -513,7 +582,8 @@ fn vars_match(a: &Expr, b: &Expr) -> bool {
 fn simplify_stmt(stmt: &Statement) -> Statement {
     match stmt {
         Statement::Assign(lhs, expr) => Statement::Assign(lhs.clone(), simplify_expr(expr)),
-        Statement::Let { name, expr, .. } => Statement::Let { names: vec![],  
+        Statement::Let { name, expr, .. } => Statement::Let {
+            names: vec![],
             name: name.clone(),
             ty: None,
             expr: expr.as_ref().map(|e| simplify_expr(e)),
@@ -557,12 +627,18 @@ fn detect_increments(body: &[Statement]) -> Option<IncrementInfo> {
             if let Expr::BinaryOp(BinaryOpKind::Add, a, b) = expr {
                 if let (Expr::Identifier(var), Some(delta)) = (a.as_ref(), get_int(b)) {
                     if *var == name && delta > 0 {
-                        return Some(IncrementInfo { var: name.to_string(), delta });
+                        return Some(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                     }
                 }
                 if let (Expr::Identifier(var), Some(delta)) = (b.as_ref(), get_int(a)) {
                     if *var == name && delta > 0 {
-                        return Some(IncrementInfo { var: name.to_string(), delta });
+                        return Some(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                     }
                 }
             }
@@ -570,7 +646,10 @@ fn detect_increments(body: &[Statement]) -> Option<IncrementInfo> {
             if let Expr::BinaryOp(BinaryOpKind::Sub, a, b) = expr {
                 if let (Expr::Identifier(var), Some(delta)) = (a.as_ref(), get_int(b)) {
                     if *var == name && delta > 0 {
-                        return Some(IncrementInfo { var: name.to_string(), delta });
+                        return Some(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                     }
                 }
             }
@@ -584,11 +663,17 @@ fn detect_increments(body: &[Statement]) -> Option<IncrementInfo> {
                         if let (Some(r1_val), Some(r2_val)) = (r1, r2) {
                             let net = r1_val - r2_val;
                             if net > 0 {
-                                return Some(IncrementInfo { var: name.to_string(), delta: net });
+                                return Some(IncrementInfo {
+                                    var: name.to_string(),
+                                    delta: net,
+                                });
                             }
                         }
                         if r1.map_or(false, |v| v >= 1) && r2.is_none() {
-                            return Some(IncrementInfo { var: name.to_string(), delta: 1 });
+                            return Some(IncrementInfo {
+                                var: name.to_string(),
+                                delta: 1,
+                            });
                         }
                     }
                 }
@@ -608,25 +693,33 @@ fn detect_popcount_decay(body: &[Statement]) -> Option<IncrementInfo> {
             // reg & (reg - 1)
             if let Expr::BinaryOp(BinaryOpKind::BitAnd, a, b) = expr {
                 let a_is_self = matches!(a.as_ref(), Expr::Identifier(v) if *v == name);
-                let b_is_self_minus = if let Expr::BinaryOp(BinaryOpKind::Sub, inner, val) = b.as_ref() {
-                    matches!(inner.as_ref(), Expr::Identifier(v) if *v == name)
-                        && matches!(val.as_ref(), Expr::Decimal(1))
-                } else {
-                    false
-                };
+                let b_is_self_minus =
+                    if let Expr::BinaryOp(BinaryOpKind::Sub, inner, val) = b.as_ref() {
+                        matches!(inner.as_ref(), Expr::Identifier(v) if *v == name)
+                            && matches!(val.as_ref(), Expr::Decimal(1))
+                    } else {
+                        false
+                    };
                 if a_is_self && b_is_self_minus {
-                    return Some(IncrementInfo { var: name.clone(), delta: 1 });
+                    return Some(IncrementInfo {
+                        var: name.clone(),
+                        delta: 1,
+                    });
                 }
                 // (reg - 1) & reg
                 let b_is_self = matches!(b.as_ref(), Expr::Identifier(v) if *v == name);
-                let a_is_self_minus = if let Expr::BinaryOp(BinaryOpKind::Sub, inner, val) = a.as_ref() {
-                    matches!(inner.as_ref(), Expr::Identifier(v) if *v == name)
-                        && matches!(val.as_ref(), Expr::Decimal(1))
-                } else {
-                    false
-                };
+                let a_is_self_minus =
+                    if let Expr::BinaryOp(BinaryOpKind::Sub, inner, val) = a.as_ref() {
+                        matches!(inner.as_ref(), Expr::Identifier(v) if *v == name)
+                            && matches!(val.as_ref(), Expr::Decimal(1))
+                    } else {
+                        false
+                    };
                 if b_is_self && a_is_self_minus {
-                    return Some(IncrementInfo { var: name.clone(), delta: 1 });
+                    return Some(IncrementInfo {
+                        var: name.clone(),
+                        delta: 1,
+                    });
                 }
             }
         }
@@ -642,17 +735,25 @@ fn detect_all_increments(body: &[Statement]) -> Vec<IncrementInfo> {
     let mut results = Vec::new();
     for stmt in body {
         if let Statement::Assign(lhs, expr) = stmt {
-            let Some(name) = lhs.as_var_name() else { continue; };
+            let Some(name) = lhs.as_var_name() else {
+                continue;
+            };
             if let Expr::BinaryOp(BinaryOpKind::Add, a, b) = expr {
                 if let (Expr::Identifier(var), Some(delta)) = (a.as_ref(), get_int(b)) {
                     if *var == name && delta > 0 {
-                        results.push(IncrementInfo { var: name.to_string(), delta });
+                        results.push(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                         continue;
                     }
                 }
                 if let (Expr::Identifier(var), Some(delta)) = (b.as_ref(), get_int(a)) {
                     if *var == name && delta > 0 {
-                        results.push(IncrementInfo { var: name.to_string(), delta });
+                        results.push(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                         continue;
                     }
                 }
@@ -660,7 +761,10 @@ fn detect_all_increments(body: &[Statement]) -> Vec<IncrementInfo> {
             if let Expr::BinaryOp(BinaryOpKind::Sub, a, b) = expr {
                 if let (Expr::Identifier(var), Some(delta)) = (a.as_ref(), get_int(b)) {
                     if *var == name && delta > 0 {
-                        results.push(IncrementInfo { var: name.to_string(), delta });
+                        results.push(IncrementInfo {
+                            var: name.to_string(),
+                            delta,
+                        });
                         continue;
                     }
                 }
@@ -679,14 +783,18 @@ fn detect_lexicographic_ranking(pre: &Expr, body: &[Statement]) -> Vec<String> {
             }
             _ => {
                 if let Expr::BinaryOp(BinaryOpKind::Gt, inner, val) = expr {
-                    if let (Expr::Identifier(var), Expr::Decimal(n)) = (inner.as_ref(), val.as_ref()) {
+                    if let (Expr::Identifier(var), Expr::Decimal(n)) =
+                        (inner.as_ref(), val.as_ref())
+                    {
                         if *n >= 0 && !out.contains(var) {
                             out.push(var.clone());
                         }
                     }
                 }
                 if let Expr::BinaryOp(BinaryOpKind::Ge, inner, val) = expr {
-                    if let (Expr::Identifier(var), Expr::Decimal(n)) = (inner.as_ref(), val.as_ref()) {
+                    if let (Expr::Identifier(var), Expr::Decimal(n)) =
+                        (inner.as_ref(), val.as_ref())
+                    {
                         if *n > 0 && !out.contains(var) {
                             out.push(var.clone());
                         }
@@ -702,22 +810,37 @@ fn detect_lexicographic_ranking(pre: &Expr, body: &[Statement]) -> Vec<String> {
         return Vec::new();
     }
 
-    let decremented: HashSet<String> = body.iter().filter_map(|stmt| {
-        if let Statement::Assign(lhs, expr) = stmt {
-            let name = match lhs {
-                Expr::Identifier(n) => Some(n.clone()),
-                _ => None,
-            }?;
-            let is_decrement = if let Expr::BinaryOp(BinaryOpKind::Sub, a, d) = expr {
-                            matches!(a.as_ref(), Expr::Identifier(v) if *v == name)
-                                && matches!(d.as_ref(), Expr::Decimal(val) if *val >= 1)
-                        } else { false };
-            if is_decrement { Some(name) } else { None }
-        } else { None }
-    }).collect();
+    let decremented: HashSet<String> = body
+        .iter()
+        .filter_map(|stmt| {
+            if let Statement::Assign(lhs, expr) = stmt {
+                let name = match lhs {
+                    Expr::Identifier(n) => Some(n.clone()),
+                    _ => None,
+                }?;
+                let is_decrement = if let Expr::BinaryOp(BinaryOpKind::Sub, a, d) = expr {
+                    matches!(a.as_ref(), Expr::Identifier(v) if *v == name)
+                        && matches!(d.as_ref(), Expr::Decimal(val) if *val >= 1)
+                } else {
+                    false
+                };
+                if is_decrement {
+                    Some(name)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
 
     vars.retain(|v| decremented.contains(v));
-    if vars.len() < 2 { vec![] } else { vars }
+    if vars.len() < 2 {
+        vec![]
+    } else {
+        vars
+    }
 }
 
 fn is_pure_body(
@@ -734,7 +857,11 @@ fn is_pure_body(
                     _ => return false,
                 };
                 if Some(&name) == inc_var {
-                    if !matches!(expr, Expr::BinaryOp(BinaryOpKind::Add, _, _) | Expr::BinaryOp(BinaryOpKind::BitAnd, _, _)) {
+                    if !matches!(
+                        expr,
+                        Expr::BinaryOp(BinaryOpKind::Add, _, _)
+                            | Expr::BinaryOp(BinaryOpKind::BitAnd, _, _)
+                    ) {
                         return false;
                     }
                     continue;
@@ -766,7 +893,10 @@ fn is_pure_body(
                 if references_triggers_or_ffi_with_decls(condition) {
                     return false;
                 }
-                if statements.iter().any(|s| statement_contains_ffi_with_decls(s)) {
+                if statements
+                    .iter()
+                    .any(|s| statement_contains_ffi_with_decls(s))
+                {
                     return false;
                 }
             }
@@ -783,27 +913,42 @@ fn references_triggers_or_ffi(expr: &Expr) -> bool {
 fn references_triggers_or_ffi_with_decls(expr: &Expr) -> bool {
     match expr {
         Expr::Call(_, _, _) => true,
-        Expr::Identifier(_) | Expr::Decimal(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Quoted(_) => false,
+        Expr::Identifier(_)
+        | Expr::Decimal(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Quoted(_) => false,
         Expr::BinaryOp(_, a, b) => {
             references_triggers_or_ffi_with_decls(a) || references_triggers_or_ffi_with_decls(b)
         }
         Expr::UnaryOp(_, a) => references_triggers_or_ffi_with_decls(a),
         Expr::Cast(a, _) => references_triggers_or_ffi_with_decls(a),
         Expr::Block(stmts) => stmts.iter().any(|s| statement_contains_ffi_with_decls(s)),
-        Expr::List(elems) => elems.iter().any(|e| references_triggers_or_ffi_with_decls(e)),
-        Expr::Index(list, idx) => references_triggers_or_ffi_with_decls(list) || references_triggers_or_ffi_with_decls(idx),
+        Expr::List(elems) => elems
+            .iter()
+            .any(|e| references_triggers_or_ffi_with_decls(e)),
+        Expr::Index(list, idx) => {
+            references_triggers_or_ffi_with_decls(list)
+                || references_triggers_or_ffi_with_decls(idx)
+        }
         Expr::Field(obj, _) => references_triggers_or_ffi_with_decls(obj),
-        Expr::Tuple(elems) => elems.iter().any(|e| references_triggers_or_ffi_with_decls(e)),
+        Expr::Tuple(elems) => elems
+            .iter()
+            .any(|e| references_triggers_or_ffi_with_decls(e)),
         _ => false,
     }
 }
 
 pub fn is_uniform_body_group(txns: &[(String, &crate::ast::Transaction)]) -> bool {
-    if txns.len() < 2 { return false; }
+    if txns.len() < 2 {
+        return false;
+    }
     let first_body = &txns[0].1.body;
     let first_debug = format!("{:?}", first_body);
     for (_, txn) in &txns[1..] {
-        if format!("{:?}", &txn.body) != first_debug { return false; }
+        if format!("{:?}", &txn.body) != first_debug {
+            return false;
+        }
     }
     true
 }
@@ -842,12 +987,12 @@ pub fn compute_live_fields(
             }
             for stmt in stmts {
                 let (target, expr) = match stmt {
-                    Statement::Assign(lhs, expr) => {
-                        (expr_name(lhs), expr)
-                    }
-                    Statement::Let { name, expr: Some(e), .. } => {
-                        (Some(name.clone()), e)
-                    }
+                    Statement::Assign(lhs, expr) => (expr_name(lhs), expr),
+                    Statement::Let {
+                        name,
+                        expr: Some(e),
+                        ..
+                    } => (Some(name.clone()), e),
                     _ => continue,
                 };
                 if let Some(ref t) = target {
@@ -863,7 +1008,9 @@ pub fn compute_live_fields(
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     live
@@ -871,11 +1018,16 @@ pub fn compute_live_fields(
 
 pub fn compute_projection_usage(items: &[TopLevel]) -> HashMap<String, HashSet<String>> {
     // 2026-07-17: Collect from both StateDecl and Statement::Let (parser output).
-    let state_fields: HashSet<String> = items.iter()
+    let state_fields: HashSet<String> = items
+        .iter()
         .filter_map(|item| match item {
             TopLevel::StateDecl(s) => Some(s.name.clone()),
             TopLevel::Statement(stmt) => {
-                if let Statement::Let { name, .. } = stmt.as_ref() { Some(name.clone()) } else { None }
+                if let Statement::Let { name, .. } = stmt.as_ref() {
+                    Some(name.clone())
+                } else {
+                    None
+                }
             }
             _ => None,
         })
@@ -893,13 +1045,19 @@ pub fn projection_target_name(target: &str) -> String {
     target.to_string()
 }
 
-fn scan_for_projections_in_stmts(stmts: &[Statement], state_fields: &HashSet<String>, usage: &mut HashMap<String, HashSet<String>>) {
+fn scan_for_projections_in_stmts(
+    stmts: &[Statement],
+    state_fields: &HashSet<String>,
+    usage: &mut HashMap<String, HashSet<String>>,
+) {
     for stmt in stmts {
         match stmt {
             Statement::Expression(expr) => {
                 collect_projection_identifiers(expr, state_fields, usage);
             }
-            Statement::Let { expr: Some(expr), .. } => {
+            Statement::Let {
+                expr: Some(expr), ..
+            } => {
                 collect_projection_identifiers(expr, state_fields, usage);
             }
             Statement::Assign(_, expr) => {
@@ -914,12 +1072,19 @@ fn scan_for_projections_in_stmts(stmts: &[Statement], state_fields: &HashSet<Str
     }
 }
 
-fn collect_projection_identifiers(expr: &Expr, state_fields: &HashSet<String>, usage: &mut HashMap<String, HashSet<String>>) {
+fn collect_projection_identifiers(
+    expr: &Expr,
+    state_fields: &HashSet<String>,
+    usage: &mut HashMap<String, HashSet<String>>,
+) {
     match expr {
         Expr::Field(source, target) => {
             if let Expr::Identifier(name) = source.as_ref() {
                 if state_fields.contains(name) {
-                    usage.entry(name.clone()).or_default().insert(projection_target_name(target));
+                    usage
+                        .entry(name.clone())
+                        .or_default()
+                        .insert(projection_target_name(target));
                 }
             }
             collect_projection_identifiers(source, state_fields, usage);
@@ -954,13 +1119,16 @@ pub fn compute_referenced_fields(items: &[TopLevel]) -> HashSet<String> {
     // 2026-07-16: Include both StateDecl items AND top-level Statement::Let items.
     // build_field_index registers both as state fields, but only StateDecl was
     // included here, causing fields from let x: T = expr; to be treated as dead.
-    let state_fields: HashSet<String> = items.iter()
+    let state_fields: HashSet<String> = items
+        .iter()
         .filter_map(|item| match item {
             TopLevel::StateDecl(s) => Some(s.name.clone()),
             TopLevel::Statement(stmt) => {
                 if let crate::ast::Statement::Let { name, .. } = stmt.as_ref() {
                     Some(name.clone())
-                } else { None }
+                } else {
+                    None
+                }
             }
             _ => None,
         })
@@ -1009,12 +1177,18 @@ pub fn compute_referenced_fields(items: &[TopLevel]) -> HashSet<String> {
     referenced
 }
 
-fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String>, out: &mut HashSet<String>) {
+fn scan_for_state_identifiers(
+    stmts: &[Statement],
+    state_fields: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     for stmt in stmts {
         match stmt {
             Statement::Expression(expr)
             | Statement::Expect(expr)
-            | Statement::Let { expr: Some(expr), .. } => {
+            | Statement::Let {
+                expr: Some(expr), ..
+            } => {
                 collect_state_identifiers(expr, state_fields, out);
             }
             Statement::Let { expr: None, .. } => {}
@@ -1109,7 +1283,11 @@ fn scan_for_state_identifiers(stmts: &[Statement], state_fields: &HashSet<String
     }
 }
 
-fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &mut HashSet<String>) {
+fn collect_state_identifiers(
+    expr: &Expr,
+    state_fields: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
     match expr {
         Expr::Identifier(name) => {
             if state_fields.contains(name) {
@@ -1193,7 +1371,11 @@ fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &
         }
         // 2026-08-07 (Phase 7): a range's bounds are reads — a foreach over
         // `0..=n` keeps the bound field alive (previously pruned as Never).
-        Expr::Range { start, end, inclusive: _ } => {
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
             collect_state_identifiers(start, state_fields, out);
             collect_state_identifiers(end, state_fields, out);
         }
@@ -1201,11 +1383,22 @@ fn collect_state_identifiers(expr: &Expr, state_fields: &HashSet<String>, out: &
         // a liveness hole (field used only here was Never-pruned → undefined
         // `@name` load at emit). Slice bounds, spawn args, struct-literal
         // field values/specs, is-type scrutinee, and await operand are reads.
-        Expr::Slice { array, start, end, stride } => {
+        Expr::Slice {
+            array,
+            start,
+            end,
+            stride,
+        } => {
             collect_state_identifiers(array, state_fields, out);
-            if let Some(s) = start { collect_state_identifiers(s, state_fields, out); }
-            if let Some(e) = end { collect_state_identifiers(e, state_fields, out); }
-            if let Some(s) = stride { collect_state_identifiers(s, state_fields, out); }
+            if let Some(s) = start {
+                collect_state_identifiers(s, state_fields, out);
+            }
+            if let Some(e) = end {
+                collect_state_identifiers(e, state_fields, out);
+            }
+            if let Some(s) = stride {
+                collect_state_identifiers(s, state_fields, out);
+            }
         }
         Expr::Spawn { args, .. } => {
             for e in args {
@@ -1318,13 +1511,16 @@ pub fn assign_field_modes(
         let usage = projection_usage.get(field);
         if let Some(targets) = usage {
             if targets.len() >= 2 {
-                modes.insert(field.clone(), super::FieldMode::LazyCached {
-                    cache_index: {
-                        let ci = next_cache_index;
-                        next_cache_index += 1;
-                        ci
+                modes.insert(
+                    field.clone(),
+                    super::FieldMode::LazyCached {
+                        cache_index: {
+                            let ci = next_cache_index;
+                            next_cache_index += 1;
+                            ci
+                        },
                     },
-                });
+                );
                 continue;
             }
         }
@@ -1341,7 +1537,10 @@ pub fn assign_field_modes(
 
 fn scan_for_ffi_args(stmt: &Statement, out: &mut HashSet<String>) {
     match stmt {
-        Statement::Expression(expr) | Statement::Let { expr: Some(expr), .. } => {
+        Statement::Expression(expr)
+        | Statement::Let {
+            expr: Some(expr), ..
+        } => {
             collect_ffi_identifiers(expr, out);
         }
         Statement::Guarded(_, statements) => {
@@ -1376,14 +1575,17 @@ fn expr_name(expr: &Expr) -> Option<String> {
 }
 
 fn compute_effectively_pure(node: &mut ReactorNode, live_fields: &HashSet<String>) {
-    if node.body.iter().any(|s| statement_contains_ffi_with_decls(s)) {
+    if node
+        .body
+        .iter()
+        .any(|s| statement_contains_ffi_with_decls(s))
+    {
         return;
     }
     if let (Some(bp), Some(inc)) = (&node.bounded_pre, &node.increments) {
         if inc.var == bp.var && inc.delta > 0 && live_fields.contains(&inc.var) {
-            let non_counter_writes: Vec<&String> = node.write_set.iter()
-                .filter(|f| *f != &inc.var)
-                .collect();
+            let non_counter_writes: Vec<&String> =
+                node.write_set.iter().filter(|f| *f != &inc.var).collect();
             if non_counter_writes.iter().all(|f| !live_fields.contains(*f)) {
                 node.is_effectively_pure = true;
             }
@@ -1398,13 +1600,17 @@ pub(crate) fn statement_contains_ffi(stmt: &Statement) -> bool {
 pub(crate) fn statement_contains_ffi_with_decls(stmt: &Statement) -> bool {
     match stmt {
         Statement::Assign(_, expr) => references_triggers_or_ffi_with_decls(expr),
-        Statement::Let { expr, .. } => expr.as_ref().map_or(false, |e| references_triggers_or_ffi_with_decls(e)),
+        Statement::Let { expr, .. } => expr
+            .as_ref()
+            .map_or(false, |e| references_triggers_or_ffi_with_decls(e)),
         Statement::Expression(e) => references_triggers_or_ffi_with_decls(e),
         Statement::Term(Some(e)) | Statement::Tail(e) => references_triggers_or_ffi_with_decls(e),
         Statement::EndProgram(Some(e)) => references_triggers_or_ffi_with_decls(e),
         Statement::Guarded(condition, statements) => {
             references_triggers_or_ffi_with_decls(condition)
-                || statements.iter().any(|s| statement_contains_ffi_with_decls(s))
+                || statements
+                    .iter()
+                    .any(|s| statement_contains_ffi_with_decls(s))
         }
         _ => false,
     }
@@ -1564,7 +1770,8 @@ mod tests {
 
     #[test]
     fn test_extract_bounded_pre_counter_lt_total() {
-        let pre = Expr::BinaryOp(BinaryOpKind::Lt,
+        let pre = Expr::BinaryOp(
+            BinaryOpKind::Lt,
             Box::new(Expr::Identifier("count".to_string())),
             Box::new(Expr::Identifier("total".to_string())),
         );
@@ -1577,7 +1784,8 @@ mod tests {
     fn test_detect_increments() {
         let body = vec![Statement::Assign(
             Expr::Identifier("count".to_string()),
-            Expr::BinaryOp(BinaryOpKind::Add,
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier("count".to_string())),
                 Box::new(Expr::Decimal(1)),
             ),
@@ -1592,7 +1800,8 @@ mod tests {
         let fields: HashSet<String> = ["count".to_string(), "total".to_string()].into();
         let body = vec![Statement::Assign(
             Expr::Identifier("count".to_string()),
-            Expr::BinaryOp(BinaryOpKind::Add,
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier("count".to_string())),
                 Box::new(Expr::Decimal(1)),
             ),
@@ -1605,13 +1814,11 @@ mod tests {
     fn test_impure_body_with_state_write() {
         let fields: HashSet<String> = ["count".to_string(), "value".to_string()].into();
         let body = vec![
-            Statement::Assign(
-                Expr::Identifier("value".to_string()),
-                Expr::Float(1.0),
-            ),
+            Statement::Assign(Expr::Identifier("value".to_string()), Expr::Float(1.0)),
             Statement::Assign(
                 Expr::Identifier("count".to_string()),
-                Expr::BinaryOp(BinaryOpKind::Add,
+                Expr::BinaryOp(
+                    BinaryOpKind::Add,
                     Box::new(Expr::Identifier("count".to_string())),
                     Box::new(Expr::Decimal(1)),
                 ),
@@ -1625,7 +1832,8 @@ mod tests {
     fn test_is_uniform_body_group_identical() {
         let body = vec![Statement::Assign(
             Expr::Identifier("count".to_string()),
-            Expr::BinaryOp(BinaryOpKind::Add,
+            Expr::BinaryOp(
+                BinaryOpKind::Add,
                 Box::new(Expr::Identifier("count".to_string())),
                 Box::new(Expr::Decimal(1)),
             ),
@@ -1645,7 +1853,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: body.clone(),
             span: None,
             metadata: std::collections::HashMap::new(),
@@ -1656,12 +1865,10 @@ mod tests {
         let txn2 = Transaction {
             name: "txn_b".to_string(),
             doc: None,
-            .. txn1.clone()
+            ..txn1.clone()
         };
-        let pairs: Vec<(String, &Transaction)> = vec![
-            ("txn_a".to_string(), &txn1),
-            ("txn_b".to_string(), &txn2),
-        ];
+        let pairs: Vec<(String, &Transaction)> =
+            vec![("txn_a".to_string(), &txn1), ("txn_b".to_string(), &txn2)];
         assert!(is_uniform_body_group(&pairs));
     }
 
@@ -1690,7 +1897,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body: body_a,
             span: None,
             metadata: std::collections::HashMap::new(),
@@ -1702,12 +1910,10 @@ mod tests {
             body: body_b,
             name: "txn_b".to_string(),
             doc: None,
-            .. txn_a.clone()
+            ..txn_a.clone()
         };
-        let pairs: Vec<(String, &Transaction)> = vec![
-            ("txn_a".to_string(), &txn_a),
-            ("txn_b".to_string(), &txn_b),
-        ];
+        let pairs: Vec<(String, &Transaction)> =
+            vec![("txn_a".to_string(), &txn_a), ("txn_b".to_string(), &txn_b)];
         assert!(!is_uniform_body_group(&pairs));
     }
 
@@ -1729,7 +1935,8 @@ mod tests {
                 watchdog: None,
                 explicit: false,
                 span: None,
-            post_authority: false},
+                post_authority: false,
+            },
             body,
             span: None,
             metadata: std::collections::HashMap::new(),
@@ -1756,7 +1963,8 @@ mod tests {
                 output_type: None,
                 outputs: Vec::new(),
                 contract: crate::ast::Contract {
-                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
                         Box::new(Expr::Identifier("count".to_string())),
                         Box::new(Expr::Identifier("total".to_string())),
                     ),
@@ -1764,10 +1972,12 @@ mod tests {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![Statement::Assign(
                     Expr::Identifier("count".to_string()),
-                    Expr::BinaryOp(BinaryOpKind::Add,
+                    Expr::BinaryOp(
+                        BinaryOpKind::Add,
                         Box::new(Expr::Identifier("count".to_string())),
                         Box::new(Expr::Decimal(1)),
                     ),
@@ -1801,9 +2011,12 @@ mod tests {
                 outputs: Vec::new(),
                 contract: crate::ast::Contract::new(Expr::Bool(true), Expr::Bool(true)),
                 body: vec![Statement::Term(None)],
-                is_async: false, is_reactive: false, span: None,
+                is_async: false,
+                is_reactive: false,
+                span: None,
                 metadata: std::collections::HashMap::new(),
-                modifiers: vec![], derivation: None,
+                modifiers: vec![],
+                derivation: None,
                 doc: None,
             }),
         ];
@@ -1830,9 +2043,12 @@ mod tests {
                     )),
                     Statement::Term(None),
                 ],
-                is_async: false, is_reactive: false, span: None,
+                is_async: false,
+                is_reactive: false,
+                span: None,
                 metadata: std::collections::HashMap::new(),
-                modifiers: vec![], derivation: None,
+                modifiers: vec![],
+                derivation: None,
                 doc: None,
             }),
         ];
@@ -1855,7 +2071,11 @@ mod tests {
         let referenced: HashSet<String> = ["x"].iter().map(|s| s.to_string()).collect();
         let modes = assign_field_modes(&all, &referenced, &usage);
         let mode = modes.get("x").expect("x should have a mode");
-        assert_eq!(*mode, crate::analysis::FieldMode::Always, "single-lens + referenced → Always");
+        assert_eq!(
+            *mode,
+            crate::analysis::FieldMode::Always,
+            "single-lens + referenced → Always"
+        );
     }
 
     #[test]
@@ -1871,7 +2091,11 @@ mod tests {
         let referenced: HashSet<String> = ["x"].iter().map(|s| s.to_string()).collect();
         let modes = assign_field_modes(&all, &referenced, &usage);
         let mode = modes.get("x").expect("x should have a mode");
-        assert_eq!(*mode, crate::analysis::FieldMode::LazyCached { cache_index: 0 }, "dual-lens → LazyCached");
+        assert_eq!(
+            *mode,
+            crate::analysis::FieldMode::LazyCached { cache_index: 0 },
+            "dual-lens → LazyCached"
+        );
     }
 
     #[test]
@@ -1881,7 +2105,11 @@ mod tests {
         let referenced: HashSet<String> = HashSet::new();
         let modes = assign_field_modes(&all, &referenced, &usage);
         let mode = modes.get("x").expect("x should have a mode");
-        assert_eq!(*mode, crate::analysis::FieldMode::Never, "unreferenced + no projection → Never");
+        assert_eq!(
+            *mode,
+            crate::analysis::FieldMode::Never,
+            "unreferenced + no projection → Never"
+        );
     }
 
     #[test]
@@ -1911,8 +2139,10 @@ mod tests {
             ],
         );
         collect_state_identifiers(&m, &state_fields, &mut out);
-        assert!(out.contains("tick"),
-            "match scrutinee (and any guard) must count as a field read");
+        assert!(
+            out.contains("tick"),
+            "match scrutinee (and any guard) must count as a field read"
+        );
     }
 
     #[test]
@@ -1922,7 +2152,11 @@ mod tests {
         let referenced: HashSet<String> = ["x"].iter().map(|s| s.to_string()).collect();
         let modes = assign_field_modes(&all, &referenced, &usage);
         let mode = modes.get("x").expect("x should have a mode");
-        assert_eq!(*mode, crate::analysis::FieldMode::Always, "referenced + no projection → Always");
+        assert_eq!(
+            *mode,
+            crate::analysis::FieldMode::Always,
+            "referenced + no projection → Always"
+        );
     }
 
     // ── Provenance-aware write set tests ───────────────────────────────
@@ -1930,7 +2164,10 @@ mod tests {
     #[test]
     fn test_extract_root_via_provenance_identifier() {
         let expr = Expr::Identifier("count".to_string());
-        assert_eq!(extract_root_via_provenance(&expr), Some("count".to_string()));
+        assert_eq!(
+            extract_root_via_provenance(&expr),
+            Some("count".to_string())
+        );
     }
 
     #[test]
@@ -1959,7 +2196,10 @@ mod tests {
             Expr::Decimal(42),
         )];
         let writes = extract_write_set(&body, &fields);
-        assert!(writes.contains("obj"), "field assign to obj.Size should detect obj as written");
+        assert!(
+            writes.contains("obj"),
+            "field assign to obj.Size should detect obj as written"
+        );
         assert_eq!(writes.len(), 1);
     }
 
@@ -1971,10 +2211,7 @@ mod tests {
     fn test_extract_write_set_recurses_into_conditionals() {
         let fields: HashSet<String> = ["count".to_string(), "show".to_string()].into();
         let body = vec![
-            Statement::Assign(
-                Expr::Identifier("count".to_string()),
-                Expr::Decimal(1),
-            ),
+            Statement::Assign(Expr::Identifier("count".to_string()), Expr::Decimal(1)),
             Statement::Guarded(
                 Expr::BinaryOp(
                     BinaryOpKind::Gt,
@@ -2013,7 +2250,8 @@ mod tests {
                 output_type: None,
                 outputs: Vec::new(),
                 contract: crate::ast::Contract {
-                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
                         Box::new(Expr::Identifier("count".to_string())),
                         Box::new(Expr::Identifier("total".to_string())),
                     ),
@@ -2021,7 +2259,8 @@ mod tests {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
                     Statement::Expression(Expr::Call("PrintLn#".to_string(), vec![], None)),
                     Statement::Term(None),
@@ -2034,8 +2273,10 @@ mod tests {
             }),
         ];
         let g = ReactorTransitionGraph::build(&items, &None, &[]);
-        assert!(g.has_unguarded_ffi.contains("work"),
-            "top-level FFI call must be flagged as unguarded");
+        assert!(
+            g.has_unguarded_ffi.contains("work"),
+            "top-level FFI call must be flagged as unguarded"
+        );
     }
 
     /// Phase 2 (§7.4): FFI inside a `when` guard is OUTLINED into a cold
@@ -2055,7 +2296,8 @@ mod tests {
                 output_type: None,
                 outputs: Vec::new(),
                 contract: crate::ast::Contract {
-                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
                         Box::new(Expr::Identifier("count".to_string())),
                         Box::new(Expr::Identifier("total".to_string())),
                     ),
@@ -2063,17 +2305,24 @@ mod tests {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
                     Statement::Guarded(
-                        Expr::BinaryOp(BinaryOpKind::Eq,
-                            Box::new(Expr::BinaryOp(BinaryOpKind::Mod,
+                        Expr::BinaryOp(
+                            BinaryOpKind::Eq,
+                            Box::new(Expr::BinaryOp(
+                                BinaryOpKind::Mod,
                                 Box::new(Expr::Identifier("count".to_string())),
-                                Box::new(Expr::Decimal(5))),
-                            ),
+                                Box::new(Expr::Decimal(5)),
+                            )),
                             Box::new(Expr::Decimal(0)),
                         ),
-                        vec![Statement::Expression(Expr::Call("PrintLn#".to_string(), vec![], None))],
+                        vec![Statement::Expression(Expr::Call(
+                            "PrintLn#".to_string(),
+                            vec![],
+                            None,
+                        ))],
                     ),
                     Statement::Term(None),
                 ],
@@ -2085,8 +2334,10 @@ mod tests {
             }),
         ];
         let g = ReactorTransitionGraph::build(&items, &None, &[]);
-        assert!(!g.has_unguarded_ffi.contains("work"),
-            "FFI inside a `when` guard is guarded (outlined) — not unguarded");
+        assert!(
+            !g.has_unguarded_ffi.contains("work"),
+            "FFI inside a `when` guard is guarded (outlined) — not unguarded"
+        );
     }
 
     /// 2026-08-04 (out-observability plan): a top-level `out let` state field
@@ -2103,7 +2354,10 @@ mod tests {
                 names: vec![],
                 ty: Some(Type::int()),
                 expr: Some(Expr::Decimal(0)),
-                modifiers: vec![Annotation { name: "out".to_string(), value: None }],
+                modifiers: vec![Annotation {
+                    name: "out".to_string(),
+                    value: None,
+                }],
             })),
             TopLevel::Transaction(Transaction {
                 variadic_param: None,
@@ -2115,7 +2369,8 @@ mod tests {
                 output_type: None,
                 outputs: Vec::new(),
                 contract: crate::ast::Contract {
-                    pre_condition: Expr::BinaryOp(BinaryOpKind::Lt,
+                    pre_condition: Expr::BinaryOp(
+                        BinaryOpKind::Lt,
                         Box::new(Expr::Identifier("count".to_string())),
                         Box::new(Expr::Identifier("total".to_string())),
                     ),
@@ -2123,10 +2378,13 @@ mod tests {
                     watchdog: None,
                     explicit: false,
                     span: None,
-                post_authority: false},
+                    post_authority: false,
+                },
                 body: vec![
-                    Statement::Assign(Expr::Identifier("count".to_string()),
-                        Expr::BinaryOp(BinaryOpKind::Add,
+                    Statement::Assign(
+                        Expr::Identifier("count".to_string()),
+                        Expr::BinaryOp(
+                            BinaryOpKind::Add,
                             Box::new(Expr::Identifier("count".to_string())),
                             Box::new(Expr::Decimal(1)),
                         ),
@@ -2143,8 +2401,10 @@ mod tests {
             }),
         ];
         let g = ReactorTransitionGraph::build(&items, &None, &[]);
-        assert!(g.live_fields.contains("pinned"),
-            "out-let field must stay live even though never read");
+        assert!(
+            g.live_fields.contains("pinned"),
+            "out-let field must stay live even though never read"
+        );
     }
 
     /// 2026-08-09 (Bug 2): a `sync<group> node` is a real reactive node — it
@@ -2204,7 +2464,11 @@ mod tests {
             make_sync_node("step", "count"),
         ];
         let graph = ReactorTransitionGraph::build(&items, &None, &[]);
-        assert_eq!(graph.nodes.len(), 2, "sync-group nodes must enter the graph");
+        assert_eq!(
+            graph.nodes.len(),
+            2,
+            "sync-group nodes must enter the graph"
+        );
         assert!(
             graph.nodes.iter().all(|n| n.bounded_pre.is_some()),
             "each sync-group node must get a bounded-pre"

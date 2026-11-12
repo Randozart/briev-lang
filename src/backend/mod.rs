@@ -19,7 +19,7 @@ use crate::analysis::dependency_graph::DependencyGraph;
 use crate::analysis::loop_shape::LoopShape;
 use crate::analysis::range::ParameterRanges;
 use crate::analysis::dataflow::DataflowError;
-use crate::analysis::region::RegionAnalyzer;
+use crate::hir::region::RegionAnalyzer;
 use crate::analysis::transition_graph::ReactorTransitionGraph;
 use crate::ast::{Annotation, Expr, Statement, TopLevel, Transaction, Definition};
 use std::collections::HashMap;
@@ -647,7 +647,21 @@ pub fn analyze_program(
         } else {
             crate::analysis::web_commits::analyze(items)
         },
-        region_analyzer: RegionAnalyzer::analyze(items),
+        region_analyzer: {
+            // 2026-11-11 (H5): the HIR analyzer is the only implementation
+            // (the AST one is the debug oracle while the opt-out window is
+            // open). Emission’s opt-out remains separate.
+            let h = RegionAnalyzer::analyze(&hir);
+            if hir_emit_enabled() {
+                let ast = crate::analysis::region::RegionAnalyzer::analyze(items);
+                debug_assert_eq!(
+                    h.consumer_fingerprint(),
+                    ast.consumer_fingerprint(),
+                    "HIR/AST region-analyzer drift"
+                );
+            }
+            h
+        },
         dependency_graph,
         loop_shapes,
         swan_songs,

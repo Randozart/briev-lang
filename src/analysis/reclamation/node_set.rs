@@ -15,9 +15,13 @@ pub(super) struct NodeSet {
 }
 
 impl NodeSet {
-    pub(super) fn new() -> Self { Self::default() }
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
 
-    pub(super) fn len(&self) -> usize { self.len }
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
 
     pub(super) fn clear(&mut self) {
         self.words.clear();
@@ -40,12 +44,17 @@ impl NodeSet {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.words.iter().flat_map(|(&index, &bits)| WordNodes { base: index * 64, bits })
+        self.words.iter().flat_map(|(&index, &bits)| WordNodes {
+            base: index * 64,
+            bits,
+        })
     }
 
     #[cfg(test)]
     pub(super) fn contains(&self, node: &usize) -> bool {
-        self.words.get(&(node / 64)).is_some_and(|bits| bits & (1u64 << (node % 64)) != 0)
+        self.words
+            .get(&(node / 64))
+            .is_some_and(|bits| bits & (1u64 << (node % 64)) != 0)
     }
 }
 
@@ -55,13 +64,18 @@ pub(super) fn merge_word(target: &mut u64, source: u64) -> usize {
     added
 }
 
-pub(super) struct WordNodes { pub(super) base: usize, pub(super) bits: u64 }
+pub(super) struct WordNodes {
+    pub(super) base: usize,
+    pub(super) bits: u64,
+}
 
 impl Iterator for WordNodes {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.bits == 0 { return None; }
+        if self.bits == 0 {
+            return None;
+        }
         let node = self.base + self.bits.trailing_zeros() as usize;
         self.bits &= self.bits - 1;
         Some(node)
@@ -86,7 +100,11 @@ mod tests {
         let mut second = NodeSet::new();
         let mut expected = BTreeSet::new();
         for (index, &node) in universe.iter().enumerate() {
-            let target = if mask & (1 << index) != 0 { &mut first } else { &mut second };
+            let target = if mask & (1 << index) != 0 {
+                &mut first
+            } else {
+                &mut second
+            };
             assert!(target.insert(node));
             assert!(!target.insert(node));
             expected.insert(node);
@@ -94,7 +112,10 @@ mod tests {
         assert_eq!(first.union_with(&second), second.len() != 0);
         assert!(!first.union_with(&second));
         assert_eq!(first.len(), expected.len());
-        assert_eq!(first.iter().collect::<Vec<_>>(), expected.into_iter().collect::<Vec<_>>());
+        assert_eq!(
+            first.iter().collect::<Vec<_>>(),
+            expected.into_iter().collect::<Vec<_>>()
+        );
         first.clear();
         assert_eq!(first.len(), 0);
         assert_eq!(first.iter().next(), None);
@@ -104,8 +125,12 @@ mod tests {
     fn overlapping_words_preserve_membership_and_exact_change_flag() {
         let mut first = NodeSet::new();
         let mut second = NodeSet::new();
-        for node in 0..130 { first.insert(node); }
-        for node in 60..190 { second.insert(node); }
+        for node in 0..130 {
+            first.insert(node);
+        }
+        for node in 60..190 {
+            second.insert(node);
+        }
         assert!(first.union_with(&second));
         assert_eq!(first.len(), 190);
         assert!(first.iter().eq(0..190));
@@ -144,7 +169,9 @@ mod proofs {
         let mut previous = None;
         for found in (WordNodes { base, bits: source }) {
             assert_eq!(found / 64, node / 64);
-            if let Some(last) = previous { assert!(found > last); }
+            if let Some(last) = previous {
+                assert!(found > last);
+            }
             previous = Some(found);
             actual |= 1u64 << (found % 64);
         }

@@ -18,8 +18,8 @@ use rspirv::dr::{Instruction, Operand};
 use rspirv::spirv::{self, StorageClass, Word};
 
 use crate::ast::{Expr, Statement, Type, UnaryOpKind};
-use crate::casting::graph::SpirvShape;
 use crate::backend::spirv::builder::SpirvBuilder;
+use crate::casting::graph::SpirvShape;
 
 /// One program-state field referenced by the kernel body. Collected before
 /// emission so the SSBO layout is stable regardless of use order.
@@ -157,10 +157,7 @@ impl<'a> FnLowerer<'a> {
         self.pair_view_fields = fields;
     }
 
-    pub fn set_image_plans(
-        &mut self,
-        plans: &[crate::analysis::image_storage::ImageStoragePlan],
-    ) {
+    pub fn set_image_plans(&mut self, plans: &[crate::analysis::image_storage::ImageStoragePlan]) {
         for p in plans {
             self.image_plans.insert(p.array.clone(), p.clone());
         }
@@ -178,7 +175,9 @@ impl<'a> FnLowerer<'a> {
     pub fn materialize_consts(&mut self, items: &[crate::ast::TopLevel]) -> Result<(), String> {
         let mut values: HashMap<String, i64> = HashMap::new();
         for item in items {
-            let crate::ast::TopLevel::Constant(c) = item else { continue };
+            let crate::ast::TopLevel::Constant(c) = item else {
+                continue;
+            };
             let folded = crate::analysis::gemm_shape::fold_consts(&c.expr, &values);
             // `lit` EVALUATES the folded tree (`M * N` → the product) —
             // fold_consts alone only substitutes identifiers.
@@ -198,14 +197,14 @@ impl<'a> FnLowerer<'a> {
                 }
                 (Expr::Bool(b), _) => {
                     let bool_ty = self.builder.lower_type(&Type::Bits(1))?;
-                    let op = if *b { spirv::Op::ConstantTrue } else { spirv::Op::ConstantFalse };
+                    let op = if *b {
+                        spirv::Op::ConstantTrue
+                    } else {
+                        spirv::Op::ConstantFalse
+                    };
                     let id = self.builder.gen_id();
-                    self.builder.emit_global(Instruction::new(
-                        op,
-                        Some(bool_ty),
-                        Some(id),
-                        vec![],
-                    ));
+                    self.builder
+                        .emit_global(Instruction::new(op, Some(bool_ty), Some(id), vec![]));
                     (id, Type::Bits(1))
                 }
                 (other, _) => {
@@ -249,7 +248,12 @@ impl<'a> FnLowerer<'a> {
 
     pub fn emit_stmt(&mut self, stmt: &Statement) -> Result<(), String> {
         match stmt {
-            Statement::Let { name, ty, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                ty,
+                expr: Some(e),
+                ..
+            } => {
                 // 2026-08-23: the VARIABLE itself was pre-declared in the
                 // entry block (SPIR-V requires every function-scope
                 // OpVariable in the FIRST block); here we only store.
@@ -329,8 +333,15 @@ impl<'a> FnLowerer<'a> {
             // lowers to a STRUCTURED loop (OpLoopMerge) over a Function-scope
             // loop variable. The loop var was pre-declared in the entry block
             // by collect_locals; the body obeys the same scalar/array rules.
-            Statement::Foreach { item, list, body , ..} => {
-                let Expr::Range { start, end, inclusive } = list.as_ref() else {
+            Statement::Foreach {
+                item, list, body, ..
+            } => {
+                let Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = list.as_ref()
+                else {
                     return self.err(
                         "foreach over a non-range collection - kernel loops iterate `start..end` ranges only",
                     );
@@ -341,7 +352,11 @@ impl<'a> FnLowerer<'a> {
                 let var = *var;
                 let int_ty = self.type_id(&Type::int())?;
                 let bool_ty = self.type_id(&Type::Bits(1))?;
-                let cmp_op = if *inclusive { spirv::Op::SLessThanEqual } else { spirv::Op::SLessThan };
+                let cmp_op = if *inclusive {
+                    spirv::Op::SLessThanEqual
+                } else {
+                    spirv::Op::SLessThan
+                };
 
                 // O1 (plan VITRIOL GEMM comparison): constant-trip-count
                 // unrolling. `0..K` with K a literal const emits all trip
@@ -353,9 +368,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 let end_n = match end.as_ref() {
                     Expr::Decimal(n) if *n >= 0 => Some(*n as u64),
-                    Expr::Identifier(f) => {
-                        self.const_int_values.get(f).copied().map(|v| v as u64)
-                    }
+                    Expr::Identifier(f) => self.const_int_values.get(f).copied().map(|v| v as u64),
                     _ => None,
                 };
 
@@ -367,7 +380,11 @@ impl<'a> FnLowerer<'a> {
                     // rest (K=4096 fully inlined produced megabyte modules
                     // and second-long compiles).
                     let budget: u32 = 64;
-                    let factor = if body_cost > 0 { factor.clamp(1, budget / body_cost).max(1) } else { factor };
+                    let factor = if body_cost > 0 {
+                        factor.clamp(1, budget / body_cost).max(1)
+                    } else {
+                        factor
+                    };
                     let trip = e0.saturating_sub(s0);
                     let unrolled = trip.min(factor as u64);
                     let mut k = s0;
@@ -384,10 +401,7 @@ impl<'a> FnLowerer<'a> {
                         match_vec4_fma(body, &item, &self.vec4_fields, &self.const_int_values)
                     };
                     while k < s0 + unrolled {
-                        if k % 4 == 0
-                            && s0 + unrolled - k >= 4
-                            && group_match.is_some()
-                        {
+                        if k % 4 == 0 && s0 + unrolled - k >= 4 && group_match.is_some() {
                             let g = group_match.as_ref().unwrap();
                             self.emit_vec4_fma_group(g, &item, Some(k), k, var)?;
                             k += 4;
@@ -422,14 +436,10 @@ impl<'a> FnLowerer<'a> {
                             let cond0 = self.builder.gen_id();
                             let cond_next = self.builder.gen_id();
 
-                            let start_c =
-                                self.builder.builder.constant_bit64(int_ty, k);
-                            let end_c =
-                                self.builder.builder.constant_bit64(int_ty, group_end);
+                            let start_c = self.builder.builder.constant_bit64(int_ty, k);
+                            let end_c = self.builder.builder.constant_bit64(int_ty, group_end);
                             self.builder.store(var, start_c);
-                            let emit_cond = |lower: &mut Self,
-                                             cond: u32|
-                             -> Result<(), String> {
+                            let emit_cond = |lower: &mut Self, cond: u32| -> Result<(), String> {
                                 let v = lower.builder.gen_id();
                                 lower.builder.emit(Instruction::new(
                                     spirv::Op::Load,
@@ -465,9 +475,12 @@ impl<'a> FnLowerer<'a> {
                                 rspirv::spirv::LoopControl::NONE,
                                 [] as [rspirv::dr::Operand; 0],
                             );
-                            self.builder
-                                .builder
-                                .branch_conditional(cond_hdr, body_bb, merge, [] as [u32; 0]);
+                            self.builder.builder.branch_conditional(
+                                cond_hdr,
+                                body_bb,
+                                merge,
+                                [] as [u32; 0],
+                            );
                             self.builder.begin_block(Some(body_bb));
                             self.vars.insert(item.clone(), (var, Type::int()));
                             let prev_terminated = self.terminated;
@@ -548,12 +561,18 @@ impl<'a> FnLowerer<'a> {
                                 [(cond0, preheader_bb), (cond_next, continue_bb)],
                             )
                             .map_err(|e| format!("loop phi: {:?}", e))?;
-                        self.builder
-                            .builder
-                            .loop_merge(merge, continue_bb, rspirv::spirv::LoopControl::NONE, [] as [rspirv::dr::Operand; 0]);
-                        self.builder
-                            .builder
-                            .branch_conditional(cond_hdr, body_bb, merge, [] as [u32; 0]);
+                        self.builder.builder.loop_merge(
+                            merge,
+                            continue_bb,
+                            rspirv::spirv::LoopControl::NONE,
+                            [] as [rspirv::dr::Operand; 0],
+                        );
+                        self.builder.builder.branch_conditional(
+                            cond_hdr,
+                            body_bb,
+                            merge,
+                            [] as [u32; 0],
+                        );
                         self.builder.begin_block(Some(body_bb));
                         self.const_vars.remove(item);
                         self.vars.insert(item.clone(), (var, Type::int()));
@@ -642,9 +661,12 @@ impl<'a> FnLowerer<'a> {
                         [(cond0, preheader_bb), (cond_next, continue_bb)],
                     )
                     .map_err(|e| format!("loop phi: {:?}", e))?;
-                self.builder
-                    .builder
-                    .loop_merge(merge, continue_bb, rspirv::spirv::LoopControl::NONE, [] as [rspirv::dr::Operand; 0]);
+                self.builder.builder.loop_merge(
+                    merge,
+                    continue_bb,
+                    rspirv::spirv::LoopControl::NONE,
+                    [] as [rspirv::dr::Operand; 0],
+                );
                 self.builder
                     .builder
                     .branch_conditional(cond_hdr, body_bb, merge, [] as [u32; 0]);
@@ -832,7 +854,10 @@ impl<'a> FnLowerer<'a> {
                     return self.err("only direct state-field indexing reads");
                 };
                 if !self.state_fields.iter().any(|f| f.name == fname) {
-                    return self.err(format!("unknown state field '{}' (declare it as indexed state)", fname));
+                    return self.err(format!(
+                        "unknown state field '{}' (declare it as indexed state)",
+                        fname
+                    ));
                 }
                 let (idx_val, _) = self.emit_expr(idx)?;
                 let (ptr, ety) = self.state_field_elem_ptr(fname, idx_val)?;
@@ -849,7 +874,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let src_shape = self.builder.shape_of(&src_ty)?;
                 let dst_shape = self.builder.shape_of(target)?;
-                let op = Self::cast_opcode(&src_shape, &dst_shape)?;;
+                let op = Self::cast_opcode(&src_shape, &dst_shape)?;
                 match op {
                     None => Ok((val, target.clone())),
                     Some(op) => {
@@ -876,7 +901,10 @@ impl<'a> FnLowerer<'a> {
                 match (kind, &shape) {
                     (UnaryOpKind::Neg, SpirvShape::Float { .. }) => {
                         let zero = self.builder.float_const(
-                            match &shape { SpirvShape::Float { bits } => *bits, _ => 32 },
+                            match &shape {
+                                SpirvShape::Float { bits } => *bits,
+                                _ => 32,
+                            },
                             0.0,
                         );
                         let res = self.builder.gen_id();
@@ -990,11 +1018,7 @@ impl<'a> FnLowerer<'a> {
     /// FAdd/FMax/FMin share the OpGroupNonUniform*Reduce shape — only the
     /// opcode differs. Scope is IdScope (a uint-constant reference; spirv-val
     /// rejected the literal form).
-    fn emit_subgroup_reduce(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<(Word, Type), String> {
+    fn emit_subgroup_reduce(&mut self, name: &str, args: &[Expr]) -> Result<(Word, Type), String> {
         let (v, vty) = match args.first() {
             Some(e) => self.emit_expr(e)?,
             None => return self.err(format!("{} needs an operand", name)),
@@ -1065,11 +1089,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// ShuffleDown/ShuffleXor: (value, lane-selector) → OpGroupNonUniform*.
-    fn emit_subgroup_shuffle(
-        &mut self,
-        name: &str,
-        args: &[Expr],
-    ) -> Result<(Word, Type), String> {
+    fn emit_subgroup_shuffle(&mut self, name: &str, args: &[Expr]) -> Result<(Word, Type), String> {
         if args.len() < 2 {
             return self.err(format!("{} needs (value, lane_selector)", name));
         }
@@ -1159,8 +1179,8 @@ impl<'a> FnLowerer<'a> {
             // Subgroup family (reduces, shuffles, ballot, broadcast) — split
             // out to keep this dispatcher readable; see emit_subgroup_intrinsic.
             "SubgroupFAdd#" | "SubgroupIAdd#" | "SubgroupIMul#" | "SubgroupSMin#"
-            | "SubgroupSMax#" | "SubgroupFMax#" | "SubgroupFMin#"
-            | "ShuffleDown#" | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
+            | "SubgroupSMax#" | "SubgroupFMax#" | "SubgroupFMin#" | "ShuffleDown#"
+            | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
                 self.emit_subgroup_intrinsic(name, args)
             }
             "Exp#" => {
@@ -1379,10 +1399,8 @@ impl<'a> FnLowerer<'a> {
                     }
                     let (val, val_ty) = self.emit_expr(&args[3])?;
                     if val_ty != Type::int() {
-                        return self.err(format!(
-                            "AtomicCasAt# value must be Int, got {:?}",
-                            val_ty
-                        ));
+                        return self
+                            .err(format!("AtomicCasAt# value must be Int, got {:?}", val_ty));
                     }
                     let res_ty = self.builder.lower_type(&Type::int())?;
                     let old = self.builder.atomic_cas(res_ty, ptr, val, cmp);
@@ -1412,10 +1430,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let (val, val_ty) = self.emit_expr(&args[2])?;
                 if val_ty != Type::int() {
-                    return self.err(format!(
-                        "AtomicAddAt# value must be Int, got {:?}",
-                        val_ty
-                    ));
+                    return self.err(format!("AtomicAddAt# value must be Int, got {:?}", val_ty));
                 }
                 let res_ty = self.builder.lower_type(&Type::int())?;
                 // 2026-10-01: the family expansion — Sub rides the same
@@ -1560,9 +1575,7 @@ impl<'a> FnLowerer<'a> {
     /// O2: lower float `mul + addend` (either order) as a single Fma.
     /// Returns Ok(None) when the shape is not a float mul-add; the caller
     /// then lowers normally (the speculative ids here are dead code).
-    fn try_emit_float_fma(&mut self, l: &Expr, r: &Expr)
-        -> Result<Option<(Word, Type)>, String>
-    {
+    fn try_emit_float_fma(&mut self, l: &Expr, r: &Expr) -> Result<Option<(Word, Type)>, String> {
         use crate::ast::BinaryOpKind::Mul;
         let (mul_operands, addend) = match (l, r) {
             (Expr::BinaryOp(Mul, a, b), c) => ((a.as_ref(), b.as_ref()), c),
@@ -1587,9 +1600,12 @@ impl<'a> FnLowerer<'a> {
         Ok(Some((res, aty)))
     }
 
-    fn emit_binop(&mut self, kind: &crate::ast::BinaryOpKind, l: &Expr, r: &Expr)
-        -> Result<(Word, Type), String>
-    {
+    fn emit_binop(
+        &mut self,
+        kind: &crate::ast::BinaryOpKind,
+        l: &Expr,
+        r: &Expr,
+    ) -> Result<(Word, Type), String> {
         use crate::ast::BinaryOpKind::*;
         // O2 (plan 2026-08-31-gpu-next): fuse float `a*b + c` into one
         // GLSL.std.450 Fma BEFORE the generic lowering splits it into FMul +
@@ -1608,8 +1624,7 @@ impl<'a> FnLowerer<'a> {
         // the OPERANDS' protocol category — float-shaped operands get the F*
         // opcode family and their own result type; everything else keeps the
         // integer family. No type names are matched (rule 19).
-        let float_lane = self.builder.is_float_type(&lty)?
-            || self.builder.is_float_type(&rty)?;
+        let float_lane = self.builder.is_float_type(&lty)? || self.builder.is_float_type(&rty)?;
         if float_lane {
             return self.emit_float_binop(kind, lid, lty.clone(), rid, rty.clone());
         }
@@ -1633,7 +1648,11 @@ impl<'a> FnLowerer<'a> {
             Neq => spirv::Op::INotEqual,
             And | Or => {
                 // Logical over bool operands.
-                let op = if matches!(kind, And) { spirv::Op::LogicalAnd } else { spirv::Op::LogicalOr };
+                let op = if matches!(kind, And) {
+                    spirv::Op::LogicalAnd
+                } else {
+                    spirv::Op::LogicalOr
+                };
                 let bool_ty = self.builder.lower_type(&Type::Bits(1))?;
                 let res = self.builder.gen_id();
                 self.builder.emit(Instruction::new(
@@ -1662,10 +1681,7 @@ impl<'a> FnLowerer<'a> {
             Some(res),
             vec![Operand::IdRef(lid), Operand::IdRef(rid)],
         ));
-        Ok((
-            res,
-            if is_cmp { Type::Bits(1) } else { lty },
-        ))
+        Ok((res, if is_cmp { Type::Bits(1) } else { lty }))
     }
 
     /// 2026-08-31 (plan abv-gpu-by-default): the float opcode family. Mixed
@@ -1751,7 +1767,8 @@ impl<'a> FnLowerer<'a> {
         if matches!(
             self.builder.shape_of(&ty)?,
             crate::casting::graph::SpirvShape::Float { bits: 16 }
-        ) && !opencl_native_f16 {
+        ) && !opencl_native_f16
+        {
             let dst = Type::float();
             let dst_id = self.type_id(&dst)?;
             let res = self.builder.gen_id();
@@ -1794,46 +1811,62 @@ impl<'a> FnLowerer<'a> {
         self.err(format!("operand type mismatch {:?} vs {:?}", ty, other))
     }
 
-/// 2026-08-31 (plan abv-gpu-by-default): scalar cast opcode from the source
-/// and destination shapes. `None` = identity (same kind + width — the value
-/// passes through). The INT side's signedness picks the S/U conversion
-/// family; float width changes pick trunc/ext. Bool mixes have no direct
-/// scalar conversion and error naming the fix.
-fn cast_opcode(
-    src: &crate::casting::graph::SpirvShape,
-    dst: &crate::casting::graph::SpirvShape,
-) -> Result<Option<spirv::Op>, String> {
-    use crate::casting::graph::SpirvShape;
-    let same_kind = std::mem::discriminant(src) == std::mem::discriminant(dst);
-    Ok(match (src, dst) {
-        (SpirvShape::Int { bits: x, .. }, SpirvShape::Int { bits: y, .. }) if same_kind && x == y => None,
-        (SpirvShape::Int { signed, .. }, SpirvShape::Int { .. }) if same_kind => {
-            Some(if *signed { spirv::Op::SConvert } else { spirv::Op::UConvert })
-        }
-        (SpirvShape::Float { bits: x }, SpirvShape::Float { bits: y }) if same_kind && x == y => None,
-        (SpirvShape::Float { bits: x }, SpirvShape::Float { bits: y }) if same_kind => {
-            // SPIR-V has one OpFConvert for both float width directions.
-            let _ = (x, y);
-            Some(spirv::Op::FConvert)
-        }
-        (SpirvShape::Bool, SpirvShape::Bool) => None,
-        (SpirvShape::Int { signed, .. }, SpirvShape::Float { .. }) => {
-            Some(if *signed { spirv::Op::ConvertSToF } else { spirv::Op::ConvertUToF })
-        }
-        (SpirvShape::Float { .. }, SpirvShape::Int { signed, .. }) => {
-            Some(if *signed { spirv::Op::ConvertFToS } else { spirv::Op::ConvertFToU })
-        }
-        _ => {
-            return Err(format!(
-                "cast {:?} → {:?} is not a kernel scalar conversion — bool mixes \
+    /// 2026-08-31 (plan abv-gpu-by-default): scalar cast opcode from the source
+    /// and destination shapes. `None` = identity (same kind + width — the value
+    /// passes through). The INT side's signedness picks the S/U conversion
+    /// family; float width changes pick trunc/ext. Bool mixes have no direct
+    /// scalar conversion and error naming the fix.
+    fn cast_opcode(
+        src: &crate::casting::graph::SpirvShape,
+        dst: &crate::casting::graph::SpirvShape,
+    ) -> Result<Option<spirv::Op>, String> {
+        use crate::casting::graph::SpirvShape;
+        let same_kind = std::mem::discriminant(src) == std::mem::discriminant(dst);
+        Ok(match (src, dst) {
+            (SpirvShape::Int { bits: x, .. }, SpirvShape::Int { bits: y, .. })
+                if same_kind && x == y =>
+            {
+                None
+            }
+            (SpirvShape::Int { signed, .. }, SpirvShape::Int { .. }) if same_kind => {
+                Some(if *signed {
+                    spirv::Op::SConvert
+                } else {
+                    spirv::Op::UConvert
+                })
+            }
+            (SpirvShape::Float { bits: x }, SpirvShape::Float { bits: y })
+                if same_kind && x == y =>
+            {
+                None
+            }
+            (SpirvShape::Float { bits: x }, SpirvShape::Float { bits: y }) if same_kind => {
+                // SPIR-V has one OpFConvert for both float width directions.
+                let _ = (x, y);
+                Some(spirv::Op::FConvert)
+            }
+            (SpirvShape::Bool, SpirvShape::Bool) => None,
+            (SpirvShape::Int { signed, .. }, SpirvShape::Float { .. }) => Some(if *signed {
+                spirv::Op::ConvertSToF
+            } else {
+                spirv::Op::ConvertUToF
+            }),
+            (SpirvShape::Float { .. }, SpirvShape::Int { signed, .. }) => Some(if *signed {
+                spirv::Op::ConvertFToS
+            } else {
+                spirv::Op::ConvertFToU
+            }),
+            _ => {
+                return Err(format!(
+                    "cast {:?} → {:?} is not a kernel scalar conversion — bool mixes \
                  materialize explicitly (0/1 arithmetic)",
-                src, dst
-            ))
-        }
-    })
-}
+                    src, dst
+                ))
+            }
+        })
+    }
 
-// ── State (SSBO) ────────────────────────────────────────────────────
+    // ── State (SSBO) ────────────────────────────────────────────────────
     /// O3 helpers: member byte size (shared by the offset walk) and the
     /// vec4 eligibility / member-type construction.
     /// Device storage bytes for a field type (element × count for arrays).
@@ -1856,7 +1889,8 @@ fn cast_opcode(
             // storage is elem(arg[0]) × rows × cols × depth.
             Type::Applied(_, args) => {
                 if let Some((r, c, d)) = builder.matrix_shape(ty) {
-                    let elem = builder.scalar_storage_bytes(args.first().unwrap_or(&Type::int()))?;
+                    let elem =
+                        builder.scalar_storage_bytes(args.first().unwrap_or(&Type::int()))?;
                     Ok(elem * (r as u32) * (c as u32) * (d as u32))
                 } else {
                     builder.scalar_storage_bytes(ty)
@@ -1893,7 +1927,13 @@ fn cast_opcode(
         let mut out = std::collections::HashSet::new();
         for item in items {
             if let crate::ast::TopLevel::Statement(stmt) = item {
-                if let crate::ast::Statement::Let { name, ty: Some(ty), modifiers, .. } = stmt.as_ref() {
+                if let crate::ast::Statement::Let {
+                    name,
+                    ty: Some(ty),
+                    modifiers,
+                    ..
+                } = stmt.as_ref()
+                {
                     if matches!(ty, crate::ast::Type::Vector(..))
                         && modifiers.iter().any(|m| m.name == "seq")
                     {
@@ -1932,10 +1972,7 @@ fn cast_opcode(
         // its offset is final. The aliased field shares the same device slot.
         for (i, f) in fields.iter().enumerate() {
             if let Some(target_name) = reuse.get(&f.name) {
-                if let Some(target_idx) = fields
-                    .iter()
-                    .position(|tf| tf.name == *target_name)
-                {
+                if let Some(target_idx) = fields.iter().position(|tf| tf.name == *target_name) {
                     offsets[i] = offsets[target_idx];
                 }
             }
@@ -1964,8 +2001,12 @@ fn cast_opcode(
         };
         let mut out = HashMap::new();
         for (aliased, target) in reuse {
-            let Some(a) = size_of(builder, aliased)? else { continue };
-            let Some(t) = size_of(builder, target)? else { continue };
+            let Some(a) = size_of(builder, aliased)? else {
+                continue;
+            };
+            let Some(t) = size_of(builder, target)? else {
+                continue;
+            };
             if a == t {
                 out.insert(aliased.clone(), target.clone());
             }
@@ -2033,7 +2074,11 @@ fn cast_opcode(
     /// pairs, 4 = quads); vec4 eligibility never fires for f16 (32-bit
     /// float-shaped gate) so the two views cannot collide.
     fn view_width(&mut self, name: &str, ty: &Type) -> Result<Option<u32>, String> {
-        let Some(width) = self.pair_view_fields.iter().find(|(n, _)| n == name).map(|(_, w)| *w)
+        let Some(width) = self
+            .pair_view_fields
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, w)| *w)
         else {
             return Ok(None);
         };
@@ -2064,11 +2109,7 @@ fn cast_opcode(
     /// OpTypeArray(vNf16, N/width) with ArrayStride 2·width —
     /// byte-identical to the half array it replaces (the count is
     /// divisible by the width; see view_width).
-    fn pair_member_type(
-        builder: &mut SpirvBuilder,
-        ty: &Type,
-        width: u32,
-    ) -> Result<Word, String> {
+    fn pair_member_type(builder: &mut SpirvBuilder, ty: &Type, width: u32) -> Result<Word, String> {
         let Type::Vector(inner, dims) = ty else {
             return Err("pair_member_type on a non-array".into());
         };
@@ -2102,7 +2143,9 @@ fn cast_opcode(
         }
         let arr = builder.builder.type_array(view, view_count);
         builder.emit_global(Instruction::new(
-            spirv::Op::Decorate, None, None,
+            spirv::Op::Decorate,
+            None,
+            None,
             vec![
                 Operand::IdRef(arr),
                 Operand::Decoration(spirv::Decoration::ArrayStride),
@@ -2148,7 +2191,10 @@ fn cast_opcode(
             if aliased.contains(&idx) {
                 continue;
             }
-            if let Some(p) = pair_ids.iter().find(|(n, _, _)| *n == self.state_fields[idx].name) {
+            if let Some(p) = pair_ids
+                .iter()
+                .find(|(n, _, _)| *n == self.state_fields[idx].name)
+            {
                 members.push(p.1);
             } else {
                 match self.vec4_fields.get(&self.state_fields[idx].name) {
@@ -2167,16 +2213,17 @@ fn cast_opcode(
         &mut self,
         reuse_map: Option<&HashMap<String, String>>,
         pinned: &std::collections::HashSet<String>,
-    ) -> Result<(), String> {        if self.state_fields.is_empty() {
+    ) -> Result<(), String> {
+        if self.state_fields.is_empty() {
             return Ok(());
         }
         self.state_fields.sort_by(|a, b| a.name.cmp(&b.name));
-        let field_types: Vec<Type> =
-            self.state_fields.iter().map(|f| f.ty.clone()).collect();
+        let field_types: Vec<Type> = self.state_fields.iter().map(|f| f.ty.clone()).collect();
         // THE layout rule (plan 2026-09-01-vec4-projection-layout): shared
         // with the runner + LLVM descriptor paths; vec4-eligible arrays are
         // 16B-aligned, everything else packed.
-        let proj_offsets = Self::projection_offsets(self.builder, &self.state_fields, reuse_map, pinned)?;
+        let proj_offsets =
+            Self::projection_offsets(self.builder, &self.state_fields, reuse_map, pinned)?;
         self.state_offsets = proj_offsets.clone();
         // Phase 3 — buffer reuse: identify aliased fields (skipped from the
         // SSBO struct; AccessChain remaps to the target's member index) and
@@ -2220,7 +2267,9 @@ fn cast_opcode(
         for (name, arr_id, ty) in &vec4_ids {
             // The VECTOR id is the first operand of the array type's
             // OpTypeArray; the scalar element type comes from the field.
-            let vector = match self.builder.module_ref()
+            let vector = match self
+                .builder
+                .module_ref()
                 .types_global_values
                 .iter()
                 .find(|i| i.result_id == Some(*arr_id))
@@ -2247,7 +2296,7 @@ fn cast_opcode(
         let member_ids: Vec<Word> = members.clone();
         let struct_ty = self.builder.builder.type_struct(member_ids);
         // Block decoration (required for SSBO interface).
-                self.builder
+        self.builder
             .decorate_raw(struct_ty, spirv::Decoration::Block, vec![]);
         // Explicit member offsets — Block structs must be fully laid out.
         // Only non-aliased fields get Offset decorations (aliased fields
@@ -2265,7 +2314,9 @@ fn cast_opcode(
             );
             member_idx += 1;
         }
-        let struct_ptr = self.builder.ptr_class(StorageClass::StorageBuffer, struct_ty);
+        let struct_ptr = self
+            .builder
+            .ptr_class(StorageClass::StorageBuffer, struct_ty);
         let var = self.builder.gen_id();
         self.builder.emit_global(Instruction::new(
             spirv::Op::Variable,
@@ -2301,14 +2352,15 @@ fn cast_opcode(
             let plan = &self.image_plans[name];
             let fmt = self.spirv_image_format(&plan.format)?;
             let f32_ty = self.builder.lower_type(&Type::float())?;
-            let img_ty = self
-                .builder
-                .builder
-                .type_image(f32_ty, spirv::Dim::Dim2D, 0, 0, 0, 2, fmt, None);
-            let ptr_ty = self
-                .builder
-                .builder
-                .type_pointer(None, spirv::StorageClass::UniformConstant, img_ty);
+            let img_ty =
+                self.builder
+                    .builder
+                    .type_image(f32_ty, spirv::Dim::Dim2D, 0, 0, 0, 2, fmt, None);
+            let ptr_ty = self.builder.builder.type_pointer(
+                None,
+                spirv::StorageClass::UniformConstant,
+                img_ty,
+            );
             let var = self.builder.gen_id();
             self.builder.emit_global(Instruction::new(
                 spirv::Op::Variable,
@@ -2473,9 +2525,7 @@ fn cast_opcode(
             return self.err("kernel touches state but no state base pointer was set");
         };
         let u8_ty = self.builder.lower_type(&Type::Bits(8))?;
-        let u8_ptr = self
-            .builder
-            .ptr_class(StorageClass::CrossWorkgroup, u8_ty);
+        let u8_ptr = self.builder.ptr_class(StorageClass::CrossWorkgroup, u8_ty);
         let off_ptr = self.builder.gen_id();
         self.builder.emit(Instruction::new(
             spirv::Op::InBoundsPtrAccessChain,
@@ -2525,8 +2575,16 @@ fn cast_opcode(
         };
         // Phase 3 — buffer reuse: aliased fields are not SSBO members;
         // remap to the target's member index.
-        let effective_name: String = self.alias_map.get(field).cloned().unwrap_or_else(|| field.to_string());
-        let Some(pos) = self.state_fields.iter().position(|f| f.name == effective_name) else {
+        let effective_name: String = self
+            .alias_map
+            .get(field)
+            .cloned()
+            .unwrap_or_else(|| field.to_string());
+        let Some(pos) = self
+            .state_fields
+            .iter()
+            .position(|f| f.name == effective_name)
+        else {
             return self.err(format!("state field '{}' was not declared", effective_name));
         };
         let fty = self.state_fields[pos].ty.clone();
@@ -2601,8 +2659,16 @@ fn cast_opcode(
             return self.err("kernel touches state but no state fields were collected");
         };
         // Phase 3 — buffer reuse: remap aliased fields to target member.
-        let effective_name: String = self.alias_map.get(field).cloned().unwrap_or_else(|| field.to_string());
-        let Some(pos) = self.state_fields.iter().position(|f| f.name == effective_name) else {
+        let effective_name: String = self
+            .alias_map
+            .get(field)
+            .cloned()
+            .unwrap_or_else(|| field.to_string());
+        let Some(pos) = self
+            .state_fields
+            .iter()
+            .position(|f| f.name == effective_name)
+        else {
             return self.err(format!("state field '{}' was not declared", effective_name));
         };
         let fty = self.state_fields[pos].ty.clone();
@@ -2652,9 +2718,14 @@ fn cast_opcode(
                         fname
                     ));
                 }
-                if !matches!(self.state_fields.iter().find(|f| f.name == fname).unwrap().ty,
-                             Type::Vector(_, _))
-                {
+                if !matches!(
+                    self.state_fields
+                        .iter()
+                        .find(|f| f.name == fname)
+                        .unwrap()
+                        .ty,
+                    Type::Vector(_, _)
+                ) {
                     return self.err(format!(
                         "field '{}' is scalar — no '{}'[i]' addressing; use the \
                          field directly",
@@ -2675,7 +2746,12 @@ fn cast_opcode(
     /// Byte-count argument check: LLVM Load#/Store# accept a byte width;
     /// over a TYPED buffer the width comes from the declaration. A matching
     /// count passes (source compatibility); anything else names the fix.
-    fn check_width_arg(&mut self, arg: Option<&Expr>, elem_ty: &Type, who: &str) -> Result<(), String> {
+    fn check_width_arg(
+        &mut self,
+        arg: Option<&Expr>,
+        elem_ty: &Type,
+        who: &str,
+    ) -> Result<(), String> {
         let Some(Expr::Decimal(n)) = arg else {
             return Ok(()); // omitted — natural width
         };
@@ -2835,7 +2911,10 @@ mod __collect {
                         }
                         other => other.clone(),
                     };
-                    fields.push(StateField { name: d.name.clone(), ty });
+                    fields.push(StateField {
+                        name: d.name.clone(),
+                        ty,
+                    });
                 }
                 // 2026-08-31 (plan abv-gpu-by-default): the real parser emits
                 // top-level `let` as Statement(Let) — the same dual form the
@@ -2846,14 +2925,20 @@ mod __collect {
                 // kernel storage type and are skipped (referencing one errors
                 // naming the field).
                 crate::ast::TopLevel::Statement(stmt) => {
-                    if let crate::ast::Statement::Let { name, ty: Some(ty), .. } = stmt.as_ref() {
+                    if let crate::ast::Statement::Let {
+                        name, ty: Some(ty), ..
+                    } = stmt.as_ref()
+                    {
                         let ty = match ty {
                             Type::Vector(inner, dims) => {
                                 Type::Vector(inner.clone(), resolve_dims(dims))
                             }
                             other => other.clone(),
                         };
-                        fields.push(StateField { name: name.clone(), ty });
+                        fields.push(StateField {
+                            name: name.clone(),
+                            ty,
+                        });
                     }
                 }
                 _ => {}
@@ -2871,7 +2956,9 @@ mod __collect {
 pub fn collect_locals(body: &[Statement], out: &mut Vec<(String, Type)>) {
     for stmt in body {
         match stmt {
-            Statement::Let { name, ty: Some(ty), .. } => {
+            Statement::Let {
+                name, ty: Some(ty), ..
+            } => {
                 out.push((name.clone(), ty.clone()));
             }
             Statement::Guarded(_, inner) | Statement::Block(inner) => {
@@ -2881,7 +2968,9 @@ pub fn collect_locals(body: &[Statement], out: &mut Vec<(String, Type)>) {
             // variable is a Function-scope long - declared in the entry block
             // like every other local (SPIR-V layout rule); body lets are
             // collected by the recursive call.
-            Statement::Foreach { item, body: inner, .. } => {
+            Statement::Foreach {
+                item, body: inner, ..
+            } => {
                 out.push((item.clone(), Type::int()));
                 collect_locals(inner, out);
             }
@@ -3027,11 +3116,7 @@ impl<'a> FnLowerer<'a> {
                     Box::new(Expr::Identifier(item.to_string())),
                     Box::new(Expr::Decimal(2)),
                 );
-                Expr::BinaryOp(
-                    crate::ast::BinaryOpKind::Add,
-                    Box::new(b0),
-                    Box::new(rel),
-                )
+                Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(b0), Box::new(rel))
             }
         };
         let (base_id, _bty) = self.emit_expr(&base_expr)?;
@@ -3086,15 +3171,12 @@ impl<'a> FnLowerer<'a> {
                         Box::new(Expr::Identifier(item.to_string())),
                         Box::new(Expr::Decimal(j as i64)),
                     );
-                    let scalar_expr =
-                        subst_var_expr(&g.scalar_side, item, &kv_plus_j);
+                    let scalar_expr = subst_var_expr(&g.scalar_side, item, &kv_plus_j);
                     self.emit_expr(&scalar_expr)?
                 }
             };
             let acc_val = self.builder.load(elem_ty_id, acc_ptr);
-            let fused = self
-                .builder
-                .glsl_fma(elem_ty_id, comp, other_id, acc_val);
+            let fused = self.builder.glsl_fma(elem_ty_id, comp, other_id, acc_val);
             self.builder.store(acc_ptr, fused);
         }
         Ok(())
@@ -3126,10 +3208,9 @@ pub(crate) fn subst_var_expr(e: &Expr, name: &str, repl: &Expr) -> Expr {
         // 2026-09-18 (P0 f16 swap): same hole as subst_var — the runtime
         // vec4 form substitutes the loop var through the scalar side, which
         // may carry a widening cast around the load.
-        Expr::Cast(inner, ty) => Expr::Cast(
-            Box::new(subst_var_expr(inner, name, repl)),
-            ty.clone(),
-        ),
+        Expr::Cast(inner, ty) => {
+            Expr::Cast(Box::new(subst_var_expr(inner, name, repl)), ty.clone())
+        }
         other => other.clone(),
     }
 }
@@ -3153,10 +3234,7 @@ fn subst_var(e: &Expr, name: &str, value: i64) -> Expr {
         // this arm the unrolled vec4 scalar side kept the raw loop var and
         // read garbage strides (Vulkan s_err=158, caught by the M3
         // f32-with-casts probe).
-        Expr::Cast(inner, ty) => Expr::Cast(
-            Box::new(subst_var(inner, name, value)),
-            ty.clone(),
-        ),
+        Expr::Cast(inner, ty) => Expr::Cast(Box::new(subst_var(inner, name, value)), ty.clone()),
         other => other.clone(),
     }
 }
@@ -3201,21 +3279,19 @@ pub(crate) fn div4(e: &Expr) -> Option<Expr> {
             Box::new(div4(l)?),
             Box::new(div4(r)?),
         )),
-        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => {
-            match (l.as_ref(), r.as_ref()) {
-                (Expr::Decimal(d), other) | (other, Expr::Decimal(d)) => {
-                    if d % 4 != 0 {
-                        return None;
-                    }
-                    Some(Expr::BinaryOp(
-                        crate::ast::BinaryOpKind::Mul,
-                        Box::new(other.clone()),
-                        Box::new(Expr::Decimal(d / 4)),
-                    ))
+        Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) => match (l.as_ref(), r.as_ref()) {
+            (Expr::Decimal(d), other) | (other, Expr::Decimal(d)) => {
+                if d % 4 != 0 {
+                    return None;
                 }
-                _ => None,
+                Some(Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Mul,
+                    Box::new(other.clone()),
+                    Box::new(Expr::Decimal(d / 4)),
+                ))
             }
-        }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -3318,12 +3394,10 @@ fn expr_provably_mod4_zero(e: &Expr, item: &str, consts: &HashMap<String, i64>) 
         Expr::Identifier(name) => consts.get(name).map(|v| v % 4 == 0).unwrap_or(false),
         Expr::BinaryOp(kind, l, r) => match kind {
             crate::ast::BinaryOpKind::Mul => {
-                expr_provably_mod4_zero(l, item, consts)
-                    || expr_provably_mod4_zero(r, item, consts)
+                expr_provably_mod4_zero(l, item, consts) || expr_provably_mod4_zero(r, item, consts)
             }
             crate::ast::BinaryOpKind::Add | crate::ast::BinaryOpKind::Sub => {
-                expr_provably_mod4_zero(l, item, consts)
-                    && expr_provably_mod4_zero(r, item, consts)
+                expr_provably_mod4_zero(l, item, consts) && expr_provably_mod4_zero(r, item, consts)
             }
             _ => false,
         },
@@ -3362,18 +3436,21 @@ pub(crate) fn replace_index_in_expr(e: &Expr, fname: &str, orig_idx: &Expr, repl
         // cast-wrapped `field[idx]` still rewrites to the synthetic vec4
         // component var (the Cast wrapper stays; over an f32 component it
         // is a passthrough at lowering time — cast_opcode returns None).
-        Expr::Cast(inner, ty) => {
-            Expr::Cast(
-                Box::new(replace_index_in_expr(inner, fname, orig_idx, repl)),
-                ty.clone(),
-            )
-        }
+        Expr::Cast(inner, ty) => Expr::Cast(
+            Box::new(replace_index_in_expr(inner, fname, orig_idx, repl)),
+            ty.clone(),
+        ),
         other => other.clone(),
     }
 }
 
 /// Replace an Index expression in a Statement.
-pub(crate) fn replace_index_in_stmt(stmt: &Statement, fname: &str, orig_idx: &Expr, repl: &Expr) -> Statement {
+pub(crate) fn replace_index_in_stmt(
+    stmt: &Statement,
+    fname: &str,
+    orig_idx: &Expr,
+    repl: &Expr,
+) -> Statement {
     match stmt {
         Statement::Assign(lhs, rhs) => Statement::Assign(
             replace_index_in_expr(lhs, fname, orig_idx, repl),
@@ -3393,7 +3470,10 @@ mod vec4_gate_tests {
     fn f32_vec(count: u32) -> Type {
         // The internal form of the canonical `Bit<32>`-backed Float array
         // element (BUGS.md "Bits tripwire": internal spelling `Type::Bits`).
-        Type::Vector(Box::new(Type::Bits(32)), vec![Dimension::Anonymous(count as usize)])
+        Type::Vector(
+            Box::new(Type::Bits(32)),
+            vec![Dimension::Anonymous(count as usize)],
+        )
     }
 
     fn f32_scalar() -> Type {
@@ -3409,31 +3489,62 @@ mod vec4_gate_tests {
         let k = Expr::Identifier("k".into());
         let n = Expr::Identifier("n".into());
         match op {
-            "gemv_a" => Expr::BinaryOp(BinaryOpKind::Add,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Mul, Box::new(i), Box::new(Expr::Identifier("K".into())))),
-                Box::new(k)),
-            "gemm_b" => Expr::BinaryOp(BinaryOpKind::Add,
-                Box::new(Expr::BinaryOp(BinaryOpKind::Mul, Box::new(k.clone()), Box::new(Expr::Identifier("N".into())))),
-                Box::new(n)),
+            "gemv_a" => Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mul,
+                    Box::new(i),
+                    Box::new(Expr::Identifier("K".into())),
+                )),
+                Box::new(k),
+            ),
+            "gemm_b" => Expr::BinaryOp(
+                BinaryOpKind::Add,
+                Box::new(Expr::BinaryOp(
+                    BinaryOpKind::Mul,
+                    Box::new(k.clone()),
+                    Box::new(Expr::Identifier("N".into())),
+                )),
+                Box::new(n),
+            ),
             "gemv_x" => k,
-            _ => Expr::BinaryOp(BinaryOpKind::Mul, Box::new(i), Box::new(Expr::Identifier("K".into()))),
+            _ => Expr::BinaryOp(
+                BinaryOpKind::Mul,
+                Box::new(i),
+                Box::new(Expr::Identifier("K".into())),
+            ),
         }
     }
 
     fn vec4_map(fields: &[&str]) -> HashMap<String, Vec4Field> {
-        fields.iter().map(|f| (f.to_string(), Vec4Field {
-            array: 0, vector: 0, elem: f32_scalar(), elem_float: true,
-        })).collect()
+        fields
+            .iter()
+            .map(|f| {
+                (
+                    f.to_string(),
+                    Vec4Field {
+                        array: 0,
+                        vector: 0,
+                        elem: f32_scalar(),
+                        elem_float: true,
+                    },
+                )
+            })
+            .collect()
     }
 
     #[test]
     fn vec4_collector_accepts_aligned_row_index() {
         // a[i*K + k] with K = 4096 (a multiple of 4): provably 4-aligned.
         let mut got = Vec::new();
-        let access = Expr::Index(Box::new(Expr::Identifier("a".into())),
-                                 Box::new(idx_expr("gemv_a")));
+        let access = Expr::Index(
+            Box::new(Expr::Identifier("a".into())),
+            Box::new(idx_expr("gemv_a")),
+        );
         collect_vec4_indices(
-            &access, &vec4_map(&["a"]), "k",
+            &access,
+            &vec4_map(&["a"]),
+            "k",
             &[("K".to_string(), 4096)].into_iter().collect(),
             &mut got,
         );
@@ -3445,10 +3556,14 @@ mod vec4_gate_tests {
         // b[k*N + n]: n is arbitrary — the >>2 base read the WRONG element
         // (the M2.0 hole). The collector must reject it → scalar loads.
         let mut got = Vec::new();
-        let access = Expr::Index(Box::new(Expr::Identifier("b".into())),
-                                 Box::new(idx_expr("gemm_b")));
+        let access = Expr::Index(
+            Box::new(Expr::Identifier("b".into())),
+            Box::new(idx_expr("gemm_b")),
+        );
         collect_vec4_indices(
-            &access, &vec4_map(&["b"]), "k",
+            &access,
+            &vec4_map(&["b"]),
+            "k",
             &[("N".to_string(), 4096)].into_iter().collect(),
             &mut got,
         );
@@ -3459,13 +3574,11 @@ mod vec4_gate_tests {
     fn vec4_collector_accepts_bare_loop_var() {
         // x[k]: repl is 4-aligned by construction → provable.
         let mut got = Vec::new();
-        let access = Expr::Index(Box::new(Expr::Identifier("x".into())),
-                                 Box::new(idx_expr("gemv_x")));
-        collect_vec4_indices(
-            &access, &vec4_map(&["x"]), "k",
-            &HashMap::new(),
-            &mut got,
+        let access = Expr::Index(
+            Box::new(Expr::Identifier("x".into())),
+            Box::new(idx_expr("gemv_x")),
         );
+        collect_vec4_indices(&access, &vec4_map(&["x"]), "k", &HashMap::new(), &mut got);
         assert_eq!(got.len(), 1, "bare loop-var index must be vec4-collected");
     }
 
@@ -3476,15 +3589,13 @@ mod vec4_gate_tests {
         // load; the field must STILL collect as vec4-eligible. Without the
         // Cast arm the unrolled body read the raw scalar slot with a stale
         // loop var (Vulkan s_err=158 in the M3 f32-with-casts probe).
-        let inner = Expr::Index(Box::new(Expr::Identifier("k".into())),
-                                Box::new(idx_expr("gemv_x")));
+        let inner = Expr::Index(
+            Box::new(Expr::Identifier("k".into())),
+            Box::new(idx_expr("gemv_x")),
+        );
         let access = Expr::Cast(Box::new(inner), Type::Bits(32));
         let mut got = Vec::new();
-        collect_vec4_indices(
-            &access, &vec4_map(&["k"]), "k",
-            &HashMap::new(),
-            &mut got,
-        );
+        collect_vec4_indices(&access, &vec4_map(&["k"]), "k", &HashMap::new(), &mut got);
         assert_eq!(got.len(), 1, "cast-wrapped load must be vec4-collected");
     }
 
@@ -3493,12 +3604,18 @@ mod vec4_gate_tests {
         // Same probe, substitution side: the vec4 fma group's scalar side
         // rebinds the loop var per unrolled step — the binding must reach
         // the loop var hiding inside a Cast-wrapped index.
-        let inner = Expr::Index(Box::new(Expr::Identifier("k".into())),
-                                Box::new(idx_expr("gemv_x")));
+        let inner = Expr::Index(
+            Box::new(Expr::Identifier("k".into())),
+            Box::new(idx_expr("gemv_x")),
+        );
         let cast = Expr::Cast(Box::new(inner), Type::Bits(32));
         let out = subst_var(&cast, "k", 7);
-        let replaced = replace_index_in_expr(&out, "k", &idx_expr("gemv_x"),
-                                             &Expr::Identifier("syn".into()));
+        let replaced = replace_index_in_expr(
+            &out,
+            "k",
+            &idx_expr("gemv_x"),
+            &Expr::Identifier("syn".into()),
+        );
         // After substitution the index must be the constant 7 (the loop var
         // was replaced INSIDE the cast, not skipped).
         let Expr::Cast(inner, _) = replaced else {
@@ -3507,16 +3624,24 @@ mod vec4_gate_tests {
         let Expr::Index(_, idx) = inner.as_ref() else {
             panic!("index must survive inside the cast");
         };
-        assert_eq!(**idx, Expr::Decimal(7), "loop var must substitute through the cast");
+        assert_eq!(
+            **idx,
+            Expr::Decimal(7),
+            "loop var must substitute through the cast"
+        );
     }
 
     #[test]
     fn vec4_collector_ignores_indices_without_loop_var() {
         let mut got = Vec::new();
-        let access = Expr::Index(Box::new(Expr::Identifier("a".into())),
-                                 Box::new(idx_expr("no_k")));
+        let access = Expr::Index(
+            Box::new(Expr::Identifier("a".into())),
+            Box::new(idx_expr("no_k")),
+        );
         collect_vec4_indices(
-            &access, &vec4_map(&["a"]), "k",
+            &access,
+            &vec4_map(&["a"]),
+            "k",
             &[("K".to_string(), 4096)].into_iter().collect(),
             &mut got,
         );
@@ -3530,13 +3655,31 @@ mod vec4_gate_tests {
         // aligns up to 16B; everything else packs. The gemv-like field set:
         // a [Float x 4096], i [Int scalar], x [Float x 16], y [Float x 16].
         let fields = vec![
-            StateField { name: "a".into(), ty: f32_vec(4096) },
-            StateField { name: "i".into(), ty: Type::Bits(64) },
-            StateField { name: "x".into(), ty: f32_vec(16) },
-            StateField { name: "y".into(), ty: f32_vec(16) },
+            StateField {
+                name: "a".into(),
+                ty: f32_vec(4096),
+            },
+            StateField {
+                name: "i".into(),
+                ty: Type::Bits(64),
+            },
+            StateField {
+                name: "x".into(),
+                ty: f32_vec(16),
+            },
+            StateField {
+                name: "y".into(),
+                ty: f32_vec(16),
+            },
         ];
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, None, &std::collections::HashSet::new()).expect("layout");
+        let offs = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields,
+            None,
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         // a @ 0 (already 16-aligned)
         assert_eq!(offs[0], 0, "a: first field, naturally aligned");
         // i: scalar Bit<64> → 8 bytes, PACKED right after a (host==this rule
@@ -3547,7 +3690,13 @@ mod vec4_gate_tests {
         // y: x ends 16400+64=16464 (already aligned) → packed
         assert_eq!(offs[3], 16464, "y: already aligned after x");
         // Determinism: same input, same output.
-        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields, None, &std::collections::HashSet::new()).expect("layout");
+        let offs2 = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields,
+            None,
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         assert_eq!(offs, offs2, "the layout rule must be deterministic");
     }
 
@@ -3558,23 +3707,39 @@ mod vec4_gate_tests {
         // optimization is disabled for it.
         let mut sb = SpirvBuilder::new();
         let fields = vec![
-            StateField { name: "counter".into(), ty: Type::int() },
+            StateField {
+                name: "counter".into(),
+                ty: Type::int(),
+            },
             StateField {
                 name: "pinned".into(),
-                ty: Type::Vector(Box::new(Type::float()), vec![crate::ast::Dimension::Anonymous(16)]),
+                ty: Type::Vector(
+                    Box::new(Type::float()),
+                    vec![crate::ast::Dimension::Anonymous(16)],
+                ),
             },
         ];
         let unpinned = FnLowerer::projection_offsets(
-            &mut sb, &fields, None, &std::collections::HashSet::new(),
-        ).expect("offsets");
+            &mut sb,
+            &fields,
+            None,
+            &std::collections::HashSet::new(),
+        )
+        .expect("offsets");
         assert_eq!(unpinned[0], 0);
-        assert_eq!(unpinned[1], 16, "vec4-eligible arrays align to 16 by default");
+        assert_eq!(
+            unpinned[1], 16,
+            "vec4-eligible arrays align to 16 by default"
+        );
         let mut pinned = std::collections::HashSet::new();
         pinned.insert("pinned".to_string());
-        let packed = FnLowerer::projection_offsets(&mut sb, &fields, None, &pinned)
-            .expect("pinned offsets");
+        let packed =
+            FnLowerer::projection_offsets(&mut sb, &fields, None, &pinned).expect("pinned offsets");
         assert_eq!(packed[0], 0);
-        assert_eq!(packed[1], 8, "seq pins the array to the packed sequential offset");
+        assert_eq!(
+            packed[1], 8,
+            "seq pins the array to the packed sequential offset"
+        );
     }
 
     #[test]
@@ -3582,26 +3747,53 @@ mod vec4_gate_tests {
         // Phase 3 — buffer reuse: "y" is aliased to "x" (same type, dead
         // before y's first use). Both get the same device offset.
         let fields = vec![
-            StateField { name: "x".into(), ty: f32_vec(16) },
-            StateField { name: "y".into(), ty: f32_vec(16) },
+            StateField {
+                name: "x".into(),
+                ty: f32_vec(16),
+            },
+            StateField {
+                name: "y".into(),
+                ty: f32_vec(16),
+            },
         ];
         let mut reuse = HashMap::new();
         reuse.insert("y".into(), "x".into());
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse), &std::collections::HashSet::new()).expect("layout");
+        let offs = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields,
+            Some(&reuse),
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         // x gets its natural 16B-aligned offset (0 for the first field).
         assert_eq!(offs[0], 0, "x: first field, base offset 0");
         // y is aliased to x → same offset.
         assert_eq!(offs[1], 0, "y: aliased to x, shares offset 0");
         // Non-aliased fields still pack normally.
         let fields3 = vec![
-            StateField { name: "a".into(), ty: f32_vec(16) },
-            StateField { name: "b".into(), ty: f32_vec(16) },
-            StateField { name: "c".into(), ty: f32_vec(16) },
+            StateField {
+                name: "a".into(),
+                ty: f32_vec(16),
+            },
+            StateField {
+                name: "b".into(),
+                ty: f32_vec(16),
+            },
+            StateField {
+                name: "c".into(),
+                ty: f32_vec(16),
+            },
         ];
         let mut reuse3 = HashMap::new();
         reuse3.insert("c".into(), "a".into());
-        let offs3 = FnLowerer::projection_offsets(&mut sb, &fields3, Some(&reuse3), &std::collections::HashSet::new()).expect("layout");
+        let offs3 = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields3,
+            Some(&reuse3),
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         assert_eq!(offs3[0], 0, "a: base offset 0");
         assert_eq!(offs3[1], 16 * 4, "b: packed after a (64 bytes)");
         assert_eq!(offs3[2], 0, "c: aliased to a, shares offset 0");
@@ -3612,23 +3804,47 @@ mod vec4_gate_tests {
         // A scalar (8 bytes) must NOT alias an array's slot (64 bytes) —
         // the filter rejects the pair, keeping the scalar at its own offset.
         let fields = vec![
-            StateField { name: "arr".into(), ty: f32_vec(16) },
-            StateField { name: "scal".into(), ty: Type::Bits(64) },
+            StateField {
+                name: "arr".into(),
+                ty: f32_vec(16),
+            },
+            StateField {
+                name: "scal".into(),
+                ty: Type::Bits(64),
+            },
         ];
         let mut reuse = HashMap::new();
         reuse.insert("scal".into(), "arr".into());
         let mut sb = SpirvBuilder::new();
-        let offs = FnLowerer::projection_offsets(&mut sb, &fields, Some(&reuse), &std::collections::HashSet::new()).expect("layout");
+        let offs = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields,
+            Some(&reuse),
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         assert_eq!(offs[0], 0, "arr: first field, offset 0");
         assert_eq!(offs[1], 16 * 4, "scal: keeps its own slot (filtered out)");
         // Same-size pair survives.
         let mut reuse2 = HashMap::new();
         reuse2.insert("scal".into(), "arr".into());
         let fields2 = vec![
-            StateField { name: "arr".into(), ty: f32_vec(8) },
-            StateField { name: "scal".into(), ty: f32_vec(8) },
+            StateField {
+                name: "arr".into(),
+                ty: f32_vec(8),
+            },
+            StateField {
+                name: "scal".into(),
+                ty: f32_vec(8),
+            },
         ];
-        let offs2 = FnLowerer::projection_offsets(&mut sb, &fields2, Some(&reuse2), &std::collections::HashSet::new()).expect("layout");
+        let offs2 = FnLowerer::projection_offsets(
+            &mut sb,
+            &fields2,
+            Some(&reuse2),
+            &std::collections::HashSet::new(),
+        )
+        .expect("layout");
         assert_eq!(offs2[1], 0, "same-size array aliases to arr's offset 0");
     }
 }

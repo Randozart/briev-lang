@@ -141,7 +141,11 @@ pub fn build_enum_representation_plan(items: &[TopLevel]) -> EnumRepresentationP
     }
 
     let escaping_return_lets = escaping_return_lets(items, &defns, &variants);
-    EnumRepresentationPlan { defns, variants, escaping_return_lets }
+    EnumRepresentationPlan {
+        defns,
+        variants,
+        escaping_return_lets,
+    }
 }
 
 /// Prove the local bindings whose enum image can be heap-owned at return.
@@ -157,7 +161,9 @@ fn escaping_return_lets(
     let variants: HashMap<&str, ()> = variants.iter().map(|v| (v.as_str(), ())).collect();
     let mut out = BTreeMap::new();
     for item in items {
-        let TopLevel::Definition(d) = item else { continue };
+        let TopLevel::Definition(d) = item else {
+            continue;
+        };
         if !defns.contains_key(&d.name) {
             continue;
         }
@@ -178,7 +184,12 @@ fn escaping_let_names(
     let reassigned = reassigned_identifiers(&d.body);
     let mut names = BTreeSet::new();
     for stmt in &d.body {
-        let Statement::Let { name, expr: Some(init), .. } = stmt else {
+        let Statement::Let {
+            name,
+            expr: Some(init),
+            ..
+        } = stmt
+        else {
             continue;
         };
         let immutable = !reassigned.contains(name);
@@ -240,9 +251,7 @@ fn heap_owned_initializer(
         // A direct alias points at another local's image; only the alias's
         // own initializer can prove heap ownership.
         Expr::Identifier(_) => false,
-        Expr::Call(name, _, _) => {
-            is_variant_name(name, variants) || defns.contains_key(name)
-        }
+        Expr::Call(name, _, _) => is_variant_name(name, variants) || defns.contains_key(name),
         Expr::Match(_, arms) => arms
             .iter()
             .all(|arm| heap_owned_initializer(&arm.body, variants, defns)),
@@ -590,7 +599,11 @@ mod tests {
              defn outer(x: Int) -> R { let r: R = inner(x); term r; };\n",
         );
         let plan = build_enum_representation_plan(&items);
-        assert!(plan.escaping_return_lets.get("outer").map(|s| s.contains("r")).unwrap_or(false));
+        assert!(plan
+            .escaping_return_lets
+            .get("outer")
+            .map(|s| s.contains("r"))
+            .unwrap_or(false));
     }
 
     #[test]
@@ -601,7 +614,11 @@ mod tests {
              defn outer(x: Int, y: Int) -> R { let r: R = match y { 0 => inner(x), _ => Err(1) }; term r; };\n",
         );
         let plan = build_enum_representation_plan(&items);
-        assert!(plan.escaping_return_lets.get("outer").map(|s| s.contains("r")).unwrap_or(false));
+        assert!(plan
+            .escaping_return_lets
+            .get("outer")
+            .map(|s| s.contains("r"))
+            .unwrap_or(false));
     }
 
     #[test]
@@ -613,8 +630,16 @@ mod tests {
              defn reassigned(x: Int) -> R { let r: R = inner(x); r = Err(2); term r; };\n",
         );
         let plan = build_enum_representation_plan(&items);
-        assert!(!plan.escaping_return_lets.get("alias").map(|s| s.contains("passed")).unwrap_or(false));
-        assert!(!plan.escaping_return_lets.get("reassigned").map(|s| s.contains("r")).unwrap_or(false));
+        assert!(!plan
+            .escaping_return_lets
+            .get("alias")
+            .map(|s| s.contains("passed"))
+            .unwrap_or(false));
+        assert!(!plan
+            .escaping_return_lets
+            .get("reassigned")
+            .map(|s| s.contains("r"))
+            .unwrap_or(false));
     }
 
     #[test]

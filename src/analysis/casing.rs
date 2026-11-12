@@ -83,7 +83,11 @@ pub(crate) fn check_name(out: &mut Vec<String>, category: &str, name: &str, expe
         first.is_ascii_lowercase() || first == '_'
     };
     if !ok {
-        let conv = if expect_pascal { "PascalCase" } else { "snake_case" };
+        let conv = if expect_pascal {
+            "PascalCase"
+        } else {
+            "snake_case"
+        };
         out.push(format!(
             "{category} are {conv} by convention (advisory): found '{name}'"
         ));

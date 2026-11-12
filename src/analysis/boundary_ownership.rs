@@ -61,7 +61,11 @@ impl BoundaryOwnership {
             BoundaryOwnership::Borrowed => 2,
             BoundaryOwnership::ZeroCost => 3,
         };
-        if rank(self) >= rank(other) { self } else { other }
+        if rank(self) >= rank(other) {
+            self
+        } else {
+            other
+        }
     }
 
     /// Meet that treats ZeroCost as a non-constraint: a value which is ZeroCost
@@ -139,10 +143,7 @@ pub fn compute_boundary_ownership(
             TopLevel::ForeignBinding(fb) => {
                 let name = fb.effective_briev_name().to_string();
                 frgns.insert(name.clone(), fb.inputs.clone());
-                frgn_ret.insert(
-                    name,
-                    fb.success_output.first().map(|(_, t)| t.clone()),
-                );
+                frgn_ret.insert(name, fb.success_output.first().map(|(_, t)| t.clone()));
             }
             TopLevel::Statement(stmt) => {
                 if let Statement::Let { name, .. } = stmt.as_ref() {
@@ -169,16 +170,32 @@ pub fn compute_boundary_ownership(
         let convention = convention_of(name).unwrap_or_else(|| "c_abi".to_string());
         let param_owns: Vec<BoundaryOwnership> = params
             .iter()
-            .map(|(_, t)| seed_from_protocol(t, &convention, Direction::Param, universe, &declared_protocols))
+            .map(|(_, t)| {
+                seed_from_protocol(
+                    t,
+                    &convention,
+                    Direction::Param,
+                    universe,
+                    &declared_protocols,
+                )
+            })
             .collect();
-        let ret = frgn_ret
-            .get(name)
-            .and_then(|o| o.as_ref())
-            .map(|t| seed_from_protocol(t, &convention, Direction::Return, universe, &declared_protocols));
-        result.frgns.insert(name.clone(), BoundaryEntry {
-            params: param_owns,
-            ret,
+        let ret = frgn_ret.get(name).and_then(|o| o.as_ref()).map(|t| {
+            seed_from_protocol(
+                t,
+                &convention,
+                Direction::Return,
+                universe,
+                &declared_protocols,
+            )
         });
+        result.frgns.insert(
+            name.clone(),
+            BoundaryEntry {
+                params: param_owns,
+                ret,
+            },
+        );
     }
 
     // ── Propagate export ownership transitively through the call graph ──
@@ -359,7 +376,15 @@ impl<'a> FlowCtx<'a> {
         let params: Vec<BoundaryOwnership> = d
             .parameters
             .iter()
-            .map(|(_, t)| seed_from_protocol(t, "c_abi", Direction::Param, self.universe, self.declared_protocols))
+            .map(|(_, t)| {
+                seed_from_protocol(
+                    t,
+                    "c_abi",
+                    Direction::Param,
+                    self.universe,
+                    self.declared_protocols,
+                )
+            })
             .collect();
 
         self.visiting.push(name.to_string());
@@ -367,7 +392,8 @@ impl<'a> FlowCtx<'a> {
         // refine with the body's terminal flow (which may carry a stricter class,
         // e.g. a frgn CStr return → ZeroCopy). A literal in an `-> Int` export is
         // Value; a literal in an `-> String` export is Owned.
-        let decl_ret = output_type_ownership(&d.output_type, self.universe, self.declared_protocols);
+        let decl_ret =
+            output_type_ownership(&d.output_type, self.universe, self.declared_protocols);
         let flow_ret = self.body_ownership(&d.body);
         self.visiting.pop();
 
@@ -391,9 +417,7 @@ impl<'a> FlowCtx<'a> {
 
     fn stmt_ownership(&mut self, stmt: &Statement) -> Option<BoundaryOwnership> {
         match stmt {
-            Statement::Term(opt)
-            | Statement::EndProgram(opt)
-            | Statement::Rollback(opt) => {
+            Statement::Term(opt) | Statement::EndProgram(opt) | Statement::Rollback(opt) => {
                 opt.as_ref().and_then(|e| self.expr_ownership(e))
             }
             Statement::Tail(e) => self.expr_ownership(e),
@@ -423,7 +447,11 @@ impl<'a> FlowCtx<'a> {
         let from_call = if self.frgn_owns.contains_key(name) {
             self.frgn_owns.get(name).and_then(|e| e.ret)
         } else if self.exports.contains_key(name) {
-            Some(self.defn_ownership(name).ret.unwrap_or(BoundaryOwnership::Owned))
+            Some(
+                self.defn_ownership(name)
+                    .ret
+                    .unwrap_or(BoundaryOwnership::Owned),
+            )
         } else {
             None
         };
@@ -452,7 +480,9 @@ impl<'a> FlowCtx<'a> {
                 meet_option(l, r)
             }
             Expr::UnaryOp(_, inner) => self.expr_ownership(inner),
-            Expr::List(items) => fold_ownership(items.iter().filter_map(|e| self.expr_ownership(e))),
+            Expr::List(items) => {
+                fold_ownership(items.iter().filter_map(|e| self.expr_ownership(e)))
+            }
             Expr::Cast(inner, _) => self.expr_ownership(inner),
             Expr::MethodCall(recv, _, args, _) => {
                 let r = self.expr_ownership(recv);
@@ -465,7 +495,9 @@ impl<'a> FlowCtx<'a> {
                 let i = self.expr_ownership(idx);
                 meet_option(a, i)
             }
-            Expr::Slice { array, start, end, .. } => {
+            Expr::Slice {
+                array, start, end, ..
+            } => {
                 let mut acc = self.expr_ownership(array);
                 for e in [start.as_ref(), end.as_ref()] {
                     if let Some(e) = e {
@@ -495,13 +527,27 @@ fn output_type_ownership(
     use crate::ast::OutputType;
     let o = output.as_ref()?;
     match o {
-        OutputType::Single(t) => Some(seed_from_protocol(t, "c_abi", Direction::Return, universe, declared_protocols)),
-        OutputType::Union(v) => v.iter().filter_map(|x| output_type_ownership(&Some(x.clone()), universe, declared_protocols))
+        OutputType::Single(t) => Some(seed_from_protocol(
+            t,
+            "c_abi",
+            Direction::Return,
+            universe,
+            declared_protocols,
+        )),
+        OutputType::Union(v) => v
+            .iter()
+            .filter_map(|x| output_type_ownership(&Some(x.clone()), universe, declared_protocols))
             .reduce(BoundaryOwnership::meet),
-        OutputType::Tuple(v) => v.iter().filter_map(|x| output_type_ownership(&Some(x.clone()), universe, declared_protocols))
+        OutputType::Tuple(v) => v
+            .iter()
+            .filter_map(|x| output_type_ownership(&Some(x.clone()), universe, declared_protocols))
             .reduce(BoundaryOwnership::meet),
-        OutputType::Array(inner) => output_type_ownership(&Some((**inner).clone()), universe, declared_protocols),
-        OutputType::Named(_, inner) => output_type_ownership(&Some((**inner).clone()), universe, declared_protocols),
+        OutputType::Array(inner) => {
+            output_type_ownership(&Some((**inner).clone()), universe, declared_protocols)
+        }
+        OutputType::Named(_, inner) => {
+            output_type_ownership(&Some((**inner).clone()), universe, declared_protocols)
+        }
     }
 }
 
@@ -536,7 +582,7 @@ mod tests {
 
     fn defn_typed(name: &str, ret: crate::ast::Type, body: Vec<Statement>) -> Definition {
         Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: name.to_string(),
             type_params: Vec::<TypeParam>::new(),
             parameters: vec![],
@@ -605,9 +651,10 @@ mod tests {
         // `type CStr: String<C_String>` — a CStr return seeded as ZeroCopy.
         // Simulated here as a direct Applied-variant so the test needs no
         // populated universe.
-        let d = defn("echo", vec![Statement::Term(Some(
-            Expr::Identifier("x".into()),
-        ))]);
+        let d = defn(
+            "echo",
+            vec![Statement::Term(Some(Expr::Identifier("x".into())))],
+        );
         // The output_type is CStr (as String<C_String>); the pass seeds params
         // from d.parameters — for a parameterless CStr return, no params.
         let mut items = vec![exported(d)];
@@ -628,29 +675,53 @@ mod tests {
     #[test]
     fn utf8_string_is_owned() {
         let ty = Type::Applied("String".into(), vec![Type::Custom("UTF8".into())]);
-        assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()), BoundaryOwnership::Owned);
-        assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Param, None, &HashMap::new()), BoundaryOwnership::Owned);
+        assert_eq!(
+            seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()),
+            BoundaryOwnership::Owned
+        );
+        assert_eq!(
+            seed_from_protocol(&ty, "c_abi", Direction::Param, None, &HashMap::new()),
+            BoundaryOwnership::Owned
+        );
     }
 
     #[test]
     fn lto_is_zero_cost() {
         let ty = Type::Applied("String".into(), vec![Type::Custom("C_String".into())]);
-        assert_eq!(seed_from_protocol(&ty, "lto", Direction::Return, None, &HashMap::new()), BoundaryOwnership::ZeroCost);
+        assert_eq!(
+            seed_from_protocol(&ty, "lto", Direction::Return, None, &HashMap::new()),
+            BoundaryOwnership::ZeroCost
+        );
     }
 
     #[test]
     fn unknown_type_is_borrowed() {
         // Bits and Void are compiler constructs → Borrowed via the fallback
         // (they resolve to no protocol category here).
-        assert_eq!(seed_from_protocol(&Type::Bits(64), "c_abi", Direction::Return, None, &HashMap::new()), BoundaryOwnership::Borrowed);
+        assert_eq!(
+            seed_from_protocol(
+                &Type::Bits(64),
+                "c_abi",
+                Direction::Return,
+                None,
+                &HashMap::new()
+            ),
+            BoundaryOwnership::Borrowed
+        );
     }
 
     #[test]
     fn scalar_seed_is_value() {
         let ty = Type::Custom("Int".into());
-        assert_eq!(seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()), BoundaryOwnership::Value);
+        assert_eq!(
+            seed_from_protocol(&ty, "c_abi", Direction::Return, None, &HashMap::new()),
+            BoundaryOwnership::Value
+        );
         let f = Type::Custom("Float".into());
-        assert_eq!(seed_from_protocol(&f, "c_abi", Direction::Param, None, &HashMap::new()), BoundaryOwnership::Value);
+        assert_eq!(
+            seed_from_protocol(&f, "c_abi", Direction::Param, None, &HashMap::new()),
+            BoundaryOwnership::Value
+        );
     }
 
     #[test]
@@ -665,11 +736,18 @@ mod tests {
         );
         // Set the return type to CStr variant.
         let mut fb = fb;
-        fb.success_output = vec![("r".into(), Type::Applied("String".into(), vec![Type::Custom("C_String".into())]))];
+        fb.success_output = vec![(
+            "r".into(),
+            Type::Applied("String".into(), vec![Type::Custom("C_String".into())]),
+        )];
         let d = defn_typed(
             "f",
             Type::Applied("String".into(), vec![Type::Custom("C_String".into())]),
-            vec![Statement::Term(Some(Expr::Call("cstr_fn".into(), vec![], None)))],
+            vec![Statement::Term(Some(Expr::Call(
+                "cstr_fn".into(),
+                vec![],
+                None,
+            )))],
         );
         let items = vec![TopLevel::ForeignBinding(fb), exported(d)];
         let r = compute_boundary_ownership(&items, None, &no_convention);
@@ -733,7 +811,7 @@ mod tests {
             span: None,
         }));
         let d = Definition {
-                variadic_param: None,
+            variadic_param: None,
             name: "echo".to_string(),
             type_params: vec![],
             parameters: vec![("name".to_string(), Type::Custom("CStr".to_string()))],

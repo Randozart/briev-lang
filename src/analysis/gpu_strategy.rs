@@ -222,7 +222,6 @@ pub fn estimate_time(m: u64, n: u64, k: u64, s: &Strategy, hw: &GpuHardware) -> 
     let ilp_bonus = 1.0 + 0.01 * (s.stages - 1) as f64;
     let mut seconds = compute_s.max(memory_s) / ilp_bonus;
 
-
     // Underfill: when the grid has fewer CTAs than the SM count, the GPU
     // sits partially idle — scale by the unused-SM fraction.
     let ctas = m_tiles * n_tiles;
@@ -314,13 +313,11 @@ pub fn select(m: u64, n: u64, k: u64, hw: &GpuHardware) -> Option<Strategy> {
     if cands.is_empty() {
         return None;
     }
-    cands
-        .into_iter()
-        .min_by(|a, b| {
-            let ta = estimate_time(m, n, k, a, hw).seconds;
-            let tb = estimate_time(m, n, k, b, hw).seconds;
-            ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
-        })
+    cands.into_iter().min_by(|a, b| {
+        let ta = estimate_time(m, n, k, a, hw).seconds;
+        let tb = estimate_time(m, n, k, b, hw).seconds;
+        ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
+    })
 }
 
 #[cfg(test)]
@@ -331,14 +328,22 @@ mod tests {
     fn selects_small_tile_for_small_shape() {
         let hw = GpuHardware::SM86;
         let s = select(64, 64, 64, &hw).expect("candidate");
-        assert!(s.tile_m <= 64 && s.tile_n <= 64, "64³ needs a small tile: {:?}", s);
+        assert!(
+            s.tile_m <= 64 && s.tile_n <= 64,
+            "64³ needs a small tile: {:?}",
+            s
+        );
     }
 
     #[test]
     fn selects_large_tile_for_large_shape() {
         let hw = GpuHardware::SM86;
         let s = select(4096, 4096, 4096, &hw).expect("candidate");
-        assert!(s.tile_m >= 128 && s.tile_n >= 128, "4096³ needs a big tile: {:?}", s);
+        assert!(
+            s.tile_m >= 128 && s.tile_n >= 128,
+            "4096³ needs a big tile: {:?}",
+            s
+        );
     }
 
     #[test]
@@ -378,7 +383,10 @@ mod tests {
     fn empty_candidates_returns_none() {
         // Non-divisible shape → no candidate.
         let hw = GpuHardware::SM86;
-        assert!(select(100, 100, 100, &hw).is_none() || candidate_strategies(100, 100, 100, &hw).is_empty());
+        assert!(
+            select(100, 100, 100, &hw).is_none()
+                || candidate_strategies(100, 100, 100, &hw).is_empty()
+        );
     }
 
     /// Stage 0c calibration: the model's selected tile family must track
@@ -466,56 +474,60 @@ mod tests {
         assert!(
             small.tile_m * small.tile_n < big.tile_m * big.tile_n,
             "128³ tile {}x{} should be smaller than 2048³ {}x{}",
-            small.tile_m, small.tile_n, big.tile_m, big.tile_n
+            small.tile_m,
+            small.tile_n,
+            big.tile_m,
+            big.tile_n
         );
     }
 }
 
-    #[test]
-    fn stage_preference_calibration() {
-        let hw = GpuHardware::SM86;
-        for shape in [1024u64, 4096] {
-            let s = select(shape, shape, shape, &hw).expect("candidate");
-            assert!(
-                s.stages == 3,
-                "{shape}³: E4c measured optimum is stages=3, model picked {}",
-                s.stages
-            );
-        }
+#[test]
+fn stage_preference_calibration() {
+    let hw = GpuHardware::SM86;
+    for shape in [1024u64, 4096] {
+        let s = select(shape, shape, shape, &hw).expect("candidate");
+        assert!(
+            s.stages == 3,
+            "{shape}³: E4c measured optimum is stages=3, model picked {}",
+            s.stages
+        );
     }
+}
 
-    #[test]
-    fn rectangular_shapes_get_feasible_tiles() {
-        let hw = GpuHardware::SM86;
-        // M != N: a thin GEMM (4096x512x512) and a tall one (512x4096x512).
-        for (m, n, k) in [(4096u64, 512, 512), (512, 4096, 512), (2048, 1024, 1024)] {
-            let s = select(m, n, k, &hw).expect("candidate");
-            assert!(
-                m % s.tile_m == 0 && n % s.tile_n == 0,
-                "{m}x{n}x{k}: tile {}x{} must divide the shape",
-                s.tile_m, s.tile_n
-);
-        }
+#[test]
+fn rectangular_shapes_get_feasible_tiles() {
+    let hw = GpuHardware::SM86;
+    // M != N: a thin GEMM (4096x512x512) and a tall one (512x4096x512).
+    for (m, n, k) in [(4096u64, 512, 512), (512, 4096, 512), (2048, 1024, 1024)] {
+        let s = select(m, n, k, &hw).expect("candidate");
+        assert!(
+            m % s.tile_m == 0 && n % s.tile_n == 0,
+            "{m}x{n}x{k}: tile {}x{} must divide the shape",
+            s.tile_m,
+            s.tile_n
+        );
     }
+}
 
-    #[test]
-    fn reduction_split_fires_only_on_underfill() {
-        let hw = GpuHardware::SM86; // 28 SMs, desired = 112 CTAs
-        // Underfilled: the decode pv (H=20 heads, NKV=4096) → fill to ~112.
-        assert_eq!(reduction_split_factor_for(20, 4096, &hw), 6);
-        assert_eq!(reduction_split_factor_for(32, 4096, &hw), 4);
-        // At/above the target, or a tiny span, → no split.
-        assert_eq!(reduction_split_factor_for(112, 4096, &hw), 1);
-        assert_eq!(reduction_split_factor_for(1024, 4096, &hw), 1);
-        assert_eq!(reduction_split_factor_for(20, 32, &hw), 1);
-        assert_eq!(reduction_split_factor_for(0, 4096, &hw), 1);
-    }
+#[test]
+fn reduction_split_fires_only_on_underfill() {
+    let hw = GpuHardware::SM86; // 28 SMs, desired = 112 CTAs
+                                // Underfilled: the decode pv (H=20 heads, NKV=4096) → fill to ~112.
+    assert_eq!(reduction_split_factor_for(20, 4096, &hw), 6);
+    assert_eq!(reduction_split_factor_for(32, 4096, &hw), 4);
+    // At/above the target, or a tiny span, → no split.
+    assert_eq!(reduction_split_factor_for(112, 4096, &hw), 1);
+    assert_eq!(reduction_split_factor_for(1024, 4096, &hw), 1);
+    assert_eq!(reduction_split_factor_for(20, 32, &hw), 1);
+    assert_eq!(reduction_split_factor_for(0, 4096, &hw), 1);
+}
 
-    #[test]
-    fn reduction_split_respects_min_chunk() {
-        let hw = GpuHardware::SM86;
-        // inner=128: naive S=6 → chunk 21 < 32, so back off to S=4 (chunk 32).
-        assert_eq!(reduction_split_factor_for(20, 128, &hw), 4);
-        // inner=256: S=6 → chunk 42 ≥ 32 → S=6.
-        assert_eq!(reduction_split_factor_for(20, 256, &hw), 6);
-    }
+#[test]
+fn reduction_split_respects_min_chunk() {
+    let hw = GpuHardware::SM86;
+    // inner=128: naive S=6 → chunk 21 < 32, so back off to S=4 (chunk 32).
+    assert_eq!(reduction_split_factor_for(20, 128, &hw), 4);
+    // inner=256: S=6 → chunk 42 ≥ 32 → S=6.
+    assert_eq!(reduction_split_factor_for(20, 256, &hw), 6);
+}

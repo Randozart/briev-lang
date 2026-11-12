@@ -39,12 +39,10 @@ pub fn declared_composite(shape: &KernelShape, name: &str) -> bool {
         .kernel_stmts
         .iter()
         .find_map(|s| match s {
-            Statement::Let { modifiers, .. } => Some(
-                modifiers.iter().any(|m| {
-                    m.name == "declared_composite"
-                        && matches!(&m.value, Some(Expr::Identifier(n)) if n == name)
-                }),
-            ),
+            Statement::Let { modifiers, .. } => Some(modifiers.iter().any(|m| {
+                m.name == "declared_composite"
+                    && matches!(&m.value, Some(Expr::Identifier(n)) if n == name)
+            })),
             _ => None,
         })
         .unwrap_or(false)
@@ -306,7 +304,10 @@ fn match_foreach(
     consts: &HashMap<String, i64>,
 ) -> Option<(String, i64, Vec<Statement>)> {
     for stmt in stmts {
-        if let Statement::Foreach { item, list, body , ..} = stmt {
+        if let Statement::Foreach {
+            item, list, body, ..
+        } = stmt
+        {
             if let Expr::Range { end, .. } = list.as_ref() {
                 let end = fold_consts(end, consts);
                 if let Some(k) = lit(&end, consts) {

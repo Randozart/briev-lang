@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const Z3_VERSION: &str = "4.13.0";
-const Z3_URL: &str = "https://github.com/Z3Prover/z3/releases/download/z3-4.13.0/z3-4.13.0-x64-glibc-2.31.zip";
+const Z3_URL: &str =
+    "https://github.com/Z3Prover/z3/releases/download/z3-4.13.0/z3-4.13.0-x64-glibc-2.31.zip";
 
 const DWARFDUMP_URL: &str = "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/llvm-dwarfdump-19.1.0-x86_64-unknown-linux-gnu.tar.xz";
 
@@ -39,7 +40,8 @@ pub fn is_dwarfdump_installed() -> bool {
 /// Install all optional dependencies (z3, dwarfdump).
 pub fn install_all() -> Result<(), String> {
     let bin_dir = dep_bin_dir();
-    std::fs::create_dir_all(&bin_dir).map_err(|e| format!("failed to create {}: {}", bin_dir.display(), e))?;
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|e| format!("failed to create {}: {}", bin_dir.display(), e))?;
 
     if !is_z3_installed() {
         println!("z3 not found — downloading v{}...", Z3_VERSION);
@@ -56,7 +58,9 @@ pub fn install_all() -> Result<(), String> {
     }
 
     println!("\nDependencies installed to: {}", bin_dir.display());
-    println!("Make sure this directory is on your PATH, or the compiler will find it automatically.");
+    println!(
+        "Make sure this directory is on your PATH, or the compiler will find it automatically."
+    );
     Ok(())
 }
 
@@ -68,21 +72,31 @@ fn install_z3(target_dir: &PathBuf) -> Result<(), String> {
     // Extract — z3 archive contains a directory with the binary inside
     let extract_dir = target_dir.join("z3_extract");
     std::fs::create_dir_all(&extract_dir).map_err(|e| format!("mkdir: {}", e))?;
-    run_command("unzip", &["-o", &archive.to_string_lossy(), "-d", &extract_dir.to_string_lossy()])?;
+    run_command(
+        "unzip",
+        &[
+            "-o",
+            &archive.to_string_lossy(),
+            "-d",
+            &extract_dir.to_string_lossy(),
+        ],
+    )?;
 
     // Find the z3 binary within the extracted directory tree
     let z3_binary = find_file_recursive(&extract_dir, "z3")
         .ok_or_else(|| "z3 binary not found after extraction".to_string())?;
 
-    std::fs::rename(&z3_binary, target_dir.join("z3"))
-        .map_err(|e| format!("rename z3: {}", e))?;
+    std::fs::rename(&z3_binary, target_dir.join("z3")).map_err(|e| format!("rename z3: {}", e))?;
 
     // Make executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(target_dir.join("z3"), std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("chmod z3: {}", e))?;
+        std::fs::set_permissions(
+            target_dir.join("z3"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .map_err(|e| format!("chmod z3: {}", e))?;
     }
 
     // Cleanup
@@ -99,7 +113,15 @@ fn install_dwarfdump(target_dir: &PathBuf) -> Result<(), String> {
     download_file(DWARFDUMP_URL, &archive)?;
 
     // Extract
-    run_command("tar", &["-xf", &archive.to_string_lossy(), "-C", &target_dir.to_string_lossy()])?;
+    run_command(
+        "tar",
+        &[
+            "-xf",
+            &archive.to_string_lossy(),
+            "-C",
+            &target_dir.to_string_lossy(),
+        ],
+    )?;
 
     // Find the binary
     let dd_binary = find_file_recursive(target_dir, "llvm-dwarfdump")
@@ -107,8 +129,7 @@ fn install_dwarfdump(target_dir: &PathBuf) -> Result<(), String> {
 
     let target = target_dir.join("llvm-dwarfdump");
     if dd_binary != target {
-        std::fs::rename(&dd_binary, &target)
-            .map_err(|e| format!("rename dwarfdump: {}", e))?;
+        std::fs::rename(&dd_binary, &target).map_err(|e| format!("rename dwarfdump: {}", e))?;
     }
 
     #[cfg(unix)]
@@ -134,7 +155,10 @@ fn download_file(url: &str, dest: &PathBuf) -> Result<(), String> {
         return Err(format!(
             "no download tool found (curl or wget required).\n\
              Install manually:\n  wget {} -O {}\n  unzip -o {} -d {}/",
-            url, dest.display(), dest.display(), dest.parent().unwrap().display()
+            url,
+            dest.display(),
+            dest.display(),
+            dest.parent().unwrap().display()
         ));
     }
 }
