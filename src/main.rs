@@ -1814,7 +1814,7 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
 /// This command compares the binary's mtime against the newest mtime in
 /// `src/` and `config/` (the two `include_str!` trees) and reports the
 /// offending file. Exit 0 = fresh, 1 = stale (rebuild required).
-fn run_freshness_check() -> Result<(), String> {
+pub(crate) fn run_freshness_check() -> Result<(), String> {
     let bin =
         std::env::current_exe().map_err(|e| format!("cannot resolve current executable: {}", e))?;
     let bin_mtime = std::fs::metadata(&bin)
