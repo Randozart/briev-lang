@@ -4937,7 +4937,12 @@ impl LlvmBackend {
                     match super::emit_hir_stmt::hir_sourced_body(self, &hir_body, &d.body, &d.name)
                     {
                         Some(body) => {
-                            debug_assert_eq!(body, d.body, "HIR/AST defn body drift: {}", d.name);
+                            debug_assert_eq!(
+                                super::emit_hir_stmt::storage_release_view(&body),
+                                d.body,
+                                "HIR/AST defn body drift: {}",
+                                d.name
+                            );
                             hir_subst = crate::ast::Definition { body, ..d.clone() };
                             &hir_subst
                         }
@@ -5970,7 +5975,8 @@ impl LlvmBackend {
                     ) {
                         Some(body) => {
                             debug_assert_eq!(
-                                body, txn.body,
+                                super::emit_hir_stmt::storage_release_view(&body),
+                                txn.body,
                                 "HIR/AST txn body drift: {}",
                                 txn.name
                             );

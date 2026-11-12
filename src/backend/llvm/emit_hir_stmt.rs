@@ -12,7 +12,8 @@
 use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
 use std::fmt::Write;
 use crate::ast::Statement;
-use crate::hir::expr::HirExprKind;
+use crate::hir::expr::{HirExpr, HirExprKind};
+use crate::backend::llvm::AllocStrategy;
 use crate::hir::stmt::{HirStmt, HirStmtKind};
 
 /// Reconstruct one HIR statement for emission. `None` = unsupported node;
@@ -27,28 +28,233 @@ pub(crate) fn convert_hir_statement(stmt: &HirStmt) -> Option<Statement> {
 /// Build a HIR-sourced body: per-statement conversion with AST splice and
 /// coverage accounting. Returns `None` when the HIR body length does not
 /// match the AST body (lowering drift) — callers fall back to the AST body.
+/// 2026-11-12 (owned-storage seam): comparison view that strips the
+/// compiler-inserted storage releases and temp-transfers back to the source
+/// shape. Emission keeps the full body; only the H4.2 drift assert looks
+/// through this view. Top-level only — nested inserts fall back to AST and
+/// are lost (leak, never unsound).
+pub(crate) fn storage_release_view(body: &[Statement]) -> Vec<Statement> {
+    let mut stash: Vec<(String, crate::ast::Expr)> = Vec::new();
+    let mut out = Vec::with_capacity(body.len());
+    for stmt in body {
+        match stmt {
+            Statement::Expression(crate::ast::Expr::Call(callee, args, _))
+                if (callee == "Free#" || callee == "coll_destroy")
+                    && args.len() == 1
+                    && matches!(&args[0], crate::ast::Expr::Identifier(_)) =>
+            {
+                continue;
+            }
+            Statement::Let { name, expr: Some(e), .. } if name.starts_with("__ot") => {
+                stash.push((name.clone(), e.clone()));
+                continue;
+            }
+            Statement::Term(Some(crate::ast::Expr::Identifier(n)))
+            | Statement::Tail(crate::ast::Expr::Identifier(n))
+            | Statement::EndProgram(Some(crate::ast::Expr::Identifier(n))) => {
+                if let Some((_, e)) = stash.iter().rev().find(|(sn, _)| sn == n) {
+                    let e = e.clone();
+                    out.push(match stmt {
+                        Statement::Tail(_) => Statement::Tail(e),
+                        Statement::EndProgram(_) => Statement::EndProgram(Some(e)),
+                        _ => Statement::Term(Some(e)),
+                    });
+                    continue;
+                }
+                out.push(stmt.clone());
+            }
+            _ => out.push(stmt.clone()),
+        }
+    }
+    out
+}
+
+fn release_ast_stmt(storage: crate::hir::stmt::StorageKind, name: &str) -> Option<Statement> {
+    let callee = match storage {
+        crate::hir::stmt::StorageKind::Str => "Free#",
+        crate::hir::stmt::StorageKind::List => "coll_destroy",
+    };
+    let hir = HirStmt {
+        id: crate::hir::ids::NodeId(0),
+        span: None,
+        kind: HirStmtKind::Expression(crate::hir::expr::HirExpr {
+            id: crate::hir::ids::NodeId(0),
+            span: None,
+            ty: None,
+            kind: HirExprKind::Call {
+                callee: callee.to_string(),
+                args: vec![crate::hir::expr::HirExpr {
+                    id: crate::hir::ids::NodeId(0),
+                    span: None,
+                    ty: None,
+                    kind: HirExprKind::Identifier(name.to_string()),
+                }],
+                analysis_id: None,
+            },
+        }),
+    };
+    crate::hir::to_ast::stmt(&hir)
+}
+
+/// Native emission for a compiler-inserted storage release. Str reuses the
+/// strategy-aware destroy (arena no-ops honored); List calls the stdlib
+/// coll_destroy handle-destroy.
+fn emit_release_owned_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    storage: crate::hir::stmt::StorageKind,
+    name: &str,
+    indent: &str,
+) -> Option<TypedRegister> {
+    match storage {
+        crate::hir::stmt::StorageKind::Str => emit_release_owned_str(backend, out, name, indent),
+        crate::hir::stmt::StorageKind::List => {
+            // Handle width follows the target's pointer-int width; the arg
+            // goes through the normal expression/adapter path so ptr-typed
+            // bindings materialize correctly (same lesson as Free#).
+            let ity = backend.ptr_int_ty();
+            let reg = backend.emit_expr(
+                out,
+                &crate::ast::Expr::Identifier(name.to_string()),
+                indent,
+            );
+            let h = super::intrinsics::adapt_to_ptr_width(backend, out, &reg, indent);
+            let v = backend.fun.gen_reg();
+            writeln!(out, "{indent}{v} = call {ity} @coll_destroy({ity} {h})").ok();
+            Some(TypedRegister { name: v, ty: crate::ast::Type::void() })
+        }
+    }
+}
+
+/// String lane of ReleaseOwned. String bindings materialize as ACTUAL
+/// pointers on both targets, but their stamped Briev type is Custom while
+/// some producers stamp Ptr — the shared adapter cannot tell them apart.
+/// This lane owns the decision: materialize via emit_expr, honor the arena
+/// strategy (no-op), then ptrtoint the pointer directly.
+fn emit_release_owned_str(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    name: &str,
+    indent: &str,
+) -> Option<TypedRegister> {
+    let reg = backend.emit_expr(out, &crate::ast::Expr::Identifier(name.to_string()), indent);
+    if matches!(
+        backend.fun.alloc_strategies.get(&reg.name),
+        Some(AllocStrategy::Arena) | Some(AllocStrategy::Alloca)
+    ) {
+        return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+    }
+    let ity = backend.ptr_int_ty();
+    let h = super::intrinsics::adapt_handle_to_ptr_int(backend, out, &reg, indent);
+    let p = backend.fun.gen_reg();
+    writeln!(out, "{indent}{p} = inttoptr {ity} {h} to ptr").ok();
+    writeln!(out, "{indent}call void @free(ptr {p})").ok();
+    Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() })
+}
+
+/// Native emission for a temp-transfer: bind, release, then the original
+/// return form (Term/Tail/EndProgram) on the temp binding.
+fn emit_temp_transfer_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    indent: &str,
+) -> Option<TypedRegister> {
+    let HirStmtKind::TempTransfer { name, ty, expr, releases, ret } = &stmt.kind else {
+        return None;
+    };
+    let binding = HirStmt {
+        id: crate::hir::ids::NodeId(0),
+        span: None,
+        kind: HirStmtKind::Let {
+            name: name.clone(),
+            names: vec![name.clone()],
+            ty: ty.clone(),
+            expr: Some((**expr).clone()),
+            modifiers: vec![],
+        },
+    };
+    let bound = emit_value_statement(backend, out, &binding, indent);
+    for (storage, n) in releases {
+        emit_release_owned_statement(backend, out, *storage, n, indent);
+    }
+    let ret_expr = HirExpr {
+        id: crate::hir::ids::NodeId(1),
+        span: None,
+        ty: ty.clone(),
+        kind: HirExprKind::Identifier(name.clone()),
+    };
+    let ret_stmt = HirStmt {
+        id: crate::hir::ids::NodeId(2),
+        span: None,
+        kind: match ret {
+            crate::hir::stmt::RetKind::Term => HirStmtKind::Term(Some(ret_expr)),
+            crate::hir::stmt::RetKind::Tail => HirStmtKind::Tail(ret_expr),
+            crate::hir::stmt::RetKind::EndProgram => HirStmtKind::EndProgram(Some(ret_expr)),
+        },
+    };
+    let _ = bound;
+    emit_hir_statement(backend, out, &ret_stmt, indent)
+}
+
 pub(crate) fn hir_sourced_body(
     backend: &mut LlvmBackend,
     hir_body: &[HirStmt],
     ast_body: &[Statement],
     name: &str,
 ) -> Option<Vec<Statement>> {
-    if hir_body.len() != ast_body.len() {
-        return None;
-    }
-    let mut out = Vec::with_capacity(hir_body.len());
-    for (hir_stmt, ast_stmt) in hir_body.iter().zip(ast_body.iter()) {
+    // Two-cursor walk: compiler-inserted storage statements consume no AST
+    // statement (they have no source syntax); everything else zips 1:1.
+    let mut out = Vec::with_capacity(hir_body.len() + 2);
+    let mut ai = 0usize;
+    for hir_stmt in hir_body {
         backend.hir_stmts_seen += 1;
-        match convert_hir_statement(hir_stmt) {
-            Some(s) => {
+        match &hir_stmt.kind {
+            HirStmtKind::ReleaseOwned { storage, name } => {
+                let s = release_ast_stmt(*storage, name)?;
                 backend.hir_stmts_native += 1;
                 out.push(s);
             }
-            None => {
-                backend.hir_stmts_fallback += 1;
-                out.push(ast_stmt.clone());
+            HirStmtKind::TempTransfer { name, ty, expr, ret, .. } => {
+                let binding = HirStmt {
+                    id: hir_stmt.id,
+                    span: None,
+                    kind: HirStmtKind::Let {
+                        name: name.clone(),
+                        names: vec![name.clone()],
+                        ty: ty.clone(),
+                        expr: Some((**expr).clone()),
+                        modifiers: vec![],
+                    },
+                };
+                let let_ast = crate::hir::to_ast::stmt(&binding)?;
+                let term_expr = crate::hir::to_ast::expr(expr)?;
+                backend.hir_stmts_native += 2;
+                out.push(let_ast);
+                out.push(match ret {
+                    crate::hir::stmt::RetKind::Term => Statement::Term(Some(term_expr)),
+                    crate::hir::stmt::RetKind::Tail => Statement::Tail(term_expr),
+                    crate::hir::stmt::RetKind::EndProgram => Statement::EndProgram(Some(term_expr)),
+                });
+            }
+            _ => {
+                let Some(ast_stmt) = ast_body.get(ai) else { return None };
+                ai += 1;
+                match convert_hir_statement(hir_stmt) {
+                    Some(s) => {
+                        backend.hir_stmts_native += 1;
+                        out.push(s);
+                    }
+                    None => {
+                        backend.hir_stmts_fallback += 1;
+                        out.push(ast_stmt.clone());
+                    }
+                }
             }
         }
+    }
+    if ai != ast_body.len() {
+        return None;
     }
     let _ = name;
     Some(out)
@@ -719,6 +925,10 @@ pub(crate) fn emit_hir_statement(
     indent: &str,
 ) -> Option<TypedRegister> {
     let native = match &stmt.kind {
+        HirStmtKind::ReleaseOwned { storage, name } => {
+            emit_release_owned_statement(backend, out, *storage, name, indent)
+        }
+        HirStmtKind::TempTransfer { .. } => emit_temp_transfer_statement(backend, out, stmt, indent),
         HirStmtKind::Expression(_) => emit_expr_statement(backend, out, stmt, indent),
         HirStmtKind::Guarded(..) | HirStmtKind::Block(_) => {
             emit_scoped_statement(backend, out, stmt, indent)

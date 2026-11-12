@@ -29,7 +29,7 @@ pub mod global_lifetime;
 pub mod facts;
 pub mod frontend;
 pub mod ids;
-pub mod owned_strings;
+pub mod owned_storage;
 pub mod lower;
 pub mod needs_state;
 pub mod ownership;

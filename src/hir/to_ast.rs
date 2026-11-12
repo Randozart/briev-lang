@@ -195,7 +195,16 @@ pub fn pattern(p: &HirPattern) -> Option<Pattern> {
 }
 
 pub fn stmt(s: &HirStmt) -> Option<Statement> {
+    // 2026-11-12: compiler-inserted storage releases never convert from
+    // source; hir_sourced_body consumes them on its own cursor.
+    if matches!(
+        &s.kind,
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. }
+    ) {
+        return None;
+    }
     Some(match &s.kind {
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. } => unreachable!("filtered above"),
         HirStmtKind::Let { name, names, ty, expr: e, modifiers } => Statement::Let {
             name: name.clone(),
             names: names.clone(),

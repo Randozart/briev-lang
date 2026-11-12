@@ -16,12 +16,13 @@
 use super::expr::{HirExpr, HirExprKind, HirLiteral};
 use super::ids::NodeId;
 use super::program::{HirCallable, HirProgram};
-use super::stmt::{HirStmt, HirStmtKind};
+use super::stmt::{HirStmt, HirStmtKind, StorageKind};
 use crate::ast::{BinaryOpKind, Type};
 use std::collections::{HashMap, HashSet};
 
 pub fn insert_releases(program: &mut HirProgram, escapes: &HashMap<String, Vec<bool>>) {
-    let fresh = fresh_callables(program);
+    let fresh = fresh_callables(program, escapes);
+    let param_return = param_return_summaries(program);
     let consumed = consumed_params(program);
     let mut next = program
         .callables
@@ -30,10 +31,13 @@ pub fn insert_releases(program: &mut HirProgram, escapes: &HashMap<String, Vec<b
         .max()
         .unwrap_or(0);
     for callable in &mut program.callables {
+        // Conservative: generic bodies are emitted through the specialization
+        // site, not the body seam; leave them leak-conservative for now.
+        if !callable.type_params.is_empty() { continue; }
         let mut locals = HashSet::new();
         collect_let_names(&callable.body.statements, &mut locals);
-        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, locals: &locals, next };
-        let mut owned = HashMap::new();
+        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, param_return: &param_return, locals: &locals, next };
+        let mut owned: HashMap<String, OwnKind> = HashMap::new();
         let mut fresh_vars = HashMap::new();
         for param in &callable.params {
             fresh_vars.insert(param.name.clone(), false);
@@ -50,14 +54,31 @@ pub fn insert_releases(program: &mut HirProgram, escapes: &HashMap<String, Vec<b
     }
 }
 
-fn returns_string(c: &HirCallable) -> bool {
-    c.result.as_ref().is_some_and(is_string) || c.outputs.as_ref().is_some_and(|o| {
-        o.all_types().iter().any(is_string)
+fn returns_owned(c: &HirCallable) -> bool {
+    c.result.as_ref().is_some_and(owned_ty) || c.outputs.as_ref().is_some_and(|o| {
+        o.all_types().iter().any(owned_ty)
     })
 }
 
 fn is_string(ty: &Type) -> bool {
     matches!(ty, Type::Custom(n) if n == "String")
+}
+
+fn is_list(ty: &Type) -> bool {
+    matches!(ty, Type::Generic(n, _) | Type::Applied(n, _) if n == "List")
+}
+
+fn owned_ty(ty: &Type) -> bool {
+    is_string(ty) || is_list(ty)
+}
+
+/// What a released owner needs: a String frees its handle; a List goes
+/// through stdlib `coll_destroy` (object free + arena-aware data free).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum OwnKind { Str, Lst }
+
+fn kind_of(ty: &Type) -> OwnKind {
+    if is_string(ty) { OwnKind::Str } else { OwnKind::Lst }
 }
 
 fn max_node(stmts: &[HirStmt]) -> u32 {
@@ -85,6 +106,9 @@ fn max_node(stmts: &[HirStmt]) -> u32 {
             }
             HirStmtKind::Let { expr, .. } | HirStmtKind::Term(expr) | HirStmtKind::EndProgram(expr) => {
                 if let Some(e) = expr { max = max.max(expr_max(e)); }
+            }
+            HirStmtKind::TempTransfer { expr, .. } => {
+                max = max.max(expr_max(expr));
             }
             HirStmtKind::Assign(l, r) | HirStmtKind::ArrowAssign { value: l, target: Some(r), .. } => {
                 max = max.max(expr_max(l)).max(expr_max(r));
@@ -145,17 +169,58 @@ fn expr_max(e: &HirExpr) -> u32 {
     max
 }
 
-fn fresh_callables(program: &HirProgram) -> HashSet<String> {
+/// Callables whose EVERY return path is `Identifier(param_i)` verbatim:
+/// builders/filters that hand their argument back (e.g. list `nms`-style
+/// filters). A call to one is fresh exactly when that argument is fresh —
+/// ownership flows through the identity return.
+fn param_return_summaries(program: &HirProgram) -> HashMap<String, usize> {
+    let mut out = HashMap::new();
+    for c in &program.callables {
+        let mut returns = Vec::new();
+        collect_returns(&c.body.statements, &mut returns);
+        if returns.is_empty() { continue; }
+        let mut idx: Option<usize> = None;
+        let mut all_param = true;
+        for e in &returns {
+            match &e.kind {
+                HirExprKind::Identifier(n) => {
+                    let i = c.params.iter().position(|p| &p.name == n);
+                    match (i, idx) {
+                        (Some(i), None) => idx = Some(i),
+                        (Some(i), Some(j)) if i == j => {}
+                        _ => { all_param = false; break; }
+                    }
+                }
+                _ => { all_param = false; break; }
+            }
+        }
+        if all_param { if let Some(i) = idx { out.insert(c.name.clone(), i); } }
+    }
+    out
+}
+
+fn fresh_callables(
+    program: &HirProgram,
+    escapes: &HashMap<String, Vec<bool>>,
+) -> HashSet<String> {
     let mut fresh = HashSet::new();
+    let pr = param_return_summaries(program);
     for _ in 0..program.callables.len().max(1) {
         let mut changed = false;
         for c in &program.callables {
-            if !returns_string(c) || fresh.contains(&c.name) { continue; }
+            if !returns_owned(c) || fresh.contains(&c.name) { continue; }
+            // Fresh-set soundness gate: if ANY parameter escapes (stored into
+            // the result/state/collection), the callable must not count as
+            // fresh — a `wrap(s) -> [s]` stasher would make the caller free a
+            // retained operand. Escape-summary facts are the gate.
+            if escapes.get(&c.name).is_some_and(|v| v.iter().any(|e| *e)) {
+                continue;
+            }
             let mut vars: HashMap<String, bool> = c.params.iter().map(|p| (p.name.clone(), false)).collect();
-            collect_fresh(&c.body.statements, &mut vars, &fresh);
+            collect_fresh(&c.body.statements, &mut vars, &fresh, &pr);
             let mut returns = Vec::new();
             collect_returns(&c.body.statements, &mut returns);
-            if !returns.is_empty() && returns.iter().all(|e| is_fresh(e, &vars, &fresh)) {
+            if !returns.is_empty() && returns.iter().all(|e| is_fresh(e, &vars, &pr, &fresh)) {
                 fresh.insert(c.name.clone());
                 changed = true;
             }
@@ -165,27 +230,27 @@ fn fresh_callables(program: &HirProgram) -> HashSet<String> {
     fresh
 }
 
-fn collect_fresh(stmts: &[HirStmt], vars: &mut HashMap<String, bool>, fresh: &HashSet<String>) {
+fn collect_fresh(stmts: &[HirStmt], vars: &mut HashMap<String, bool>, fresh: &HashSet<String>, pr: &HashMap<String, usize>) {
     for s in stmts {
         match &s.kind {
             HirStmtKind::Let { name, expr: Some(e), ty, .. } => {
-                let fresh = is_fresh_rhs(e, vars, fresh);
-                let string_ty = ty.as_ref().is_some_and(is_string) || e.ty.as_ref().is_some_and(is_string);
-                vars.insert(name.clone(), fresh && string_ty);
+                let fresh = is_fresh_rhs(e, vars, pr, fresh);
+                let own = ty.as_ref().is_some_and(owned_ty) || e.ty.as_ref().is_some_and(owned_ty);
+                vars.insert(name.clone(), fresh && own);
             }
             HirStmtKind::Assign(l, r) => {
                 if let HirExprKind::Identifier(n) = &l.kind {
-                    let fresh = is_fresh_rhs(r, vars, fresh);
+                    let fresh = is_fresh_rhs(r, vars, pr, fresh);
                     vars.insert(n.clone(), fresh);
                 }
             }
             HirStmtKind::Guarded(_, b) | HirStmtKind::Block(b)
             | HirStmtKind::SyncBlock(b) | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => {
-                collect_fresh(b, vars, fresh);
+                collect_fresh(b, vars, fresh, pr);
             }
-            HirStmtKind::Foreach { body, .. } => collect_fresh(body, vars, fresh),
+            HirStmtKind::Foreach { body, .. } => collect_fresh(body, vars, fresh, pr),
             HirStmtKind::Match { arms, .. } => {
-                for a in arms { collect_fresh(&a.body, vars, fresh); }
+                for a in arms { collect_fresh(&a.body, vars, fresh, pr); }
             }
             _ => {}
         }
@@ -196,6 +261,7 @@ fn collect_returns(stmts: &[HirStmt], out: &mut Vec<HirExpr>) {
     for s in stmts {
         match &s.kind {
             HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) => out.push(e.clone()),
+            HirStmtKind::TempTransfer { expr, .. } => out.push((**expr).clone()),
             HirStmtKind::Guarded(_, b) | HirStmtKind::Block(b)
             | HirStmtKind::SyncBlock(b) | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => {
                 collect_returns(b, out);
@@ -209,24 +275,33 @@ fn collect_returns(stmts: &[HirStmt], out: &mut Vec<HirExpr>) {
     }
 }
 
-fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, fresh: &HashSet<String>) -> bool {
+fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>) -> bool {
     match &e.kind {
-        HirExprKind::Call { callee, .. } => fresh.contains(callee),
+        HirExprKind::List(_) => true,
+        HirExprKind::Call { callee, args, .. } => {
+            if fresh.contains(callee) {
+                true
+            } else if let Some(i) = pr.get(callee) {
+                args.get(*i).is_some_and(|a| is_fresh(a, vars, pr, fresh))
+            } else {
+                false
+            }
+        }
         HirExprKind::Binary { op: BinaryOpKind::Add, left, right } => {
             string_expr(left) && string_expr(right)
         }
         HirExprKind::Cast { inner, to, .. } => is_string(to) && !string_expr(inner),
         HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
         HirExprKind::If { then_branch, else_branch, .. } => {
-            else_branch.as_ref().is_some_and(|e| is_fresh(then_branch, vars, fresh) && is_fresh(e, vars, fresh))
+            else_branch.as_ref().is_some_and(|e| is_fresh(then_branch, vars, pr, fresh) && is_fresh(e, vars, pr, fresh))
         }
-        HirExprKind::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| is_fresh(&a.body, vars, fresh)),
+        HirExprKind::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| is_fresh(&a.body, vars, pr, fresh)),
         _ => false,
     }
 }
 
-fn is_fresh_rhs(e: &HirExpr, vars: &HashMap<String, bool>, fresh: &HashSet<String>) -> bool {
-    !matches!(e.kind, HirExprKind::Identifier(_)) && is_fresh(e, vars, fresh)
+fn is_fresh_rhs(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>) -> bool {
+    !matches!(e.kind, HirExprKind::Identifier(_)) && is_fresh(e, vars, pr, fresh)
 }
 
 fn string_expr(e: &HirExpr) -> bool {
@@ -261,6 +336,11 @@ fn consumed_in(stmts: &[HirStmt], out: &mut HashSet<String>) {
                 consumed_expr(l, out); consumed_expr(r, out);
             }
             HirStmtKind::FreeHint(n) | HirStmtKind::KeepHint(n) => { out.insert(n.clone()); }
+            HirStmtKind::ReleaseOwned { name, .. } => { out.insert(name.clone()); }
+            HirStmtKind::TempTransfer { expr, releases, .. } => {
+                consumed_expr(expr, out);
+                for (_, n) in releases { out.insert(n.clone()); }
+            }
             HirStmtKind::Guarded(c, b) => {
                 consumed_expr(c, out); consumed_in(b, out);
             }
@@ -313,6 +393,7 @@ struct Pass<'a> {
     fresh: &'a HashSet<String>,
     escapes: &'a HashMap<String, Vec<bool>>,
     consumed: &'a HashMap<String, HashSet<usize>>,
+    param_return: &'a HashMap<String, usize>,
     locals: &'a HashSet<String>,
     next: u32,
 }
@@ -332,7 +413,7 @@ fn collect_let_names(stmts: &[HirStmt], out: &mut HashSet<String>) {
 
 fn rewrite_list(
     stmts: &[HirStmt],
-    owned: &mut HashMap<String, bool>,
+    owned: &mut HashMap<String, OwnKind>,
     fresh_vars: &mut HashMap<String, bool>,
     ctx: &mut Pass<'_>,
     top: bool,
@@ -345,16 +426,18 @@ fn rewrite_list(
     let mut out = Vec::with_capacity(stmts.len());
     for stmt in stmts {
         let mut s = stmt.clone();
+        let stmt_kind_tag = stmt.kind.clone();
         match &mut s.kind {
             HirStmtKind::Let { name, expr: Some(e), ty, .. } => {
                 uses(e, owned, ctx);
-                let string_ty = ty.as_ref().is_some_and(is_string) || e.ty.as_ref().is_some_and(is_string);
-                let fresh = string_ty && is_fresh_rhs(e, fresh_vars, ctx.fresh);
-                if string_ty {
+                let own_flag = ty.as_ref().is_some_and(owned_ty) || e.ty.as_ref().is_some_and(owned_ty);
+                let kind = ty.as_ref().or(e.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
+                let fresh = own_flag && is_fresh_rhs(e, fresh_vars, ctx.param_return, ctx.fresh);
+                if own_flag {
                     fresh_vars.insert(name.clone(), fresh);
                 }
                 if fresh {
-                    owned.insert(name.clone(), true);
+                    owned.insert(name.clone(), kind);
                 } else {
                     owned.remove(name);
                     if matches!(e.kind, HirExprKind::Identifier(_)) {
@@ -376,14 +459,17 @@ fn rewrite_list(
                         out.push(s);
                         continue;
                     }
-                    if owned.get(n).copied().unwrap_or(false) && !rhs_ids.contains(n) {
-                        out.push(release(n, ctx));
-                        owned.remove(n);
+                    if let Some(kind) = owned.get(n).copied() {
+                        if !rhs_ids.contains(n) {
+                            out.push(release(n, kind, ctx));
+                            owned.remove(n);
+                        }
                     }
-                    let string_ty = lhs.ty.as_ref().is_some_and(is_string) || rhs.ty.as_ref().is_some_and(is_string);
-                    let fresh = string_ty && is_fresh_rhs(rhs, fresh_vars, ctx.fresh);
+                    let own_flag = lhs.ty.as_ref().is_some_and(owned_ty) || rhs.ty.as_ref().is_some_and(owned_ty);
+                    let kind = lhs.ty.as_ref().or(rhs.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
+                    let fresh = own_flag && is_fresh_rhs(rhs, fresh_vars, ctx.param_return, ctx.fresh);
                     fresh_vars.insert(n.clone(), fresh);
-                    if fresh { owned.insert(n.clone(), true); } else { owned.remove(n); }
+                    if fresh { owned.insert(n.clone(), kind); } else { owned.remove(n); }
                     if matches!(rhs.kind, HirExprKind::Identifier(_)) {
                         for id in rhs_ids { owned.remove(&id); }
                     }
@@ -404,10 +490,55 @@ fn rewrite_list(
                 let mut ids = HashSet::new();
                 mention(e, &mut ids);
                 if let Some(n) = &transferred { owned.remove(n); }
+                // Temp-transfer (2026-11-12): a FRESH return expression that
+                // borrows owned locals evaluates the allocation first, so the
+                // borrowed operands can be released right after — bind the
+                // result to a synthetic local, release the operands, return
+                // the binding. Not-fresh returns keep the conservative drop.
+                let ret_fresh = is_fresh(e, fresh_vars, ctx.param_return, ctx.fresh);
+                let borrows_owned = transferred.is_none()
+                    && ids.iter().any(|n| owned.contains_key(n));
+                if ret_fresh && borrows_owned {
+                    let mut tname = format!("__ot{}", ctx.next);
+                    ctx.next += 1;
+                    while ctx.locals.contains(&tname) {
+                        tname = format!("{}x", tname);
+                        ctx.next += 1;
+                    }
+                    let names: Vec<String> = owned.keys().cloned().collect();
+                    let releases: Vec<(StorageKind, String)> = names
+                        .iter()
+                        .map(|n| {
+                            let k = owned.get(n).copied().unwrap_or(OwnKind::Str);
+                            (match k { OwnKind::Str => StorageKind::Str, OwnKind::Lst => StorageKind::List }, n.clone())
+                        })
+                        .collect();
+                    let ret = match stmt_kind_tag {
+                        HirStmtKind::Tail(_) => crate::hir::stmt::RetKind::Tail,
+                        HirStmtKind::EndProgram(_) => crate::hir::stmt::RetKind::EndProgram,
+                        _ => crate::hir::stmt::RetKind::Term,
+                    };
+                    let stmt = HirStmt {
+                        id: NodeId(ctx.next),
+                        span: None,
+                        kind: HirStmtKind::TempTransfer {
+                            name: tname,
+                            ty: e.ty.clone(),
+                            expr: Box::new(e.clone()),
+                            releases,
+                            ret,
+                        },
+                    };
+                    ctx.next += 1;
+                    out.push(stmt);
+                    owned.clear();
+                    continue;
+                }
                 let names: Vec<String> = owned.keys().cloned().collect();
                 for n in names {
+                    let k = owned.get(&n).copied();
                     if !ids.contains(&n) {
-                        out.push(release(&n, ctx));
+                        if let Some(k) = k { out.push(release(&n, k, ctx)); }
                         owned.remove(&n);
                     } else {
                         owned.remove(&n);
@@ -454,7 +585,7 @@ fn rewrite_list(
             HirStmtKind::Match { expr, arms } => {
                 uses(expr, owned, ctx);
                 let before: HashSet<String> = owned.keys().cloned().collect();
-                let mut kept: Option<HashMap<String, bool>> = None;
+                let mut kept: Option<HashMap<String, OwnKind>> = None;
                 for arm in arms.iter_mut() {
                     let mut inner = owned.clone();
                     let mut inner_fresh = fresh_vars.clone();
@@ -470,46 +601,28 @@ fn rewrite_list(
         }
     }
     if top {
-        let names: Vec<String> = owned.keys().cloned().collect();
-        for n in names { out.push(release(&n, ctx)); }
+        let names: Vec<(String, OwnKind)> = owned.iter().map(|(n, k)| (n.clone(), *k)).collect();
+        for (n, k) in names { out.push(release(&n, k, ctx)); }
         owned.clear();
     } else {
-        let added: Vec<String> = owned.keys().filter(|n| !entry.contains(*n) && declared.contains(*n)).cloned().collect();
-        for n in added { out.push(release(&n, ctx)); owned.remove(&n); }
+        let added: Vec<(String, OwnKind)> = owned.iter()
+            .filter(|(n, _)| !entry.contains(*n) && declared.contains(*n))
+            .map(|(n, k)| (n.clone(), *k)).collect();
+        for (n, k) in added { out.push(release(&n, k, ctx)); owned.remove(&n); }
     }
     out
 }
 
-fn release(name: &str, ctx: &mut Pass<'_>) -> HirStmt {
+fn release(name: &str, kind: OwnKind, ctx: &mut Pass<'_>) -> HirStmt {
     let id = NodeId(ctx.next);
-    ctx.next += 1;
-    // 2026-11-12: pass the String handle directly. The HIR String→Ptr cast
-    // lane stamps a ptr type on an i64 handle register, which mis-types
-    // emit_free's width adapter (wasm32 dashboard caught it). The plain
-    // identifier materializes as an actual ptr on every target, and
-    // adapt_to_ptr_width's ptr→ptrtoint path handles the rest.
-    let arg = HirExpr {
-        id: NodeId(ctx.next),
-        span: None,
-        ty: Some(Type::Custom(name.to_string())),
-        kind: HirExprKind::Identifier(name.to_string()),
-    };
-    ctx.next += 1;
-    let call = HirExpr {
-        id: NodeId(ctx.next),
-        span: None,
-        ty: Some(Type::void()),
-        kind: HirExprKind::Call {
-            callee: "Free#".to_string(),
-            args: vec![arg],
-            analysis_id: None,
-        },
-    };
     ctx.next += 1;
     HirStmt {
         id,
         span: None,
-        kind: HirStmtKind::Expression(call),
+        kind: HirStmtKind::ReleaseOwned {
+            storage: match kind { OwnKind::Str => StorageKind::Str, OwnKind::Lst => StorageKind::List },
+            name: name.to_string(),
+        },
     }
 }
 
@@ -550,6 +663,11 @@ fn mention_stmt(s: &HirStmt, out: &mut HashSet<String>) {
         HirStmtKind::Let { expr: Some(e), .. } | HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e)
         | HirStmtKind::Check(e) | HirStmtKind::Expression(e) | HirStmtKind::Gate(e) => mention(e, out),
         HirStmtKind::Assign(l, r) => { mention(l, out); mention(r, out); }
+        HirStmtKind::TempTransfer { expr, releases, .. } => {
+            mention(expr, out);
+            for (_, n) in releases { out.insert(n.clone()); }
+        }
+        HirStmtKind::ReleaseOwned { name, .. } => { out.insert(name.clone()); }
         HirStmtKind::Guarded(c, b) => { mention(c, out); for s in b { mention_stmt(s, out); } }
         HirStmtKind::Block(b) | HirStmtKind::SyncBlock(b)
         | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => { for s in b { mention_stmt(s, out); } }
@@ -559,11 +677,17 @@ fn mention_stmt(s: &HirStmt, out: &mut HashSet<String>) {
     }
 }
 
-fn uses(e: &HirExpr, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
+fn uses(e: &HirExpr, owned: &mut HashMap<String, OwnKind>, ctx: &Pass<'_>) {
     match &e.kind {
         HirExprKind::Call { callee, args, .. } => {
+            // A fresh-set callee provably allocates its own result and (by
+            // the escape gate above) lets no argument escape: its args are
+            // reads. Identity-return callees (param_return) still hit the
+            // Escape path so the caller drops the handle the result now owns.
+            let fresh_callee = ctx.fresh.contains(callee);
             for (i, a) in args.iter().enumerate() {
                 let mode = if callee == "Free#" { Mode::Consume }
+                    else if fresh_callee { Mode::Borrow }
                     else if ctx.consumed.get(callee).is_some_and(|s| s.contains(&i)) { Mode::Consume }
                     else if let Some(summary) = ctx.escapes.get(callee) {
                         if summary.get(i).copied().unwrap_or(true) { Mode::Escape } else { Mode::Borrow }
@@ -574,9 +698,13 @@ fn uses(e: &HirExpr, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
         }
         HirExprKind::Consume(inner) => use_arg(inner, Mode::Consume, owned, ctx),
         HirExprKind::AddrOf(inner) => use_arg(inner, Mode::Escape, owned, ctx),
+        // 2026-11-12: MethodCall receivers borrow, like Field reads. Same
+        // trust class: a user method that STASHES its receiver escapes it
+        // silently — recorded as the known limitation of this slice; stdlib
+        // methods (Count#, iteration) are pure.
         HirExprKind::MethodCall { receiver, args, .. } => {
-            use_arg(receiver, Mode::Escape, owned, ctx);
-            for a in args { use_arg(a, Mode::Escape, owned, ctx); }
+            use_arg(receiver, Mode::Borrow, owned, ctx);
+            for a in args { use_arg(a, Mode::Borrow, owned, ctx); }
         }
         HirExprKind::StructLiteral { fields, specs, .. } => {
             for (_, v) in fields.iter().chain(specs.iter()) { use_arg(v, Mode::Escape, owned, ctx); }
@@ -605,11 +733,13 @@ fn uses(e: &HirExpr, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
     }
 }
 
-fn use_stmt(s: &HirStmt, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
+fn use_stmt(s: &HirStmt, owned: &mut HashMap<String, OwnKind>, ctx: &Pass<'_>) {
     match &s.kind {
         HirStmtKind::Let { expr: Some(e), .. } | HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e)
         | HirStmtKind::Check(e) | HirStmtKind::Expression(e) | HirStmtKind::Gate(e) => uses(e, owned, ctx),
         HirStmtKind::Assign(l, r) => { uses(l, owned, ctx); uses(r, owned, ctx); }
+        HirStmtKind::TempTransfer { expr, .. } => uses(expr, owned, ctx),
+        HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::Guarded(c, b) => { uses(c, owned, ctx); for s in b { use_stmt(s, owned, ctx); } }
         HirStmtKind::Block(b) | HirStmtKind::SyncBlock(b)
         | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => { for s in b { use_stmt(s, owned, ctx); } }
@@ -622,7 +752,7 @@ fn use_stmt(s: &HirStmt, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
 #[derive(Clone, Copy)]
 enum Mode { Borrow, Consume, Escape }
 
-fn use_arg(e: &HirExpr, mode: Mode, owned: &mut HashMap<String, bool>, ctx: &Pass<'_>) {
+fn use_arg(e: &HirExpr, mode: Mode, owned: &mut HashMap<String, OwnKind>, ctx: &Pass<'_>) {
     match mode {
         Mode::Borrow => uses(e, owned, ctx),
         Mode::Consume | Mode::Escape => {
@@ -654,29 +784,94 @@ mod tests {
         program
     }
 
-    fn has_free(c: &HirCallable, name: &str) -> bool {
-        fn walk(stmts: &[HirStmt], name: &str) -> bool {
-            for s in stmts {
-                match &s.kind {
+    /// Collect every release the pass inserted (or authored Free# calls on
+    /// plain identifiers), so tests assert on a flat list.
+    fn releases_of(c: &HirCallable) -> Vec<(StorageKind, String)> {
+        fn walk(stmts: &[HirStmt], out: &mut Vec<(StorageKind, String)>) {
+            for st in stmts {
+                match &st.kind {
+                    HirStmtKind::ReleaseOwned { storage, name } => {
+                        out.push((*storage, name.clone()));
+                    }
+                    HirStmtKind::TempTransfer { releases, .. } => {
+                        out.extend(releases.iter().cloned());
+                    }
                     HirStmtKind::Expression(HirExpr { kind: HirExprKind::Call { callee, args, .. }, .. }) => {
-                        if callee == "Free#" && args.iter().any(|a| match &a.kind {
-                            HirExprKind::Cast { inner, .. } => matches!(&inner.kind, HirExprKind::Identifier(n) if n == name),
-                            HirExprKind::Identifier(n) => n == name,
-                            _ => false,
-                        }) { return true; }
+                        if callee == "Free#" {
+                            for a in args {
+                                if let HirExprKind::Identifier(n) = &a.kind {
+                                    out.push((StorageKind::Str, n.clone()));
+                                }
+                            }
+                        }
                     }
                     HirStmtKind::Guarded(_, b) | HirStmtKind::Block(b)
-                    | HirStmtKind::SyncBlock(b) | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => {
-                        if walk(b, name) { return true; }
-                    }
-                    HirStmtKind::Foreach { body, .. } => if walk(body, name) { return true; },
-                    HirStmtKind::Match { arms, .. } => if arms.iter().any(|a| walk(&a.body, name)) { return true; },
+                    | HirStmtKind::SyncBlock(b) | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => walk(b, out),
+                    HirStmtKind::Foreach { body, .. } => walk(body, out),
+                    HirStmtKind::Match { arms, .. } => for a in arms { walk(&a.body, out); },
                     _ => {}
                 }
             }
-            false
         }
-        walk(&c.body.statements, name)
+        let mut out = Vec::new();
+        walk(&c.body.statements, &mut out);
+        out
+    }
+
+    fn has_free(c: &HirCallable, name: &str) -> bool {
+        releases_of(c).iter().any(|(k, n)| *k == StorageKind::Str && n == name)
+    }
+
+    fn has_destroy(c: &HirCallable, name: &str) -> bool {
+        releases_of(c).iter().any(|(k, n)| *k == StorageKind::List && n == name)
+    }
+
+    #[test]
+    fn list_literal_owner_is_destroyed_at_exit() {
+        let mut program = annotated(
+            r#"
+defn use() -> Int { let xs: List<Int> = [1, 2]; let n: Int = xs.Count#(); term n; };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        assert!(has_destroy(use_fn, "xs"), "dead owned List must be destroyed");
+        assert!(!has_free(use_fn, "xs"), "List must not go through Free#");
+    }
+
+    #[test]
+    fn param_identity_return_transfers_list_ownership() {
+        let mut program = annotated(
+            r#"
+defn passthrough(xs: List<Int>) -> List<Int> { term xs; };
+defn use() -> Int { let xs: List<Int> = [7]; let ys: List<Int> = passthrough(xs); let n: Int = ys.Count#(); term n; };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        assert!(has_destroy(use_fn, "ys"), "the transferred owner must be destroyed");
+        assert!(!has_destroy(use_fn, "xs"), "the pre-transfer handle must not double-free");
+    }
+
+    #[test]
+    fn fresh_return_borrowing_owned_local_temp_transfers() {
+        let mut program = annotated(
+            r#"
+defn mk() -> String { term "a" + "b"; };
+defn cat(a: String, b: String) -> String { term a + b; };
+defn use() -> String { let s: String = mk(); term cat(s, "!"); };
+"#,
+        );
+        insert_releases(&mut program, &HashMap::new());
+        let use_fn = program.callables.iter().find(|c| c.name == "use").unwrap();
+        assert!(has_free(use_fn, "s"), "the borrowed operand must free after the fresh call evaluates");
+        let last = use_fn.body.statements.last().unwrap();
+        match &last.kind {
+            HirStmtKind::TempTransfer { name, .. } => {
+                assert!(name.starts_with("__ot"), "expected temp-transfer binding, got {name}");
+            }
+            other => panic!("expected temp-transfer tail, got {other:?}"),
+        }
     }
 
     #[test]

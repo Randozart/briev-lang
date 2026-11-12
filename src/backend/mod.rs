@@ -618,7 +618,7 @@ pub fn analyze_program(
     };
     if hir_emit_enabled() {
         let escapes = crate::analysis::allocation::summarize_escapes(items);
-        crate::hir::owned_strings::insert_releases(&mut hir, &escapes);
+        crate::hir::owned_storage::insert_releases(&mut hir, &escapes);
     }
     let mut destination_ownership =
         crate::analysis::destination_ownership::analyze(items);

@@ -651,7 +651,24 @@ fn widen_to_i64(backend: &mut LlvmBackend, out: &mut String, reg: &str, indent: 
 /// Data/Alloc handle must narrow on wasm32, a chain-internal i64 must match
 /// the declared operand. Returns the (possibly fresh) register name.
 /// A no-op when the register's LLVM type already IS the pointer width.
-fn adapt_to_ptr_width(
+/// 2026-11-12: String-release lane. Unlike adapt_to_ptr_width, this assumes
+/// the register holds an ACTUAL pointer when its LLVM type is ptr (String
+/// bindings materialize as pointers); a ptr-typed stamp on an integer handle
+/// goes through the recorded-width map instead of guessing.
+pub(crate) fn adapt_handle_to_ptr_int(
+    backend: &mut LlvmBackend, out: &mut String, reg: &BTypedRegister, indent: &str,
+) -> String {
+    let ity = backend.ptr_int_ty();
+    let have = backend.llvm_type(&reg.ty);
+    if have == "ptr" {
+        let t = backend.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, t, reg.name, ity).ok();
+        return t;
+    }
+    adapt_to_ptr_width(backend, out, reg, indent)
+}
+
+pub(crate) fn adapt_to_ptr_width(
     backend: &mut LlvmBackend, out: &mut String, reg: &BTypedRegister, indent: &str,
 ) -> String {
     let ity = backend.ptr_int_ty();

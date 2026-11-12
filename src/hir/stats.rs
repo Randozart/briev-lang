@@ -85,6 +85,8 @@ fn count_stmt(stmt: &HirStmt, counts: &mut UnsupportedCounts) {
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. } => {}
+        HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::TempTransfer { expr, .. } => count_expr(expr, counts),
         HirStmtKind::Other(tag) => {
             counts.statements += 1;
             *counts.statement_tags.entry(tag).or_insert(0) += 1;

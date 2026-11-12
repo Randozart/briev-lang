@@ -1083,6 +1083,28 @@ frgn coll_arena_begin(bytes: Int) -> Void from "std/c/coll_arena.c";
 frgn coll_arena_reset() -> Void from "std/c/coll_arena.c";
 frgn coll_arena_end() -> Void from "std/c/coll_arena.c";
 frgn coll_alloc(bytes: Int) -> Int from "std/c/coll_arena.c";
+frgn coll_arena_owns(ptr: Int) -> Int from "std/c/coll_arena.c";
+
+// coll_destroy — release a compiler-owned coll handle: the scaffold-allocated
+// object is always freed; the backing block is freed only when it does NOT
+// live in an active request arena (coll_arena_owns covers retired buffers via
+// the block's high-water mark). If the scaffold ever allocates the object
+// itself from an arena, this intrinsic pair must grow an owns-check for the
+// object too.
+defn coll_destroy(handle: Int)
+    [handle >= 0][term == 0 || term != 0]
+    -> Int
+{
+    when handle == 0 { term 0; };
+    let data: Int = Load#(handle, 8);
+    when data != 0 {
+        when coll_arena_owns(data) == 0 {
+            Free#(data as Ptr<Bit<8>>);
+        };
+    };
+    Free#(handle as Ptr<Bit<8>>);
+    term 0;
+};
 
 // coll_resize — grow a coll handle's [data, cap, len] block to
 // new_cap word-elements. Arena semantics: the old buffer is NOT freed

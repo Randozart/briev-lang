@@ -590,3 +590,35 @@ covered (needs a coll destroy intrinsic/owner slot).
 
 Verification: `cargo test --lib` 3661 pass; kiosk native health/sentiment/face
 smoke and 150-call daemon soak remain output-stable at VmRSS 172 MB plateau.
+
+## 16. Owned List + temp-transfer — second slice (2026-11-12)
+
+Extends §15 to coll Lists and closes the return-expression gap:
+
+- `coll_destroy` (stdlib, `cast_lanes`/`cast_portable`): frees the
+  scaffold-allocated coll object always; frees the backing block only when
+  `coll_arena_owns(data)` is false. The C query checks the block's high-water
+  mark, so buffers retired by a request-arena reset are still recognized as
+  arena-owned (freeing an interior arena pointer would be invalid).
+- The pass emits first-class HIR: `ReleaseOwned { Str|List, name }` and
+  `TempTransfer { name, expr, releases, ret }`. Temp-transfer rewrites a fresh
+  return expression that borrows owned locals into bind→release→return,
+  preserving the original return form (Term/Tail/EndProgram).
+- Fresh-set soundness gate: a callable joins the fresh set only if NO
+  parameter escapes (escape-summary facts). A `wrap(s) -> [s]` stasher is not
+  fresh, so its callers stay conservative. Identity-return callables
+  (`param_return`) transfer ownership from the argument position.
+- Emission: the H4.2 body seam grew a two-cursor walk — the inserted kinds
+  consume no AST statement (they have no source syntax) and expand natively;
+  the drift asserts compare through `storage_release_view`, which strips the
+  inserts back to source shape. Known limitation: inserts nested inside
+  guard bodies still fall back to AST (leak, never unsound); MethodCall
+  receivers borrow (same trust class as field reads — a user method that
+  stashes its receiver escapes it silently).
+
+Verification: `cargo test --lib` 3728 (7 owned-storage tests incl. List
+release, param-return transfer, temp-transfer, alias/global/keep
+conservatism); dashboard `.rbv` IR verify on wasm32 (599 calls, coll_destroy
+clean at i32); daemon IR has 12 coll_destroy call sites; native smoke, ML
+smoke, VAD 187 chunks max |Δ| 3.057e-07; 200-call daemon soak flat at
+VmRSS 171 MB (HWM 227 MB).

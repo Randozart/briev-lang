@@ -222,6 +222,12 @@ fn stmt_needs_state(stmt: &HirStmt, ctx: &Ctx<'_>) -> bool {
         | HirStmtKind::KeepHint(_)
         | HirStmtKind::MetadataAssignment(..)
         | HirStmtKind::InlineAsm { .. } => false,
+        // Compiler-inserted storage release: no state. Temp-transfer behaves
+        // like the expression it wraps plus its (stateless) release list.
+        HirStmtKind::ReleaseOwned { .. } => false,
+        HirStmtKind::TempTransfer { expr, releases, .. } => {
+            rec(expr) || releases.iter().any(|(_, _)| false)
+        }
         // Unsupported lowering: conservative (never mark a stateful defn
         // stateless).
         HirStmtKind::Other(_) => true,
