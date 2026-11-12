@@ -66,6 +66,12 @@ pub(crate) fn constraints_for_test(
         index.casts = casts.clone();
     }
     walk::register(&mut index, program);
+    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+        eprintln!(
+            "reclamation HIR declared user operators: {:?}",
+            index.user_operators
+        );
+    }
     dump_constraints(&index)
 }
 
@@ -110,11 +116,20 @@ fn dump_constraints(
 /// owner on a fresh graph clone, solve, absorb into one plan.
 pub fn analyze(
     program: &HirProgram,
+    items: &[crate::ast::TopLevel],
     universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> crate::analysis::reclamation::ReclamationPlan {
     let mut index = graph::Graph::default();
     if let Some(universe) = universe {
         index.universe = universe.clone();
+    }
+    // 2026-11-12 (drift fix): register protocol defs into the casting graph —
+    // the AST analyze does this, and without it CStr→String cast lanes are
+    // invisible (find_path returns None), causing spurious barriers.
+    for item in items {
+        if let crate::ast::TopLevel::ProtocolDef(protocol) = item {
+            index.casts.register_protocol_def(protocol);
+        }
     }
     walk::register(&mut index, program);
     let owners: Vec<_> = index.bodies.keys().cloned().collect();
@@ -348,7 +363,7 @@ mod tests {
             .collect();
         let expected =
             crate::analysis::reclamation::analyze(&items, &live, None);
-        let actual = analyze(&crate::hir::lower_program(&items), None);
+        let actual = analyze(&crate::hir::lower_program(&items), &items, None);
         assert_eq!(actual, expected, "plan drift:\n{src}");
     }
 
@@ -799,7 +814,7 @@ mod tmp_drift {
         let _arena = crate::analysis::allocation::analyze_arena_need(&mut items);
         let ast = crate::analysis::reclamation::analyze(&items, &Default::default(), Some(&u));
         let program = crate::hir::lower_program(&items);
-        let hir = analyze(&program, Some(&u));
+        let hir = analyze(&program, &items, Some(&u));
         for (label, a, h) in [
             ("regions", &ast.regions, &hir.regions),
             ("barriers", &ast.barriers, &hir.barriers),

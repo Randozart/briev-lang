@@ -610,7 +610,7 @@ pub fn analyze_program(
     };
     let reclamation = if hir_emit_enabled() {
         let ast = crate::analysis::reclamation::analyze(items, &defn_liveness.live, type_universe);
-        let h = crate::hir::reclamation::analyze(&hir, type_universe);
+        let h = crate::hir::reclamation::analyze(&hir, items, type_universe);
         if h != ast {
             if let Ok(dir) = std::env::var("BRIEV_DRIFT_DIR") {
                 let _ = std::fs::write(format!("{dir}/left.json"), format!("{h:#?}"));
