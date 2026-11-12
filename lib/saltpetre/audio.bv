@@ -77,3 +77,53 @@ defn vad_stream_probs(graph: OnnxGraph, audio_path: String, chunk_len: Int)
     };
     term Ok(probs);
 };
+// ── Session-fed streaming (daemon vad_open/feed/close) ─────────────────
+// The final carried state lands in vad_last_state (owned copy): the daemon's
+// session table copies it into its slot after each feed. Single global is
+// safe — the serve loop is sequential.
+let vad_last_state: Int = 0;
+
+// vad_take_last_state — the carried state from the most recent
+// vad_feed_probs, as an owned Tensor handle for a session slot. Scalar Int
+// global by design (obj/coll globals have a broken init path — BUGS.md).
+defn vad_take_last_state() -> Tensor {
+    term vad_last_state as Tensor;
+};
+
+// vad_feed_probs — one feed request: chunk `audio_path` starting from
+// `state`, return this feed's per-chunk probabilities, and leave the final
+// carried state in `vad_last_state` (owned; copy it into the session slot
+// before the next request's arena resets).
+defn vad_feed_probs(graph: OnnxGraph, state: Tensor, audio_path: String, chunk_len: Int)
+    [chunk_len > 0 && CharCount#(audio_path) >= 0][true]
+    -> Result<List<Float>, String>
+{
+    ml_arena_reset();
+    let rf: Result<String, Int> = read_file(audio_path);
+    when is_err(rf) { term Err("cannot read audio"); };
+    let bytes: String = unwrap(rf);
+    let samples: Int = (bytes .^Length) / 4;
+    let chunks: Int = samples / chunk_len;
+    let cur: Tensor = state;
+    let probs: List<Float> = [];
+    foreach c in 0..chunks {
+        let frame: Tensor = tensor_take("input", [1, chunk_len], chunk_len);
+        foreach i in 0..chunk_len {
+            tensor_set(frame, i, f32_from_bytes(bytes, (c * chunk_len + i) * 4));
+        };
+        let inputs: List<Tensor> = [];
+        inputs <- frame;
+        inputs <- cur;
+        let envr: Result<List<Tensor>, String> = execute_env_inputs(graph, inputs);
+        when is_err(envr) { term Err("vad exec failed"); };
+        let env: List<Tensor> = unwrap(envr);
+        let pr: Result<Tensor, String> = env_find(env, graph.outs[0].name);
+        let sr: Result<Tensor, String> = env_find(env, graph.outs[1].name);
+        when is_err(pr) || is_err(sr) { term Err("vad outputs missing"); };
+        probs <- tensor_get(unwrap(pr), 0);
+        cur = tensor_copy_owned(unwrap(sr));
+        ml_arena_reset();
+    };
+    vad_last_state = (cur as Data) as Int;
+    term Ok(probs);
+};
