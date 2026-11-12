@@ -22,9 +22,19 @@ pub enum SmtResult {
 pub fn prove_smt(formula: &Expr, _param_types: &[(String, Type)]) -> SmtResult {
     // Build SMT-LIB query
     let query = build_smt_query(formula);
-    // Invoke solver (z3 must be on PATH)
-    match Command::new("z3").arg("-in").arg("-smt2").stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped()).spawn()
+    // Invoke the RESOLVED solver (PATH, else the managed install directory).
+    // Resolving here — the same way `is_z3_available` does — keeps the two from
+    // disagreeing: a managed-only install used to make availability report true
+    // while every query silently degraded to `Unknown`.
+    let Some(bin) = z3_bin() else {
+        return SmtResult::Unknown;
+    };
+    match Command::new(&bin)
+        .arg("-in")
+        .arg("-smt2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
     {
         Ok(mut child) => {
             use std::io::Write;
@@ -54,7 +64,10 @@ pub fn prove_smt(formula: &Expr, _param_types: &[(String, Type)]) -> SmtResult {
 /// Returns Unsat if the formula is unsatisfiable (property holds).
 /// Uses a simple timeout wrapper around the cli invocation.
 pub fn prove_smt_formula(formula: &str, _timeout_ms: u64) -> SmtResult {
-    match Command::new("z3")
+    let Some(bin) = z3_bin() else {
+        return SmtResult::Unknown;
+    };
+    match Command::new(&bin)
         .arg("-in")
         .arg("-smt2")
         .stdin(std::process::Stdio::piped())
@@ -134,6 +147,8 @@ fn encode_expr_smt(expr: &Expr) -> String {
                 crate::ast::BinaryOpKind::Add => format!("(bvadd {} {})", l, r),
                 crate::ast::BinaryOpKind::Sub => format!("(bvsub {} {})", l, r),
                 crate::ast::BinaryOpKind::Mul => format!("(bvmul {} {})", l, r),
+                crate::ast::BinaryOpKind::Div => format!("(bvsdiv {} {})", l, r),
+                crate::ast::BinaryOpKind::Mod => format!("(bvsrem {} {})", l, r),
                 _ => format!("(= {} {})", l, r),
             }
         }
@@ -176,6 +191,60 @@ pub fn build_contract_query(expr: &Expr, params: &[(String, Type)]) -> String {
     q
 }
 
+/// Build an SMT-LIB verification-condition query for ONE symbolic path.
+///
+/// The path's facts (precondition plus each guard with its taken polarity) and
+/// the NEGATION of the postcondition are asserted together, so `Unsat` means the
+/// facts imply the postcondition — the body establishes its contract on this
+/// path. Free identifiers are declared as `(_ BitVec 64)` constants, which is
+/// exactly the universal quantification weakest-precondition reasoning needs, so
+/// callers need no parameter list to use it correctly.
+pub fn build_vc_query(facts: &[Expr], post: &Expr) -> String {
+    // Sorted so the emitted query is byte-identical across processes.
+    let mut free = std::collections::BTreeSet::new();
+    for fact in facts {
+        collect_free_idents(fact, &mut free);
+    }
+    collect_free_idents(post, &mut free);
+
+    let mut q = String::new();
+    q.push_str("(set-option :produce-models true)\n");
+    q.push_str("(set-logic QF_BV)\n");
+    for name in &free {
+        q.push_str(&format!(
+            "(declare-const {} (_ BitVec 64))\n",
+            sanitize_name(name)
+        ));
+    }
+    // Assumptions first, then the negated goal.
+    for fact in facts {
+        q.push_str("(assert ");
+        q.push_str(&encode_expr_smt(fact));
+        q.push_str(")\n");
+    }
+    q.push_str("(assert (not ");
+    q.push_str(&encode_expr_smt(post));
+    q.push_str("))\n");
+    q.push_str("(check-sat)\n");
+    q.push_str("(get-model)\n");
+    q
+}
+
+/// Collect the free identifiers an expression mentions (sorted, deterministic).
+fn collect_free_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Identifier(name) => {
+            out.insert(name.clone());
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_free_idents(l, out);
+            collect_free_idents(r, out);
+        }
+        Expr::UnaryOp(_, e) => collect_free_idents(e, out),
+        _ => {}
+    }
+}
+
 /// Sanitize a Briev identifier for SMT-LIB.
 /// #Self → self_var (SMT-LIB doesn't allow # in simple symbols).
 fn sanitize_name(name: &str) -> String {
@@ -191,7 +260,16 @@ fn sanitize_name(name: &str) -> String {
 /// 2026-07-23: Quick check if z3 is on PATH by spawning with --version.
 /// Also checks the managed binary directory (~/.local/share/briev-compiler/bin/).
 pub fn is_z3_available() -> bool {
-    // Check PATH first
+    z3_bin().is_some()
+}
+
+/// Resolve the z3 binary: PATH first, then the managed install directory.
+///
+/// One resolution rule for every call site. `is_z3_available` accepting a
+/// location that the query path cannot reach is how a solver install turns into
+/// silent `Unknown` verdicts instead of proofs.
+fn z3_bin() -> Option<std::ffi::OsString> {
+    // PATH: keep the bare name so the OS resolves it (preserves `which z3`).
     if std::process::Command::new("z3")
         .arg("--version")
         .stdout(std::process::Stdio::null())
@@ -201,10 +279,10 @@ pub fn is_z3_available() -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
     {
-        return true;
+        return Some(std::ffi::OsString::from("z3"));
     }
-    // Check managed directory (installed via `brievc install-deps`)
-    managed_z3_path().map_or(false, |p| p.exists())
+    let managed = managed_z3_path()?;
+    managed.exists().then(|| managed.into_os_string())
 }
 
 /// Path to z3 in the managed binary directory.

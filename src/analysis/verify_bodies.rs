@@ -200,7 +200,20 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                     violated = Some(render_counterexample(state));
                 }
             }
-            ProofVerdict::Undecided => undecided += 1,
+            ProofVerdict::Undecided => {
+                // C4: escalate an inconclusive symbolic verdict to the solver
+                // before reporting "could not prove". Only a real `Sat` becomes
+                // a violation; every other answer stays honest and undecided.
+                match smt_discharge(post, state) {
+                    Some(ProofVerdict::Violated) => {
+                        if violated.is_none() {
+                            violated = Some(render_counterexample(state));
+                        }
+                    }
+                    Some(ProofVerdict::Holds) => {}
+                    _ => undecided += 1,
+                }
+            }
         }
     }
     if let Some(v) = violated {
@@ -212,6 +225,196 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
         ));
     }
     BodyOutcome::Proven
+}
+
+/// Try to decide an Undecided path with the SMT solver (C4).
+///
+/// Returns `None` — leaving the caller's honest `Undecided` verdict intact —
+/// when no solver is installed, when the goal falls outside the encodable
+/// subset, or when the path's state cannot be substituted unambiguously (a
+/// prior-state `@x` reference or an unknown value).
+fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
+    if !crate::proof_engine::smt::is_z3_available() {
+        return None;
+    }
+    // Soundness: a postcondition about the returned value only means something
+    // when THIS path actually bound one. If `term` reaches the solver as a free
+    // variable, `facts ∧ ¬post` is trivially satisfiable and the solver would
+    // manufacture a refutation for a body it never reasoned about.
+    for bound in ["term", "__result"] {
+        if mentions_ident(post, bound) && !state.assignments.contains_key(bound) {
+            return None;
+        }
+    }
+    let goal = substitute_all(post, &state.assignments)?;
+    // Defensive: substitution must have eliminated the return projections.
+    if mentions_ident(&goal, "term") || mentions_ident(&goal, "__result") {
+        return None;
+    }
+    if !encodable(&goal) {
+        return None;
+    }
+    let mut facts = Vec::new();
+    for fact in &state.path_constraints {
+        let substituted = substitute_all(fact, &state.assignments)?;
+        if !encodable(&substituted) {
+            return None;
+        }
+        facts.push(substituted);
+    }
+    let query = crate::proof_engine::smt::build_vc_query(&facts, &goal);
+    match crate::proof_engine::smt::prove_smt_formula(&query, 1000) {
+        crate::proof_engine::smt::SmtResult::Unsat => Some(ProofVerdict::Holds),
+        // Refute only when the body's result is fully determined: with no free
+        // identifier left in the goal, a model means the body contradicts its
+        // contract for EVERY input. A parameter-dependent counterexample means
+        // "some input violates" — real, but the stdlib's optimistic contracts
+        // (`[true][term >= 0]`) hit that routinely, so those stay advisory
+        // (the caller keeps `Undecided` → warning) rather than failing builds.
+        crate::proof_engine::smt::SmtResult::Sat(_) if free_idents(&goal).is_empty() => {
+            Some(ProofVerdict::Violated)
+        }
+        crate::proof_engine::smt::SmtResult::Sat(_) => None,
+        crate::proof_engine::smt::SmtResult::Unknown => None,
+    }
+}
+
+/// Free identifiers of an expression (sorted, for determinism).
+fn free_idents(expr: &Expr) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    collect_idents(expr, &mut out);
+    out
+}
+
+/// Accumulate identifiers into `out`.
+fn collect_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Identifier(name) => {
+            out.insert(name.clone());
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_idents(l, out);
+            collect_idents(r, out);
+        }
+        Expr::UnaryOp(_, inner) => collect_idents(inner, out),
+        _ => {}
+    }
+}
+
+/// Maximum transitive substitution depth before the discharge gives up.
+const SUBST_DEPTH_CAP: usize = 8;
+
+/// Rewrite every identifier the path bound to a symbolic value.
+///
+/// Substitution is transitive (a local may be defined in terms of another) with
+/// a depth cap; it bails out (`None`) rather than guessing.
+fn substitute_all(expr: &Expr, assignments: &HashMap<String, SymbolicValue>) -> Option<Expr> {
+    subst_expr(expr, assignments, 0)
+}
+
+/// One substitution step; `depth` caps transitive chains.
+fn subst_expr(
+    expr: &Expr,
+    assignments: &HashMap<String, SymbolicValue>,
+    depth: usize,
+) -> Option<Expr> {
+    if depth > SUBST_DEPTH_CAP {
+        return None;
+    }
+    match expr {
+        Expr::Identifier(name) => match assignments.get(name) {
+            Some(value) => symbolic_to_expr(value, assignments, depth + 1),
+            None => Some(expr.clone()),
+        },
+        Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
+            *kind,
+            Box::new(subst_expr(l, assignments, depth)?),
+            Box::new(subst_expr(r, assignments, depth)?),
+        )),
+        Expr::UnaryOp(kind, inner) => Some(Expr::UnaryOp(
+            *kind,
+            Box::new(subst_expr(inner, assignments, depth)?),
+        )),
+        other => Some(other.clone()),
+    }
+}
+
+/// Convert a tracked symbolic value back into an expression for the solver.
+fn symbolic_to_expr(
+    value: &SymbolicValue,
+    assignments: &HashMap<String, SymbolicValue>,
+    depth: usize,
+) -> Option<Expr> {
+    match value {
+        SymbolicValue::Literal(n, _) => Some(Expr::Decimal(*n)),
+        SymbolicValue::Identifier(name) => match assignments.get(name) {
+            Some(_) if depth > SUBST_DEPTH_CAP => None,
+            Some(inner) => symbolic_to_expr(inner, assignments, depth + 1),
+            None => Some(Expr::Identifier(name.clone())),
+        },
+        SymbolicValue::Binary(op, l, r) => Some(Expr::BinaryOp(
+            op_kind(op)?,
+            Box::new(symbolic_to_expr(l, assignments, depth + 1)?),
+            Box::new(symbolic_to_expr(r, assignments, depth + 1)?),
+        )),
+        // Prior-state (`@x`) and unknown values have no solver encoding here.
+        SymbolicValue::Previous(_) | SymbolicValue::Unknown => None,
+    }
+}
+
+/// Map a symbolic operator symbol to its AST kind.
+fn op_kind(symbol: &str) -> Option<BinaryOpKind> {
+    match symbol {
+        "+" => Some(BinaryOpKind::Add),
+        "-" => Some(BinaryOpKind::Sub),
+        "*" => Some(BinaryOpKind::Mul),
+        "/" => Some(BinaryOpKind::Div),
+        "%" => Some(BinaryOpKind::Mod),
+        _ => None,
+    }
+}
+
+/// Whether the SMT encoder models this expression exactly.
+///
+/// `encode_expr_smt` silently falls back to asserting equality for operators it
+/// does not know, so anything outside this set must never reach the solver.
+fn encodable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Decimal(_) | Expr::Bool(_) | Expr::Identifier(_) => true,
+        Expr::BinaryOp(kind, l, r) => {
+            matches!(
+                kind,
+                BinaryOpKind::Eq
+                    | BinaryOpKind::Neq
+                    | BinaryOpKind::Lt
+                    | BinaryOpKind::Gt
+                    | BinaryOpKind::Le
+                    | BinaryOpKind::Ge
+                    | BinaryOpKind::And
+                    | BinaryOpKind::Or
+                    | BinaryOpKind::Add
+                    | BinaryOpKind::Sub
+                    | BinaryOpKind::Mul
+                    | BinaryOpKind::Div
+                    | BinaryOpKind::Mod
+            ) && encodable(l)
+                && encodable(r)
+        }
+        Expr::UnaryOp(kind, inner) => {
+            matches!(kind, UnaryOpKind::Not | UnaryOpKind::Neg) && encodable(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Whether an expression mentions `name` anywhere.
+fn mentions_ident(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Identifier(ident) => ident == name,
+        Expr::BinaryOp(_, l, r) => mentions_ident(l, name) || mentions_ident(r, name),
+        Expr::UnaryOp(_, inner) => mentions_ident(inner, name),
+        _ => false,
+    }
 }
 
 /// Walk one statement block, forking on guard blocks.
@@ -872,19 +1075,62 @@ mod point_bound_tests {
         assert_eq!(verify_bodies(&[bad]).violated.len(), 1);
     }
 
-    /// A range is not a value: arithmetic over it must stay undecided.
+    /// A range is not a value: without a solver, arithmetic over it stays
+    /// undecided. With a solver (C4) the identity is discharged instead —
+    /// either way the verdict must never be a refutation.
     #[test]
     fn range_bound_does_not_pin() {
         // `term == 2 * a` is NOT structurally equal to the body's `a + a`, so
-        // only a concrete pin could decide it — and `a >= 0` provides none.
+        // the symbolic engine alone could never decide it.
         let d = parse_defn("defn f(a: Int) [a >= 0][term == 2 * a] -> Int { term a + a; };");
         let report = verify_bodies(&[d]);
-        assert!(report.violated.is_empty());
-        assert_eq!(
-            report.proven.len(),
-            0,
-            "a range must not fabricate a concrete value"
+        assert!(
+            report.violated.is_empty(),
+            "a true identity must never be refuted: {:?}",
+            report.violated
         );
-        assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+        if crate::proof_engine::smt::is_z3_available() {
+            assert_eq!(
+                report.proven.len(),
+                1,
+                "the solver should discharge a+a == 2*a: unproven {:?}",
+                report.unproven
+            );
+        } else {
+            assert_eq!(
+                report.proven.len(),
+                0,
+                "a range must not fabricate a concrete value"
+            );
+            assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+        }
+    }
+
+    /// C4: the solver decides what pure symbolic tracking cannot.
+    #[test]
+    fn smt_discharges_arithmetic_identity() {
+        if !crate::proof_engine::smt::is_z3_available() {
+            return; // No solver installed: `unproven` is the honest answer.
+        }
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 3 * a] -> Int { term a + a + a; };");
+        let report = verify_bodies(&[d]);
+        assert_eq!(report.proven.len(), 1, "unproven: {:?}", report.unproven);
+        assert!(report.violated.is_empty());
+    }
+
+    /// C4: a parameter-dependent refutation stays advisory (the stdlib relies
+    /// on optimistic contracts like `[true][term >= 0]`).
+    #[test]
+    fn smt_parameter_dependent_refutation_is_advisory() {
+        if !crate::proof_engine::smt::is_z3_available() {
+            return;
+        }
+        let d = parse_defn("defn f(a: Int) [a >= 0][term >= 0] -> Int { term 0 - a; };");
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "input-dependent failures must not fail a build: {:?}",
+            report.violated
+        );
     }
 }
