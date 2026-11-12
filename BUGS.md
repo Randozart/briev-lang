@@ -13249,7 +13249,10 @@ walk leaves unclassified; the likely divergence is the call/escape edges
 around the new foreign allocation in the HIR classification phase
 (`classify`'s retained/incoming branch, not registration).
 
-**Status.** OPEN. Debug-only (the plan oracle asserts); release compiles use
-the HIR plan silently. Fix before deleting the AST oracle. Repro:
-`cargo test --test c_driver_boundary boundary_types_roundtrip`.
+**Status.** FIXED (2026-11-12, `6b06d6e1`). Root cause: the HIR
+`reclamation::analyze` took `HirProgram` (which has no `TopLevel` items) and
+never registered `ProtocolDef` items into the casting graph — so
+`find_path(CStr → String)` returned `None`. Fix: `analyze` now takes
+`items: &[TopLevel]` and registers protocol defs, mirroring the AST.
+`c_driver_boundary boundary_types_roundtrip` passes.
 

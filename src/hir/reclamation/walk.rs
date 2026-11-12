@@ -1518,6 +1518,13 @@ impl Builder<'_> {
     }
 
     fn unsupported(&mut self) {
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+            eprintln!(
+                "reclamation HIR unsupported owner={} bt={}",
+                self.owner,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         self.graph.unsupported.insert(self.owner.into());
         let inputs: Vec<_> = self.bindings.values().copied().collect();
         self.capture(&inputs);

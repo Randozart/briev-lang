@@ -676,7 +676,7 @@ pub fn analyze(
     walk::register(&mut index, items, live);
     if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
         eprintln!(
-            "reclamation declared user operators: {:?}",
+            "reclamation AST declared user operators: {:?}",
             index.user_operators
         );
     }
