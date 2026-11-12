@@ -8828,6 +8828,13 @@ impl LlvmBackend {
             .ctx
             .generalized_destination_ownership
             .recursive_carrier_obligations(&d.name);
+        // 2026-11-12 (FFI callback ABI): a fn-typed param of an `export defn`
+        // arrives as a flat C function pointer, but internally a fn value is a
+        // closure slot called as (slot, args). Bridge them with a trampoline.
+        let callbacks = callback_params(d);
+        for (index, arity) in &callbacks {
+            Self::emit_c_callback_trampoline(out, &callback_symbol(&d.name, *index), *arity);
+        }
         write!(out, "define {}{} @{}(", visibility, ret_ty, d.name).ok();
         self.write_export_wrapper_args(
             out,
@@ -8837,8 +8844,33 @@ impl LlvmBackend {
                 boundary_types: boundary_types.as_deref(),
                 has_prefix: false,
             },
+            &[],
         );
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        // One closure slot per callback: slot[0] is the trampoline (Briev ABI),
+        // slot[1] is the host's flat C pointer.
+        for (index, _) in &callbacks {
+            writeln!(out, "  %cbslot{index} = alloca [2 x i64], align 8").ok();
+            writeln!(
+                out,
+                "  %cbtramp{index} = ptrtoint ptr @{} to i64",
+                callback_symbol(&d.name, *index)
+            )
+            .ok();
+            writeln!(
+                out,
+                "  %cbz{index} = getelementptr i64, ptr %cbslot{index}, i64 0"
+            )
+            .ok();
+            writeln!(out, "  store i64 %cbtramp{index}, ptr %cbz{index}, align 8").ok();
+            writeln!(out, "  %cbhost{index} = ptrtoint ptr %arg{index} to i64").ok();
+            writeln!(
+                out,
+                "  %cbo{index} = getelementptr i64, ptr %cbslot{index}, i64 1"
+            )
+            .ok();
+            writeln!(out, "  store i64 %cbhost{index}, ptr %cbo{index}, align 8").ok();
+        }
         let hoisted_slots: Vec<String> = hoisted
             .iter()
             .enumerate()
@@ -8877,6 +8909,7 @@ impl LlvmBackend {
                 hoisted: &hoisted_slots,
                 carriers: &carrier_slots,
             },
+            &callbacks,
         );
         writeln!(out, ")").ok();
         if ret_ty == "void" {
@@ -8887,7 +8920,12 @@ impl LlvmBackend {
         writeln!(out, "}}").ok();
     }
 
-    fn write_export_wrapper_call_args(&self, out: &mut String, spec: ExportWrapperCallSpec<'_>) {
+    fn write_export_wrapper_call_args(
+        &self,
+        out: &mut String,
+        spec: ExportWrapperCallSpec<'_>,
+        callbacks: &[(usize, usize)],
+    ) {
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
@@ -8908,10 +8946,16 @@ impl LlvmBackend {
                 boundary_types: spec.boundary_types,
                 has_prefix: spec.needs_state || has_hidden,
             },
+            callbacks,
         );
     }
 
-    fn write_export_wrapper_args(&self, out: &mut String, spec: ExportWrapperArgs<'_>) {
+    fn write_export_wrapper_args(
+        &self,
+        out: &mut String,
+        spec: ExportWrapperArgs<'_>,
+        callbacks: &[(usize, usize)],
+    ) {
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
@@ -8924,7 +8968,13 @@ impl LlvmBackend {
                 .and_then(|types| types.get(i))
                 .cloned()
                 .unwrap_or_else(|| self.llvm_type(fallback_ty));
-            write!(out, "{} %arg{}", ty, i).ok();
+            // A callback parameter is passed as the adapted closure slot.
+            let value = if callbacks.iter().any(|(index, _)| *index == i) {
+                format!("%cbslot{}", i)
+            } else {
+                format!("%arg{}", i)
+            };
+            write!(out, "{} {}", ty, value).ok();
         }
     }
 
