@@ -1,0 +1,16 @@
+
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type VBUS { spec NetVoltage: 5V; };
+        type V3V3 { spec NetVoltage: 3.3V; spec KicadLabel: "+3V3"; };
+        type Src { pin p: Power; reference "U"; };
+        type Chip { pin vdd: Power; pin vss: Ground; reference "U"; };
+        type ChipA { pin vdd: Power; pin vss: Ground; reference "U"; spec Tolerance: 4V; };
+        type Ldo { pin in: Power; pin vout: Power; pin gnd: Ground; reference "U"; };
+    
+let s1: Src = Src { value: "usb" };
+let s2: Src = Src { value: "ldo" };
+
+txn r1 [s1.p.voltage == 5.0V] [s1.p.current >= 0.0] { }
+txn r2 [s2.p.voltage == 3.3V] [s2.p.current >= 0.0] { }
+stdnet<V3V3> let u1: Chip = Chip { value: "mcu" };

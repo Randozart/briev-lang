@@ -1,0 +1,18 @@
+
+            type Control { spec KicadType: "input"; spec Control: true; };
+            type Path { spec KicadType: "passive"; spec Switchable: true; };
+            type Relay { pin coil1: Control; pin coil2: Control;
+                         pin c1: Path; pin c2: Path; reference "K"; spec Tolerance: any; };
+            type Supply { pin vout; reference "S"; spec KicadType: "power_in"; spec Supply: true; };
+            type Lamp { pin a; pin k; reference "L"; };
+            type Jack { pin p1; pin p2; reference "J"; };
+            let rly: Relay = Relay { value: "5v-coil" };
+            let u1: Supply = Supply { value: "ctl" };
+            let d1: Lamp = Lamp { value: "lamp" };
+            let j1: Jack = Jack { value: "j" };
+            let j2: Jack = Jack { value: "j2" };
+            node n [d1.k.voltage == j1.p2.voltage && j2.p1.voltage == j1.p1.voltage
+                && j2.p2.voltage == j1.p2.voltage] {
+                hold u1.vout.voltage == 5.0V { d1.a = rly.c1; } through Relay;
+            };
+        

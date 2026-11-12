@@ -1,0 +1,20 @@
+
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Out { spec KicadType: "output"; spec CanDrive: true; };
+            type OpAmp { pin drv: Out; pin gnd: Ground; reference "U"; spec Tolerance: any;
+                         spec DriveCurrent: drv: 10mA; };
+            type Res { pin a; pin b; reference "R"; spec Tolerance: any; spec Resistance: 1kOhm; };
+
+            let u1: OpAmp = OpAmp { value: "op" };
+            let r1: Res = Res { };
+            let r2: Res = Res { };
+            let r3: Res = Res { };
+
+            txn on
+                [u1.drv.voltage == 3.3V && u1.drv.voltage == r1.a.voltage &&
+                 r1.b.voltage == u1.gnd.voltage && u1.drv.voltage == r2.a.voltage &&
+                 r2.b.voltage == u1.gnd.voltage && u1.drv.voltage == r3.a.voltage &&
+                 r3.b.voltage == u1.gnd.voltage]
+                [u1.gnd.voltage == r3.b.voltage]
+            { }
+        

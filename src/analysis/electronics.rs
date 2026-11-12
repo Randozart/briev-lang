@@ -27,7 +27,7 @@ use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel};
 use std::collections::BTreeMap;
 
 /// One component instance in the schematic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ComponentInstance {
     pub name: String,
     pub type_name: String,
@@ -49,7 +49,7 @@ pub struct PinRef {
 }
 
 /// Per-component-type schematic facts extracted from the type declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeInfo {
     /// KiCad reference-designator prefix (`R`, `D`, `J`) — `attr Reference` on
     /// the type, defaulting to the type's first letter uppercased.
@@ -96,7 +96,7 @@ pub struct TypeInfo {
 }
 
 /// One derived electrical node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Net {
     pub name: String,
     pub pins: Vec<PinRef>,
@@ -107,7 +107,7 @@ pub struct Net {
 }
 
 /// The derived netlist plus hard diagnostics.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct ElectronicsNetlist {
     pub components: Vec<ComponentInstance>,
     pub nets: Vec<Net>,
@@ -225,7 +225,7 @@ impl Default for PinClassProps {
 /// driven net whose type declares `attr Tolerance: <max>` must tolerate the
 /// class; a 5 V net into a 3.3 V-only pin is a compile error, never a fried
 /// board. Unrated pins place no constraint.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct VoltageCheck {
     /// Net name → driven voltage class (max of agreeing drives).
     pub net_voltage: BTreeMap<String, f64>,
@@ -6266,7 +6266,7 @@ impl<'a, 'b> ObligationForcing<'a, 'b> {
         self.ctx.ds.union(w.rail, &pb_key);
         self.proofs.push(format!(
             "series part forced by current obligation '>= {}' (node '{}'): {}.{} <-> {}.{} \
-             (load anode), {}.{} <-> {} rail ({}V, forward drop {}V) — the DC solve proves \
+             (load anode), {}.{} <-> {} rail ({}, forward drop {}) — the DC solve proves \
              the bound through it",
             format_amps(w.amps),
             w.nodes,
