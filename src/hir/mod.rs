@@ -42,6 +42,7 @@ pub mod type_facts;
 pub mod slp_isomorphism;
 pub mod spawn_pool;
 pub mod specialize;
+pub mod electronics;
 pub mod expr_walk;
 pub mod free_vars;
 pub mod stmt;

@@ -3212,7 +3212,7 @@ fn record_current_bound(site: CurrentBoundSite<'_>, check: &mut VoltageCheck) {
 }
 
 /// Current formatting for diagnostics.
-fn format_amps(a: f64) -> String {
+pub(crate) fn format_amps(a: f64) -> String {
     if a < 1.0 {
         format!("{:.1} mA", a * 1e3)
     } else {
@@ -3232,7 +3232,7 @@ fn format_watts(w: f64) -> String {
     }
 }
 
-fn format_volts(v: f64) -> String {
+pub(crate) fn format_volts(v: f64) -> String {
     let s = format!("{:.2}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.');
     format!("{} V", s)

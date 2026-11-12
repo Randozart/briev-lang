@@ -139,6 +139,33 @@ pub struct HirField {
     pub ty: Type,
 }
 
+/// 2026-11-12 (H5 electronics port): one `pin` declaration in a component
+/// type body. `number` is the KiCad pin number, `class_ref` the ascribed
+/// electrical-class fundamental name, `unit` the symbol unit clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirPinDecl {
+    pub name: String,
+    pub number: u64,
+    pub class_ref: Option<String>,
+    pub unit: Option<String>,
+}
+
+/// A static forced-fact law (`hold G { F₁; … }`) carried on the type or at
+/// top level. The electronics analysis reads the guard/facts to derive
+/// conditional voltage drives. Runtime `when` statements stay in bodies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirHoldLaw {
+    pub guard: HirExpr,
+    pub facts: Vec<HirStmt>,
+}
+
+/// A top-level `unpop`/`shortcircuit` participation fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirParticipation {
+    pub instance: String,
+    pub shortcircuit: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirEnumVariant {
     Unit(String),
@@ -184,6 +211,17 @@ pub struct HirTypeDef {
     pub has_user_operators: bool,
     /// Op-binding implementation fn names (`op Add: cstring_concat`).
     pub binding_fns: Vec<String>,
+    /// 2026-11-12 (electronics): first-class component pins, in declaration
+    /// order. Empty for non-component types.
+    pub pins: Vec<HirPinDecl>,
+    /// Declared schematic reference-designator prefix (`reference "R";`).
+    pub reference: Option<String>,
+    /// Type-level `spec`/`attr` metadata bag.
+    pub metadata: std::collections::BTreeMap<String, crate::ast::PropertyValue>,
+    /// Type-inherited static laws (`hold G { … }`).
+    pub hold_laws: Vec<HirHoldLaw>,
+    /// Declared named operating modes, in declaration order.
+    pub modes: Vec<String>,
     pub span: Option<Span>,
 }
 
@@ -205,6 +243,9 @@ pub struct HirGlobal {
     pub is_state_decl: bool,
     /// Declared modifier names (`out`, `vol`, `state`, `plain`, …).
     pub modifiers: Vec<String>,
+    /// Declared modifier payloads (`net: "…"`, `stdnet: "…"`) in declaration
+    /// order. The electronics analysis reads the author net attachments here.
+    pub annotations: Vec<(String, Option<HirExpr>)>,
     pub span: Option<Span>,
 }
 
@@ -240,6 +281,10 @@ pub struct HirProgram {
     /// 2026-11-10: top-level `trg name @ instance.port` binding names — the
     /// externally-driven input set the dependency graph seeds.
     pub trigger_bindings: Vec<String>,
+    /// 2026-11-12 (electronics): top-level `unpop`/`shortcircuit` facts.
+    pub participations: Vec<HirParticipation>,
+    /// 2026-11-12 (electronics): top-level static `hold` laws.
+    pub hold_laws: Vec<HirHoldLaw>,
     /// 2026-11-10 (casing port): declared-name surfaces by origin. The AST
     /// advisory distinguishes `type` from `struct`, `trait`, and `cell`
     /// declarations; `type_defs` alone conflates TypeDef and StaticStruct.

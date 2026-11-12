@@ -36,6 +36,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut trait_names = Vec::new();
     let mut cell_names = Vec::new();
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
+    let mut participations = Vec::new();
+    let mut hold_laws = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -56,6 +58,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             cell_names: &mut cell_names,
             trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
+            participations: &mut participations,
+            hold_laws: &mut hold_laws,
             has_triggers: false,
         };
         for item in items {
@@ -81,6 +85,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         cell_names,
         trait_functions,
         always_stateful,
+        participations,
+        hold_laws,
         has_triggers,
     }
 }
@@ -103,6 +109,8 @@ struct LowerOutputs<'a> {
     cell_names: &'a mut Vec<String>,
     trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
+    participations: &'a mut Vec<super::program::HirParticipation>,
+    hold_laws: &'a mut Vec<super::program::HirHoldLaw>,
     has_triggers: bool,
 }
 
@@ -231,7 +239,14 @@ fn lower_global_statement(
     ids: &mut IdSupply,
     out: &mut LowerOutputs<'_>,
 ) {
-    let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt else {
+    let crate::ast::Statement::Let {
+        name,
+        ty,
+        expr,
+        modifiers,
+        ..
+    } = stmt
+    else {
         return;
     };
     let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
@@ -248,6 +263,10 @@ fn lower_global_statement(
         declared_storage,
         is_state_decl: false,
         modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
+        annotations: modifiers
+            .iter()
+            .map(|m| (m.name.clone(), m.value.as_ref().map(|v| lower_expr(v, ids))))
+            .collect(),
         span: None,
     });
 }
@@ -324,22 +343,13 @@ fn lower_item(
                 out.trigger_bindings.push(name.clone());
             }
         }
-        TopLevel::ProtocolDef(pd) => lower_protocol_bindings(pd, out),
-        TopLevel::Export(export) => {
-            let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
-            lower_item(&export.inner, true, symbol, ids, out);
+        TopLevel::ProtocolDef(_) => lower_protocol_item(item, out),
+        // 2026-11-05 (H3.4b): `export`/`sync<group>` wrap a callable that the
+        // reactor still dispatches; HIR must contain the inner node.
+        TopLevel::Export(_) | TopLevel::SyncGroup { .. } => {
+            lower_wrapped_item(item, exported, export_symbol, ids, out)
         }
-        // 2026-11-05 (H3.4b): `sync<group>` wraps a transaction that the
-        // reactor still dispatches. `analysis::effective_txns` walks these;
-        // HIR must contain them or live-field/dispatch analyses lose the node.
-        TopLevel::SyncGroup { item, domains } => {
-            let ctx = SyncGroupCtx { item, domains, exported, export_symbol };
-            lower_sync_group(&ctx, ids, out);
-        }
-        TopLevel::TypeDef(td) => {
-            out.type_names.push(td.name.clone());
-            lower_typedef_item(td, ids, out)
-        }
+        TopLevel::TypeDef(_) => lower_typedef_top(item, ids, out),
         // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
         // the keys the needs_state fixpoint and type_stateful_members use.
         TopLevel::Impl(imp) => lower_impl_item(imp, ids, out),
@@ -350,29 +360,17 @@ fn lower_item(
             lower_trait_item(tr, ids, out)
         }
         TopLevel::IsrHandler(h) => out.callables.push(lower_isr_handler(h, ids)),
+        // 2026-11-12 (electronics): participation facts and top-level static
+        // laws are electrical inputs; both are inert for other analyses.
+        TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => lower_electrical_item(item, ids, out),
+        TopLevel::HoldLaw(_) if !exported => lower_electrical_item(item, ids, out),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
-        TopLevel::Statement(stmt) if !exported => lower_global_statement(stmt, ids, out),
-        TopLevel::StateDecl(s) if !exported => out.globals.push(HirGlobal {
-            node: ids.node(),
-            item: ids.item(),
-            name: s.name.clone(),
-            ty: Some(s.ty.clone()),
-            expr: None,
-            declared_storage: None,
-            is_state_decl: true,
-            modifiers: Vec::new(),
-            span: s.span,
-        }),
-        TopLevel::ForeignBinding(fb) => out.foreign.push(HirForeign {
-            name: fb
-                .briev_name
-                .clone()
-                .unwrap_or_else(|| fb.foreign_name.clone()),
-            params: fb.inputs.clone(),
-            ret: fb.success_output.first().map(|(_, t)| t.clone()),
-        }),
+        TopLevel::Statement(_) | TopLevel::StateDecl(_) if !exported => {
+            lower_global_item(item, ids, out)
+        }
+        TopLevel::ForeignBinding(_) => lower_foreign_item(item, out),
         TopLevel::Constant(c) => lower_constant_item(c, ids, out),
         TopLevel::Init(i) => lower_init_item(i, ids, out),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
@@ -397,10 +395,148 @@ fn binding_fns(def: &crate::ast::TypeDef) -> Vec<String> {
     out
 }
 
+fn lower_typedef_top(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    if let TopLevel::TypeDef(td) = item {
+        out.type_names.push(td.name.clone());
+        lower_typedef_item(td, ids, out);
+    }
+}
+
+fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
+    if let TopLevel::ForeignBinding(fb) = item {
+        out.foreign.push(HirForeign {
+            name: fb
+                .briev_name
+                .clone()
+                .unwrap_or_else(|| fb.foreign_name.clone()),
+            params: fb.inputs.clone(),
+            ret: fb.success_output.first().map(|(_, t)| t.clone()),
+        });
+    }
+}
+
+fn lower_protocol_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
+    if let TopLevel::ProtocolDef(pd) = item {
+        lower_protocol_bindings(pd, out);
+    }
+}
+
+fn lower_wrapped_item(
+    item: &TopLevel,
+    exported: bool,
+    export_symbol: Option<String>,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
+    match item {
+        TopLevel::Export(export) => {
+            let symbol = export
+                .export_name
+                .clone()
+                .or_else(|| item_name(&export.inner));
+            lower_item(&export.inner, true, symbol, ids, out);
+        }
+        TopLevel::SyncGroup { item, domains } => {
+            let ctx = SyncGroupCtx {
+                item,
+                domains,
+                exported,
+                export_symbol,
+            };
+            lower_sync_group(&ctx, ids, out);
+        }
+        _ => {}
+    }
+}
+
+fn lower_electrical_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    match item {
+        TopLevel::Unpop(d) => out.participations.push(super::program::HirParticipation {
+            instance: d.instance.clone(),
+            shortcircuit: false,
+        }),
+        TopLevel::ShortCircuit(d) => out.participations.push(super::program::HirParticipation {
+            instance: d.instance.clone(),
+            shortcircuit: true,
+        }),
+        TopLevel::HoldLaw(w) => out.hold_laws.push(lower_hold_law(&w.guard, &w.facts, ids)),
+        _ => {}
+    }
+}
+
+fn lower_global_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    match item {
+        TopLevel::Statement(stmt) => lower_global_statement(stmt, ids, out),
+        TopLevel::StateDecl(s) => out.globals.push(HirGlobal {
+            node: ids.node(),
+            item: ids.item(),
+            name: s.name.clone(),
+            ty: Some(s.ty.clone()),
+            expr: None,
+            declared_storage: None,
+            is_state_decl: true,
+            modifiers: Vec::new(),
+            annotations: Vec::new(),
+            span: s.span,
+        }),
+        _ => {}
+    }
+}
+
+fn lower_pins(def: &crate::ast::TypeDef) -> Vec<super::program::HirPinDecl> {
+    def.body
+        .pins
+        .iter()
+        .map(|p| super::program::HirPinDecl {
+            name: p.name.clone(),
+            number: p.number,
+            class_ref: p.class_ref.clone(),
+            unit: p.unit.clone(),
+        })
+        .collect()
+}
+
+fn lower_metadata(
+    def: &crate::ast::TypeDef,
+) -> std::collections::BTreeMap<String, crate::ast::PropertyValue> {
+    def.body
+        .metadata
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+fn lower_type_hold_laws(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+) -> Vec<super::program::HirHoldLaw> {
+    def.body
+        .hold_laws
+        .iter()
+        .map(|law| lower_hold_law(&law.guard, &law.facts, ids))
+        .collect()
+}
+
+fn lower_hold_law(
+    guard: &Expr,
+    facts: &[Statement],
+    ids: &mut IdSupply,
+) -> super::program::HirHoldLaw {
+    super::program::HirHoldLaw {
+        guard: lower_expr(guard, ids),
+        facts: lower_body(facts, ids),
+    }
+}
+
 fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
     // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
-    // when it carries a protocol; otherwise it has no HIR shape.
-    if def.body.slots.is_empty() {
+    // when it carries a protocol; otherwise it has no HIR shape. Component
+    // types (`pin`/`hold`/mode clauses only) keep their declaration.
+    let has_electrical_body = !def.body.pins.is_empty()
+        || !def.body.hold_laws.is_empty()
+        || !def.body.modes.is_empty()
+        || !def.body.metadata.is_empty();
+    if def.body.slots.is_empty() && !has_electrical_body {
         let protocol = def.protocol.clone()?;
         return Some(HirTypeDef {
             node: ids.node(),
@@ -411,13 +547,28 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             protocol: Some(protocol),
             is_coll: def.coll,
             traits: def.traits.clone(),
-            op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
-        has_user_operators: has_user_operators(def),
+            op_bindings: def
+                .body
+                .op_bindings
+                .iter()
+                .map(|b| b.name.clone())
+                .collect(),
+            has_user_operators: has_user_operators(def),
             binding_fns: binding_fns(def),
+            pins: lower_pins(def),
+            reference: def.body.reference.clone(),
+            metadata: lower_metadata(def),
+            hold_laws: lower_type_hold_laws(def, ids),
+            modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
             span: def.span,
         });
     }
-    if def.body.slots.iter().all(|slot| slot.name.starts_with("__variant_")) {
+    if def
+        .body
+        .slots
+        .iter()
+        .all(|slot| slot.name.starts_with("__variant_"))
+    {
         return Some(lower_enum_type_def(def, ids));
     }
     Some(HirTypeDef {
@@ -439,9 +590,19 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         traits: def.traits.clone(),
-        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        op_bindings: def
+            .body
+            .op_bindings
+            .iter()
+            .map(|b| b.name.clone())
+            .collect(),
         has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
+        pins: lower_pins(def),
+        reference: def.body.reference.clone(),
+        metadata: lower_metadata(def),
+        hold_laws: lower_type_hold_laws(def, ids),
+        modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
         span: def.span,
     })
 }
@@ -478,9 +639,19 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         traits: def.traits.clone(),
-        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        op_bindings: def
+            .body
+            .op_bindings
+            .iter()
+            .map(|b| b.name.clone())
+            .collect(),
         has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
+        pins: lower_pins(def),
+        reference: def.body.reference.clone(),
+        metadata: lower_metadata(def),
+        hold_laws: lower_type_hold_laws(def, ids),
+        modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
         span: def.span,
     }
 }
@@ -518,6 +689,11 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
         span: def.span,
     }
 }
@@ -544,6 +720,11 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
         span: def.span,
     }
 }
@@ -570,6 +751,11 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
         span: def.span,
     }
 }
