@@ -280,11 +280,17 @@ fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
     }
     let mut facts = Vec::new();
     for fact in &state.path_constraints {
-        let substituted = substitute_all(fact, &state.assignments)?;
-        if !encodable(&substituted) {
+        // Path constraints are facts about the state WHEN THEY WERE RECORDED —
+        // the entry precondition, or a guard at that moment. Substituting the
+        // FINAL assignment state into them rewrites an entry fact into the goal
+        // itself (`acc == i` becomes `acc == i + 6`), so the VC becomes
+        // fact ≡ goal, Z3 reports unsat, and a violated obligation is reported
+        // as PROVEN. That is a false proof, the one outcome this tool must never
+        // produce: the facts go to the solver exactly as they were recorded.
+        if !encodable(fact) {
             return None;
         }
-        facts.push(substituted);
+        facts.push(fact.clone());
     }
     let query = crate::proof_engine::smt::build_vc_query(&facts, &goal);
     match crate::proof_engine::smt::prove_smt_formula(&query, 1000) {
