@@ -50,3 +50,34 @@ Extracted verbatim from `briev-kiosk-avatar/briev/ml/` on 2026-11-12
 (plan: `docs/plans/2026-11-12-saltpetre-ml-library.md`). Op additions
 continue through the kiosk acceptance ladder first, then graduate here with
 a conformance fixture.
+
+## Op ledger (canonical, 2026-11-12)
+
+`exec.bv` dispatches 30 ONNX op types. Every op lands with a gate: either an
+in-repo tiny fixture (bit/tolerance parity vs ORT goldens, no PTL) or a
+kiosk acceptance model (differential vs ORT on real inputs). Additions land
+through the kiosk acceptance ladder first, then graduate here with a
+fixture.
+
+| Op | Gated by |
+|---|---|
+| Sign | tiny: `sign.onnx` |
+| Relu | tiny: `relu.onnx`; kiosk: YuNet, ResNet |
+| Gemm | tiny: `mlp.onnx`; kiosk: ResNet |
+| Conv (2-D + grouped, 1-D helper) | tiny: `conv.onnx`, `conv_ext.onnx` (external data); kiosk: YuNet (groups), VAD (Conv1d) |
+| Add / Mul / Sub / Div / Pow | kiosk: YuNet f32 + int8 QDQ |
+| MaxPool | kiosk: ResNet |
+| ReduceMean | kiosk: ResNet |
+| GlobalAveragePool | kiosk: ResNet |
+| BatchNormalization | kiosk: VAD (Conv1d BN), ResNet |
+| Flatten / Identity / Reshape | kiosk: ResNet / YuNet decode |
+| QuantizeLinear / DequantizeLinear | kiosk: YuNet int8 QDQ gate + 24-frame eval |
+| Pad / Concat / Split / Gather / Slice / Unsqueeze / Squeeze / Transpose / Resize | kiosk: YuNet decode (Resize/Transpose/Sigmoid chain) |
+| Sqrt / Tanh / Sigmoid | kiosk: YuNet decode |
+| (new ops) | kiosk acceptance ladder first → then tiny fixture |
+
+The saltpetre conformance corpus (`tests/fixtures/saltpetre/`) is the
+in-repo tier; `briev-kiosk-avatar/harness/ml_parity.py` is the external
+capability meter. VAD's 187-chunk golden
+(`models/onnx/vad/x22-speech-6s.probs.json`) gates the audio stack through
+both the standalone binary and the daemon `vad_chunks` RPC.

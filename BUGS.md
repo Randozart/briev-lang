@@ -13047,49 +13047,18 @@ to per-instruction fast flags via the dead `emit_fast_math_flags` helper, or
 retirement plan chooses — and add a regression that builds each hint.
 **Status:** OPEN (latent; not triggered by the keyword path).
 
-## `List<Float> <- call()` emits INVALID IR (`sitofp i64 <float>`) — OPEN 2026-11-10
+## FIXED — `List<Float> <- call()` emitted INVALID IR (`sitofp i64 <float>`) (2026-11-10, fixed 2026-11-12)
 
-**Symptom:** arrow-pushing a function result into a `List<Float>` produces IR
-that LLVM rejects:
+Same two-convention collision as the same-day literal-repro entry (below):
+the strategy push path boxed its value arg as i64 regardless of the
+element's real type, so a Float element — whether a literal or a `call()`
+result — crossed the boundary as bits and came back through the semantic
+`sitofp`. Fixed by `eecf9d66`: `StrategyCall` carries `value_ty`; member and
+free-fn dispatch bind the arg at its real LLVM width; the `box_scalar`
+pre-box was removed. Verified post-fix: call-RHS repro
+(`/tmp/opencode/f32call.bv`, `xs <- prob_at(i)` twice) prints the correct
+values and the emitted IR passes `opt -verify` clean.
 
-```
-%t28 = call float @one()
-%t33 = sitofp i64 %t28 to float        ; operand already float
-error: '%t28' defined with type 'float' but expected 'i64'
-```
-
-Literal pushes (`xs <- 1.0`) and integer lists are unaffected; the failure is
-the element expression being routed through an integer conversion before the
-list store. Discovered while building `briev/ml/onnx.bv` (packed float
-attribute reader); worked around by not accumulating floats in a `List`.
-
-**Repro:**
-```briev
-defn one() -> Float { term 1.0; };
-
-node entry [beginprogram][true] {
-    let xs: List<Float> = [];
-    xs <- one();
-    let n: Int = xs.Count#();
-    let ignored: Int = print_int(n);
-    endprogram;
-};
-```
-Build with the pinned compiler: IR verification fails at the emitted
-`sitofp`. The same shape inside a linked module (ONNX reader) fails the same
-way, so it is the construct, not the caller.
-
-**Root cause:** suspected in the arrow/InsertAt lowering for `List<Float>`:
-the element expression's type is not threaded into the conversion, so the
-Int→Float coercion is applied even when the source is already `Float`.
-Receiver/protocol handling should preserve the element type and emit no
-conversion (or a single fpext only for narrower float formats).
-
-**Fix direction:** add the construct as a regression fixture; in
-`emit_stmt`/InsertAt element lowering, key the coercion on the declared
-element type vs the expression type instead of an assumed Int source.
-**Status:** OPEN. Workaround: build the float list through a typed buffer
-(`Malloc#` + `Ptr<Float>`), as `briev/ml/tensor.bv` does.
 
 ## 2026-11-12 — forwarding a callback parameter emits an i64 where the callee expects `ptr`
 
