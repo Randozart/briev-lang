@@ -36,17 +36,15 @@ defn vad_new_state() -> Tensor {
     term state;
 };
 
-// vad_stream_probs_json — chunk the raw f32 stream, carry state across
-// chunks, return the probabilities as a JSON array STRING (["p0","p1",...],
-// %g per float_to_str). String accumulation rather than a List<Float>:
-// 2026-11-12 BUG (see BUGS.md): coll List<Float> push/index currently
-// returns bit-reinterpreted values (f32list repro), so the hot path avoids
-// float collection until the scaffold is fixed. Resets the inference arena
-// per chunk; inputs are allocated after each reset. graph.outs[0] is the
-// probability, outs[1] the new state (Silero layout).
-defn vad_stream_probs_json(graph: OnnxGraph, audio_path: String, chunk_len: Int)
-    [chunk_len > 0 && CharCount#(audio_path) >= 0][CharCount#(term) >= 0]
-    -> Result<String, String>
+// vad_stream_probs — chunk the raw f32 stream, carry state across chunks,
+// return one speech probability per chunk. Resets the inference arena per
+// chunk; the raw bytes are read as a persistent String because the per-chunk
+// reset would wipe an arena-allocated audio tensor after chunk 0 (the
+// input-lifetime rule). graph.outs[0] is the probability, outs[1] the new
+// state (Silero layout).
+defn vad_stream_probs(graph: OnnxGraph, audio_path: String, chunk_len: Int)
+    [chunk_len > 0 && CharCount#(audio_path) >= 0][true]
+    -> Result<List<Float>, String>
 {
     ml_arena_reset();
     // Raw bytes, NOT an arena tensor: the per-chunk reset below would wipe
@@ -58,7 +56,7 @@ defn vad_stream_probs_json(graph: OnnxGraph, audio_path: String, chunk_len: Int)
     let samples: Int = (bytes .^Length) / 4;
     let chunks: Int = samples / chunk_len;
     let state: Tensor = vad_new_state();
-    let acc: String = concat("", "[");
+    let probs: List<Float> = [];
     foreach c in 0..chunks {
         let frame: Tensor = tensor_take("input", [1, chunk_len], chunk_len);
         foreach i in 0..chunk_len {
@@ -73,11 +71,9 @@ defn vad_stream_probs_json(graph: OnnxGraph, audio_path: String, chunk_len: Int)
         let pr: Result<Tensor, String> = env_find(env, graph.outs[0].name);
         let sr: Result<Tensor, String> = env_find(env, graph.outs[1].name);
         when is_err(pr) || is_err(sr) { term Err("vad outputs missing"); };
-        when c > 0 { acc = concat(acc, ","); };
-        acc = concat(acc, float_to_str(tensor_get(unwrap(pr), 0)));
+        probs <- tensor_get(unwrap(pr), 0);
         state = tensor_copy_owned(unwrap(sr));
         ml_arena_reset();
     };
-    acc = concat(acc, "]");
-    term Ok(acc);
+    term Ok(probs);
 };

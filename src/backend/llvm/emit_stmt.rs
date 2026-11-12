@@ -383,8 +383,8 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
                     .or_else(|| backend.find_extract_strategy(expr));
                 if let Some(op_def) = strat {
                     let op = op_def.clone();
-                    if emit_strategy_member_call(backend, out, indent, source, &op, None).is_none() {
-                        emit_strategy_fn_call(backend, out, indent, source, &op, None);
+                    if emit_strategy_member_call(backend, out, indent, source, &op, None, None).is_none() {
+                        emit_strategy_fn_call(backend, out, indent, source, &op, None, None);
                     }
                 }
                 TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
@@ -1007,6 +1007,13 @@ pub(super) struct StrategyCall<'a> {
     pub recv: &'a str,
     pub op: &'a crate::ast::top::OperatorDef,
     pub value: Option<&'a str>,
+    /// 2026-11-12 (coll Float fix): the pushed value's Briev type. The old
+    /// convention stamped every value arg `Type::int()`, so Float elements
+    /// were bits-boxed and then re-materialized with sitofp — the stored
+    /// "float" was the bit pattern as a number (List<Float> push/index
+    /// BUGS.md entry). The real type lets both dispatch paths bind the arg
+    /// honestly (Float stays a float register end-to-end).
+    pub value_ty: Option<&'a Type>,
 }
 
 pub(super) fn emit_strategy_member_call(
@@ -1016,13 +1023,14 @@ pub(super) fn emit_strategy_member_call(
     target: &Expr,
     op_def: &crate::ast::top::OperatorDef,
     value: Option<&str>,
+    value_ty: Option<&Type>,
 ) -> Option<String> {
     let recv = match target {
         Expr::AddrOf(inner) => (**inner).clone(),
         _ => target.clone(),
     };
     let Expr::Identifier(recv_name) = &recv else { return None; };
-    emit_strategy_member_call_name(backend, out, indent, &StrategyCall { recv: recv_name, op: op_def, value })
+    emit_strategy_member_call_name(backend, out, indent, &StrategyCall { recv: recv_name, op: op_def, value, value_ty })
 }
 
 /// 2026-11-09 (H5 seam refactor): name-based member dispatch (HIR arrow path).
@@ -1032,7 +1040,7 @@ fn emit_strategy_member_call_name(
     indent: &str,
     call: &StrategyCall<'_>,
 ) -> Option<String> {
-    let StrategyCall { recv: recv_name, op: op_def, value } = *call;
+    let StrategyCall { recv: recv_name, op: op_def, value, .. } = *call;
     let fn_name = match op_def.impl_args.as_ref() {
         Some(crate::ast::PropertyValue::Identifier(s)) => s.clone(),
         Some(crate::ast::PropertyValue::List(items)) => match items.first() {
@@ -1071,7 +1079,7 @@ fn emit_strategy_member_call_name(
     };
     let mut arg_regs: Vec<(String, Type)> = Vec::new();
     if let Some(vreg) = value {
-        arg_regs.push((vreg.to_string(), Type::int()));
+        arg_regs.push((vreg.to_string(), call.value_ty.cloned().unwrap_or(Type::int())));
     }
     let out_tmp = backend.fun.gen_reg();
     // 2026-08-01 (A10): resolve the mono key for a generic receiver
@@ -1099,14 +1107,14 @@ fn emit_strategy_member_call_name(
 ///   and PropertyValue::List([Identifier("ring_push"), HashL, HashR]) for
 ///   explicit marker-based dispatch like InsertAt <~ ring_push(#Lh, #Rh).
 pub(super) fn emit_strategy_fn_call(backend: &mut LlvmBackend, out: &mut String, indent: &str,
-    target: &Expr, op_def: &crate::ast::top::OperatorDef, value: Option<&str>) -> Option<String> {
-    emit_strategy_fn_call_name(backend, out, indent, &StrategyCall { recv: target.as_var_name()?, op: op_def, value })
+    target: &Expr, op_def: &crate::ast::top::OperatorDef, value: Option<&str>, value_ty: Option<&Type>) -> Option<String> {
+    emit_strategy_fn_call_name(backend, out, indent, &StrategyCall { recv: target.as_var_name()?, op: op_def, value, value_ty })
 }
 
 /// 2026-11-09 (H5 seam refactor): name-based free-function dispatch.
 fn emit_strategy_fn_call_name(backend: &mut LlvmBackend, out: &mut String, indent: &str,
     call: &StrategyCall<'_>) -> Option<String> {
-    let StrategyCall { recv: var_name, op: op_def, value } = *call;
+    let StrategyCall { recv: var_name, op: op_def, value, value_ty } = *call;
     let pv = op_def.impl_args.as_ref()?;
     let (fn_name, markers): (&str, &[crate::ast::PropertyValue]) = match pv {
         crate::ast::PropertyValue::Identifier(s) => {
@@ -1164,7 +1172,15 @@ fn emit_strategy_fn_call_name(backend: &mut LlvmBackend, out: &mut String, inden
     // (the handle is a ptrtoint'd address; the pushed value is the boxed
     // register). Each arg must carry its LLVM type or the call is malformed
     // (`call i64 @pop(%t39)` — LLVM requires `i64 %t39`).
-    let typed_args: Vec<String> = args.iter().map(|a| format!("i64 {}", a)).collect();
+    // 2026-11-12 (coll Float fix): the value arg keeps its real LLVM width
+    // when the caller supplied one — the synth push defn's param is the
+    // element type, so a Float element takes `float %reg`, not the i64
+    // bits-box (which the callee would sitofp).
+    let val_llvm = value_ty.map(|t| backend.llvm_type(t));
+    let typed_args: Vec<String> = args.iter().enumerate().map(|(i, a)| {
+        let t = if i == 1 { val_llvm.clone().unwrap_or_else(|| "i64".to_string()) } else { "i64".to_string() };
+        format!("{} {}", t, a)
+    }).collect();
     let args_str = typed_args.join(", ");
     let result = backend.fun.gen_reg();
     writeln!(out, "{}{} = call i64 @{}({})", indent, result, fn_name, args_str).ok();
@@ -2189,21 +2205,15 @@ fn arrow_insert(
     let val = ctx.value.emit(backend, &mut val_buf, indent);
     let elem_ty = backend.insert_element_type_name(tname);
     let val_ty = ctx.value.declared_type(backend).unwrap_or_else(|| val.ty.clone());
-    // 2026-11-10 (BUGS: bool list push): list elements are boxes (i64 words),
-    // but a scalar literal (Bool/Char/Float) emits a native-width register.
-    // Box it before the InsertAt strategy consumes the element, or clang sees
-    // an i8 value where an i64 payload is expected.
-    let box_scalar = elem_ty.as_ref().is_some_and(|et| {
-        backend.is_protocol_member(et, "Bool")
-            || backend.is_protocol_member(et, "Char")
-            || backend.is_protocol_member(et, "Float")
-    }) && !backend.is_protocol_member(&val.ty, "Int");
-    let val = if box_scalar {
-        let name = backend.adapt_to_i64(&mut val_buf, indent, &val);
-        TypedRegister { name, ty: Type::int() }
-    } else {
-        val
-    };
+    // 2026-11-12 (coll Float fix — supersedes the 2026-11-10 box_scalar):
+    // elements flow at their NATIVE width through the typed strategy arg.
+    // The old unconditional i64 bits-box made Float elements round-trip as
+    // `sitofp(bits)` (List<Float> push/index BUGS.md entry); Bool/Char/Int
+    // already round-trip honestly now that StrategyCall carries value_ty
+    // (native arg width == synth push param width, both sides coerce once).
+    // The payload block stays 8-byte-strided; native-width stores/loads hit
+    // the same slot start, so Int/pointer elements are unchanged.
+    let _ = &val_buf;
     let dyn_push = dyn_push_pair(elem_ty.as_ref(), &val_ty);
     if !insert_matches(backend, elem_ty.as_ref(), &val_ty, &dyn_push) {
         return None;
@@ -2227,7 +2237,7 @@ fn arrow_insert(
         val.clone()
     };
     let pushed = push_val.as_ref().unwrap_or(&owned_enum);
-    let call = StrategyCall { recv: tname, op: &op_def, value: Some(&pushed.name) };
+    let call = StrategyCall { recv: tname, op: &op_def, value: Some(&pushed.name), value_ty: Some(&pushed.ty) };
     if emit_strategy_member_call_name(backend, out, indent, &call).is_none() {
         emit_strategy_fn_call_name(backend, out, indent, &call);
     }
@@ -2244,7 +2254,7 @@ fn arrow_extract(
 ) -> Option<TypedRegister> {
     let vname = ctx.value.name()?;
     let op_def = backend.find_extract_strategy_for_arrow_name(vname, ctx.consume).cloned()?;
-    let call = StrategyCall { recv: vname, op: &op_def, value: None };
+    let call = StrategyCall { recv: vname, op: &op_def, value: None, value_ty: None };
     let result = emit_strategy_member_call_name(backend, out, indent, &call)
         .or_else(|| emit_strategy_fn_call_name(backend, out, indent, &call))?;
     if let Some(tname) = ctx.target.as_ref().and_then(ArrowOperand::name) {
@@ -2363,7 +2373,7 @@ pub(crate) fn emit_assign_statement(
                 let Some(op_def) = strat else {
                     return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                 };
-                let Some(result) = emit_strategy_fn_call(backend, out, indent, source, &op_def.clone(), None) else {
+                let Some(result) = emit_strategy_fn_call(backend, out, indent, source, &op_def.clone(), None, None) else {
                     return TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() };
                 };
                 // Store popped result to the LHS variable.
@@ -2629,8 +2639,8 @@ pub(crate) fn emit_assign_statement(
                     }
                     let insert_strat = backend.find_insert_strategy(lhs).cloned();
                     if let Some(op_def) = &insert_strat {
-                        if emit_strategy_member_call(backend, out, indent, lhs, op_def, Some(&val.name)).is_none() {
-                            emit_strategy_fn_call(backend, out, indent, lhs, op_def, Some(&val.name));
+                        if emit_strategy_member_call(backend, out, indent, lhs, op_def, Some(&val.name), Some(&val.ty)).is_none() {
+                            emit_strategy_fn_call(backend, out, indent, lhs, op_def, Some(&val.name), Some(&val.ty));
                         }
                     } else if let Some(reg) = backend.fun.let_bindings.get(name).cloned() {
                         // 2026-07-18: If the binding is a value register (not an alloca),

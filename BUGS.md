@@ -13257,19 +13257,23 @@ never registered `ProtocolDef` items into the casting graph — so
 `c_driver_boundary boundary_types_roundtrip` passes.
 
 
-## OPEN — coll `List<Float>` push/index returns bit-reinterpreted values (2026-11-12)
+## FIXED — coll `List<Float>` push/index returned bit-reinterpreted values (2026-11-12, fixed same day)
 
-`List<Float>` element push (`<-`) followed by index read yields the f32's bit
-pattern reinterpreted as Float: `0.0022557973861694336` reads back as
-`9.91156e+08`. Repro: `/tmp/opencode/f32list.bv` (push two literals, print
-`float_to_str(xs[0])`). Suspect: the coll scaffold's element copy path uses
-the 8-byte Int slot width for the 4-byte Float (stride/partial-copy
-mismatch), coll_scaffold.rs. The interpreter handles the same program
-correctly (verify with `brievi f32list.bv` — expected Rule-5 divergence
-report). Workaround shipped: saltpetre's `vad_stream_probs_json` accumulates
-the %g array as a String instead of a `List<Float>` (see
-`lib/saltpetre/audio.bv` header comment). Fix the scaffold, restore the
-List<Float> return shape, and delete the workaround.
+`List<Float>` element push (`<-`) followed by index read yielded the f32's bit
+pattern reinterpreted as Float: `0.0022557973861694336` read back as
+`9.91156e+08`. Repro: `/tmp/opencode/f32list.bv`. Root cause was NOT the
+scaffold's storage (payload slots are 8-byte words by design and native-width
+stores/loads hit the same slot start): `arrow_insert` force-boxed
+Bool/Char/Float scalars via `adapt_to_i64` (bits-as-int) while the inlined
+push member re-materialized its Float param with the SEMANTIC i64→float cast
+(`sitofp`) — two conventions, so the stored "float" was the bit pattern as a
+number. Fix: `StrategyCall` carries `value_ty`; both member and free-fn
+dispatch bind the value arg at its real LLVM width (Float stays a float
+register end-to-end), and the `box_scalar` pre-box in `arrow_insert` was
+removed (supersedes the 2026-11-10 bool-list-push note — native widths
+round-trip honestly through coerce once the arg is typed). Interpre
+comparison not needed (pure codegen). saltpetre's `vad_stream_probs` returned
+to `List<Float>`; the String workaround is deleted.
 
 ## OPEN — coll-typed globals (`List<Int> = []`) emit a broken init_state store (2026-11-12)
 
