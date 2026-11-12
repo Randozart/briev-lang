@@ -36,6 +36,12 @@ pub(super) struct Graph {
     pub(super) constants: Vec<BTreeSet<i64>>,
     pub(super) inexact_constants: BTreeSet<Node>,
     pub(super) memory: Vec<NodeSet>,
+    /// 2026-11-12: backing-storage proxies recorded by collection growth. They
+    /// model the storage a container owns: a container escaping must keep them
+    /// reachable, but reading an element must not inherit them. Undo by storing
+    /// them in `memory` again (the pre-2026-11-12 conflation that made scalar
+    /// element reads look like their container escaped).
+    pub(super) container_storage: BTreeSet<Node>,
     pub(super) named_memory: BTreeMap<(Node, String), NodeSet>,
     pub(super) constraints: Vec<Constraint>,
     pub(super) allocation_owner: BTreeMap<Node, String>,
@@ -71,6 +77,7 @@ impl Default for Graph {
             constants: Vec::new(),
             inexact_constants: BTreeSet::new(),
             memory: Vec::new(),
+            container_storage: BTreeSet::new(),
             named_memory: BTreeMap::new(),
             constraints: Vec::new(),
             allocation_owner: BTreeMap::new(),
@@ -182,7 +189,7 @@ impl Graph {
                     | inexact
             }
             Constraint::Load(base, result) => {
-                let refs = self.contents(base);
+                let refs = self.load_contents(base);
                 self.points[result].union_with(&refs) | self.inexact_constants.insert(result)
             }
             Constraint::Store(base, value) => self.store(base, self.points[value].clone()),
@@ -211,6 +218,21 @@ impl Graph {
         let mut refs = NodeSet::new();
         for root in self.points[base].iter() {
             refs.union_with(&self.root_contents(root));
+        }
+        refs
+    }
+
+    /// 2026-11-12: a load reads the *values* stored in the container, never the
+    /// container's own backing storage. Storage proxies stay reachable through
+    /// `root_contents` (so an escaping container keeps its storage alive) but
+    /// must not become the provenance of an element read, or a plain scalar
+    /// element would appear to alias its container and force an escape barrier.
+    fn load_contents(&self, base: Node) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for node in self.contents(base).iter() {
+            if !self.container_storage.contains(&node) {
+                refs.insert(node);
+            }
         }
         refs
     }
