@@ -622,3 +622,22 @@ conservatism); dashboard `.rbv` IR verify on wasm32 (599 calls, coll_destroy
 clean at i32); daemon IR has 12 coll_destroy call sites; native smoke, ML
 smoke, VAD 187 chunks max |Δ| 3.057e-07; 200-call daemon soak flat at
 VmRSS 171 MB (HWM 227 MB).
+
+## 17. Nested-seam releases (2026-11-12)
+
+The §16 body seam only handled top-level inserts: any guard/block/loop/match
+containing a `ReleaseOwned`/`TempTransfer` failed conversion wholesale and fell
+back to source AST, silently dropping the release (leak). The seam now converts
+scoped statements recursively (`convert_scoped_seam`/`convert_children_seam`),
+`storage_release_view` strips nested inserts in the comparison view, and the
+stdlib-extension gate (`coll_destroy` in `defn_params`) keeps bare-compiler
+corpus tests link-clean by skipping List releases (conservative leak) instead
+of emitting an undefined symbol.
+
+Kiosk-neutral by measurement: the daemon's coll_destroy site count is
+unchanged (12) — the json-chain guards own no inserts (`term parsed` releases
+nothing). The slice is mechanism completeness that unblocks guard-scoped
+release patterns (per-iteration temporaries, early-return owners) without new
+compiler knowledge. Gates: 3739 lib (new seam test asserts an insert inside a
+guard survives `hir_sourced_body` and is stripped in the comparison view),
+wasm32 dashboard IR verify, native smoke.

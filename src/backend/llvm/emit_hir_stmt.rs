@@ -13,6 +13,7 @@ use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
 use std::fmt::Write;
 use crate::ast::Statement;
 use crate::hir::expr::{HirExpr, HirExprKind};
+use crate::ast::top::StmtMatchArm;
 use crate::backend::llvm::AllocStrategy;
 use crate::hir::stmt::{HirStmt, HirStmtKind};
 
@@ -34,6 +35,10 @@ pub(crate) fn convert_hir_statement(stmt: &HirStmt) -> Option<Statement> {
 /// through this view. Top-level only — nested inserts fall back to AST and
 /// are lost (leak, never unsound).
 pub(crate) fn storage_release_view(body: &[Statement]) -> Vec<Statement> {
+    strip_view(body)
+}
+
+fn strip_view(body: &[Statement]) -> Vec<Statement> {
     let mut stash: Vec<(String, crate::ast::Expr)> = Vec::new();
     let mut out = Vec::with_capacity(body.len());
     for stmt in body {
@@ -63,10 +68,42 @@ pub(crate) fn storage_release_view(body: &[Statement]) -> Vec<Statement> {
                 }
                 out.push(stmt.clone());
             }
+            Statement::Guarded(c, b) => {
+                out.push(Statement::Guarded(c.clone(), strip_view(b)));
+            }
+            Statement::Block(b) => out.push(Statement::Block(strip_view(b))),
+            Statement::SyncBlock(b) => out.push(Statement::SyncBlock(strip_view(b))),
+            Statement::Mutex(b) => out.push(Statement::Mutex(strip_view(b))),
+            Statement::Defer(b) => out.push(Statement::Defer(strip_view(b))),
+            Statement::Foreach { item, list, body, modifiers } => {
+                out.push(Statement::Foreach {
+                    item: item.clone(),
+                    list: list.clone(),
+                    body: strip_view(body),
+                    modifiers: modifiers.clone(),
+                });
+            }
+            Statement::Match { expr, arms } => {
+                out.push(Statement::Match {
+                    expr: expr.clone(),
+                    arms: arms
+                        .iter()
+                        .map(|a| StmtMatchArm { patterns: a.patterns.clone(), body: strip_view(&a.body) })
+                        .collect(),
+                });
+            }
             _ => out.push(stmt.clone()),
         }
     }
     out
+}
+
+fn coll_destroy_available(backend: &LlvmBackend) -> bool {
+    // stdlib-extension gate: coll_destroy lives in the stdlib prelude. Bodies
+    // compiled without stdlib (bare-compiler corpus tests) have no definition
+    // to call — List releases are skipped (conservative leak, the pre-slice
+    // fallback behavior) rather than emitting an undefined symbol.
+    backend.ctx.defn_params.contains_key("coll_destroy")
 }
 
 fn release_ast_stmt(storage: crate::hir::stmt::StorageKind, name: &str) -> Option<Statement> {
@@ -109,6 +146,13 @@ fn emit_release_owned_statement(
     match storage {
         crate::hir::stmt::StorageKind::Str => emit_release_owned_str(backend, out, name, indent),
         crate::hir::stmt::StorageKind::List => {
+            // stdlib-extension gate: coll_destroy lives in the stdlib prelude.
+            // Bodies compiled without stdlib (bare-compiler corpus tests) have
+            // no definition to call — skip the release (conservative leak,
+            // previous fallback behavior) rather than emit an undefined sym.
+            if !backend.ctx.defn_params.contains_key("coll_destroy") {
+                return Some(TypedRegister { name: backend.fun.gen_reg(), ty: crate::ast::Type::void() });
+            }
             // Handle width follows the target's pointer-int width; the arg
             // goes through the normal expression/adapter path so ptr-typed
             // bindings materialize correctly (same lesson as Free#).
@@ -197,6 +241,97 @@ fn emit_temp_transfer_statement(
     emit_hir_statement(backend, out, &ret_stmt, indent)
 }
 
+/// 2026-11-12 (owned-storage seam, nested): scoped-statement conversion that
+/// preserves inserted storage releases inside guard/block/loop/match bodies.
+/// Without this, any scope containing an insert failed conversion wholesale
+/// and the whole scope fell back to source AST — the release was silently
+/// lost (leak). Recursion makes arbitrary nesting seam-clean.
+fn convert_children_seam(
+    backend: &LlvmBackend,
+    body: &[HirStmt],
+) -> Option<Vec<Statement>> {
+    let mut out = Vec::with_capacity(body.len() + 2);
+    for child in body {
+        match &child.kind {
+            HirStmtKind::ReleaseOwned { storage, name } => {
+                if *storage == crate::hir::stmt::StorageKind::List
+                    && !coll_destroy_available(backend)
+                {
+                    continue;
+                }
+                out.push(release_ast_stmt(*storage, name)?);
+            }
+            HirStmtKind::TempTransfer { name, ty, expr, ret, releases } => {
+                let releases: Vec<(crate::hir::stmt::StorageKind, String)> = releases
+                    .iter()
+                    .filter(|(st, _)| {
+                        *st == crate::hir::stmt::StorageKind::Str
+                            || coll_destroy_available(backend)
+                    })
+                    .cloned()
+                    .collect();
+                let binding = HirStmt {
+                    id: crate::hir::ids::NodeId(0),
+                    span: None,
+                    kind: HirStmtKind::Let {
+                        name: name.clone(),
+                        names: vec![name.clone()],
+                        ty: ty.clone(),
+                        expr: Some((**expr).clone()),
+                        modifiers: vec![],
+                    },
+                };
+                out.push(crate::hir::to_ast::stmt(&binding)?);
+                let ret_expr = crate::hir::to_ast::expr(expr)?;
+                out.push(match ret {
+                    crate::hir::stmt::RetKind::Term => Statement::Term(Some(ret_expr)),
+                    crate::hir::stmt::RetKind::Tail => Statement::Tail(ret_expr),
+                    crate::hir::stmt::RetKind::EndProgram => Statement::EndProgram(Some(ret_expr)),
+                });
+            }
+            _ => out.push(convert_scoped_seam(backend, child)?),
+        }
+    }
+    Some(out)
+}
+
+fn convert_scoped_seam(backend: &LlvmBackend, stmt: &HirStmt) -> Option<Statement> {
+    match &stmt.kind {
+        HirStmtKind::Guarded(c, b) => Some(Statement::Guarded(
+            crate::hir::to_ast::expr(c)?,
+            convert_children_seam(backend, b)?,
+        )),
+        HirStmtKind::Block(b) => Some(Statement::Block(convert_children_seam(backend, b)?)),
+        HirStmtKind::SyncBlock(b) => Some(Statement::SyncBlock(convert_children_seam(backend, b)?)),
+        HirStmtKind::Mutex(b) => Some(Statement::Mutex(convert_children_seam(backend, b)?)),
+        HirStmtKind::Defer(b) => Some(Statement::Defer(convert_children_seam(backend, b)?)),
+        HirStmtKind::Foreach { item, list, body, modifiers } => {
+            Some(Statement::Foreach {
+                item: item.clone(),
+                list: Box::new(crate::hir::to_ast::expr(list)?),
+                body: convert_children_seam(backend, body)?,
+                modifiers: modifiers
+                    .iter()
+                    .map(|name| crate::ast::Annotation { name: name.clone(), value: None })
+                    .collect(),
+            })
+        }
+        HirStmtKind::Match { expr, arms } => Some(Statement::Match {
+            expr: Box::new(crate::hir::to_ast::expr(expr)?),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    Some(StmtMatchArm {
+                        patterns: arm.patterns.iter().map(crate::hir::to_ast::pattern).collect::<Option<Vec<_>>>()?,
+                        body: convert_children_seam(backend, &arm.body)?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        _ => crate::hir::to_ast::stmt(stmt),
+    }
+}
+
 pub(crate) fn hir_sourced_body(
     backend: &mut LlvmBackend,
     hir_body: &[HirStmt],
@@ -211,6 +346,11 @@ pub(crate) fn hir_sourced_body(
         backend.hir_stmts_seen += 1;
         match &hir_stmt.kind {
             HirStmtKind::ReleaseOwned { storage, name } => {
+                if *storage == crate::hir::stmt::StorageKind::List
+                    && !coll_destroy_available(backend)
+                {
+                    continue;
+                }
                 let s = release_ast_stmt(*storage, name)?;
                 backend.hir_stmts_native += 1;
                 out.push(s);
@@ -240,7 +380,7 @@ pub(crate) fn hir_sourced_body(
             _ => {
                 let Some(ast_stmt) = ast_body.get(ai) else { return None };
                 ai += 1;
-                match convert_hir_statement(hir_stmt) {
+                match convert_scoped_seam(backend, hir_stmt) {
                     Some(s) => {
                         backend.hir_stmts_native += 1;
                         out.push(s);
@@ -975,6 +1115,66 @@ mod tests {
         let tokens = crate::lexer::tokenize(src).expect("tokenize");
         let mut parser = crate::parser::Parser::new(tokens, src);
         parser.parse_program().expect("parse")
+    }
+
+    #[test]
+    fn nested_storage_inserts_survive_the_body_seam() {
+        let src = r#"
+defn mk() -> String { term "a" + "b"; };
+defn use(s: String) -> Int {
+    when s .^Length > 0 {
+        let y: String = mk();
+        let n: Int = CharCount#(y);
+        term n;
+    };
+    term 0;
+};
+"#;
+        let items = parse(src);
+        let mut program = crate::hir::lower_program(&items);
+        crate::hir::owned_storage::insert_releases(&mut program, &std::collections::HashMap::new());
+        let use_fn = program
+            .callables
+            .iter()
+            .find(|c| c.name == "use")
+            .expect("use fn");
+        // The pass releases x inside the guard body (early-return path).
+        let guard = use_fn
+            .body
+            .statements
+            .iter()
+            .find_map(|st| match &st.kind {
+                HirStmtKind::Guarded(_, b) => Some(b),
+                _ => None,
+            })
+            .expect("guard");
+        assert!(
+            guard.iter().any(|st| matches!(&st.kind, HirStmtKind::TempTransfer { .. } | HirStmtKind::ReleaseOwned { .. })),
+            "release expected inside the guard body"
+        );
+
+        let ast_body: Vec<Statement> = items
+            .iter()
+            .find_map(|i| match i {
+                crate::ast::TopLevel::Definition(d) if d.name == "use" => Some(d.body.clone()),
+                _ => None,
+            })
+            .expect("ast defn");
+
+        let mut backend = LlvmBackend::new();
+        let out = hir_sourced_body(&mut backend, &use_fn.body.statements, &ast_body, "use")
+            .expect("nested inserts must not force a whole-body fallback");
+        // Comparison view strips the inserts back to the source shape.
+        assert_eq!(storage_release_view(&out), ast_body);
+        // Emission view keeps them: a Free#/coll_destroy call exists inside
+        // the emitted guard.
+        let emitted_guard = out.iter().find_map(|st| match st {
+            Statement::Guarded(_, b) => Some(b),
+            _ => None,
+        })
+        .expect("emitted guard");
+        let has_release = emitted_guard.iter().any(|st| matches!(st, Statement::Expression(crate::ast::Expr::Call(c, _, _)) if c == "Free#" || c == "coll_destroy"));
+        assert!(has_release, "release must survive emission inside the guard");
     }
 
     #[test]
