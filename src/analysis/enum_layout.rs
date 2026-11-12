@@ -4,8 +4,9 @@
 //! Concrete enum image layout (P2-1 Option B, B1).
 //!
 //! The image is `1 tag word + max(variant payload words)`, with a descendant
-//! enum laid out inline inside the payload area. Unknown, aggregate, or
-//! recursive-beyond-cap payloads consume one boxed handle word.
+//! enum laid out inline only when its full enum tree fits the depth budget.
+//! Unknown, aggregate, or recursive-beyond-cap payloads consume one boxed
+//! handle word, preserving the nested value's standalone representation.
 
 use crate::ast::{EnumVariant, Statement, TopLevel, Type};
 use std::collections::{HashMap, HashSet};
@@ -31,9 +32,10 @@ pub const PACKED_MEMORY_MAX_WORDS: usize = 4;
 /// enum images bounded; larger objects keep the one-word boxed handle.
 pub const INLINE_OBJECT_MAX_WORDS: usize = 8;
 
-/// Object payloads inside enum images are disabled: the frame image is returned
-/// through an i64 handle and miscompiles `net_stack_helpers` at -O1. Keep the
-/// layout facts so the pass can be re-enabled with a lifetime/alias proof.
+/// Small object payloads are enabled for eligible internal enums; boundary
+/// enums retain handles. Earlier unconditional frame-image returns miscompiled
+/// `net_stack_helpers` at -O1, so representation and lifetime eligibility must
+/// remain coordinated with the destination/alias proof consumers.
 pub const OBJECT_PAYLOAD_INLINE_ENABLED: bool = true;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,11 +155,41 @@ impl EnumLayoutPlanner {
         if depth >= self.max_depth {
             return false;
         }
-        match ty {
+        let declared = match ty {
             Type::Custom(n) => self.enums.contains_key(n),
             Type::Applied(n, _) => self.enums.contains_key(n),
             _ => false,
+        };
+        declared && self.enum_payload_tree_fits(ty, depth)
+    }
+
+    // 2026-11-12: an inline payload must use the same image as its standalone
+    // constructor and match consumer. Box the whole nested value when its
+    // enum tree crosses the depth cap; truncating only a descendant changed
+    // the image under the emitter and caused out-of-bounds stores. Replace
+    // this gate only with explicit context-specific construction/projection.
+    fn enum_payload_tree_fits(&self, ty: &Type, depth: usize) -> bool {
+        if let Type::Vector(element, _) = ty {
+            return self.enum_payload_tree_fits(element, depth);
         }
+        if let Type::Tuple(elements) = ty {
+            return elements.iter().all(|element| self.enum_payload_tree_fits(element, depth));
+        }
+        let (name, args) = match ty {
+            Type::Custom(name) => (name.as_str(), &[][..]),
+            Type::Applied(name, args) => (name.as_str(), args.as_slice()),
+            _ => return true,
+        };
+        let Some(definition) = self.enums.get(name) else { return true };
+        if depth >= self.max_depth {
+            return false;
+        }
+        let substitutions: HashMap<String, Type> = definition.params.iter().cloned()
+            .zip(args.iter().cloned()).collect();
+        definition.variants.iter().all(|(_, payload)| {
+            let concrete = crate::typechecker::substitute_type(payload, &substitutions);
+            self.enum_payload_tree_fits(&concrete, depth + 1)
+        })
     }
 
     fn is_inline_object(&self, ty: &Type, depth: usize) -> bool {
@@ -238,7 +270,7 @@ impl EnumLayoutPlanner {
             Type::Tuple(elems) => elems.iter().map(|e| self.payload_words(e, depth)).sum(),
             // A concrete enum payload is inline while within the depth cap.
             Type::Custom(_) | Type::Applied(_, _) => {
-                if depth < self.max_depth {
+                if self.is_inline_enum(ty, depth) {
                     self.layout_at(ty, depth)
                         .map(|l| l.image_words)
                         .unwrap_or(1)
@@ -656,6 +688,32 @@ mod tests {
         let p1 = EnumLayoutPlanner::new(&shallow, 1);
         let layout = p1.layout_for(&deeper).expect("layout");
         assert_eq!(layout.image_words, 2);
+    }
+
+    #[test]
+    fn depth_cap_preserves_standalone_nested_images() {
+        let items = parse("enum Leaf { Value(Int) }; enum Middle { Child(Leaf) }; enum Outer { ChildMiddle(Middle) };");
+        let planner = EnumLayoutPlanner::new(&items, 2);
+        let middle = planner.layout_for(&Type::Custom("Middle".into())).unwrap();
+        let outer = planner.layout_for(&Type::Custom("Outer".into())).unwrap();
+        assert_eq!(middle.image_words, 3);
+        assert!(!outer.variant_payload_inline[0]);
+        assert_eq!(outer.variant_payload_words[0], 1);
+        let wider = EnumLayoutPlanner::new(&items, 3);
+        let outer = wider.layout_for(&Type::Custom("Outer".into())).unwrap();
+        assert!(outer.variant_payload_inline[0]);
+        assert_eq!(outer.variant_payload_words[0], middle.image_words);
+    }
+
+    #[test]
+    fn recursive_enum_payloads_have_finite_boxed_layouts() {
+        let items = parse("enum Left { ToRight(Right), Stop }; enum Right { ToLeft(Left) };");
+        let planner = EnumLayoutPlanner::new(&items, 3);
+        for name in ["Left", "Right"] {
+            let layout = planner.layout_for(&Type::Custom(name.into())).unwrap();
+            assert!(!layout.variant_payload_inline[0]);
+            assert_eq!(layout.image_words, 2);
+        }
     }
 }
 
