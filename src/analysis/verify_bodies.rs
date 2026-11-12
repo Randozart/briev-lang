@@ -205,7 +205,8 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
     }
     let mut violated: Option<String> = None;
     let mut undecided = 0usize;
-    for state in &terminated {
+    let mut first_undecided: Option<usize> = None;
+    for (index, state) in terminated.iter().enumerate() {
         match verdict_for_path(post, state) {
             ProofVerdict::Holds => {}
             ProofVerdict::Violated => {
@@ -224,7 +225,12 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                         }
                     }
                     Some(ProofVerdict::Holds) => {}
-                    _ => undecided += 1,
+                    _ => {
+                        undecided += 1;
+                        if first_undecided.is_none() {
+                            first_undecided = Some(index);
+                        }
+                    }
                 }
             }
         }
@@ -233,8 +239,13 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
         return BodyOutcome::Violated(format!("body can violate its postcondition: {v}"));
     }
     if undecided > 0 {
+        // Name the first blocking path and render the goal. "could not prove"
+        // alone leaves the author guessing which branch needs the stronger
+        // fact — and that guess is what makes repairing a contract risky.
+        let path = first_undecided.map_or(1, |index| index + 1);
         return BodyOutcome::Unproven(format!(
-            "could not prove the postcondition on {undecided} path(s) — add a guard or a stronger precondition"
+            "could not prove the postcondition on path {path} of {} (goal: {post}) — add a guard or a stronger precondition",
+            terminated.len()
         ));
     }
     BodyOutcome::Proven
