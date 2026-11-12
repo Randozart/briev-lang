@@ -1419,6 +1419,12 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     // Keyed by the underlying SSA register (%t{N}) or alloca name.
     // Propagated through let-bindings in emit_statement.
     pub alloc_strategies: HashMap<String, AllocStrategy>,
+    /// 2026-11-12: ACTUAL LLVM register width for cast-step results. Cast
+    /// lanes stamp the Briev target type on registers whose value width
+    /// differs (the "value is i64, type says Ptr" invariant), so width
+    /// adapters (Free#'s handle materialization) consult this map instead of
+    /// guessing from the stamped type. Recorded by emit_cast_steps.
+    pub reg_value_ll: HashMap<String, String>,
 
     // 2026-07-18: Fat pointer provenance — base, offset, remaining registers.
     // Keyed by the fat pointer register name. Populated by emit_expr when
@@ -1566,6 +1572,7 @@ impl FunctionContext {
             chimera_map: HashMap::new(),
             expr_dedup_cache: HashMap::new(),
             alloc_strategies: HashMap::new(),
+            reg_value_ll: HashMap::new(),
             fat_ptrs: HashMap::new(),
             canonical_ptrs: HashMap::new(),
             state_ptr_cache: HashMap::new(),
@@ -1610,6 +1617,7 @@ impl FunctionContext {
         self.let_binding_types.clear();
         self.let_original_types.clear();
         self.boxed_scalar_regs.clear();
+        self.reg_value_ll.clear();
         self.task_handle_regs.clear();
         self.task_handle_names.clear();
         self.is_task_segment = false;

@@ -657,6 +657,40 @@ fn adapt_to_ptr_width(
     let ity = backend.ptr_int_ty();
     let ity_bits = backend.ctx.int_bits as usize;
     let have = backend.llvm_type(&reg.ty);
+    // 2026-11-12: two ptr-LLVM-type shapes reach this adapter and they hold
+    // DIFFERENT register widths (the wasm32 dashboard IR verify caught both):
+    //   - `Type::Ptr(_)`-stamped registers are the documented i64-handle
+    //     invariant ("value is i64, type says Ptr") — cast lanes return them;
+    //     narrow the handle with trunc.
+    //   - `Custom` protocol values (String/Data) materialize as an ACTUAL ptr
+    //     register; convert the address with ptrtoint.
+    if have == "ptr" {
+        // Three ptr-LLVM-type shapes reach this adapter; the stamped Briev
+        // type alone cannot distinguish them (the wasm32 dashboard IR verify
+        // and the to_c_string Copy# both caught mis-typings here):
+        //   1. Cast-step recorder says i64 — an i64 handle (trunc to width).
+        //   2. Unmapped `Type::Ptr(_)`-stamped — the historic "value is i64,
+        //      type says Ptr" handle population (let-typed allocs, i64→ptr
+        //      shortcut): pass through unchanged (pre-2026-11-12 behavior).
+        //   3. Unmapped `Custom` protocol value (String/Data materialized by
+        //      an identifier load) or a recorded ptr — an ACTUAL pointer
+        //      register: ptrtoint to width.
+        let recorded = backend.fun.reg_value_ll.get(&reg.name).cloned();
+        if recorded.as_deref() == Some("i64") {
+            if ity == "i64" {
+                return reg.name.clone();
+            }
+            let t = backend.fun.gen_reg();
+            writeln!(out, "{}{} = trunc i64 {} to {}", indent, t, reg.name, ity).ok();
+            return t;
+        }
+        if recorded.as_deref() != Some("ptr") && matches!(reg.ty, crate::ast::Type::Ptr(_)) {
+            return reg.name.clone();
+        }
+        let t = backend.fun.gen_reg();
+        writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, t, reg.name, ity).ok();
+        return t;
+    }
     let have_bits = have.strip_prefix('i').and_then(|n| n.parse::<usize>().ok());
     match have_bits {
         Some(w) if w > ity_bits => {

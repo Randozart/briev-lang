@@ -9383,6 +9383,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // the correct Ptr type — the value is i64 but the type system says Ptr.
         let src_ll = self.llvm_type(&src.ty);
         if matches!(target, Type::Ptr(_)) && src_ll == "i64" {
+            self.fun.reg_value_ll.insert(src.name.clone(), "i64".to_string());
             return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
         }
 
@@ -9413,6 +9414,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             };
 
+            // 2026-11-12: record the ACTUAL register width this step produces.
+            // Cast lanes stamp Briev target types on values whose LLVM width
+            // differs (e.g. i64 handles stamped Ptr); width adapters must not
+            // guess from the stamped type.
+            self.fun.reg_value_ll.insert(dst.clone(), dst_ll.clone());
             match &step.lane {
                 crate::casting::graph::LaneKind::Bitcast => {
                     // 2026-08-13 (pack): LLVM `bitcast` requires equal-width
@@ -9585,6 +9591,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         writeln!(out, "{}{} = ptrtoint {} {} to i64",
                             indent, dst, cur_ll, cur).ok();
                     }
+                    // 2026-11-12: a PtrToInt step ALWAYS yields an i64 handle,
+                    // even as the last step (where the generic recorder stamps
+                    // the Briev target's ptr type). Width adapters need the
+                    // actual width, not the stamped one.
+                    self.fun.reg_value_ll.insert(dst.clone(), "i64".to_string());
                 }
                 crate::casting::graph::LaneKind::IntToPtr => {
                     // 2026-08-28: identity when the register is already a
