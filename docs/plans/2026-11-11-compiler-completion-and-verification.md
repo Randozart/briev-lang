@@ -304,3 +304,21 @@ and table-indexed fields, bus/wildcard equalities, constitutive-law elaboration
 budgets, `net<>`/`stdnet<>` membership, named modes, and mechanism synthesis.
 The consumer remains AST; finishing this coverage is the prerequisite for the
 electronics consumer flip.
+
+**Electronics full-surface attempt (2026-11-12, uncommitted WIP).**
+A follow-up attempt to close the documented gap reached 5.3k lines across 12
+files (new `hir/electronics_laws.rs`, fidelity in program/lower/expr/to_ast/
+walk/stats/needs_state/verify) before the worker hit its 5-hour quota. The WIP
+lives in worktree `/tmp/electronics-port2` (branch `electronics-hir-port2`)
+and is NOT integrated: its own parity suite has 12 failures, mostly message
+formatting (Rust string continuations leaving literal backslashes/double
+spaces; duplicated `V` suffixes around `format_volts`) plus wildcard/instance
+array net expansion returning 0 nets instead of 2. AST electronics (157) and
+the committed HIR subset (14) remain green on main.
+
+Next steps for that branch: normalize the HIR diagnostic strings against the
+AST messages, restore unit suffixes only where the argument is a raw number,
+debug wildcard instance-array expansion (`t[*].a.voltage`) against
+`partition_nets`, then run the full parity suite, Praetor, quick gate, sweep,
+and only then flip the electronics consumer. The scratch binary
+`src/bin/scratch_elec.rs` and the WIP plan file must be removed before merge.
