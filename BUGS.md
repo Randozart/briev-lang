@@ -13255,3 +13255,141 @@ cache was rewound to scalar per-slot globals (sp_s0_*/sp_s1_*), which also
 matches the two-slot requirement. Fix the scaffold's global-init store path
 for coll-typed globals, then the scalar rewind can become a List again if
 dynamic slot growth is ever wanted.
+
+## 2026-11-14 — `--verify-bodies` cannot discharge a relational goal over a sum
+
+**Status:** open. Found while implementing loop-invariant preservation (Counsel
+P4); the same shape caps every accumulator proof, so it blocks more than one
+consumer.
+
+### Symptom
+
+```briev
+defn two_var(a: Int, b: Int) [a >= 0 && b >= 0][term >= 0] -> Int { term a + b; };
+```
+→ `warning: --verify-bodies could not prove: two_var: could not prove the
+postcondition on path 1 of 1 (goal: (term >= 0))`
+
+### What does and does not discharge
+
+| shape | verdict | route |
+|---|---|---|
+| `[a >= 0][term >= 0] { term a; }` | proven | symbolic (structural) |
+| `[a >= 5][term > 4] { term a; }` | proven | symbolic (bounds) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven | SMT (equality) |
+| `[a >= 0 && b >= 0][term >= 0] { term a + b; }` | **UNPROVEN** | SMT (relational) |
+
+So equality goals over a sum reach SMT and are discharged, while relational goals
+over a sum are not. Single-variable relational goals never needed SMT, which is
+why the gap stayed hidden: `verify_bodies`'s symbolic bounds answer those.
+
+### Ruled out
+
+- **Contract shape**: hand-written defns reproduce it, and the `[I][I]` form for
+  preservation is the standard one.
+- **Parenthesised bounds** (`i >= (0)`): same result without parens.
+- **Self-referential substitution** from `acc = acc + i`: the failure reproduces
+  with **no assignment at all** (`term a + b;`).
+- **Z3 availability**: the managed z3 is installed, and the `3 * a` equality goal
+  proves through the SMT path in the same invocation.
+
+### Suspect
+
+`smt_discharge` (src/analysis/verify_bodies.rs) downgrades `Sat` to "unproven"
+when the goal has free identifiers — correct policy, but it makes this defect
+**silent**: a query whose facts never reached the solver returns a model, gets
+downgraded, and reads as the prover merely lacking information.
+
+Next probe: `[a >= 0 && b >= 0][term >= 1]` with `term a + b + 1`. It is provable
+only if the facts are used, so it separates "facts not asserted" from
+"relational-over-sum unsupported". If it fails, inspect `build_vc_query` and the
+fact plumbing; if it passes, the fault is the `bvsge` encoding path.
+
+### Why it matters
+
+Any function that accumulates (`acc = acc + x`) has a postcondition of exactly
+this shape, so this single gap is what stops Counsel from verifying
+loop-accumulator kernels — 270 of 535 eligible functions in this repo contain a
+loop, 178 with dynamic bounds.
+
+### 2026-11-14 (amendment) — the SMT path appears not to use the path FACTS
+
+The original report above blamed the relational encoding. Three further probes
+show something sharper and worse:
+
+| probe | result |
+|---|---|
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` — provable **only** from the pre | **UNPROVEN** |
+| `[a >= 0 && b >= 0 && a + b >= 0][term >= 0] { term a + b; }` — same goal, fact added | **proven** (structurally) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven |
+
+That last one is the tell: `a + a + a == 3 * a` holds in bitvector arithmetic for
+**every** `a`, so it never needed the precondition. Re-reading the earlier C4
+evidence with this in mind, **every** case believed to demonstrate SMT-assisted
+proof was fact-free:
+
+- `range_bound_does_not_pin` (`a + a == 2 * a`) — tautology.
+- `smt_discharges_arithmetic_identity` (`a + a + a == 3 * a`) — tautology.
+
+None of them exercised "the precondition constrains the goal". `needs_facts` is
+the first probe that does, and it fails.
+
+**Conclusion:** `--verify-bodies`'s SMT discharge is (at most) deciding closed
+formulas; it is not using `SymbolicState::path_constraints`. That is consistent
+with `smt_discharge`'s `Sat => unproven` policy hiding the failure: a query with
+no facts finds a model immediately, the model is silently downgraded to advisory,
+and the result reads as "the prover lacked information" rather than "the facts
+were never sent".
+
+**Where to look:** `smt_discharge` in src/analysis/verify_bodies.rs — does
+`state.path_constraints` actually contain the precondition by the time a path is
+discharged, and does `build_vc_query` emit each fact as its own `(assert …)`
+before `(assert (not <goal>))`? Add a probe that prints the generated SMT-LIB.
+
+**Impact:** this caps `--verify-bodies` at tautologies and bound-provable goals.
+Any contract whose goal depends on the declared precondition is unprovable today
+— which is most real contracts, and all of Counsel's accumulator VC2.
+
+### 2026-11-14 (RETRACTION) — not a defect: bitvector wraparound, correctly refused
+
+Both entries above are **withdrawn**. The prover is right and the report was
+wrong. Evidence, from an env-gated dump of the actual SMT-LIB
+(`BRIEV_DIAG_VC=1`) plus one discriminating probe:
+
+```lisp
+(declare-const a (_ BitVec 64))
+(declare-const b (_ BitVec 64))
+(assert (and (bvsge a #x0) (bvsge b #x0)))          ; the preconditions ARE sent
+(assert (not (bvsge (bvadd (bvadd a b) #x1) #x1)))
+(check-sat)                                          ; SAT — and genuinely so
+```
+
+`a = b = 2^63 - 1` makes `a + b` wrap negative, so `a >= 0 ∧ b >= 0` does **not**
+imply `a + b + 1 >= 1` in 64-bit wrapping arithmetic. The query is satisfiable,
+the model is real, and the `Sat => unproven` policy correctly declines to claim a
+proof.
+
+The discriminating probe:
+
+| defn | verdict |
+|---|---|
+| `[a >= 0 && a < 1000000 && b >= 0 && b < 1000000][term >= 1] { term a + b + 1; }` | **proven** |
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` | unproven |
+
+Bounding the operands rules out wraparound, and the same goal then proves. So:
+
+1. **Facts reach the solver.** The `path_constraints` plumbing and
+   `build_vc_query` were never at fault.
+2. **The relational encoding is correct** (`bvsge`/`bvadd` are exact).
+3. The earlier claim that "every C4 SMT success was a fact-free tautology" was
+   also **wrong**: `a + a == 2 * a` holds under wraparound, so those tests were
+   correct evidence — they simply never needed the preconditions.
+
+**The real lesson is a modelling constraint, not a bug:** Briev's `Int` is a
+wrapping 64-bit bitvector, so *no* arithmetic postcondition that can overflow is
+provable from unbounded range facts. Contracts and loop invariants must bound the
+values they reason about (e.g. `acc >= 0 && acc <= N`) or they are — correctly —
+refused.
+
+Recorded so this is not re-investigated: a future reader finding `needs_facts`
+unproven should add the bound first, not file a bug.
