@@ -820,6 +820,8 @@ mod tmp_drift {
                 println!("REASON {} ast={:?} hir={:?}", k, v, hir.reasons.get(k));
             }
         }
-        panic!("diff printed");
+        // Plans may be equal here — the diag is for the backend-pipeline-only
+    // drift (see BUGS.md 2026-11-12). Use --nocapture to see the output.
+    println!("tmp_boundary_drift_diff: plans compared; see BUGS.md");
     }
 }
