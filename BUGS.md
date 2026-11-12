@@ -13380,3 +13380,47 @@ before `(assert (not <goal>))`? Add a probe that prints the generated SMT-LIB.
 **Impact:** this caps `--verify-bodies` at tautologies and bound-provable goals.
 Any contract whose goal depends on the declared precondition is unprovable today
 — which is most real contracts, and all of Counsel's accumulator VC2.
+
+### 2026-11-14 (RETRACTION) — not a defect: bitvector wraparound, correctly refused
+
+Both entries above are **withdrawn**. The prover is right and the report was
+wrong. Evidence, from an env-gated dump of the actual SMT-LIB
+(`BRIEV_DIAG_VC=1`) plus one discriminating probe:
+
+```lisp
+(declare-const a (_ BitVec 64))
+(declare-const b (_ BitVec 64))
+(assert (and (bvsge a #x0) (bvsge b #x0)))          ; the preconditions ARE sent
+(assert (not (bvsge (bvadd (bvadd a b) #x1) #x1)))
+(check-sat)                                          ; SAT — and genuinely so
+```
+
+`a = b = 2^63 - 1` makes `a + b` wrap negative, so `a >= 0 ∧ b >= 0` does **not**
+imply `a + b + 1 >= 1` in 64-bit wrapping arithmetic. The query is satisfiable,
+the model is real, and the `Sat => unproven` policy correctly declines to claim a
+proof.
+
+The discriminating probe:
+
+| defn | verdict |
+|---|---|
+| `[a >= 0 && a < 1000000 && b >= 0 && b < 1000000][term >= 1] { term a + b + 1; }` | **proven** |
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` | unproven |
+
+Bounding the operands rules out wraparound, and the same goal then proves. So:
+
+1. **Facts reach the solver.** The `path_constraints` plumbing and
+   `build_vc_query` were never at fault.
+2. **The relational encoding is correct** (`bvsge`/`bvadd` are exact).
+3. The earlier claim that "every C4 SMT success was a fact-free tautology" was
+   also **wrong**: `a + a == 2 * a` holds under wraparound, so those tests were
+   correct evidence — they simply never needed the preconditions.
+
+**The real lesson is a modelling constraint, not a bug:** Briev's `Int` is a
+wrapping 64-bit bitvector, so *no* arithmetic postcondition that can overflow is
+provable from unbounded range facts. Contracts and loop invariants must bound the
+values they reason about (e.g. `acc >= 0 && acc <= N`) or they are — correctly —
+refused.
+
+Recorded so this is not re-investigated: a future reader finding `needs_facts`
+unproven should add the bound first, not file a bug.
