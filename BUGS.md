@@ -12996,7 +12996,7 @@ element type vs the expression type instead of an assumed Int source.
 
 ## 2026-11-12 — forwarding a callback parameter emits an i64 where the callee expects `ptr`
 
-**Status:** open — fix in progress.
+**Status:** FIXED (2026-11-12) — the call-argument chain in `emit_expr.rs` now emits `inttoptr` when a `Type::Function` argument is the `%acN` handle and the callee declares `ptr`. Verified: the repro compiles to a library, a C host gets `agree=-1 diverge=10`, and `forwarded_fn_param_is_converted_to_ptr` pins it.
 
 ### Symptom
 
