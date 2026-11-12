@@ -1,3 +1,29 @@
+## 2026-11-12 — Nested enum constructor underallocates collection element images
+
+**Symptom.** A list containing an outer enum whose payload is another enum
+prints the expected result but Valgrind reports an eight-byte write/read beyond
+a sixteen-byte allocation. Two- and three-level nested enum images reproduce.
+
+**Cause.** `emit_enum_construct` sized allocation from ambient
+`expected_enum_type`, then resolved the actual constructor enum only for payload
+emission. Collection element context can be absent or stale, so allocation fell
+back to two words while payload emission wrote three or more.
+
+A second mismatch appeared at three levels: depth-limited planning truncated
+the nested image, while its constructor and match consumer used its standalone
+layout. Inline selection now requires the complete nested enum tree to fit the
+depth cap; otherwise that nested value is boxed intact.
+
+**Repair.** Resolve the constructor enum before destination selection and use
+that same concrete type for image size, caller-result eligibility and payload
+layout. Regression: `tests/nested_enum_allocation.rs` exercises native AST/HIR,
+O0/O3 and Valgrind when installed.
+
+**Status.** Fixed 2026-11-12 on `fix/nested-enum-allocation`. Native AST/HIR
+O0/O3 Valgrind regressions and the instrumented application journey pass. Full
+gate has nine failures reproduced on unchanged base `94eb8583`; details are in
+`docs/plans/2026-11-12-nested-enum-allocation.md`.
+
 ## 2026-11-12 — Scalar element reads inherit their container's storage provenance
 
 **Symptom.** A function that reads a scalar element out of a grown collection
