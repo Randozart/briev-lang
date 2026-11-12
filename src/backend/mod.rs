@@ -685,7 +685,16 @@ pub fn analyze_program(
         task_segments,
         boundary_ownership,
         destination_ownership,
-        electronics: crate::analysis::electronics::derive_netlist(items),
+        electronics: {
+            // 2026-11-12 (H5): HIR netlist is the default; the AST result is
+            // the debug oracle while BRIEV_HIR_EMIT is on.
+            let h = crate::hir::electronics::derive_netlist(&hir);
+            if hir_emit_enabled() {
+                let ast = crate::analysis::electronics::derive_netlist(items);
+                debug_assert_eq!(h, ast, "HIR/AST electronics drift");
+            }
+            h
+        },
         defn_liveness,
         dyn_collection_info,
         hir,

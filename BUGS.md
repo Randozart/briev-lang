@@ -12993,3 +12993,55 @@ conversion (or a single fpext only for narrower float formats).
 element type vs the expression type instead of an assumed Int source.
 **Status:** OPEN. Workaround: build the float list through a typed buffer
 (`Malloc#` + `Ptr<Float>`), as `briev/ml/tensor.bv` does.
+
+## 2026-11-12 — forwarding a callback parameter emits an i64 where the callee expects `ptr`
+
+**Status:** FIXED (2026-11-12) — the call-argument chain in `emit_expr.rs` now emits `inttoptr` when a `Type::Function` argument is the `%acN` handle and the callee declares `ptr`. Verified: the repro compiles to a library, a C host gets `agree=-1 diverge=10`, and `forwarded_fn_param_is_converted_to_ptr` pins it.
+
+### Symptom
+
+A defn that takes a fn-typed parameter and forwards it to another Briev
+function produces IR the verifier rejects:
+
+```
+opt: s.ll:6523:33: error: '%ac0' defined with type 'i64' but expected 'ptr'
+  %t0 = call i64 @verify_at(ptr %ac0, ptr %ac1, i64 %arg2, i64 %t4)
+```
+
+Minimal repro (`/tmp/a4/s.bv`):
+
+```briev
+export defn verify_samples(original: (Int) -> Int, shadow: (Int) -> Int, n: Int) -> Int {
+    term verify_at(original, shadow, n, 0);
+};
+
+defn verify_at(original: (Int) -> Int, shadow: (Int) -> Int, n: Int, i: Int) -> Int {
+    when i >= n { term -1; };
+    let expected: Int = shadow(i);
+    let actual: Int = original(i);
+    when actual != expected { term i; };
+    term verify_at(original, shadow, n, i + 1);
+};
+```
+
+### Cause
+
+At function entry a ptr-typed ABI parameter is canonically stored as an i64
+handle (`%ac0 = ptrtoint ptr %arg0 to i64`) because locals are i64. At a call
+site the argument is then formatted with the declared parameter's LLVM type
+(`ptr` for `Type::Function`) while the value register is still that i64 — no
+`inttoptr` is emitted on the forwarding path.
+
+### Fix
+
+Coerce the argument to the declared parameter type at the call-argument site:
+when the parameter is `Type::Function` and the register is i64, emit
+`inttoptr i64 %x to ptr` and pass the pointer. Callbacks therefore remain
+first-class values that can be forwarded and recursed through.
+
+### Acceptance
+
+`/tmp/a4/s.bv` compiles to a library; a C host calling
+`verify_samples(original, shadow, n)` gets `-1` when all samples agree and the
+first divergent sample index otherwise. Regression test asserting the call site
+passes `ptr`, not an i64, for a forwarded fn-typed parameter.

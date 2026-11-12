@@ -7533,6 +7533,21 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let conv = self.fun.gen_reg();
                     writeln!(out, "{}{} = trunc i64 {} to {}", indent, conv, reg.name, expected_ty).ok();
                     call_args.push(format!("{} {}", expected_ty, conv));
+                } else if matches!(reg.ty, Type::Function(_, _))
+                    && expected_ty == "ptr"
+                    && reg.name.starts_with("%ac")
+                {
+                    // 2026-11-12 (forwarded callbacks): a fn-typed parameter is
+                    // ptrtoint'd to the i64 handle %acN at entry, and every
+                    // internal fn value is an i64 handle. The declared
+                    // parameter type is `ptr`, so the handle must be converted
+                    // back at the call: passing it raw made `opt` reject the
+                    // module ("'%ac0' defined with type 'i64' but expected
+                    // 'ptr'") and made forwarding/recursing through a callback
+                    // impossible.
+                    let conv = self.fun.gen_reg();
+                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, conv, reg.name).ok();
+                    call_args.push(format!("ptr {}", conv));
                 } else {
                     call_args.push(format!("{} {}", actual_ty, reg.name));
                 }

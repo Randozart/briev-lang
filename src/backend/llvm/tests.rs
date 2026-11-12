@@ -15062,3 +15062,63 @@ node run [tick == 0][tick == 1] { sink = guards_only(7); tick = 1; term; };
         "fallthrough must return the typed zero:\n{body}"
     );
 }
+
+/// 2026-11-12 (FFI callback ABI): an exported defn taking fn-typed parameters
+/// must adapt the host's flat C function pointer into Briev's closure slot via
+/// a generated trampoline — otherwise the slot load reads machine code as a
+/// function pointer and the host callback SIGSEGVs.
+#[test]
+fn exported_fn_param_gets_c_callback_trampoline() {
+    let src = r#"
+export defn apply_cb(f: (Int) -> Int, x: Int) -> Int {
+    term f(x);
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    assert!(
+        ir.contains("apply_cb__c_cb0"),
+        "exported fn-typed param needs a C-callback trampoline:\n{ir}"
+    );
+    let wrapper = function_body(&ir, "@apply_cb(");
+    assert!(
+        wrapper.contains("ptr %cbslot0"),
+        "the wrapper must pass the adapted closure slot:\n{wrapper}"
+    );
+}
+
+/// 2026-11-12 (forwarded callbacks): forwarding a fn-typed parameter to
+/// another Briev function must convert the i64 handle back to `ptr`. Without
+/// it the module carries `call ... (ptr %ac0, ...)` where %ac0 is i64, `opt`
+/// rejects it ("defined with type 'i64' but expected 'ptr'"), and recursion
+/// through a callback is impossible.
+#[test]
+fn forwarded_fn_param_is_converted_to_ptr() {
+    let src = r#"
+export defn forward(f: (Int) -> Int, x: Int) -> Int {
+    term apply_one(f, x);
+};
+defn apply_one(f: (Int) -> Int, x: Int) -> Int {
+    term f(x);
+};
+"#;
+    let mut items = parse_bv_source(src);
+    let mut universe = crate::type_universe::TypeUniverse::new();
+    crate::backend::register_types::register_typedefs(&mut items, &mut universe, 64)
+        .expect("type registration failed");
+    let mut backend = LlvmBackend::new().with_type_universe(universe);
+    let ir = backend.generate(&items, None);
+    let body = function_body(&ir, "@forward__briev_internal(");
+    assert!(
+        body.contains("inttoptr i64"),
+        "forwarding must convert the i64 handle to ptr:\n{body}"
+    );
+    assert!(
+        body.contains("@apply_one(ptr "),
+        "the callee declares a ptr parameter:\n{body}"
+    );
+}
