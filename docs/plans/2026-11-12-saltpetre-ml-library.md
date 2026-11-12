@@ -94,7 +94,7 @@ VmRSS 163 MB (HWM 219 MB) — 8 MB under the pre-extraction plateau, from the
 cache-before-open ordering. Library conformance re-run green on the split
 signatures.
 
-## Next: tensor dims owner slot (queued, design)
+## Tensor dims owner slot (LANDED 2026-11-12, design as planned)
 
 Add `owns_dims: Int` to `Tensor`. Constructors that build a fresh dims list
 (`tensor_new`/`tensor_named`/`tensor_named_owned`/`tensor_reshape`-style)
@@ -108,3 +108,15 @@ is still correct (drop happens only via tensor_drop). Gates: conformance
 corpus, kiosk native/ML/VAD, 300-call soak — the target is the discrete
 staging (both daemon builds stage; fewer per-request coll allocations
 should shrink the staged block).
+
+Landed verbatim per the design, plus one comparison-view subtlety the debug
+drift gate caught: pass-inserted releases are bare-identifier calls, so
+`tensor_drop`'s authored `coll_destroy(dims_handle)` grew a load-bearing
+no-op `as Int` cast to stay distinguishable in `storage_release_view`.
+Executor gains 19 `tensor_take` builder sites (fresh od/xd/dims); the seven
+`x.dims` elementwise views and the cached-graph input wrap stay borrow;
+conv/gemm patch temporaries now die via `tensor_drop` (object + owned dims,
+not data-only). Gates: 3756 lib, conformance corpus, kiosk native
+raw=0/jpeg=2, ML smoke, VAD parity, dashboard IR verify, 300-call soak
+VmRSS 171 / HWM 227 — at-or-below the pre-cache control (173/229) and well
+under the staged 189/245 cache-build run.

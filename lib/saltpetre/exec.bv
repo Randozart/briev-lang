@@ -163,7 +163,7 @@ defn conv1d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>)
         };
     };
     let od: List<Int> = [n, oc, out_len];
-    let result: Tensor = tensor_named("", od, positions * oc);
+    let result: Tensor = tensor_take("", od, positions * oc);
     let rp: Ptr<Float> = result.ptr as Ptr<Float>;
     let has_bias: Bool = is_ok(bias);
     foreach oi in 0..oc {
@@ -177,7 +177,7 @@ defn conv1d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>)
             rp[(ni * oc + oi) * out_len + sp] = bv + d;
         };
     };
-    tensor_free(patch);
+    tensor_drop(patch);
     term Ok(result);
 };
 
@@ -230,7 +230,7 @@ defn conv2d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>)
     };
 
     let od: List<Int> = [n, oc, out_h, out_w];
-    let result: Tensor = tensor_named("", od, n * oc * out_h * out_w);
+    let result: Tensor = tensor_take("", od, n * oc * out_h * out_w);
     let wp: Ptr<Float> = wt.ptr as Ptr<Float>;
     let rp: Ptr<Float> = result.ptr as Ptr<Float>;
     let has_bias: Bool = is_ok(bias);
@@ -245,7 +245,7 @@ defn conv2d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>)
             rp[(ni * oc + oi) * out_plane + sp] = bv + d;
         };
     };
-    tensor_free(patch);
+    tensor_drop(patch);
     term Ok(result);
 };
 
@@ -279,7 +279,7 @@ defn gemm(node: OnnxNode, a: Tensor, b: Tensor, c: Result<Tensor, String>) -> Re
     when trans_b != 0 { kb = bd[1]; n = bd[0]; };
     when k != kb { term Err("Gemm inner dimension mismatch"); };
     let od: List<Int> = [m, n];
-    let result: Tensor = tensor_named("", od, m * n);
+    let result: Tensor = tensor_take("", od, m * n);
     foreach i in 0..m {
         foreach j in 0..n {
             let acc: Float = gemm_dot(a.ptr, b.ptr, i, j, k, trans_a, trans_b, ad[1], bd[1]);
@@ -330,7 +330,7 @@ defn maxpool(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
     let ow: Int = (w + ps[1] + ps[3] - kw) / sw + 1;
     let od: List<Int> = [n, c, oh, ow];
     let total: Int = n * c * oh * ow;
-    let result: Tensor = tensor_named("", od, total);
+    let result: Tensor = tensor_take("", od, total);
     let xp: Ptr<Float> = x.ptr as Ptr<Float>;
     let rp: Ptr<Float> = result.ptr as Ptr<Float>;
     let out_plane: Int = oh * ow;
@@ -378,7 +378,7 @@ defn tensor_reduce_mean(node: OnnxNode, x: Tensor, axes_t: Result<Tensor, String
     };
     let on: Int = dims_product(od);
     let dst: List<Int> = strides_of(od);
-    let sums: Tensor = tensor_named("", od, on);
+    let sums: Tensor = tensor_take("", od, on);
     foreach i in 0..on { tensor_set(sums, i, 0.0); };
     foreach idx in 0..x.n {
         let rem: Int = idx;
@@ -399,7 +399,7 @@ defn tensor_reduce_mean(node: OnnxNode, x: Tensor, axes_t: Result<Tensor, String
         tensor_set(sums, oi, tensor_get(sums, oi) + tensor_get(x, idx));
     };
     let count: Int = x.n / on;
-    let result: Tensor = tensor_named("", od, on);
+    let result: Tensor = tensor_take("", od, on);
     foreach i in 0..on {
         tensor_set(result, i, tensor_get(sums, i) / (count as Float));
     };
@@ -414,7 +414,7 @@ defn global_avg(x: Tensor) -> Result<Tensor, String> {
     let c: Int = xd[1];
     let plane: Int = xd[2] * xd[3];
     let od: List<Int> = [n, c, 1, 1];
-    let result: Tensor = tensor_named("", od, n * c);
+    let result: Tensor = tensor_take("", od, n * c);
     let xp: Ptr<Float> = x.ptr as Ptr<Float>;
     foreach nc in 0..(n * c) {
         tensor_set(result, nc, plane_sum(x.ptr, nc * plane, plane) / (plane as Float));
@@ -448,7 +448,7 @@ defn reshape(node: OnnxNode, x: Tensor, shape_t: Tensor) -> Result<Tensor, Strin
         when v == -1 { v = x.n / known; };
         dims <- v;
     };
-    let result: Tensor = tensor_named("", dims, x.n);
+    let result: Tensor = tensor_take("", dims, x.n);
     foreach i in 0..x.n {
         tensor_set(result, i, tensor_get(x, i));
     };
@@ -473,7 +473,7 @@ defn batchnorm(node: OnnxNode, x: Tensor, scale: Tensor, bias: Tensor, mean: Ten
     let c: Int = xd[1];
     let plane: Int = x.n / (n * c);
     let eps: Float = attr_float(node, "epsilon", 0.00001);
-    let result: Tensor = tensor_named("", xd, x.n);
+    let result: Tensor = tensor_take("", xd, x.n);
     let xp: Ptr<Float> = x.ptr as Ptr<Float>;
     let bp: Ptr<Float> = result.ptr as Ptr<Float>;
     foreach ci in 0..c {
@@ -495,7 +495,7 @@ defn flatten(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
         when i >= axis { second = second * xd[i]; };
     };
     let od: List<Int> = [first, second];
-    let result: Tensor = tensor_named("", od, x.n);
+    let result: Tensor = tensor_take("", od, x.n);
     foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
     term Ok(result);
 };
@@ -574,7 +574,7 @@ defn tensor_unsqueeze(x: Tensor, axes: List<Int>) -> Tensor {
         when is_axis { od <- 1; };
         when !is_axis { od <- x.dims[k]; k = k + 1; };
     };
-    let result: Tensor = tensor_named("", od, x.n);
+    let result: Tensor = tensor_take("", od, x.n);
     foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
     term result;
 };
@@ -592,7 +592,7 @@ defn tensor_squeeze(x: Tensor, axes: List<Int>) -> Tensor {
         };
         when !drop { od <- x.dims[pos]; };
     };
-    let result: Tensor = tensor_named("", od, x.n);
+    let result: Tensor = tensor_take("", od, x.n);
     foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
     term result;
 };
@@ -658,7 +658,7 @@ defn tensor_slice(node: OnnxNode, x: Tensor, starts: Tensor, ends_t: Tensor, axe
         od <- d;
     };
     let n: Int = dims_product(od);
-    let result: Tensor = tensor_named("", od, n);
+    let result: Tensor = tensor_take("", od, n);
     foreach idx in 0..n {
         let rem: Int = idx;
         let in_idx: Int = 0;
@@ -742,7 +742,7 @@ defn tensor_binary(x: Tensor, y: Tensor, op: Int) -> Result<Tensor, String> {
             od <- d;
         };
         let n: Int = dims_product(od);
-        let result: Tensor = tensor_named("", od, n);
+        let result: Tensor = tensor_take("", od, n);
         foreach i in 0..n {
             let xa: Int = bcast_index(i, od, x.dims);
             let ya: Int = bcast_index(i, od, y.dims);
@@ -785,7 +785,7 @@ defn tensor_gather(node: OnnxNode, x: Tensor, idx_t: Tensor) -> Result<Tensor, S
     let dst: List<Int> = strides_of(x.dims);
     let ist: List<Int> = strides_of(idx_t.dims);
     let n: Int = dims_product(od);
-    let result: Tensor = tensor_named("", od, n);
+    let result: Tensor = tensor_take("", od, n);
     foreach out_idx in 0..n {
         let rem: Int = out_idx;
         let data_idx: Int = 0;
@@ -860,7 +860,7 @@ defn tensor_concat(node: OnnxNode, parts: List<Tensor>) -> Result<Tensor, String
     foreach k in 0..parts.Count#() { total = total + parts[k].dims[an]; };
     od[an] = total;
     let n: Int = dims_product(od);
-    let result: Tensor = tensor_named("", od, n);
+    let result: Tensor = tensor_take("", od, n);
     let offset: Int = 0;
     foreach k in 0..parts.Count#() {
         let t: Tensor = parts[k];
@@ -895,7 +895,7 @@ defn tensor_pad(node: OnnxNode, x: Tensor, pads: Tensor, value: Float) -> Tensor
         od <- x.dims[i] + before + after;
     };
     let n: Int = dims_product(od);
-    let result: Tensor = tensor_named("", od, n);
+    let result: Tensor = tensor_take("", od, n);
     foreach idx in 0..n {
         let rem: Int = idx;
         let in_idx: Int = 0;
@@ -947,7 +947,7 @@ defn transpose4(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
     let d: List<Int> = x.dims;
     let od: List<Int> = [d[p[0]], d[p[1]], d[p[2]], d[p[3]]];
     let n: Int = x.n;
-    let result: Tensor = tensor_named("", od, n);
+    let result: Tensor = tensor_take("", od, n);
     foreach idx in 0..n {
         let o3: Int = idx % od[3];
         let r3: Int = idx / od[3];
@@ -987,7 +987,7 @@ defn resize_nearest(node: OnnxNode, x: Tensor, scales: Tensor) -> Result<Tensor,
     let oh: Int = (d[2] as Float * tensor_get(scales, 2)) as Int;
     let ow: Int = (d[3] as Float * tensor_get(scales, 3)) as Int;
     let od: List<Int> = [d[0], d[1], oh, ow];
-    let result: Tensor = tensor_named("", od, d[0] * d[1] * oh * ow);
+    let result: Tensor = tensor_take("", od, d[0] * d[1] * oh * ow);
     let sh: Float = tensor_get(scales, 2);
     let sw: Float = tensor_get(scales, 3);
     foreach idx in 0..result.n {

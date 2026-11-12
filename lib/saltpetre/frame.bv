@@ -57,7 +57,7 @@ defn image_to_tensor(path: String) -> Result<Tensor, String> {
     let img: DecodedImage = unwrap(dec);
     when img.width <= 0 || img.height <= 0 { term Err("empty image"); };
     let px: Ptr<Bit<8>> = img.rgb as Ptr<Bit<8>>;
-    let tensor: Tensor = tensor_named("input", [1, 3, FACE_SIZE, FACE_SIZE], 3 * FACE_SIZE * FACE_SIZE);
+    let tensor: Tensor = tensor_take("input", [1, 3, FACE_SIZE, FACE_SIZE], 3 * FACE_SIZE * FACE_SIZE);
     let sx_scale: Float = (img.width as Float) / (FACE_SIZE as Float);
     let sy_scale: Float = (img.height as Float) / (FACE_SIZE as Float);
     foreach oy in 0..FACE_SIZE {

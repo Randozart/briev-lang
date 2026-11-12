@@ -8,6 +8,11 @@
 obj Tensor {
     name: String;
     dims: List<Int>;
+    // 2026-11-12 (dims owner slot): 1 = this Tensor built (and owns) its
+    // dims list; tensor_drop destroys the list. 0 = the dims list is
+    // borrowed (elementwise views, copy_owned, rename, cached-graph input
+    // wraps) and must outlive this handle.
+    owns_dims: Int;
     n: Int;
     ptr: Int;
     arena: Bool;
@@ -63,28 +68,39 @@ defn dims_product(dims: List<Int>) -> Int {
 
 defn tensor_empty() -> Tensor {
     let dims: List<Int> = [];
-    term Tensor { name: "", dims: dims, n: 0, ptr: 0, arena: false };
+    term Tensor { name: "", dims: dims, owns_dims: 1, n: 0, ptr: 0, arena: false };
 };
 
 defn tensor_new(n: Int) [n >= 0][true] -> Tensor {
     let (addr, in_arena) = tensor_alloc(n);
     let dims: List<Int> = [];
-    term Tensor { name: "", dims: dims, n: n, ptr: addr, arena: in_arena };
+    term Tensor { name: "", dims: dims, owns_dims: 1, n: n, ptr: addr, arena: in_arena };
 };
 
+// tensor_named — BORROW constructor: the dims list is not owned; the handle
+// must outlive the returned Tensor (elementwise views wrap the input's
+// dims; execute_env_inputs wraps cached-graph dims). Builders with a fresh
+// list use tensor_take.
 defn tensor_named(name: String, dims: List<Int>, n: Int) -> Tensor {
     let (addr, in_arena) = tensor_alloc(n);
-    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: in_arena };
+    term Tensor { name: name, dims: dims, owns_dims: 0, n: n, ptr: addr, arena: in_arena };
+};
+
+// tensor_take — OWNING constructor: the returned Tensor owns the dims list
+// and tensor_drop destroys it. For freshly built shape lists.
+defn tensor_take(name: String, dims: List<Int>, n: Int) -> Tensor {
+    let (addr, in_arena) = tensor_alloc(n);
+    term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: in_arena };
 };
 
 defn tensor_named_owned(name: String, dims: List<Int>, n: Int) -> Tensor {
     let addr: Int = tensor_alloc_owned(n);
-    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: false };
+    term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: false };
 };
 
 defn tensor_named4(name: String, dims: List<Int>, n: Int) -> Tensor {
     let addr: Int = tensor_alloc_owned(n);
-    term Tensor { name: name, dims: dims, n: n, ptr: addr, arena: false };
+    term Tensor { name: name, dims: dims, owns_dims: 1, n: n, ptr: addr, arena: false };
 };
 
 defn string_free(s: String) -> Void {
@@ -96,6 +112,16 @@ defn string_free(s: String) -> Void {
 
 defn tensor_drop(t: Tensor) -> Void {
     tensor_free(t);
+    // Dims owner slot: destroy the shape list only when this handle built
+    // it. coll_destroy is arena-aware — request-arena list blocks are
+    // skipped (the block owns them), malloc'd ones are freed.
+    when t.owns_dims != 0 {
+        let dims_handle: Int = (t.dims as Data) as Int;
+        // The `as Int` is load-bearing for the H4.2 comparison view: pass-
+        // inserted releases are bare-identifier calls, authored ones carry a
+        // cast — the view strips only the bare shape.
+        when dims_handle != 0 { coll_destroy(dims_handle as Int); };
+    };
     when t.ptr != 0 {
         Free#(((t as Data) as Int) as Ptr<Bit<8>>);
     };
@@ -104,7 +130,7 @@ defn tensor_drop(t: Tensor) -> Void {
 
 defn tensor_copy_owned(t: Tensor) -> Tensor {
     let addr: Int = tensor_alloc_owned(t.n);
-    let copy: Tensor = Tensor { name: t.name, dims: t.dims, n: t.n, ptr: addr, arena: false };
+    let copy: Tensor = Tensor { name: t.name, dims: t.dims, owns_dims: 0, n: t.n, ptr: addr, arena: false };
     foreach i in 0..t.n { tensor_set(copy, i, tensor_get(t, i)); };
     term copy;
 };
@@ -128,7 +154,7 @@ defn tensor_set(t: Tensor, i: Int, v: Float) [i >= 0 && i < t.n][true] -> Void {
 };
 
 defn tensor_rename(t: Tensor, name: String) -> Tensor {
-    term Tensor { name: name, dims: t.dims, n: t.n, ptr: t.ptr, arena: t.arena };
+    term Tensor { name: name, dims: t.dims, owns_dims: 0, n: t.n, ptr: t.ptr, arena: t.arena };
 };
 
 defn tensor_byte_store(t: Tensor, at: Int, v: Int) -> Void {
