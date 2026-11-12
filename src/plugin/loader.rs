@@ -11,7 +11,7 @@
 // retained but will be replaced by the stage-based architecture in
 // Phase 5.
 
-use super::{Plugin, PluginManager, PluginEntry};
+use super::{Plugin, PluginEntry, PluginManager};
 use crate::ast::{StageBlock, StageKind, TopLevel};
 use crate::macros;
 use crate::parser::Parser;
@@ -61,7 +61,9 @@ impl StageBlockPlugin {
     /// Retrieve the PluginManager as &mut, if set.
     fn get_pm(&self) -> Option<&mut PluginManager> {
         let ptr = self.pm_ptr.get();
-        if ptr == 0 { return None; }
+        if ptr == 0 {
+            return None;
+        }
         Some(unsafe { &mut *(ptr as *mut PluginManager) })
     }
 
@@ -74,9 +76,7 @@ impl StageBlockPlugin {
         universe: &mut TypeUniverse,
     ) -> Result<(), String> {
         let mut pm = self.get_pm();
-        macros::eval::evaluate_stage_block(
-            &self.body, program, universe, self.stage, &mut pm,
-        )
+        macros::eval::evaluate_stage_block(&self.body, program, universe, self.stage, &mut pm)
     }
 }
 
@@ -143,13 +143,25 @@ const STAGE_DIRS: &[(&str, StageKind)] = &[
 /// `.bv` file in the stage directories can contain one or more $(Stage)
 /// blocks. The plugin name is derived from the filename and a block
 /// index to ensure uniqueness.
-pub fn discover_system_plugins(mgr: &mut PluginManager) {
-    let cwd_base = Path::new("plugins");
-    let base = if cwd_base.is_dir() {
-        cwd_base.to_path_buf()
-    } else {
-        crate::resource_root().join("plugins")
+/// Discover the system plugins that ship beside the compiler.
+///
+/// 2026-11-12 (C2c, relocatability): returns `Err` when the resource tree holds
+/// no plugin directory, because `plugins/parsed/` *is* the prelude. Compiling
+/// without it does not fail — it silently degrades the type system (a return
+/// type declared `Float` starts receiving `Int`), so an incomplete install must
+/// be loud rather than subtly wrong.
+pub fn discover_system_plugins(mgr: &mut PluginManager) -> Result<(), String> {
+    let root = crate::resource_root();
+    let Some(base) = pick_plugins_base(&root, Path::new(".")) else {
+        return Err(format!(
+            "no system plugin directory: looked for '{}' and './plugins'. The \
+             prelude lives there, so type-checking cannot run without it — ship \
+             the resource tree (lib, config, glue, std, spec, plugins) beside \
+             the binary, or point BRIEV_HOME at it.",
+            root.join("plugins").display()
+        ));
     };
+    let mut registered = 0usize;
     for (dir_name, stage) in STAGE_DIRS {
         let dir = base.join(dir_name);
         if !dir.is_dir() {
@@ -174,7 +186,10 @@ pub fn discover_system_plugins(mgr: &mut PluginManager) {
             let tokens = match crate::lexer::tokenize(&source) {
                 Ok(t) => t,
                 Err(_) => {
-                    eprintln!("warning: system plugin '{}' failed to tokenize, skipping", path.display());
+                    eprintln!(
+                        "warning: system plugin '{}' failed to tokenize, skipping",
+                        path.display()
+                    );
                     continue;
                 }
             };
@@ -182,13 +197,18 @@ pub fn discover_system_plugins(mgr: &mut PluginManager) {
             let items = match parser.parse_program() {
                 Ok(items) => items,
                 Err(e) => {
-                    eprintln!("warning: system plugin '{}' parse error: {}, skipping", path.display(), e);
+                    eprintln!(
+                        "warning: system plugin '{}' parse error: {}, skipping",
+                        path.display(),
+                        e
+                    );
                     continue;
                 }
             };
 
             // Extract StageBlock top-levels and register each.
-            let file_stem = path.file_stem()
+            let file_stem = path
+                .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
@@ -202,19 +222,41 @@ pub fn discover_system_plugins(mgr: &mut PluginManager) {
                     } else {
                         format!("{}-{}", file_stem, block_idx)
                     };
-                    let plugin = StageBlockPlugin::new(
-                        plugin_name,
-                        block.clone(),
-                    );
-                    mgr.register_with_priority(
-                        Box::new(plugin),
-                        block.priority,
-                    );
+                    let plugin = StageBlockPlugin::new(plugin_name, block.clone());
+                    mgr.register_with_priority(Box::new(plugin), block.priority);
                     block_idx += 1;
+                    registered += 1;
                 }
             }
         }
     }
+    if registered == 0 {
+        return Err(format!(
+            "system plugin directory '{}' holds no $(Stage) blocks — the prelude \
+             is missing, so type-checking would silently degrade.",
+            base.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Pick the directory holding the system plugin stages (`plugins/<stage>/`).
+///
+/// 2026-11-12 (C2c, relocatability): the resource root wins. Preferring the
+/// working directory made the *type system* depend on where the user stood: a
+/// compiler shipped outside its build tree found `./plugins` missing and typed
+/// every numeric literal as `Float`. `./plugins` survives only as a development
+/// fallback for running a binary from a scratch checkout.
+fn pick_plugins_base(root: &Path, cwd: &Path) -> Option<std::path::PathBuf> {
+    let from_root = root.join("plugins");
+    if from_root.is_dir() {
+        return Some(from_root);
+    }
+    let from_cwd = cwd.join("plugins");
+    if from_cwd.is_dir() {
+        return Some(from_cwd);
+    }
+    None
 }
 
 // ── Inline Plugin Extraction ──────────────────────────────────────────
@@ -228,10 +270,7 @@ pub fn discover_system_plugins(mgr: &mut PluginManager) {
 ///
 /// 2026-07-15: Phase 2 — Inline $(Stage) blocks become StageBlockPlugin
 /// instances. The block is removed from the AST after registration.
-pub fn extract_inline_stage_blocks(
-    program: &mut Vec<TopLevel>,
-    mgr: &mut PluginManager,
-) {
+pub fn extract_inline_stage_blocks(program: &mut Vec<TopLevel>, mgr: &mut PluginManager) {
     let mut blocks: Vec<(usize, StageBlock)> = Vec::new();
     for (i, item) in program.iter().enumerate() {
         if let TopLevel::StageBlock(block) = item {
@@ -262,11 +301,13 @@ pub fn extract_inline_stage_blocks(
     for (i, item) in program.iter().enumerate() {
         match item {
             TopLevel::CompileTimeDefn(d) => {
-                mgr.fn_registry.insert(d.name.clone(), crate::plugin::FnDef::Defn(d.clone()));
+                mgr.fn_registry
+                    .insert(d.name.clone(), crate::plugin::FnDef::Defn(d.clone()));
                 fn_indices.push(i);
             }
             TopLevel::CompileTimeTxn(t) => {
-                mgr.fn_registry.insert(t.name.clone(), crate::plugin::FnDef::Txn(t.clone()));
+                mgr.fn_registry
+                    .insert(t.name.clone(), crate::plugin::FnDef::Txn(t.clone()));
                 fn_indices.push(i);
             }
             _ => {}
@@ -283,11 +324,13 @@ pub fn extract_inline_stage_blocks(
     for (i, item) in program.iter().enumerate() {
         match item {
             TopLevel::CompileTimeLet(name, expr) => {
-                mgr.pending_comptime.insert(name.clone(), (expr.clone(), false));
+                mgr.pending_comptime
+                    .insert(name.clone(), (expr.clone(), false));
                 comptime_indices.push(i);
             }
             TopLevel::CompileTimeConst(name, expr) => {
-                mgr.pending_comptime.insert(name.clone(), (expr.clone(), true));
+                mgr.pending_comptime
+                    .insert(name.clone(), (expr.clone(), true));
                 comptime_indices.push(i);
             }
             _ => {}
@@ -310,7 +353,9 @@ pub struct ValidationPlugin {
 
 impl ValidationPlugin {
     pub fn new() -> Self {
-        ValidationPlugin { name: "builtin:validation".into() }
+        ValidationPlugin {
+            name: "builtin:validation".into(),
+        }
     }
 }
 
@@ -320,7 +365,12 @@ impl Plugin for ValidationPlugin {
     }
 
     fn stages(&self) -> Vec<StageKind> {
-        vec![StageKind::Parsed, StageKind::Typed, StageKind::Generated, StageKind::Optimized]
+        vec![
+            StageKind::Parsed,
+            StageKind::Typed,
+            StageKind::Generated,
+            StageKind::Optimized,
+        ]
     }
 }
 
@@ -402,11 +452,34 @@ mod tests {
     }
 
     #[test]
-    fn test_discover_system_plugins_no_dir() {
-        // No plugins/ directory exists yet — should not panic.
-        let mut mgr = PluginManager::new();
-        discover_system_plugins(&mut mgr);
-        // Just check no crash. Plugins may or may not be found.
+    fn system_plugins_prefer_the_resource_root() {
+        // 2026-11-12 (C2c): the resource root wins, so a relocated compiler does
+        // not depend on the working directory for its prelude.
+        let tmp = std::env::temp_dir().join(format!("briev-plug-{}", std::process::id()));
+        let root = tmp.join("root");
+        let cwd = tmp.join("cwd");
+        std::fs::create_dir_all(root.join("plugins")).expect("root plugins");
+        std::fs::create_dir_all(cwd.join("plugins")).expect("cwd plugins");
+        let picked = pick_plugins_base(&root, &cwd).expect("a base must be found");
+        assert_eq!(picked, root.join("plugins"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn system_plugins_fall_back_to_the_cwd() {
+        // A scratch checkout keeps working: ./plugins is the fallback.
+        let tmp = std::env::temp_dir().join(format!("briev-plugcwd-{}", std::process::id()));
+        let root = tmp.join("root");
+        let cwd = tmp.join("cwd");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(cwd.join("plugins")).expect("cwd plugins");
+        let picked = pick_plugins_base(&root, &cwd).expect("cwd fallback");
+        assert_eq!(picked, cwd.join("plugins"));
+        assert!(
+            pick_plugins_base(&root, &root).is_none(),
+            "no plugins anywhere must be None, never a silent empty scan"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

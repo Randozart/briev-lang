@@ -1050,11 +1050,12 @@ pub fn check_data_source(file_path: &str, source: &str) -> Result<(), String> {
     }
 }
 
-pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManager {
+pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> Result<PluginManager, String> {
     let mut pm = PluginManager::new();
 
-    // Discover system plugins from plugins/{front,mid,post,back}/
-    discover_system_plugins(&mut pm);
+    // Discover system plugins from plugins/<stage>/ — the prelude lives there,
+    // so a missing resource tree is a hard error, not a silently untyped build.
+    discover_system_plugins(&mut pm)?;
 
     // Register built-in Rust plugins
     pm.register(Box::new(crate::plugin::env_plugin::EnvPlugin));
@@ -1109,7 +1110,7 @@ pub fn build_plugin_manager(file_path: &str, opts: &BuildOptions) -> PluginManag
     };
     pm = pm.with_sandbox(sandbox);
 
-    pm
+    Ok(pm)
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the per-module plugin factory — given a
@@ -1140,7 +1141,7 @@ pub fn module_plugin_factory(
         } else {
             module_path
         };
-        Ok(build_plugin_manager(plugin_path, &opts))
+        build_plugin_manager(plugin_path, &opts)
     })
 }
 
@@ -1149,7 +1150,7 @@ pub fn compile_to_typed(
     source: &str,
     opts: &BuildOptions,
 ) -> Result<(Vec<TopLevel>, TypeUniverse), String> {
-    let mut pm = build_plugin_manager(file_path, opts);
+    let mut pm = build_plugin_manager(file_path, opts)?;
     let project_root =
         std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
@@ -1276,7 +1277,7 @@ fn parse_and_check(
     // divergence class is closed by sharing the pipeline).
     let preprocessed = preprocess_source_for_path(file_path, source)?;
     let mut source = preprocessed.briev_source;
-    let mut pm = build_plugin_manager(file_path, opts);
+    let mut pm = build_plugin_manager(file_path, opts)?;
     let project_root =
         std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();

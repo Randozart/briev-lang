@@ -443,7 +443,7 @@ impl Graph {
                 .filter_map(|root| self.allocation_owner.get(root))
                 .collect();
             if owners.iter().any(|owner| owner.as_str() == name) {
-                plan.barriers.insert(name.into());
+                plan.barriers.insert(name.to_string());
             }
             plan.reasons.insert(
                 name.into(),

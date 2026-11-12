@@ -1,3 +1,29 @@
+## 2026-11-12 — Nested enum constructor underallocates collection element images
+
+**Symptom.** A list containing an outer enum whose payload is another enum
+prints the expected result but Valgrind reports an eight-byte write/read beyond
+a sixteen-byte allocation. Two- and three-level nested enum images reproduce.
+
+**Cause.** `emit_enum_construct` sized allocation from ambient
+`expected_enum_type`, then resolved the actual constructor enum only for payload
+emission. Collection element context can be absent or stale, so allocation fell
+back to two words while payload emission wrote three or more.
+
+A second mismatch appeared at three levels: depth-limited planning truncated
+the nested image, while its constructor and match consumer used its standalone
+layout. Inline selection now requires the complete nested enum tree to fit the
+depth cap; otherwise that nested value is boxed intact.
+
+**Repair.** Resolve the constructor enum before destination selection and use
+that same concrete type for image size, caller-result eligibility and payload
+layout. Regression: `tests/nested_enum_allocation.rs` exercises native AST/HIR,
+O0/O3 and Valgrind when installed.
+
+**Status.** Fixed 2026-11-12 on `fix/nested-enum-allocation`. Native AST/HIR
+O0/O3 Valgrind regressions and the instrumented application journey pass. Full
+gate has nine failures reproduced on unchanged base `94eb8583`; details are in
+`docs/plans/2026-11-12-nested-enum-allocation.md`.
+
 ## 2026-11-12 — Scalar element reads inherit their container's storage provenance
 
 **Symptom.** A function that reads a scalar element out of a grown collection
@@ -13116,3 +13142,114 @@ first-class values that can be forwarded and recursed through.
 `verify_samples(original, shadow, n)` gets `-1` when all samples agree and the
 first divergent sample index otherwise. Regression test asserting the call site
 passes `ptr`, not an i64, for a forwarded fn-typed parameter.
+
+## 2026-11-12 — `brievc` is not relocatable (release artifacts cannot compile)
+
+**Status:** FIXED 2026-11-12 (`2172bbc6`, guarded by `tests/relocatability.rs`).
+Found while shipping a prebuilt compiler for `counsel`.
+
+### Symptom
+
+A `brievc` built and copied outside its build tree cannot compile a contract.
+The failure **cascades** — each directory added to the package reveals the next
+missing root, which is the signature of several independent path assumptions
+rather than one bug:
+
+| Package contents | Failure |
+|---|---|
+| `brievc` alone | `Cannot find module 'std/cli.bv'` (searches `/lib`, `/imports`, `/std`) |
+| + `lib/` `config/` `glue/` | `type mismatch: expected Float for term value vs declared return type, found Int` |
+| + `std/` `imports/` `spec/` … | `cannot read 'std/c/coll_arena.c'` |
+
+### Evidence — four negatives
+
+Each rules out the obvious explanation, so a packaging fix alone will not do:
+
+1. A **byte-identical** copy of `lib/` (0 symlinks, same file list, same size)
+   reproduces the typing failure → not a copy artifact.
+2. A self-contained package with the **source inside it** still fails → not the
+   source location.
+3. `--stdlib-path <packaged lib>` from a foreign cwd still fails → not the
+   stdlib root.
+4. `.config/` holds only `nextest.toml` → not type seeding.
+
+An apparent success with `--stdlib-path` turned out to be **confounded**: `/tmp`
+still held symlinks from an earlier experiment, so the compiler was reading the
+real repo tree. With them removed the failure returns.
+
+### Where the roots live
+
+- `src/import_resolver.rs` — `search_paths = ["lib", "imports", "."]`
+  (cwd-relative), `root_path` from the source file's directory, plus
+  exe-relative probes (~L400-430) that already include `exe_dir/lib`.
+- `src/config_resolver.rs` — `BRIEV_CONFIG_DIR` or defaults.
+- C sources read through a relative `std/c/...` path.
+
+### Proposed fix
+
+Resolve **one** resource root from `std::env::current_exe()` and use it for
+`lib/`, `config/`, `glue/`, `std/` and the C sources; allow a `BRIEV_ROOT`
+override for unusual layouts. Add an acceptance test that copies `brievc` + the
+resource tree to a temp dir, compiles a contract from an unrelated cwd, and
+asserts the verdicts equal the in-tree run — that test would catch all three
+cascade failures.
+
+## Resolution (2026-11-12)
+
+The `Int` → `Float` degradation *was* path resolution after all — just not the
+path anyone expected. `discover_system_plugins` looked for `./plugins` first and
+fell back to `<resource_root>/plugins`, then silently `continue`d when neither
+existed. But `plugins/parsed/prelude-native.bv` **is the prelude**: without it
+the fundamentals never load and the type checker, finding no `Int`, settles on
+`Float`. Nothing crashed; the compiler became quietly wrong. Because the working
+directory was consulted first, the identical tree typed differently depending
+on where you stood.
+
+That also explains the cascade: supplying `std/` and the rest changed which
+runs *looked* healthy, while the real dependency (`plugins/`) was never in any
+package. The earlier "`Int` → `Float` is independent of the stdlib root" note was
+true but misleading — it was independent of the *stdlib* root and entirely
+dependent on the *plugin* root.
+
+Rejected explanations, for the record: byte-identical `lib/` (correctly ruled
+out), source location (correctly ruled out), `--stdlib-path` (correctly ruled
+out), a `read_dir` ordering bug (wrong), and a missing C source (a later,
+unrelated failure that only appears once typing is fixed).
+
+Fix: the resource root wins; `./plugins` survives only as a development
+fallback; a missing or empty plugin directory is a hard error naming the
+expected path and `BRIEV_HOME`. `discover_system_plugins` now returns
+`Result`, propagated through `build_plugin_manager`'s call sites.
+
+How it was found, since the technique is reusable: `BRIEV_HOME=<original repo>`
+made the packaged binary compile from the package's own cwd, proving the
+resource *root* was the variable; then a bisect over the repo's 612 root
+entries converged on `plugins/` with "needed alone: YES". (The first bisect was
+inverted and converged on a random `.bc` with "needed alone: no" — the
+contradiction is what exposed the bug in the bisect rather than the compiler.)
+
+Release side: the artifact is now a tarball, `<prefix>/bin/brievc` +
+`<prefix>/share/briev/{lib,config,glue,std,spec,plugins}`, and the workflow
+extracts it in a temp directory and compiles from an unrelated cwd before
+publishing.
+## 2026-11-12 — HIR/AST reclamation-plan drift on `c_driver_boundary`
+
+**Symptom.** `cargo test --test c_driver_boundary` panics in debug builds:
+`HIR/AST reclamation-plan drift` (`src/backend/mod.rs`). AST barriers include
+`cstr_to_briev`, `greet`, `iter_{all,any,filter,flatmap,fold,map,partition,
+product,sum,take,zip}_loop`, `join`, `prefetch`, `rdtsc`, `rt_getcwd`,
+`stdout_byte`; the HIR plan omits them. Regions, reasons, known and
+closed_regions otherwise match. Reproduced identically on `main` and on the
+#92/#93 validation trees, so it is not caused by either PR.
+
+**Context.** Introduced by the stdlib coll-arena change (`376fd4d2`): generic
+`coll_resize` now calls the foreign `coll_alloc`, and `briev_rt.c` includes
+`lib/std/c/coll_arena.c`. `BRIEV_DIAG_RECLAMATION=1` shows which calls the HIR
+walk leaves unclassified; the likely divergence is the call/escape edges
+around the new foreign allocation in the HIR classification phase
+(`classify`'s retained/incoming branch, not registration).
+
+**Status.** OPEN. Debug-only (the plan oracle asserts); release compiles use
+the HIR plan silently. Fix before deleting the AST oracle. Repro:
+`cargo test --test c_driver_boundary boundary_types_roundtrip`.
+

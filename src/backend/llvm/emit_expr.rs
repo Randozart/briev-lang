@@ -6722,12 +6722,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // sub-patterns extract elements from that image symmetrically.
         let payload_exprs: Vec<Expr> = args.to_vec();
         let _ = payload_exprs;
+        // 2026-11-12: collection elements can have no ambient enum type, or
+        // inherit an enclosing value's type. Resolve the constructor before
+        // sizing/selecting its image so nested payload stores fit. Remove only
+        // when every constructor arrives with its verified concrete destination.
+        let saved_expected_enum = self.resolve_constructor_enum(v);
         let inline_slot = self.fun.enum_construct_slot.take();
         let out_used = inline_slot.is_none()
             && self.fun.enum_return_context
             && !self.fun.enum_out_busy
             && self.fun.enum_out_slot.is_some()
-            && self.fun.expected_enum_type.as_ref() == self.fun.enum_out_type.as_ref();
+            && saved_expected_enum.as_ref() == self.fun.enum_out_type.as_ref();
         if out_used {
             self.fun.enum_out_busy = true;
         }
@@ -6737,7 +6742,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             let slot = self.fun.enum_out_slot.clone().unwrap();
             (slot.clone(), slot)
         } else {
-            let bytes = self.enum_image_words(self.fun.expected_enum_type.as_ref()) * 8;
+            let bytes = self.enum_image_words(saved_expected_enum.as_ref()) * 8;
             let raw = self.fun.gen_reg();
             writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, raw, bytes).ok();
             let img = self.fun.gen_reg();
@@ -6760,7 +6765,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // (`AdmissionError` around `OwnedOperationJob(WorkerTag)`). Only use it
         // when this variant actually belongs to that enum; otherwise resolve
         // the constructor's own enum from the plan-owned tag index.
-        let saved_expected_enum = self.resolve_constructor_enum(v);
         let payload_expected = saved_expected_enum
             .as_ref()
             .and_then(|t| self.enum_payload_type(t, v));
