@@ -13256,3 +13256,29 @@ never registered `ProtocolDef` items into the casting graph — so
 `items: &[TopLevel]` and registers protocol defs, mirroring the AST.
 `c_driver_boundary boundary_types_roundtrip` passes.
 
+
+## OPEN — coll `List<Float>` push/index returns bit-reinterpreted values (2026-11-12)
+
+`List<Float>` element push (`<-`) followed by index read yields the f32's bit
+pattern reinterpreted as Float: `0.0022557973861694336` reads back as
+`9.91156e+08`. Repro: `/tmp/opencode/f32list.bv` (push two literals, print
+`float_to_str(xs[0])`). Suspect: the coll scaffold's element copy path uses
+the 8-byte Int slot width for the 4-byte Float (stride/partial-copy
+mismatch), coll_scaffold.rs. The interpreter handles the same program
+correctly (verify with `brievi f32list.bv` — expected Rule-5 divergence
+report). Workaround shipped: saltpetre's `vad_stream_probs_json` accumulates
+the %g array as a String instead of a `List<Float>` (see
+`lib/saltpetre/audio.bv` header comment). Fix the scaffold, restore the
+List<Float> return shape, and delete the workaround.
+
+## OPEN — coll-typed globals (`List<Int> = []`) emit a broken init_state store (2026-11-12)
+
+Sibling finding to the Float-collection bug: a module-global initialized to
+an empty coll (`let sp_slot_nodes: List<Int> = [];` in saltpetre/session.bv)
+makes `init_state` emit `ptrtoint ptr %tN to i64` where `%tN` is an i64
+constant — IR verify fails on any program that pulls the module in
+(`vad_stream.bv` caught it; opt line 25966 in the failing dump). The slot
+cache was rewound to scalar per-slot globals (sp_s0_*/sp_s1_*), which also
+matches the two-slot requirement. Fix the scaffold's global-init store path
+for coll-typed globals, then the scalar rewind can become a List again if
+dynamic slot growth is ever wanted.

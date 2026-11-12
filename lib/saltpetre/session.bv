@@ -85,49 +85,81 @@ defn sp_end() [ml_arena_off_bytes() >= 0][ml_arena_off_bytes() == 0] -> Void {
     term;
 };
 
-// ── Cached model session (single slot) ──────────────────────────────────
-// A parsed graph is persistent state: the cache below stores the four list
-// handles out of the request arenas' reach, so every caller reuses one
-// parse for the process lifetime. Prime at service start (BEFORE
-// sp_open_coll — the persistent-state rule on sp_begin), then fetch per
-// request; the OnnxGraph itself is a value rebuilt around the cached lists.
-let sp_cached_nodes: Int = 0;
-let sp_cached_ins: Int = 0;
-let sp_cached_outs: Int = 0;
-let sp_cached_inits: Int = 0;
-let sp_cached_loaded: Int = 0;
+// ── Cached model sessions (two scalar slots) ───────────────────────────
+// Parsed graphs are persistent state: each slot stores the four list handles
+// out of the request arenas' reach, keyed by model path, so every caller
+// reuses one parse per model for the process lifetime. Prime all slots at
+// service start (BEFORE sp_open_coll — the persistent-state rule on
+// sp_begin), then fetch per request; the OnnxGraph is a value rebuilt around
+// the cached handles. Slot 0 = the caller's primary model (kiosk: YuNet),
+// slot 1 = secondary (kiosk: Silero VAD) — slots are indexes, not a
+// vocabulary. SCALAR globals by design: coll-typed globals (`List<Int> = []`)
+// emit a broken init_state store (2026-11-12, BUGS.md sibling note) and two
+// slots need no dynamic growth.
+let sp_s0_nodes: Int = 0;
+let sp_s0_ins: Int = 0;
+let sp_s0_outs: Int = 0;
+let sp_s0_inits: Int = 0;
+let sp_s0_path: String = "";
+let sp_s1_nodes: Int = 0;
+let sp_s1_ins: Int = 0;
+let sp_s1_outs: Int = 0;
+let sp_s1_inits: Int = 0;
+let sp_s1_path: String = "";
 
-defn sp_cached_model(path: String)
-    [CharCount#(path) >= 0][sp_cached_loaded >= 0]
-    -> Result<OnnxGraph, String>
-{
-    when sp_cached_loaded == 0 {
-        let mf: Result<String, Int> = read_file(path);
-        when is_ok(mf) {
-            let parsed: OnnxGraph = parse_model_at(unwrap(mf), path);
-            sp_cached_nodes = (parsed.nodes as Data) as Int;
-            sp_cached_ins = (parsed.ins as Data) as Int;
-            sp_cached_outs = (parsed.outs as Data) as Int;
-            sp_cached_inits = (parsed.inits as Data) as Int;
-            sp_cached_loaded = 1;
-        };
+defn sp_cache_store(slot: Int, path: String, parsed: OnnxGraph) -> Void {
+    when slot == 0 {
+        sp_s0_nodes = (parsed.nodes as Data) as Int;
+        sp_s0_ins = (parsed.ins as Data) as Int;
+        sp_s0_outs = (parsed.outs as Data) as Int;
+        sp_s0_inits = (parsed.inits as Data) as Int;
+        sp_s0_path = path;
     };
-    when sp_cached_loaded == 0 { term Err("model unavailable"); };
-    let graph: OnnxGraph = OnnxGraph {
-        nodes: sp_cached_nodes as List<OnnxNode>,
-        ins: sp_cached_ins as List<OnnxValue>,
-        outs: sp_cached_outs as List<OnnxValue>,
-        inits: sp_cached_inits as List<Tensor>,
+    when slot == 1 {
+        sp_s1_nodes = (parsed.nodes as Data) as Int;
+        sp_s1_ins = (parsed.ins as Data) as Int;
+        sp_s1_outs = (parsed.outs as Data) as Int;
+        sp_s1_inits = (parsed.inits as Data) as Int;
+        sp_s1_path = path;
     };
-    term Ok(graph);
+    term;
 };
 
-// sp_prime_model — load-and-cache without consuming the result. Call at
-// service start, after sp_begin and BEFORE sp_open_coll, so the parse's
-// coll growth uses malloc (persistent) instead of the request block.
-defn sp_prime_model(path: String)
-    [CharCount#(path) >= 0][sp_cached_loaded >= 0]
+defn sp_cached_model(slot: Int, path: String)
+    [slot >= 0 && slot <= 1 && CharCount#(path) >= 0][CharCount#(sp_s0_path) >= 0]
+    -> Result<OnnxGraph, String>
+{
+    when slot == 0 && sp_s0_path == path {
+        let graph: OnnxGraph = OnnxGraph {
+            nodes: sp_s0_nodes as List<OnnxNode>,
+            ins: sp_s0_ins as List<OnnxValue>,
+            outs: sp_s0_outs as List<OnnxValue>,
+            inits: sp_s0_inits as List<Tensor>,
+        };
+        term Ok(graph);
+    };
+    when slot == 1 && sp_s1_path == path {
+        let graph: OnnxGraph = OnnxGraph {
+            nodes: sp_s1_nodes as List<OnnxNode>,
+            ins: sp_s1_ins as List<OnnxValue>,
+            outs: sp_s1_outs as List<OnnxValue>,
+            inits: sp_s1_inits as List<Tensor>,
+        };
+        term Ok(graph);
+    };
+    let mf: Result<String, Int> = read_file(path);
+    when is_err(mf) { term Err("cannot read model"); };
+    let parsed: OnnxGraph = parse_model_at(unwrap(mf), path);
+    sp_cache_store(slot, path, parsed);
+    term sp_cached_model(slot, path);
+};
+
+// sp_prime_model — load-and-cache without consuming the result. Call per
+// slot at service start, after sp_begin and BEFORE sp_open_coll, so the
+// parse's coll growth uses malloc (persistent) instead of the request block.
+defn sp_prime_model(slot: Int, path: String)
+    [slot >= 0 && slot <= 1 && CharCount#(path) >= 0][CharCount#(sp_s0_path) >= 0]
     -> Void {
-    let ignored: Result<OnnxGraph, String> = sp_cached_model(path);
+    let ignored: Result<OnnxGraph, String> = sp_cached_model(slot, path);
     term;
 };
