@@ -430,6 +430,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut raw_bin = false;
     let mut no_link = false;
     let mut verify_bodies = false;
+    let mut verify_report: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -458,6 +459,16 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             // satisfies its own [pre][post] via the symbolic+Z3 prover.
             verify_bodies = true;
             i += 1;
+        } else if arg == "--verify-report" {
+            // 2026-11-12 (standalone roadmap C1): machine-readable verdicts.
+            // Tooling must not parse the human diagnostics, whose wording is
+            // not a contract. Asking for a report implies asking for the gate.
+            let val = args
+                .get(i + 1)
+                .ok_or("--verify-report requires a path argument")?;
+            verify_report = Some(val.clone());
+            verify_bodies = true;
+            i += 2;
         } else if arg == "--out" {
             let val = args
                 .get(i + 1)
@@ -767,6 +778,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         no_link,
         web_page_key: None,
         verify_bodies,
+        verify_report,
     })
 }
 
@@ -1159,6 +1171,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         no_link: false,
         web_page_key: None,
         verify_bodies: false,
+        verify_report: None,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;

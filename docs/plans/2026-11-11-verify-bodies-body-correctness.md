@@ -145,3 +145,20 @@ do not block verify-bodies on it. Predicates cross as data and that works.
 2. `[a>=0][term==a+1]{term a+1;}` passes under the flag.
 3. Existing suite green with the flag off (identical behaviour).
 4. Counsel Phase-4 probe discharges a translated VC through the same gate.
+## Machine-readable report (C1, 2026-11-12)
+
+`brievc build … --verify-bodies --verify-report <path>` writes the report as
+JSON before the gate returns, so a failing build still produces tooling-ready
+detail. `--verify-report` implies `--verify-bodies`; the gate is unchanged.
+
+```json
+{
+  "proven": 1,
+  "unproven": [{ "name": "g", "reason": "could not derive …" }],
+  "violated": [{ "name": "f", "reason": "returned value does not imply the postcondition" }]
+}
+```
+
+Entries are `{ name, reason }` objects; tooling must not parse prose. Tests:
+`analysis::verify_bodies::tests::json_report_splits_names_and_reasons` and
+`tests/verify_report.rs` (violation + pass, report written both times).
