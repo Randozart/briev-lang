@@ -108,6 +108,9 @@ struct Bound {
 /// off (the default) the historical consistency-only behaviour is unchanged.
 pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
     let mut report = BodyReport::default();
+    // C3: value summaries let a body be proved through the helpers it calls.
+    // Computed once, up front, so the result never depends on item order.
+    let sums = build_summaries(items);
     for item in items {
         let (name, contract, body) = match contract_target(item) {
             Some(t) => t,
@@ -119,11 +122,21 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
             continue;
         }
         // Soundness boundary: only prove bodies whose entire surface is
-        // within the pure-integer prover's reach.
-        if !body_supported(body) {
+        // within the pure-integer prover's reach (calls included, when the
+        // callee has a value summary).
+        if !body_supported(body, &sums) {
             continue;
         }
-        match verify_one(&contract.pre_condition, &contract.post_condition, body) {
+        // Substitute each summarised call with the callee's value expression,
+        // so the existing path walk reasons about one flat body.
+        let Ok(flattened) = inline_body(body, &sums) else {
+            continue;
+        };
+        match verify_one(
+            &contract.pre_condition,
+            &contract.post_condition,
+            &flattened,
+        ) {
             BodyOutcome::Proven => report.proven.push(name.to_string()),
             BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
             BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
@@ -891,38 +904,38 @@ fn render_counterexample(state: &SymbolicState) -> String {
 }
 
 /// Whether the entire body is within the supported pure-integer surface.
-fn body_supported(body: &[Statement]) -> bool {
-    body.iter().all(stmt_supported)
+fn body_supported(body: &[Statement], sums: &HashMap<String, Summary>) -> bool {
+    body.iter().all(|stmt| stmt_supported(stmt, sums))
 }
 
 /// Whether one statement is within the supported surface.
-fn stmt_supported(stmt: &Statement) -> bool {
+fn stmt_supported(stmt: &Statement, sums: &HashMap<String, Summary>) -> bool {
     match stmt {
-        Statement::Assign(lhs, e) => matches!(lhs, Expr::Identifier(_)) && expr_supported(e),
+        Statement::Assign(lhs, e) => matches!(lhs, Expr::Identifier(_)) && expr_supported(e, sums),
         Statement::Let { names, expr, .. } => {
-            names.is_empty() && expr.as_ref().map_or(true, |e| expr_supported(e))
+            names.is_empty() && expr.as_ref().map_or(true, |e| expr_supported(e, sums))
         }
-        Statement::Guarded(c, inner) => expr_supported(c) && body_supported(inner),
+        Statement::Guarded(c, inner) => expr_supported(c, sums) && body_supported(inner, sums),
         Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-            expr_supported(e)
+            expr_supported(e, sums)
         }
         Statement::Term(None) | Statement::EndProgram(None) => true,
-        Statement::Gate(c) | Statement::Check(c) => expr_supported(c),
-        Statement::Expression(e) => expr_supported(e),
+        Statement::Gate(c) | Statement::Check(c) => expr_supported(c, sums),
+        Statement::Expression(e) => expr_supported(e, sums),
         // Paths that terminate without a value are always modelable.
         Statement::Rollback(_) | Statement::Halt | Statement::Trap => true,
-        // Loops, foreach/break, calls-in-statement position, yields, expects,
-        // metadata, arrows — outside the pure-integer prover's contract.
+        // Loops, foreach/break, yields, expects, metadata, arrows — outside the
+        // pure-integer prover's contract.
         _ => false,
     }
 }
 
 /// Whether an expression is within the supported pure-integer surface.
 ///
-/// Calls, fields, indexes, slices, ranges, spawns, quotes, and reflection are
-/// excluded: the prover must never claim a proof over a value it cannot
-/// evaluate.
-fn expr_supported(expr: &Expr) -> bool {
+/// Fields, indexes, slices, ranges, spawns, quotes and reflection stay
+/// excluded. A call is included **only** when the callee has a value summary,
+/// so the prover never claims a proof over a value it cannot evaluate.
+fn expr_supported(expr: &Expr, sums: &HashMap<String, Summary>) -> bool {
     match expr {
         Expr::Decimal(_)
         | Expr::Char(_)
@@ -932,11 +945,220 @@ fn expr_supported(expr: &Expr) -> bool {
         | Expr::UnitLiteral { .. }
         | Expr::Identifier(_)
         | Expr::Wildcard => true,
-        Expr::BinaryOp(_, l, r) => expr_supported(l) && expr_supported(r),
-        Expr::UnaryOp(_, x) => expr_supported(x),
-        Expr::AddrOf(x) | Expr::Consume(x) => expr_supported(x),
+        Expr::BinaryOp(_, l, r) => expr_supported(l, sums) && expr_supported(r, sums),
+        Expr::UnaryOp(_, x) => expr_supported(x, sums),
+        Expr::AddrOf(x) | Expr::Consume(x) => expr_supported(x, sums),
+        Expr::Call(name, args, _) => {
+            sums.contains_key(name) && args.iter().all(|a| expr_supported(a, sums))
+        }
         _ => false,
     }
+}
+
+/// A function's returned value, as an expression over its parameters.
+///
+/// Only unconditional single-value bodies get one: a value that depends on a
+/// guard has no single expression to substitute, and guessing one would turn an
+/// unproved contract into a false proof.
+#[derive(Debug, Clone)]
+struct Summary {
+    params: Vec<String>,
+    value: Expr,
+}
+
+/// Build value summaries for pure-integer definitions, closing over callees.
+///
+/// Iterates to a fixpoint: a body calling a function with no summary yet is
+/// retried next round. Recursion therefore never acquires a summary — the sound
+/// answer, since a self-referential summary would be a guess rather than a
+/// proof.
+fn build_summaries(items: &[TopLevel]) -> HashMap<String, Summary> {
+    let candidates: Vec<(&str, Vec<String>, &[Statement])> =
+        items.iter().filter_map(summary_candidate).collect();
+    let mut sums: HashMap<String, Summary> = HashMap::new();
+    // Each round adds a summary or ends the loop, so this terminates.
+    for _ in 0..=candidates.len() {
+        let mut added = false;
+        for (name, params, body) in &candidates {
+            if sums.contains_key(*name) || !body_supported(body, &sums) {
+                continue;
+            }
+            let Ok(flattened) = inline_body(body, &sums) else {
+                continue;
+            };
+            let Ok(value) = evaluate_body(&flattened) else {
+                continue;
+            };
+            if !mentions_only(&value, params) {
+                continue;
+            }
+            sums.insert(
+                (*name).to_string(),
+                Summary {
+                    params: params.clone(),
+                    value,
+                },
+            );
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    sums
+}
+
+/// The (name, parameters, body) a summary could be built from.
+fn summary_candidate(item: &TopLevel) -> Option<(&str, Vec<String>, &[Statement])> {
+    match item {
+        TopLevel::Definition(d) => Some((
+            &d.name,
+            d.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            d.body.as_slice(),
+        )),
+        TopLevel::Transaction(t) => Some((
+            &t.name,
+            t.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            t.body.as_slice(),
+        )),
+        _ => None,
+    }
+}
+
+/// Evaluate a call-free, guard-free body to the expression it returns.
+///
+/// Parameters are deliberately left UNBOUND: `eval_symbolic` already yields
+/// `Identifier(name)` for an unknown name, whereas binding `a -> Identifier(a)`
+/// is self-referential — `symbolic_to_expr` would follow it until the depth cap
+/// and give up, and no summary would ever be produced.
+fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
+    let mut state = SymbolicState::empty();
+    for stmt in body {
+        match stmt {
+            Statement::Assign(lhs, e) => {
+                let Expr::Identifier(name) = lhs else {
+                    return Err(());
+                };
+                state
+                    .assignments
+                    .insert(name.clone(), eval_symbolic(e, &state));
+            }
+            Statement::Let {
+                name, names, expr, ..
+            } => {
+                if !names.is_empty() {
+                    return Err(());
+                }
+                if let Some(e) = expr {
+                    state
+                        .assignments
+                        .insert(name.clone(), eval_symbolic(e, &state));
+                }
+            }
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
+                return symbolic_to_expr(&eval_symbolic(e, &state), &state.assignments, 0)
+                    .ok_or(());
+            }
+            Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
+            // Guards pick between values; a non-value exit has no result.
+            _ => return Err(()),
+        }
+    }
+    Err(())
+}
+
+/// Replace every summarised call in a body with the callee's value form.
+fn inline_body(body: &[Statement], sums: &HashMap<String, Summary>) -> Result<Vec<Statement>, ()> {
+    body.iter().map(|stmt| inline_stmt(stmt, sums)).collect()
+}
+
+/// Replace summarised calls in one statement.
+fn inline_stmt(stmt: &Statement, sums: &HashMap<String, Summary>) -> Result<Statement, ()> {
+    Ok(match stmt {
+        Statement::Assign(lhs, e) => Statement::Assign(lhs.clone(), inline_expr(e, sums, 0)?),
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: match expr {
+                Some(e) => Some(inline_expr(e, sums, 0)?),
+                None => None,
+            },
+            modifiers: modifiers.clone(),
+        },
+        Statement::Guarded(c, inner) => {
+            Statement::Guarded(inline_expr(c, sums, 0)?, inline_body(inner, sums)?)
+        }
+        Statement::Term(Some(e)) => Statement::Term(Some(inline_expr(e, sums, 0)?)),
+        Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(inline_expr(e, sums, 0)?)),
+        Statement::Tail(e) => Statement::Tail(inline_expr(e, sums, 0)?),
+        Statement::Gate(c) => Statement::Gate(inline_expr(c, sums, 0)?),
+        Statement::Check(c) => Statement::Check(inline_expr(c, sums, 0)?),
+        Statement::Expression(e) => Statement::Expression(inline_expr(e, sums, 0)?),
+        // Everything else is rejected before inlining is attempted.
+        _ => return Err(()),
+    })
+}
+
+/// Replace summarised calls in one expression.
+fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Result<Expr, ()> {
+    if depth > SUBST_DEPTH_CAP {
+        return Err(());
+    }
+    Ok(match expr {
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(inline_expr(l, sums, depth)?),
+            Box::new(inline_expr(r, sums, depth)?),
+        ),
+        Expr::UnaryOp(kind, x) => Expr::UnaryOp(*kind, Box::new(inline_expr(x, sums, depth)?)),
+        Expr::Call(name, args, _) => {
+            let Some(sum) = sums.get(name) else {
+                return Err(());
+            };
+            if sum.params.len() != args.len() {
+                return Err(());
+            }
+            let inlined: Vec<Expr> = args
+                .iter()
+                .map(|a| inline_expr(a, sums, depth + 1))
+                .collect::<Result<_, _>>()?;
+            substitute_params(&sum.value, &sum.params, &inlined)
+        }
+        other => other.clone(),
+    })
+}
+
+/// Replace the callee's parameters with the caller's argument expressions.
+fn substitute_params(expr: &Expr, params: &[String], args: &[Expr]) -> Expr {
+    match expr {
+        Expr::Identifier(name) => match params.iter().position(|p| p == name) {
+            Some(index) => args[index].clone(),
+            None => expr.clone(),
+        },
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(substitute_params(l, params, args)),
+            Box::new(substitute_params(r, params, args)),
+        ),
+        Expr::UnaryOp(kind, x) => {
+            Expr::UnaryOp(*kind, Box::new(substitute_params(x, params, args)))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Whether every free identifier of `expr` is one of `allowed`.
+fn mentions_only(expr: &Expr, allowed: &[String]) -> bool {
+    free_idents(expr)
+        .iter()
+        .all(|name| allowed.iter().any(|p| p == name))
 }
 
 #[cfg(test)]
@@ -1130,6 +1352,86 @@ mod point_bound_tests {
         assert!(
             report.violated.is_empty(),
             "input-dependent failures must not fail a build: {:?}",
+            report.violated
+        );
+    }
+
+    /// Parse every top-level item — the interprocedural tests need several.
+    fn parse_program(src: &str) -> Vec<TopLevel> {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+    }
+
+    /// C3: a caller is proved through the callee's value summary.
+    #[test]
+    fn summary_proves_through_a_call() {
+        let items = parse_program(
+            "defn inc(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; }\n\
+             defn uses(a: Int) [a >= 0][term == a + 2] -> Int { term inc(a) + 1; }",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert_eq!(report.proven.len(), 2, "both should be proved");
+    }
+
+    /// C3: summaries close over callees, so a chain proves end to end.
+    #[test]
+    fn summary_chain_closes_to_a_fixpoint() {
+        let items = parse_program(
+            "defn base(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; }\n\
+             defn mid(a: Int) [a >= 0][term == a + 2] -> Int { term base(a) + 1; }\n\
+             defn top(a: Int) [a >= 0][term == a + 3] -> Int { term mid(a) + 1; }",
+        );
+        let report = verify_bodies(&items);
+        assert_eq!(
+            report.proven.len(),
+            3,
+            "proven {:?} unproven {:?}",
+            report.proven,
+            report.unproven
+        );
+    }
+
+    /// C3: substituting a callee's value still refutes a lying caller.
+    #[test]
+    fn summary_refutes_a_lying_caller() {
+        let items = parse_program(
+            "defn five(a: Int) [a >= 0][term == 5] -> Int { term 5; }\n\
+             defn lies(a: Int) [a >= 0][term == 0] -> Int { term five(a); }",
+        );
+        let report = verify_bodies(&items);
+        assert_eq!(
+            report.violated.len(),
+            1,
+            "proven {:?} unproven {:?}",
+            report.proven,
+            report.unproven
+        );
+        assert!(report.violated[0].contains("lies"));
+    }
+
+    /// C3: recursion never earns a summary — skipped, never guessed at.
+    #[test]
+    fn recursion_never_earns_a_summary() {
+        let items = parse_program(
+            "defn ping(a: Int) [a >= 0][term == a] -> Int { term pong(a); }\n\
+             defn pong(a: Int) [a >= 0][term == a] -> Int { term ping(a); }",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
             report.violated
         );
     }
