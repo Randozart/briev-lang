@@ -13198,3 +13198,24 @@ resolution (see the negatives). It needs instrumentation: locate the
 `format!`-built emitter of `expected {} for term value`, log the type `term` is
 bound to at contract elaboration, and check via `--emit-beast parse.after`
 whether `lib/std/types/bootstrap.bv` was spliced into that run.
+## 2026-11-12 — HIR/AST reclamation-plan drift on `c_driver_boundary`
+
+**Symptom.** `cargo test --test c_driver_boundary` panics in debug builds:
+`HIR/AST reclamation-plan drift` (`src/backend/mod.rs`). AST barriers include
+`cstr_to_briev`, `greet`, `iter_{all,any,filter,flatmap,fold,map,partition,
+product,sum,take,zip}_loop`, `join`, `prefetch`, `rdtsc`, `rt_getcwd`,
+`stdout_byte`; the HIR plan omits them. Regions, reasons, known and
+closed_regions otherwise match. Reproduced identically on `main` and on the
+#92/#93 validation trees, so it is not caused by either PR.
+
+**Context.** Introduced by the stdlib coll-arena change (`376fd4d2`): generic
+`coll_resize` now calls the foreign `coll_alloc`, and `briev_rt.c` includes
+`lib/std/c/coll_arena.c`. `BRIEV_DIAG_RECLAMATION=1` shows which calls the HIR
+walk leaves unclassified; the likely divergence is the call/escape edges
+around the new foreign allocation in the HIR classification phase
+(`classify`'s retained/incoming branch, not registration).
+
+**Status.** OPEN. Debug-only (the plan oracle asserts); release compiles use
+the HIR plan silently. Fix before deleting the AST oracle. Repro:
+`cargo test --test c_driver_boundary boundary_types_roundtrip`.
+

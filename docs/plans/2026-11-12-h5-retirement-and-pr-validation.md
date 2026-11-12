@@ -110,3 +110,20 @@ Praetor on changed dirs; docs in the same commit.
 PR validation: 0.5 day (plus any PR-specific fixes). Phase A: 1–2 days.
 Phase B: 3–5 days. Phase C: 2–4 days (family by family). Phase D: 1–2 days
 after the opt-out release. Docs/ledger reconciliation included in each commit.
+
+## Execution record (2026-11-12)
+
+- Reviewed and merged **#93** (collection element provenance): targeted HIR/AST
+  reclamation suites, publish/reclamation runtime, quick gate green; full suite
+  matched the pre-existing `c_driver_boundary` failure.
+- Reviewed and merged **#92** (nested enum allocation/payload layouts):
+  `nested_enum_allocation` 1, enum 80, quick 42/42; same single pre-existing
+  full-suite failure. BUGS.md append conflicts resolved during both merges.
+- Runtime integration fix included en route: `briev_rt.c` now includes the coll
+  request arena, arena entry points are weak (FFI object + runtime include must
+  coexist), and owned-`_start` harness links pass `-nostartfiles`
+  (`c03c12e6`, `e28919b3`).
+- **Known blockers before Phase D:** the HIR/AST reclamation-plan drift on
+  `c_driver_boundary` (BUGS.md 2026-11-12) must be fixed while the AST oracle
+  still exists. Phase A (entry switch) can proceed; do not delete the oracle
+  until this drift is resolved.
