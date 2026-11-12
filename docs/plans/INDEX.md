@@ -3,7 +3,7 @@
 **2026-10-06.** 430+ files in `docs/plans/`; historical plans are
 reference-only (never retroactively edited — AGENTS.md Rule 13).
 
-**Suite state:** `cargo test --lib` 3601 green (2026-11-11); daily corpus 41 green; quick gate 36 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
+**Suite state:** `cargo test --lib` 3732 green (2026-11-12, incl. 7 owned-storage tests); daily corpus 41 green; quick gate 36 green; Task Board structured Chrome/API green; full runtime suite green; browser host/heap/snapshot gates green; determinism quick green.
 **Ledger state:** `docs/plans/2026-10-06-bugs-ledger-sweep.md` — 152
 unmarked BUGS entries verified, 4 open. Fixed during the sweep: the
 `List<T> + List<T>` silent miscompile (now elaborates to stdlib `iter_chain`),
@@ -139,13 +139,20 @@ captured final block) at the two hardcoded sites, then fixes the arena
 subsystem (Direct-SSA init, brk-aware fini, grow preserves the bump) and
 re-enables selection behind an IR gate. Prerequisite for per-worker arenas.
 
-**Memory decisions + auto-free (2026-11-10, ACTIVE — M1):**
+**Memory decisions + auto-free (2026-11-10, ACTIVE — M2 in progress):**
 `docs/plans/2026-11-10-memory-decisions-and-auto-free.md` — plain `Alloc#()`
 is the author surface; the compiler picks arena/stack/malloc when feasible.
 Provenance + interprocedural escape summaries; prove dead sole owners and
 auto-free (reported in `memcheck`, `keep` overrides); warn on undecided
-owners, deny in kiosk CI; no GC/refcount; no new `store` keyword. M1 compiler
-first, then tensor ownership/per-tick arena, then VAD RPC + op ledger.
+owners, deny in kiosk CI; no GC/refcount; no new `store` keyword. LANDED:
+request coll arena (C runtime, weak entry points), String-ownership slices
+(§14–15: read_whole/stdlib copy lanes/strip_frac_zeros + HIR fresh-summary
+pass `hir::owned_storage`), owned List destruction + temp-transfer (§16:
+`ReleaseOwned`/`TempTransfer` first-class HIR kinds, body-seam two-cursor
+walk, fresh-set gated on zero escaping params, identity-return transfer).
+Kiosk face soak: 144→187 MB pre-slices → flat 171 MB at 200 calls. NEXT:
+guard-nested inserts (currently AST-fallback leaks), tensor dims owner slot,
+then VAD RPC + op ledger.
 
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
