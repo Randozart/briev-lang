@@ -1825,8 +1825,13 @@ pub(crate) fn run_freshness_check() -> Result<(), String> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let mut newest: Option<(i64, std::path::PathBuf)> = None;
+    // Scan the compiler's OWN tree, never the caller's working directory:
+    // resolving from cwd compared a consumer project's sources against this
+    // binary and called the consumer's files stale.
+    let resource_root = briev_compiler::resource_root();
     for dir in ["src", "config"] {
-        let root = Path::new(dir);
+        let root = resource_root.join(dir);
+        let root = root.as_path();
         if !root.exists() {
             continue;
         }
@@ -1865,13 +1870,15 @@ pub(crate) fn run_freshness_check() -> Result<(), String> {
         }
     }
     match newest {
+        // Return rather than exit: the build path (C6) calls this to WARN, and
+        // exiting here aborted a consumer's compile. The CLI still fails the
+        // command because `main` maps Err to a non-zero exit.
         Some((_, p)) => {
-            eprintln!(
+            return Err(format!(
                 "STALE: {} is newer than {} — run `cargo build --release` before trusting brievc",
                 p.display(),
                 bin.display()
-            );
-            std::process::exit(1);
+            ));
         }
         None => println!("fresh: {} is up to date with src/ + config/", bin.display()),
     }
