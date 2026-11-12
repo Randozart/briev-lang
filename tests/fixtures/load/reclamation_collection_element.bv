@@ -1,0 +1,32 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+// A scalar element read from a grown collection must not inherit the
+// collection's backing storage as its provenance. If it does, the value
+// appears to alias the container, the container's owner becomes an escape
+// barrier, and its frame is suspended so the storage is never reclaimed.
+// 2026-11-12: regression for the collector's per-sample leak.
+//
+// The count stays within the initial 16-element capacity on purpose: growth
+// past it exercises a separate barrier-allocation bug (coll_resize's new
+// backing is untracked) that would otherwise mask this provenance result.
+obj Sample { value: Int; };
+
+defn build_sample(count: Int) -> Sample {
+    let values: List<Int> = [];
+    foreach index in 0..count { values <- index; };
+    term Sample { value: values[0] + values[count - 1] };
+};
+
+defn report(count: Int) -> Int {
+    let sample: Sample = build_sample(count);
+    println!("{}",sample.value);
+    term 0;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    let status: Int = report(8);
+    done = true;
+    endprogram status;
+};

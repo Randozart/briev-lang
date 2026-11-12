@@ -1,3 +1,74 @@
+## 2026-11-12 — Scalar element reads inherit their container's storage provenance
+
+**Symptom.** A function that reads a scalar element out of a grown collection
+and uses it (e.g. prints it, stores it in an object it returns) leaks the
+collection's header and backing store. The leak scales with usage: the load
+harness collector leaked exactly 224 bytes per `/proc` sample (96 direct + 128
+indirect), reproduced at 1/5/20/40 samples.
+
+**Discriminator.** Printing `proc_stat_read(pid).pid` (a directly computed
+scalar) is clean; changing only the selected field to `minor_faults` (a
+collection element) introduces a barrier in the parser and leaks. A standalone
+loop-grown `List<Int>` whose element is returned in an object and printed leaks
+24 + 128 bytes; the single-append variant does not.
+
+**Root cause.** `<-` models the fresh backing store as an allocation stored
+*through the handle* (`Constraint::Store(target, backing)`), which puts the
+storage proxy into the handle's `memory`. `Constraint::Load` (index/deref/
+foreach) then returned `contents(base)` including that proxy, so a scalar
+element read appeared to alias the container's storage. When the value reached
+an escape (a print/syscall), the container's owning callable became an escape
+barrier; its frame was suspended and the storage was never reclaimed.
+Diagnosed with `BRIEV_DIAG_RECLAMATION=1`: the read case adds the container's
+owner to `escape_barriers`, the direct-scalar case does not.
+
+**Fix.** Separate container *storage* from container *contents*. Storage proxies
+are recorded in a dedicated `container_storage` set and excluded from
+`Constraint::Load`, so an element read yields only the stored values. They stay
+in `memory`, so `root_contents`/`reachable` still keep a container's storage
+alive when the container itself escapes. Applied identically to the AST and HIR
+graphs to preserve the parity gate.
+
+**Regression.** `tests/reclamation_runtime.rs::collection_element_reads_do_not_escape_their_container`
+(fixture `tests/fixtures/load/reclamation_collection_element.bv`). The collector
+reduced from 1920/2560 bytes lost at 20 samples to zero at 1/5/20/40.
+
+**Status.** Fixed 2026-11-12.
+
+**Distinct, still-open sibling.** While reducing this, a separate leak appeared
+that is NOT the provenance bug: a list that grows past its initial 16-element
+capacity leaks every backing store allocated by `coll_resize`. `coll_resize` is
+classified as a barrier, so its region is suspended and its
+`__briev_region_malloc` runs with `__briev_region_owner()` returning null; the
+new backing is never tracked. Reproduction (no element read at all): a
+`foreach 0..count { values <- index; }` with a constant count leaks 0 bytes at
+8/16, 256 at 32 and 768 (256+512) at 64, on both this commit and the base. The
+caller's own initial 128-byte backing is tracked and freed, which is why only the
+post-growth backings leak. See the OPEN entry below.
+
+## 2026-11-12 — Barrier-callee allocations are untracked (collection growth leak)
+
+**Symptom.** A collection grown past its initial 16-element capacity leaks each
+new backing store. Measured on both `94eb8583` and the provenance fix: 0 bytes at
+8/16 elements, 256 at 32, 768 at 64. Independent of element reads.
+
+**Cause.** `coll_resize` is a barrier (`mode_for`), so its entry suspends the
+enclosing region (`@__briev_region_current = null`). Its
+`__briev_region_malloc` therefore calls `__briev_region_adopt`, whose
+`__briev_region_owner()` returns null and skips tracking. The fresh backing is
+plain untracked heap; nothing frees it, and the handle only records the new
+pointer, so the previous tracked backing is freed while the new one leaks.
+
+**Candidate directions (not implemented).** Either the caller adopts an owned
+barrier return (the `briev.owned_return`/`__briev_region_adopt` mechanism already
+used for the encoding provider), or growth is lowered without a suspending
+barrier. Both need the closed-region/owned-return design in
+`docs/plans/2026-11-03-lifetime-and-reclamation.md`; do not special-case
+`coll_resize` by name.
+
+**Status.** OPEN 2026-11-12. Not fixed here; the provenance fix deliberately keeps
+its regression fixture within the initial capacity so the two are not conflated.
+
 ## 2026-11-11 — `.bv` wasm32 emission rejects the stdlib prelude (i64 vs i32)
 
 **Symptom.** `brievc build <prog>.bv --triple wasm32-unknown-wasi --split`

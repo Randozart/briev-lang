@@ -1278,7 +1278,16 @@ accounted for.
 Two frontend gaps are closed so the proof is sound. `<-` models its fresh
 backing store as an allocation of the current callable, stored through the
 handle (matching the helper's escape behavior without importing the helper's
-copy of the old contents). Intrinsic helper effects enter the graph through the
+copy of the old contents). 2026-11-12: that backing store is recorded as
+*container storage*, not as a stored element. `Constraint::Load` (index, deref,
+foreach) excludes container-storage proxies, so reading a scalar element yields
+only the element value; the proxies remain in `memory`, so `root_contents` and
+`reachable` still keep a container's storage alive whenever the container itself
+escapes. Before the split, a scalar element read inherited its container's
+storage provenance, the container's owner became an escape barrier, and the
+frame was suspended without reclaiming the storage (the load-harness collector's
+per-sample leak). `container_storage` is the sole exclusion set; add any future
+storage-only relation to it rather than to `memory`. Intrinsic helper effects enter the graph through the
 shared `intrinsic_helpers` registry: a union of the intrinsic's arguments
 conservatively feeds every helper parameter and the helper result feeds the
 intrinsic result. A helper whose body is unavailable rejects closed ownership.
