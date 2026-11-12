@@ -292,7 +292,14 @@ fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
         }
         facts.push(fact.clone());
     }
+    if std::env::var_os("BRIEV_DIAG_VC").is_some() {
+        eprintln!("[vc] facts={facts:?}");
+        eprintln!("[vc] goal={goal:?}");
+    }
     let query = crate::proof_engine::smt::build_vc_query(&facts, &goal);
+    if std::env::var_os("BRIEV_DIAG_VC").is_some() {
+        eprintln!("[vc] query=\n{query}");
+    }
     match crate::proof_engine::smt::prove_smt_formula(&query, 1000) {
         crate::proof_engine::smt::SmtResult::Unsat => Some(ProofVerdict::Holds),
         // Refute only when the body's result is fully determined: with no free
@@ -360,7 +367,18 @@ fn subst_expr(
     }
     match expr {
         Expr::Identifier(name) => match assignments.get(name) {
-            Some(value) => symbolic_to_expr(value, assignments, depth + 1, seen),
+            Some(value) => {
+                // Guard the name BEFORE descending. `acc -> acc + 1` is
+                // self-referential, so without this the inner `acc` expands
+                // again and one `acc = acc + 1` becomes acc+2 in the goal.
+                if seen.iter().any(|seen_name| seen_name == name) {
+                    return Some(Expr::Identifier(name.clone()));
+                }
+                seen.push(name.clone());
+                let expanded = symbolic_to_expr(value, assignments, depth + 1, seen);
+                seen.pop();
+                expanded
+            }
             None => Some(expr.clone()),
         },
         Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
