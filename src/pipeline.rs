@@ -330,6 +330,10 @@ pub struct BuildOptions {
     /// own [pre][post] via the symbolic+Z3 body prover (--verify-bodies).
     /// Default off — keeps the historical consistency-only contract behaviour.
     pub verify_bodies: bool,
+    /// 2026-11-12 (standalone roadmap C1): write the body-verification report as
+    /// JSON to this path (--verify-report). Tooling must not parse the human
+    /// diagnostics: their wording is not a contract.
+    pub verify_report: Option<String>,
 }
 
 /// 2026-09-25 (interop Wave 1 C3): the de-facto default option set, lifted
@@ -394,6 +398,7 @@ impl Default for BuildOptions {
             no_link: false,
             web_page_key: None,
             verify_bodies: false,
+            verify_report: None,
         }
     }
 }

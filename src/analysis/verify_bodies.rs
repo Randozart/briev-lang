@@ -61,6 +61,33 @@ pub struct BodyReport {
     pub violated: Vec<String>,
 }
 
+impl BodyReport {
+    /// Render the report as JSON for tooling (`--verify-report`).
+    ///
+    /// Entries become `{ "name", "reason" }` objects so a consumer never parses
+    /// prose. The internal strings are `name: reason` for the human diagnostic;
+    /// a declaration name is an identifier, so it cannot contain `: ` and the
+    /// split is unambiguous.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "proven": self.proven.len(),
+            "unproven": findings_json(&self.unproven),
+            "violated": findings_json(&self.violated),
+        })
+    }
+}
+
+/// Split `name: reason` entries into structured objects.
+fn findings_json(entries: &[String]) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .map(|entry| {
+            let (name, reason) = entry.split_once(": ").unwrap_or((entry.as_str(), ""));
+            serde_json::json!({ "name": name, "reason": reason })
+        })
+        .collect()
+}
+
 /// Inclusive numeric bounds of one identifier, derived from path facts.
 #[derive(Debug, Clone, Copy, Default)]
 struct Bound {
@@ -732,6 +759,25 @@ mod tests {
         assert!(r.violated.is_empty(), "violated: {:?}", r.violated);
         assert!(r.unproven.is_empty(), "unproven: {:?}", r.unproven);
         assert_eq!(r.proven.len(), 1);
+    }
+
+    #[test]
+    fn json_report_splits_names_and_reasons() {
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 0] -> Int { term 5; };");
+        let r = verify_bodies(&[d]);
+        let json = r.to_json();
+        assert_eq!(json["proven"].as_u64(), Some(0));
+        let violated = json["violated"].as_array().expect("violated array");
+        assert_eq!(violated.len(), 1);
+        assert_eq!(violated[0]["name"], "f");
+        assert!(
+            violated[0]["reason"].as_str().is_some_and(|reason| !reason.is_empty()),
+            "{json}"
+        );
+        // A finding without the "name: reason" separator still yields a name.
+        let bare = findings_json(&["solo".to_string()]);
+        assert_eq!(bare[0]["name"], "solo");
+        assert_eq!(bare[0]["reason"], "");
     }
 
     #[test]

@@ -840,6 +840,15 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         for line in &report.unproven {
             eprintln!("warning: --verify-bodies could not prove: {line}");
         }
+        // 2026-11-12 (standalone roadmap C1): a machine-readable report. Written
+        // before the failure return so a violating build still produces one —
+        // that is exactly when a tool needs the detail.
+        if let Some(path) = &opts.verify_report {
+            let json = serde_json::to_string_pretty(&report.to_json())
+                .map_err(|e| format!("cannot serialise the verify report: {e}"))?;
+            std::fs::write(path, json)
+                .map_err(|e| format!("cannot write verify report '{path}': {e}"))?;
+        }
         if !report.violated.is_empty() {
             return Err(format!("--verify-bodies:\n{}", report.violated.join("\n")));
         }
@@ -3856,6 +3865,7 @@ node go [done == false][done == true] {
             no_link: false,
             web_page_key: None,
             verify_bodies: false,
+            verify_report: None,
         }
     }
 

@@ -231,3 +231,13 @@ transitive/uncalled/value-output/spawn shapes.
 port targets until a consumer is designed. `destination_ownership` is
 analysis-only by its own header comment (no backend lowering consumes it) and
 is deferred the same way. H5 effort goes to analyses with live consumers.
+
+**Ported + consumer flipped (2026-11-12):** `electronics` — `hir::electronics`
+(all netlist passes: pins/classes/units, instances/data tables, buses and
+wildcards, participation, return topology, rail membership/labels, decoupling,
+contention, voltage/current/power proofs, series synthesis, budgets, laws/DC,
+named modes, mechanisms) plus `hir::electronics_laws`. AST↔HIR parity covers
+the AST reference sources (`tests/fixtures/electronics/parity/`) and every
+`.ebv` under `tests/electronics`, `examples/electronics`, `examples/silicon`.
+`AnalysisResults.electronics` uses the HIR derive by default with a
+`PartialEq` debug oracle; `BRIEV_HIR_EMIT=0` keeps the AST path.
