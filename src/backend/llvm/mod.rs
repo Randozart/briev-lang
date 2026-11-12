@@ -39,6 +39,9 @@ mod crash_regressions;
 pub use builder::LLVMBuilder;
 pub use context::{CompilerContext, FunctionContext, FunctionGuard};
 pub(crate) use helpers::WatchdogGateLabels;
+// 2026-11-12 (H5 phase A): emitter per-call specs (HIR body passed in, no
+// backend-wide body map).
+use emit_toplevel::{DefinitionEmitSpec, TransactionEmitSpec};
 
 fn escape_llvm_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1445,10 +1448,10 @@ pub struct LlvmBackend {
     pub ctx: CompilerContext,
     pub fun: FunctionContext,
 
-    /// 2026-11-05 (H4.2): unique top-level defn/txn HIR bodies. At the hook
-    /// each statement is reconstructed (native) or spliced from AST
-    /// (unsupported `Other`), with coverage counted.
-    pub(crate) hir_stmt_bodies: HashMap<String, Vec<crate::hir::stmt::HirStmt>>,
+    /// 2026-11-12 (H5 phase A): the `hir_stmt_bodies` map is GONE — emitter
+    /// entry points (`emit_definition`/`emit_transaction`) receive the HIR
+    /// body as a parameter from `generate_with_analysis`'s local
+    /// name→body lookup (unique top-level callables only).
     pub(crate) hir_stmts_seen: usize,
     pub(crate) hir_stmts_native: usize,
     pub(crate) hir_stmts_fallback: usize,
@@ -1630,7 +1633,6 @@ impl LlvmBackend {
         LlvmBackend {
             ctx: CompilerContext::new(),
             fun: FunctionContext::new(),
-            hir_stmt_bodies: HashMap::new(),
             hir_stmts_seen: 0,
             hir_stmts_native: 0,
             hir_stmts_fallback: 0,
@@ -2839,15 +2841,23 @@ pub(crate) fn emit_brk_syscall(&mut self, out: &mut String, v: &str, arg_reg: &s
         // Red-proven: without the reset, test_trap_frame_survives_fixpoint_round
         // fails on the missing global.
         self.trap_frame_emitted = false;
-        // 2026-11-05 (H4.2): expose the HIR bodies that can be emitted. Only
-        // unique top-level defn/txn names qualify; duplicates and unsupported
-        // nodes fall back to AST, never a guessed body.
-        self.hir_stmt_bodies.clear();
+        // 2026-11-05 (H4.2), 2026-11-12 (H5 phase A): the HIR bodies that
+        // can be emitted live in a LOCAL name→body lookup (unique top-level
+        // defn/txn names qualify; duplicates and unsupported nodes fall back
+        // to AST, never a guessed body) and are passed to the emitters as
+        // parameters — no backend-wide state.
         self.hir_stmts_seen = 0;
         self.hir_stmts_native = 0;
         self.hir_stmts_fallback = 0;
+        let hir_stmt_bodies = if crate::backend::hir_emit_enabled() {
+            build_hir_stmt_bodies(&analysis.hir)
+        } else {
+            HashMap::new()
+        };
+        let hir_body_for = |name: &str| -> Option<&[crate::hir::stmt::HirStmt]> {
+            hir_stmt_bodies.get(name).map(Vec::as_slice)
+        };
         if crate::backend::hir_emit_enabled() {
-            self.hir_stmt_bodies = build_hir_stmt_bodies(&analysis.hir);
             // 2026-11-05 (H3.6): base HIR callables for the specialization
             // site — unique top-level defns with declared type params.
             self.ctx.generic_hir = analysis
@@ -4783,7 +4793,10 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                     // were emitted with state (the blanket rule), which forced
                     // every export calling one to carry %state too.
                     let needs_state = self.ctx.defn_needs_state.get(&d.name).copied().unwrap_or(true);
-                    self.emit_definition(&mut out, d, needs_state);
+                    self.emit_definition(
+                        &mut out,
+                        DefinitionEmitSpec { definition: d, needs_state, hir_body: hir_body_for(&d.name) },
+                    );
                     writeln!(out).ok();
                 }
                 TopLevel::Export(e) => {
@@ -4796,7 +4809,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                             .unwrap_or(false);
                         let internal = self.top_level_export_internal_symbol(d);
                         self.definition_symbol_override = internal.clone();
-                        self.emit_definition(&mut out, d, needs_state);
+                        self.emit_definition(
+                            &mut out,
+                            DefinitionEmitSpec {
+                                definition: d,
+                                needs_state,
+                                hir_body: hir_body_for(&d.name),
+                            },
+                        );
                         writeln!(out).ok();
                         if let Some(symbol) = internal {
                             self.emit_top_level_export_wrapper(
@@ -4897,10 +4917,20 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
                 if let Some(info) = self.internal_fold_info(name, &analysis) {
                     self.emit_internal_fold_txn(&mut out, name, txn, &analysis, info);
                 } else {
-                    self.emit_transaction(&mut out, txn, name, &mut range_meta);
+                    self.emit_transaction(
+                        &mut out,
+                        TransactionEmitSpec { txn, hir_body: hir_body_for(&txn.name) },
+                        name,
+                        &mut range_meta,
+                    );
                 }
             } else {
-                self.emit_transaction(&mut out, txn, name, &mut range_meta);
+                self.emit_transaction(
+                    &mut out,
+                    TransactionEmitSpec { txn, hir_body: hir_body_for(&txn.name) },
+                    name,
+                    &mut range_meta,
+                );
             }
             writeln!(out).ok();
         }

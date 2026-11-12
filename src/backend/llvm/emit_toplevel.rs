@@ -4923,18 +4923,22 @@ impl LlvmBackend {
     pub(super) fn emit_definition(
         &mut self,
         out: &mut String,
-        d: &crate::ast::Definition,
-        needs_state: bool,
+        spec: DefinitionEmitSpec<'_>,
     ) {
+        let d: &crate::ast::Definition = spec.definition;
+        let needs_state = spec.needs_state;
+        // 2026-11-12 (H5 phase A): the caller supplies the callable's HIR
+        // body (unique top-level defns only — duplicates get None and fall
+        // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
+        let hir_body = spec.hir_body;
         // 2026-11-05 (H4.2): by default (BRIEV_HIR_EMIT=0 opts out) the body comes from typed
         // HIR (reconstructed losslessly). Debug builds pin it equal to the
         // AST body; names without a converted body fall back here.
         let hir_subst;
         let d: &crate::ast::Definition = if crate::backend::hir_emit_enabled() {
-            let hir_body = self.hir_stmt_bodies.get(&d.name).cloned();
             if let Some(hir_body) = hir_body {
                 {
-                    match super::emit_hir_stmt::hir_sourced_body(self, &hir_body, &d.body, &d.name)
+                    match super::emit_hir_stmt::hir_sourced_body(self, hir_body, &d.body, &d.name)
                     {
                         Some(body) => {
                             debug_assert_eq!(
@@ -5473,7 +5477,7 @@ impl LlvmBackend {
             // statement (and the substituted body already IS the converted
             // AST when the flag is on).
             if crate::backend::hir_emit_enabled() {
-                if let Some(hir_body) = self.hir_stmt_bodies.get(&d.name).cloned() {
+                if let Some(hir_body) = hir_body {
                     if let Some(hir_stmt) = hir_body.get(idx) {
                         if let Some(reg) =
                             super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
@@ -5617,7 +5621,9 @@ impl LlvmBackend {
         // source, and debug builds pin HIR substitution == AST substitution
         // statement-for-statement (the golden: iter_chain_multi's trait
         // generics). A base without HIR (duplicates, non-top-level) keeps the
-        // pure-AST path.
+        // pure-AST path. 2026-11-12 (H5 phase A): the derived body is passed
+        // straight to emit_definition — no map insert/refill round-trip.
+        let mut spec_hir_body: Option<Vec<crate::hir::stmt::HirStmt>> = None;
         if crate::backend::hir_emit_enabled() {
             if let Some(base_hir) = self.ctx.generic_hir.get(base).cloned() {
                 let mut ids = crate::hir::ids::IdSupply::default();
@@ -5634,8 +5640,7 @@ impl LlvmBackend {
                     if let Err(err) = crate::hir::verify_single_callable(&spec_hir) {
                         panic!("specialized HIR verification failed for {mangled}: {err}");
                     }
-                    self.hir_stmt_bodies
-                        .insert(mangled.to_string(), spec_hir.body.statements.clone());
+                    spec_hir_body = Some(spec_hir.body.statements);
                 }
             }
         }
@@ -5645,7 +5650,14 @@ impl LlvmBackend {
             .get(mangled)
             .copied()
             .unwrap_or(true);
-        self.emit_definition(out, &specialized, needs_state);
+        self.emit_definition(
+            out,
+            DefinitionEmitSpec {
+                definition: &specialized,
+                needs_state,
+                hir_body: spec_hir_body.as_deref(),
+            },
+        );
     }
 
     // 2026-06-13: Added ptr %state param — definitions can access global state.
@@ -5959,19 +5971,23 @@ impl LlvmBackend {
     pub(super) fn emit_transaction(
         &mut self,
         out: &mut String,
-        txn: &crate::ast::Transaction,
+        spec: TransactionEmitSpec<'_>,
         name: &str,
         range_meta: &mut Vec<String>,
     ) {
+        let txn: &crate::ast::Transaction = spec.txn;
+        // 2026-11-12 (H5 phase A): the caller supplies the txn's HIR body
+        // (unique top-level txns only — duplicates/members get None and fall
+        // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
+        let hir_body = spec.hir_body;
         // 2026-11-05 (H4.2): HIR-driven body when a unique converted body
         // exists; AST fallback otherwise (members, duplicates, Other nodes).
         let hir_subst;
         let txn: &crate::ast::Transaction = if crate::backend::hir_emit_enabled() {
-            let hir_body = self.hir_stmt_bodies.get(&txn.name).cloned();
             if let Some(hir_body) = hir_body {
                 {
                     match super::emit_hir_stmt::hir_sourced_body(
-                        self, &hir_body, &txn.body, &txn.name,
+                        self, hir_body, &txn.body, &txn.name,
                     ) {
                         Some(body) => {
                             debug_assert_eq!(
@@ -6477,7 +6493,7 @@ impl LlvmBackend {
                     break;
                 }
                 if crate::backend::hir_emit_enabled() {
-                    if let Some(hir_body) = self.hir_stmt_bodies.get(name).cloned() {
+                    if let Some(hir_body) = hir_body {
                         if let Some(hir_stmt) = hir_body.get(idx) {
                             if let Some(reg) =
                                 super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
@@ -8685,6 +8701,23 @@ struct ExportWrapperCallSpec<'a> {
 }
 
 /// Inputs for one `#export` boundary wrapper.
+/// 2026-11-12 (H5 phase A): per-call emission data for `emit_transaction`.
+/// Same contract as `DefinitionEmitSpec` — HIR body from the analysis,
+/// `None` = AST emission.
+pub(super) struct TransactionEmitSpec<'a> {
+    pub(super) txn: &'a crate::ast::Transaction,
+    pub(super) hir_body: Option<&'a [crate::hir::stmt::HirStmt]>,
+}
+
+/// 2026-11-12 (H5 phase A): per-call emission data for `emit_definition`.
+/// The HIR body comes straight from the analysis (unique top-level defns;
+/// `None` = AST emission), replacing the backend-wide `hir_stmt_bodies` map.
+pub(super) struct DefinitionEmitSpec<'a> {
+    pub(super) definition: &'a crate::ast::Definition,
+    pub(super) needs_state: bool,
+    pub(super) hir_body: Option<&'a [crate::hir::stmt::HirStmt]>,
+}
+
 struct ExportWrapperSpec<'a> {
     definition: &'a crate::ast::Definition,
     ll_name: &'a str,
@@ -9856,7 +9889,16 @@ impl LlvmBackend {
         };
         // needs_state=true — the body shares the program state (the global
         // when ISR handlers exist; the wrapper passes it explicitly).
-        self.emit_definition(out, &body_defn, self.ctx.state_is_global);
+        // 2026-11-12 (H5 phase A): ISR bodies are synthetic (no top-level
+        // HIR callable) — no HIR body, AST emission as before.
+        self.emit_definition(
+            out,
+            DefinitionEmitSpec {
+                definition: &body_defn,
+                needs_state: self.ctx.state_is_global,
+                hir_body: None,
+            },
+        );
         writeln!(out).ok();
 
         // The interrupt wrapper — mechanism calling convention inline.
