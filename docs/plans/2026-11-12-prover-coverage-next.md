@@ -46,7 +46,14 @@ Zero semantic risk, no change to any verdict. Implemented in `verify_one`; the
 Acceptance: existing suite green; the prelude's unproven entries now carry a
 path index and a concrete goal.
 
-## P1 — repair the five optimistic contracts (needs owner review)
+## P1 — repair the five optimistic contracts ✅ done (`464c7393`)
+
+**Measured:** proven 4 → 9, unproven 8 → 3, violated 0. The sixth case
+(`exponent_val`) was reverted: widening its postcondition to `<= 105`
+un-proved `float_rounded`, whose precondition needs `e <= 104`, and failed
+`examples/view-bind-edge.rbv`. The correct fix is to tighten `exponent_val`'s
+own precondition to `exp8 <= 254` (exp8 == 255 is NaN/Inf), which needs its own
+pass over the call sites.
 
 CONTRACT-FIRST says fix the code, not the contract, and here the code is the
 thing that is wrong: a clamp returning a negative value is nonsense.

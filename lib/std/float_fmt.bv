@@ -470,6 +470,12 @@ defn mantissa_val(exp8: Int, mant: Int) [exp8 >= 0 && exp8 <= 255 && mant >= 0]
 };
 
 // exponent_val - E such that value = M x 2^E (denormal E = -149).
+// The bound stays at <= 104 deliberately: `float_rounded`'s precondition
+// requires `e <= 104`, so widening it here silently un-proves that caller
+// (caught by examples/view-bind-edge.rbv). The body's true range is
+// [-149, 105] — exp8 == 255 is NaN/Inf and never reaches the formatter — so
+// the correct fix is to tighten THIS precondition to `exp8 <= 254`, which is
+// its own pass over the call sites rather than a one-line bound change.
 defn exponent_val(exp8: Int) [exp8 >= 0 && exp8 <= 255][term >= -149 && term <= 104] -> Int {
     when exp8 == 0 {
         term 1 - 150;
