@@ -66,8 +66,9 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             budgets: &mut budgets,
             has_triggers: false,
         };
-        for item in items {
-            lower_item(item, false, None, &mut ids, &mut out);
+        for (top_index, item) in items.iter().enumerate() {
+            let ctx = ItemCtx { exported: false, export_symbol: None, top_index };
+            lower_item(item, ctx, &mut ids, &mut out);
         }
         has_triggers = out.has_triggers;
     }
@@ -139,7 +140,7 @@ fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOut
 }
 
 /// TypeDef members (owner-qualified) plus the type declaration itself.
-fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
     for member in &td.body.members {
         match member {
             TopLevel::Definition(d) => {
@@ -156,7 +157,7 @@ fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut Lo
             _ => {}
         }
     }
-    if let Some(decl) = lower_type_def(td, ids) {
+    if let Some(decl) = lower_type_def(td, ids, top_index) {
         out.types.push(decl);
     }
 }
@@ -223,18 +224,26 @@ fn lower_trait_item(tr: &crate::ast::top::TraitDef, ids: &mut IdSupply, out: &mu
     }
 }
 
+/// Per-item lowering context: export wrapper state and the top-level item
+/// position (the `declaration_order` source for type declarations).
+#[derive(Clone, Default)]
+struct ItemCtx {
+    exported: bool,
+    export_symbol: Option<String>,
+    top_index: usize,
+}
+
 /// `sync<domains>`: lower the inner item and tag its callables with the
 /// domains (effective_txns parity).
 struct SyncGroupCtx<'a> {
     item: &'a TopLevel,
     domains: &'a [String],
-    exported: bool,
-    export_symbol: Option<String>,
+    item_ctx: ItemCtx,
 }
 
 fn lower_sync_group(ctx: &SyncGroupCtx<'_>, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
     let before = out.callables.len();
-    lower_item(ctx.item, ctx.exported, ctx.export_symbol.clone(), ids, out);
+    lower_item(ctx.item, ctx.item_ctx.clone(), ids, out);
     for c in &mut out.callables[before..] {
         c.sync_domains = ctx.domains.to_vec();
     }
@@ -301,13 +310,8 @@ fn lower_init_item(i: &crate::ast::top::InitDecl, ids: &mut IdSupply, out: &mut 
     });
 }
 
-fn lower_item(
-    item: &TopLevel,
-    exported: bool,
-    export_symbol: Option<String>,
-    ids: &mut IdSupply,
-    out: &mut LowerOutputs<'_>,
-) {
+fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    let ItemCtx { exported, export_symbol, top_index } = ctx;
     match item {
         TopLevel::Definition(d) => out.callables.push(lower_definition(
             d,
@@ -355,9 +359,10 @@ fn lower_item(
         // 2026-11-05 (H3.4b): `export`/`sync<group>` wrap a callable that the
         // reactor still dispatches; HIR must contain the inner node.
         TopLevel::Export(_) | TopLevel::SyncGroup { .. } => {
-            lower_wrapped_item(item, exported, export_symbol, ids, out)
+            let wrapped = ItemCtx { exported, export_symbol, top_index };
+            lower_wrapped_item(item, wrapped, ids, out);
         }
-        TopLevel::TypeDef(_) => lower_typedef_top(item, ids, out),
+        TopLevel::TypeDef(_) => lower_typedef_top(item, ids, out, top_index),
         // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
         // the keys the needs_state fixpoint and type_stateful_members use.
         TopLevel::Impl(imp) => lower_impl_item(imp, ids, out),
@@ -386,11 +391,11 @@ fn lower_item(
         TopLevel::Init(i) => lower_init_item(i, ids, out),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
-        TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
-        TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
+        TopLevel::Enum(def) => out.types.push(lower_enum(def, ids, top_index)),
+        TopLevel::Obj(def) => out.types.push(lower_object(def, ids, top_index)),
         TopLevel::StaticStruct(def) => {
             out.static_struct_names.push(def.name.clone());
-            out.types.push(lower_struct(def, ids))
+            out.types.push(lower_struct(def, ids, top_index))
         }
         _ => {}
     }
@@ -406,10 +411,10 @@ fn binding_fns(def: &crate::ast::TypeDef) -> Vec<String> {
     out
 }
 
-fn lower_typedef_top(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+fn lower_typedef_top(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
     if let TopLevel::TypeDef(td) = item {
         out.type_names.push(td.name.clone());
-        lower_typedef_item(td, ids, out);
+        lower_typedef_item(td, ids, out, top_index);
     }
 }
 
@@ -420,6 +425,7 @@ fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
                 .briev_name
                 .clone()
                 .unwrap_or_else(|| fb.foreign_name.clone()),
+            link_symbol: fb.foreign_name.clone(),
             params: fb.inputs.clone(),
             ret: fb.success_output.first().map(|(_, t)| t.clone()),
         });
@@ -434,8 +440,7 @@ fn lower_protocol_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
 
 fn lower_wrapped_item(
     item: &TopLevel,
-    exported: bool,
-    export_symbol: Option<String>,
+    ctx: ItemCtx,
     ids: &mut IdSupply,
     out: &mut LowerOutputs<'_>,
 ) {
@@ -445,16 +450,20 @@ fn lower_wrapped_item(
                 .export_name
                 .clone()
                 .or_else(|| item_name(&export.inner));
-            lower_item(&export.inner, true, symbol, ids, out);
+            let inner = ItemCtx {
+                exported: true,
+                export_symbol: symbol,
+                top_index: ctx.top_index,
+            };
+            lower_item(&export.inner, inner, ids, out);
         }
         TopLevel::SyncGroup { item, domains } => {
-            let ctx = SyncGroupCtx {
+            let sync = SyncGroupCtx {
                 item,
                 domains,
-                exported,
-                export_symbol,
+                item_ctx: ctx,
             };
-            lower_sync_group(&ctx, ids, out);
+            lower_sync_group(&sync, ids, out);
         }
         _ => {}
     }
@@ -565,7 +574,19 @@ fn lower_hold_law(
     }
 }
 
-fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
+/// 2026-11-12 (destination-model port): the refinement parent's bare name.
+/// The parser guarantees `Expr::Identifier` for parents (generic-arg and
+/// hashword entries become traits/protocol), so a non-identifier expression
+/// is impossible from source; the empty-string fallback keeps the `Some`
+/// guard semantics for hand-built ASTs.
+fn parent_name(def: &crate::ast::TypeDef) -> Option<String> {
+    def.parent.as_ref().map(|expr| match expr.as_ref() {
+        Expr::Identifier(name) => name.clone(),
+        _ => String::new(),
+    })
+}
+
+fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> Option<HirTypeDef> {
     // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
     // when it carries a protocol; otherwise it has no HIR shape. Component
     // types (`pin`/`hold`/mode clauses only) keep their declaration.
@@ -580,6 +601,8 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             item: ids.item(),
             name: def.name.clone(),
             type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+            parent: parent_name(def),
+            declaration_order: top_index,
             kind: HirTypeDefKind::Struct { fields: Vec::new() },
             protocol: Some(protocol),
             is_coll: def.coll,
@@ -607,13 +630,15 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         .iter()
         .all(|slot| slot.name.starts_with("__variant_"))
     {
-        return Some(lower_enum_type_def(def, ids));
+        return Some(lower_enum_type_def(def, ids, top_index));
     }
     Some(HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: parent_name(def),
+        declaration_order: top_index,
         kind: HirTypeDefKind::Struct {
             fields: def
                 .body
@@ -655,7 +680,7 @@ fn has_user_operators(def: &crate::ast::TypeDef) -> bool {
     })
 }
 
-fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     let variants = def
         .body
         .slots
@@ -674,6 +699,8 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: parent_name(def),
+        declaration_order: top_index,
         kind: HirTypeDefKind::Enum { variants },
         protocol: def.protocol.clone(),
         is_coll: def.coll,
@@ -696,7 +723,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
     }
 }
 
-fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     let variants = def
         .variants
         .iter()
@@ -722,6 +749,8 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Enum { variants },
         protocol: None,
         is_coll: false,
@@ -739,12 +768,14 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
     }
 }
 
-fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.clone(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Object {
             fields: def
                 .fields
@@ -771,12 +802,14 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
     }
 }
 
-fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Struct {
             fields: def
                 .fields

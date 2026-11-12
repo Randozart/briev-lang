@@ -214,6 +214,10 @@ pub enum HirTypeDefKind {
 pub struct HirForeign {
     /// Effective Briev name (`as <name>` or the foreign symbol).
     pub name: String,
+    /// 2026-11-12 (destination-model port): the linker symbol (`frgn local :
+    /// symbol from "libc"` — the AST `ForeignBinding.foreign_name`). The
+    /// boundary destination plan keys foreign boundaries by this symbol.
+    pub link_symbol: String,
     pub params: Vec<(String, Type)>,
     pub ret: Option<Type>,
 }
@@ -224,6 +228,17 @@ pub struct HirTypeDef {
     pub item: ItemId,
     pub name: String,
     pub type_params: Vec<String>,
+    /// 2026-11-12 (destination-model port): refinement parent name
+    /// (`type Int32: Int` → `Some("Int")`). The parser guarantees a bare
+    /// identifier here; generic-arg and hashword relationship entries are
+    /// traits/protocol, not the parent. The object-shape guard reads this —
+    /// a parented type is never a plain object.
+    pub parent: Option<String>,
+    /// 2026-11-12 (destination-model port): source index of the top-level
+    /// item this declaration came from (Export/SyncGroup wrappers count as
+    /// their inner item's position). The enum constructor-tag order and the
+    /// AST `declaration_order` read this.
+    pub declaration_order: usize,
     pub kind: HirTypeDefKind,
     /// Declared boundary protocol (`type CStr: String<C_String>`), if any.
     pub protocol: Option<String>,
