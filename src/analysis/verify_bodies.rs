@@ -123,9 +123,41 @@ fn trivially_true(expr: &Expr) -> bool {
 }
 
 /// Prove one (pre, body, post) triple across all of the body's paths.
+/// Bind identifiers that a fact pins to a single value (`a == 5`).
+///
+/// A point equality is a value fact, not a range. Recording it as an
+/// assignment lets arithmetic over the identifier fold *while the body is
+/// walked*, so the body's result and the postcondition are evaluated with the
+/// same knowledge — pinning only at verdict time leaves the two sides
+/// disagreeing (`a + a` already folded against an unpinned `a`).
+fn pin_points(state: &mut SymbolicState, fact: &Expr) {
+    match fact {
+        Expr::BinaryOp(BinaryOpKind::And, left, right) => {
+            pin_points(state, left);
+            pin_points(state, right);
+        }
+        Expr::BinaryOp(BinaryOpKind::Eq, left, right) => {
+            let pinned = match (left.as_ref(), right.as_ref()) {
+                (Expr::Identifier(name), Expr::Decimal(value))
+                | (Expr::Decimal(value), Expr::Identifier(name)) => Some((name.clone(), *value)),
+                _ => None,
+            };
+            if let Some((name, value)) = pinned {
+                state
+                    .assignments
+                    .entry(name)
+                    .or_insert(SymbolicValue::Literal(value, "int".to_string()));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
+    let mut initial = SymbolicState::new(pre);
+    pin_points(&mut initial, pre);
     let mut terminated = Vec::new();
-    walk_block(body, SymbolicState::new(pre), &mut terminated);
+    walk_block(body, initial, &mut terminated);
     if terminated.is_empty() {
         return BodyOutcome::Unproven(
             "body has no terminating value path — nothing to verify".to_string(),
@@ -226,6 +258,7 @@ fn step_statement(
         Statement::Gate(c) | Statement::Check(c) => {
             let mut s = st;
             s.add_constraint(c, true);
+            pin_points(&mut s, c);
             next.push(s);
         }
         // Pure expression statement: no effect on the symbolic state.
@@ -249,6 +282,7 @@ fn step_guard(
     // inner block's end falls through with the guard still true.
     let mut taken = st.clone();
     taken.add_constraint(cond, true);
+    pin_points(&mut taken, cond);
     next.extend(walk_block(inner, taken, terminated));
     // Guard NOT taken: continue in the enclosing block with the negated fact.
     let mut skipped = st;
@@ -354,7 +388,33 @@ fn tighten(name: &str, op: BinaryOpKind, lit: i64, bounds: &mut HashMap<String, 
 /// Tri-state evaluation of the postcondition against one path's state.
 fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
     let bounds = bounds_of(state);
-    eval_post(post, state, &bounds)
+    // 2026-11-12 (point bounds): a precondition that pins an identifier
+    // (`[a == 5]`) is a fact about its VALUE, not merely a range. Binding such
+    // an identifier to its literal lets arithmetic over it fold — otherwise
+    // `term == a + a` stays Undecided even though `a` is fully known.
+    let pinned = with_point_bounds(state, &bounds);
+    eval_post(post, &pinned, &bounds)
+}
+
+/// Clone a state with point-bounded identifiers bound to their literal value.
+///
+/// An existing assignment wins: a body-local that was actually computed is more
+/// precise than a constraint-derived pin.
+fn with_point_bounds(state: &SymbolicState, bounds: &HashMap<String, Bound>) -> SymbolicState {
+    let mut pinned = state.clone();
+    for (name, bound) in bounds {
+        let (Some(lower), Some(upper)) = (bound.lower, bound.upper) else {
+            continue;
+        };
+        if lower != upper {
+            continue;
+        }
+        pinned
+            .assignments
+            .entry(name.clone())
+            .or_insert(SymbolicValue::Literal(lower, "int".to_string()));
+    }
+    pinned
 }
 
 /// Recursive tri-state postcondition evaluator over the (term-bound) state.
@@ -720,5 +780,63 @@ mod tests {
         let d = parse_defn("defn f(a: Int) [a >= 0][term >= 0] -> Int { term helper(a); };");
         let r = verify_bodies(&[d]);
         assert!(r.violated.is_empty() && r.unproven.is_empty() && r.proven.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod point_bound_tests {
+    use super::*;
+    use crate::ast::TopLevel;
+
+    /// Parse one defn through the real frontend.
+    fn parse_defn(src: &str) -> TopLevel {
+        let (items, _universe) = crate::library::parse_and_check("<test>", src).expect("parse");
+        items
+            .into_iter()
+            .find(|item| matches!(item, TopLevel::Definition(_)))
+            .expect("definition")
+    }
+
+    /// `a == 5` is a value fact, so `a + a` folds and the goal is decided.
+    #[test]
+    fn point_bound_decides_arithmetic() {
+        let d = parse_defn("defn f(a: Int) [a == 5][term == a + a] -> Int { term a + a; };");
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert_eq!(report.proven.len(), 1);
+    }
+
+    /// Pinned to 5 the body yields 10: `2 * a` holds, `11` does not.
+    #[test]
+    fn point_bound_proves_and_refutes() {
+        let ok = parse_defn("defn f(a: Int) [a == 5][term == 2 * a] -> Int { term a + a; };");
+        assert!(verify_bodies(&[ok]).violated.is_empty());
+        let bad = parse_defn("defn f(a: Int) [a == 5][term == 11] -> Int { term a + a; };");
+        assert_eq!(verify_bodies(&[bad]).violated.len(), 1);
+    }
+
+    /// A range is not a value: arithmetic over it must stay undecided.
+    #[test]
+    fn range_bound_does_not_pin() {
+        // `term == 2 * a` is NOT structurally equal to the body's `a + a`, so
+        // only a concrete pin could decide it — and `a >= 0` provides none.
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 2 * a] -> Int { term a + a; };");
+        let report = verify_bodies(&[d]);
+        assert!(report.violated.is_empty());
+        assert_eq!(
+            report.proven.len(),
+            0,
+            "a range must not fabricate a concrete value"
+        );
+        assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
     }
 }
