@@ -15,6 +15,7 @@ pub mod defn_liveness;
 pub mod batch_shape;
 pub mod casing;
 pub mod dependency_graph;
+pub mod inline_cost;
 pub mod purity;
 pub mod reclamation;
 pub mod region;

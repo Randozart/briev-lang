@@ -318,7 +318,29 @@ pub fn analyze_program(
         crate::analysis::modulo_partition::detect_modulo_partition(items)
     };
     let inline_decisions = build_inline_decisions(items);
-    let node_inline_decisions = build_node_inline_decisions(items);
+    let node_inline_decisions = if hir_emit_enabled() {
+        let ast = build_node_inline_decisions(items);
+        let h: HashMap<String, crate::analysis::inline_cost::InlineDecision> = hir
+            .callables
+            .iter()
+            .filter(|c| {
+                matches!(c.kind, crate::hir::HirCallableKind::Transaction)
+                    && !c.exported
+                    && c.sync_domains.is_empty()
+            })
+            .map(|c| (c.name.clone(), crate::hir::inline_cost::node_inline_decision_hir(c)))
+            .collect();
+        if h != ast {
+            if let Ok(dir) = std::env::var("BRIEV_DRIFT_DIR") {
+                let _ = std::fs::write(format!("{dir}/node_left.json"), format!("{h:#?}"));
+                let _ = std::fs::write(format!("{dir}/node_right.json"), format!("{ast:#?}"));
+            }
+            debug_assert_eq!(h, ast, "HIR/AST node inline decision drift");
+        }
+        h
+    } else {
+        build_node_inline_decisions(items)
+    };
     let has_unguarded_ffi = transition_graph.has_unguarded_ffi.clone();
     // 2026-07-31: Batch-loop decomposition derived from the swan-song-stripped
     // bodies (what the backend emits). The io boundary is the guard's
