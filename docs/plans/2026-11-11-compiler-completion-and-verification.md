@@ -285,3 +285,22 @@ refactors on owner instruction. The checkpoint did not build: it called
 Region was then integrated on top with a single `compute_link_vars` conflict
 resolved to the deterministic version. Gates: quick 41/41; region 16; sweep
 143/0; release A/B byte-identical.
+
+**Electronics HIR port — first subset (2026-11-11).**
+`src/hir/electronics.rs` (2.1k) ports the HIR-native core: pin declarations and
+classes/units/numbering, reference designators, instances and literal fields,
+precondition pin equalities, return-net union, participation
+(`unpop`/`shortcircuit`), dangling detection, decoupler bridging, decoupling
+and contention checks, contract voltage drives, static/top-level hold-law
+conditional drives, mutually-exclusive guards, and tolerance/current-bound
+checks. 14 parity tests; AST electronics suite 157; quick 41/41; sweep 143/0;
+A/B byte-identical. HIR fidelity added: `HirTypeDef`
+pins/reference/metadata/hold-laws/modes, `HirProgram` participation + top-level
+hold laws (snapshots refreshed).
+
+Still unsupported (documented in the module, never approximated): data tables
+and table-indexed fields, bus/wildcard equalities, constitutive-law elaboration
+(`electronics_laws`/`electronics_dc`), series synthesis, current/power proofs,
+budgets, `net<>`/`stdnet<>` membership, named modes, and mechanism synthesis.
+The consumer remains AST; finishing this coverage is the prerequisite for the
+electronics consumer flip.
