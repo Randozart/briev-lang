@@ -187,6 +187,9 @@ fn count_expr(expr: &HirExpr, counts: &mut UnsupportedCounts) {
         }
         HirExprKind::Literal(_)
         | HirExprKind::Identifier(_)
+        // 2026-11-12 (electronics full-surface port): a lowered selector,
+        // never unsupported syntax.
+        | HirExprKind::Wildcard
         | HirExprKind::UnitLiteral { .. } => {}
     }
 }

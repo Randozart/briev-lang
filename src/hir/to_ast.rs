@@ -87,6 +87,7 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind)
         }
         HirExprKind::Index(a, b) => Expr::Index(Box::new(expr(a)?), Box::new(expr(b)?)),
+        HirExprKind::Wildcard => Expr::Wildcard,
         HirExprKind::Slice { array, start, end, stride } => Expr::Slice {
             array: Box::new(expr(array)?),
             start: opt_box(start)?,

@@ -38,6 +38,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
     let mut participations = Vec::new();
     let mut hold_laws = Vec::new();
+    let mut data_tables = Vec::new();
+    let mut budgets = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -60,6 +62,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             always_stateful: &mut always_stateful,
             participations: &mut participations,
             hold_laws: &mut hold_laws,
+            data_tables: &mut data_tables,
+            budgets: &mut budgets,
             has_triggers: false,
         };
         for item in items {
@@ -87,6 +91,8 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         always_stateful,
         participations,
         hold_laws,
+        data_tables,
+        budgets,
         has_triggers,
     }
 }
@@ -111,6 +117,8 @@ struct LowerOutputs<'a> {
     always_stateful: &'a mut Vec<String>,
     participations: &'a mut Vec<super::program::HirParticipation>,
     hold_laws: &'a mut Vec<super::program::HirHoldLaw>,
+    data_tables: &'a mut Vec<super::program::HirDataTable>,
+    budgets: &'a mut Vec<super::program::HirBudget>,
     has_triggers: bool,
 }
 
@@ -363,6 +371,9 @@ fn lower_item(
         // 2026-11-12 (electronics): participation facts and top-level static
         // laws are electrical inputs; both are inert for other analyses.
         TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => lower_electrical_item(item, ids, out),
+        // 2026-11-12 (electronics full-surface port): data tables and
+        // budgets lower through the electrical arm like the laws.
+        TopLevel::Data(_) | TopLevel::Budget(_) => lower_electrical_item(item, ids, out),
         TopLevel::HoldLaw(_) if !exported => lower_electrical_item(item, ids, out),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
@@ -460,6 +471,16 @@ fn lower_electrical_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOut
             shortcircuit: true,
         }),
         TopLevel::HoldLaw(w) => out.hold_laws.push(lower_hold_law(&w.guard, &w.facts, ids)),
+        // 2026-11-12 (electronics full-surface port): constant data tables and
+        // source-pin budgets are electrical inputs like the laws above.
+        TopLevel::Data(t) => out.data_tables.push(super::program::HirDataTable {
+            name: t.name.clone(),
+            dims: t.dims.clone(),
+            cells: t.cells.clone(),
+        }),
+        TopLevel::Budget(b) => out.budgets.push(super::program::HirBudget {
+            contract: lower_expr(&b.contract, ids),
+        }),
         _ => {}
     }
 }
@@ -517,6 +538,22 @@ fn lower_type_hold_laws(
         .collect()
 }
 
+/// 2026-11-12 (electronics full-surface port): named component modes with
+/// their equation facts — the constitutive-law elaborator's per-mode input.
+fn lower_mode_decls(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+) -> Vec<super::program::HirModeDecl> {
+    def.body
+        .modes
+        .iter()
+        .map(|mode| super::program::HirModeDecl {
+            name: mode.name.clone(),
+            facts: lower_body(&mode.facts, ids),
+        })
+        .collect()
+}
+
 fn lower_hold_law(
     guard: &Expr,
     facts: &[Statement],
@@ -560,6 +597,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
             metadata: lower_metadata(def),
             hold_laws: lower_type_hold_laws(def, ids),
             modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+            mode_decls: lower_mode_decls(def, ids),
             span: def.span,
         });
     }
@@ -603,6 +641,7 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         metadata: lower_metadata(def),
         hold_laws: lower_type_hold_laws(def, ids),
         modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+        mode_decls: lower_mode_decls(def, ids),
         span: def.span,
     })
 }
@@ -652,6 +691,7 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         metadata: lower_metadata(def),
         hold_laws: lower_type_hold_laws(def, ids),
         modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+        mode_decls: lower_mode_decls(def, ids),
         span: def.span,
     }
 }
@@ -694,6 +734,7 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         metadata: std::collections::BTreeMap::new(),
         hold_laws: Vec::new(),
         modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
@@ -725,6 +766,7 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         metadata: std::collections::BTreeMap::new(),
         hold_laws: Vec::new(),
         modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
@@ -756,6 +798,7 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         metadata: std::collections::BTreeMap::new(),
         hold_laws: Vec::new(),
         modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
@@ -1081,6 +1124,9 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
             Box::new(lower_expr(array, ids)),
             Box::new(lower_expr(index, ids)),
         )),
+        // 2026-11-12 (electronics full-surface port): the `[*]` wildcard
+        // selector. Only ever an index; the electronics analysis expands it.
+        Expr::Wildcard => (None, HirExprKind::Wildcard),
         Expr::Slice { array, start, end, stride } => (None, HirExprKind::Slice {
             array: Box::new(lower_expr(array, ids)),
             start: start.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),
