@@ -485,6 +485,11 @@ out defn briev_str_substr(s: String, a: Int, b: Int) [true][term .^Length >= 0] 
 
 // when_raw — max(a, 0) clamped to len.
 defn when_raw(a: Int, len: Int) [true][term >= 0] -> Int {
+    // A clamp is only meaningful for a non-negative bound: without this the
+    // declared [term >= 0] is false whenever len is negative.
+    when len < 0 {
+        term 0;
+    };
     when a < 0 {
         term 0;
     };
@@ -504,6 +509,10 @@ defn clamp_hi(b: Int, len: Int, lo: Int) [true][term >= 0] -> Int {
 };
 
 defn when_hi(b: Int, len: Int) [true][term >= 0] -> Int {
+    // Same contract rationale as when_raw: the bound participates in the result.
+    when len < 0 {
+        term 0;
+    };
     when b > len {
         term len;
     };
@@ -788,6 +797,13 @@ defn coll_count_true_i64(mask: Int, n: Int) [true][term >= 0] -> Int {
 
 // coll_min — min of two non-negative counts.
 defn coll_min(a: Int, b: Int) [true][term >= 0] -> Int {
+    // Both operands reach the result, so both need the bound the contract claims.
+    when a < 0 {
+        term 0;
+    };
+    when b < 0 {
+        term 0;
+    };
     when a > b {
         term b;
     };
@@ -967,6 +983,10 @@ out defn briev_slice_range64(data: Int, n: Int, lo: Int, hi: Int)
 
 // coll_hi_fix — max(h, lo) for the range clamp.
 defn coll_hi_fix(h: Int, lo: Int) [true][term >= 0] -> Int {
+    // `lo` is returned when h < lo, so the contract needs lo >= 0.
+    when lo < 0 {
+        term 0;
+    };
     when h < lo {
         term lo;
     };
@@ -1040,6 +1060,10 @@ defn coll_step_fix(step: Int) [step >= 0][term >= 1] -> Int {
 
 // coll_len_fix — 0 when hi < lo (empty range), else the computed len.
 defn coll_len_fix(h: Int, l: Int, len: Int) [true][term >= 0] -> Int {
+    // `len` is returned on the fall-through path, so the contract needs len >= 0.
+    when len < 0 {
+        term 0;
+    };
     when h < l {
         term 0;
     };
