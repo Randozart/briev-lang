@@ -243,3 +243,46 @@ with subset-clean bodies. The invariant's payoff therefore depends on annotating
 code that is already in-subset — not on the raw loop count. That reframes task 75
 from "count provable loops" to "annotate the 55 and see", and it lowers the
 expected payoff accordingly.
+
+## 11. Open items
+
+Status after `9f1df3450` — `foreach` invariants shipped, SPEC §10.4 written.
+Three remain, ordered by what they unlock.
+
+**1. `node` / `txn` invariants — DONE.** Third contract slot, entry +
+preservation obligations (guard `¬post`), no progress obligation yet. See §10.5.
+Original note retained below for the reasoning.
+`parse_node` returns a `Transaction`, and both are loops (entry loop / convergent
+loop), so one implementation serves both. Unlike `foreach` there is no index
+range: the loop runs until the postcondition holds, so the obligations are
+entry / preservation / **progress**, not entry / preservation / exit. That needs a
+decision on what the third slot means for convergence — almost certainly `I`
+plus a variant, since the SPEC already demands the goal be *"provably
+reachable"*. Storage is free again: `Transaction.modifiers` (same
+`Annotation` channel, zero struct edits).
+
+**2. Invariant inference (Houdini).** The annotation cost blocks scale: 221
+`foreach` in `lib/`, 55 with subset-clean bodies, each needing a human-written
+invariant. Generate candidate conjuncts from the body (`acc == i`, `i <= n`,
+`0 <= i`, `x == k`), keep the weakest subset that is inductive — init and
+preserve both hold. Pure prover work, no syntax. This is what turns the feature
+from "provable if you annotate" into "usually proved without annotation".
+
+**3. Invariant-licensed parallelisation.** A proved independent-iteration
+invariant is exactly the proof the SPEC demands before reassociating a fold; with
+it, `approx` becomes **derivable** rather than asserted. The most Briev-shaped
+payoff on the list: verification earning a strategy keyword instead of taxing it.
+
+Two smaller ones, not scheduled: **counterexample → test generation** (a failed
+obligation already yields a concrete model; emit it as a `#[case]`), and **ghost
+variables** (an invariant often needs a counter that exists only in the proof —
+`ghost processed: Int`).
+
+### Known limits of what shipped
+
+- Only `foreach`. `node`/`txn` still take no invariant.
+- The bracket is required to sit between the binder and `in` (see §10); a
+  post-iterable position would collide with indexing.
+- There is no `variant` clause, so **termination is not proved** — the obligations
+  give partial correctness only, as before.
+- Nothing infers invariants, so every annotation is manual.

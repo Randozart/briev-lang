@@ -2334,8 +2334,36 @@ This is distinct from §10.2's statement guards (`[cond] stmt;`) and convergence
 gates (`[cond];`), which assert on every pass. The loop invariant is the
 hypothesis that makes the loop's obligations provable at all.
 
-`node` and `txn` bodies are loops as well — an entry loop and the convergent loop
-— and will take the same treatment in the dedicated contract slot when specified.
+### 10.5 Loop invariants on `node` and `txn`
+
+A `node` or `txn` states its loop invariant as a **third** contract bracket:
+
+```briev
+txn tick(x: Int, done: Int) [x >= 0 && x < 1000][done == 1][x >= 0] {
+    x = x + 1;
+    done = 1;
+};
+```
+
+The slot is unambiguous: after a contract the parser expects a terminator, and
+the watchdog forms start with `?` or `!`, so a third `[` can only be the
+invariant.
+
+There is no index range here. The body runs **until the postcondition holds**, so
+a pass is guarded by the *negation* of the postcondition and two obligations are
+proved:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| entry — `<fn>_init` | the precondition | `I` |
+| preservation — `<fn>_preserve` | the precondition, `I`, and `¬post` | `I` after one pass |
+
+There is deliberately **no progress obligation**. Showing that the body actually
+drives `post` towards truth needs a *variant* — a measure that strictly decreases
+and is bounded below — which the language does not yet express. The invariant
+therefore gives partial correctness of every pass; termination of a convergent
+body remains unproved. This is the same gap as the `beginprogram` rule above,
+where "provably reachable" is checked as a shape on the source rather than proved.
 
 ## 11. Control flow
 

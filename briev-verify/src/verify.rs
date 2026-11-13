@@ -138,7 +138,9 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         // A loop carrying an `invariant` annotation is proved by its three
         // Hoare obligations, not as one straight-line body. Each obligation is
         // loop-free, so the ordinary path walk discharges it.
-        if let Some(obligations) = loop_obligations(name, contract, body) {
+        let obligations = loop_obligations(name, contract, body)
+            .or_else(|| convergent_obligations(item, name, contract, body));
+        if let Some(obligations) = obligations {
             for (obligation, pre, post, obligation_body) in obligations {
                 if let Some(reason) = unsupported_reason(&obligation_body, &sums) {
                     report.skipped.push(format!("{obligation}: {reason}"));
@@ -1000,6 +1002,81 @@ fn render_counterexample(state: &SymbolicState) -> String {
         }
         _ => "a path produces a value that contradicts the contract".to_string(),
     }
+}
+
+/// The negation of a condition, preferring a flipped comparison.
+///
+/// A flipped comparison is a numeric fact the bounds reasoning can use;
+/// `!(a > 5)` is not.
+fn negate(condition: &Expr) -> Expr {
+    if let Expr::BinaryOp(op, left, right) = condition {
+        let flipped = match op {
+            BinaryOpKind::Lt => Some(BinaryOpKind::Ge),
+            BinaryOpKind::Le => Some(BinaryOpKind::Gt),
+            BinaryOpKind::Gt => Some(BinaryOpKind::Le),
+            BinaryOpKind::Ge => Some(BinaryOpKind::Lt),
+            BinaryOpKind::Eq => Some(BinaryOpKind::Neq),
+            BinaryOpKind::Neq => Some(BinaryOpKind::Eq),
+            _ => None,
+        };
+        if let Some(kind) = flipped {
+            return binop(kind, (**left).clone(), (**right).clone());
+        }
+    }
+    Expr::UnaryOp(UnaryOpKind::Not, Box::new(condition.clone()))
+}
+
+/// The obligations of a convergent body (`node` / `txn`) carrying an invariant.
+///
+/// There is no index range: the body runs until the postcondition holds, so the
+/// guard of a pass is the *negation of the postcondition* and there is no exit
+/// obligation to state — the loop leaves precisely because `post` holds, and `I`
+/// is then a free fact about the exit state.
+///
+///   init       pre        =>  I
+///   preserve   pre && I && !post  =>  I   after one pass
+///
+/// Progress — that the body actually drives `post` towards truth — needs a
+/// variant and is not claimed here.
+fn convergent_obligations(
+    item: &TopLevel,
+    name: &str,
+    contract: &Contract,
+    body: &[Statement],
+) -> Option<Vec<(String, Expr, Expr, Vec<Statement>)>> {
+    let TopLevel::Transaction(txn) = item else {
+        return None;
+    };
+    let invariant = txn
+        .modifiers
+        .iter()
+        .find(|annotation| annotation.name == "invariant")?
+        .value
+        .clone()?;
+    let zero = Expr::Decimal(0);
+
+    let init = (
+        format!("{name}_init"),
+        contract.pre_condition.clone(),
+        invariant.clone(),
+        vec![Statement::Term(Some(zero.clone()))],
+    );
+
+    let preserve = vec![
+        contract.pre_condition.clone(),
+        invariant.clone(),
+        negate(&contract.post_condition),
+    ];
+    let mut preserve_body = body.to_vec();
+    preserve_body.push(Statement::Term(Some(zero)));
+    let keep = (
+        format!("{name}_preserve"),
+        conjunction(preserve),
+        invariant,
+        preserve_body,
+    );
+
+    Some(vec![init, keep])
 }
 
 /// `left op right`.

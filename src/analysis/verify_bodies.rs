@@ -384,3 +384,36 @@ mod loop_invariant_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod convergent_invariant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A `txn` with a third-bracket invariant proves entry and preservation.
+    #[test]
+    fn txn_invariant_proves_entry_and_preservation() {
+        let defn = parse_one(
+            "txn tick(x: Int, done: Int) [x >= 0 && x < 1000][done == 1][x >= 0] {\n\
+                 x = x + 1;\n\
+                 done = 1;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["tick_init", "tick_preserve"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} violated={:?} skipped={:?}",
+                report.unproven,
+                report.violated,
+                report.skipped
+            );
+        }
+    }
+}

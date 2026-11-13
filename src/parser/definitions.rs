@@ -1185,6 +1185,7 @@ impl<'a> Parser<'a> {
         // 2026-07-31: Contract may precede or follow the `-> Type` return
         // type (see parse_output_and_contract).
         let (output_type, contract) = self.parse_output_and_contract()?;
+        let invariant = self.parse_optional_invariant()?;
         // 2026-07-28: Body is optional — `txn f -> T := { ... }` has no { body }.
         let body = if self.check(&Token::LBrace) {
             self.parse_block()?
@@ -1208,7 +1209,7 @@ impl<'a> Parser<'a> {
             body,
             metadata: std::collections::HashMap::new(),
             derivation,
-            modifiers: vec![],
+            modifiers: invariant,
             span: None,
             variadic_param,
             doc,
@@ -1336,6 +1337,7 @@ impl<'a> Parser<'a> {
         }
         // node has no parameters and no return value (purely reactive)
         let contract = self.parse_contract()?;
+        let invariant = self.parse_optional_invariant()?;
         // 2026-07-28: Body is optional for consistency with defn/txn.
         let body = if self.check(&Token::LBrace) {
             self.parse_block()?
@@ -1355,7 +1357,7 @@ impl<'a> Parser<'a> {
             body,
             metadata: std::collections::HashMap::new(),
             derivation,
-            modifiers: vec![],
+            modifiers: invariant,
             span: None,
             variadic_param: None,
             doc: self.take_doc(),
@@ -2774,6 +2776,25 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse contract: [pre][post], [[post], [pre]]
+    /// Optional third contract bracket: the invariant of a convergent body.
+    ///
+    /// `txn f [pre][post][I] { ... }` — the body runs until the postcondition
+    /// holds, so `I` is the property that survives every pass. A third `[` after
+    /// a contract cannot be anything else: the contract parser stops at a
+    /// terminator, and the watchdog forms start with `?` or `!`.
+    fn parse_optional_invariant(&mut self) -> Result<Vec<Annotation>, SyntaxError> {
+        if !self.check(&Token::LBracket) {
+            return Ok(Vec::new());
+        }
+        self.pos += 1;
+        let property = self.parse_expression()?;
+        self.expect(Token::RBracket)?;
+        Ok(vec![Annotation {
+            name: "invariant".to_string(),
+            value: Some(property),
+        }])
+    }
+
     fn parse_contract(&mut self) -> Result<Contract, SyntaxError> {
         let mut pre = Expr::Bool(true);
         let mut post = Expr::Bool(true);
