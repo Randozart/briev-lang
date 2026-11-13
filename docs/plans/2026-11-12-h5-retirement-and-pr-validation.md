@@ -248,3 +248,49 @@ corpus ALL BYTE-IDENTICAL; `ll_determinism_check.sh --quick` ALL
 DETERMINISTIC; focused HIR/match/field/tier2/corpus suites 28/28; Praetor
 on `src/backend/llvm` produces no new diagnostics (net one fewer issue in
 `emit_match`/`emit_struct_literal`).
+
+## Phase C, statement-operand slice (2026-11-13, done)
+
+`emit_hir_stmt.rs` no longer crosses `hir::to_ast` at all: **8 → 0** code
+references (the module doc is the only remaining textual mention). The
+value-binding and term/match statement arms now take their shape and fallback
+expressions from the SOURCE statement at the same pair slot, and HIR still
+drives native value emission:
+
+- **ArrowAssign (gate + operand)**: new `ArrowOperand::HirSourced(hir, source_ast)`
+  carries the pair slot's AST leaf. `name()`/`declared_type()` read HIR; `emit()`
+  prefers `emit_hir_operand` and falls back to the source AST; `to_ast()` is the
+  source AST, so the `#StdOut` `Print#` path needs no reconstruction. The
+  reconstructibility gate is gone (the source slot always exists).
+- **Let**: `emit_let_pair` takes the paired `HirStmt` plus the SOURCE
+  initializer (`LetValue::Hir(hir, source_ast)`); bare lets pass `Ast(None)`.
+- **Assign**: LHS/RHS shape and RHS fallback come from
+  `Statement::Assign`; the RHS still emits through `AssignValue::Hir`.
+- **Term/Tail**: `term_source_value` extracts the paired source expression;
+  the value emits through `emit_hir_operand` with the source AST as the
+  uncovered-leaf fallback. A value term with no source declines before the web
+  flush (no partial IR).
+- **Match scrutinee**: emitted through `emit_hir_operand`, falling back to the
+  paired `Statement::Match` scrutinee; arm patterns/bodies were already sourced.
+- **TempTransfer**: the synthetic binding uses the replaced return statement's
+  source expression at the pair slot; its synthetic return carries a
+  synthetic `Identifier` source so the term arm never crosses `to_ast`.
+
+No `to_ast` site in this file is kept as an AST-only exception. The remaining
+`to_ast` families in `emit_expr.rs` (Index/MethodCall/Reflect/Call/short-circuit/
+Block children) are unchanged and remain the next expression slice.
+
+Gates (re-verified independently 2026-11-13 after the interruption):
+`cargo build`/`--release` green, no new warnings; `cargo nextest run --lib`
+3767/3767; `scripts/gate.sh quick` 42/42; `hir_emit_ab.sh` full corpus ALL
+BYTE-IDENTICAL; `ll_determinism_check.sh --quick` ALL DETERMINISTIC.
+`cargo test --all --no-fail-fast` shows 72 failures — all exec/toolchain
+golden suites plus contract proof binaries (host clang currently degraded:
+`unknown platform, assuming -mfloat-abi=soft`) — and the failure set is
+IDENTICAL at the base commit `33b4ca0c0` in a temp worktree
+(`daily_use_smoke` 41/41, `inferred_output` 4/4, `tail_expr` 1/2 pass,
+`pgated_term_backend` 2/2, `c_driver_callback`,
+`frgn_contract_preconditions`); each sampled failure also fails with
+`BRIEV_HIR_EMIT=0`. No failure implicates this slice. Praetor on the
+changed files: `emit_hir_stmt.rs` clean; `emit_stmt.rs` has the identical
+27-diagnostic pre-existing set at HEAD (line-number shifts only).

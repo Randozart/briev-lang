@@ -2027,10 +2027,14 @@ fn emit_assign_value(
 /// 2026-11-09 (H5 seam refactor): an arrow operand addressed by NAME/TYPE,
 /// not by AST shape. `name()` peels `AddrOf` layers to the identifier (the
 /// strategy lookup and stores only ever need the variable); `emit()` prefers
-/// the HIR operand and falls back losslessly to the reconstructed AST leaf.
+/// the HIR operand and falls back losslessly to the source AST leaf.
 pub(crate) enum ArrowOperand<'a> {
     Ast(&'a crate::ast::Expr),
-    Hir(&'a crate::hir::expr::HirExpr),
+    /// 2026-11-13 (H5 phase C): HIR operand plus the SOURCE AST expression at
+    /// the same pair slot. Shape decisions read the HIR; the `#StdOut` print
+    /// path and any uncovered operand leaf use the source AST directly, so the
+    /// statement seam never reconstructs through `hir::to_ast`.
+    HirSourced(&'a crate::hir::expr::HirExpr, &'a crate::ast::Expr),
 }
 
 impl ArrowOperand<'_> {
@@ -2043,24 +2047,23 @@ impl ArrowOperand<'_> {
                 }
                 t.as_var_name()
             }
-            ArrowOperand::Hir(expr) => hir_addr_of_name(expr),
+            ArrowOperand::HirSourced(expr, _) => hir_addr_of_name(expr),
         }
     }
 
     fn emit(&self, backend: &mut LlvmBackend, out: &mut String, indent: &str) -> TypedRegister {
         match self {
             ArrowOperand::Ast(expr) => backend.emit_expr(out, expr, indent),
-            ArrowOperand::Hir(expr) => backend.emit_hir_operand(out, expr, indent).unwrap_or_else(|| {
-                let ast = crate::hir::to_ast::expr(expr).expect("reconstructible arrow value");
-                backend.emit_expr(out, &ast, indent)
-            }),
+            ArrowOperand::HirSourced(expr, ast) => backend
+                .emit_hir_operand(out, expr, indent)
+                .unwrap_or_else(|| backend.emit_expr(out, ast, indent)),
         }
     }
 
     fn to_ast(&self) -> Option<crate::ast::Expr> {
         match self {
             ArrowOperand::Ast(expr) => Some((*expr).clone()),
-            ArrowOperand::Hir(expr) => crate::hir::to_ast::expr(expr),
+            ArrowOperand::HirSourced(_, ast) => Some((*ast).clone()),
         }
     }
 
@@ -2075,7 +2078,7 @@ impl ArrowOperand<'_> {
                     .and_then(|n| backend.resolve_id_type(n))
                     .unwrap_or_else(crate::ast::Type::int)).collect(),
             )),
-            ArrowOperand::Hir(expr) => hir_declared_value_type(expr, backend),
+            ArrowOperand::HirSourced(expr, _) => hir_declared_value_type(expr, backend),
             _ => None,
         }
     }
