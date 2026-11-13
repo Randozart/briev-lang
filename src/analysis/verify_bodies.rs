@@ -1259,9 +1259,10 @@ mod tests {
         let d = parse_defn("defn f(a: Int) [a >= 0][term == 0] -> Int { term 5; };");
         let r = verify_bodies(&[d]);
         let json = r.to_json();
-        // 2026-11-13: `proven` lists NAMES now (b1dd6550) — an empty list,
-        // not a zero count.
-        assert!(json["proven"].as_array().is_some_and(|a| a.is_empty()), "{json}");
+        // `proven` lists names, not a count: a bare total cannot tell "proved"
+        // apart from "never examined", and consumers need the difference.
+        let proven = json["proven"].as_array().expect("proven array");
+        assert!(proven.is_empty(), "a violated body is not proven: {json}");
         let violated = json["violated"].as_array().expect("violated array");
         assert_eq!(violated.len(), 1);
         assert_eq!(violated[0]["name"], "f");

@@ -10,7 +10,7 @@
 // These will be migrated to the new AST types as each backend is rewritten.
 
 use crate::ast::{BitRange, DerivationBlock, Expr, Formatting, PropertyValue, Type};
-use crate::errors::Span;
+use crate::span::Span;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

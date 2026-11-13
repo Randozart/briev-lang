@@ -25,7 +25,7 @@
 
 use crate::ast::bad::BadInstr;
 use crate::ast::{Expr, Type};
-use crate::errors::Span;
+use crate::span::Span;
 
 /// A whole .bld file. `items` preserves source order.
 #[derive(Debug, Clone)]
