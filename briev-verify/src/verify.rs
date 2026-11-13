@@ -59,6 +59,12 @@ pub struct BodyReport {
     pub unproven: Vec<String>,
     /// Declarations with a concrete counterexample — hard failures.
     pub violated: Vec<String>,
+    /// Declarations the prover never examined, with the reason.
+    ///
+    /// These are not successes. A body outside the supported surface used to be
+    /// dropped silently, so a caller could not tell "proved" from "never looked
+    /// at". Naming them costs nothing and removes the ambiguity.
+    pub skipped: Vec<String>,
 }
 
 impl BodyReport {
@@ -80,6 +86,7 @@ impl BodyReport {
             })).collect::<Vec<_>>(),
             "unproven": findings_json(&self.unproven),
             "violated": findings_json(&self.violated),
+            "skipped": findings_json(&self.skipped),
         })
     }
 }
@@ -131,12 +138,14 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         // Soundness boundary: only prove bodies whose entire surface is
         // within the pure-integer prover's reach (calls included, when the
         // callee has a value summary).
-        if !body_supported(body, &sums) {
+        if let Some(reason) = unsupported_reason(body, &sums) {
+            report.skipped.push(format!("{name}: {reason}"));
             continue;
         }
         // Substitute each summarised call with the callee's value expression,
         // so the existing path walk reasons about one flat body.
         let Ok(flattened) = inline_body(body, &sums) else {
+            report.skipped.push(format!("{name}: a call could not be inlined"));
             continue;
         };
         match verify_one(
@@ -545,7 +554,8 @@ fn step_statement(
             ..
         } => {
             let mut s = st;
-            if names.is_empty() {
+            // `names` holds the declared names; a plain `let x = e;` has one.
+            if names.len() <= 1 {
                 s.assign(name, e);
             }
             next.push(s);
@@ -967,37 +977,68 @@ fn render_counterexample(state: &SymbolicState) -> String {
 
 /// Whether the entire body is within the supported pure-integer surface.
 fn body_supported(body: &[Statement], sums: &HashMap<String, Summary>) -> bool {
-    body.iter().all(|stmt| stmt_supported(stmt, sums))
+    unsupported_reason(body, sums).is_none()
 }
 
-/// Whether one statement is within the supported surface.
-fn stmt_supported(stmt: &Statement, sums: &HashMap<String, Summary>) -> bool {
+/// The first construct that puts a body outside the prover's reach, named.
+///
+/// The boolean this replaces said only "not supported", which tells an author
+/// nothing and makes a census impossible. Naming the construct makes the skip
+/// actionable: a reader learns what to avoid, and extending the prover can be
+/// aimed at whatever blocks the most bodies.
+fn unsupported_reason(stmts: &[Statement], sums: &HashMap<String, Summary>) -> Option<String> {
+    stmts.iter().find_map(|stmt| statement_reason(stmt, sums))
+}
+
+/// The reason one statement is unsupported, if it is.
+fn statement_reason(stmt: &Statement, sums: &HashMap<String, Summary>) -> Option<String> {
     match stmt {
-        Statement::Assign(lhs, e) => matches!(lhs, Expr::Identifier(_)) && expr_supported(e, sums),
+        Statement::Assign(lhs, e) => {
+            if !matches!(lhs, Expr::Identifier(_)) {
+                return Some("an assignment whose target is not a plain name".to_string());
+            }
+            expr_reason(e, sums)
+        }
         Statement::Let { names, expr, .. } => {
-            names.is_empty() && expr.as_ref().map_or(true, |e| expr_supported(e, sums))
+            // A plain `let x = e;` carries exactly one name — the parser fills
+            // `names` with it. Only a multi-target binding is out of reach.
+            if names.len() > 1 {
+                return Some("a `let` binding more than one name".to_string());
+            }
+            expr.as_ref().and_then(|e| expr_reason(e, sums))
         }
-        Statement::Guarded(c, inner) => expr_supported(c, sums) && body_supported(inner, sums),
+        Statement::Guarded(c, inner) => {
+            expr_reason(c, sums).or_else(|| unsupported_reason(inner, sums))
+        }
         Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-            expr_supported(e, sums)
+            expr_reason(e, sums)
         }
-        Statement::Term(None) | Statement::EndProgram(None) => true,
-        Statement::Gate(c) | Statement::Check(c) => expr_supported(c, sums),
-        Statement::Expression(e) => expr_supported(e, sums),
         // Paths that terminate without a value are always modelable.
-        Statement::Rollback(_) | Statement::Halt | Statement::Trap => true,
-        // Loops, foreach/break, yields, expects, metadata, arrows — outside the
-        // pure-integer prover's contract.
-        _ => false,
+        Statement::Term(None) | Statement::EndProgram(None) => None,
+        Statement::Gate(c) | Statement::Check(c) => expr_reason(c, sums),
+        Statement::Expression(e) => expr_reason(e, sums),
+        Statement::Rollback(_) | Statement::Halt | Statement::Trap => None,
+        Statement::Foreach { .. } => Some("a `foreach` loop".to_string()),
+        Statement::Match { .. } => Some("a `match` statement".to_string()),
+        Statement::Break => Some("`break`".to_string()),
+        Statement::Yield => Some("`yield`".to_string()),
+        Statement::Expect(_) => Some("`expect`".to_string()),
+        Statement::MetadataAssignment(..) => Some("a metadata assignment".to_string()),
+        Statement::SyncBlock(_) => Some("a sync block".to_string()),
+        Statement::Defer(_) => Some("a `defer` block".to_string()),
+        Statement::Mutex(_) => Some("a `mutex` block".to_string()),
+        Statement::TrgBinding { .. } => Some("a trigger binding".to_string()),
+        Statement::InlineAsm { .. } => Some("inline asm".to_string()),
+        Statement::Block(_) => Some("a nested block".to_string()),
+        _ => Some("an unsupported statement".to_string()),
     }
 }
 
-/// Whether an expression is within the supported pure-integer surface.
+/// The reason one expression is unsupported, if it is.
 ///
-/// Fields, indexes, slices, ranges, spawns, quotes and reflection stay
-/// excluded. A call is included **only** when the callee has a value summary,
-/// so the prover never claims a proof over a value it cannot evaluate.
-fn expr_supported(expr: &Expr, sums: &HashMap<String, Summary>) -> bool {
+/// A call is supported **only** when the callee has a value summary, so the
+/// prover never claims a proof over a value it cannot evaluate.
+fn expr_reason(expr: &Expr, sums: &HashMap<String, Summary>) -> Option<String> {
     match expr {
         Expr::Decimal(_)
         | Expr::Char(_)
@@ -1006,14 +1047,22 @@ fn expr_supported(expr: &Expr, sums: &HashMap<String, Summary>) -> bool {
         | Expr::BeginProgram
         | Expr::UnitLiteral { .. }
         | Expr::Identifier(_)
-        | Expr::Wildcard => true,
-        Expr::BinaryOp(_, l, r) => expr_supported(l, sums) && expr_supported(r, sums),
-        Expr::UnaryOp(_, x) => expr_supported(x, sums),
-        Expr::AddrOf(x) | Expr::Consume(x) => expr_supported(x, sums),
+        | Expr::Wildcard => None,
+        Expr::BinaryOp(_, l, r) => expr_reason(l, sums).or_else(|| expr_reason(r, sums)),
+        Expr::UnaryOp(_, x) => expr_reason(x, sums),
+        Expr::AddrOf(x) | Expr::Consume(x) => expr_reason(x, sums),
         Expr::Call(name, args, _) => {
-            sums.contains_key(name) && args.iter().all(|a| expr_supported(a, sums))
+            if !sums.contains_key(name) {
+                return Some(format!("a call to `{name}`, which has no value summary"));
+            }
+            args.iter().find_map(|a| expr_reason(a, sums))
         }
-        _ => false,
+        Expr::Field(..) => Some("field access".to_string()),
+        Expr::Index(..) => Some("indexing".to_string()),
+        Expr::MethodCall(..) => Some("a method call".to_string()),
+        Expr::List(_) | Expr::Tuple(_) => Some("a list or tuple literal".to_string()),
+        Expr::Reflect(..) => Some("reflection".to_string()),
+        _ => Some("an unsupported expression".to_string()),
     }
 }
 
