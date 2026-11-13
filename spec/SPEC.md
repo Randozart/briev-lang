@@ -2419,6 +2419,43 @@ A `foreach` needs no variant — its trip count is bounded by the range — and 
 variant without an invariant is not accepted: the decreasing obligation is stated
 under `I ∧ ¬post`.
 
+### 10.7 What is verified today
+
+Contract checking is **partial, and honest about it**. The prover reasons over a
+pure-integer subset; a body outside that subset is reported as *skipped* — never
+assumed, and never silently passed.
+
+**Candidates.** A declaration is examined when it carries an explicit,
+non-trivial contract and is a `defn`, a `txn` or a `node` (including `export` and
+`sync` wrappers).
+
+**Not candidates — not even examined.** `$defn` / `$txn` compile-time
+declarations, `defn`s that are *members* of a type, and `cell` declarations. The
+verifier's entry point is the top-level declaration, so these never reach it.
+
+**Supported inside a candidate body.** Integer arithmetic and comparisons, `let`,
+`when` guards, `check` / `gate` facts, calls to callees that carry a value
+summary, and `foreach` over a range — with an invariant (§10.4) or one inferred —
+plus the invariant and variant clauses of §10.5 and §10.6.
+
+**Skipped, with a named reason.** Field access, indexing, buffers, floats,
+strings, casts, `match`, and intrinsics without a summary. The reason names the
+construct and the declaration:
+
+```
+info: --verify-bodies skipped: byte_at: indexing
+```
+
+Skips are advisory. They mean *nothing was proved here*, which is different from
+both "proved" and "refuted", and the report keeps those three apart.
+
+**Consequence.** Most of `lib/std`'s loops live in compile-time metaprogramming or
+in type members, so they are not candidates at all (measured: `lib/std/numeric.bv`
+holds 6 `$defn` and 0 plain `defn`). Verification today pays for **user code
+written in the integer subset**, not for the standard library. Widening it means
+index, bounds and alias reasoning, which the prover does not yet have — and which
+also gates parallelism, since independence is a claim about disjoint writes.
+
 ## 11. Control flow
 
 ### 11.1 No `if`/`else`
