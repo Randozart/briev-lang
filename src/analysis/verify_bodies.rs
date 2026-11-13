@@ -332,3 +332,191 @@ mod cycle_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod loop_invariant_tests {
+    use super::*;
+
+    /// Parse one `defn` through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A `foreach` carrying an invariant is proved by its three obligations.
+    #[test]
+    fn foreach_invariant_yields_three_obligations() {
+        let defn = parse_one(
+            "defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i [acc == i && i <= n] in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["count_init", "count_preserve", "count_exit"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} skipped={:?}",
+                report.unproven,
+                report.skipped
+            );
+        }
+    }
+
+    /// The obligations discriminate: a wrong invariant is refuted at entry
+    /// rather than accepted because the other two happen to hold.
+    #[test]
+    fn a_wrong_foreach_invariant_is_refuted_at_entry() {
+        let defn = parse_one(
+            "defn bad(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i [acc == i + 1 && i <= n] in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.iter().any(|line| line.starts_with("bad_init")),
+            "entry must be refuted: {:?}",
+            report.violated
+        );
+    }
+}
+
+#[cfg(test)]
+mod convergent_invariant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A `txn` with a third-bracket invariant proves entry and preservation.
+    #[test]
+    fn txn_invariant_proves_entry_and_preservation() {
+        let defn = parse_one(
+            "txn tick(x: Int, done: Int) [x >= 0 && x < 1000][done == 1][x >= 0] {\n\
+                 x = x + 1;\n\
+                 done = 1;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["tick_init", "tick_preserve"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} violated={:?} skipped={:?}",
+                report.unproven,
+                report.violated,
+                report.skipped
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod inferred_invariant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A loop with no annotation is proved by inferring its invariant.
+    #[test]
+    fn unannotated_loop_is_proved_by_inference() {
+        let defn = parse_one(
+            "defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["count_init", "count_preserve", "count_exit"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} violated={:?} skipped={:?}",
+                report.unproven,
+                report.violated,
+                report.skipped
+            );
+        }
+    }
+
+    /// Inference must never manufacture a proof: a false contract stays unproved.
+    #[test]
+    fn inference_does_not_invent_a_proof() {
+        let defn = parse_one(
+            "defn wrong(n: Int) [n >= 0 && n <= 1000][term == 999] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        let proven: Vec<&String> = report
+            .proven
+            .iter()
+            .filter(|name| name.starts_with("wrong"))
+            .collect();
+        assert!(
+            proven.len() < 3,
+            "a false contract must not be fully proved: {proven:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A decreasing measure proves both the bound and the step.
+    #[test]
+    fn a_decreasing_variant_proves_bound_and_step() {
+        let defn = parse_one(
+            "txn converge(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] \
+             variant [100 - x] {\n x = x + 1;\n done = 1;\n};",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["converge_variant_bound", "converge_variant_step"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?}",
+                report.unproven
+            );
+        }
+    }
+
+    /// A measure that grows must not prove its step obligation.
+    #[test]
+    fn a_growing_variant_does_not_prove_the_step() {
+        let defn = parse_one(
+            "txn grows(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] \
+             variant [x] {\n x = x + 1;\n done = 1;\n};",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            !report
+                .proven
+                .iter()
+                .any(|name| name == "grows_variant_step"),
+            "a growing measure must not prove progress: {:?}",
+            report.proven
+        );
+    }
+}
