@@ -1228,3 +1228,49 @@ fn mentions_only(expr: &Expr, allowed: &[String]) -> bool {
         .iter()
         .all(|name| allowed.iter().any(|p| p == name))
 }
+
+#[cfg(test)]
+mod prover_api_tests {
+    use crate::ast::{BinaryOpKind, Contract, Definition, Expr, Statement, TopLevel};
+    use super::verify_bodies;
+
+    /// Build `defn f(x) [x >= 0][term >= 0] { term x; }` without any frontend.
+    #[test]
+    fn a_constructed_definition_is_proved() {
+        let ge = |lhs: Expr, rhs: i64| {
+            Expr::BinaryOp(
+                BinaryOpKind::Ge,
+                Box::new(lhs),
+                Box::new(Expr::Decimal(rhs)),
+            )
+        };
+        let contract = Contract::proven(
+            ge(Expr::Identifier("x".into()), 0),
+            ge(Expr::Identifier("term".into()), 0),
+        );
+        let body = vec![Statement::Term(Some(Expr::Identifier("x".into())))];
+        let item = TopLevel::Definition(Definition::prover_defn("f", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert_eq!(report.proven, vec!["f".to_string()], "unproven: {:?}", report.unproven);
+        assert!(report.violated.is_empty());
+    }
+
+    /// A false contract built the same way is refuted, not silently accepted.
+    #[test]
+    fn a_constructed_false_contract_is_violated() {
+        let contract = Contract::proven(
+            Expr::Identifier("true".into()),
+            Expr::BinaryOp(
+                BinaryOpKind::Eq,
+                Box::new(Expr::Identifier("term".into())),
+                Box::new(Expr::Decimal(0)),
+            ),
+        );
+        let body = vec![Statement::Term(Some(Expr::Decimal(5)))];
+        let item = TopLevel::Definition(Definition::prover_defn("g", contract, body));
+
+        let report = verify_bodies(&[item]);
+        assert_eq!(report.violated.len(), 1, "proven: {:?}", report.proven);
+    }
+}

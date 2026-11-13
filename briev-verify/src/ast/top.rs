@@ -332,6 +332,49 @@ impl Contract {
             post_authority: false,
         }
     }
+
+    /// A contract the prover is expected to discharge.
+    ///
+    /// [`Contract::new`] leaves `explicit` false, marking a generated default
+    /// rather than a proposition, and `verify_bodies` skips those. A tool that
+    /// builds AST nodes directly is stating a real contract, so this sets it.
+    pub fn proven(pre: Expr, post: Expr) -> Self {
+        Contract {
+            explicit: true,
+            ..Contract::new(pre, post)
+        }
+    }
+}
+
+impl Definition {
+    /// A `defn` with only the fields the prover reads filled in.
+    ///
+    /// The prover looks at the name, the contract and the body; the other
+    /// eleven fields exist for the compiler's frontend and backends. This is the
+    /// constructor for a caller that has no frontend — it builds nodes and asks
+    /// for a verdict.
+    pub fn prover_defn(
+        name: impl Into<String>,
+        contract: Contract,
+        body: Vec<Statement>,
+    ) -> Self {
+        Definition {
+            name: name.into(),
+            type_params: Vec::new(),
+            parameters: Vec::new(),
+            output_type: None,
+            outputs: Vec::new(),
+            contract,
+            body,
+            metadata: std::collections::HashMap::new(),
+            derivation: None,
+            modifiers: Vec::new(),
+            annotations: Vec::new(),
+            span: None,
+            variadic_param: None,
+            doc: None,
+        }
+    }
 }
 
 // ── Export ─────────────────────────────────────────────────────────────
