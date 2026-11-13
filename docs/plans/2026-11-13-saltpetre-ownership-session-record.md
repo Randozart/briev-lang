@@ -82,6 +82,22 @@ never reassigned (9), literal-return helpers (`face_param`,
 NOT wired into kiosk CI — the census must reach a stable interpretation
 first (see §3.1).
 
+## 2b. Census campaign outcome (2026-11-13, post-record)
+
+Census **147 → 42 undecided / 16 → 47 releases**, soak now DEAD-FLAT from
+call 50 (177 MB, HWM 233 — no staging steps at all). Landed: blanket
+escape-gate withdrawal (freshness derives from body shape), ok_fresh
+through locals + tail self-recursion, list-BLOCK ownership, borrow-result /
+borrow-init classification, Static classification (literal-backed locals
+are reported separately, superseded by later releases), memcheck prelude
+inlining (cast_lanes participates in the census), §13 copy discipline on
+`face_param` misses, `strip_frac_zeros`, `pad_digits`, and the b64/http
+literal branches (`fresh_string` now a prelude helper built on the
+substring lane). Pointer-arithmetic aliasing stays conservative (test
+refuted the non-aliasing attempt; reverted). `--deny-memory-ambiguity`
+wiring waits for the remaining ~42 (parser attr-fallback families are the
+largest honest block).
+
 ## 3. What is left
 
 1. **Census interpretation pass** (next): classify genuinely-static

@@ -1830,11 +1830,56 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     }
     let mut items = items;
     if let Some(sp) = &stdlib_path {
+        // Same plugin factory as the build pipeline: without it the prelude
+        // plugin does not inject, and prelude-defined helpers (fresh_string,
+        // coll_destroy, ...) resolve as unknown callables in the census.
+        let config_dir = std::env::var("BRIEV_HOME")
+            .ok()
+            .map(|h| format!("{h}/config"));
+        let opts = briev_compiler::pipeline::BuildOptions {
+            stdlib_path: Some(sp.display().to_string()),
+            config_dir,
+            file_path: file_path.clone(),
+            ..Default::default()
+        };
         let mut resolver = briev_compiler::import_resolver::ImportResolver::new()
             .with_stdlib_path(Some(sp.clone()));
+        resolver.plugin_factory =
+            Some(briev_compiler::pipeline::module_plugin_factory(&opts, &file_path));
         items = resolver
             .resolve_imports(items, &std::path::PathBuf::from(&file_path))
             .map_err(|e| format!("import resolution failed: {}", e))?;
+    }
+    if std::env::var("BRIEV_MEMCHECK_DEBUG").is_ok() {
+        let names: Vec<&str> = items.iter().filter_map(|i| match i {
+            briev_compiler::ast::TopLevel::Definition(d) => Some(d.name.as_str()),
+            _ => None,
+        }).collect();
+        eprintln!("[memcheck-dbg] defs={} fresh_string={} b64_char={} concat={}",
+            names.len(),
+            names.contains(&"fresh_string"),
+            names.contains(&"b64_char"),
+            names.contains(&"concat"));
+    }
+    // 2026-11-13: the prelude plugin stage (cast_lanes.bv injection) runs in
+    // the build pipeline, not in bare resolve_imports. Inline cast_lanes
+    // directly when absent so prelude-defined helpers participate in the
+    // census instead of resolving as unknown calls.
+    let has_fresh = items.iter().any(|i| matches!(i,
+        briev_compiler::ast::TopLevel::Definition(d) if d.name == "fresh_string"));
+    if !has_fresh {
+        if let Some(sp) = &stdlib_path {
+            let cl_path = sp.join("cast_lanes.bv");
+            if let Ok(cl_src) = std::fs::read_to_string(&cl_path) {
+                let cl_tokens = briev_compiler::lexer::tokenize(&cl_src)
+                    .map_err(|e| format!("lex failed (cast_lanes): {}", e))?;
+                let mut cl_parser = briev_compiler::parser::Parser::new(cl_tokens, &cl_src);
+                let cl_items = cl_parser
+                    .parse_program()
+                    .map_err(|e| format!("parse failed (cast_lanes): {}", e))?;
+                items.extend(cl_items);
+            }
+        }
     }
     let report = briev_compiler::macros::memcheck::run_memcheck(&items);
     briev_compiler::macros::memcheck::print_memcheck(&report);
@@ -1852,10 +1897,12 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let mut releases = 0usize;
     let mut undecided: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();
     let mut drops: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();
+    let mut statics: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();
     for e in &events {
         match &e.kind {
             briev_compiler::hir::owned_storage::OwnedEventKind::Release { .. } => releases += 1,
             briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(_) => undecided.push(e),
+            briev_compiler::hir::owned_storage::OwnedEventKind::Static => statics.push(e),
             _ => drops.push(e),
         }
     }
@@ -1871,6 +1918,10 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
             println!("    {} in {}: {why}", e.name, e.function);
         }
     }
+    if !statics.is_empty() {
+        println!("  static-backed locals (no allocation, no owner): {}", statics.len());
+        for e in &statics { println!("    {} in {}", e.name, e.function); }
+    }
     if !drops.is_empty() {
         println!("  conservative drops (leaks by design, never unsound): {}", drops.len());
         for e in &drops {
@@ -1882,6 +1933,7 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
                 briev_compiler::hir::owned_storage::OwnedEventKind::ExplicitFree => "explicit free".to_string(),
                 briev_compiler::hir::owned_storage::OwnedEventKind::Store => "stored into state/collection".to_string(),
                 briev_compiler::hir::owned_storage::OwnedEventKind::ReturnBorrow => "returned expression borrows it".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::Borrow => "borrow-shaped init (container storage)".to_string(),
                 _ => "other".to_string(),
             };
             println!("    {} in {}: {why}", e.name, e.function);

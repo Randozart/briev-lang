@@ -987,6 +987,23 @@ frgn coll_arena_end() -> Void from "std/c/coll_arena.c";
 frgn coll_alloc(bytes: Int) -> Int from "std/c/coll_arena.c";
 frgn coll_arena_owns(ptr: Int) -> Int from "std/c/coll_arena.c";
 
+// fresh_string — an OWNED copy of any String (static literals included).
+// 2026-11-13 (owners census, §13 copy discipline): helpers with mixed
+// literal/alloc return paths use this on their literal branches so every
+// path hands back fresh storage. Lives in the prelude so no module needs a
+// string.bv import (and its namespace) just for the copy. Build the
+// [len][bytes] block, let the Data->String door copy it, free the
+// intermediate (the int_to_str pattern).
+defn fresh_string(text: String) [true][CharCount#(term) == CharCount#(text)] -> String {
+    let n: Int = CharCount#(text);
+    let buf: Int = Alloc#(8 + n + 1) as Int;
+    Store#(buf, n, 8);
+    Copy#(buf + 8, ((text as Data) as Int) + 8, n + 1);
+    let owned: String = (buf as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
+}
+
 // coll_destroy — release a compiler-owned coll handle: the scaffold-allocated
 // object is always freed; the backing block is freed only when it does NOT
 // live in an active request arena (coll_arena_owns covers retired buffers via

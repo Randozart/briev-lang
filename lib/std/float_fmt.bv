@@ -324,7 +324,7 @@ defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
     -> String {
     let missing: Int = len - s .^Length;
     when missing == 0 {
-        term s;
+        term fresh_string(s);
     };
     term zeros(missing) + s;
 };
@@ -333,7 +333,7 @@ defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
 // (returns "" when all zeros). The integer part is untouched by %g.
 defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
     when frac .^Length == 0 {
-        term frac;
+        term fresh_string(frac);
     };
     let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
     when last == 0 {
@@ -344,7 +344,10 @@ defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
         Free#(frac as Ptr<Bit<8>>);
         term strip_frac_zeros(trimmed);
     };
-    term frac;
+    // 2026-11-13 (owners census): return an OWNED copy — the input slice is
+    // caller storage, and mixed borrow/copy returns kept this helper
+    // undecided. Formatting is cold; the copy is fine.
+    term fresh_string(frac);
 };
 
 // exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.

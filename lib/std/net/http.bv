@@ -230,7 +230,7 @@ defn http_request_line(head: String, line_end: Int) [true][CharCount#(term) >= 0
 // the first CRLF), or empty when the request line is the whole block.
 defn http_header_block(head: String, line_end: Int) [true][CharCount#(term) >= 0] -> String {
     when line_end < 0 {
-        term "";
+        term fresh_string("");
     };
     term head[line_end + 2:CharCount#(head)];
 };
@@ -249,7 +249,7 @@ defn http_method(req_line: String) [true][CharCount#(term) >= 0] -> String {
 defn http_path(req_line: String) [true][CharCount#(term) >= 0] -> String {
     let sp1: Int = str_find(req_line, " ");
     when sp1 < 0 {
-        term "";
+        term fresh_string("");
     };
     let rest: String = req_line[sp1 + 1:CharCount#(req_line)];
     let sp2: Int = str_find(rest, " ");
@@ -278,7 +278,7 @@ defn http_header_scan(block: String, name: String, off: Int)
     -> String
 {
     when off >= CharCount#(block) {
-        term "";
+        term fresh_string("");
     };
     let rest: String = block[off:CharCount#(block)];
     let nl: Int = str_find(rest, "\r\n");
@@ -287,7 +287,7 @@ defn http_header_scan(block: String, name: String, off: Int)
         term http_line_value(line);
     };
     when nl < 0 {
-        term "";
+        term fresh_string("");
     };
     term http_header_scan(block, name, off + nl + 2);
 };
@@ -317,7 +317,7 @@ defn http_line_is_match(line: String, name: String) [true][term == true || term 
 defn http_line_value(line: String) [true][CharCount#(term) >= 0] -> String {
     let colon: Int = str_find(line, ":");
     when colon < 0 {
-        term "";
+        term fresh_string("");
     };
     let raw: String = line[colon + 1:CharCount#(line)];
     when CharCount#(raw) > 0 && raw[0:1] == " " {

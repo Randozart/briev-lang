@@ -32,9 +32,9 @@ defn b64_char(val: Int) [val >= 0 && val <= 63][CharCount#(term) == 1] -> String
         term (48 + (val - 52)) as Char as String;
     };
     when val == 62 {
-        term "+";
+        term fresh_string("+");
     };
-    term "/";
+    term fresh_string("/");
 };
 
 // b64_group - encode ONE group starting at byte offset `off` in `buf`, where
@@ -86,7 +86,7 @@ defn b64_pad_or_char(n: Int, shift: Int, avail: Int, need: Int)
     when avail >= need {
         term b64_char((n >> shift) & 63);
     };
-    term "=";
+    term fresh_string("=");
 };
 
 // b64_loop - encode successive 3-byte groups, accumulating the output String.
@@ -110,7 +110,7 @@ txn b64_loop(buf: ByteBuf, acc: String, off: Int)
 // get_u8 reader (DRY); no byte-poking of its own.
 defn base64_encode(buf: ByteBuf) [true][CharCount#(term) >= 0] -> String {
     when buf.len == 0 {
-        term "";
+        term fresh_string("");
     };
     term b64_loop(buf, "", 0);
 };

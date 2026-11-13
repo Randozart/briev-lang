@@ -45,6 +45,10 @@ pub enum OwnedEventKind {
     /// (field/index/deref/reflect) — the storage belongs to the container,
     /// this local is an alias, not an undecided owner.
     Borrow,
+    /// String/List local backed by STATIC storage (a string literal) and
+    /// never reassigned — allocates nothing, owns nothing, not ambiguous.
+    /// Reported separately from the undecided census.
+    Static,
     /// String/List local whose initializer was not provably fresh.
     UndecidedInit(String),
 }
@@ -113,7 +117,7 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
         .map(|e| (e.function.clone(), e.name.clone()))
         .collect();
     events.retain(|e| {
-        !(matches!(e.kind, OwnedEventKind::UndecidedInit(_))
+        !(matches!(e.kind, OwnedEventKind::UndecidedInit(_) | OwnedEventKind::Static)
             && released.contains(&(e.function.clone(), e.name.clone())))
     });
     let rel = events.iter().filter(|e| matches!(e.kind, OwnedEventKind::Release { .. })).count();
@@ -371,6 +375,10 @@ fn ok_fresh_callables(
                 // Freshness flows through locals: read_file returns the
                 // Result it unpacked into a local after its guard.
                 HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
+                // Tail self-recursion carries the Result through unchanged
+                // (read_whole recursing on its own accumulator): the recursive
+                // path is exactly as Ok-side-fresh as the base paths.
+                HirExprKind::Call { callee, .. } if *callee == c.name => true,
                 _ => false,
             });
             if all_ok {
@@ -667,10 +675,13 @@ fn rewrite_list(
                         if borrow_call || matches!(&e.kind, HirExprKind::Field { .. } | HirExprKind::Index(..)
                             | HirExprKind::Deref(_) | HirExprKind::Reflect { .. }) {
                             ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::Borrow });
+                        } else if matches!(&e.kind, HirExprKind::Literal(_)) {
+                            // Literal-backed local: static storage, allocates
+                            // nothing, owns nothing — not an ambiguous owner.
+                            ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::Static });
                         } else {
                             let why = match &e.kind {
                                 HirExprKind::Call { callee, .. } => format!("call {callee} not proven fresh"),
-                                HirExprKind::Literal(_) => "literal (static storage)".to_string(),
                                 _ => "expression not proven fresh".to_string(),
                             };
                             ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::UndecidedInit(why) });
