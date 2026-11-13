@@ -2334,6 +2334,19 @@ This is distinct from §10.2's statement guards (`[cond] stmt;`) and convergence
 gates (`[cond];`), which assert on every pass. The loop invariant is the
 hypothesis that makes the loop's obligations provable at all.
 
+When no invariant is written, the prover **infers** one. Candidate conjuncts
+are drawn from the code itself — `v == i`, `v >= 0`, `v >= lo`, `v <= hi` for each
+variable the loop writes and for the loop variable — and a candidate is kept only
+if the precondition establishes it at entry *and* one pass preserves it. The
+survivors are conjoined.
+
+Candidates are filtered one at a time, so a conjunct that is inductive only
+alongside another is dropped: the usual Houdini trade, which keeps the procedure
+linear in the candidate count. An inferred invariant is then proved exactly as a
+written one — entry, preservation and exit are all still discharged, so nothing is
+assumed. A loop whose contract cannot be proved stays unproven even when a
+conjunct is inferred.
+
 ### 10.5 Loop invariants on `node` and `txn`
 
 A `node` or `txn` states its loop invariant as a **third** contract bracket:

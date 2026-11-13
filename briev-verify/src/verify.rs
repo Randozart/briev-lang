@@ -21,7 +21,7 @@
 // surface are skipped silently (declared coverage, per the plan's soundness
 // boundary).
 
-use crate::ast::{BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
+use crate::ast::{Annotation, BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
 use crate::symbolic::{eval_symbolic, SymbolicState, SymbolicValue};
 use std::collections::HashMap;
 
@@ -139,6 +139,7 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         // Hoare obligations, not as one straight-line body. Each obligation is
         // loop-free, so the ordinary path walk discharges it.
         let obligations = loop_obligations(name, contract, body)
+            .or_else(|| inferred_loop_obligations(name, contract, body))
             .or_else(|| convergent_obligations(item, name, contract, body));
         if let Some(obligations) = obligations {
             for (obligation, pre, post, obligation_body) in obligations {
@@ -1002,6 +1003,186 @@ fn render_counterexample(state: &SymbolicState) -> String {
         }
         _ => "a path produces a value that contradicts the contract".to_string(),
     }
+}
+
+/// Names a statement list writes.
+fn assigned_names(stmts: &[Statement]) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_assigned(stmts, &mut out);
+    out
+}
+
+/// Collect assignment and binding targets, descending into guards.
+fn collect_assigned(stmts: &[Statement], out: &mut Vec<String>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Assign(Expr::Identifier(name), _) => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Statement::Guarded(_, inner) => collect_assigned(inner, out),
+            Statement::Let { name, .. } => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Guess an inductive invariant for a loop, or `None` when nothing survives.
+///
+/// Houdini-style: propose candidates drawn from the code, then keep only those
+/// that are inductive on their own — established by the precondition at entry
+/// and preserved by one pass. Filtering each candidate independently is
+/// complete-but-conservative: a conjunct that is only inductive *alongside*
+/// another is dropped. That is the standard trade, and it keeps the procedure
+/// linear in the candidate count.
+fn infer_invariant(
+    contract: &Contract,
+    var: &str,
+    lower: &Expr,
+    bound: &Expr,
+    inclusive: bool,
+    loop_body: &[Statement],
+    prefix: &[Statement],
+) -> Option<Expr> {
+    let loop_var = Expr::Identifier(var.to_string());
+    let zero = Expr::Decimal(0);
+
+    // Candidates come from the code that exists: the variables the loop writes,
+    // their bindings before the loop, and the loop variable's own range.
+    let mut vars = assigned_names(loop_body);
+    for stmt in prefix {
+        let Statement::Let { name, .. } = stmt else {
+            continue;
+        };
+        if !vars.contains(name) {
+            vars.push(name.clone());
+        }
+    }
+    let mut candidates: Vec<Expr> = Vec::new();
+    for name in &vars {
+        let value = Expr::Identifier(name.clone());
+        candidates.push(binop(BinaryOpKind::Eq, value.clone(), loop_var.clone()));
+        candidates.push(binop(BinaryOpKind::Ge, value.clone(), zero.clone()));
+        candidates.push(binop(BinaryOpKind::Ge, value.clone(), lower.clone()));
+        candidates.push(binop(BinaryOpKind::Le, value, bound.clone()));
+    }
+    candidates.push(binop(BinaryOpKind::Le, loop_var.clone(), bound.clone()));
+    candidates.push(binop(BinaryOpKind::Ge, loop_var.clone(), lower.clone()));
+
+    let within = if inclusive {
+        binop(BinaryOpKind::Le, loop_var.clone(), bound.clone())
+    } else {
+        binop(BinaryOpKind::Lt, loop_var.clone(), bound.clone())
+    };
+
+    let survivors: Vec<Expr> = candidates
+        .into_iter()
+        .filter(|candidate| {
+            // Established at entry. The pre-loop bindings are RUN so that a
+            // candidate like `acc == i` sees `acc = 0`; the loop variable is
+            // pinned to the lower bound, as the entry obligation does.
+            let mut entry_body = prefix.to_vec();
+            entry_body.push(Statement::Term(Some(zero.clone())));
+            let entry_pre = conjunction(vec![
+                contract.pre_condition.clone(),
+                binop(BinaryOpKind::Eq, loop_var.clone(), lower.clone()),
+            ]);
+            let entry = matches!(
+                verify_one(&entry_pre, candidate, &entry_body),
+                BodyOutcome::Proven
+            );
+            if !entry {
+                return false;
+            }
+            // Preserved by one pass.
+            let mut step = loop_body.to_vec();
+            step.push(Statement::Assign(
+                loop_var.clone(),
+                binop(BinaryOpKind::Add, loop_var.clone(), Expr::Decimal(1)),
+            ));
+            step.push(Statement::Term(Some(zero.clone())));
+            let preserve = conjunction(vec![
+                contract.pre_condition.clone(),
+                candidate.clone(),
+                binop(BinaryOpKind::Ge, loop_var.clone(), lower.clone()),
+                within.clone(),
+            ]);
+            matches!(verify_one(&preserve, candidate, &step), BodyOutcome::Proven)
+        })
+        .collect();
+
+    if survivors.is_empty() {
+        None
+    } else {
+        Some(conjunction(survivors))
+    }
+}
+
+/// Prove an unannotated loop by inferring its invariant first.
+fn inferred_loop_obligations(
+    name: &str,
+    contract: &Contract,
+    body: &[Statement],
+) -> Option<Vec<(String, Expr, Expr, Vec<Statement>)>> {
+    let mut patched: Vec<Statement> = body.to_vec();
+    let mut inferred = false;
+    for at in 0..patched.len() {
+        let (var, lower, bound, inclusive, loop_body) = match &patched[at] {
+            Statement::Foreach {
+                item,
+                list,
+                body: inner,
+                modifiers,
+            } => {
+                if modifiers.iter().any(|annotation| annotation.name == "invariant") {
+                    continue;
+                }
+                let Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = list.as_ref()
+                else {
+                    continue;
+                };
+                (
+                    item.clone(),
+                    (**start).clone(),
+                    (**end).clone(),
+                    *inclusive,
+                    inner.clone(),
+                )
+            }
+            _ => continue,
+        };
+        let Some(invariant) = infer_invariant(
+            contract,
+            &var,
+            &lower,
+            &bound,
+            inclusive,
+            &loop_body,
+            &patched[..at],
+        ) else {
+            continue;
+        };
+        if let Statement::Foreach { modifiers, .. } = &mut patched[at] {
+            modifiers.push(Annotation {
+                name: "invariant".to_string(),
+                value: Some(invariant),
+            });
+            inferred = true;
+        }
+    }
+    if !inferred {
+        return None;
+    }
+    loop_obligations(name, contract, &patched)
 }
 
 /// The negation of a condition, preferring a flipped comparison.

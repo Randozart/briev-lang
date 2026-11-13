@@ -417,3 +417,59 @@ mod convergent_invariant_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod inferred_invariant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A loop with no annotation is proved by inferring its invariant.
+    #[test]
+    fn unannotated_loop_is_proved_by_inference() {
+        let defn = parse_one(
+            "defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["count_init", "count_preserve", "count_exit"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} violated={:?} skipped={:?}",
+                report.unproven,
+                report.violated,
+                report.skipped
+            );
+        }
+    }
+
+    /// Inference must never manufacture a proof: a false contract stays unproved.
+    #[test]
+    fn inference_does_not_invent_a_proof() {
+        let defn = parse_one(
+            "defn wrong(n: Int) [n >= 0 && n <= 1000][term == 999] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        let proven: Vec<&String> = report
+            .proven
+            .iter()
+            .filter(|name| name.starts_with("wrong"))
+            .collect();
+        assert!(
+            proven.len() < 3,
+            "a false contract must not be fully proved: {proven:?}"
+        );
+    }
+}
