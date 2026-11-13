@@ -623,13 +623,14 @@ pub fn emit_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &Statem
             // firing's defer stack; flush_defer_cleanup emits it LIFO before
             // every exit (term/rollback/fallthrough ret). No code is emitted
             // at the registration point — the cleanup runs later.
-            // 2026-11-09 (H5 seam refactor): one unified HIR stack; the AST
-            // path lowers the body at registration so LIFO order across mixed
-            // HIR/AST emission is preserved.
-            backend
-                .fun
-                .defer_bodies
-                .push(crate::hir::lower_body_statements(body));
+            // 2026-11-12 (H5 phase C): one unified HIR+AST stack; the AST
+            // path lowers the body at registration and keeps the SOURCE body
+            // so the flush splices a declining native child (LIFO order
+            // across mixed HIR/AST emission is preserved).
+            backend.fun.defer_bodies.push(super::context::DeferCleanupBody {
+                hir: crate::hir::lower_body_statements(body),
+                ast: body.clone(),
+            });
             TypedRegister { name: backend.fun.gen_reg(), ty: Type::void() }
         }
         Statement::SyncBlock(stmts) => {
@@ -1558,12 +1559,16 @@ pub(crate) fn emit_bare_term_gate(
 
 /// 2026-11-05 (H4 slice D): the AST Foreach arm, extracted verbatim with a
 /// dual-fueled body — `Ast` keeps the legacy path, `Hir` routes children
-/// through the statement seam (native or per-child conversion). The list is
-/// AST in both cases (the iteration-source dispatch reads its shape). Undo:
-/// inline back into emit_statement's `Foreach` arm.
+/// through the pair walk (native, or a splice of the paired source body).
+/// The list is AST in both cases (the iteration-source dispatch reads its
+/// shape; the HIR caller passes the SOURCE statement's list). Undo: inline
+/// back into emit_statement's `Foreach` arm.
 pub(crate) enum ForeachBody<'a> {
     Ast(&'a [Statement]),
-    Hir(&'a [crate::hir::stmt::HirStmt]),
+    Hir {
+        hir: &'a [crate::hir::stmt::HirStmt],
+        ast: &'a [Statement],
+    },
 }
 
 pub(crate) fn emit_foreach_statement(
@@ -1899,23 +1904,28 @@ pub(crate) fn emit_foreach_statement(
             // 2026-08-17 (foreach break): make the innermost foreach's `end`
             // label the break target while the body runs (popped after).
             backend.fun.foreach_break_labels.push(end_lbl.clone());
-            let body_len = match &body {
-                ForeachBody::Ast(a) => a.len(),
-                ForeachBody::Hir(h) => h.len(),
-            };
-            for i in 0..body_len {
-                match &body {
-                    ForeachBody::Ast(a) => {
-                        emit_statement(backend, out, &a[i], indent);
+            match &body {
+                ForeachBody::Ast(a) => {
+                    for stmt in a.iter() {
+                        emit_statement(backend, out, stmt, indent);
                     }
-                    ForeachBody::Hir(h) => {
-                        if super::emit_hir_stmt::emit_hir_statement(backend, out, &h[i], indent)
-                            .is_none()
-                        {
-                            let Some(ast) = crate::hir::to_ast::stmt(&h[i]) else { break; };
-                            emit_statement(backend, out, &ast, indent);
-                        }
-                    }
+                }
+                // 2026-11-12 (H5 phase C): children through the pair walk —
+                // native-first with a splice of the paired source body (pure
+                // inserts flush natively; no per-child reconstruction). The
+                // body pair was checked before the helper emitted.
+                ForeachBody::Hir { hir, ast } => {
+                    super::emit_hir_stmt::emit_children_pair(
+                        backend,
+                        out,
+                        hir,
+                        ast,
+                        super::emit_hir_stmt::ChildPairWalk {
+                            indent,
+                            break_on_terminated: false,
+                            thread_last: false,
+                        },
+                    );
                 }
             }
             backend.fun.foreach_break_labels.pop();

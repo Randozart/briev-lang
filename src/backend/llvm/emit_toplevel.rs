@@ -514,13 +514,20 @@ impl LlvmBackend {
     /// exactly once).
     pub(super) fn flush_defer_cleanup(&mut self, out: &mut String, indent: &str) {
         while let Some(body) = self.fun.defer_bodies.pop() {
-            for stmt in &body {
-                // 2026-11-09 (H5 seam refactor): deferred cleanup bodies are
-                // HIR; the seam falls back losslessly for any non-native kind.
-                let _ = crate::backend::llvm::emit_hir_stmt::emit_hir_statement(
-                    self, out, stmt, indent,
-                );
-            }
+            // 2026-11-12 (H5 phase C): children emit through the pair walk —
+            // native-first, splicing the SOURCE child for a declining native
+            // arm (no statement reconstruction at flush time).
+            let _ = super::emit_hir_stmt::emit_children_pair(
+                self,
+                out,
+                &body.hir,
+                &body.ast,
+                super::emit_hir_stmt::ChildPairWalk {
+                    indent,
+                    break_on_terminated: false,
+                    thread_last: false,
+                },
+            );
         }
     }
 
@@ -4931,33 +4938,15 @@ impl LlvmBackend {
         // body (unique top-level defns only — duplicates get None and fall
         // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
         let hir_body = spec.hir_body;
-        // 2026-11-05 (H4.2): by default (BRIEV_HIR_EMIT=0 opts out) the body comes from typed
-        // HIR (reconstructed losslessly). Debug builds pin it equal to the
-        // AST body; names without a converted body fall back here.
-        let hir_subst;
-        let d: &crate::ast::Definition = if crate::backend::hir_emit_enabled() {
-            if let Some(hir_body) = hir_body {
-                {
-                    match super::emit_hir_stmt::hir_sourced_body(self, hir_body, &d.body, &d.name)
-                    {
-                        Some(body) => {
-                            debug_assert_eq!(
-                                super::emit_hir_stmt::storage_release_view(&body),
-                                d.body,
-                                "HIR/AST defn body drift: {}",
-                                d.name
-                            );
-                            hir_subst = crate::ast::Definition { body, ..d.clone() };
-                            &hir_subst
-                        }
-                        None => d,
-                    }
-                }
-            } else {
-                d
-            }
+        // 2026-11-12 (H5 phase C): the HIR body emits directly through the
+        // statement seam — no AST substitution, no reconstruction. The pair
+        // check validates slot alignment; on drift the plain AST body emits
+        // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
+        {
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &d.body))
         } else {
-            d
+            None
         };
         // A defn is not a state-machine transaction. Leaving the previous
         // txn's name here made emit_web_flush_batch treat every defn `term`
@@ -5451,45 +5440,72 @@ impl LlvmBackend {
             }
         }
         let body_len = d.body.len();
-        for (idx, s) in d.body.iter().enumerate() {
+        // 2026-11-12 (H5 phase C): the body loop walks the pair — pure
+        // inserts flush natively before each source slot; the paired HIR
+        // statement emits natively with the SOURCE statement as splice
+        // (counted native/fallback). Without a valid pair this is the plain
+        // AST walk; the HIR statement at the same index still attempts
+        // native emission first, exactly as before the pair seam existed.
+        let mut hi = 0usize;
+        let mut ai = 0usize;
+        while ai < body_len {
             if self.fun.terminated {
                 break;
             }
-            // 2026-10-05 (json.bv tail-match): a value-returning defn whose
-            // body ENDS in a bare `match` must emit the EXPRESSION match —
-            // the phi merges arm values and last_expr_reg points at the
-            // merge. The void statement-match path (.smt_*) is for matches
-            // used as statements; routed here it left last_expr_reg citing an
-            // arm-local register, producing non-dominating `ret` IR that
-            // clang rejected (silent miscompile). Void defns keep the
-            // statement path (their arms may be void txn calls).
-            if idx + 1 == body_len && ll_ret_ty != "void" {
-                if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
-                    let reg = self.emit_expr(out, e, "  ");
+            if let Some(pair) = pair_hir {
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                {
                     self.fun.last_expr_reg = Some(reg.name);
                     self.fun.last_expr_ty = Some(reg.ty.clone());
                     continue;
                 }
             }
-            // 2026-11-05 (H4 slice D): route through the HIR statement seam
-            // when this callable has a HIR body — native families emit
-            // without conversion; the seam's None falls back to the AST
-            // statement (and the substituted body already IS the converted
-            // AST when the flag is on).
-            if crate::backend::hir_emit_enabled() {
-                if let Some(hir_body) = hir_body {
-                    if let Some(hir_stmt) = hir_body.get(idx) {
-                        if let Some(reg) =
-                            super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
-                        {
-                            self.fun.last_expr_reg = Some(reg.name);
-                            self.fun.last_expr_ty = Some(reg.ty.clone());
-                            continue;
-                        }
-                    }
+            let s = &d.body[ai];
+            ai += 1;
+            let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+            // 2026-10-05 (json.bv tail-match): a value-returning defn whose
+            // body ENDS in a bare `match` must emit the EXPRESSION match —
+            // the phi merges arm values and last_expr_reg points at the
+            // merge. The void statement-match path (.smt_*) is for matches
+            // used as statements; routed here it left last_expr_reg citing
+            // an arm-local register, producing non-dominating `ret` IR that
+            // clang rejected (silent miscompile). Void defns keep the
+            // statement path (their arms may be void txn calls). The check
+            // fires on the true last slot: no trailing insert may follow.
+            let last_slot = ai == body_len
+                && pair_hir.is_none_or(|p| {
+                    p[hi + 1..].iter().all(|h| super::emit_hir_stmt::is_pure_insert(&h.kind))
+                });
+            if last_slot && ll_ret_ty != "void" {
+                if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
+                    let reg = self.emit_expr(out, e, "  ");
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                    hi += usize::from(hir_stmt.is_some());
+                    continue;
                 }
             }
-            emit_statement(self, out, s, "  ");
+            if let Some(reg) =
+                super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+            {
+                self.fun.last_expr_reg = Some(reg.name);
+                self.fun.last_expr_ty = Some(reg.ty.clone());
+            }
+            hi += usize::from(hir_stmt.is_some());
+        }
+        // Trailing pure inserts after the last source slot (skip when the
+        // body terminated — same statements the substituted walk skipped).
+        if let Some(pair) = pair_hir {
+            while !self.fun.terminated {
+                match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ") {
+                    Some(reg) => {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                    }
+                    None => break,
+                }
+            }
         }
         // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.
         self.flush_defer_cleanup(out, "  ");
@@ -5980,36 +5996,15 @@ impl LlvmBackend {
         // (unique top-level txns only — duplicates/members get None and fall
         // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
         let hir_body = spec.hir_body;
-        // 2026-11-05 (H4.2): HIR-driven body when a unique converted body
-        // exists; AST fallback otherwise (members, duplicates, Other nodes).
-        let hir_subst;
-        let txn: &crate::ast::Transaction = if crate::backend::hir_emit_enabled() {
-            if let Some(hir_body) = hir_body {
-                {
-                    match super::emit_hir_stmt::hir_sourced_body(
-                        self, hir_body, &txn.body, &txn.name,
-                    ) {
-                        Some(body) => {
-                            debug_assert_eq!(
-                                super::emit_hir_stmt::storage_release_view(&body),
-                                txn.body,
-                                "HIR/AST txn body drift: {}",
-                                txn.name
-                            );
-                            hir_subst = crate::ast::Transaction {
-                                body,
-                                ..txn.clone()
-                            };
-                            &hir_subst
-                        }
-                        None => txn,
-                    }
-                }
-            } else {
-                txn
-            }
+        // 2026-11-12 (H5 phase C): the HIR body emits directly through the
+        // statement seam — no AST substitution, no reconstruction. The pair
+        // check validates slot alignment; on drift the plain AST body emits
+        // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
+        {
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &txn.body))
         } else {
-            txn
+            None
         };
         let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
         // 2026-09-14 (machine-entry plan): non-reactive txns are CALLABLES —
@@ -6018,7 +6013,7 @@ impl LlvmBackend {
         // wrapper (@txn_<name>), while call sites emitted @<name> — the call
         // referenced an undefined symbol.
         if !txn.is_reactive {
-            self.emit_callable_txn(out, txn, name);
+            self.emit_callable_txn(out, txn, name, pair_hir);
             return;
         }
         // 2026-07-27: Set txn_name for per-function arena gating.
@@ -6484,28 +6479,46 @@ impl LlvmBackend {
             }
             // 2026-07-29: Statement reordering removed — proven counterproductive.
             // LLVM's scheduler does this better within each basic block.
-            // 2026-11-05 (H4 slice D): the txn body loop routes through the HIR
-            // statement seam too (native families emit without conversion; the
-            // seam's None falls back to the AST statement). Index-aligned with the
-            // substituted body, which is the converted AST when the flag is on.
-            for (idx, s) in txn.body.iter().enumerate() {
+            // 2026-11-12 (H5 phase C): the txn body loop walks the pair — pure
+            // inserts flush natively before each source slot; the paired HIR
+            // statement emits natively with the SOURCE statement as splice.
+            // Without a valid pair this is the plain AST walk; the HIR
+            // statement at the same index still attempts native emission
+            // first, exactly as before the pair seam existed.
+            let mut hi = 0usize;
+            for s in txn.body.iter() {
                 if self.fun.terminated {
                     break;
                 }
-                if crate::backend::hir_emit_enabled() {
-                    if let Some(hir_body) = hir_body {
-                        if let Some(hir_stmt) = hir_body.get(idx) {
-                            if let Some(reg) =
-                                super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
-                            {
-                                self.fun.last_expr_reg = Some(reg.name);
-                                self.fun.last_expr_ty = Some(reg.ty.clone());
-                                continue;
-                            }
-                        }
+                if let Some(pair) = pair_hir {
+                    if let Some(reg) =
+                        super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                    {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                        continue;
                     }
                 }
-                emit_statement(self, out, s, "  ");
+                let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+                {
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                }
+                hi += usize::from(hir_stmt.is_some());
+            }
+            if let Some(pair) = pair_hir {
+                while !self.fun.terminated {
+                    match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                    {
+                        Some(reg) => {
+                            self.fun.last_expr_reg = Some(reg.name);
+                            self.fun.last_expr_ty = Some(reg.ty.clone());
+                        }
+                        None => break,
+                    }
+                }
             }
             // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.
             self.flush_defer_cleanup(out, "  ");
@@ -7819,6 +7832,7 @@ impl LlvmBackend {
         out: &mut String,
         txn: &crate::ast::Transaction,
         name: &str,
+        pair_hir: Option<&[crate::hir::stmt::HirStmt]>,
     ) {
         // 2026-11-01: entry allocas and body registers share one namespace.
         // Reset before emitting either; a later reset can reuse entry names.
@@ -8079,11 +8093,43 @@ impl LlvmBackend {
 
         writeln!(out, "body:").ok();
 
+        // 2026-11-12 (H5 phase C): the body loop walks the pair — pure
+        // inserts flush natively before each source slot; the paired HIR
+        // statement emits natively with the SOURCE statement as splice.
+        // Without a valid pair this is the plain AST walk.
+        let mut hi = 0usize;
         for s in &txn.body {
             if self.fun.terminated {
                 break;
             }
-            emit_statement(self, out, s, "  ");
+            if let Some(pair) = pair_hir {
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                {
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                    continue;
+                }
+            }
+            let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+            if let Some(reg) =
+                super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+            {
+                self.fun.last_expr_reg = Some(reg.name);
+                self.fun.last_expr_ty = Some(reg.ty.clone());
+            }
+            hi += usize::from(hir_stmt.is_some());
+        }
+        if let Some(pair) = pair_hir {
+            while !self.fun.terminated {
+                match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ") {
+                    Some(reg) => {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                    }
+                    None => break,
+                }
+            }
         }
 
         // Foreign destructor cleanup: emit OnExit calls before loop exit

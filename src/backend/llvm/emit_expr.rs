@@ -564,7 +564,9 @@ impl LlvmBackend {
                             continue;
                         }
                     }
-                    last = match super::emit_hir_stmt::emit_hir_statement(self, out, child, indent) {
+                    last = match super::emit_hir_stmt::emit_hir_statement(
+                        self, out, child, Some(&ast_children[i]), indent,
+                    ) {
                         Some(reg) => reg,
                         // Unreachable (children pre-converted); kept total.
                         None => self.emit_statement(out, &ast_children[i], indent),

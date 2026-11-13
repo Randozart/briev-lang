@@ -70,7 +70,14 @@ impl BodyReport {
     /// split is unambiguous.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "proven": self.proven.len(),
+            // Names, not a bare count: a consumer has to be able to tell
+            // "proved" from "never examined", and a total cannot do that. The
+            // prelude is included in this list, so consumers intersect with
+            // their own declarations.
+            "proven": self.proven.iter().map(|name| serde_json::json!({
+                "name": name,
+                "reason": "",
+            })).collect::<Vec<_>>(),
             "unproven": findings_json(&self.unproven),
             "violated": findings_json(&self.violated),
         })

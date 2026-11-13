@@ -127,3 +127,35 @@ after the opt-out release. Docs/ledger reconciliation included in each commit.
   `c_driver_boundary` (BUGS.md 2026-11-12) must be fixed while the AST oracle
   still exists. Phase A (entry switch) can proceed; do not delete the oracle
   until this drift is resolved.
+
+## Phase C, statement-emission slice (2026-11-12, done)
+
+Statement emission no longer reconstructs through `hir::to_ast`. The
+convert-then-substitute seam (H4.2) is deleted:
+
+- `hir_sourced_body` is now a pair validator (slot alignment only); the body
+  loops in `emit_definition`/`emit_transaction`/`emit_callable_txn` walk the
+  (HIR, source AST) pair directly — pure inserts (`ReleaseOwned`) flush
+  natively before each source slot; the paired statement emits natively and
+  splices the SOURCE statement when its native arm declines (`Other`,
+  uncovered expression leaves). No AST substitution, no drift assert, no
+  `storage_release_view`.
+- `convert_hir_statement`, `convert_children_seam`/`convert_scoped_seam`,
+  `reconstruct_match_arms`, `release_ast_stmt` deleted. Nested scopes, match
+  arm bodies, foreach bodies, and defer flushes go through one shared
+  `emit_children_pair` (block/serial arms thread the last register; guard/
+  match/foreach arms must NOT allocate one — register parity with their AST
+  arms was the A/B failure mode found and fixed en route).
+- New native arms: `Open`, `TrgBinding`, `MetadataAssignment`, `InlineAsm`
+  (the AST arm emits only a void register; mirrored directly).
+- Callable txns now route through the seam too (they previously emitted the
+  substituted body purely via the AST path).
+- Defer bodies carry the SOURCE AST body alongside the HIR lowering
+  (`DeferCleanupBody`) so the flush splices instead of reconstructing.
+- `to_ast` in `emit_hir_stmt.rs`: 22 → 9 lines (7 code refs, all
+  expression-level `to_ast::expr` gates kept per the Phase C boundary —
+  expression families are the remaining slice).
+- Byte-identity: `hir_emit_ab.sh` full corpus ALL BYTE-IDENTICAL; determinism
+  quick ALL DETERMINISTIC; quick gate 3788 lib + 42 integration green;
+  tier1 corpus 52/54 (same two pre-existing `strexp`/`strexp2` link failures
+  as baseline HEAD); Praetor at-or-below baseline on every changed file.
