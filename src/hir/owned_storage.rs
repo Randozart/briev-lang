@@ -432,9 +432,14 @@ fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usiz
         // Scalar literals are copied values — always fresh.
         HirExprKind::Literal(HirLiteral::Int(_) | HirLiteral::Float(_)
         | HirLiteral::Bool(_) | HirLiteral::Char(_) | HirLiteral::TaggedInt(_, _)) => true,
-        // A List literal is fresh only if every element is — this is the
-        // wrap-stasher guard (`Ok([state])` must not discharge).
-        HirExprKind::List(items) => items.iter().all(|a| is_fresh(a, vars, pr, fresh, ok)),
+        // A List literal allocates a fresh BLOCK (the coll object + data);
+        // element handles live inside it as plain words. Freeing the block
+        // (coll_destroy: object + data) never frees an element's own
+        // allocation, so list-block ownership is independent of element
+        // ownership. The wrap-stasher hazard (`wrap(s) -> [s]`) lives on the
+        // ARGUMENT side — the escape gate keeps `s` unowned at the caller —
+        // not here. Hence: unconditionally fresh.
+        HirExprKind::List(_) => true,
         // 2026-11-12 (slicing doc): a String slice allocates a fresh copy.
         HirExprKind::Slice { array, .. } => string_expr(array),
         HirExprKind::Call { callee, args, .. } => {

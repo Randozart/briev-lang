@@ -88,3 +88,18 @@ drops (they are the function's result); `--deny-memory-ambiguity` stays
 unwired in kiosk CI until the env-handle frontier lands. Gates: 3792 lib,
 conformance, kiosk native faces / vad_rpc golden / sessions equivalence /
 dashboard IR verify.
+
+## Outcome 3 (2026-11-13): list-BLOCK ownership separated from element ownership
+
+The §Outcome-2 per-item List guard was withdrawn as unsound-for-the-question:
+a List literal always allocates a fresh BLOCK (coll object + data), and
+freeing it (`coll_destroy`) never frees an element's own allocation — element
+handles are plain words inside the block. List-block ownership is therefore
+independent of element ownership, and the wrap-stasher hazard
+(`wrap(s) -> [s]`) is an ARGUMENT-side concern already covered by the escape
+gate (`vars[param] == false`). Restoring unconditional List-literal
+freshness re-discharged the executor chains (env lists owned again:
+releases 14 → 16, undecided 159 → 147), with zero behavior change and no
+crash: native faces, VAD sessions equivalence, 3792 lib green; 300-call soak
+flat after the allocator staging step (181 MB @300, HWM 237 — within the
+characterised variance).
