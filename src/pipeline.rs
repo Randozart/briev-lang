@@ -1383,6 +1383,39 @@ fn parse_and_check(
     }
     crate::analysis::watchdog::check_on_fire_handlers_dual(&items)
         .map_err(|e| format!("watchdog error:\n{}", e))?;
+    // Convergence safety: a reactive txn that never advances its own precondition,
+    // and which no other txn advances either, would fire forever *by accident*.
+    // `unbounded` is the declared answer to that (SPEC 10.9), so the check skips
+    // declarations carrying it: intent is exempt, accidents are not.
+    //
+    // Advisory for now. The pass has never run in production, so promoting it
+    // straight to an error would turn untested analysis into a corpus break; the
+    // documented sequence is warn, migrate, then error.
+    let txns: std::collections::HashMap<String, crate::ast::Transaction> = items
+        .iter()
+        .filter_map(|item| match item {
+            crate::ast::TopLevel::Transaction(txn) => Some((txn.name.clone(), txn.clone())),
+            _ => None,
+        })
+        .collect();
+    for txn in txns.values() {
+        if txn
+            .modifiers
+            .iter()
+            .any(|annotation| annotation.name == "unbounded")
+        {
+            continue;
+        }
+        for (severity, message) in crate::analysis::provenance::check_convergence_safety(
+            &txn.name,
+            txn.is_reactive,
+            &txn.contract.pre_condition,
+            &txn.body,
+            &txns,
+        ) {
+            eprintln!("warning: {severity}: {message}");
+        }
+    }
     // 2026-08-04: term termination diagnostics — `check` must catch
     // unreachable code after a terminating `term <value>`/`term! <value>`
     // exactly like `build` does, or the two paths silently diverge.
