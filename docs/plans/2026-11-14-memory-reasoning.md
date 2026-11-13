@@ -170,3 +170,32 @@ itself.
 parameter *and* carry a contract — that is the population a memory model could
 serve. If it is a handful, the honest conclusion is that memory reasoning is not
 where the value is and the invariant line should be declared finished.
+
+### Result: 104, so it is not a handful
+
+Measured over `lib/` + `examples/` (1,462 top-level declarations):
+
+| filter | count |
+|---|---|
+| top-level declarations | 1,462 |
+| non-integer parameter | 699 |
+| ... and a contract | 353 |
+| **buffer-shaped** parameter (`Data`, `Ptr`, `&`, `*`, `List`, `Map`, `Set`, `Buffer`, `Vec`, `Array`) | 221 |
+| **... and a contract — the memory population** | **104** |
+
+The looser rows are the shape of a measurement error worth keeping in view:
+`Bool`, `String` and `Expr` inflate 104 to 353. Only the last row is the
+population a memory model would serve.
+
+**104 against 68.** The invariant line already covers 68 in-subset loops; a working
+memory model would roughly double the verifiable surface, and it is the only path
+to the GPU-shaped code in `lib/std/numeric.bv`. That is material, not a handful, so
+memory reasoning is worth building for and this gate passes.
+
+What the number does **not** say is that an array theory is the next thing to
+write. Those 104 declarations first have to be *admitted*, and the blocker is that
+the prover takes integer parameters only. The next question is therefore narrower
+and much cheaper than `select`/`store`:
+
+> What is the smallest admission that lets one buffer-shaped parameter into a
+> candidate, without pretending to model its contents?
