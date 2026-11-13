@@ -7,6 +7,9 @@
 //! which is what lets tools verify contracts without shipping the compiler.
 
 pub mod ast;
+pub mod smt;
 pub mod span;
+pub mod symbolic;
+pub mod verify;
 
 pub use span::Span;

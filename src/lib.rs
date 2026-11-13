@@ -89,7 +89,7 @@ pub mod resolver;
 pub mod scheduler;
 pub mod signal_graph;
 pub mod ssr;
-pub mod symbolic;
+pub use briev_verify::symbolic;
 pub mod target_spec;
 pub mod typechecker;
 pub mod view_compiler;
