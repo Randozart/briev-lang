@@ -56,6 +56,10 @@ disjointness is a statement about *addresses*, not contents.
 
 ## 4. Recommendation
 
+> **Superseded — see §9.** A buffer cannot currently be a parameter of a verifier
+> candidate at all, so neither C nor A is reachable as written. Kept because the
+> reversal is the useful part.
+
 **C first, then A.** They answer different questions and C is small:
 
 1. **C — address arithmetic.** Let the prover reason about index expressions as
@@ -125,3 +129,44 @@ loops are the ones the invariant and inference work already covers.
 3. A: `Array` sort in the encoder, `select`/`store`, length as a symbolic value.
 4. Tests from real kernels: `matmul`'s inner fold and `softmax`'s buffer loop are
    already in `lib/std/numeric.bv`, both currently unprovable.
+
+## 9. Correction: indexed storage is never an `Int`
+
+Tried to build the first C slice — accept a write-only store into `buf[expr]` — and
+the typechecker refused the fixture outright:
+
+```
+error: type errors:
+  invalid operation 'indexed assignment requires writable storage; declare op
+  SetAt(index, value) on the collection or use a mutable pointer or array' on type Int
+```
+
+So in Briev a **buffer is never an `Int`**. Indexed storage is either a collection
+that declares `op SetAt(index, value)`, or a mutable pointer / array. Both are
+non-integer types, and the prover admits a candidate only when every parameter is
+an integer type (`signature_facts` / `width_of`). A buffer therefore cannot appear
+in a verifiable body at all — which is the real blocker, upstream of both C and A.
+
+**Two consequences, both corrections to what precedes this section.**
+
+1. **The ordering is wrong.** C cannot be exercised before a buffer *type* is
+   admitted into the prover's world. That admission is A's prerequisite, not a
+   later refinement of C. The first step is "let a buffer-shaped parameter into a
+   candidate", not "teach the encoder `select`".
+2. **The 37-loop figure is misleading**, for exactly the reason the 8/3/154 figure
+   was earlier: it counted loops in `$defn` / collection bodies, which according to
+   SPEC 10.7 are **not verifier candidates**. Indexing in those bodies resolves to
+   `SetAt` at compile time and never reaches the prover. So the payoff of C is not
+   37; it is the subset of those that would become candidates once buffers are
+   admitted — unknown, and worth measuring before any code.
+
+**What was reverted.** The write-only-store erasure (drop `buf[i] = v` when the
+postcondition never mentions `buf`) was implemented, built and then removed: it is
+sound, but no Briev source can reach it, so it is untestable against real code and
+would be dead weight. That is the "tests or it does not exist" rule applied to
+itself.
+
+**Revised first step.** Measure how many declarations take a buffer/pointer
+parameter *and* carry a contract — that is the population a memory model could
+serve. If it is a handful, the honest conclusion is that memory reasoning is not
+where the value is and the invariant line should be declared finished.
