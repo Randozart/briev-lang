@@ -1900,6 +1900,30 @@ fn eval_string_arg(
     }
 }
 
+/// Ordered numeric comparison: a Float operand promotes the comparison to f64;
+/// otherwise the operands compare as i64. Non-numeric operands are false.
+/// 2026-11-13 (BUGS.md interpreter float relationals): Lt/Gt/Le/Ge previously
+/// read `as_i64()` only, so every Float comparison fell through to `false`;
+/// this made the reference interpreter disagree with native code for all float
+/// ordering (on which the `test { expect … }` runner depends).
+fn ordered_compare(
+    lv: &Value,
+    rv: &Value,
+    int_pred: fn(i64, i64) -> bool,
+    float_pred: fn(f64, f64) -> bool,
+) -> bool {
+    if lv.is_float() || rv.is_float() {
+        return match (lv.as_number_f64(), rv.as_number_f64()) {
+            (Some(a), Some(b)) => float_pred(a, b),
+            _ => false,
+        };
+    }
+    match (lv.as_i64(), rv.as_i64()) {
+        (Some(a), Some(b)) => int_pred(a, b),
+        _ => false,
+    }
+}
+
 /// Evaluate a binary operation.
 fn eval_binary_op(
     kind: &BinaryOpKind,
@@ -1988,46 +2012,48 @@ fn eval_binary_op(
             // #4); the LLVM backend mirrors it in emit_expr.rs.
             match (lv.string_bytes(heap), rv.string_bytes(heap)) {
                 (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a == b))),
+                // 2026-11-13 (BUGS.md interpreter float relationals): a Float
+                // operand compares in the f64 domain. Reading as_i64() alone
+                // returned None for both Floats, so `None == None` made every
+                // float equality spuriously true in the interpreter.
+                _ if lv.is_float() || rv.is_float() => {
+                    Ok(Value::Atom(Atom::Bool(
+                        match (lv.as_number_f64(), rv.as_number_f64()) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => false,
+                        },
+                    )))
+                }
                 _ => Ok(Value::Atom(Atom::Bool(lv.as_i64() == rv.as_i64()))),
             }
         }
-        BinaryOpKind::Lt => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a < b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Gt => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a > b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Le => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a <= b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
-        BinaryOpKind::Ge => {
-            let la = lv.as_i64();
-            let ra = rv.as_i64();
-            match (la, ra) {
-                (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a >= b))),
-                _ => Ok(Value::Atom(Atom::Bool(false))),
-            }
-        }
+        BinaryOpKind::Lt => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv, &rv, |a, b| a < b, |a, b| a < b,
+        )))),
+        BinaryOpKind::Gt => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv, &rv, |a, b| a > b, |a, b| a > b,
+        )))),
+        BinaryOpKind::Le => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv, &rv, |a, b| a <= b, |a, b| a <= b,
+        )))),
+        BinaryOpKind::Ge => Ok(Value::Atom(Atom::Bool(ordered_compare(
+            &lv, &rv, |a, b| a >= b, |a, b| a >= b,
+        )))),
         BinaryOpKind::Neq => {
             // 2026-08-01 (B1): content inequality — mirrors the Eq arm above
             // (deref both Strings, compare payload bytes).
             match (lv.string_bytes(heap), rv.string_bytes(heap)) {
                 (Some(a), Some(b)) => Ok(Value::Atom(Atom::Bool(a != b))),
+                // 2026-11-13 (BUGS.md interpreter float relationals): mirror the
+                // Eq arm — Float operands compare in the f64 domain.
+                _ if lv.is_float() || rv.is_float() => {
+                    Ok(Value::Atom(Atom::Bool(
+                        match (lv.as_number_f64(), rv.as_number_f64()) {
+                            (Some(a), Some(b)) => a != b,
+                            _ => false,
+                        },
+                    )))
+                }
                 _ => Ok(Value::Atom(Atom::Bool(lv.as_i64() != rv.as_i64()))),
             }
         }
@@ -2938,6 +2964,67 @@ mod tests {
         );
         assert_eq!(eval1(&eq), Value::Atom(Atom::Bool(true)));
         assert!(eval1(&eq).is_true());
+    }
+
+    // 2026-11-13 (BUGS.md interpreter float relationals): the interpreter read
+    // `as_i64()` only for Lt/Gt/Le/Ge, so every Float comparison returned
+    // false, and Eq read `NaN == NaN`-style None==None as true. These lock the
+    // f64 domain and the mixed int/float promotion.
+
+    #[test]
+    fn test_float_relationals_compare_in_f64() {
+        let lt = Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Float(0.5)),
+            Box::new(Expr::Float(1.0)),
+        );
+        assert_eq!(eval1(&lt), Value::Atom(Atom::Bool(true)));
+        let gt = Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(Expr::Float(2.5)),
+            Box::new(Expr::Float(2.0)),
+        );
+        assert_eq!(eval1(&gt), Value::Atom(Atom::Bool(true)));
+        let le = Expr::BinaryOp(
+            BinaryOpKind::Le,
+            Box::new(Expr::Float(3.4)),
+            Box::new(Expr::Float(3.5)),
+        );
+        assert_eq!(eval1(&le), Value::Atom(Atom::Bool(true)));
+    }
+
+    #[test]
+    fn test_float_relationals_promote_mixed_int() {
+        let ge = Expr::BinaryOp(
+            BinaryOpKind::Ge,
+            Box::new(Expr::Float(1.0)),
+            Box::new(Expr::Decimal(1)),
+        );
+        assert_eq!(eval1(&ge), Value::Atom(Atom::Bool(true)));
+        let lt = Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Decimal(2)),
+            Box::new(Expr::Float(2.5)),
+        );
+        assert_eq!(eval1(&lt), Value::Atom(Atom::Bool(true)));
+    }
+
+    #[test]
+    fn test_float_equality_is_value_based() {
+        // (31/9) != 3.0 — previously both sides read as_i64()==None, so this
+        // was spuriously true.
+        let neq = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Float(31.0 / 9.0)),
+            Box::new(Expr::Float(3.0)),
+        );
+        assert_eq!(eval1(&neq), Value::Atom(Atom::Bool(false)));
+        let eq = Expr::BinaryOp(
+            BinaryOpKind::Eq,
+            Box::new(Expr::Float(0.5)),
+            Box::new(Expr::Float(0.5)),
+        );
+        assert_eq!(eval1(&eq), Value::Atom(Atom::Bool(true)));
     }
 
     // 2026-08-06 (Slice B): unnamed products, indexing, and membership.

@@ -1,3 +1,29 @@
+## 2026-11-13 — interpreter mis-evaluates every Float relational (and Float equality)
+
+**Symptom.** In the reference interpreter (`brievc test --tests-only`), float
+`<`, `>`, `<=`, `>=` never evaluate to true, and float `==`/`!=` are
+degenerate. `expect 0.5 < 1.0;` and `expect lt(0.5, 1.0);` (with
+`defn lt(a: Float, b: Float) -> Bool { term a < b; }`) both report
+`evaluated to false`. Native (compiled) execution is correct. Float `==` is
+worse: `31.0/9.0 == 3.0` and `31.0/9.0 == 3.44444442` are *both* true.
+
+**Cause.** `eval_binary_op`'s `Lt/Gt/Le/Ge` arms read only `as_i64()`. A Float
+atom is `Atom::Float(f)`, for which `as_i64()` is `None`, so the
+`_ => Bool(false)` arm fired for every float comparison. `Eq/Neq` read
+`lv.as_i64() == rv.as_i64()`; with both sides `None`, `None == None` is `true`,
+making all float (in)equalities compare equal.
+
+**Fix.** Added `Value::is_float` / `Value::as_number_f64` (integers, bools,
+chars, and bit patterns widen into f64) and an `ordered_compare` helper in
+`src/interpreter/eval.rs`. `Lt/Gt/Le/Ge` now select the f64 domain when either
+operand is a Float (promoting a mixed Int/Float operand), else the i64 domain.
+`Eq/Neq` gain the same float branch, preserving the existing non-float and
+string-content paths. Regression tests:
+`interpreter::eval::tests::test_float_relationals_compare_in_f64`,
+`test_float_relationals_promote_mixed_int`, `test_float_equality_is_value_based`.
+
+**Status.** Fixed 2026-11-13.
+
 ## 2026-11-11 — `.bv` wasm32 emission rejects the stdlib prelude (i64 vs i32)
 
 **Symptom.** `brievc build <prog>.bv --triple wasm32-unknown-wasi --split`
