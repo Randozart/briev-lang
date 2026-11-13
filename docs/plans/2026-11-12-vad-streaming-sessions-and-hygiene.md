@@ -38,3 +38,29 @@ the 6 s fixture) → close, asserting concatenated probs match the committed
 187-chunk golden within tolerance (streaming equivalence: fed-in-parts ==
 fed-whole); existing vad_rpc/native/ML/dashboard/soak suite; 3789 lib +
 conformance. CI wiring next to vad_rpc_smoke.
+
+## Outcome (2026-11-12)
+
+Memcheck owned tier landed: `brievc memcheck [--deny-memory-ambiguity]
+[--stdlib-path <dir>] <file.bv>` prints, per program, the releases the
+owned-storage pass inserted and the conservative drops with REASONS
+(alias / escape-via-callee / consumed-by-callee / keep / explicit-free /
+state-store / return-borrow), plus the undecided-owner census with the
+freshness gap named (`call X not proven fresh` / `expression not proven
+fresh`). `--deny-memory-ambiguity` fails when the census is non-empty —
+that is the kiosk-CI enforcement point once the daemon's census reaches
+zero. Freshness summaries gained two derivations en route: String-slice
+freshness (slicing doc) and unwrap-shaped Match identity (`Ok(v) => v`,
+`Err(_) => { trap; }`), so `unwrap(fresh)` stays fresh across the Result
+boundary.
+
+Daemon census (honest worklist, not noise): 16 releases + 147 undecided.
+The undecideds are dominated by conditional-ownership families — helpers
+with literal-return branches (`read_file` Err strings, `face_param` empty
+returns, `b64_char` alphabet literals, `get_env` empty) flowing through
+`unwrap` into callers, plus loop/match builders the summaries cannot yet
+discharge. The fix is the §13 response-builder copy discipline applied
+across stdlib (`owned_literal`-style fresh returns) — tracked as the
+follow-up; `--deny-memory-ambiguity` wiring into kiosk CI happens after
+that census reaches zero. Nine owned-storage tests (events for release
+kinds, keep/alias/undecided).

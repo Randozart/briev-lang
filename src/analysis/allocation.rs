@@ -387,6 +387,12 @@ fn stmt_aliases(
     }
 }
 
+/// Public wrapper for the memcheck CLI tier (crate-internal users call the
+/// crate-private one directly).
+pub fn summarize_escapes_pub(items: &[TopLevel]) -> HashMap<String, Vec<bool>> {
+    summarize_escapes(items)
+}
+
 pub(crate) fn summarize_escapes(items: &[TopLevel]) -> HashMap<String, Vec<bool>> {
     let bodies = collect_escape_bodies(items);
     let state_fields = state_field_names(items);
