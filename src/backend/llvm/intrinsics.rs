@@ -4,11 +4,11 @@
 // memory/I/O intrinsics (Malloc#, Print#, etc.) that don't fit templates.
 // Flat code: max 2 nesting depth.
 
-use std::sync::LazyLock;
 use crate::ast::{Expr, Type};
 use crate::backend::llvm::{AllocStrategy, LlvmBackend, TypedRegister as BTypedRegister};
 use crate::config::AllocConfig;
 use std::fmt::Write;
+use std::sync::LazyLock;
 
 pub(crate) static ALLOC_CONFIG: LazyLock<AllocConfig> = LazyLock::new(|| AllocConfig::load());
 // 2026-09-10 (Family F, Asm#): abstract-asm lowering table.
@@ -34,9 +34,9 @@ pub fn emit_intrinsic_call(
         // the scan (a computed property, so an intrinsic; `.^Length` is the
         // stored byte count).
         // 2026-08-12 (Iterable protocol): the UTF8 CHAR count of a String — the
-    // scan (a computed property, so an intrinsic; `.^Length` is the stored
-    // byte count).
-    "CharCount#" => return emit_char_count(backend, out, v, args, indent),
+        // scan (a computed property, so an intrinsic; `.^Length` is the stored
+        // byte count).
+        "CharCount#" => return emit_char_count(backend, out, v, args, indent),
         "Alloc#" => return emit_alloc(backend, out, v, args, indent, analysis_id),
         "Free#" => return emit_free(backend, out, v, args, indent),
         "Now#" => {
@@ -45,10 +45,17 @@ pub fn emit_intrinsic_call(
             // plain stateful rt_now_ns; else the C-fallback symbol
             // (emit_toplevel declare; core-usable purge, family 4).
             let sym = bridge_symbol(backend, "rt_now_ns", "__briev_now");
-            let st = if backend.ctx.defn_takes_state(&sym) { "%state" } else { "" };
+            let st = if backend.ctx.defn_takes_state(&sym) {
+                "%state"
+            } else {
+                ""
+            };
             writeln!(out, "{}{} = call i64 @{}({})", indent, v, sym, st).ok();
             let narrowed = narrow_int_result(backend, out, v, indent);
-            return BTypedRegister { name: narrowed, ty: Type::int() };
+            return BTypedRegister {
+                name: narrowed,
+                ty: Type::int(),
+            };
         }
         // 2026-08-27 (Slice C): typed volatile MMIO access — width from the
         // Ptr<T> element type; raw-address access stays with Load#/Store#.
@@ -61,7 +68,10 @@ pub fn emit_intrinsic_call(
         "Barrier#" => {
             writeln!(out, "{}{} = add i64 0, 1", indent, v).ok();
             let narrowed = narrow_int_result(backend, out, v, indent);
-            return BTypedRegister { name: narrowed, ty: Type::int() };
+            return BTypedRegister {
+                name: narrowed,
+                ty: Type::int(),
+            };
         }
         "Store#" => return emit_store(backend, out, v, args, indent),
         "Copy#" => return emit_copy(backend, out, v, args, indent),
@@ -84,41 +94,96 @@ pub fn emit_intrinsic_call(
             let cmd = backend.emit_expr(out, &args[0], indent);
             let cmd_ptr = backend.string_ptr(out, indent, &cmd);
             let r = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call i64 @__briev_spawn(ptr {})", indent, r, cmd_ptr).ok();
-            return BTypedRegister { name: r, ty: Type::int() };
+            writeln!(
+                out,
+                "{}{} = call i64 @__briev_spawn(ptr {})",
+                indent, r, cmd_ptr
+            )
+            .ok();
+            return BTypedRegister {
+                name: r,
+                ty: Type::int(),
+            };
         }
         "SpawnWithOutput#" => {
             let cmd = backend.emit_expr(out, &args[0], indent);
             let cmd_ptr = backend.string_ptr(out, indent, &cmd);
             let cstr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call ptr @__briev_spawn_output(ptr {})", indent, cstr, cmd_ptr).ok();
+            writeln!(
+                out,
+                "{}{} = call ptr @__briev_spawn_output(ptr {})",
+                indent, cstr, cmd_ptr
+            )
+            .ok();
             let is_null = backend.fun.gen_reg();
             writeln!(out, "{}{} = icmp eq ptr {}, null", indent, is_null, cstr).ok();
             let fb = backend.fun.gen_reg();
             writeln!(out, "{}{} = alloca i8, i64 1", indent, fb).ok();
             writeln!(out, "{}store i8 0, ptr {}", indent, fb).ok();
             let safe_ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = select i1 {}, ptr {}, ptr {}", indent, safe_ptr, is_null, fb, cstr).ok();
+            writeln!(
+                out,
+                "{}{} = select i1 {}, ptr {}, ptr {}",
+                indent, safe_ptr, is_null, fb, cstr
+            )
+            .ok();
             let len = backend.fun.gen_reg();
             // 2026-09-10 (Family F): cstr_len is a pure-Briev defn (cast_lanes)
             // — removes the last libc strlen reference from GetCwd#.
             // 2026-09-23 (stateless-defn mechanism): it is stateless (Load#);
             // pass %state only when the defn takes it.
             if backend.ctx.defn_params.contains_key("cstr_len") {
-                let st = if backend.ctx.defn_takes_state("cstr_len") { "ptr %state, " } else { "" };
-                writeln!(out, "{}{} = call i64 @cstr_len({}ptr {})", indent, len, st, safe_ptr).ok();
+                let st = if backend.ctx.defn_takes_state("cstr_len") {
+                    "ptr %state, "
+                } else {
+                    ""
+                };
+                writeln!(
+                    out,
+                    "{}{} = call i64 @cstr_len({}ptr {})",
+                    indent, len, st, safe_ptr
+                )
+                .ok();
             } else {
-                writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @strlen(ptr {})",
+                    indent, len, safe_ptr
+                )
+                .ok();
             }
             let data_raw = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, data_raw, safe_ptr).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to i64",
+                indent, data_raw, safe_ptr
+            )
+            .ok();
             let data = backend.fun.gen_reg();
-            writeln!(out, "{}{} = select i1 {}, i64 0, i64 {}", indent, data, is_null, data_raw).ok();
+            writeln!(
+                out,
+                "{}{} = select i1 {}, i64 0, i64 {}",
+                indent, data, is_null, data_raw
+            )
+            .ok();
             let t1 = backend.fun.gen_reg();
-            writeln!(out, "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0", indent, t1, data).ok();
+            writeln!(
+                out,
+                "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0",
+                indent, t1, data
+            )
+            .ok();
             let t2 = backend.fun.gen_reg();
-            writeln!(out, "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1", indent, t2, t1, len).ok();
-            return BTypedRegister { name: t2, ty: Type::string() };
+            writeln!(
+                out,
+                "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1",
+                indent, t2, t1, len
+            )
+            .ok();
+            return BTypedRegister {
+                name: t2,
+                ty: Type::string(),
+            };
         }
         "SetEnv#" => {
             let k = backend.emit_expr(out, &args[0], indent);
@@ -126,8 +191,16 @@ pub fn emit_intrinsic_call(
             let kptr = backend.string_ptr(out, indent, &k);
             let vptr = backend.string_ptr(out, indent, &val);
             let r = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call i64 @__briev_setenv(ptr {}, ptr {})", indent, r, kptr, vptr).ok();
-            return BTypedRegister { name: r, ty: Type::int() };
+            writeln!(
+                out,
+                "{}{} = call i64 @__briev_setenv(ptr {}, ptr {})",
+                indent, r, kptr, vptr
+            )
+            .ok();
+            return BTypedRegister {
+                name: r,
+                ty: Type::int(),
+            };
         }
         "GetCwd#" => {
             let cstr = backend.fun.gen_reg();
@@ -144,18 +217,51 @@ pub fn emit_intrinsic_call(
             writeln!(out, "{}{} = alloca i8, i64 1", indent, fb).ok();
             writeln!(out, "{}store i8 0, ptr {}", indent, fb).ok();
             let safe_ptr = backend.fun.gen_reg();
-            writeln!(out, "{}{} = select i1 {}, ptr {}, ptr {}", indent, safe_ptr, is_null, fb, cstr).ok();
+            writeln!(
+                out,
+                "{}{} = select i1 {}, ptr {}, ptr {}",
+                indent, safe_ptr, is_null, fb, cstr
+            )
+            .ok();
             let len = backend.fun.gen_reg();
-            writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
+            writeln!(
+                out,
+                "{}{} = call i64 @strlen(ptr {})",
+                indent, len, safe_ptr
+            )
+            .ok();
             let data_raw = backend.fun.gen_reg();
-            writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, data_raw, safe_ptr).ok();
+            writeln!(
+                out,
+                "{}{} = ptrtoint ptr {} to i64",
+                indent, data_raw, safe_ptr
+            )
+            .ok();
             let data = backend.fun.gen_reg();
-            writeln!(out, "{}{} = select i1 {}, i64 0, i64 {}", indent, data, is_null, data_raw).ok();
+            writeln!(
+                out,
+                "{}{} = select i1 {}, i64 0, i64 {}",
+                indent, data, is_null, data_raw
+            )
+            .ok();
             let t1 = backend.fun.gen_reg();
-            writeln!(out, "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0", indent, t1, data).ok();
+            writeln!(
+                out,
+                "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0",
+                indent, t1, data
+            )
+            .ok();
             let t2 = backend.fun.gen_reg();
-            writeln!(out, "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1", indent, t2, t1, len).ok();
-            return BTypedRegister { name: t2, ty: Type::string() };
+            writeln!(
+                out,
+                "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1",
+                indent, t2, t1, len
+            )
+            .ok();
+            return BTypedRegister {
+                name: t2,
+                ty: Type::string(),
+            };
         }
         "ChDir#" => {
             let pth = backend.emit_expr(out, &args[0], indent);
@@ -169,9 +275,24 @@ pub fn emit_intrinsic_call(
             // (stateful); else the C-fallback symbol (emit_toplevel
             // declare) — same shape as GetCwd# above.
             let sym = bridge_symbol(backend, "rt_chdir", "__briev_chdir");
-            writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, r, &sym,
-                if backend.ctx.defn_takes_state(&sym) { "ptr %state, " } else { "" }, pi).ok();
-            return BTypedRegister { name: r, ty: Type::int() };
+            writeln!(
+                out,
+                "{}{} = call i64 @{}({}i64 {})",
+                indent,
+                r,
+                &sym,
+                if backend.ctx.defn_takes_state(&sym) {
+                    "ptr %state, "
+                } else {
+                    ""
+                },
+                pi
+            )
+            .ok();
+            return BTypedRegister {
+                name: r,
+                ty: Type::int(),
+            };
         }
         // 2026-08-03: call a function-pointer value (host callback).
         "CallPtr#" => return emit_call_ptr(backend, out, v, args, indent),
@@ -192,15 +313,30 @@ pub fn emit_intrinsic_call(
             let argv_p = backend.pointer_from_handle(out, indent, &argv);
             let outc_p = backend.pointer_from_handle(out, indent, &outc);
             let hw = format!("i{}", backend.ctx.int_bits);
-            writeln!(out, "{}{} = call {} {}(ptr %state, ptr {}, ptr {})",
-                indent, v, hw, seg_p, argv_p, outc_p).ok();
-            return BTypedRegister { name: v.to_string(), ty: Type::int() };
+            writeln!(
+                out,
+                "{}{} = call {} {}(ptr %state, ptr {}, ptr {})",
+                indent, v, hw, seg_p, argv_p, outc_p
+            )
+            .ok();
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::int(),
+            };
         }
         // 2026-08-03: host cancellation flag (process-global atomic).
         "CancelRequested#" => return emit_cancel_requested(backend, out, v, indent),
         "ClearCancel#" => {
-            writeln!(out, "{}store atomic i32 0, ptr @__briev_cancel_flag seq_cst, align 4", indent).ok();
-            return BTypedRegister { name: v.to_string(), ty: Type::void() };
+            writeln!(
+                out,
+                "{}store atomic i32 0, ptr @__briev_cancel_flag seq_cst, align 4",
+                indent
+            )
+            .ok();
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::void(),
+            };
         }
         // 2026-09-23 (frgn-elimination round 2): `Environ#()` — load the
         // compiler-owned @__briev_environ global (captured by the owned
@@ -212,7 +348,10 @@ pub fn emit_intrinsic_call(
             writeln!(out, "{}{} = load ptr, ptr @__briev_environ", indent, env).ok();
             let ptr = backend.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, env).ok();
-            return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
+            return BTypedRegister {
+                name: ptr.to_string(),
+                ty: Type::int(),
+            };
         }
         // 2026-10-12 (daily-driver quick wins): `Argc#()` / `Args#()` —
         // load the captured argc/argv globals the backend-owned main
@@ -225,14 +364,20 @@ pub fn emit_intrinsic_call(
             writeln!(out, "{}{} = load i32, ptr @__briev_argc", indent, n).ok();
             let z = backend.fun.gen_reg();
             writeln!(out, "{}{} = zext i32 {} to i64", indent, z, n).ok();
-            return BTypedRegister { name: z.to_string(), ty: Type::int() };
+            return BTypedRegister {
+                name: z.to_string(),
+                ty: Type::int(),
+            };
         }
         "Args#" => {
             let argv = backend.fun.gen_reg();
             writeln!(out, "{}{} = load ptr, ptr @__briev_argv", indent, argv).ok();
             let ptr = backend.fun.gen_reg();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, ptr, argv).ok();
-            return BTypedRegister { name: ptr.to_string(), ty: Type::int() };
+            return BTypedRegister {
+                name: ptr.to_string(),
+                ty: Type::int(),
+            };
         }
         // 2026-10-05 (Phase 0.6, gate-membership<->arm rule): the GPU
         // launch-dimension builtins are DE-LISTED from this lane.
@@ -308,7 +453,10 @@ pub fn emit_intrinsic_call(
         "Ptr#" => {
             let a = backend.emit_expr(out, &args[0], indent);
             writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, v, a.name).ok();
-            return BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::int()) };
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::ptr(Type::int()),
+            };
         }
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): pointer arithmetic
         "PtrAdd#" => return emit_ptr_add(backend, out, v, args, indent),
@@ -320,12 +468,16 @@ pub fn emit_intrinsic_call(
     }
 
     // For generic operations, look up template from config
-    let arg_regs: Vec<BTypedRegister> = args.iter()
+    let arg_regs: Vec<BTypedRegister> = args
+        .iter()
         .map(|a| backend.emit_expr(out, a, indent))
         .collect();
 
     if arg_regs.is_empty() {
-        return BTypedRegister { name: v.to_string(), ty: Type::void() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::void(),
+        };
     }
 
     // Determine llvm type and bytes from the first argument's type
@@ -335,16 +487,26 @@ pub fn emit_intrinsic_call(
 
     let op_name = name.trim_end_matches('#');
     // 2026-07-17: Directly emit float intrinsics (Sqrt#, Sin#, Cos#, etc.)
-    let is_float_unary = matches!(op_name, "Sqrt" | "Sin" | "Cos" | "Fabs" | "Ceil" | "Floor" | "Exp");
+    let is_float_unary = matches!(
+        op_name,
+        "Sqrt" | "Sin" | "Cos" | "Fabs" | "Ceil" | "Floor" | "Exp"
+    );
     if is_float_unary {
         let llvm_name = op_name.to_lowercase();
         let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
             "double" => ("f64", "double", Type::float64()),
             _ => ("f32", "float", Type::float()),
         };
-        writeln!(out, "{}{} = call {} @llvm.{}.{}({} {})",
-            indent, v, float_llvm_ty, llvm_name, float_suffix, float_llvm_ty, arg_regs[0].name).ok();
-        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+        writeln!(
+            out,
+            "{}{} = call {} @llvm.{}.{}({} {})",
+            indent, v, float_llvm_ty, llvm_name, float_suffix, float_llvm_ty, arg_regs[0].name
+        )
+        .ok();
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: ret_ty,
+        };
     }
 
     // 2026-09-17 (M2a): Max#/Min# — binary intrinsics. Float uses
@@ -361,19 +523,39 @@ pub fn emit_intrinsic_call(
         if llvm_ty.starts_with('i') {
             // llvm.smin/smax are declared intrinsics: call form with the
             // width suffix (i64 here — the Int fundamental).
-            writeln!(out, "{}{} = call i64 @llvm.{}.i64(i64 {}, i64 {})",
-                indent, v, int_op, arg_regs[0].name, arg_regs[1].name).ok();
-            return BTypedRegister { name: v.to_string(), ty: arg_regs[0].ty.clone() };
+            writeln!(
+                out,
+                "{}{} = call i64 @llvm.{}.i64(i64 {}, i64 {})",
+                indent, v, int_op, arg_regs[0].name, arg_regs[1].name
+            )
+            .ok();
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: arg_regs[0].ty.clone(),
+            };
         }
         let (float_suffix, float_llvm_ty, ret_ty) = match llvm_ty.as_str() {
             "double" => ("f64", "double", Type::float64()),
             _ => ("f32", "float", Type::float()),
         };
-        writeln!(out, "{}{} = call {} @llvm.{}.{}({} {}, {} {})",
-            indent, v, float_llvm_ty, llvm_name, float_suffix,
-            float_llvm_ty, arg_regs[0].name,
-            float_llvm_ty, arg_regs[1].name).ok();
-        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+        writeln!(
+            out,
+            "{}{} = call {} @llvm.{}.{}({} {}, {} {})",
+            indent,
+            v,
+            float_llvm_ty,
+            llvm_name,
+            float_suffix,
+            float_llvm_ty,
+            arg_regs[0].name,
+            float_llvm_ty,
+            arg_regs[1].name
+        )
+        .ok();
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: ret_ty,
+        };
     }
 
     // 2026-09-17: Fma# — ternary float intrinsic (a*b+c, single rounding).
@@ -384,12 +566,26 @@ pub fn emit_intrinsic_call(
             "double" => ("f64", "double", Type::float64()),
             _ => ("f32", "float", Type::float()),
         };
-        writeln!(out, "{}{} = call {} @llvm.{}.{}({} {}, {} {}, {} {})",
-            indent, v, float_llvm_ty, llvm_name, float_suffix,
-            float_llvm_ty, arg_regs[0].name,
-            float_llvm_ty, arg_regs[1].name,
-            float_llvm_ty, arg_regs[2].name).ok();
-        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+        writeln!(
+            out,
+            "{}{} = call {} @llvm.{}.{}({} {}, {} {}, {} {})",
+            indent,
+            v,
+            float_llvm_ty,
+            llvm_name,
+            float_suffix,
+            float_llvm_ty,
+            arg_regs[0].name,
+            float_llvm_ty,
+            arg_regs[1].name,
+            float_llvm_ty,
+            arg_regs[2].name
+        )
+        .ok();
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: ret_ty,
+        };
     }
 
     // 2026-07-20: Simple hardcoded template dispatch for standard ops.
@@ -398,16 +594,34 @@ pub fn emit_intrinsic_call(
     if let Some(template) = template_for_op(op_name, &llvm_ty, bytes) {
         let ir = template
             .replace("%v", v)
-            .replace("%a", &arg_regs.get(0).map(|r| r.name.clone()).unwrap_or_default())
-            .replace("%b", &arg_regs.get(1).map(|r| r.name.clone()).unwrap_or_default())
-            .replace("%c", &arg_regs.get(2).map(|r| r.name.clone()).unwrap_or_default());
+            .replace(
+                "%a",
+                &arg_regs.get(0).map(|r| r.name.clone()).unwrap_or_default(),
+            )
+            .replace(
+                "%b",
+                &arg_regs.get(1).map(|r| r.name.clone()).unwrap_or_default(),
+            )
+            .replace(
+                "%c",
+                &arg_regs.get(2).map(|r| r.name.clone()).unwrap_or_default(),
+            );
         writeln!(out, "{}  {}", indent, ir).ok();
         let ret_ty = if arg_regs.len() >= 1 {
-            if arg_regs[0].ty == Type::float64() { Type::float64() }
-            else if arg_regs[0].ty == Type::float() { Type::float() }
-            else { Type::int() }
-        } else { Type::int() };
-        return BTypedRegister { name: v.to_string(), ty: ret_ty };
+            if arg_regs[0].ty == Type::float64() {
+                Type::float64()
+            } else if arg_regs[0].ty == Type::float() {
+                Type::float()
+            } else {
+                Type::int()
+            }
+        } else {
+            Type::int()
+        };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: ret_ty,
+        };
     }
 
     // Fallback: generative op-identity dispatch (2026-08-14, UOL §6b.2 step 3).
@@ -424,14 +638,29 @@ pub fn emit_intrinsic_call(
             // count of Iterable<Char>), not a declared `op Count`.
             let p = backend.string_ptr(out, indent, &arg_regs[0]);
             let ret = backend.defn_call_ret_ll("briev_char_len");
-            writeln!(out, "{}{} = call {} @briev_char_len({}ptr {})", indent, v, ret,
-            if backend.ctx.defn_takes_state("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
+            writeln!(
+                out,
+                "{}{} = call {} @briev_char_len({}ptr {})",
+                indent,
+                v,
+                ret,
+                if backend.ctx.defn_takes_state("briev_char_len") {
+                    "ptr %state, "
+                } else {
+                    ""
+                },
+                p
+            )
+            .ok();
             let narrowed = if ret == "i64" {
                 narrow_int_result(backend, out, v, indent)
             } else {
                 v.to_string()
             };
-            return BTypedRegister { name: narrowed, ty: Type::int() };
+            return BTypedRegister {
+                name: narrowed,
+                ty: Type::int(),
+            };
         }
         if !args.is_empty() {
             let recv = &args[0];
@@ -452,14 +681,43 @@ pub fn emit_intrinsic_call(
 /// signatures + `template_for_op`; the collection/cursor set below is what
 /// the generative dispatch reaches.
 fn is_operation_identity(name: &str) -> bool {
-    matches!(name,
-        "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Neg" | "Abs"
-        | "Eq" | "Neq" | "Lt" | "Le" | "Gt" | "Ge"
-        | "And" | "Or" | "Not"
-        | "BitAnd" | "BitOr" | "BitXor" | "BitNot" | "Shl" | "Shr"
-        | "At" | "Slice" | "InsertAt" | "ExtractFrom" | "CopyFrom"
-        | "Append" | "Prepend"
-        | "Count" | "Iter" | "Step" | "IsEnd" | "Current")
+    matches!(
+        name,
+        "Add"
+            | "Sub"
+            | "Mul"
+            | "Div"
+            | "Rem"
+            | "Neg"
+            | "Abs"
+            | "Eq"
+            | "Neq"
+            | "Lt"
+            | "Le"
+            | "Gt"
+            | "Ge"
+            | "And"
+            | "Or"
+            | "Not"
+            | "BitAnd"
+            | "BitOr"
+            | "BitXor"
+            | "BitNot"
+            | "Shl"
+            | "Shr"
+            | "At"
+            | "Slice"
+            | "InsertAt"
+            | "ExtractFrom"
+            | "CopyFrom"
+            | "Append"
+            | "Prepend"
+            | "Count"
+            | "Iter"
+            | "Step"
+            | "IsEnd"
+            | "Current"
+    )
 }
 
 /// 2026-07-20: Simple IR template dispatch, replacing the old TOML config lookup.
@@ -484,7 +742,11 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
     // 2026-07-25: Use the passed llvm_ty for integer ops (may be narrowed
     // from value-range inference), falling back to bytes*8 if llvm_ty
     // doesn't look like an integer type (e.g., "ptr", "float").
-    let int_llvm = if llvm_ty.starts_with('i') { llvm_ty.to_string() } else { format!("i{}", bytes * 8) };
+    let int_llvm = if llvm_ty.starts_with('i') {
+        llvm_ty.to_string()
+    } else {
+        format!("i{}", bytes * 8)
+    };
 
     match (op_name, is_float) {
         ("Add", true) => Some(format!("%v = fadd fast {} %a, %b", float_llvm)),
@@ -499,7 +761,10 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
         ("Le", true) => Some(format!("%v = fcmp ole {} %a, %b", float_llvm)),
         ("Ge", true) => Some(format!("%v = fcmp oge {} %a, %b", float_llvm)),
         ("Neg", true) => Some(format!("%v = fneg fast {} %a", float_llvm)),
-        ("Abs", true) => Some(format!("%v = call {} @llvm.fabs.{}({} %a)", float_llvm, float_llvm, float_llvm)),
+        ("Abs", true) => Some(format!(
+            "%v = call {} @llvm.fabs.{}({} %a)",
+            float_llvm, float_llvm, float_llvm
+        )),
 
         ("Add", false) => Some(format!("%v = add nsw {} %a, %b", int_llvm)),
         ("Sub", false) => Some(format!("%v = sub nsw {} %a, %b", int_llvm)),
@@ -513,15 +778,30 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
         ("Le", false) => Some(format!("%v = icmp sle {} %a, %b", int_llvm)),
         ("Ge", false) => Some(format!("%v = icmp sge {} %a, %b", int_llvm)),
         ("Neg", false) => Some(format!("%v = sub nsw {} 0, %a", int_llvm)),
-        ("Abs", false) => Some(format!("%v = call {} @llvm.abs.{}({} %a, i1 false)", int_llvm, int_llvm, int_llvm)),
+        ("Abs", false) => Some(format!(
+            "%v = call {} @llvm.abs.{}({} %a, i1 false)",
+            int_llvm, int_llvm, int_llvm
+        )),
         // 2026-08-14 (boundary plan, SPEC §17.3): the four bit intrinsics —
         // declared at emit_toplevel.rs, now dispatched here. All integer
         // unary; ctlz/cttz take the poison-on-zero flag (false = return the
         // bit width for an all-zero input, matching C semantics).
-        ("BitReverse", false) => Some(format!("%v = call {} @llvm.bitreverse.{}({} %a)", int_llvm, int_llvm, int_llvm)),
-        ("Popcount", false) => Some(format!("%v = call {} @llvm.ctpop.{}({} %a)", int_llvm, int_llvm, int_llvm)),
-        ("LeadingZeros", false) => Some(format!("%v = call {} @llvm.ctlz.{}({} %a, i1 false)", int_llvm, int_llvm, int_llvm)),
-        ("TrailingZeros", false) => Some(format!("%v = call {} @llvm.cttz.{}({} %a, i1 false)", int_llvm, int_llvm, int_llvm)),
+        ("BitReverse", false) => Some(format!(
+            "%v = call {} @llvm.bitreverse.{}({} %a)",
+            int_llvm, int_llvm, int_llvm
+        )),
+        ("Popcount", false) => Some(format!(
+            "%v = call {} @llvm.ctpop.{}({} %a)",
+            int_llvm, int_llvm, int_llvm
+        )),
+        ("LeadingZeros", false) => Some(format!(
+            "%v = call {} @llvm.ctlz.{}({} %a, i1 false)",
+            int_llvm, int_llvm, int_llvm
+        )),
+        ("TrailingZeros", false) => Some(format!(
+            "%v = call {} @llvm.cttz.{}({} %a, i1 false)",
+            int_llvm, int_llvm, int_llvm
+        )),
 
         ("BitAnd", false) => Some(format!("%v = and {} %a, %b", int_llvm)),
         ("BitOr", false) => Some(format!("%v = or {} %a, %b", int_llvm)),
@@ -534,14 +814,22 @@ pub(crate) fn template_for_op(op_name: &str, llvm_ty: &str, bytes: u64) -> Optio
 }
 
 fn resolve_arg_bytes(backend: &LlvmBackend, reg: &BTypedRegister) -> Option<u64> {
-    backend.ctx.type_universe.as_ref()
+    backend
+        .ctx
+        .type_universe
+        .as_ref()
         .and_then(|u| crate::type_universe::resolve_type(u, &reg.ty))
         .map(|rt| rt.bytes)
 }
 
 // ── Helper: emit argument expressions and return their register names ──
 
-fn emit_args(backend: &mut LlvmBackend, out: &mut String, args: &[Expr], indent: &str) -> Vec<String> {
+fn emit_args(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    args: &[Expr],
+    indent: &str,
+) -> Vec<String> {
     args.iter()
         .map(|a| backend.emit_expr(out, a, indent).name)
         .collect()
@@ -552,12 +840,7 @@ fn emit_arg(backend: &mut LlvmBackend, out: &mut String, arg: &Expr, indent: &st
 }
 
 /// Emit an expression and adapt it to the i64 C-runtime ABI slot.
-fn emit_arg_i64(
-    backend: &mut LlvmBackend,
-    out: &mut String,
-    arg: &Expr,
-    indent: &str,
-) -> String {
+fn emit_arg_i64(backend: &mut LlvmBackend, out: &mut String, arg: &Expr, indent: &str) -> String {
     let reg = backend.emit_expr(out, arg, indent);
     backend.ensure_typed_value(
         out,
@@ -592,28 +875,52 @@ fn narrow_int_result(backend: &mut LlvmBackend, out: &mut String, v: &str, inden
 /// boxed i64 handle at a call/binding boundary — recover the ptr via
 /// string_ptr). Emits `call i64 @briev_char_len(ptr ...)`.
 fn emit_char_count(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     if args.is_empty() {
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     }
     let reg = backend.emit_expr(out, &args[0], indent);
     let p = backend.string_ptr(out, indent, &reg);
     let ret = backend.defn_call_ret_ll("briev_char_len");
-    writeln!(out, "{}{} = call {} @briev_char_len({}ptr {})", indent, v, ret,
-            if backend.ctx.defn_takes_state("briev_char_len") { "ptr %state, " } else { "" }, p).ok();
+    writeln!(
+        out,
+        "{}{} = call {} @briev_char_len({}ptr {})",
+        indent,
+        v,
+        ret,
+        if backend.ctx.defn_takes_state("briev_char_len") {
+            "ptr %state, "
+        } else {
+            ""
+        },
+        p
+    )
+    .ok();
     let narrowed = if ret == "i64" {
         narrow_int_result(backend, out, v, indent)
     } else {
         v.to_string()
     };
-    BTypedRegister { name: narrowed, ty: Type::int() }
+    BTypedRegister {
+        name: narrowed,
+        ty: Type::int(),
+    }
 }
 
 fn emit_malloc(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let size = emit_arg(backend, out, &args[0], indent);
     // 2026-11-04: Malloc# exposes a target-width Ptr<Int>. Keep the address
@@ -626,12 +933,21 @@ fn emit_malloc(
         let width = backend.ptr_int_ty();
         writeln!(out, "{indent}{v}_p = inttoptr i64 {address} to ptr").ok();
         writeln!(out, "{indent}{v} = ptrtoint ptr {v}_p to {width}").ok();
-        backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
-        backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), size));
+        backend
+            .fun
+            .alloc_strategies
+            .insert(v.to_string(), AllocStrategy::Arena);
+        backend
+            .fun
+            .fat_ptrs
+            .insert(v.to_string(), (v.to_string(), "0".to_string(), size));
     } else {
         emit_malloc_inline(backend, out, v, &size, indent);
     }
-    BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::int()) }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::ptr(Type::int()),
+    }
 }
 
 /// 2026-08-11 (wasm32 obj-member fix): widen an `i{int_bits}` value to i64
@@ -656,20 +972,31 @@ fn widen_to_i64(backend: &mut LlvmBackend, out: &mut String, reg: &str, indent: 
 /// bindings materialize as pointers); a ptr-typed stamp on an integer handle
 /// goes through the recorded-width map instead of guessing.
 pub(crate) fn adapt_handle_to_ptr_int(
-    backend: &mut LlvmBackend, out: &mut String, reg: &BTypedRegister, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    reg: &BTypedRegister,
+    indent: &str,
 ) -> String {
     let ity = backend.ptr_int_ty();
     let have = backend.llvm_type(&reg.ty);
     if have == "ptr" {
         let t = backend.fun.gen_reg();
-        writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, t, reg.name, ity).ok();
+        writeln!(
+            out,
+            "{}{} = ptrtoint ptr {} to {}",
+            indent, t, reg.name, ity
+        )
+        .ok();
         return t;
     }
     adapt_to_ptr_width(backend, out, reg, indent)
 }
 
 pub(crate) fn adapt_to_ptr_width(
-    backend: &mut LlvmBackend, out: &mut String, reg: &BTypedRegister, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    reg: &BTypedRegister,
+    indent: &str,
 ) -> String {
     let ity = backend.ptr_int_ty();
     let ity_bits = backend.ctx.int_bits as usize;
@@ -705,19 +1032,34 @@ pub(crate) fn adapt_to_ptr_width(
             return reg.name.clone();
         }
         let t = backend.fun.gen_reg();
-        writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, t, reg.name, ity).ok();
+        writeln!(
+            out,
+            "{}{} = ptrtoint ptr {} to {}",
+            indent, t, reg.name, ity
+        )
+        .ok();
         return t;
     }
     let have_bits = have.strip_prefix('i').and_then(|n| n.parse::<usize>().ok());
     match have_bits {
         Some(w) if w > ity_bits => {
             let t = backend.fun.gen_reg();
-            writeln!(out, "{}{} = trunc {} {} to {}", indent, t, have, reg.name, ity).ok();
+            writeln!(
+                out,
+                "{}{} = trunc {} {} to {}",
+                indent, t, have, reg.name, ity
+            )
+            .ok();
             t
         }
         Some(w) if w < ity_bits => {
             let t = backend.fun.gen_reg();
-            writeln!(out, "{}{} = zext {} {} to {}", indent, t, have, reg.name, ity).ok();
+            writeln!(
+                out,
+                "{}{} = zext {} {} to {}",
+                indent, t, have, reg.name, ity
+            )
+            .ok();
             t
         }
         _ => reg.name.clone(),
@@ -733,8 +1075,12 @@ pub(crate) fn adapt_to_ptr_width(
 //   Alloc#(size, "pool_serial")         — quoted: config/alloc-strategies.dbvl
 //   Alloc#(size, my_custom_alloc_fn)    — identifier: user Briev function
 fn emit_alloc(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str, analysis_id: Option<usize>,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
+    analysis_id: Option<usize>,
 ) -> BTypedRegister {
     let size = emit_arg(backend, out, &args[0], indent);
 
@@ -761,8 +1107,14 @@ fn emit_alloc(
                     AllocStrategy::Arena if !backend.fun.stateless_body => {
                         let result = backend.emit_arena_alloc(out, indent, &size);
                         writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
-                        backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
-                        BTypedRegister { name: v.to_string(), ty: Type::int() }
+                        backend
+                            .fun
+                            .alloc_strategies
+                            .insert(v.to_string(), AllocStrategy::Arena);
+                        BTypedRegister {
+                            name: v.to_string(),
+                            ty: Type::int(),
+                        }
                     }
                     // 2026-09-24 (stateless-defn × arena): analysis chose Arena
                     // but the body is stateless — arena fields live in %State
@@ -770,24 +1122,34 @@ fn emit_alloc(
                     // bookkeep Malloc so Free# dispatches @free (an Arena
                     // bookkeeping here would leak: arena results are never
                     // explicitly freed).
-                    AllocStrategy::Arena => {
-                        emit_malloc_inline(backend, out, v, &size, indent)
-                    }
+                    AllocStrategy::Arena => emit_malloc_inline(backend, out, v, &size, indent),
                     AllocStrategy::Alloca => {
                         let a = format!("%alloc_{}", backend.fun.txn_counter);
                         backend.fun.txn_counter += 1;
                         writeln!(out, "{}{} = alloca i8, i64 {}", indent, a, size).ok();
                         writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, a).ok();
-                        backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Alloca);
-                        BTypedRegister { name: v.to_string(), ty: Type::int() }
+                        backend
+                            .fun
+                            .alloc_strategies
+                            .insert(v.to_string(), AllocStrategy::Alloca);
+                        BTypedRegister {
+                            name: v.to_string(),
+                            ty: Type::int(),
+                        }
                     }
                     // 2026-07-18: Inline — allocation fits in parent struct field.
                     // The Alloc# is a no-op; the address is computed from the
                     // containing struct's field offset at access time.
                     AllocStrategy::Inline => {
-                        backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Inline);
+                        backend
+                            .fun
+                            .alloc_strategies
+                            .insert(v.to_string(), AllocStrategy::Inline);
                         writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-                        BTypedRegister { name: v.to_string(), ty: Type::int() }
+                        BTypedRegister {
+                            name: v.to_string(),
+                            ty: Type::int(),
+                        }
                     }
                     // 2026-07-18: RingBuffer — circular buffer with wrap-around.
                     AllocStrategy::RingBuffer => {
@@ -795,7 +1157,10 @@ fn emit_alloc(
                     }
                     // 2026-07-18: Config strategy — look up template.
                     AllocStrategy::Config(_) | AllocStrategy::Custom(_) => {
-                        backend.fun.alloc_strategies.insert(v.to_string(), strategy.clone());
+                        backend
+                            .fun
+                            .alloc_strategies
+                            .insert(v.to_string(), strategy.clone());
                         emit_malloc_inline(backend, out, v, &size, indent)
                     }
                 };
@@ -814,8 +1179,14 @@ fn emit_alloc(
         // The caller receives it directly — no ptrtoint needed.
         let result = backend.emit_arena_alloc(out, indent, &size);
         writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
-        backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        backend
+            .fun
+            .alloc_strategies
+            .insert(v.to_string(), AllocStrategy::Arena);
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     }
     if backend.is_in_bounded_scope() && !backend.will_escape_current_allocation() {
         // 2026-07-18: Check if size is a compile-time constant.
@@ -825,8 +1196,14 @@ fn emit_alloc(
             backend.fun.txn_counter += 1;
             writeln!(out, "{}{} = alloca i8, i64 {}", indent, a, size).ok();
             writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, a).ok();
-            backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Alloca);
-            return BTypedRegister { name: v.to_string(), ty: Type::int() };
+            backend
+                .fun
+                .alloc_strategies
+                .insert(v.to_string(), AllocStrategy::Alloca);
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::int(),
+            };
         }
         // Runtime fallback: try alloca, fall back to malloc if size > threshold.
         return emit_dynamic_alloc(backend, out, v, &size, indent);
@@ -839,8 +1216,12 @@ fn emit_alloc(
 // Strategy can be PascalCase (Arena/Malloc/Alloca), quoted string (config),
 // or an identifier (user function).
 fn emit_alloc_with_strategy(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str, size: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
+    size: &str,
 ) -> BTypedRegister {
     let strategy_expr = &args[1];
     match strategy_expr {
@@ -850,7 +1231,10 @@ fn emit_alloc_with_strategy(
                     let result = backend.emit_arena_alloc(out, indent, size);
                     // 2026-07-19: emit_arena_alloc returns i64 — route to v.
                     writeln!(out, "{}{} = add i64 0, {}", indent, v, result).ok();
-                    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Arena);
+                    backend
+                        .fun
+                        .alloc_strategies
+                        .insert(v.to_string(), AllocStrategy::Arena);
                 }
                 // 2026-09-24: explicit Arena in a stateless body — %state is
                 // unavailable, so honor the intent (heap, not stack) with
@@ -863,14 +1247,25 @@ fn emit_alloc_with_strategy(
                 }
                 "Alloca" => {
                     writeln!(out, "{}{} = alloca i8, i64 {}", indent, v, size).ok();
-                    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Alloca);
+                    backend
+                        .fun
+                        .alloc_strategies
+                        .insert(v.to_string(), AllocStrategy::Alloca);
                 }
                 // Unknown PascalCase — treat as user function name.
                 custom_fn => {
                     let fn_reg = emit_arg(backend, out, strategy_expr, indent);
-                    writeln!(out, "{}{} = call i64 @{}(i64 {})", indent, v, custom_fn, size).ok();
+                    writeln!(
+                        out,
+                        "{}{} = call i64 @{}(i64 {})",
+                        indent, v, custom_fn, size
+                    )
+                    .ok();
                     // Conservative: unknown strategy → Malloc for Free# dispatch.
-                    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
+                    backend
+                        .fun
+                        .alloc_strategies
+                        .insert(v.to_string(), AllocStrategy::Malloc);
                 }
             }
         }
@@ -880,7 +1275,10 @@ fn emit_alloc_with_strategy(
             let found = emit_alloc_from_config(backend, out, v, &strategy_name, size, indent);
             if !found {
                 // Fallback to @malloc with warning.
-                let msg = format!("warning: unknown alloc strategy '{}', falling back to malloc", strategy_name);
+                let msg = format!(
+                    "warning: unknown alloc strategy '{}', falling back to malloc",
+                    strategy_name
+                );
                 backend.warnings.push(msg);
                 emit_malloc_inline(backend, out, v, size, indent);
             }
@@ -888,18 +1286,33 @@ fn emit_alloc_with_strategy(
         _ => {
             // Unknown expression type — emit as function call.
             let fn_reg = emit_arg(backend, out, strategy_expr, indent);
-            writeln!(out, "{}{} = call i64 @custom_alloc(i64 {}, i64 {})", indent, v, size, fn_reg).ok();
-            backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
+            writeln!(
+                out,
+                "{}{} = call i64 @custom_alloc(i64 {}, i64 {})",
+                indent, v, size, fn_reg
+            )
+            .ok();
+            backend
+                .fun
+                .alloc_strategies
+                .insert(v.to_string(), AllocStrategy::Malloc);
         }
     }
-    BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::int()) }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::ptr(Type::int()),
+    }
 }
 
 // 2026-07-18: Look up a quoted strategy name in config/alloc-strategies.dbvl
 // and emit the corresponding LLVM IR template. Returns true if found.
 fn emit_alloc_from_config(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    strategy_name: &str, size: &str, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    strategy_name: &str,
+    size: &str,
+    indent: &str,
 ) -> bool {
     let config = crate::config::AllocConfig::load();
     let Some(template) = config.lookup(strategy_name) else {
@@ -910,7 +1323,10 @@ fn emit_alloc_from_config(
         .replace("{size}", size);
     writeln!(out, "{}  {}", indent, ir).ok();
     // AllocConfig entries default to Malloc strategy for Free# dispatch.
-    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
+    backend
+        .fun
+        .alloc_strategies
+        .insert(v.to_string(), AllocStrategy::Malloc);
     true
 }
 
@@ -918,7 +1334,11 @@ fn emit_alloc_from_config(
 // if the allocation size exceeds the stack threshold. Used for dynamic-size
 // allocs where the strategy is Alloca but size is unknown at compile time.
 fn emit_dynamic_alloc(
-    backend: &mut LlvmBackend, out: &mut String, v: &str, size: &str, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    size: &str,
+    indent: &str,
 ) -> BTypedRegister {
     let counter = backend.fun.txn_counter;
     backend.fun.txn_counter += 1;
@@ -926,7 +1346,12 @@ fn emit_dynamic_alloc(
     let heap_l = format!(".heap{}", counter);
     let done_l = format!(".done{}", counter);
 
-    writeln!(out, "  %cmp = icmp ule i64 {}, {}", size, backend.ctx.stack_threshold).ok();
+    writeln!(
+        out,
+        "  %cmp = icmp ule i64 {}, {}",
+        size, backend.ctx.stack_threshold
+    )
+    .ok();
     writeln!(out, "  br i1 %cmp, label %{}, label %{}", stack_l, heap_l).ok();
     writeln!(out, "{}:", stack_l).ok();
     writeln!(out, "  %s = alloca i8, i64 {}", size).ok();
@@ -937,16 +1362,31 @@ fn emit_dynamic_alloc(
     writeln!(out, "  %hv = ptrtoint ptr %h to i64").ok();
     writeln!(out, "  br label %{}", done_l).ok();
     writeln!(out, "{}:", done_l).ok();
-    writeln!(out, "  {} = phi i64 [ %sv, %{} ], [ %hv, %{} ]", v, stack_l, heap_l).ok();
-    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Alloca);
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "  {} = phi i64 [ %sv, %{} ], [ %hv, %{} ]",
+        v, stack_l, heap_l
+    )
+    .ok();
+    backend
+        .fun
+        .alloc_strategies
+        .insert(v.to_string(), AllocStrategy::Alloca);
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 // 2026-07-18: RingBuffer — circular buffer alloc via slot-based ring.
 // Each allocation advances a head pointer modulo RING_SIZE (power of two).
 // Free# is a no-op — old slots are overwritten when head wraps around.
 fn emit_ring_buffer_alloc(
-    backend: &mut LlvmBackend, out: &mut String, v: &str, size: &str, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    size: &str,
+    indent: &str,
 ) -> BTypedRegister {
     let counter = backend.fun.txn_counter;
     backend.fun.txn_counter += 1;
@@ -956,8 +1396,14 @@ fn emit_ring_buffer_alloc(
     let a = format!("%ring_buf{}", counter);
     writeln!(out, "{}{} = alloca i8, i64 {}", indent, a, size).ok();
     writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, a).ok();
-    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::RingBuffer);
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    backend
+        .fun
+        .alloc_strategies
+        .insert(v.to_string(), AllocStrategy::RingBuffer);
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 // 2026-07-18: Emit @malloc for a size register, returning the ptrtoint'd
@@ -966,27 +1412,53 @@ fn emit_ring_buffer_alloc(
 // address at the POINTER width (the handle lives in Int/Data registers,
 // which are i{int_bits} on wasm32). No-op on x86_64 (int_bits=64).
 fn emit_malloc_inline(
-    backend: &mut LlvmBackend, out: &mut String, v: &str, size: &str, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    size: &str,
+    indent: &str,
 ) -> BTypedRegister {
     let name = v.trim_start_matches('%');
     let size64 = widen_to_i64(backend, out, size, indent);
     let ity = backend.ptr_int_ty();
-    writeln!(out, "{}%{}_p = call ptr @malloc(i64 {})", indent, name, size64).ok();
+    writeln!(
+        out,
+        "{}%{}_p = call ptr @malloc(i64 {})",
+        indent, name, size64
+    )
+    .ok();
     writeln!(out, "{}{} = ptrtoint ptr %{}_p to {}", indent, v, name, ity).ok();
-    backend.fun.alloc_strategies.insert(v.to_string(), AllocStrategy::Malloc);
+    backend
+        .fun
+        .alloc_strategies
+        .insert(v.to_string(), AllocStrategy::Malloc);
     let remaining_reg = backend.fun.gen_reg();
-    writeln!(out, "{} {} = add {} {}, 0", indent, remaining_reg, ity, size).ok();
-    backend.fun.fat_ptrs.insert(v.to_string(), (v.to_string(), "0".to_string(), remaining_reg));
+    writeln!(
+        out,
+        "{} {} = add {} {}, 0",
+        indent, remaining_reg, ity, size
+    )
+    .ok();
+    backend.fun.fat_ptrs.insert(
+        v.to_string(),
+        (v.to_string(), "0".to_string(), remaining_reg),
+    );
     // 2026-07-18: Alloc# returns the ptrtoint'd handle, not ptr.
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 // 2026-07-18: Free# — strategy-aware. Looks up the pointer's allocation
 // strategy from the alloc_strategies map. Arena/Alloca → no-op (memory
 // reclaimed by scope end / arena reset). Malloc/unknown → call @free.
 fn emit_free(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ptr_reg = backend.emit_expr(out, &args[0], indent);
     // Look up the allocation strategy for the pointer register.
@@ -994,16 +1466,25 @@ fn emit_free(
     let strategy = backend.fun.alloc_strategies.get(&ptr_reg.name).cloned();
     match strategy {
         // 2026-07-18: Inline, RingBuffer, Arena, Alloca — no Free# needed.
-        Some(AllocStrategy::Arena) | Some(AllocStrategy::Alloca)
-            | Some(AllocStrategy::Inline) | Some(AllocStrategy::RingBuffer) => {}
+        Some(AllocStrategy::Arena)
+        | Some(AllocStrategy::Alloca)
+        | Some(AllocStrategy::Inline)
+        | Some(AllocStrategy::RingBuffer) => {}
         // 2026-07-18: Config strategy — check the free field from config.
         Some(AllocStrategy::Config(name)) => {
             match ALLOC_CONFIG.lookup_free(&name) {
-                Some("none") => {}  // no-op
-                Some(fn_name) => {   // custom free function
-                    writeln!(out, "{}call void @{}(ptr {})", indent, fn_name, ptr_reg.name).ok();
+                Some("none") => {} // no-op
+                Some(fn_name) => {
+                    // custom free function
+                    writeln!(
+                        out,
+                        "{}call void @{}(ptr {})",
+                        indent, fn_name, ptr_reg.name
+                    )
+                    .ok();
                 }
-                None => {            // default → @free
+                None => {
+                    // default → @free
                     writeln!(out, "{}call void @free(ptr {})", indent, ptr_reg.name).ok();
                 }
             }
@@ -1022,12 +1503,18 @@ fn emit_free(
         }
     }
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
- fn emit_load(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+fn emit_load(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let addr_reg = backend.emit_expr(out, &args[0], indent);
     // 2026-10-06 (wasm32 pointer width): adapt the address register to the
@@ -1037,7 +1524,16 @@ fn emit_free(
     // address SSA value.
     let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
     let ptr = backend.canonical_ptr(out, indent, &addr_op);
-    let bytes = args.get(1).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
+    let bytes = args
+        .get(1)
+        .and_then(|a| {
+            if let Expr::Decimal(n) = a {
+                Some(*n as usize)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8);
     writeln!(out, "{}{} = load i{}, ptr {}", indent, v, bytes * 8, ptr).ok();
     // 2026-10-06 (wasm32): Load# declares `-> Int`, and Int is i{int_bits}
     // (i32 on wasm32) — but the loaded slot width is ABI-fixed (the String
@@ -1050,20 +1546,42 @@ fn emit_free(
     let int_w = backend.ctx.int_bits as usize;
     if load_w < int_w {
         let ext = backend.fun.gen_reg();
-        writeln!(out, "{}{} = zext i{} {} to i{}", indent, ext, load_w, v, int_w).ok();
-        return BTypedRegister { name: ext, ty: Type::int() };
+        writeln!(
+            out,
+            "{}{} = zext i{} {} to i{}",
+            indent, ext, load_w, v, int_w
+        )
+        .ok();
+        return BTypedRegister {
+            name: ext,
+            ty: Type::int(),
+        };
     }
     if load_w > int_w {
         let tr = backend.fun.gen_reg();
-        writeln!(out, "{}{} = trunc i{} {} to i{}", indent, tr, load_w, v, int_w).ok();
-        return BTypedRegister { name: tr, ty: Type::int() };
+        writeln!(
+            out,
+            "{}{} = trunc i{} {} to i{}",
+            indent, tr, load_w, v, int_w
+        )
+        .ok();
+        return BTypedRegister {
+            name: tr,
+            ty: Type::int(),
+        };
     }
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_store(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let addr_reg = backend.emit_expr(out, &args[0], indent);
     let val = backend.emit_expr(out, &args[1], indent);
@@ -1073,7 +1591,16 @@ fn emit_store(
     // address SSA value.
     let addr_op = adapt_to_ptr_width(backend, out, &addr_reg, indent);
     let ptr = backend.canonical_ptr(out, indent, &addr_op);
-    let bytes = args.get(2).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
+    let bytes = args
+        .get(2)
+        .and_then(|a| {
+            if let Expr::Decimal(n) = a {
+                Some(*n as usize)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8);
     // 2026-09-09 (Family A): narrow stores must TRUNC the i64 value first —
     // `store i8 <i64 reg>` is invalid IR. (VolatileStore# already
     // width-adapts; plain Store# never hit a sub-word width until the
@@ -1084,27 +1611,41 @@ fn emit_store(
     // ABI) needs a WIDENING of the Int value, and the source type is the
     // register's actual LLVM type, never a hardcoded i64.
     let val_ty = backend.llvm_type(&val.ty);
-    let val_w = val_ty.strip_prefix('i').and_then(|n| n.parse::<usize>().ok())
+    let val_w = val_ty
+        .strip_prefix('i')
+        .and_then(|n| n.parse::<usize>().ok())
         .unwrap_or(backend.ctx.int_bits as usize);
     let slot_w = bytes * 8;
     let stored = if val_w > slot_w {
         let t = backend.fun.gen_reg();
-        writeln!(out, "{}{} = trunc {} {} to i{}", indent, t, val_ty, val.name, slot_w).ok();
+        writeln!(
+            out,
+            "{}{} = trunc {} {} to i{}",
+            indent, t, val_ty, val.name, slot_w
+        )
+        .ok();
         t
     } else if val_w < slot_w {
         // Int is SIGNED — sext preserves the numeric value into the wider
         // slot; Load# truncates back, so bit patterns round-trip.
         let t = backend.fun.gen_reg();
-        writeln!(out, "{}{} = sext {} {} to i{}", indent, t, val_ty, val.name, slot_w).ok();
+        writeln!(
+            out,
+            "{}{} = sext {} {} to i{}",
+            indent, t, val_ty, val.name, slot_w
+        )
+        .ok();
         t
     } else {
         val.name.clone()
     };
     writeln!(out, "{}store i{} {}, ptr {}", indent, slot_w, stored, ptr).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
-
 
 /// 2026-08-27 (plan 2026-08-27-cbv-foreign-hardware-and-mmio.md Slice C):
 /// `VolatileLoad#(p: Ptr<T>) -> T`. Briev's pointer ABI boxes addresses as
@@ -1113,32 +1654,69 @@ fn emit_store(
 /// result type + alignment via the casting graph; shape enforcement lives
 /// in the TYPECHECKER and a non-Ptr declaration degrades to one-word Int.
 fn emit_volatile_load(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let arg = backend.emit_expr(out, &args[0], indent);
-    let inner_ty = match &arg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &arg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
     let ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, ptr,
-        backend.llvm_type(&Type::int()), arg.name).ok();
-    writeln!(out, "{}{} = load volatile {}, ptr {}, align {}", indent, v,
-        llvm_ty, ptr, backend.align_of(&llvm_ty)).ok();
-    BTypedRegister { name: v.to_string(), ty: inner_ty }
+    writeln!(
+        out,
+        "{}{} = inttoptr {} {} to ptr",
+        indent,
+        ptr,
+        backend.llvm_type(&Type::int()),
+        arg.name
+    )
+    .ok();
+    writeln!(
+        out,
+        "{}{} = load volatile {}, ptr {}, align {}",
+        indent,
+        v,
+        llvm_ty,
+        ptr,
+        backend.align_of(&llvm_ty)
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: inner_ty,
+    }
 }
 
 /// `VolatileStore#(p: Ptr<T>, val: T) -> Bool`. Value is width-adapted to
 /// the pointee so the store text is always valid IR.
 fn emit_volatile_store(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ptr_arg = backend.emit_expr(out, &args[0], indent);
     let addr_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, addr_ptr,
-        backend.llvm_type(&Type::int()), ptr_arg.name).ok();
+    writeln!(
+        out,
+        "{}{} = inttoptr {} {} to ptr",
+        indent,
+        addr_ptr,
+        backend.llvm_type(&Type::int()),
+        ptr_arg.name
+    )
+    .ok();
     let mut val_reg = backend.emit_expr(out, &args[1], indent);
-    let inner_ty = match &ptr_arg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &ptr_arg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
     // Width compare on the EMITTED LLVM types, not the Briev metadata:
     // the cast must be valid between the IR registers this function just
@@ -1147,35 +1725,59 @@ fn emit_volatile_store(
     // 2026-09-14 (rv64-finish plan Phase 5): found by the ARM SysTick
     // demo — Ptr<Bit<32>> MMIO store emitted `zext i64 -> i32`, invalid IR.
     let llvm_bits = |t: &str| -> u64 {
-        t.strip_prefix("i").and_then(|n| n.parse().ok()).unwrap_or(64)
+        t.strip_prefix("i")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(64)
     };
     let val_llvm_ty = backend.llvm_type(&val_reg.ty);
     let target_bits = llvm_bits(&llvm_ty);
     let val_bits = llvm_bits(&val_llvm_ty);
     if val_bits > target_bits {
         let trunc = backend.fun.gen_reg();
-        writeln!(out, "{}{} = trunc {} {} to {}", indent, trunc,
-            val_llvm_ty, val_reg.name, llvm_ty).ok();
+        writeln!(
+            out,
+            "{}{} = trunc {} {} to {}",
+            indent, trunc, val_llvm_ty, val_reg.name, llvm_ty
+        )
+        .ok();
         val_reg.name = trunc;
     } else if val_bits < target_bits {
         let ext = backend.fun.gen_reg();
-        writeln!(out, "{}{} = zext {} {} to {}", indent, ext,
-            val_llvm_ty, val_reg.name, llvm_ty).ok();
+        writeln!(
+            out,
+            "{}{} = zext {} {} to {}",
+            indent, ext, val_llvm_ty, val_reg.name, llvm_ty
+        )
+        .ok();
         val_reg.name = ext;
     }
-    writeln!(out, "{}store volatile {} {}, ptr {}, align {}", indent,
-        llvm_ty, val_reg.name, addr_ptr, backend.align_of(&llvm_ty)).ok();
+    writeln!(
+        out,
+        "{}store volatile {} {}, ptr {}, align {}",
+        indent,
+        llvm_ty,
+        val_reg.name,
+        addr_ptr,
+        backend.align_of(&llvm_ty)
+    )
+    .ok();
     // 2026-10-15 (bool-width canonicalization): the success result must be
     // the canonical i8 Bool (invariant I1) — the old `add i64 0, 1` produced
     // an i64 register labeled `bool_()`, exactly the And/Or label/width
     // desync class: a consumer's `trunc i8` would hit an i64.
     writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::bool_() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::bool_(),
+    }
 }
 
 fn emit_copy(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let dst = backend.emit_expr(out, &args[0], indent);
     let src = backend.emit_expr(out, &args[1], indent);
@@ -1190,14 +1792,25 @@ fn emit_copy(
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, dptr, ity, d_op).ok();
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, sptr, ity, s_op).ok();
     let len64 = widen_to_i64(backend, out, &len, indent);
-    writeln!(out, "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)", indent, dptr, sptr, len64).ok();
+    writeln!(
+        out,
+        "{}call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false)",
+        indent, dptr, sptr, len64
+    )
+    .ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 fn emit_fill(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ptr_arg = backend.emit_expr(out, &args[0], indent);
     let val = backend.emit_expr(out, &args[1], indent);
@@ -1211,7 +1824,9 @@ fn emit_fill(
     let p_op = adapt_to_ptr_width(backend, out, &ptr_arg, indent);
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, ity, p_op).ok();
     let val_ty = backend.llvm_type(&val.ty);
-    let val_w = val_ty.strip_prefix('i').and_then(|n| n.parse::<usize>().ok());
+    let val_w = val_ty
+        .strip_prefix('i')
+        .and_then(|n| n.parse::<usize>().ok());
     let val8 = match val_w {
         Some(8) => val.name.clone(),
         Some(w) if w > 8 => {
@@ -1232,16 +1847,27 @@ fn emit_fill(
         }
     };
     let len64 = widen_to_i64(backend, out, &len, indent);
-    writeln!(out, "{}call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)", indent, p, val8, len64).ok();
+    writeln!(
+        out,
+        "{}call void @llvm.memset.p0.i64(ptr {}, i8 {}, i64 {}, i1 false)",
+        indent, p, val8, len64
+    )
+    .ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 /// 2026-08-15 (coll plan §3.6): `Capacity#(h)` — read a coll's hidden `cap`
 /// slot (offset 8 of the `[data, cap, len]` block). One load.
 fn emit_capacity(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // 2026-08-16 (Phase 3a): a fixed `coll struct` has NO hidden `cap` slot —
     // its capacity IS the compile-time N (SPEC §8.10: Capacity# returns N, a
@@ -1250,7 +1876,10 @@ fn emit_capacity(
     // constant.
     let is_fixed = match args.first() {
         Some(Expr::Identifier(n)) => {
-            let bound = backend.fun.let_binding_types.get(n)
+            let bound = backend
+                .fun
+                .let_binding_types
+                .get(n)
                 .cloned()
                 .or_else(|| backend.fun.let_original_types.get(n).cloned());
             bound.map_or(false, |t| {
@@ -1268,24 +1897,38 @@ fn emit_capacity(
     };
     if is_fixed {
         let n = backend.coll_fixed_length(&match args.first() {
-            Some(Expr::Identifier(name)) => backend.fun.let_binding_types.get(name)
+            Some(Expr::Identifier(name)) => backend
+                .fun
+                .let_binding_types
+                .get(name)
                 .or_else(|| backend.fun.let_original_types.get(name))
                 .cloned()
                 .unwrap_or_else(crate::ast::Type::int),
             _ => crate::ast::Type::int(),
         });
         writeln!(out, "{}{} = add i64 0, {}", indent, v, n).ok();
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     }
     let h = emit_arg(backend, out, &args[0], indent);
     let p = backend.fun.gen_reg();
     let gep = backend.fun.gen_reg();
     let load = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, p, h).ok();
-    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, gep, p).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr i8, ptr {}, i64 8",
+        indent, gep, p
+    )
+    .ok();
     writeln!(out, "{}{} = load i64, ptr {}", indent, load, gep).ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, v, load).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-08-15 (coll plan §3.6): `Resize#(h, cap)` — set the data buffer to
@@ -1300,39 +1943,72 @@ fn emit_capacity(
 /// guard in a member body never needs to reassign the data slot, so no
 /// register merge is required across the guard branch.
 fn emit_resize(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let hreg = backend.emit_expr(out, &args[0], indent);
     let creg = backend.emit_expr(out, &args[1], indent);
     let h = backend.pointer_handle_of(out, indent, &hreg);
     let hw = format!("i{}", backend.ctx.int_bits);
     let cap = backend.ensure_typed_value(
-        out, indent, &hw, &creg.name, Some(creg.ty.clone()),
+        out,
+        indent,
+        &hw,
+        &creg.name,
+        Some(creg.ty.clone()),
         backend.ctx.type_universe.clone().as_ref(),
     );
     let call = backend.fun.gen_reg();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
     let ret = backend.defn_call_ret_ll(&rsym);
-    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, call, ret, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, cap).ok();
+    writeln!(
+        out,
+        "{}{} = call {} @{}({}{} {}, {} {})",
+        indent,
+        call,
+        ret,
+        &rsym,
+        if backend.ctx.defn_takes_state(&rsym) {
+            "ptr %state, "
+        } else {
+            ""
+        },
+        hw,
+        h,
+        hw,
+        cap
+    )
+    .ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 /// 2026-08-15 (coll plan §3.6): `EnsureCap#(h, n)` — grow the data buffer to
 /// at least `n` elements (a no-op when the current cap is already >= n).
 fn emit_ensure_cap(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let hreg = backend.emit_expr(out, &args[0], indent);
     let nreg = backend.emit_expr(out, &args[1], indent);
     let h = backend.pointer_handle_of(out, indent, &hreg);
     let hw = format!("i{}", backend.ctx.int_bits);
     let n = backend.ensure_typed_value(
-        out, indent, &hw, &nreg.name, Some(nreg.ty.clone()),
+        out,
+        indent,
+        &hw,
+        &nreg.name,
+        Some(nreg.ty.clone()),
         backend.ctx.type_universe.clone().as_ref(),
     );
     let p = backend.fun.gen_reg();
@@ -1344,26 +2020,63 @@ fn emit_ensure_cap(
     let target = backend.fun.gen_reg();
     let call = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, hw, h).ok();
-    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, cap_gep, p).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr i8, ptr {}, i64 8",
+        indent, cap_gep, p
+    )
+    .ok();
     writeln!(out, "{}{} = load {}, ptr {}", indent, cur_cap, hw, cap_gep).ok();
-    writeln!(out, "{}{} = icmp ult {} {}, {}", indent, cmp, hw, cur_cap, n).ok();
+    writeln!(
+        out,
+        "{}{} = icmp ult {} {}, {}",
+        indent, cmp, hw, cur_cap, n
+    )
+    .ok();
     writeln!(out, "{}{} = add {} 0, 0", indent, grow, hw).ok();
-    writeln!(out, "{}{} = select i1 {}, {} {}, {} {}", indent, after, cmp, hw, n, hw, cur_cap).ok();
+    writeln!(
+        out,
+        "{}{} = select i1 {}, {} {}, {} {}",
+        indent, after, cmp, hw, n, hw, cur_cap
+    )
+    .ok();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
     let ret = backend.defn_call_ret_ll(&rsym);
-    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, target, ret, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, after).ok();
+    writeln!(
+        out,
+        "{}{} = call {} @{}({}{} {}, {} {})",
+        indent,
+        target,
+        ret,
+        &rsym,
+        if backend.ctx.defn_takes_state(&rsym) {
+            "ptr %state, "
+        } else {
+            ""
+        },
+        hw,
+        h,
+        hw,
+        after
+    )
+    .ok();
     writeln!(out, "{}{} = add i64 {}, 0", indent, call, target).ok();
     let _ = (grow, call);
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 /// 2026-08-15 (coll plan §3.6): `TrimCap#(h)` — shrink the data buffer to the
 /// current length (shrink-to-fit).
 fn emit_trim_cap(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let hreg = backend.emit_expr(out, &args[0], indent);
     let h = backend.pointer_handle_of(out, indent, &hreg);
@@ -1373,15 +2086,39 @@ fn emit_trim_cap(
     let len = backend.fun.gen_reg();
     let call = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, p, hw, h).ok();
-    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 16", indent, len_gep, p).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr i8, ptr {}, i64 16",
+        indent, len_gep, p
+    )
+    .ok();
     writeln!(out, "{}{} = load {}, ptr {}", indent, len, hw, len_gep).ok();
     let rsym = bridge_symbol(backend, "coll_resize", "__briev_coll_resize");
     let ret = backend.defn_call_ret_ll(&rsym);
-    writeln!(out, "{}{} = call {} @{}({}{} {}, {} {})", indent, call, ret, &rsym,
-            if backend.ctx.defn_takes_state(&rsym) { "ptr %state, " } else { "" }, hw, h, hw, len).ok();
+    writeln!(
+        out,
+        "{}{} = call {} @{}({}{} {}, {} {})",
+        indent,
+        call,
+        ret,
+        &rsym,
+        if backend.ctx.defn_takes_state(&rsym) {
+            "ptr %state, "
+        } else {
+            ""
+        },
+        hw,
+        h,
+        hw,
+        len
+    )
+    .ok();
     let _ = call;
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 // ─── GetEnv# ──────────────────────────────────────────────────────────
@@ -1389,8 +2126,11 @@ fn emit_trim_cap(
 // 2026-07-19: GetEnv# returns the raw env var value as a String.
 // Returns empty string {0, 0} if the env var is not found.
 fn emit_get_env(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let name_reg = backend.emit_expr(out, &args[0], indent);
     // 2026-08-10: the string operand may be an unboxed ptr (literal's
@@ -1400,7 +2140,12 @@ fn emit_get_env(
     let ptr_reg = backend.string_ptr(out, indent, &name_reg);
     // Call getenv — may return null
     let env_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call ptr @getenv(ptr {})", indent, env_ptr, ptr_reg).ok();
+    writeln!(
+        out,
+        "{}{} = call ptr @getenv(ptr {})",
+        indent, env_ptr, ptr_reg
+    )
+    .ok();
     let is_null = backend.fun.gen_reg();
     writeln!(out, "{}{} = icmp eq ptr {}, null", indent, is_null, env_ptr).ok();
     // Allocate a fallback 1-byte null-terminated buffer for the null case
@@ -1409,28 +2154,64 @@ fn emit_get_env(
     writeln!(out, "{}store i8 0, ptr {}", indent, fb).ok();
     // Safe pointer: fallback buffer when null, real pointer otherwise
     let safe_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = select i1 {}, ptr {}, ptr {}", indent, safe_ptr, is_null, fb, env_ptr).ok();
+    writeln!(
+        out,
+        "{}{} = select i1 {}, ptr {}, ptr {}",
+        indent, safe_ptr, is_null, fb, env_ptr
+    )
+    .ok();
     // Compute length via strlen on the safe pointer
     let len = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call i64 @strlen(ptr {})", indent, len, safe_ptr).ok();
+    writeln!(
+        out,
+        "{}{} = call i64 @strlen(ptr {})",
+        indent, len, safe_ptr
+    )
+    .ok();
     // Data: 0 when null, ptrtoint(env_ptr) otherwise
     let data_raw = backend.fun.gen_reg();
-    writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, data_raw, env_ptr).ok();
+    writeln!(
+        out,
+        "{}{} = ptrtoint ptr {} to i64",
+        indent, data_raw, env_ptr
+    )
+    .ok();
     let data = backend.fun.gen_reg();
-    writeln!(out, "{}{} = select i1 {}, i64 0, i64 {}", indent, data, is_null, data_raw).ok();
+    writeln!(
+        out,
+        "{}{} = select i1 {}, i64 0, i64 {}",
+        indent, data, is_null, data_raw
+    )
+    .ok();
     // Pack into {i64, i64} SSO string struct
     let t1 = backend.fun.gen_reg();
-    writeln!(out, "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0", indent, t1, data).ok();
+    writeln!(
+        out,
+        "{}{} = insertvalue {{ i64, i64 }} undef, i64 {}, 0",
+        indent, t1, data
+    )
+    .ok();
     let t2 = backend.fun.gen_reg();
-    writeln!(out, "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1", indent, t2, t1, len).ok();
-    BTypedRegister { name: t2, ty: Type::string() }
+    writeln!(
+        out,
+        "{}{} = insertvalue {{ i64, i64 }} %{}, i64 {}, 1",
+        indent, t2, t1, len
+    )
+    .ok();
+    BTypedRegister {
+        name: t2,
+        ty: Type::string(),
+    }
 }
 
 // 2026-07-19: GetEnvInt# returns the env var value parsed as Int.
 // Returns 0 if the env var is missing or unparseable (matches atol behavior).
 fn emit_get_env_int(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let name_reg = backend.emit_expr(out, &args[0], indent);
     // 2026-08-10: string_ptr handles unboxed-ptr vs boxed-i64 operands (see
@@ -1442,16 +2223,34 @@ fn emit_get_env_int(
     // length=5 → binary 0x05 → empty string) → returns NULL → atol(NULL)
     // segfaults. This was the root cause of the popcount binary crash.
     let data_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 8", indent, data_ptr, ptr_reg).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr i8, ptr {}, i64 8",
+        indent, data_ptr, ptr_reg
+    )
+    .ok();
     let env_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call ptr @getenv(ptr {})", indent, env_ptr, data_ptr).ok();
+    writeln!(
+        out,
+        "{}{} = call ptr @getenv(ptr {})",
+        indent, env_ptr, data_ptr
+    )
+    .ok();
     let atol_reg = backend.fun.gen_reg();
-    writeln!(out, "{}{} = call i64 @atol(ptr {})", indent, atol_reg, env_ptr).ok();
+    writeln!(
+        out,
+        "{}{} = call i64 @atol(ptr {})",
+        indent, atol_reg, env_ptr
+    )
+    .ok();
     // 2026-08-10: atol returns i64 but the Int register width is i{int_bits}
     // (i32 wasm32) — narrow so the result matches llvm_type(Int) and feeds
     // i32 comparisons/arithmetic. x86_64 (int_bits=64) returns the value as-is.
     let narrowed = narrow_int_result(backend, out, &atol_reg, indent);
-    BTypedRegister { name: narrowed, ty: Type::int() }
+    BTypedRegister {
+        name: narrowed,
+        ty: Type::int(),
+    }
 }
 
 // ─── GetGlobalId# ─────────────────────────────────────────────────────
@@ -1463,14 +2262,20 @@ fn emit_get_env_int(
 /// (which reads config/address-map.dbvl + hardcoded fallbacks).
 /// Emits: %v = inttoptr i64 <addr> to ptr
 fn emit_address_of(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // Guard against empty args — address must be provided
     let Some(arg) = args.first() else {
         eprintln!("AddressOf#: warning — no arguments, emitting 0 as address");
         backend.emit_inttoptr(out, indent, &v, &"0");
-        return BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::bits(8)) };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::ptr(Type::bits(8)),
+        };
     };
     // The argument must be a string literal at compile time
     let id = match arg {
@@ -1478,29 +2283,45 @@ fn emit_address_of(
         _ => {
             // If not a literal, try emitting as expression and warn
             let reg = emit_arg(backend, out, &args[0], indent);
-            eprintln!("AddressOf#: warning — argument is not a string literal, using runtime value");
+            eprintln!(
+                "AddressOf#: warning — argument is not a string literal, using runtime value"
+            );
             format!("dynamic_{}", reg)
         }
     };
     let addr = crate::address_resolver::resolve_address(&id);
     let addr_str = addr.to_string();
     backend.emit_inttoptr(out, indent, &v, &addr_str);
-    BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::bits(8)) }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::ptr(Type::bits(8)),
+    }
 }
 
 /// `CancelRequested#()` — load the process-global cancel flag as a Bool.
 /// 2026-08-03: the host raises it via `__briev_set_cancel`; Briev loops
 /// poll explicitly (no implicit injection).
 fn emit_cancel_requested(
-    backend: &mut LlvmBackend, out: &mut String, v: &str, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    indent: &str,
 ) -> BTypedRegister {
     let flag = backend.fun.gen_reg();
-    writeln!(out, "{}{} = load atomic i32, ptr @__briev_cancel_flag seq_cst, align 4", indent, flag).ok();
+    writeln!(
+        out,
+        "{}{} = load atomic i32, ptr @__briev_cancel_flag seq_cst, align 4",
+        indent, flag
+    )
+    .ok();
     let cmp = backend.fun.gen_reg();
     writeln!(out, "{}{} = icmp ne i32 {}, 0", indent, cmp, flag).ok();
     let zext = backend.fun.gen_reg();
     writeln!(out, "{}{} = zext i1 {} to i8", indent, zext, cmp).ok();
-    BTypedRegister { name: zext.to_string(), ty: Type::bool_() }
+    BTypedRegister {
+        name: zext.to_string(),
+        ty: Type::bool_(),
+    }
 }
 
 /// `CallPtr#(cb, args...)` — call a function-pointer value.
@@ -1510,12 +2331,18 @@ fn emit_cancel_requested(
 /// `call <ret> ptr %cb(args...)`. The return type is taken from the fn type
 /// (default i64); args are passed as their native LLVM types.
 fn emit_call_ptr(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let Some(cb_expr) = args.first() else {
         writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     };
     let cb_reg = emit_arg(backend, out, cb_expr, indent);
 
@@ -1543,41 +2370,81 @@ fn emit_call_ptr(
         // Int args cross as i64; String as ptr. Resolve identifier types via
         // the binding map, defaulting to i64.
         let ll = match a {
-            Expr::Identifier(name) => backend.fun.let_binding_types.get(name)
+            Expr::Identifier(name) => backend
+                .fun
+                .let_binding_types
+                .get(name)
                 .map(|t| backend.llvm_type(t))
                 .unwrap_or_else(|| "i64".to_string()),
             _ => "i64".to_string(),
         };
         call_args.push(format!("{} {}", ll, reg));
     }
-    // The callback param was ptrtoint'd to i64 at function entry; cast back
-    // to a pointer so the `call` operand type matches.
-    let cb_ptr = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cb_ptr, cb_reg).ok();
+    // Dispatch through the callable's code slot. A Briev fn value is a
+    // [code, env] pair, not a bare code pointer: the C-callback wrapper builds
+    // exactly that (word 0 = trampoline, word 1 = host pointer), and the
+    // member-call path dispatches with `call %fn(ptr %env, args...)`.
+    //
+    // 2026-11-14: calling the object address directly (the previous lowering,
+    // following the "a fn value is `ptr`" comment in types.rs) jumped to a
+    // stack address and segfaulted — `apply` passes the address of its local
+    // [code, env] alloca. Reproduced with every released brievc back to v0.1.0;
+    // see tests/c_driver_callback.rs.
+    let cb_slot = backend.fun.gen_reg();
     writeln!(
-        out, "{}{} = call {} {}({})",
-        indent, v, ret_ll, cb_ptr, call_args.join(", ")
-    ).ok();
-    BTypedRegister { name: v.to_string(), ty: ret_briev }
+        out,
+        "{}{} = inttoptr i64 {} to ptr",
+        indent, cb_slot, cb_reg
+    )
+    .ok();
+    let cb_fp = backend.fun.gen_reg();
+    writeln!(out, "{}{} = load i64, ptr {}", indent, cb_fp, cb_slot).ok();
+    let cb_fn = backend.fun.gen_reg();
+    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, cb_fn, cb_fp).ok();
+    let mut full_args: Vec<String> = vec![format!("ptr {}", cb_slot)];
+    full_args.extend(call_args);
+    writeln!(
+        out,
+        "{}{} = call {} {}({})",
+        indent,
+        v,
+        ret_ll,
+        cb_fn,
+        full_args.join(", ")
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: ret_briev,
+    }
 }
 
 // ─── Len# / Length# — load list length from 2-slot header ──────────────
 
 fn emit_len(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let arg_reg = emit_arg(backend, out, &args[0], indent);
     // Check if this argument has fat pointer provenance — if so, read
     // the remaining length directly from the provenance metadata.
     if let Some((_base, _offset, remaining)) = backend.fun.fat_ptrs.get(&arg_reg) {
-        return BTypedRegister { name: remaining.clone(), ty: Type::int() };
+        return BTypedRegister {
+            name: remaining.clone(),
+            ty: Type::int(),
+        };
     }
     // Fallback: load length from string/list header slot 0.
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, arg_reg).ok();
     writeln!(out, "{}{} = load i64, ptr {}", indent, v, ptr).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 // ─── SysCall# — raw OS syscall ───────────────────────────────────────
@@ -1590,61 +2457,151 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
     if triple.starts_with("riscv64") {
         // riscv64 Linux syscall numbers (asm-generic /unistd.h)
         Some(match op {
-            "Read" => 63, "Write" => 64, "Open" => 56, "Close" => 57,
-            "Stat" => 179, "FStat" => 80, "LSeek" => 62, "Mmap" => 222,
-            "Munmap" => 215, "Brk" => 214, "RtSigAction" => 134,
-            "RtSigProcmask" => 135, "IoCtl" => 29, "Pipe" => 59,
-            "SchedYield" => 124, "NanoSleep" => 101,
-            "GetPid" => 172, "GetPPid" => 173, "Socket" => 198,
-            "Connect" => 203, "Accept" => 202, "Send" => 211,
-            "Recv" => 207, "SendTo" => 206, "RecvFrom" => 209,
-            "Bind" => 200, "Listen" => 201, "Exit" => 93,
-            "Fcntl" => 25, "FTruncate" => 46, "GetCwd" => 17,
-            "ChDir" => 49, "MkDir" => 34, "RmDir" => 35,
-            "Unlink" => 36, "Dup" => 22, "Dup2" => 23,
-            "FSync" => 72, "MkDt" => 33, "ReadLink" => 78,
-            "ChMod" => 55, "ChOwn" => 53, "Clone" => 220,
-            "GetEgid" => 177, "GetEuid" => 175, "GetGid" => 176,
-            "GetPgid" => 180, "GetSid" => 182,
-            "GetSockOpt" => 204, "GetUid" => 174, "Mlock" => 221,
-            "Mprotect" => 226, "SetSockOpt" => 208,
-            "ShmGet" => 194, "Shutdown" => 210, "UMask" => 166,
-            "ShmAt" => 195, "ShmDt" => 196, "SemGet" => 193,
-            "SemOp" => 192, "SemCtl" => 191, "ClockGetTime" => 113,
-            "ClockSetTime" => 114, "Futex" => 98,
-            "GetRandom" => 278, "Openat" => 56,
-            "Membarrier" => 283, "CopyFileRange" => 285,
-            "PRead" => 67, "PWrite" => 68,
+            "Read" => 63,
+            "Write" => 64,
+            "Open" => 56,
+            "Close" => 57,
+            "Stat" => 179,
+            "FStat" => 80,
+            "LSeek" => 62,
+            "Mmap" => 222,
+            "Munmap" => 215,
+            "Brk" => 214,
+            "RtSigAction" => 134,
+            "RtSigProcmask" => 135,
+            "IoCtl" => 29,
+            "Pipe" => 59,
+            "SchedYield" => 124,
+            "NanoSleep" => 101,
+            "GetPid" => 172,
+            "GetPPid" => 173,
+            "Socket" => 198,
+            "Connect" => 203,
+            "Accept" => 202,
+            "Send" => 211,
+            "Recv" => 207,
+            "SendTo" => 206,
+            "RecvFrom" => 209,
+            "Bind" => 200,
+            "Listen" => 201,
+            "Exit" => 93,
+            "Fcntl" => 25,
+            "FTruncate" => 46,
+            "GetCwd" => 17,
+            "ChDir" => 49,
+            "MkDir" => 34,
+            "RmDir" => 35,
+            "Unlink" => 36,
+            "Dup" => 22,
+            "Dup2" => 23,
+            "FSync" => 72,
+            "MkDt" => 33,
+            "ReadLink" => 78,
+            "ChMod" => 55,
+            "ChOwn" => 53,
+            "Clone" => 220,
+            "GetEgid" => 177,
+            "GetEuid" => 175,
+            "GetGid" => 176,
+            "GetPgid" => 180,
+            "GetSid" => 182,
+            "GetSockOpt" => 204,
+            "GetUid" => 174,
+            "Mlock" => 221,
+            "Mprotect" => 226,
+            "SetSockOpt" => 208,
+            "ShmGet" => 194,
+            "Shutdown" => 210,
+            "UMask" => 166,
+            "ShmAt" => 195,
+            "ShmDt" => 196,
+            "SemGet" => 193,
+            "SemOp" => 192,
+            "SemCtl" => 191,
+            "ClockGetTime" => 113,
+            "ClockSetTime" => 114,
+            "Futex" => 98,
+            "GetRandom" => 278,
+            "Openat" => 56,
+            "Membarrier" => 283,
+            "CopyFileRange" => 285,
+            "PRead" => 67,
+            "PWrite" => 68,
             _ => return None,
         })
     } else {
         // x86_64 Linux syscall numbers (asm/unistd_64.h)
         Some(match op {
-            "Read" => 0, "Write" => 1, "Open" => 2, "Close" => 3,
-            "Stat" => 4, "FStat" => 5, "LSeek" => 8, "Mmap" => 9,
-            "Munmap" => 11, "Brk" => 12, "RtSigAction" => 13,
-            "RtSigProcmask" => 14, "IoCtl" => 16, "Pipe" => 22,
-            "SchedYield" => 24, "NanoSleep" => 35,
-            "GetPid" => 39, "GetPPid" => 40, "Socket" => 41,
-            "Connect" => 42, "Accept" => 43, "Send" => 44,
-            "Recv" => 45, "SendTo" => 44, "RecvFrom" => 45,
-            "Bind" => 49, "Listen" => 50, "Exit" => 60,
-            "Fcntl" => 72, "FTruncate" => 77, "GetCwd" => 79,
-            "ChDir" => 80, "MkDir" => 83, "RmDir" => 84,
-            "Unlink" => 87, "Dup" => 32, "Dup2" => 33,
-            "FSync" => 74, "MkDt" => 85, "ReadLink" => 89,
-            "ChMod" => 90, "ChOwn" => 92, "Clone" => 56,
-            "GetEgid" => 108, "GetEuid" => 107, "GetGid" => 104,
-            "GetPgid" => 109, "GetSid" => 124,
-            "GetSockOpt" => 55, "GetUid" => 102, "Mlock" => 149,
-            "Mprotect" => 10, "SetSockOpt" => 54,
-            "ShmGet" => 29, "Shutdown" => 48, "UMask" => 95,
-            "ShmAt" => 30, "ShmDt" => 31, "SemGet" => 64,
-            "SemOp" => 65, "SemCtl" => 66, "ClockGetTime" => 228,
-            "ClockSetTime" => 229, "Futex" => 202,
-            "GetRandom" => 318, "Openat" => 257,
-            "Membarrier" => 324, "CopyFileRange" => 326,
-            "PRead" => 17, "PWrite" => 18,
+            "Read" => 0,
+            "Write" => 1,
+            "Open" => 2,
+            "Close" => 3,
+            "Stat" => 4,
+            "FStat" => 5,
+            "LSeek" => 8,
+            "Mmap" => 9,
+            "Munmap" => 11,
+            "Brk" => 12,
+            "RtSigAction" => 13,
+            "RtSigProcmask" => 14,
+            "IoCtl" => 16,
+            "Pipe" => 22,
+            "SchedYield" => 24,
+            "NanoSleep" => 35,
+            "GetPid" => 39,
+            "GetPPid" => 40,
+            "Socket" => 41,
+            "Connect" => 42,
+            "Accept" => 43,
+            "Send" => 44,
+            "Recv" => 45,
+            "SendTo" => 44,
+            "RecvFrom" => 45,
+            "Bind" => 49,
+            "Listen" => 50,
+            "Exit" => 60,
+            "Fcntl" => 72,
+            "FTruncate" => 77,
+            "GetCwd" => 79,
+            "ChDir" => 80,
+            "MkDir" => 83,
+            "RmDir" => 84,
+            "Unlink" => 87,
+            "Dup" => 32,
+            "Dup2" => 33,
+            "FSync" => 74,
+            "MkDt" => 85,
+            "ReadLink" => 89,
+            "ChMod" => 90,
+            "ChOwn" => 92,
+            "Clone" => 56,
+            "GetEgid" => 108,
+            "GetEuid" => 107,
+            "GetGid" => 104,
+            "GetPgid" => 109,
+            "GetSid" => 124,
+            "GetSockOpt" => 55,
+            "GetUid" => 102,
+            "Mlock" => 149,
+            "Mprotect" => 10,
+            "SetSockOpt" => 54,
+            "ShmGet" => 29,
+            "Shutdown" => 48,
+            "UMask" => 95,
+            "ShmAt" => 30,
+            "ShmDt" => 31,
+            "SemGet" => 64,
+            "SemOp" => 65,
+            "SemCtl" => 66,
+            "ClockGetTime" => 228,
+            "ClockSetTime" => 229,
+            "Futex" => 202,
+            "GetRandom" => 318,
+            "Openat" => 257,
+            "Membarrier" => 324,
+            "CopyFileRange" => 326,
+            "PRead" => 17,
+            "PWrite" => 18,
             _ => return None,
         })
     }
@@ -1670,17 +2627,30 @@ fn resolve_syscall_number(op: &str, triple: &str) -> Option<i64> {
 /// `r`, memory clobbered. The empty `()` operand tail is REQUIRED (LLVM
 /// asm-call syntax).
 fn emit_asm(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let Some(first) = args.first() else {
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     };
     let Expr::Quoted(mode_bytes) = first else {
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     };
     let mode = String::from_utf8_lossy(mode_bytes).to_string();
-    let operand_args: &[Expr] = if mode == "raw" { &args[2..] } else { &args[1..] };
+    let operand_args: &[Expr] = if mode == "raw" {
+        &args[2..]
+    } else {
+        &args[1..]
+    };
     let mut regs = Vec::new();
     for a in operand_args {
         let reg = emit_arg(backend, out, a, indent);
@@ -1703,7 +2673,10 @@ fn emit_asm(
     let template: String = if mode == "raw" {
         // Structural check: every $N in the template must have an operand.
         let Some(Expr::Quoted(t)) = args.get(1) else {
-            return BTypedRegister { name: v.to_string(), ty: Type::int() };
+            return BTypedRegister {
+                name: v.to_string(),
+                ty: Type::int(),
+            };
         };
         let t_text = String::from_utf8_lossy(t).to_string();
         let mut max_ref: i64 = -1;
@@ -1771,21 +2744,34 @@ fn emit_asm(
         operand_list.push_str(&format!("i64 {}, ", r));
     }
     let operand_list = operand_list.trim_end_matches(", ");
-    writeln!(out, "{}{} = call i64 asm sideeffect \"{}\", \"{}\" ({})",
-        indent, v, template, constraints, operand_list).ok();
+    writeln!(
+        out,
+        "{}{} = call i64 asm sideeffect \"{}\", \"{}\" ({})",
+        indent, v, template, constraints, operand_list
+    )
+    .ok();
     // The asm result register IS the i64 value (the add-zero dummy would
     // redefine it).
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_syscall(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     if args.is_empty() {
         writeln!(out, "{}call void @briev_syscall()", indent).ok();
         writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-        return BTypedRegister { name: v.to_string(), ty: Type::int() };
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
     }
     // Resolve the syscall number from the first argument
     let num_reg = match &args[0] {
@@ -1849,13 +2835,23 @@ fn emit_syscall(
         writeln!(out, "{}  )", indent).ok();
     } else {
         // Non-Linux fallback: call briev_syscall via C runtime
-        writeln!(out, "{}{} = call i64 @briev_syscall({})", indent, v, all_args.join(", ")).ok();
+        writeln!(
+            out,
+            "{}{} = call i64 @briev_syscall({})",
+            indent,
+            v,
+            all_args.join(", ")
+        )
+        .ok();
     }
     // 2026-08-10: the syscall result is a semantic Int (i64 from the kernel /
     // C runtime) — narrow to the target int width (i32 wasm32) so it matches
     // llvm_type(Int) and feeds i32 comparisons.
     let narrowed = narrow_int_result(backend, out, v, indent);
-    BTypedRegister { name: narrowed, ty: Type::int() }
+    BTypedRegister {
+        name: narrowed,
+        ty: Type::int(),
+    }
 }
 
 // ─── SysConf# — runtime system configuration ──────────────────────────
@@ -1864,8 +2860,11 @@ fn emit_syscall(
 /// First arg is a PascalCase abstract name (e.g., PageSize, CpuCount) or
 /// a raw Int constant. Emits call to @briev_sysconf(i64 %name).
 fn emit_sysconf(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let name_reg: String = match args.first() {
         Some(Expr::Identifier(name)) => {
@@ -1889,9 +2888,17 @@ fn emit_sysconf(
         Some(arg) => emit_arg(backend, out, arg, indent),
         None => "0".to_string(),
     };
-    writeln!(out, "{}{} = call i64 @briev_sysconf(i64 {})", indent, v, name_reg).ok();
+    writeln!(
+        out,
+        "{}{} = call i64 @briev_sysconf(i64 {})",
+        indent, v, name_reg
+    )
+    .ok();
     let narrowed = narrow_int_result(backend, out, v, indent);
-    BTypedRegister { name: narrowed, ty: Type::int() }
+    BTypedRegister {
+        name: narrowed,
+        ty: Type::int(),
+    }
 }
 
 // ─── Atomic operations ───────────────────────────────────────────────
@@ -1910,7 +2917,9 @@ fn emit_sysconf(
 /// identifier naming an ordering. Returns None for any other shape —
 /// callers keep seq_cst.
 fn ordering_arg(args: &[Expr], i: usize) -> Option<&'static str> {
-    let Expr::Identifier(name) = args.get(i)? else { return None; };
+    let Expr::Identifier(name) = args.get(i)? else {
+        return None;
+    };
     match name.as_str() {
         "relaxed" => Some("unordered"),
         "acquire" => Some("acquire"),
@@ -1922,20 +2931,34 @@ fn ordering_arg(args: &[Expr], i: usize) -> Option<&'static str> {
 }
 
 fn emit_atomic_load(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 1).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
-    writeln!(out, "{}{} = load atomic i64, ptr {} {}, align 8", indent, v, ptr, ord).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = load atomic i64, ptr {} {}, align 8",
+        indent, v, ptr, ord
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_atomic_store(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
@@ -1943,14 +2966,25 @@ fn emit_atomic_store(
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let val = emit_arg(backend, out, &args[1], indent);
     // 2026-07-15: LLVM 18 syntax: no comma before ordering, align required
-    writeln!(out, "{}store atomic i64 {}, ptr {} {}, align 8", indent, val, ptr, ord).ok();
+    writeln!(
+        out,
+        "{}store atomic i64 {}, ptr {} {}, align 8",
+        indent, val, ptr, ord
+    )
+    .ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 fn emit_atomic_cas(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let succ_ord = ordering_arg(args, 3).unwrap_or("seq_cst");
     let fail_ord = ordering_arg(args, 4).unwrap_or(succ_ord);
@@ -1960,28 +2994,55 @@ fn emit_atomic_cas(
     let exp = emit_arg(backend, out, &args[1], indent);
     let des = emit_arg(backend, out, &args[2], indent);
     let cx = backend.fun.gen_reg();
-    writeln!(out, "{}{} = cmpxchg ptr {}, i64 {}, i64 {} {} {}", indent, cx, ptr, exp, des, succ_ord, fail_ord).ok();
+    writeln!(
+        out,
+        "{}{} = cmpxchg ptr {}, i64 {}, i64 {} {} {}",
+        indent, cx, ptr, exp, des, succ_ord, fail_ord
+    )
+    .ok();
     // 2026-07-15: cmpxchg returns {i64, i1} — extract the value
-    writeln!(out, "{}{} = extractvalue {{ i64, i1 }} {}, 0", indent, v, cx).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = extractvalue {{ i64, i1 }} {}, 0",
+        indent, v, cx
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_atomic_xchg(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let val = emit_arg(backend, out, &args[1], indent);
-    writeln!(out, "{}{} = atomicrmw xchg ptr {}, i64 {} {}", indent, v, ptr, val, ord).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = atomicrmw xchg ptr {}, i64 {} {}",
+        indent, v, ptr, val, ord
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_atomic_add(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     emit_atomic_rmw(backend, out, v, args, indent, "add")
 }
@@ -1994,8 +3055,11 @@ fn emit_atomic_add(
 /// return old). The success/failure orderings both ride the requested
 /// ordering (default seq_cst).
 fn emit_atomic_cas_at(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 4).unwrap_or("seq_cst");
     let Some(Expr::Identifier(name)) = args.first() else {
@@ -2047,7 +3111,10 @@ fn emit_atomic_cas_at(
         indent, v, pair
     )
     .ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-10-01 (plan `2026-10-01-atomic-element-rmw.md`):
@@ -2057,8 +3124,12 @@ fn emit_atomic_cas_at(
 /// (`emit_state_gep` + element GEP) — then one `atomicrmw` at the
 /// element. Reference semantics: interpreter `eval_atomic_at`.
 fn emit_atomic_at(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str, rmw_op: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
+    rmw_op: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 3).unwrap_or("seq_cst");
     let Some(Expr::Identifier(name)) = args.first() else {
@@ -2102,34 +3173,61 @@ fn emit_atomic_at(
         indent, v, rmw_op, elem, val_i64, ord
     )
     .ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): the atomicrmw family
 /// unified — add/sub/or/and/xor share one shape: `(ptr, val, order?) -> old`.
 fn emit_atomic_rmw(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str, rmw_op: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
+    rmw_op: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let val = emit_arg(backend, out, &args[1], indent);
-    writeln!(out, "{}{} = atomicrmw {} ptr {}, i64 {} {}", indent, v, rmw_op, ptr, val, ord).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = atomicrmw {} ptr {}, i64 {} {}",
+        indent, v, rmw_op, ptr, val, ord
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-09-06: width-parameterized atomic load — AtomicLoadN#(ptr, bytes,
 /// order?). LLVM atomics require power-of-two sizes; 8 is the word width.
 fn emit_atomic_load_n(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 2).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
     // Byte count is a literal (the Load#/Store# convention — Expr::Decimal).
-    let bytes = args.get(1).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
+    let bytes = args
+        .get(1)
+        .and_then(|a| {
+            if let Expr::Decimal(n) = a {
+                Some(*n as usize)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8);
     let (ll_ty, align) = match bytes {
         1 => ("i8", 1),
         2 => ("i16", 2),
@@ -2139,20 +3237,40 @@ fn emit_atomic_load_n(
     let ptr = backend.fun.gen_reg();
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let raw = backend.fun.gen_reg();
-    writeln!(out, "{}{} = load atomic {}, ptr {} {}, align {}", indent, raw, ll_ty, ptr, ord, align).ok();
+    writeln!(
+        out,
+        "{}{} = load atomic {}, ptr {} {}, align {}",
+        indent, raw, ll_ty, ptr, ord, align
+    )
+    .ok();
     writeln!(out, "{}{} = zext {} {} to i64", indent, v, ll_ty, raw).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-09-06: width-parameterized atomic store — AtomicStoreN#(ptr, val,
 /// bytes, order?).
 fn emit_atomic_store_n(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 3).unwrap_or("seq_cst");
     let addr = emit_arg(backend, out, &args[0], indent);
-    let bytes = args.get(2).and_then(|a| if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }).unwrap_or(8);
+    let bytes = args
+        .get(2)
+        .and_then(|a| {
+            if let Expr::Decimal(n) = a {
+                Some(*n as usize)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(8);
     let (ll_ty, align) = match bytes {
         1 => ("i8", 1),
         2 => ("i16", 2),
@@ -2163,20 +3281,39 @@ fn emit_atomic_store_n(
     writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, ptr, addr).ok();
     let val_wide = emit_arg(backend, out, &args[1], indent);
     let val = backend.fun.gen_reg();
-    writeln!(out, "{}{} = trunc i64 {} to {}", indent, val, val_wide, ll_ty).ok();
-    writeln!(out, "{}store atomic {} {}, ptr {} {}, align {}", indent, ll_ty, val, ptr, ord, align).ok();
+    writeln!(
+        out,
+        "{}{} = trunc i64 {} to {}",
+        indent, val, val_wide, ll_ty
+    )
+    .ok();
+    writeln!(
+        out,
+        "{}store atomic {} {}, ptr {} {}, align {}",
+        indent, ll_ty, val, ptr, ord, align
+    )
+    .ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 fn emit_fence(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ord = ordering_arg(args, 0).unwrap_or("seq_cst");
     writeln!(out, "{}fence {}", indent, ord).ok();
     writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
 // ─── Dynamic linker intrinsics ───────────────────────────────────────
@@ -2185,34 +3322,62 @@ fn emit_fence(
 // by the system linker at load time.
 
 fn emit_dl_open(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let path = emit_arg(backend, out, &args[0], indent);
     let flags = emit_arg(backend, out, &args[1], indent);
-    writeln!(out, "{}{} = call ptr @dlopen(ptr {}, i32 {})", indent, v, path, flags).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::bits(8)) }
+    writeln!(
+        out,
+        "{}{} = call ptr @dlopen(ptr {}, i32 {})",
+        indent, v, path, flags
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::ptr(Type::bits(8)),
+    }
 }
 
 fn emit_dl_sym(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let handle = emit_arg(backend, out, &args[0], indent);
     let symbol = emit_arg(backend, out, &args[1], indent);
-    writeln!(out, "{}{} = call ptr @dlsym(ptr {}, ptr {})", indent, v, handle, symbol).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::ptr(Type::bits(8)) }
+    writeln!(
+        out,
+        "{}{} = call ptr @dlsym(ptr {}, ptr {})",
+        indent, v, handle, symbol
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::ptr(Type::bits(8)),
+    }
 }
 
 fn emit_dl_close(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let handle = emit_arg(backend, out, &args[0], indent);
     writeln!(out, "{}{} = call i32 @dlclose(ptr {})", indent, v, handle).ok();
     let ext = backend.fun.gen_reg();
     writeln!(out, "{}{} = sext i32 {} to i64", indent, ext, v).ok();
-    BTypedRegister { name: ext.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: ext.to_string(),
+        ty: Type::int(),
+    }
 }
 
 // ─── Backtrace intrinsic ─────────────────────────────────────────────
@@ -2222,31 +3387,70 @@ fn emit_dl_close(
 // 2026-07-18: Deref# — load through pointer. The pointee type is resolved
 // from the ptr argument's Type::Ptr(inner) and used as the LLVM load type.
 fn emit_intrinsic_deref(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ptr_reg = backend.emit_expr(out, &args[0], indent);
-    let inner_ty = match &ptr_reg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &ptr_reg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
-    writeln!(out, "{}{} = load {}, ptr {}, align {}", indent, v, llvm_ty, ptr_reg.name,
-        backend.align_of(&llvm_ty)).ok();
-    BTypedRegister { name: v.to_string(), ty: inner_ty }
+    writeln!(
+        out,
+        "{}{} = load {}, ptr {}, align {}",
+        indent,
+        v,
+        llvm_ty,
+        ptr_reg.name,
+        backend.align_of(&llvm_ty)
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: inner_ty,
+    }
 }
 
 // 2026-07-18: Index# — get element at index. GEP + load through pointer.
 fn emit_intrinsic_index(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let obj_reg = backend.emit_expr(out, &args[0], indent);
     let idx_reg = backend.emit_expr(out, &args[1], indent);
-    let inner_ty = match &obj_reg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &obj_reg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
     let gep = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, gep, llvm_ty, obj_reg.name, idx_reg.name).ok();
-    writeln!(out, "{}{} = load {}, ptr {}, align {}", indent, v, llvm_ty, gep,
-        backend.align_of(&llvm_ty)).ok();
-    BTypedRegister { name: v.to_string(), ty: inner_ty }
+    writeln!(
+        out,
+        "{}{} = getelementptr {}, ptr {}, i64 {}",
+        indent, gep, llvm_ty, obj_reg.name, idx_reg.name
+    )
+    .ok();
+    writeln!(
+        out,
+        "{}{} = load {}, ptr {}, align {}",
+        indent,
+        v,
+        llvm_ty,
+        gep,
+        backend.align_of(&llvm_ty)
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: inner_ty,
+    }
 }
 
 // ── Cast Resolution Pipeline ───────────────────────────────────────────
@@ -2254,10 +3458,18 @@ fn emit_intrinsic_index(
 // Falls back to LLVM bitcast when no graph path exists.
 
 fn emit_intrinsic_cast(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
-    if args.len() < 2 { return BTypedRegister { name: v.to_string(), ty: Type::int() }; }
+    if args.len() < 2 {
+        return BTypedRegister {
+            name: v.to_string(),
+            ty: Type::int(),
+        };
+    }
     let src = backend.emit_expr(out, &args[0], indent);
 
     // Extract target type from second argument
@@ -2265,14 +3477,25 @@ fn emit_intrinsic_cast(
 
     // Try casting graph path first
     if let Some(result) = backend.emit_cast_path(out, v, &src, &target, indent) {
-        return BTypedRegister { name: result.name, ty: target };
+        return BTypedRegister {
+            name: result.name,
+            ty: target,
+        };
     }
 
     // Fallback: LLVM bitcast
     let src_ll = backend.llvm_type(&src.ty);
     let target_ll = backend.llvm_type(&target);
-    writeln!(out, "{}{} = bitcast {} {} to {}", indent, v, src_ll, src.name, target_ll).ok();
-    BTypedRegister { name: v.to_string(), ty: target }
+    writeln!(
+        out,
+        "{}{} = bitcast {} {} to {}",
+        indent, v, src_ll, src.name, target_ll
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: target,
+    }
 }
 
 /// Extract a Type from an Expr that represents a type name.
@@ -2290,8 +3513,11 @@ fn extract_type_from_expr(expr: &Expr) -> Option<Type> {
 // PtrEq#/PtrLt# are simple pointer comparisons.
 
 fn emit_ptr_add(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // 2026-09-06: the Briev pointer ABI is uniformly BOXED i64 handles
     // (`&` ptrtoints, Malloc# boxes) — the atomics' inttoptr convention.
@@ -2299,71 +3525,149 @@ fn emit_ptr_add(
     // caught by LLVM), and re-boxes. The pointee drives the GEP step.
     let ptr_reg = backend.emit_expr(out, &args[0], indent);
     let offset = backend.emit_expr(out, &args[1], indent);
-    let inner_ty = match &ptr_reg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &ptr_reg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
     let base = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, ptr_reg.name).ok();
+    writeln!(
+        out,
+        "{}{} = inttoptr i64 {} to ptr",
+        indent, base, ptr_reg.name
+    )
+    .ok();
     let gep = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr inbounds {}, ptr {}, i64 {}", indent, gep, llvm_ty, base, offset.name).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr inbounds {}, ptr {}, i64 {}",
+        indent, gep, llvm_ty, base, offset.name
+    )
+    .ok();
     writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, gep).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_ptr_sub(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // Negative PtrAdd# — one GEP with the negated offset.
     let ptr_reg = backend.emit_expr(out, &args[0], indent);
     let offset = backend.emit_expr(out, &args[1], indent);
-    let inner_ty = match &ptr_reg.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &ptr_reg.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let llvm_ty = backend.llvm_type(&inner_ty);
     let base = backend.fun.gen_reg();
-    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, base, ptr_reg.name).ok();
+    writeln!(
+        out,
+        "{}{} = inttoptr i64 {} to ptr",
+        indent, base, ptr_reg.name
+    )
+    .ok();
     let neg_offset = backend.fun.gen_reg();
     writeln!(out, "{}{} = sub i64 0, {}", indent, neg_offset, offset.name).ok();
     let gep = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr inbounds {}, ptr {}, i64 {}", indent, gep, llvm_ty, base, neg_offset).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr inbounds {}, ptr {}, i64 {}",
+        indent, gep, llvm_ty, base, neg_offset
+    )
+    .ok();
     writeln!(out, "{}{} = ptrtoint ptr {} to i64", indent, v, gep).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_ptr_diff(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // Byte distance between two handles, divided by the element size —
     // both pointers must derive from the same allocation (proof
     // obligation; a cross-allocation diff is meaningless, not unsafe).
     let ptr1 = backend.emit_expr(out, &args[0], indent);
     let ptr2 = backend.emit_expr(out, &args[1], indent);
-    let inner_ty = match &ptr1.ty { Type::Ptr(i) => *i.clone(), _ => Type::int() };
+    let inner_ty = match &ptr1.ty {
+        Type::Ptr(i) => *i.clone(),
+        _ => Type::int(),
+    };
     let byte_diff = backend.fun.gen_reg();
-    writeln!(out, "{}{} = sub i64 {}, {}", indent, byte_diff, ptr1.name, ptr2.name).ok();
-    let elem_size = crate::backend::llvm::types::type_size(&inner_ty, backend.ctx.type_universe.as_ref()).max(1);
-    writeln!(out, "{}{} = sdiv i64 {}, {}", indent, v, byte_diff, elem_size).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = sub i64 {}, {}",
+        indent, byte_diff, ptr1.name, ptr2.name
+    )
+    .ok();
+    let elem_size =
+        crate::backend::llvm::types::type_size(&inner_ty, backend.ctx.type_universe.as_ref())
+            .max(1);
+    writeln!(
+        out,
+        "{}{} = sdiv i64 {}, {}",
+        indent, v, byte_diff, elem_size
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 fn emit_ptr_eq(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     // Handles are i64 — compare directly (no inttoptr round-trip).
     let ptr1 = backend.emit_expr(out, &args[0], indent);
     let ptr2 = backend.emit_expr(out, &args[1], indent);
-    writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, v, ptr1.name, ptr2.name).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::bool_() }
+    writeln!(
+        out,
+        "{}{} = icmp eq i64 {}, {}",
+        indent, v, ptr1.name, ptr2.name
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::bool_(),
+    }
 }
 
 fn emit_ptr_lt(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
     let ptr1 = backend.emit_expr(out, &args[0], indent);
     let ptr2 = backend.emit_expr(out, &args[1], indent);
-    writeln!(out, "{}{} = icmp ult i64 {}, {}", indent, v, ptr1.name, ptr2.name).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::bool_() }
+    writeln!(
+        out,
+        "{}{} = icmp ult i64 {}, {}",
+        indent, v, ptr1.name, ptr2.name
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::bool_(),
+    }
 }
 
 // ─── Portable SIMD intrinsics ───────────────────────────────────────
@@ -2389,7 +3693,12 @@ fn emit_ptr_lt(
 
 /// The SIMD op family — one shape, four arithmetic kinds.
 #[derive(Clone, Copy)]
-enum SimdKind { Add, Sub, Mul, Fma }
+enum SimdKind {
+    Add,
+    Sub,
+    Mul,
+    Fma,
+}
 
 impl SimdKind {
     /// (int op, float op) for <W x T> vector arithmetic. Float uses the
@@ -2453,7 +3762,10 @@ fn simd_elem_shape(ty: &Type, backend: &LlvmBackend) -> (&'static str, usize, bo
 /// `as Ptr<T>` retypes without changing the SSA value), so the base is
 /// ALWAYS re-materialized via inttoptr. The atomics' convention.
 fn simd_ptr_arg(
-    backend: &mut LlvmBackend, out: &mut String, arg: &Expr, indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    arg: &Expr,
+    indent: &str,
 ) -> (String, Type) {
     let reg = backend.emit_expr(out, arg, indent);
     let ptr = backend.fun.gen_reg();
@@ -2465,72 +3777,174 @@ fn simd_ptr_arg(
 /// store (that order is what makes overlapping dst/a/b safe).
 #[allow(clippy::too_many_arguments)]
 fn simd_vec_chunk(
-    backend: &mut LlvmBackend, out: &mut String, indent: &str,
-    kind: SimdKind, elem: &str, is_float: bool,
-    dst: &str, srcs: &[String], idx_reg: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    kind: SimdKind,
+    elem: &str,
+    is_float: bool,
+    dst: &str,
+    srcs: &[String],
+    idx_reg: &str,
 ) {
     let width = if elem == "double" { 2 } else { 4 };
     let vec_ty = format!("<{} x {}>", width, elem);
     let align = simd_elem_align(elem);
     let dst_gep = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, dst_gep, elem, dst, idx_reg).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr {}, ptr {}, i64 {}",
+        indent, dst_gep, elem, dst, idx_reg
+    )
+    .ok();
     let mut vecs: Vec<String> = Vec::with_capacity(srcs.len());
     for src in srcs {
         let g = backend.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, g, elem, src, idx_reg).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr {}, ptr {}, i64 {}",
+            indent, g, elem, src, idx_reg
+        )
+        .ok();
         let l = backend.fun.gen_reg();
-        writeln!(out, "{}{} = load {}, ptr {}, align {}", indent, l, vec_ty, g, align).ok();
+        writeln!(
+            out,
+            "{}{} = load {}, ptr {}, align {}",
+            indent, l, vec_ty, g, align
+        )
+        .ok();
         vecs.push(l);
     }
     let acc = match kind.followup(is_float) {
         Some(follow) => {
             let m = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, m, kind.op(is_float), vec_ty, vecs[0], vecs[1]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent,
+                m,
+                kind.op(is_float),
+                vec_ty,
+                vecs[0],
+                vecs[1]
+            )
+            .ok();
             let a = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, a, follow, vec_ty, m, vecs[2]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent, a, follow, vec_ty, m, vecs[2]
+            )
+            .ok();
             a
         }
         None => {
             let r = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, r, kind.op(is_float), vec_ty, vecs[0], vecs[1]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent,
+                r,
+                kind.op(is_float),
+                vec_ty,
+                vecs[0],
+                vecs[1]
+            )
+            .ok();
             r
         }
     };
-    writeln!(out, "{}store {} {}, ptr {}, align {}", indent, vec_ty, acc, dst_gep, align).ok();
+    writeln!(
+        out,
+        "{}store {} {}, ptr {}, align {}",
+        indent, vec_ty, acc, dst_gep, align
+    )
+    .ok();
 }
 
 /// One scalar element at element offset `idx_reg` (the tail path).
 fn simd_scalar_element(
-    backend: &mut LlvmBackend, out: &mut String, indent: &str,
-    kind: SimdKind, elem: &str, is_float: bool,
-    dst: &str, srcs: &[String], idx_reg: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    indent: &str,
+    kind: SimdKind,
+    elem: &str,
+    is_float: bool,
+    dst: &str,
+    srcs: &[String],
+    idx_reg: &str,
 ) {
     let align = simd_elem_align(elem);
     let dst_gep = backend.fun.gen_reg();
-    writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, dst_gep, elem, dst, idx_reg).ok();
+    writeln!(
+        out,
+        "{}{} = getelementptr {}, ptr {}, i64 {}",
+        indent, dst_gep, elem, dst, idx_reg
+    )
+    .ok();
     let mut loads: Vec<String> = Vec::with_capacity(srcs.len());
     for src in srcs {
         let g = backend.fun.gen_reg();
-        writeln!(out, "{}{} = getelementptr {}, ptr {}, i64 {}", indent, g, elem, src, idx_reg).ok();
+        writeln!(
+            out,
+            "{}{} = getelementptr {}, ptr {}, i64 {}",
+            indent, g, elem, src, idx_reg
+        )
+        .ok();
         let l = backend.fun.gen_reg();
-        writeln!(out, "{}{} = load {}, ptr {}, align {}", indent, l, elem, g, align).ok();
+        writeln!(
+            out,
+            "{}{} = load {}, ptr {}, align {}",
+            indent, l, elem, g, align
+        )
+        .ok();
         loads.push(l);
     }
     let acc = match kind.followup(is_float) {
         Some(follow) => {
             let m = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, m, kind.op(is_float), elem, loads[0], loads[1]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent,
+                m,
+                kind.op(is_float),
+                elem,
+                loads[0],
+                loads[1]
+            )
+            .ok();
             let a = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, a, follow, elem, m, loads[2]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent, a, follow, elem, m, loads[2]
+            )
+            .ok();
             a
         }
         None => {
             let r = backend.fun.gen_reg();
-            writeln!(out, "{}{} = {} {} {}, {}", indent, r, kind.op(is_float), elem, loads[0], loads[1]).ok();
+            writeln!(
+                out,
+                "{}{} = {} {} {}, {}",
+                indent,
+                r,
+                kind.op(is_float),
+                elem,
+                loads[0],
+                loads[1]
+            )
+            .ok();
             r
         }
     };
-    writeln!(out, "{}store {} {}, ptr {}, align {}", indent, elem, acc, dst_gep, align).ok();
+    writeln!(
+        out,
+        "{}store {} {}, ptr {}, align {}",
+        indent, elem, acc, dst_gep, align
+    )
+    .ok();
 }
 
 /// 2026-09-06: the portable SIMD binary/FMA family. Shape:
@@ -2540,8 +3954,12 @@ fn simd_scalar_element(
 /// counts emit counted chunk + tail loops with alloca induction
 /// variables. All pointers may alias.
 fn emit_simd_binary(
-    backend: &mut LlvmBackend, out: &mut String, v: &str,
-    args: &[Expr], indent: &str, kind: SimdKind,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    args: &[Expr],
+    indent: &str,
+    kind: SimdKind,
 ) -> BTypedRegister {
     let (dst_reg, dst_ty) = simd_ptr_arg(backend, out, &args[0], indent);
     let (a_reg, _) = simd_ptr_arg(backend, out, &args[1], indent);
@@ -2555,11 +3973,18 @@ fn emit_simd_binary(
     };
     let count_idx = if is_fma { 4 } else { 3 };
     let count_const = args.get(count_idx).and_then(|a| {
-        if let Expr::Decimal(n) = a { Some(*n as usize) } else { None }
+        if let Expr::Decimal(n) = a {
+            Some(*n as usize)
+        } else {
+            None
+        }
     });
 
     // Element shape from the DESTINATION pointee (results flow into dst).
-    let pointee = match &dst_ty { Type::Ptr(i) => (**i).clone(), _ => Type::int() };
+    let pointee = match &dst_ty {
+        Type::Ptr(i) => (**i).clone(),
+        _ => Type::int(),
+    };
     let (elem, width, is_float) = simd_elem_shape(&pointee, backend);
 
     match count_const {
@@ -2570,12 +3995,16 @@ fn emit_simd_binary(
             for c in 0..chunks {
                 let idx = backend.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, idx, c * width).ok();
-                simd_vec_chunk(backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &idx);
+                simd_vec_chunk(
+                    backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &idx,
+                );
             }
             for e in (chunks * width)..n {
                 let idx = backend.fun.gen_reg();
                 writeln!(out, "{}{} = add i64 0, {}", indent, idx, e).ok();
-                simd_scalar_element(backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &idx);
+                simd_scalar_element(
+                    backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &idx,
+                );
             }
         }
         None => {
@@ -2597,12 +4026,24 @@ fn emit_simd_binary(
             let i = backend.fun.gen_reg();
             writeln!(out, "{}{} = load i64, ptr {}", indent, i, i_slot).ok();
             let limit = backend.fun.gen_reg();
-            writeln!(out, "{}{} = sub i64 {}, {}", indent, limit, count_reg, width).ok();
+            writeln!(
+                out,
+                "{}{} = sub i64 {}, {}",
+                indent, limit, count_reg, width
+            )
+            .ok();
             let cond = backend.fun.gen_reg();
             writeln!(out, "{}{} = icmp sle i64 {}, {}", indent, cond, i, limit).ok();
-            writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond, body, tail).ok();
+            writeln!(
+                out,
+                "{}br i1 {}, label %{}, label %{}",
+                indent, cond, body, tail
+            )
+            .ok();
             writeln!(out, "{}:", body).ok();
-            simd_vec_chunk(backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &i);
+            simd_vec_chunk(
+                backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &i,
+            );
             let i_next = backend.fun.gen_reg();
             writeln!(out, "{}{} = add i64 {}, {}", indent, i_next, i, width).ok();
             writeln!(out, "{}store i64 {}, ptr {}", indent, i_next, i_slot).ok();
@@ -2620,10 +4061,22 @@ fn emit_simd_binary(
             let j = backend.fun.gen_reg();
             writeln!(out, "{}{} = load i64, ptr {}", indent, j, j_slot).ok();
             let cond2 = backend.fun.gen_reg();
-            writeln!(out, "{}{} = icmp slt i64 {}, {}", indent, cond2, j, count_reg).ok();
-            writeln!(out, "{}br i1 {}, label %{}, label %{}", indent, cond2, tbody, end).ok();
+            writeln!(
+                out,
+                "{}{} = icmp slt i64 {}, {}",
+                indent, cond2, j, count_reg
+            )
+            .ok();
+            writeln!(
+                out,
+                "{}br i1 {}, label %{}, label %{}",
+                indent, cond2, tbody, end
+            )
+            .ok();
             writeln!(out, "{}:", tbody).ok();
-            simd_scalar_element(backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &j);
+            simd_scalar_element(
+                backend, out, indent, kind, elem, is_float, &dst_reg, &srcs, &j,
+            );
             let j_next = backend.fun.gen_reg();
             writeln!(out, "{}{} = add i64 {}, 1", indent, j_next, j).ok();
             writeln!(out, "{}store i64 {}, ptr {}", indent, j_next, j_slot).ok();
@@ -2632,26 +4085,45 @@ fn emit_simd_binary(
         }
     }
     let _ = c_reg;
-    BTypedRegister { name: v.to_string(), ty: Type::void() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::void(),
+    }
 }
 
-
 fn emit_external_call(
-    backend: &mut LlvmBackend, out: &mut String, v: &str, name: &str,
-    args: &[Expr], indent: &str,
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    v: &str,
+    name: &str,
+    args: &[Expr],
+    indent: &str,
 ) -> BTypedRegister {
-    let typed_regs: Vec<BTypedRegister> = args.iter()
+    let typed_regs: Vec<BTypedRegister> = args
+        .iter()
         .map(|a| backend.emit_expr(out, a, indent))
         .collect();
     // 2026-07-25: External calls expect i64 arguments. Always pass as i64
     // to match the C ABI. The type checker may narrow to i8/i16/i32, but
     // the actual SSA value is already i64 from ptrtoint.
-    let arg_strs: Vec<String> = typed_regs.iter().map(|reg| {
-        format!("i64 {}", reg.name)
-    }).collect();
+    let arg_strs: Vec<String> = typed_regs
+        .iter()
+        .map(|reg| format!("i64 {}", reg.name))
+        .collect();
     let clean_name = name.trim_end_matches('#');
-    writeln!(out, "{}{} = call i64 @{}({})", indent, v, clean_name, arg_strs.join(", ")).ok();
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    writeln!(
+        out,
+        "{}{} = call i64 @{}({})",
+        indent,
+        v,
+        clean_name,
+        arg_strs.join(", ")
+    )
+    .ok();
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-08-01 (audit): the generic `Print#` convenience intrinsic — dispatch
@@ -2698,14 +4170,24 @@ fn emit_intrinsic_print(
             // [len][bytes] buffer; print_str takes that pointer.
             let sym = print_symbol(backend, "print_str", "frgn__print_str", "__print_str");
             let pre = defn_call_prefix(backend, &sym, out, indent);
-            writeln!(out, "{}{} = call i64 @{}({}ptr {})", indent, v, sym, pre, a.name).ok();
+            writeln!(
+                out,
+                "{}{} = call i64 @{}({}ptr {})",
+                indent, v, sym, pre, a.name
+            )
+            .ok();
         }
         "Char" => {
             if backend.fun.boxed_scalar_regs.contains(&a.name) {
                 // A boxed Char param is already i64 — pass directly.
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, pre, a.name).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @{}({}i64 {})",
+                    indent, v, sym, pre, a.name
+                )
+                .ok();
             } else {
                 // Native Char regs are i32 (literal/let/field/cast) —
                 // widen to the i64 ABI before the call.
@@ -2713,7 +4195,12 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i32 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "put_char", "frgn__print_char", "__print_char");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, pre, wide).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @{}({}i64 {})",
+                    indent, v, sym, pre, wide
+                )
+                .ok();
             }
         }
         "Bool" => {
@@ -2721,7 +4208,12 @@ fn emit_intrinsic_print(
                 // A boxed Bool param is already i64 0/1 — pass directly.
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, pre, a.name).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @{}({}i64 {})",
+                    indent, v, sym, pre, a.name
+                )
+                .ok();
             } else {
                 // Bool regs are i8 (Expr::Bool emits `add i8 0, 1/0`);
                 // widen to the i64 ABI before the call.
@@ -2729,34 +4221,61 @@ fn emit_intrinsic_print(
                 writeln!(out, "{}{} = zext i8 {} to i64", indent, wide, a.name).ok();
                 let sym = print_symbol(backend, "print_bool", "frgn__print_bool", "__print_bool");
                 let pre = defn_call_prefix(backend, &sym, out, indent);
-                writeln!(out, "{}{} = call i64 @{}({}i64 {})", indent, v, sym, pre, wide).ok();
+                writeln!(
+                    out,
+                    "{}{} = call i64 @{}({}i64 {})",
+                    indent, v, sym, pre, wide
+                )
+                .ok();
             }
         }
         "Float" => {
             // A boxed Float param (i64 handle boxed at defn entry) must be
             // unboxed through the float cache before the call (the
             // 2026-08-01 C3 fix).
-            let unboxed = backend.fun.reg_float_cache.get(&a.name).cloned()
+            let unboxed = backend
+                .fun
+                .reg_float_cache
+                .get(&a.name)
+                .cloned()
                 .unwrap_or_else(|| a.name.clone());
             let (arg_llvm, helper, briev_name, fallback_c) = if a.ty == Type::float64() {
                 // Float64 has no pure-Briev helper yet (C-backed, ffi/io.bv) —
                 // print_symbol finds no `print_float64` defn and falls back.
-                ("double", "print_float64", "frgn__print_float64", "__print_float64")
+                (
+                    "double",
+                    "print_float64",
+                    "frgn__print_float64",
+                    "__print_float64",
+                )
             } else {
                 ("float", "print_float", "frgn__print_float", "__print_float")
             };
             let sym = print_symbol(backend, helper, briev_name, fallback_c);
             let pre = defn_call_prefix(backend, &sym, out, indent);
-            writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, pre, arg_llvm, unboxed).ok();
+            writeln!(
+                out,
+                "{}{} = call i64 @{}({}{} {})",
+                indent, v, sym, pre, arg_llvm, unboxed
+            )
+            .ok();
         }
         _ => {
             let llvm_ty = backend.llvm_type(&a.ty);
             let sym = print_symbol(backend, "print_int", "frgn__print_int", "__print_int");
             let pre = defn_call_prefix(backend, &sym, out, indent);
-            writeln!(out, "{}{} = call i64 @{}({}{} {})", indent, v, sym, pre, llvm_ty, a.name).ok();
+            writeln!(
+                out,
+                "{}{} = call i64 @{}({}{} {})",
+                indent, v, sym, pre, llvm_ty, a.name
+            )
+            .ok();
         }
     }
-    BTypedRegister { name: v.to_string(), ty: Type::int() }
+    BTypedRegister {
+        name: v.to_string(),
+        ty: Type::int(),
+    }
 }
 
 /// 2026-09-08 (anti-pattern audit): resolve the C linker symbol for a print
@@ -2776,7 +4295,11 @@ fn emit_intrinsic_print(
 /// needs_state) and Briev-level call sites pass it (emit_user_call). The C
 /// symbols take no state. Returns the prefix for the argument list.
 fn defn_state_prefix(backend: &LlvmBackend, sym: &str) -> &'static str {
-    if backend.ctx.defn_takes_state(sym) { "ptr %state, " } else { "" }
+    if backend.ctx.defn_takes_state(sym) {
+        "ptr %state, "
+    } else {
+        ""
+    }
 }
 
 /// 2026-10-21 (plain-context experiment): hidden state + plain prefixes for a
@@ -2800,7 +4323,10 @@ fn defn_call_prefix(
 }
 
 fn frgn_symbol(backend: &LlvmBackend, briev_name: &str, fallback_c: &str) -> String {
-    backend.ctx.frgn_map.get(briev_name)
+    backend
+        .ctx
+        .frgn_map
+        .get(briev_name)
         .map(|sig| sig.name.clone())
         .unwrap_or_else(|| fallback_c.to_string())
 }
