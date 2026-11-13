@@ -46,6 +46,13 @@ Architecturally yes; the codebase is mid-migration, so not yet.
 | HIR→AST bridge (`to_ast::`) | 41 sites |
 | `hir_emit_enabled()` branches | 28 |
 
+**2026-11-12 (H5 phase C):** statement emission no longer reconstructs — the
+body loops walk the (HIR, source AST) pair and `hir::to_ast` is out of the
+statement path (`emit_hir_stmt.rs` keeps only expression-level `to_ast::expr`
+gates until the expression families land). The convert-then-substitute seam
+(`hir_sourced_body` returning a woven AST body, `convert_hir_statement`,
+`storage_release_view`) is deleted.
+
 **Cleanliness exit criteria**
 - `to_ast::` in the backend → 0; `hir_emit_enabled()` → 0 (flag removed after
   the opt-out release).

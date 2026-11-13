@@ -37,6 +37,16 @@ use std::collections::{HashMap, HashSet};
 // Holds everything that does not change between functions/transactions.
 // Previously part of the LlvmBackend god object; extracted to prevent
 // accidental mutation during per-function codegen.
+
+/// One registered `defer { ... }` body: the HIR lowering that emits natively
+/// plus the SOURCE AST body to splice when a native child declines
+/// (2026-11-12, H5 phase C — no statement reconstruction at flush time).
+#[derive(Debug, Clone)]
+pub struct DeferCleanupBody {
+    pub hir: Vec<crate::hir::stmt::HirStmt>,
+    pub ast: Vec<crate::ast::Statement>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompilerContext {
     // Target & Spec
@@ -1190,7 +1200,10 @@ pub struct FunctionContext {    // SSA register counters — NEVER rewound (prev
     /// 2026-08-09 (Phase 10): `defer { ... }` bodies registered by the current
     /// transaction/reactive firing, in registration order. Flushed LIFO before
     /// every exit (term/rollback/fallthrough ret) via flush_defer_cleanup.
-    pub defer_bodies: Vec<Vec<crate::hir::stmt::HirStmt>>,
+    /// 2026-11-12 (H5 phase C): each body carries its HIR lowering plus the
+    /// SOURCE AST body, so the flush splices a declining native child instead
+    /// of reconstructing one.
+    pub defer_bodies: Vec<DeferCleanupBody>,
     /// 2026-08-04 (term-termination-diagnostics): label that a value-form
     /// `term <val>` / `term! <val>` in a VOID function branches to, unwinding
     /// the rest of the transaction body (interpreter TermReturn in

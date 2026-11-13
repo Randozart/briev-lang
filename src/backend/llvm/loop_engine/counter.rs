@@ -2271,9 +2271,15 @@ impl LlvmBackend {
                 Statement::Defer(body) => {
                     // 2026-08-09 (Phase 10): register cleanup on the fold's
                     // defer stack; flush_defer_cleanup emits it at loop exit.
+                    // 2026-11-12 (H5 phase C): the stack carries the SOURCE
+                    // body alongside the HIR lowering so the flush splices a
+                    // declining native child.
                     self.fun
                         .defer_bodies
-                        .push(crate::hir::lower_body_statements(body));
+                        .push(super::super::context::DeferCleanupBody {
+                            hir: crate::hir::lower_body_statements(body),
+                            ast: body.clone(),
+                        });
                     i += 1;
                     continue;
                 }
