@@ -126,15 +126,18 @@ impl<'a> Parser<'a> {
     /// are collected from their declaration sites. Cheap, single pass.
     fn prescan_known_types(&mut self) {
         for name in [
-            "Int", "UInt", "Float", "Float32", "F32", "Float64", "F64", "Double",
-            "String", "Bool", "Void", "Char", "Blob", "Bit", "bits", "Ptr",
+            "Int", "UInt", "Float", "Float32", "F32", "Float64", "F64", "Double", "String", "Bool",
+            "Void", "Char", "Blob", "Bit", "bits", "Ptr",
         ] {
             self.known_types.insert(name.to_string());
         }
         let toks = &self.tokens;
         let mut i = 0;
         while i < toks.len() {
-            let is_decl = matches!(toks[i].0, Token::Type | Token::Struct | Token::Obj | Token::Enum | Token::Meld);
+            let is_decl = matches!(
+                toks[i].0,
+                Token::Type | Token::Struct | Token::Obj | Token::Enum | Token::Meld
+            );
             if is_decl {
                 if let Some((Token::Identifier(name), _)) = toks.get(i + 1) {
                     self.known_types.insert(name.clone());
@@ -178,7 +181,9 @@ impl<'a> Parser<'a> {
 
     /// Consume `<keyword><payload>` in a modifier run and record it.
     fn consume_shape_modifier(
-        &mut self, prefix: &mut ModifierPrefix, keyword: &str,
+        &mut self,
+        prefix: &mut ModifierPrefix,
+        keyword: &str,
     ) -> Result<(), SyntaxError> {
         self.pos += 1;
         let value = self.parse_shape_modifier_payload(keyword)?;
@@ -208,6 +213,30 @@ impl<'a> Parser<'a> {
                     self.record_annotation(&mut prefix, "coll")?;
                 }
                 Some(Token::Accel) => self.record_annotation(&mut prefix, "accel")?,
+                // `unbounded` — declare that this loop carries no termination
+                // obligation. A WAIVER, not an assertion: the loop may end, and
+                // showing that it does is simply not required (SPEC 10.9).
+                // Contextual identifier, like `stage` / `irr`, so no lexer token
+                // is added and the word stays available as an identifier.
+                Some(Token::Identifier(word)) if word == "unbounded" => {
+                    self.pos += 1;
+                    prefix.annotations.push(Annotation {
+                        name: "unbounded".to_string(),
+                        value: None,
+                    });
+                    // Optional `until [C]`: the declared exit. When present the
+                    // exit path owes `C && I => post`; when absent the loop
+                    // exits only externally or via `halt`.
+                    if self.eat_identifier("until") {
+                        self.expect(Token::LBracket)?;
+                        let condition = self.parse_expression()?;
+                        self.expect(Token::RBracket)?;
+                        prefix.annotations.push(Annotation {
+                            name: "until".to_string(),
+                            value: Some(condition),
+                        });
+                    }
+                }
                 Some(Token::Out) => self.record_annotation(&mut prefix, "out")?,
                 Some(Token::Mem) => self.record_annotation(&mut prefix, "mem")?,
                 Some(Token::Reg) => self.record_annotation(&mut prefix, "reg")?,
@@ -230,7 +259,10 @@ impl<'a> Parser<'a> {
                 }
                 Some(Token::Identifier(s))
                     if (s == "state" || s == "plain")
-                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Let)) =>
+                        && matches!(
+                            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                            Some(Token::Let)
+                        ) =>
                 {
                     // 2026-10-17 (plain storage, SPEC §8.1): `state let` /
                     // `plain let` — checked storage-class assertions. A bare
@@ -248,14 +280,21 @@ impl<'a> Parser<'a> {
                     if prefix.annotations.iter().any(|a| a.name == keyword) {
                         return Err(self.dup_modifier(&keyword));
                     }
-                    if prefix.annotations.iter().any(|a| a.name == "state" || a.name == "plain") {
+                    if prefix
+                        .annotations
+                        .iter()
+                        .any(|a| a.name == "state" || a.name == "plain")
+                    {
                         return Err(self.dup_modifier("state/plain"));
                     }
                     self.record_annotation(&mut prefix, &keyword)?;
                 }
                 Some(Token::Identifier(s))
                     if (s == "net" || s == "stdnet")
-                        && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
+                        && matches!(
+                            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                            Some(Token::Lt)
+                        ) =>
                 {
                     // 2026-09-25 (E14b-7, rail-membership plan): `net<name>`
                     // / `stdnet<name>` — the supply-net strategy keywords.
@@ -277,29 +316,33 @@ impl<'a> Parser<'a> {
                         value: Some(Expr::Quoted(payload.into_bytes())),
                     });
                 }
-            Some(Token::Identifier(s)) if Self::is_shape_modifier(s)
-                && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt)) =>
-            {
-                let keyword = s.clone();
-                // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
-                // declarations — contextual identifiers with a `<...>`
-                // payload, legal on node/txn only (validated by the
-                // dispatcher). 2026-10-01 (D14 remainder): the full D14
-                // vocabulary (see `is_shape_modifier`). Recorded as an
-                // annotation; the backend consumes it as an ambiguity
-                // override of the cost model (D2). Whether a lane HONORS
-                // a declaration is the dispatcher's decision — an
-                // unimplemented one errors loudly there, never silently.
-                self.consume_shape_modifier(&mut prefix, &keyword)?;
-            }
-            Some(Token::Identifier(s)) if s == "irr" => {
-                // 2026-09-30 (D29): `irr` — the site-local silencer for
-                // declared-size alignment warnings. Payload-less; warnings
-                // only, never errors (D29). Recorded as a value-less
-                // annotation; the size checks consult it per node.
-                self.pos += 1;
-                self.record_shape_modifier(&mut prefix, "irr", None)?;
-            }
+                Some(Token::Identifier(s))
+                    if Self::is_shape_modifier(s)
+                        && matches!(
+                            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                            Some(Token::Lt)
+                        ) =>
+                {
+                    let keyword = s.clone();
+                    // 2026-09-30 (gpu-syntax-decision-record D1/D14): shape
+                    // declarations — contextual identifiers with a `<...>`
+                    // payload, legal on node/txn only (validated by the
+                    // dispatcher). 2026-10-01 (D14 remainder): the full D14
+                    // vocabulary (see `is_shape_modifier`). Recorded as an
+                    // annotation; the backend consumes it as an ambiguity
+                    // override of the cost model (D2). Whether a lane HONORS
+                    // a declaration is the dispatcher's decision — an
+                    // unimplemented one errors loudly there, never silently.
+                    self.consume_shape_modifier(&mut prefix, &keyword)?;
+                }
+                Some(Token::Identifier(s)) if s == "irr" => {
+                    // 2026-09-30 (D29): `irr` — the site-local silencer for
+                    // declared-size alignment warnings. Payload-less; warnings
+                    // only, never errors (D29). Recorded as a value-less
+                    // annotation; the size checks consult it per node.
+                    self.pos += 1;
+                    self.record_shape_modifier(&mut prefix, "irr", None)?;
+                }
                 _ => break,
             }
         }
@@ -337,9 +380,7 @@ impl<'a> Parser<'a> {
                 }
                 _ => {
                     return Err(SyntaxError::InvalidStatement {
-                        reason: format!(
-                            "`{keyword}<...>` expects integer shape parameters"
-                        ),
+                        reason: format!("`{keyword}<...>` expects integer shape parameters"),
                         span: Span::dummy(),
                     })
                 }
@@ -465,10 +506,7 @@ impl<'a> Parser<'a> {
             } else if matches!(t, Token::Sync) {
                 i = Self::skip_sync_groups(i, &self.tokens);
             } else {
-                return matches!(
-                    t,
-                    Token::Struct | Token::Obj | Token::Union | Token::Type
-                );
+                return matches!(t, Token::Struct | Token::Obj | Token::Union | Token::Type);
             }
         }
         false
@@ -492,10 +530,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Skip a `sync<g>` parameter list, returning the index after the `>`.
-    fn skip_sync_groups(
-        mut i: usize,
-        tokens: &[(Token, std::ops::Range<usize>)],
-    ) -> usize {
+    fn skip_sync_groups(mut i: usize, tokens: &[(Token, std::ops::Range<usize>)]) -> usize {
         i += 1; // sync
         if tokens.get(i).is_some_and(|(t, _)| matches!(t, Token::Lt)) {
             i += 1;
@@ -531,7 +566,12 @@ impl<'a> Parser<'a> {
     pub(super) fn dup_modifier(&self, name: &str) -> SyntaxError {
         SyntaxError::UnexpectedToken {
             expected: format!("a structural identifier after modifiers (duplicate '{name}')"),
-            found: format!("{}", self.peek().map(|t| format!("{t}")).unwrap_or_else(|| "EOF".into())),
+            found: format!(
+                "{}",
+                self.peek()
+                    .map(|t| format!("{t}"))
+                    .unwrap_or_else(|| "EOF".into())
+            ),
             span: self
                 .tokens
                 .get(self.pos)
@@ -729,7 +769,8 @@ impl<'a> Parser<'a> {
     /// Check if the current token is any identifier.
     /// 2026-08-01 (C2): for `-> handler(val)` — an identifier arg name.
     pub fn peek_is_identifier(&self) -> bool {
-        self.peek().map_or(false, |t| matches!(t, Token::Identifier(_)))
+        self.peek()
+            .map_or(false, |t| matches!(t, Token::Identifier(_)))
     }
 
     /// Check if the current token is an identifier with a specific name.
@@ -741,9 +782,10 @@ impl<'a> Parser<'a> {
     /// Check if the token AFTER the current one is an identifier with a
     /// specific name (the `bootstrap bad` disambiguation).
     pub fn lookahead_is_identifier(&self, name: &str) -> bool {
-        self.tokens
-            .get(self.pos + 1)
-            .map_or(false, |(t, _)| matches!(t, Token::Identifier(s) if s == name))
+        self.tokens.get(self.pos + 1).map_or(
+            false,
+            |(t, _)| matches!(t, Token::Identifier(s) if s == name),
+        )
     }
 
     /// Consume a specific identifier if present.
@@ -857,7 +899,8 @@ impl<'a> Parser<'a> {
     /// Advances the parser position past the closing `}`.
     pub fn read_html_body(&mut self) -> Result<String, SyntaxError> {
         // Position of the first token after '{' — this is where HTML starts
-        let start = self.peek_with_span()
+        let start = self
+            .peek_with_span()
             .map(|(_, s)| s.start)
             .unwrap_or(self.pos);
         let mut depth: u64 = 1;
@@ -869,7 +912,10 @@ impl<'a> Parser<'a> {
                 });
             };
             match tok {
-                Token::LBrace => { depth += 1; self.pos += 1; }
+                Token::LBrace => {
+                    depth += 1;
+                    self.pos += 1;
+                }
                 Token::RBrace => {
                     depth -= 1;
                     self.pos += 1;
@@ -878,7 +924,9 @@ impl<'a> Parser<'a> {
                         return Ok(raw.trim().to_string());
                     }
                 }
-                _ => { self.pos += 1; }
+                _ => {
+                    self.pos += 1;
+                }
             }
         }
     }
@@ -888,28 +936,40 @@ impl<'a> Parser<'a> {
     pub fn keyword_as_identifier(&self, tok: &Token) -> Option<String> {
         Some(match tok {
             Token::Export => "export".into(),
-            Token::Defn => "defn".into(), Token::Let => "let".into(),
-            Token::Const => "const".into(), Token::Txn => "txn".into(),
-            Token::Node => "node".into(), Token::Async => "async".into(),
-            Token::Await => "await".into(),             Token::Term => "term".into(), Token::EndProgram => "endprogram".into(),
+            Token::Defn => "defn".into(),
+            Token::Let => "let".into(),
+            Token::Const => "const".into(),
+            Token::Txn => "txn".into(),
+            Token::Node => "node".into(),
+            Token::Async => "async".into(),
+            Token::Await => "await".into(),
+            Token::Term => "term".into(),
+            Token::EndProgram => "endprogram".into(),
             Token::Rollback => "rollback".into(),
             Token::Defer => "defer".into(),
             Token::Mutex => "mutex".into(),
             Token::Import => "import".into(),
-            Token::From => "from".into(), Token::As => "as".into(),
+            Token::From => "from".into(),
+            Token::As => "as".into(),
             Token::Frgn => "frgn".into(),
-            Token::Op => "op".into(), Token::Type => "type".into(),
-            Token::Trait => "trait".into(), Token::Impl => "impl".into(),
-            Token::Cell => "cell".into(),             Token::Struct => "struct".into(),
+            Token::Op => "op".into(),
+            Token::Type => "type".into(),
+            Token::Trait => "trait".into(),
+            Token::Impl => "impl".into(),
+            Token::Cell => "cell".into(),
+            Token::Struct => "struct".into(),
             Token::Render => "render".into(),
             Token::Fab => "fab".into(),
-            Token::Enum => "enum".into(), Token::Trg => "trg".into(),
+            Token::Enum => "enum".into(),
+            Token::Trg => "trg".into(),
             Token::Within => "within".into(),
             Token::Match => "match".into(),
             // 2026-07-15: Template/Macro tokens removed
             Token::Quote => "quote".into(),
-            Token::Dollar => "$".into(), Token::DollarBang => "$!".into(),
-            Token::Foreach => "foreach".into(), Token::Break => "break".into(),
+            Token::Dollar => "$".into(),
+            Token::DollarBang => "$!".into(),
+            Token::Foreach => "foreach".into(),
+            Token::Break => "break".into(),
             Token::Sync => "sync".into(),
             Token::Underscore => "_".into(),
             Token::When => "when".into(),
@@ -918,8 +978,10 @@ impl<'a> Parser<'a> {
             Token::Hold => "hold".into(),
             Token::Cyc => "cyc".into(),
             Token::Ms => "ms".into(),
-            Token::Input => "input".into(), Token::Output => "output".into(),
-            Token::BoolTrue => "true".into(), Token::BoolFalse => "false".into(),
+            Token::Input => "input".into(),
+            Token::Output => "output".into(),
+            Token::BoolTrue => "true".into(),
+            Token::BoolFalse => "false".into(),
             // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): atomic
             // ordering constants in expression position — the trailing
             // argument of an atomic intrinsic (`AtomicLoad#(p, relaxed)`).
@@ -945,8 +1007,10 @@ impl<'a> Parser<'a> {
     /// where a name is expected. `None` for everything else.
     pub(crate) fn removed_word_message(tok: &Token) -> Option<&'static str> {
         Some(match tok {
-            Token::Meld => "`meld` was removed — structural sums (`Int | String`) and \
-                            `coll` declarations replace it",
+            Token::Meld => {
+                "`meld` was removed — structural sums (`Int | String`) and \
+                            `coll` declarations replace it"
+            }
             Token::Reg => "`reg` is reserved and cannot be used as a name",
             Token::Pvt => "`pvt` is reserved and cannot be used as a name",
             Token::Sed => "`sed` is reserved and cannot be used as a name",
