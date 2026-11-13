@@ -1259,7 +1259,9 @@ mod tests {
         let d = parse_defn("defn f(a: Int) [a >= 0][term == 0] -> Int { term 5; };");
         let r = verify_bodies(&[d]);
         let json = r.to_json();
-        assert_eq!(json["proven"].as_u64(), Some(0));
+        // 2026-11-13: `proven` lists NAMES now (b1dd6550) — an empty list,
+        // not a zero count.
+        assert!(json["proven"].as_array().is_some_and(|a| a.is_empty()), "{json}");
         let violated = json["violated"].as_array().expect("violated array");
         assert_eq!(violated.len(), 1);
         assert_eq!(violated[0]["name"], "f");
