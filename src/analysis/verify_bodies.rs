@@ -378,7 +378,10 @@ mod loop_invariant_tests {
         );
         let report = verify_bodies(&[defn]);
         assert!(
-            report.violated.iter().any(|line| line.starts_with("bad_init")),
+            report
+                .violated
+                .iter()
+                .any(|line| line.starts_with("bad_init")),
             "entry must be refuted: {:?}",
             report.violated
         );

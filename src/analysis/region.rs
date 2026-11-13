@@ -874,7 +874,6 @@ impl RegionAnalyzer {
 
     // ── Chain composition (Phase 4.2) ─────────────────────────────
 
-
     /// 2026-11-11: deterministic fingerprint of the consumer-visible facts —
     /// the debug oracle for the HIR consumer flip (HashMaps are sorted).
     pub fn consumer_fingerprint(&self) -> String {
@@ -884,8 +883,11 @@ impl RegionAnalyzer {
         chains.sort();
         let mut triggers: Vec<&String> = self.trigger_vars.iter().collect();
         triggers.sort();
-        let bounds: std::collections::BTreeMap<&str, u64> =
-            self.iter_bounds.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let bounds: std::collections::BTreeMap<&str, u64> = self
+            .iter_bounds
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect();
         format!(
             "{regions:?}|{chains:?}|{triggers:?}|{bounds:?}|{:?}|{:?}|{:?}",
             self.region_scores, self.budget_plan, self.composed_chains
@@ -1486,7 +1488,8 @@ impl RegionAnalyzer {
         for i in 0..chain.len().saturating_sub(1) {
             let a = &chain[i];
             let b = &chain[i + 1];
-            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b)) {
+            if let (Some(writes_a), Some(reads_b)) = (self.txn_writes.get(a), self.txn_reads.get(b))
+            {
                 // Deterministic choice: a write set is unordered, and the link
                 // variable feeds visible composed-body substitution.
                 let mut shared: Vec<&String> =
@@ -2170,15 +2173,16 @@ fn dump_trigger_names(
     triggers.sort();
     out.insert(
         "triggers".to_string(),
-        triggers.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(","),
+        triggers
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
     );
 }
 
 #[cfg(test)]
-fn dump_regions(
-    out: &mut std::collections::BTreeMap<String, String>,
-    regions: &[Vec<String>],
-) {
+fn dump_regions(out: &mut std::collections::BTreeMap<String, String>, regions: &[Vec<String>]) {
     for (i, region) in regions.iter().enumerate() {
         out.insert(format!("region.{}", i + 1), region.join(","));
     }
@@ -2244,12 +2248,18 @@ fn dump_budget(
 ) {
     let Some(plan) = plan else { return };
     out.insert("budget.total".to_string(), plan.total_budget.to_string());
-    out.insert("budget.residual".to_string(), plan.residual_budget.to_string());
+    out.insert(
+        "budget.residual".to_string(),
+        plan.residual_budget.to_string(),
+    );
     let mut allocated: Vec<String> = plan
         .allocated
         .iter()
         .map(|(rid, class, cost, score)| {
-            format!("{}:{class:?}:{cost}:{score:.6}", canonical_rid(*rid, rid_map))
+            format!(
+                "{}:{class:?}:{cost}:{score:.6}",
+                canonical_rid(*rid, rid_map)
+            )
         })
         .collect();
     allocated.sort();
@@ -2301,7 +2311,11 @@ fn dump_composed(
 #[cfg(test)]
 fn canonical_regions(
     regions: &[Vec<String>],
-) -> (Vec<Vec<String>>, HashMap<String, usize>, HashMap<usize, usize>) {
+) -> (
+    Vec<Vec<String>>,
+    HashMap<String, usize>,
+    HashMap<usize, usize>,
+) {
     let mut entries: Vec<(usize, Vec<String>)> = regions
         .iter()
         .enumerate()

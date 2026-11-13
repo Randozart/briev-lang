@@ -2490,12 +2490,79 @@ Two consequences follow, both consistent with the rest of the language:
 - A proved variant makes a watchdog **redundant for that reason**, so the compiler
   can eventually diagnose it — the same move as diagnosing a redundant `seq` when
   the iteration order is provably unobservable.
-- `Convergence::Unprovable` forces a **conservative** reactor loop. A proven
-  measure is exactly the evidence needed to justify the aggressive form, so a
-  variant pays in performance as well as correctness. Contracts are fuel.
+- `Convergence::Unprovable` is **declared but never constructed**. Measured: a
+  repo-wide grep finds one occurrence of that name — the variant's own declaration
+  at `analysis/loop_shape.rs:62` — so nothing in the compiler produces it, and the
+  "conservative reactor loop" its doc comment promises is an intention, not
+  behaviour. A proven variant therefore buys correctness today; the performance
+  consequence follows only once the classifier is wired to emit it.
+
+That is the third dead analysis in this area (`check_convergence_safety` had no
+caller either, and now does; `check_dangling_ptrs` remains test-only). The pattern
+is worth naming: a declared-but-unwired analysis reads as a guarantee in the source
+and delivers nothing, which is exactly the failure this section is about.
 
 The watchdog keeps its place wherever no measure can be given: dynamic bounds,
 buffer work, or anything else outside the integer subset covered by §10.7.
+
+### 10.9 Declared non-termination: `unbounded`
+
+A `node` or reactive `txn` may declare that it carries **no termination
+obligation**:
+
+```briev
+unbounded node server [ready][done] {
+    ...
+};
+
+unbounded until [shutdown] node server [ready][done] {
+    ...
+};
+```
+
+`unbounded` is a **waiver, not an assertion**. The loop may end; what is waived is
+the requirement to show *that* it does — not the possibility. The `[true]`
+postcondition keeps its existing meaning and is unchanged by this clause.
+
+It is a **contextual identifier** in the modifier prefix, where `async` already
+sits, so it introduces no new token and remains legal as an identifier elsewhere.
+
+**What it waives.** The convergence-safety report: a reactive transaction that
+never advances its own precondition is reported, *unless* it declares `unbounded`.
+That is the point of the waiver — such a loop is either an accident or a design,
+and the declaration is how the author says which. Accidents keep being reported;
+intent is exempt.
+
+**What it rejects.** `variant` may not appear alongside `unbounded`. One supplies
+the proof that the loop stops; the other declares that the proof is not required.
+Both at once is a contradiction, refused at parse time.
+
+**What it charges: interruptibility.**
+
+> for every back-edge in the declaration's control-flow graph, either a `yield` is
+> reachable before it, or the loop is provably bounded.
+
+This is **reachability, never execution** — nothing is inserted at runtime, so the
+obligation costs nothing to satisfy. A guarded `yield` whose guard is false is free,
+and a body with no inner loop satisfies the "provably bounded" disjunct trivially:
+the reactor already interrupts between ticks, so such a body is not asked to write
+a token `yield`.
+
+Structural interruptibility says a `yield` is *reachable*; it does not say one
+arrives *quickly*. Bounding latency stays a runtime property, which is what the
+**required** watchdog is for (§10.3): `![progress] within 10ms -> on_stall()`.
+
+`until [C]` names the condition under which the loop stops, making the exit
+checkable — the exit path owes `C ∧ I ⟹ post` — which turns the loop into a
+`while !C` with the termination obligation removed. Without it the loop exits only
+externally or via `halt`, and the postcondition is checked on every `term` path as
+usual.
+
+**Status (2026-11-14).** Parsing, storage, the `variant` rejection, the
+convergence-safety exemption and the interruptibility check are **enforced**. The
+convergence report and the interruptibility report are **advisory** while the
+existing population is migrated. One intention remains unrealised: an `unbounded`
+declaration is not yet reported distinctly from `Unprovable`.
 
 ## 11. Control flow
 
