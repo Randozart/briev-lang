@@ -2378,6 +2378,47 @@ therefore gives partial correctness of every pass; termination of a convergent
 body remains unproved. This is the same gap as the `beginprogram` rule above,
 where "provably reachable" is checked as a shape on the source rather than proved.
 
+### 10.6 Loop variants
+
+A `node` or `txn` may state a **variant** after its contract: a measure that
+explains why the loop makes progress.
+
+```briev
+txn converge(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] variant [100 - x] {
+    x = x + 1;
+    done = 1;
+};
+```
+
+`variant` is an ordinary identifier followed by one bracketed expression. No new
+token is introduced, and no existing program can reach the position: after a
+contract the parser expects the body or a terminator.
+
+Two obligations, both loop-free:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| bounded — `<fn>_variant_bound` | `pre ∧ I ∧ ¬post` | `0 <= V` |
+| decreases — `<fn>_variant_step` | `pre ∧ I ∧ ¬post`, with `V` snapshotted at entry | `V` after one pass `<` the snapshot |
+
+The snapshot is how "strictly decreases" is stated: the entry value of `V` is
+recorded under a name in the antecedent, and the postcondition — evaluated in the
+**final** state — compares against that name. Without it a postcondition could
+only compare final values to each other, which cannot express progress.
+
+With §10.5's entry and preservation obligations, a variant makes a convergent
+loop's **termination** provable rather than merely its partial correctness. That
+is precisely what the `beginprogram` rule asks for when it requires the goal to be
+"provably reachable" — until now, a shape check on the source rather than a proof.
+
+A non-decreasing measure is reported, not ignored: `variant [x]` on a loop that
+increments `x` has its **bound** obligation proved and its **step** obligation left
+unproven, so the author sees exactly which half is wrong.
+
+A `foreach` needs no variant — its trip count is bounded by the range — and a
+variant without an invariant is not accepted: the decreasing obligation is stated
+under `I ∧ ¬post`.
+
 ## 11. Control flow
 
 ### 11.1 No `if`/`else`

@@ -1253,9 +1253,50 @@ fn convergent_obligations(
     let keep = (
         format!("{name}_preserve"),
         conjunction(preserve),
-        invariant,
+        invariant.clone(),
         preserve_body,
     );
+
+    // A `variant` adds the two obligations that turn the loop's progress — and
+    // therefore its termination — into a proof instead of a shape check.
+    let measure = txn
+        .modifiers
+        .iter()
+        .find(|annotation| annotation.name == "variant")
+        .and_then(|annotation| annotation.value.clone());
+
+    if let Some(measure) = measure {
+        let zero = Expr::Decimal(0);
+        let active = conjunction(vec![
+            contract.pre_condition.clone(),
+            invariant.clone(),
+            negate(&contract.post_condition),
+        ]);
+        // Bounded below: the measure cannot fall for ever.
+        let bounded = (
+            format!("{name}_variant_bound"),
+            active.clone(),
+            binop(BinaryOpKind::Ge, measure.clone(), zero.clone()),
+            vec![Statement::Term(Some(zero.clone()))],
+        );
+        // Strictly decreasing: the entry value is snapshotted into a name, and
+        // the postcondition — evaluated in the FINAL state — compares against
+        // that snapshot.
+        let snapshot = Expr::Identifier("__variant0".to_string());
+        let step_pre = conjunction(vec![
+            active,
+            binop(BinaryOpKind::Eq, snapshot.clone(), measure.clone()),
+        ]);
+        let mut step_body = body.to_vec();
+        step_body.push(Statement::Term(Some(zero)));
+        let step = (
+            format!("{name}_variant_step"),
+            step_pre,
+            binop(BinaryOpKind::Lt, measure, snapshot),
+            step_body,
+        );
+        return Some(vec![init, keep, bounded, step]);
+    }
 
     Some(vec![init, keep])
 }

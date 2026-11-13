@@ -473,3 +473,50 @@ mod inferred_invariant_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    /// Parse one declaration through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A decreasing measure proves both the bound and the step.
+    #[test]
+    fn a_decreasing_variant_proves_bound_and_step() {
+        let defn = parse_one(
+            "txn converge(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] \
+             variant [100 - x] {\n x = x + 1;\n done = 1;\n};",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["converge_variant_bound", "converge_variant_step"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?}",
+                report.unproven
+            );
+        }
+    }
+
+    /// A measure that grows must not prove its step obligation.
+    #[test]
+    fn a_growing_variant_does_not_prove_the_step() {
+        let defn = parse_one(
+            "txn grows(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] \
+             variant [x] {\n x = x + 1;\n done = 1;\n};",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            !report
+                .proven
+                .iter()
+                .any(|name| name == "grows_variant_step"),
+            "a growing measure must not prove progress: {:?}",
+            report.proven
+        );
+    }
+}

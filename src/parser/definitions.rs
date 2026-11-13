@@ -2783,16 +2783,31 @@ impl<'a> Parser<'a> {
     /// a contract cannot be anything else: the contract parser stops at a
     /// terminator, and the watchdog forms start with `?` or `!`.
     fn parse_optional_invariant(&mut self) -> Result<Vec<Annotation>, SyntaxError> {
-        if !self.check(&Token::LBracket) {
-            return Ok(Vec::new());
+        let mut out = Vec::new();
+        // `[I]` — the invariant.
+        if self.check(&Token::LBracket) {
+            self.pos += 1;
+            let property = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            out.push(Annotation {
+                name: "invariant".to_string(),
+                value: Some(property),
+            });
         }
-        self.pos += 1;
-        let property = self.parse_expression()?;
-        self.expect(Token::RBracket)?;
-        Ok(vec![Annotation {
-            name: "invariant".to_string(),
-            value: Some(property),
-        }])
+        // `variant [V]` — the measure that proves the loop makes progress.
+        // `variant` is an ordinary identifier, so no new token is needed, and no
+        // existing program can reach this position: after a contract the parser
+        // expects a terminator or the body.
+        if self.eat_identifier("variant") {
+            self.expect(Token::LBracket)?;
+            let measure = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            out.push(Annotation {
+                name: "variant".to_string(),
+                value: Some(measure),
+            });
+        }
+        Ok(out)
     }
 
     fn parse_contract(&mut self) -> Result<Contract, SyntaxError> {
