@@ -2456,6 +2456,47 @@ written in the integer subset**, not for the standard library. Widening it means
 index, bounds and alias reasoning, which the prover does not yet have — and which
 also gates parallelism, since independence is a claim about disjoint writes.
 
+### 10.8 How convergence is established — three mechanisms
+
+Briev can establish that a loop stops in three different ways. They are a ladder,
+not alternatives.
+
+| Mechanism | When | What it establishes | Its limit |
+|---|---|---|---|
+| Watchdog `?[progress] within 10ms -> on_timeout()` (§10.3) | runtime | if the loop stalls, a handler runs | the loop can still stall; costs a timer and a handler |
+| Shape recognition (`analysis::loop_shape`) | compile time | "a counter compared to a bound, advanced each pass" | a pattern, not an argument; anything else is `Unprovable` |
+| `variant [V]` (§10.6) | compile time | `0 <= V`, and `V` strictly decreases — an arithmetic proof | needs a measure, and it must live in the integer subset (§10.7) |
+
+**The shape classifier is what the compiler uses today**, and it is a recognition
+rather than a proof:
+
+```rust
+pub enum Convergence {
+    /// counter >= bound is the convergence proof.
+    CounterGeBound { counter: String, bound: Bound },
+    /// Not provable — a conservative reactor loop must be emitted.
+    Unprovable,
+}
+```
+
+**The watchdog is a runtime guarantee.** Its static analysis validates only the
+wiring — `UnknownTrigger`, `NoHandler`, `NoConflict`, `HandlerDoesNotFalsify`,
+`HandlerRestoresPrecondition` — and never asks whether the loop terminates.
+
+**A variant moves the second rung onto the third.** The same counter loop, given
+`variant [bound - counter]`, stops being *recognised* and starts being *proved*.
+Two consequences follow, both consistent with the rest of the language:
+
+- A proved variant makes a watchdog **redundant for that reason**, so the compiler
+  can eventually diagnose it — the same move as diagnosing a redundant `seq` when
+  the iteration order is provably unobservable.
+- `Convergence::Unprovable` forces a **conservative** reactor loop. A proven
+  measure is exactly the evidence needed to justify the aggressive form, so a
+  variant pays in performance as well as correctness. Contracts are fuel.
+
+The watchdog keeps its place wherever no measure can be given: dynamic bounds,
+buffer work, or anything else outside the integer subset covered by §10.7.
+
 ## 11. Control flow
 
 ### 11.1 No `if`/`else`
