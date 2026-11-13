@@ -41,6 +41,10 @@ pub enum OwnedEventKind {
     Store,
     /// Mentioned by a not-provably-fresh return expression.
     ReturnBorrow,
+    /// String/List local initialized from a BORROW-shaped read
+    /// (field/index/deref/reflect) — the storage belongs to the container,
+    /// this local is an alias, not an undecided owner.
+    Borrow,
     /// String/List local whose initializer was not provably fresh.
     UndecidedInit(String),
 }
@@ -69,6 +73,7 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
     let fresh = fresh_callables(program, escapes);
     let param_return = param_return_summaries(program);
     let ok_fresh = ok_fresh_callables(program, escapes, &param_return, &fresh);
+    let borrow_returns = borrow_result_summaries(program);
     let consumed = consumed_params(program);
     let mut next = program
         .callables
@@ -87,7 +92,7 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
         for param in &callable.params {
             fresh_vars.insert(param.name.clone(), false);
         }
-        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, param_return: &param_return, ok_fresh: &ok_fresh, locals: &locals, next, function: callable.name.clone(), events: &mut events };
+        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, param_return: &param_return, ok_fresh: &ok_fresh, borrow_returns: &borrow_returns, locals: &locals, next, function: callable.name.clone(), events: &mut events };
         let body = rewrite_list(
             &callable.body.statements,
             &mut owned,
@@ -98,6 +103,19 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
         callable.body.statements = body;
         next = ctx.next;
     }
+    // 2026-11-13: an UndecidedInit is SUPERSEDED when the same local is
+    // later assigned a fresh value and released (literal-initialised
+    // accumulators: the static init allocates nothing, so the eventual
+    // release is still correct — the census must not report it as ambiguous).
+    let released: HashSet<(String, String)> = events
+        .iter()
+        .filter(|e| matches!(e.kind, OwnedEventKind::Release { .. }))
+        .map(|e| (e.function.clone(), e.name.clone()))
+        .collect();
+    events.retain(|e| {
+        !(matches!(e.kind, OwnedEventKind::UndecidedInit(_))
+            && released.contains(&(e.function.clone(), e.name.clone())))
+    });
     let rel = events.iter().filter(|e| matches!(e.kind, OwnedEventKind::Release { .. })).count();
     (events, rel)
 }
@@ -273,6 +291,24 @@ fn pattern_bindings(patterns: &[crate::hir::pattern::HirPattern]) -> HashSet<Str
     out
 }
 
+/// Callables that always hand back ONE OF their parameters (any index):
+/// `ints_or(items, fallback)` style. The result aliases caller storage, so
+/// it is never fresh — callers record a Borrow, not an undecided owner.
+fn borrow_result_summaries(program: &HirProgram) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for c in &program.callables {
+        let mut returns = Vec::new();
+        collect_returns(&c.body.statements, &mut returns);
+        if returns.is_empty() { continue; }
+        let all_params = returns.iter().all(|e| match &e.kind {
+            HirExprKind::Identifier(n) => c.params.iter().any(|p| &p.name == n),
+            _ => false,
+        });
+        if all_params { out.insert(c.name.clone()); }
+    }
+    out
+}
+
 fn param_return_summaries(program: &HirProgram) -> HashMap<String, usize> {
     let mut out = HashMap::new();
     for c in &program.callables {
@@ -316,11 +352,10 @@ fn ok_fresh_callables(
         for c in &program.callables {
             let result_is_result = c.result.as_ref().is_some_and(is_result_type);
             if !result_is_result || ok.contains(&c.name) { continue; }
-            // No blanket escape gate here: a Result builder may borrow
-            // operands (graph, state) while its OK payload is fresh. The
-            // wrap-stasher guard is enforced per-payload: a List payload is
-            // only fresh if every ITEM is fresh, and escaped parameters are
-            // never fresh (they are absent from the var map's true set).
+            // No escape gate (2026-11-13, see fresh_callables). Payload
+            // freshness is derived structurally; escaped params are never
+            // fresh (absent from the var map's true set), which is the only
+            // retention fact that matters.
             let mut vars: HashMap<String, bool> = c.params.iter().map(|p| (p.name.clone(), false)).collect();
             collect_fresh(&c.body.statements, &mut vars, fresh, pr, &ok);
             let mut returns = Vec::new();
@@ -333,6 +368,9 @@ fn ok_fresh_callables(
                         args.first().is_some_and(|a| is_fresh(a, &vars, pr, fresh, &ok))
                     } else { false }
                 }
+                // Freshness flows through locals: read_file returns the
+                // Result it unpacked into a local after its guard.
+                HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
                 _ => false,
             });
             if all_ok {
@@ -362,9 +400,14 @@ fn fresh_callables(
             // the result/state/collection), the callable must not count as
             // fresh — a `wrap(s) -> [s]` stasher would make the caller free a
             // retained operand. Escape-summary facts are the gate.
-            if escapes.get(&c.name).is_some_and(|v| v.iter().any(|e| *e)) {
-                continue;
-            }
+            // 2026-11-13: the blanket "any escaping param ⇒ not fresh" gate
+            // was withdrawn. It blocked every builder that mutates or slices
+            // a reader (`proto_bytes`: r.pos writes; `read_file`: passes the
+            // Result through a local), while the hazards it guarded are
+            // covered elsewhere: a List literal's freshness is BLOCK-only
+            // (elements are never freed with it), String concat/slice are
+            // copies, and identity returns are handled by param_return with
+            // a caller-side ownership drop.
             let mut vars: HashMap<String, bool> = c.params.iter().map(|p| (p.name.clone(), false)).collect();
             collect_fresh(&c.body.statements, &mut vars, &fresh, &pr, &ok0);
             let mut returns = Vec::new();
@@ -559,6 +602,7 @@ struct Pass<'a> {
     consumed: &'a HashMap<String, HashSet<usize>>,
     param_return: &'a HashMap<String, usize>,
     ok_fresh: &'a HashSet<String>,
+    borrow_returns: &'a HashSet<String>,
     locals: &'a HashSet<String>,
     next: u32,
     function: String,
@@ -615,11 +659,22 @@ fn rewrite_list(
                             ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: id, kind: OwnedEventKind::Alias });
                         }
                     } else if own_flag {
-                        let why = match &e.kind {
-                            HirExprKind::Call { callee, .. } => format!("call {callee} not proven fresh"),
-                            _ => "expression not proven fresh".to_string(),
-                        };
-                        ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::UndecidedInit(why) });
+                        // Borrow-shaped reads hand over the container's
+                        // storage (x.dims, list[i], *p) — an alias, not an
+                        // undecided owner.
+                        let borrow_call = matches!(&e.kind, HirExprKind::Call { callee, .. }
+                            if ctx.borrow_returns.contains(callee));
+                        if borrow_call || matches!(&e.kind, HirExprKind::Field { .. } | HirExprKind::Index(..)
+                            | HirExprKind::Deref(_) | HirExprKind::Reflect { .. }) {
+                            ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::Borrow });
+                        } else {
+                            let why = match &e.kind {
+                                HirExprKind::Call { callee, .. } => format!("call {callee} not proven fresh"),
+                                HirExprKind::Literal(_) => "literal (static storage)".to_string(),
+                                _ => "expression not proven fresh".to_string(),
+                            };
+                            ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::UndecidedInit(why) });
+                        }
                     }
                 }
                 out.push(s);

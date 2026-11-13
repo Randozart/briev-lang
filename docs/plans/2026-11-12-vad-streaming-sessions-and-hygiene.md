@@ -103,3 +103,35 @@ releases 14 → 16, undecided 159 → 147), with zero behavior change and no
 crash: native faces, VAD sessions equivalence, 3792 lib green; 300-call soak
 flat after the allocator staging step (181 MB @300, HWM 237 — within the
 characterised variance).
+
+## Outcome 4 (2026-11-13): gate withdrawal + borrow classification (census 147 → 67)
+
+Three derivation fixes, all soundness-checked by existing tests:
+
+1. **The blanket "escaping param ⇒ not fresh" gate was withdrawn.** It
+   blocked every builder that mutates or slices a reader (`proto_bytes`:
+   `r.pos` writes; `read_file`: freshness flows through a Result local) while
+   the hazards it guarded are structurally covered: a List literal is a fresh
+   BLOCK (elements never freed with it), String concat/slice are copies, and
+   identity returns go through `param_return` with a caller-side drop.
+   Freshness no longer depends on escape summaries at all.
+2. **`ok_fresh` flows through locals** (`Tail(Identifier)`) — `read_file`
+   returns the Result it unpacked after its guard, which is the common shape.
+3. **Borrow-result + borrow-init classification**: callables that always
+   hand back SOME parameter (`ints_or`, `strides_of`) and borrow-shaped
+   initializers (`x.dims`, `list[i]`, `*p`) are Borrow events, not undecided
+   owners; an UndecidedInit is superseded when the local is later assigned
+   fresh and released (literal-initialised accumulators allocate nothing
+   static-time, so the eventual release is correct).
+
+The first attempt also made BinaryOp non-aliasing; the allocation test
+`pointer_aliases_still_escape_through_locals_and_assignments` refuted it
+correctly — pointer arithmetic aliases (`q = p + 8`) and the AST walker has
+no types to tell it from String concat. Reverted; the gate withdrawal alone
+was sufficient.
+
+Census: releases 16 → 39, undecided 147 → 67 (remaining families are honest
+conditional ownership: proto reader slices behind literal branches,
+face_param/get_env literal returns, int-literal statics). Gates: 3792 lib,
+conformance, kiosk native faces / VAD RPC goldens / sessions equivalence /
+dashboard IR verify; 300-call soak flat at 179 MB, HWM 235.
