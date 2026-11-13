@@ -2550,12 +2550,11 @@ checkable — the exit path owes `C ∧ I ⟹ post` — which turns the loop int
 externally or via `halt`, and the postcondition is checked on every `term` path as
 usual.
 
-**Status (2026-11-14).** Parsing, storage, the `variant` rejection and the
-convergence-safety exemption are **enforced**. The convergence report is
-**advisory** while the existing population is migrated. The `yield` reachability
-obligation is specified here but **not yet enforced**, and an `unbounded`
-declaration is not yet reported distinctly from `Unprovable`. Those are stated as
-intentions, not behaviour.
+**Status (2026-11-14).** Parsing, storage, the `variant` rejection, the
+convergence-safety exemption and the interruptibility check are **enforced**. The
+convergence report and the interruptibility report are **advisory** while the
+existing population is migrated. One intention remains unrealised: an `unbounded`
+declaration is not yet reported distinctly from `Unprovable`.
 
 ## 11. Control flow
 

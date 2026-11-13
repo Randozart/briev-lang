@@ -1404,6 +1404,12 @@ fn parse_and_check(
             .iter()
             .any(|annotation| annotation.name == "unbounded")
         {
+            // An `unbounded` declaration waives the termination obligation and owes
+            // interruptibility instead (SPEC 10.9). Advisory for now: the check is
+            // structural, and a body with no inner loop satisfies it trivially.
+            for message in crate::analysis::interruptibility::loops_without_yield(&txn.body) {
+                eprintln!("warning: {}: {message}", txn.name);
+            }
             continue;
         }
         for (severity, message) in crate::analysis::provenance::check_convergence_safety(

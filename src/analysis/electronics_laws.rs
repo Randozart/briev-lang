@@ -501,7 +501,11 @@ fn build_expression(expr: &Expr, site: &ExpressionSite<'_>) -> Result<BuiltExpre
 }
 
 /// A quantity literal in canonical SI units.
-pub(crate) fn constant_quantity(value: f64, unit: &str, source: &str) -> Result<BuiltExpression, String> {
+pub(crate) fn constant_quantity(
+    value: f64,
+    unit: &str,
+    source: &str,
+) -> Result<BuiltExpression, String> {
     let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
         crate::parser::quantity::parse_unit_suffix(unit)
     else {
@@ -516,7 +520,10 @@ pub(crate) fn constant_quantity(value: f64, unit: &str, source: &str) -> Result<
 }
 
 /// Resolve a bare spec parameter to its instance quantity.
-pub(crate) fn spec_constant(name: &str, site: &ExpressionSite<'_>) -> Result<BuiltExpression, String> {
+pub(crate) fn spec_constant(
+    name: &str,
+    site: &ExpressionSite<'_>,
+) -> Result<BuiltExpression, String> {
     let (instance, ctx, source) = (site.instance, site.ctx, site.source);
     // Known physics keys use canonical snake-case metadata storage; user law
     // parameters use the lowercase spelling.

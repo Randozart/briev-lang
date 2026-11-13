@@ -12048,6 +12048,6 @@ mod tests {
     }
 }
 
+pub(crate) use format_ohms as format_ohms_pub;
 /// HIR-port aliases for the shared formatters (2026-11-12): one spelling.
 pub(crate) use format_watts as format_watts_pub;
-pub(crate) use format_ohms as format_ohms_pub;
