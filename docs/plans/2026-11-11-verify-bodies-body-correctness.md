@@ -145,3 +145,64 @@ do not block verify-bodies on it. Predicates cross as data and that works.
 2. `[a>=0][term==a+1]{term a+1;}` passes under the flag.
 3. Existing suite green with the flag off (identical behaviour).
 4. Counsel Phase-4 probe discharges a translated VC through the same gate.
+## Machine-readable report (C1, 2026-11-12)
+
+`brievc build … --verify-bodies --verify-report <path>` writes the report as
+JSON before the gate returns, so a failing build still produces tooling-ready
+detail. `--verify-report` implies `--verify-bodies`; the gate is unchanged.
+
+```json
+{
+  "proven": 1,
+  "unproven": [{ "name": "g", "reason": "could not derive …" }],
+  "violated": [{ "name": "f", "reason": "returned value does not imply the postcondition" }]
+}
+```
+
+Entries are `{ name, reason }` objects; tooling must not parse prose. Tests:
+`analysis::verify_bodies::tests::json_report_splits_names_and_reasons` and
+`tests/verify_report.rs` (violation + pass, report written both times).
+
+## C4 — solver discharge (2026-11-12)
+
+`--verify-bodies` now escalates an `Undecided` symbolic verdict to Z3 before
+reporting "could not prove".
+
+- **Resolution fix (prerequisite).** `prove_smt`/`prove_smt_formula` invoked
+  `z3` on PATH only, while `is_z3_available` also accepted the managed install
+  directory (`~/.local/share/briev-compiler/bin/z3`, via `brievc install-deps`).
+  A managed-only install therefore reported a solver that no query could reach —
+  availability true, every query silently `Unknown`. One `z3_bin()` now resolves
+  PATH → managed for every call site.
+- **`build_vc_query(facts, post)`** asserts the path's facts together with the
+  negated postcondition and declares the free identifiers as `(_ BitVec 64)` —
+  the universal quantification weakest-precondition reasoning needs, so callers
+  need no parameter list.
+- **Encoding.** `/` and `%` now encode as `bvsdiv`/`bvsrem`; previously they fell
+  through to `(= l r)`, silently asserting equality.
+- **Verdict mapping.** `Unsat` ⇒ proven. `Sat` ⇒ refuted **only when no free
+  identifier survives substitution** (the body's result is fully determined).
+  `Unknown`, or no solver ⇒ unproven, unchanged from before.
+
+### Why parameter-dependent refutations stay advisory
+
+The prelude carries optimistic contracts such as
+`defn coll_min(a: Int, b: Int) [true][term >= 0]`. With a parameter-dependent
+body result, `facts ∧ ¬post` is satisfiable for some inputs, so Z3 legitimately
+finds a model — and enforcing it turned six prelude declarations (`coll_min`,
+`when_raw`, `when_hi`, `coll_hi_fix`, `coll_len_fix`, `exponent_val`) into hard
+build failures. Refutation is therefore restricted to fully determined results;
+an input-dependent counterexample stays a warning. Tightening those contracts is
+its own follow-up, not something a prover should turn into a build-breaking
+surprise.
+
+### Evidence
+
+- `cargo test --lib verify` → 36 green. `range_bound_does_not_pin` flips from 0
+  to 1 proven once a solver is present — that body is `[a >= 0][term == 2 * a]`
+  with body `a + a`, which only the solver can decide, so the flip is the proof
+  the solver is doing the work.
+- `brievc build <f> --library --verify-bodies --verify-report r.json` with the
+  solver installed: `violated: []`, exit 0, `proven: 4` on the prelude.
+- Without a solver the same source stays `unproven` — no behaviour change for
+  machines that have not installed it.

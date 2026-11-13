@@ -1,0 +1,130 @@
+// yunet.bv — YuNet post-processing: 12 heads -> decoded face boxes.
+//
+// Inputs are the executor's output tensors (sigmoid cls/obj, bbox deltas).
+// Decode follows the OpenCV Zoo contract: per stride 8/16/32, score =
+// sqrt(cls*obj), box center = (cell + delta) * stride, size = exp(delta) *
+// stride, then greedy NMS. Pure f32; no model-specific executor branches.
+
+import "./tensor.bv";
+import "./exec.bv";
+import "std/string.bv";
+import "std/cast_lanes.bv";
+
+obj Detection {
+    score: Float;
+    x: Float;
+    y: Float;
+    w: Float;
+    h: Float;
+};
+
+defn clamp01(v: Float) -> Float {
+    when v < 0.0 { term 0.0; };
+    when v > 1.0 { term 1.0; };
+    term v;
+};
+
+defn det_iou(a: Detection, b: Detection) -> Float {
+    let x1: Float = a.x;
+    when b.x > x1 { x1 = b.x; };
+    let y1: Float = a.y;
+    when b.y > y1 { y1 = b.y; };
+    let ax2: Float = a.x + a.w;
+    let bx2: Float = b.x + b.w;
+    let x2: Float = ax2;
+    when bx2 < x2 { x2 = bx2; };
+    let ay2: Float = a.y + a.h;
+    let by2: Float = b.y + b.h;
+    let y2: Float = ay2;
+    when by2 < y2 { y2 = by2; };
+    let iw: Float = x2 - x1;
+    let ih: Float = y2 - y1;
+    when iw <= 0.0 || ih <= 0.0 { term 0.0; };
+    let inter: Float = iw * ih;
+    term inter / (a.w * a.h + b.w * b.h - inter + 0.0000001);
+};
+
+defn insert_pos(dets: List<Detection>, key: Detection, j: Int) -> Int {
+    when j < 0 { term 0; };
+    when dets[j].score < key.score { term insert_pos(dets, key, j - 1); };
+    term j + 1;
+};
+
+defn shift_right(dets: List<Detection>, pos: Int, i: Int) -> Void {
+    when i > pos {
+        dets[i] = dets[i - 1];
+        shift_right(dets, pos, i - 1);
+    };
+    term;
+};
+
+defn insert_det(dets: List<Detection>, key: Detection, i: Int) -> Void {
+    let pos: Int = insert_pos(dets, key, i - 1);
+    shift_right(dets, pos, i);
+    dets[pos] = key;
+    term;
+};
+
+defn sort_dets(dets: List<Detection>) -> Void {
+    foreach i in 1..dets.Count#() {
+        let key: Detection = dets[i];
+        insert_det(dets, key, i);
+    };
+    term;
+};
+
+defn collect_stride(env: List<Tensor>, stride: Int, threshold: Float, dets: List<Detection>) -> Void {
+    let cls_name: String = concat("cls_", int_to_str(stride));
+    let obj_name: String = concat("obj_", int_to_str(stride));
+    let bbox_name: String = concat("bbox_", int_to_str(stride));
+    let clsr: Result<Tensor, String> = env_find(env, cls_name);
+    let objr: Result<Tensor, String> = env_find(env, obj_name);
+    let bbr: Result<Tensor, String> = env_find(env, bbox_name);
+    let all_ok: Bool = is_ok(clsr) && is_ok(objr) && is_ok(bbr);
+    when all_ok {
+        collect_ready(unwrap(clsr), unwrap(objr), unwrap(bbr), stride, threshold, dets);
+    };
+    term;
+};
+
+defn collect_ready(cls: Tensor, obt: Tensor, bbox: Tensor, stride: Int, threshold: Float, dets: List<Detection>) -> Void {
+    let cols: Int = 640 / stride;
+    foreach idx in 0..cls.n {
+        let score: Float = Sqrt#(clamp01(tensor_get(cls, idx) * tensor_get(obt, idx)));
+        when score >= threshold {
+            let row: Int = idx / cols;
+            let col: Int = idx % cols;
+            let bx: Float = tensor_get(bbox, idx * 4);
+            let by: Float = tensor_get(bbox, idx * 4 + 1);
+            let bw: Float = Exp#(tensor_get(bbox, idx * 4 + 2)) * (stride as Float);
+            let bh: Float = Exp#(tensor_get(bbox, idx * 4 + 3)) * (stride as Float);
+            let cx: Float = (col as Float + bx) * (stride as Float);
+            let cy: Float = (row as Float + by) * (stride as Float);
+            dets <- Detection { score: score, x: cx - bw / 2.0, y: cy - bh / 2.0, w: bw, h: bh };
+        };
+    };
+    term;
+};
+
+defn nms(dets: List<Detection>, iou_threshold: Float) -> List<Detection> {
+    let kept: List<Detection> = [];
+    foreach i in 0..dets.Count#() {
+        let cand: Detection = dets[i];
+        let ok: Bool = true;
+        foreach j in 0..kept.Count#() {
+            when det_iou(cand, kept[j]) >= iou_threshold { ok = false; };
+        };
+        when ok { kept <- cand; };
+    };
+    term kept;
+};
+
+defn detect_faces(env: List<Tensor>, threshold: Float, iou_threshold: Float) -> List<Detection> {
+    let dets: List<Detection> = [];
+    let strides: List<Int> = [8, 16, 32];
+    foreach i in 0..3 {
+        collect_stride(env, strides[i], threshold, dets);
+    };
+    sort_dets(dets);
+    term nms(dets, iou_threshold);
+};

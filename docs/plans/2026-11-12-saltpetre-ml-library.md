@@ -1,0 +1,122 @@
+# Saltpetre — the Briev ML library (2026-11-12)
+
+## Decision (discussion record)
+
+Promote the kiosk's `briev/ml/*.bv` stack into a co-located Briev library,
+`lib/saltpetre/`. Full v0: tensor/proto/onnx/exec/frame/yunet move verbatim;
+a new `session.bv` owns the arena lifecycle (library owns arenas — the
+daemon shrinks to RPC glue). Tiny conformance fixtures move into
+`tests/fixtures/saltpetre/` and gate in the compiler repo; the kiosk's
+differential-vs-ORT acceptance harness stays kiosk-side (two-tier gates:
+library conformance fast/in-repo, kiosk acceptance real-models/PTL).
+
+Doctrine fit: the modules are pure `.bv` (zero compiler knowledge), so this
+is Rules 14/24 in action — temporal machinery (ONNX shapes, op shapes,
+format readers) lives in library-land; the eternal machinery (ownership
+proofs, arena, escape facts) stays in the compiler. Saltpetre is also the
+concrete vehicle for the locked OpenVINO-retire decision (ONNX stays the
+model format; Briev executes the graph; VITRIOL remains the only sanctioned
+external runtime).
+
+Rejected alternatives: separate repo + submodules from day one (friction
+with the compiler-pin model; split when a second consumer appears);
+core-only v0 (frontends are already differential-tested — moving them too
+costs little and makes the boundary honest).
+
+## v0 layout
+
+```
+lib/saltpetre/
+  tensor.bv      Tensor, ml_arena_* internals (verbatim move)
+  proto.bv       ONNX protobuf reader (verbatim)
+  onnx.bv        graph model + external data (verbatim)
+  exec.bv        op executor; the op ledger IS the kiosk parity ledger
+  frame.bv       image decode → tensor frontend (verbatim)
+  yunet.bv       YuNet detection decoder — temporal, Rule-23-safe: it lives
+                 here, in library-land, not in the compiler
+  session.bv     NEW: sp_begin/sp_request_reset/sp_run/sp_end — owns the
+                 tensor-arena block + the request coll arena
+tests/fixtures/saltpetre/   tiny ONNX corpus (13 files, 56 KB)
+tests/saltpetre/conformance.bv   in-repo gate program
+tests/saltpetre_conformance.rs   compile+run gate (mirrors kiosk ml_smoke)
+```
+
+## Session contract (library owns arenas)
+
+- `sp_begin(tensor_cap, coll_cap)` — `Alloc#` the tensor block,
+  `ml_arena_install`, `coll_arena_begin`. Once, at service/node start.
+- `sp_request_reset()` — `ml_arena_reset` + `coll_arena_reset`. Per request.
+- `sp_run(graph, inputs, output_count)` — `ml_arena_reset` (per-inference
+  valve), `execute_env`, copy the requested outputs out of the request
+  arena. Replaces the caller's per-detect resets.
+- `sp_end()` — `coll_arena_end` + disarm. On shutdown.
+
+Graph caching stays kiosk-side for v0 (serving state); a generalizing
+Session arrives later.
+
+## Steps
+
+1. **Probe** import resolution for relative `./x.bv` inside `lib/` before
+   moving anything (fallback: `"saltpetre/x.bv"`-style paths).
+2. Move modules; add `session.bv`; copy fixtures; write the conformance
+   program + Rust gate; docs (`docs/architecture/saltpetre.md`, INDEX).
+3. briev-lang gates: `cargo test --lib` + the new gate; commit; reconcile
+   with main; push.
+4. Kiosk: imports → `"saltpetre/…"`; delete `briev/ml/`; daemon arena
+   choreography (5 sites) → `sp_begin`/`sp_request_reset`; local gates
+   (ml_smoke, native smoke, VAD parity, dashboard rbv check, 200-call
+   soak ≈171 MB flat); pin bump; push; acceptance CI.
+5. Record §18 in the memory plan + kiosk progress.
+
+## Risks
+
+- Relative-import resolution inside the stdlib dir (probe first).
+- `Alloc#` storage strategy for the tensor block in `sp_begin` — must land
+  malloc, not arena/stack aliasing its own backing; checked in the first IR.
+- `tests/ml/*.bv` env paths (`models/onnx/...`) unchanged — imports only.
+
+## Outcome (2026-11-12)
+
+v0 landed. One contract refinement surfaced by the kiosk daemon gates:
+`sp_begin`/`sp_open_coll` are separate — the request coll arena must open
+AFTER long-lived parsing/caching (the face-graph cache lists landed in the
+request block when the arena was active at node entry, and the first
+`sp_request_reset` rewound them under the next request → segfault in the
+JPEG RPC; raw-frame passed vacuously at count 0). The persistent-state rule
+is documented on `sp_begin` and enforced by the daemon ordering
+(cache → `sp_open_coll` per connection). Same class of lesson as the
+sp_run input-lifetime rule: request-arena resets kill anything allocated
+inside the arena — persistent state must live outside it.
+
+Kiosk gates after the swap: native faces raw=0/jpeg=2, ML smoke, VAD
+(187 chunks, max |Δ| 3.057e-07), dashboard IR verify, 200-call soak flat
+VmRSS 163 MB (HWM 219 MB) — 8 MB under the pre-extraction plateau, from the
+cache-before-open ordering. Library conformance re-run green on the split
+signatures.
+
+## Tensor dims owner slot (LANDED 2026-11-12, design as planned)
+
+Add `owns_dims: Int` to `Tensor`. Constructors that build a fresh dims list
+(`tensor_new`/`tensor_named`/`tensor_named_owned`/`tensor_reshape`-style)
+set 1; copies that alias (`tensor_copy_owned` keeps the source dims) set 0.
+`tensor_drop` frees the dims list (coll_destroy) only when the flag is set;
+`tensor_free` stays data-only. The executor's patch/temporary tensors
+currently freed with `tensor_free` (data-only) switch to `tensor_drop` so
+the object AND its fresh dims die at the same point. Initializers parsed
+into a primed model cache own their dims but are never dropped — the flag
+is still correct (drop happens only via tensor_drop). Gates: conformance
+corpus, kiosk native/ML/VAD, 300-call soak — the target is the discrete
+staging (both daemon builds stage; fewer per-request coll allocations
+should shrink the staged block).
+
+Landed verbatim per the design, plus one comparison-view subtlety the debug
+drift gate caught: pass-inserted releases are bare-identifier calls, so
+`tensor_drop`'s authored `coll_destroy(dims_handle)` grew a load-bearing
+no-op `as Int` cast to stay distinguishable in `storage_release_view`.
+Executor gains 19 `tensor_take` builder sites (fresh od/xd/dims); the seven
+`x.dims` elementwise views and the cached-graph input wrap stay borrow;
+conv/gemm patch temporaries now die via `tensor_drop` (object + owned dims,
+not data-only). Gates: 3756 lib, conformance corpus, kiosk native
+raw=0/jpeg=2, ML smoke, VAD parity, dashboard IR verify, 300-call soak
+VmRSS 171 / HWM 227 — at-or-below the pre-cache control (173/229) and well
+under the staged 189/245 cache-build run.

@@ -1,0 +1,83 @@
+// frame.bv — image file -> YuNet input tensor (3x640x640 f32, BGR CHW).
+//
+// Decoding is the stdlib stb_image boundary (JPEG/PNG/BMP); resize is
+// bilinear; the channel order is BGR because YuNet follows the OpenCV
+// convention (the native capture path will hand BGR frames directly).
+
+import "./tensor.bv";
+import "std/image/stb_image.bv";
+import "std/os/fs.bv";
+
+const FACE_SIZE: Int = 640;
+
+defn clamp_int(v: Int, lo: Int, hi: Int) -> Int {
+    when v < lo { term lo; };
+    when v > hi { term hi; };
+    term v;
+};
+
+defn rgb_at(px: Ptr<Bit<8>>, idx: Int) -> Float {
+    term (px[idx] as Int) as Float;
+};
+
+defn sample_channel(px: Ptr<Bit<8>>, w: Int, h: Int, sx: Float, sy: Float, c: Int) -> Float {
+    let x0: Int = clamp_int(sx as Int, 0, w - 1);
+    let y0: Int = clamp_int(sy as Int, 0, h - 1);
+    let x1: Int = clamp_int(x0 + 1, 0, w - 1);
+    let y1: Int = clamp_int(y0 + 1, 0, h - 1);
+    let fx: Float = sx - (x0 as Float);
+    let fy: Float = sy - (y0 as Float);
+    let ix0: Int = (y0 * w + x0) * 3 + c;
+    let ix1: Int = (y0 * w + x1) * 3 + c;
+    let ix2: Int = (y1 * w + x0) * 3 + c;
+    let ix3: Int = (y1 * w + x1) * 3 + c;
+    let top: Float = rgb_at(px, ix0) * (1.0 - fx) + rgb_at(px, ix1) * fx;
+    let bot: Float = rgb_at(px, ix2) * (1.0 - fx) + rgb_at(px, ix3) * fx;
+    term top * (1.0 - fy) + bot * fy;
+};
+
+defn write_pixel(t: Tensor, px: Ptr<Bit<8>>, w: Int, h: Int, oy: Int, ox: Int, sx: Float, sy: Float) -> Void {
+    let base: Int = oy * FACE_SIZE + ox;
+    // BGR order: B <- RGB blue (2), G <- 1, R <- 0.
+    tensor_set(t, base, sample_channel(px, w, h, sx, sy, 2));
+    tensor_set(t, FACE_SIZE * FACE_SIZE + base, sample_channel(px, w, h, sx, sy, 1));
+    tensor_set(t, 2 * FACE_SIZE * FACE_SIZE + base, sample_channel(px, w, h, sx, sy, 0));
+    term;
+};
+
+defn image_to_tensor(path: String) -> Result<Tensor, String> {
+    let f: Result<String, Int> = read_file(path);
+    when is_err(f) { term Err("cannot read image"); };
+    let bytes: String = unwrap(f);
+    let dec: Result<DecodedImage, String> = image_decode(bytes);
+    string_free(bytes);
+    when is_err(dec) {
+        match dec { Err(reason) => { term Err(reason); }, Ok(_) => {} };
+    };
+    let img: DecodedImage = unwrap(dec);
+    when img.width <= 0 || img.height <= 0 { term Err("empty image"); };
+    let px: Ptr<Bit<8>> = img.rgb as Ptr<Bit<8>>;
+    let tensor: Tensor = tensor_take("input", [1, 3, FACE_SIZE, FACE_SIZE], 3 * FACE_SIZE * FACE_SIZE);
+    let sx_scale: Float = (img.width as Float) / (FACE_SIZE as Float);
+    let sy_scale: Float = (img.height as Float) / (FACE_SIZE as Float);
+    foreach oy in 0..FACE_SIZE {
+        foreach ox in 0..FACE_SIZE {
+            write_pixel(tensor, px, img.width, img.height, oy, ox, (ox as Float) * sx_scale, (oy as Float) * sy_scale);
+        };
+    };
+    image_free(img);
+    term Ok(tensor);
+};
+
+defn load_frame_file(path: String) -> Result<Tensor, String> {
+    let f: Result<String, Int> = read_file(path);
+    when is_err(f) { term Err("cannot read frame"); };
+    let text: String = unwrap(f);
+    let n: Int = (text .^Length) / 4;
+    let tensor: Tensor = tensor_new(n);
+    foreach i in 0..n {
+        tensor_set(tensor, i, f32_from_bytes(text, 4 * i));
+    };
+    string_free(text);
+    term Ok(tensor);
+};

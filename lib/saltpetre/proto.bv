@@ -1,0 +1,62 @@
+// proto.bv — minimal Protocol Buffers wire reader for ONNX model files.
+//
+// Scope: the subset ONNX ModelProto needs (varint, 64-bit, length-delimited,
+// 32-bit fields). No schema codegen, no reflection: ml/onnx.bv walks the
+// fields by number. Everything is byte-oriented; a Briev String is a byte
+// buffer here, not text.
+
+import "std/cast_lanes.bv";
+
+obj ProtoReader {
+    buf: String;
+    pos: Int;
+    len: Int;
+};
+
+defn proto_reader(text: String) -> ProtoReader {
+    term ProtoReader { buf: text, pos: 0, len: text .^Length };
+};
+
+defn proto_done(r: ProtoReader) -> Bool {
+    term r.pos >= r.len;
+};
+
+defn proto_u8(r: ProtoReader) -> Int {
+    let b: Int = byte_at(r.buf, r.pos);
+    r.pos = r.pos + 1;
+    term b;
+};
+
+defn proto_varint_at(r: ProtoReader, shift: Int, acc: Int) -> Int {
+    let b: Int = proto_u8(r);
+    let next: Int = acc | ((b & 127) << shift);
+    when b < 128 { term next; };
+    term proto_varint_at(r, shift + 7, next);
+};
+
+defn proto_varint(r: ProtoReader) -> Int {
+    term proto_varint_at(r, 0, 0);
+};
+
+defn proto_bytes(r: ProtoReader) -> String {
+    let n: Int = proto_varint(r);
+    let start: Int = r.pos;
+    r.pos = r.pos + n;
+    term r.buf[start:start + n];
+};
+
+defn proto_skip_kind(r: ProtoReader, wire: Int) -> Void {
+    match wire {
+        0 => { let ignored: Int = proto_varint(r); },
+        1 => { r.pos = r.pos + 8; },
+        2 => { let n: Int = proto_varint(r); r.pos = r.pos + n; },
+        5 => { r.pos = r.pos + 4; },
+        _ => {},
+    };
+    term;
+};
+
+defn proto_key(r: ProtoReader) -> (Int, Int) {
+    let key: Int = proto_varint(r);
+    term (key >> 3, key & 7);
+};

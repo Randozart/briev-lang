@@ -31,6 +31,7 @@ pub fn walk_expr_mut<F: FnMut(&mut HirExpr)>(expr: &mut HirExpr, f: &mut F) {
             walk_expr_mut(left, f);
             walk_expr_mut(right, f);
         }
+        HirExprKind::Wildcard => {}
         HirExprKind::Slice { array, start, end, stride } => {
             walk_expr_mut(array, f);
             walk_opt_box_mut(start.as_deref_mut(), f);
@@ -97,6 +98,8 @@ pub fn walk_stmt_mut<F: FnMut(&mut HirExpr)>(stmt: &mut HirStmt, f: &mut F) {
             walk_expr_mut(value, f);
         }
         HirStmtKind::Term(expr) => walk_opt_mut(expr.as_mut(), f),
+        HirStmtKind::TempTransfer { expr, .. } => walk_expr_mut(expr, f),
+        HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::Tail(expr)
         | HirStmtKind::Check(expr)
         | HirStmtKind::Expression(expr)
@@ -211,6 +214,7 @@ pub fn walk_expr<F: FnMut(&HirExpr)>(expr: &HirExpr, f: &mut F) {
             walk_expr(left, f);
             walk_expr(right, f);
         }
+        HirExprKind::Wildcard => {}
         HirExprKind::Slice { array, start, end, stride } => {
             walk_expr(array, f);
             walk_opt_box(start.as_deref(), f);
@@ -274,6 +278,8 @@ pub fn walk_stmt<F: FnMut(&HirExpr)>(stmt: &HirStmt, f: &mut F) {
             walk_expr(value, f);
         }
         HirStmtKind::Term(expr) => walk_opt(expr.as_ref(), f),
+        HirStmtKind::TempTransfer { expr, .. } => walk_expr(expr, f),
+        HirStmtKind::ReleaseOwned { .. } => {}
         HirStmtKind::Tail(expr)
         | HirStmtKind::Check(expr)
         | HirStmtKind::Expression(expr)

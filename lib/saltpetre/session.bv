@@ -1,0 +1,165 @@
+// session.bv — Saltpetre's arena lifecycle owner.
+//
+// The library owns the two request-scoped arenas so service code stays RPC
+// glue: one tensor-arena block for activations (ml_arena_* in tensor.bv)
+// and one request coll block for generic coll backing stores (the C request
+// arena behind coll_alloc). Begin once at service start, reset per request,
+// end on shutdown. sp_run resets the inference arena per run and copies the
+// requested output out of the request arena, so a returned Tensor survives
+// the next reset.
+
+import "./tensor.bv";
+import "./exec.bv";
+import "std/result.bv";
+import "std/os/fs.bv";
+
+// sp_begin — allocate the tensor-arena block. Call once per service
+// lifetime, from a NODE-ENTRY context: the Alloc# picks the entry region
+// allocator, which lives for the program, so the activation block survives
+// every request reset (the kiosk daemon's identical node-entry pattern is
+// the reference use). Calling sp_begin inside a per-tick txn would tie the
+// block to a per-tick region — do not.
+// PERSISTENT-STATE RULE: open the request coll arena (sp_open_coll) only
+// AFTER any long-lived parse/caching has loaded — coll growth while the
+// arena is active lands in the request block and dies at the next reset.
+// The kiosk daemon loads its face-graph cache BEFORE sp_open_coll for
+// exactly this reason.
+defn sp_begin(tensor_cap: Int)
+    [tensor_cap > 0][ml_arena_off_bytes() == 0]
+    -> Void {
+    let base: Int = Alloc#(tensor_cap) as Int;
+    ml_arena_install(base, tensor_cap);
+    term;
+};
+
+// sp_open_coll — open (or re-open) the request coll block. Per connection
+// in a service; idempotent while the capacity fits (the C runtime reuses
+// the block). See the persistent-state rule on sp_begin.
+defn sp_open_coll(coll_cap: Int)
+    [coll_cap >= 0][ml_arena_off_bytes() >= 0]
+    -> Void {
+    coll_arena_begin(coll_cap);
+    term;
+};
+
+// sp_request_reset — per-request valve: both arenas rewind without freeing.
+defn sp_request_reset() [ml_arena_off_bytes() >= 0][ml_arena_off_bytes() == 0] -> Void {
+    ml_arena_reset();
+    coll_arena_reset();
+    term;
+};
+
+// sp_run — one inference at out_index, with the per-run arena reset and an
+// owned copy of the output so the result outlives the next reset.
+// INPUT LIFETIME: the reset fires inside sp_run, so any input allocated from
+// the inference arena AFTER the previous reset is wiped by this call.
+// Allocate inputs after the previous reset (or use owned inputs) — the
+// kiosk daemon resets before decoding its frame for exactly this reason.
+defn sp_run(graph: OnnxGraph, input: Tensor, out_index: Int)
+    [out_index >= 0][ml_arena_off_bytes() >= 0]
+    -> Result<Tensor, String>
+{
+    ml_arena_reset();
+    let result: Result<Tensor, String> = execute(graph, input, out_index);
+    when is_ok(result) {
+        let owned: Tensor = tensor_copy_owned(unwrap(result));
+        term Ok(owned);
+    };
+    term result;
+};
+
+// sp_run_env — whole-graph run (every output), per-run arena reset. Same
+// input-lifetime rule as sp_run: the reset fires inside the call.
+defn sp_run_env(graph: OnnxGraph, input: Tensor)
+    [graph.outs.Count#() >= 0][ml_arena_off_bytes() >= 0]
+    -> Result<List<Tensor>, String>
+{
+    ml_arena_reset();
+    term execute_env(graph, input);
+};
+
+// sp_end — close the request coll arena and disarm the tensor arena.
+defn sp_end() [ml_arena_off_bytes() >= 0][ml_arena_off_bytes() == 0] -> Void {
+    coll_arena_end();
+    ml_arena_install(0, 0);
+    term;
+};
+
+// ── Cached model sessions (two scalar slots) ───────────────────────────
+// Parsed graphs are persistent state: each slot stores the four list handles
+// out of the request arenas' reach, keyed by model path, so every caller
+// reuses one parse per model for the process lifetime. Prime all slots at
+// service start (BEFORE sp_open_coll — the persistent-state rule on
+// sp_begin), then fetch per request; the OnnxGraph is a value rebuilt around
+// the cached handles. Slot 0 = the caller's primary model (kiosk: YuNet),
+// slot 1 = secondary (kiosk: Silero VAD) — slots are indexes, not a
+// vocabulary. SCALAR globals by design: coll-typed globals (`List<Int> = []`)
+// emit a broken init_state store (2026-11-12, BUGS.md sibling note) and two
+// slots need no dynamic growth.
+let sp_s0_nodes: Int = 0;
+let sp_s0_ins: Int = 0;
+let sp_s0_outs: Int = 0;
+let sp_s0_inits: Int = 0;
+let sp_s0_path: String = "";
+let sp_s1_nodes: Int = 0;
+let sp_s1_ins: Int = 0;
+let sp_s1_outs: Int = 0;
+let sp_s1_inits: Int = 0;
+let sp_s1_path: String = "";
+
+defn sp_cache_store(slot: Int, path: String, parsed: OnnxGraph) -> Void {
+    when slot == 0 {
+        sp_s0_nodes = (parsed.nodes as Data) as Int;
+        sp_s0_ins = (parsed.ins as Data) as Int;
+        sp_s0_outs = (parsed.outs as Data) as Int;
+        sp_s0_inits = (parsed.inits as Data) as Int;
+        sp_s0_path = path;
+    };
+    when slot == 1 {
+        sp_s1_nodes = (parsed.nodes as Data) as Int;
+        sp_s1_ins = (parsed.ins as Data) as Int;
+        sp_s1_outs = (parsed.outs as Data) as Int;
+        sp_s1_inits = (parsed.inits as Data) as Int;
+        sp_s1_path = path;
+    };
+    term;
+};
+
+defn sp_cached_model(slot: Int, path: String)
+    [slot >= 0 && slot <= 1 && CharCount#(path) >= 0][CharCount#(sp_s0_path) >= 0]
+    -> Result<OnnxGraph, String>
+{
+    when slot == 0 && sp_s0_path == path {
+        let graph: OnnxGraph = OnnxGraph {
+            nodes: sp_s0_nodes as List<OnnxNode>,
+            ins: sp_s0_ins as List<OnnxValue>,
+            outs: sp_s0_outs as List<OnnxValue>,
+            inits: sp_s0_inits as List<Tensor>,
+        };
+        term Ok(graph);
+    };
+    when slot == 1 && sp_s1_path == path {
+        let graph: OnnxGraph = OnnxGraph {
+            nodes: sp_s1_nodes as List<OnnxNode>,
+            ins: sp_s1_ins as List<OnnxValue>,
+            outs: sp_s1_outs as List<OnnxValue>,
+            inits: sp_s1_inits as List<Tensor>,
+        };
+        term Ok(graph);
+    };
+    let mf: Result<String, Int> = read_file(path);
+    when is_err(mf) { term Err("cannot read model"); };
+    let parsed: OnnxGraph = parse_model_at(unwrap(mf), path);
+    sp_cache_store(slot, path, parsed);
+    term sp_cached_model(slot, path);
+};
+
+// sp_prime_model — load-and-cache without consuming the result. Call per
+// slot at service start, after sp_begin and BEFORE sp_open_coll, so the
+// parse's coll growth uses malloc (persistent) instead of the request block.
+defn sp_prime_model(slot: Int, path: String)
+    [slot >= 0 && slot <= 1 && CharCount#(path) >= 0][CharCount#(sp_s0_path) >= 0]
+    -> Void {
+    let ignored: Result<OnnxGraph, String> = sp_cached_model(slot, path);
+    term;
+};

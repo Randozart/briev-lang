@@ -87,6 +87,7 @@ pub fn expr(e: &HirExpr) -> Option<crate::ast::Expr> {
             Expr::Reflect(Box::new(expr(receiver)?), name.clone(), *kind)
         }
         HirExprKind::Index(a, b) => Expr::Index(Box::new(expr(a)?), Box::new(expr(b)?)),
+        HirExprKind::Wildcard => Expr::Wildcard,
         HirExprKind::Slice { array, start, end, stride } => Expr::Slice {
             array: Box::new(expr(array)?),
             start: opt_box(start)?,
@@ -194,7 +195,16 @@ pub fn pattern(p: &HirPattern) -> Option<Pattern> {
 }
 
 pub fn stmt(s: &HirStmt) -> Option<Statement> {
+    // 2026-11-12: compiler-inserted storage releases never convert from
+    // source; hir_sourced_body consumes them on its own cursor.
+    if matches!(
+        &s.kind,
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. }
+    ) {
+        return None;
+    }
     Some(match &s.kind {
+        HirStmtKind::ReleaseOwned { .. } | HirStmtKind::TempTransfer { .. } => unreachable!("filtered above"),
         HirStmtKind::Let { name, names, ty, expr: e, modifiers } => Statement::Let {
             name: name.clone(),
             names: names.clone(),

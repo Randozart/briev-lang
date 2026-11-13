@@ -1,0 +1,23 @@
+
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Control { spec KicadType: "input"; spec Control: true; };
+        type Path { spec KicadType: "passive"; spec Switchable: true; };
+        type Fet { pin gate: Control; pin d: Path; pin s: Path; reference "Q"; };
+        type Chip { pin gpio0; pin gnd: Ground; reference "U"; };
+        type Led { pin a; pin k; reference "D"; };
+        type Conn { pin gnd: Ground; reference "J"; };
+
+        let q1: Fet = Fet { value: "bs170" };
+        let u1: Chip = Chip { value: "x" };
+        let d1: Led = Led { value: "red" };
+        let j1: Conn = Conn { value: "y" };
+
+        node on
+            [j1.gnd.voltage == u1.gnd.voltage && d1.k.voltage == u1.gnd.voltage]
+            [true]
+        {
+            hold u1.gpio0.voltage == 3.3V {
+                d1.a = u1.gnd;
+            } through Fet;
+        }
+    

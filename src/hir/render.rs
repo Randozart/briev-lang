@@ -225,6 +225,8 @@ fn stmt_tag(kind: &HirStmtKind) -> &'static str {
         HirStmtKind::Gate(_) => "gate",
         HirStmtKind::Rollback(_) => "rollback",
         HirStmtKind::FreeHint(_) => "free-hint",
+        HirStmtKind::ReleaseOwned { .. } => "release-owned",
+        HirStmtKind::TempTransfer { .. } => "temp-transfer",
         HirStmtKind::KeepHint(_) => "keep-hint",
         HirStmtKind::SyncBlock(_) => "sync-block",
         HirStmtKind::Defer(_) => "defer",

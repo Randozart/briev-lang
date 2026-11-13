@@ -1,0 +1,1262 @@
+// exec.bv — reference ONNX executor over flat f32 tensors.
+//
+// Runs a graph in file order (topological for ONNX) with an environment of
+// named tensors. The first milestone covered elementwise ops; Conv / Gemm /
+// pooling / normalization / reshape carry the CNN ladder from a 3x3 conv to
+// ResNet-18. No model-specific branches: dispatch is by op type only.
+
+import "./onnx.bv";
+import "./tensor.bv";
+import "std/string.bv";
+
+
+defn attr_ints(node: OnnxNode, name: String, fallback: List<Int>) -> List<Int> {
+    foreach i in 0..node.attrs.Count#() {
+        when node.attrs[i].name == name { term node.attrs[i].ints; };
+    };
+    term fallback;
+};
+
+defn attr_int(node: OnnxNode, name: String, fallback: Int) -> Int {
+    foreach i in 0..node.attrs.Count#() {
+        when node.attrs[i].name == name { term node.attrs[i].i; };
+    };
+    term fallback;
+};
+
+defn attr_float(node: OnnxNode, name: String, fallback: Float) -> Float {
+    foreach i in 0..node.attrs.Count#() {
+        when node.attrs[i].name == name { term node.attrs[i].f; };
+    };
+    term fallback;
+};
+
+defn ints_or(items: List<Int>, fallback: List<Int>) -> List<Int> {
+    when items.Count#() == 0 { term fallback; };
+    term items;
+};
+
+defn env_find(env: List<Tensor>, name: String) -> Result<Tensor, String> {
+    foreach i in 0..env.Count#() {
+        when env[i].name == name { term Ok(env[i]); };
+    };
+    term Err(concat("missing tensor: ", name));
+};
+
+defn env_add(env: List<Tensor>, t: Tensor) -> List<Tensor> {
+    let next: List<Tensor> = env;
+    next <- t;
+    term next;
+};
+
+defn tensor_of(env: List<Tensor>, name: String) -> Result<Tensor, String> {
+    when (name .^Length) == 0 { term Err("empty ONNX input name"); };
+    term env_find(env, name);
+};
+
+
+defn tensor_sign(t: Tensor) -> Tensor {
+    let result: Tensor = tensor_named(t.name, t.dims, t.n);
+    foreach i in 0..t.n {
+        let x: Float = tensor_get(t, i);
+        let v: Float = 0.0;
+        when x > 0.0 { v = 1.0; };
+        when x < 0.0 { v = 0.0 - 1.0; };
+        tensor_set(result, i, v);
+    };
+    term result;
+};
+
+defn tensor_relu(t: Tensor) -> Tensor {
+    let result: Tensor = tensor_named(t.name, t.dims, t.n);
+    foreach i in 0..t.n {
+        let x: Float = tensor_get(t, i);
+        let v: Float = 0.0;
+        when x > 0.0 { v = x; };
+        tensor_set(result, i, v);
+    };
+    term result;
+};
+
+
+defn conv_attr4(node: OnnxNode, name: String, d0: Int) -> List<Int> {
+    let fallback: List<Int> = [d0, d0, d0, d0];
+    term ints_or(attr_ints(node, name, fallback), fallback);
+};
+
+defn patch_row(pp_addr: Int, out_off: Int, xp_addr: Int, ni: Int, ci: Int, ih: Int, iw0: Int, dw: Int, kw: Int, c: Int, h: Int, w: Int) -> Void {
+    let pp: Ptr<Float> = pp_addr as Ptr<Float>;
+    let xp: Ptr<Float> = xp_addr as Ptr<Float>;
+    foreach s in 0..kw {
+        let iw: Int = iw0 + s * dw;
+        let v: Float = 0.0;
+        when ih >= 0 && ih < h && iw >= 0 && iw < w {
+            v = xp[((ni * c + ci) * h + ih) * w + iw];
+        };
+        pp[out_off + s] = v;
+    };
+    term;
+};
+
+defn patch_channel(pp_addr: Int, pbase: Int, xp_addr: Int, ni: Int, ci: Int, oh: Int, ow: Int, sh: Int, sw: Int, pt: Int, pl: Int, dh: Int, dw: Int, karea: Int, kw: Int, c: Int, h: Int, w: Int) -> Void {
+    foreach r in 0..(karea / kw) {
+        let ih: Int = oh * sh - pt + r * dh;
+        patch_row(pp_addr, pbase + r * kw, xp_addr, ni, ci, ih, ow * sw - pl, dw, kw, c, h, w);
+    };
+    term;
+};
+
+defn dot_contig(ap_addr: Int, aoff: Int, bp_addr: Int, boff: Int, k: Int) -> Float {
+    let ap: Ptr<Float> = ap_addr as Ptr<Float>;
+    let bp: Ptr<Float> = bp_addr as Ptr<Float>;
+    let acc: Float = 0.0;
+    foreach kk in 0..k {
+        acc = acc + ap[aoff + kk] * bp[boff + kk];
+    };
+    term acc;
+};
+
+
+defn conv1d_fill(pp_addr: Int, base: Int, xp_addr: Int, ni: Int, ci: Int, ol: Int, c: Int, len: Int, stride: Int, pad: Int, dil: Int, k: Int) -> Void {
+    let pp: Ptr<Float> = pp_addr as Ptr<Float>;
+    let xp: Ptr<Float> = xp_addr as Ptr<Float>;
+    foreach kk in 0..k {
+        let il: Int = ol * stride - pad + kk * dil;
+        let v: Float = 0.0;
+        when il >= 0 && il < len { v = xp[(ni * c + ci) * len + il]; };
+        pp[base + kk] = v;
+    };
+    term;
+};
+
+defn conv1d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>) -> Result<Tensor, String> {
+    let xd: List<Int> = x.dims;
+    let wd: List<Int> = wt.dims;
+    when xd.Count#() != 3 || wd.Count#() != 3 { term Err("Conv1d expects 3-D input/weight"); };
+    let n: Int = xd[0];
+    let c: Int = xd[1];
+    let len: Int = xd[2];
+    let oc: Int = wd[0];
+    let ic: Int = wd[1];
+    let group: Int = attr_int(node, "group", 1);
+    when ic * group != c { term Err("Conv1d channel mismatch"); };
+    let ocg: Int = oc / group;
+    when ocg * group != oc { term Err("Conv1d output/group mismatch"); };
+    let k: Int = wd[2];
+    let strides: List<Int> = ints_or(attr_ints(node, "strides", [1]), [1]);
+    let pads: List<Int> = ints_or(attr_ints(node, "pads", [0, 0]), [0, 0]);
+    let dils: List<Int> = ints_or(attr_ints(node, "dilations", [1]), [1]);
+    let stride: Int = strides[0];
+    let pad_l: Int = pads[0];
+    let pad_r: Int = pads[1];
+    let dil: Int = dils[0];
+    let out_len: Int = (len + pad_l + pad_r - ((k - 1) * dil + 1)) / stride + 1;
+    let positions: Int = n * out_len;
+    let kdim: Int = c * k;
+    let krow: Int = ic * k;
+    let patch: Tensor = tensor_named4("", [positions, kdim], positions * kdim);
+    foreach p in 0..positions {
+        let ol: Int = p % out_len;
+        let ni: Int = p / out_len;
+        foreach ci in 0..c {
+            conv1d_fill(patch.ptr, p * kdim + ci * k, x.ptr, ni, ci, ol, c, len, stride, pad_l, dil, k);
+        };
+    };
+    let od: List<Int> = [n, oc, out_len];
+    let result: Tensor = tensor_take("", od, positions * oc);
+    let rp: Ptr<Float> = result.ptr as Ptr<Float>;
+    let has_bias: Bool = is_ok(bias);
+    foreach oi in 0..oc {
+        let bv: Float = 0.0;
+        when has_bias { bv = tensor_get(unwrap(bias), oi); };
+        let g: Int = oi / ocg;
+        foreach p in 0..positions {
+            let ni: Int = p / out_len;
+            let sp: Int = p % out_len;
+            let d: Float = dot_contig(wt.ptr, oi * krow, patch.ptr, p * kdim + g * krow, krow);
+            rp[(ni * oc + oi) * out_len + sp] = bv + d;
+        };
+    };
+    tensor_drop(patch);
+    term Ok(result);
+};
+
+defn conv2d(node: OnnxNode, x: Tensor, wt: Tensor, bias: Result<Tensor, String>) -> Result<Tensor, String> {
+    let xd: List<Int> = x.dims;
+    let wd: List<Int> = wt.dims;
+    when xd.Count#() != 4 || wd.Count#() != 4 { term Err("Conv expects 4-D input/weight"); };
+    let n: Int = xd[0];
+    let c: Int = xd[1];
+    let h: Int = xd[2];
+    let w: Int = xd[3];
+    let oc: Int = wd[0];
+    let ic: Int = wd[1];
+    let group: Int = attr_int(node, "group", 1);
+    when ic * group != c { term Err("Conv channel mismatch"); };
+    let ocg: Int = oc / group;
+    when ocg * group != oc { term Err("Conv output channel/group mismatch"); };
+    let kh: Int = wd[2];
+    let kw: Int = wd[3];
+    let strides: List<Int> = ints_or(attr_ints(node, "strides", [1, 1]), [1, 1]);
+    let pads: List<Int> = conv_attr4(node, "pads", 0);
+    let dils: List<Int> = ints_or(attr_ints(node, "dilations", [1, 1]), [1, 1]);
+    let sh: Int = strides[0];
+    let sw: Int = strides[1];
+    let pt: Int = pads[0];
+    let pl: Int = pads[1];
+    let out_h: Int = (h + pt + pads[2] - ((kh - 1) * dils[0] + 1)) / sh + 1;
+    let out_w: Int = (w + pl + pads[3] - ((kw - 1) * dils[1] + 1)) / sw + 1;
+    let karea: Int = kh * kw;
+    let kdim: Int = c * karea;
+    let krow: Int = ic * karea;
+    let positions: Int = n * out_h * out_w;
+    let out_plane: Int = out_h * out_w;
+
+    // im2col: one contiguous [positions x kdim] patch matrix. The dot loop
+    // then reads both operands contiguously, which is the shape LLVM
+    // vectorizes under -O3 -ffast-math.
+    let patch: Tensor = tensor_named4("", [positions, kdim], positions * kdim);
+    let pp: Ptr<Float> = patch.ptr as Ptr<Float>;
+    let xp: Ptr<Float> = x.ptr as Ptr<Float>;
+    foreach p in 0..positions {
+        let ow: Int = p % out_w;
+        let rest: Int = p / out_w;
+        let oh: Int = rest % out_h;
+        let ni: Int = rest / out_h;
+        foreach ci in 0..c {
+            let kbase: Int = ci * karea;
+            patch_channel(patch.ptr, p * kdim + kbase, x.ptr, ni, ci, oh, ow, sh, sw, pt, pl, dils[0], dils[1], karea, kw, c, h, w);
+        };
+    };
+
+    let od: List<Int> = [n, oc, out_h, out_w];
+    let result: Tensor = tensor_take("", od, n * oc * out_h * out_w);
+    let wp: Ptr<Float> = wt.ptr as Ptr<Float>;
+    let rp: Ptr<Float> = result.ptr as Ptr<Float>;
+    let has_bias: Bool = is_ok(bias);
+    foreach oi in 0..oc {
+        let bv: Float = 0.0;
+        when has_bias { bv = tensor_get(unwrap(bias), oi); };
+        foreach p in 0..positions {
+            let ni: Int = p / out_plane;
+            let sp: Int = p % out_plane;
+            let g: Int = oi / ocg;
+            let d: Float = dot_contig(wt.ptr, oi * krow, patch.ptr, p * kdim + g * krow, krow);
+            rp[(ni * oc + oi) * out_plane + sp] = bv + d;
+        };
+    };
+    tensor_drop(patch);
+    term Ok(result);
+};
+
+defn gemm_dot(ap_addr: Int, bp_addr: Int, i: Int, j: Int, k: Int, trans_a: Int, trans_b: Int, aref: Int, bref: Int) -> Float {
+    let ap: Ptr<Float> = ap_addr as Ptr<Float>;
+    let bp: Ptr<Float> = bp_addr as Ptr<Float>;
+    let acc: Float = 0.0;
+    foreach kk in 0..k {
+        let av: Float = ap[i * aref + kk];
+        when trans_a != 0 { av = ap[kk * aref + i]; };
+        let bv: Float = bp[kk * bref + j];
+        when trans_b != 0 { bv = bp[j * bref + kk]; };
+        acc = acc + av * bv;
+    };
+    term acc;
+};
+
+defn gemm(node: OnnxNode, a: Tensor, b: Tensor, c: Result<Tensor, String>) -> Result<Tensor, String> {
+    let ad: List<Int> = a.dims;
+    let bd: List<Int> = b.dims;
+    when ad.Count#() != 2 || bd.Count#() != 2 { term Err("Gemm expects 2-D operands"); };
+    let trans_a: Int = attr_int(node, "transA", 0);
+    let trans_b: Int = attr_int(node, "transB", 0);
+    let alpha: Float = attr_float(node, "alpha", 1.0);
+    let beta: Float = attr_float(node, "beta", 1.0);
+    let m: Int = ad[0];
+    let k: Int = ad[1];
+    when trans_a != 0 { m = ad[1]; k = ad[0]; };
+    let kb: Int = bd[0];
+    let n: Int = bd[1];
+    when trans_b != 0 { kb = bd[1]; n = bd[0]; };
+    when k != kb { term Err("Gemm inner dimension mismatch"); };
+    let od: List<Int> = [m, n];
+    let result: Tensor = tensor_take("", od, m * n);
+    foreach i in 0..m {
+        foreach j in 0..n {
+            let acc: Float = gemm_dot(a.ptr, b.ptr, i, j, k, trans_a, trans_b, ad[1], bd[1]);
+            let cv: Float = match c {
+                Ok(ct) => beta * tensor_get(ct, j),
+                Err(_) => 0.0,
+            };
+            tensor_set(result, i * n + j, alpha * acc + cv);
+        };
+    };
+    term Ok(result);
+};
+
+defn maxpool_cell(xp_addr: Int, base: Int, h: Int, w: Int, iy: Int, ix: Int) -> Float {
+    let xp: Ptr<Float> = xp_addr as Ptr<Float>;
+    when iy >= 0 && iy < h && ix >= 0 && ix < w {
+        term xp[base + iy * w + ix];
+    };
+    term 0.0 - 999999999999999999999999999999999999.0;
+};
+
+defn maxpool_window(xp_addr: Int, base: Int, h: Int, w: Int, oy: Int, ox: Int, sh: Int, sw: Int, pt: Int, pl: Int, kh: Int, kw: Int) -> Float {
+    let acc: Float = 0.0 - 999999999999999999999999999999999999.0;
+    foreach r in 0..kh {
+        foreach s in 0..kw {
+            let v: Float = maxpool_cell(xp_addr, base, h, w, oy * sh - pt + r, ox * sw - pl + s);
+            when v > acc { acc = v; };
+        };
+    };
+    term acc;
+};
+
+defn maxpool(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
+    let xd: List<Int> = x.dims;
+    when xd.Count#() != 4 { term Err("MaxPool expects 4-D input"); };
+    let n: Int = xd[0];
+    let c: Int = xd[1];
+    let h: Int = xd[2];
+    let w: Int = xd[3];
+    let ks: List<Int> = ints_or(attr_ints(node, "kernel_shape", [2, 2]), [2, 2]);
+    let ss: List<Int> = ints_or(attr_ints(node, "strides", ks), ks);
+    let ps: List<Int> = conv_attr4(node, "pads", 0);
+    let kh: Int = ks[0];
+    let kw: Int = ks[1];
+    let sh: Int = ss[0];
+    let sw: Int = ss[1];
+    let oh: Int = (h + ps[0] + ps[2] - kh) / sh + 1;
+    let ow: Int = (w + ps[1] + ps[3] - kw) / sw + 1;
+    let od: List<Int> = [n, c, oh, ow];
+    let total: Int = n * c * oh * ow;
+    let result: Tensor = tensor_take("", od, total);
+    let xp: Ptr<Float> = x.ptr as Ptr<Float>;
+    let rp: Ptr<Float> = result.ptr as Ptr<Float>;
+    let out_plane: Int = oh * ow;
+    foreach idx in 0..total {
+        let ow_i: Int = idx % ow;
+        let rest: Int = idx / ow;
+        let oh_i: Int = rest % oh;
+        let nc: Int = rest / oh;
+        let base: Int = nc * h * w;
+        rp[idx] = maxpool_window(x.ptr, base, h, w, oh_i, ow_i, sh, sw, ps[0], ps[1], kh, kw);
+    };
+    term Ok(result);
+};
+
+defn plane_sum(xp_addr: Int, base: Int, plane: Int) -> Float {
+    let xp: Ptr<Float> = xp_addr as Ptr<Float>;
+    let acc: Float = 0.0;
+    foreach j in 0..plane {
+        acc = acc + xp[base + j];
+    };
+    term acc;
+};
+
+defn tensor_reduce_mean(node: OnnxNode, x: Tensor, axes_t: Result<Tensor, String>) -> Result<Tensor, String> {
+    let rank: Int = x.dims.Count#();
+    let ax: List<Int> = [];
+    when is_ok(axes_t) {
+        let at: Tensor = unwrap(axes_t);
+        foreach i in 0..at.n { ax <- tensor_get(at, i) as Int; };
+    };
+    when ax.Count#() == 0 { ax = attr_ints(node, "axes", []); };
+    when ax.Count#() == 0 { foreach i in 0..rank { ax <- i; }; };
+    let keep: Int = attr_int(node, "keepdims", 1);
+    let od: List<Int> = [];
+    foreach i in 0..rank {
+        let reduced: Bool = false;
+        foreach j in 0..ax.Count#() {
+            let a: Int = ax[j];
+            let an: Int = a;
+            when an < 0 { an = an + rank; };
+            when an == i { reduced = true; };
+        };
+        when !reduced { od <- x.dims[i]; };
+        when reduced && keep != 0 { od <- 1; };
+    };
+    let on: Int = dims_product(od);
+    let dst: List<Int> = strides_of(od);
+    let sums: Tensor = tensor_take("", od, on);
+    foreach i in 0..on { tensor_set(sums, i, 0.0); };
+    foreach idx in 0..x.n {
+        let rem: Int = idx;
+        let oi: Int = 0;
+        foreach k in 0..rank {
+            let axis: Int = rank - 1 - k;
+            let coord: Int = rem % x.dims[axis];
+            rem = rem / x.dims[axis];
+            let reduced: Bool = false;
+            foreach j in 0..ax.Count#() {
+                let a: Int = ax[j];
+                let an: Int = a;
+                when an < 0 { an = an + rank; };
+                when an == axis { reduced = true; };
+            };
+            when !reduced { oi = oi + coord * dst[axis]; };
+        };
+        tensor_set(sums, oi, tensor_get(sums, oi) + tensor_get(x, idx));
+    };
+    let count: Int = x.n / on;
+    let result: Tensor = tensor_take("", od, on);
+    foreach i in 0..on {
+        tensor_set(result, i, tensor_get(sums, i) / (count as Float));
+    };
+    term Ok(result);
+};
+
+
+defn global_avg(x: Tensor) -> Result<Tensor, String> {
+    let xd: List<Int> = x.dims;
+    when xd.Count#() != 4 { term Err("GlobalAveragePool expects 4-D input"); };
+    let n: Int = xd[0];
+    let c: Int = xd[1];
+    let plane: Int = xd[2] * xd[3];
+    let od: List<Int> = [n, c, 1, 1];
+    let result: Tensor = tensor_take("", od, n * c);
+    let xp: Ptr<Float> = x.ptr as Ptr<Float>;
+    foreach nc in 0..(n * c) {
+        tensor_set(result, nc, plane_sum(x.ptr, nc * plane, plane) / (plane as Float));
+    };
+    term Ok(result);
+};
+
+defn tensor_identity(x: Tensor) -> Tensor {
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
+    term result;
+};
+
+defn reshape(node: OnnxNode, x: Tensor, shape_t: Tensor) -> Result<Tensor, String> {
+    let src: List<Int> = x.dims;
+    let wanted: List<Int> = [];
+    foreach i in 0..shape_t.n {
+        let v: Int = tensor_get(shape_t, i) as Int;
+        let next: List<Int> = wanted;
+        next <- v;
+        wanted = next;
+    };
+    let known: Int = 1;
+    foreach i in 0..wanted.Count#() {
+        when wanted[i] > 0 { known = known * wanted[i]; };
+    };
+    let dims: List<Int> = [];
+    foreach i in 0..wanted.Count#() {
+        let v: Int = wanted[i];
+        when v == 0 && i < src.Count#() { v = src[i]; };
+        when v == -1 { v = x.n / known; };
+        dims <- v;
+    };
+    let result: Tensor = tensor_take("", dims, x.n);
+    foreach i in 0..x.n {
+        tensor_set(result, i, tensor_get(x, i));
+    };
+    term Ok(result);
+};
+
+defn bn_channel(xp_addr: Int, bp_addr: Int, base: Int, plane: Int, scale: Float, bias: Float, mean: Float, var: Float, eps: Float) -> Void {
+    let xp: Ptr<Float> = xp_addr as Ptr<Float>;
+    let bp: Ptr<Float> = bp_addr as Ptr<Float>;
+    let denom: Float = Sqrt#(var + eps);
+    foreach j in 0..plane {
+        let v: Float = (xp[base + j] - mean) / denom;
+        bp[base + j] = v * scale + bias;
+    };
+    term;
+};
+
+defn batchnorm(node: OnnxNode, x: Tensor, scale: Tensor, bias: Tensor, mean: Tensor, var: Tensor) -> Result<Tensor, String> {
+    let xd: List<Int> = x.dims;
+    when xd.Count#() < 2 { term Err("BatchNormalization expects rank >= 2"); };
+    let n: Int = xd[0];
+    let c: Int = xd[1];
+    let plane: Int = x.n / (n * c);
+    let eps: Float = attr_float(node, "epsilon", 0.00001);
+    let result: Tensor = tensor_take("", xd, x.n);
+    let xp: Ptr<Float> = x.ptr as Ptr<Float>;
+    let bp: Ptr<Float> = result.ptr as Ptr<Float>;
+    foreach ci in 0..c {
+        foreach ni in 0..n {
+            let base: Int = (ni * c + ci) * plane;
+            bn_channel(x.ptr, result.ptr, base, plane, tensor_get(scale, ci), tensor_get(bias, ci), tensor_get(mean, ci), tensor_get(var, ci), eps);
+        };
+    };
+    term Ok(result);
+};
+
+defn flatten(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
+    let axis: Int = attr_int(node, "axis", 1);
+    let xd: List<Int> = x.dims;
+    let first: Int = 1;
+    let second: Int = 1;
+    foreach i in 0..xd.Count#() {
+        when i < axis { first = first * xd[i]; };
+        when i >= axis { second = second * xd[i]; };
+    };
+    let od: List<Int> = [first, second];
+    let result: Tensor = tensor_take("", od, x.n);
+    foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
+    term Ok(result);
+};
+
+defn round_even(v: Float) -> Float {
+    let f: Float = Floor#(v);
+    let d: Float = v - f;
+    when d > 0.5 { term f + 1.0; };
+    when d < 0.5 { term f; };
+    let i: Int = f as Int;
+    when i % 2 == 0 { term f; };
+    term f + 1.0;
+};
+
+defn axis_channel(idx: Int, dims: List<Int>, axis: Int) -> Int {
+    let stride: Int = 1;
+    foreach i in 0..dims.Count#() {
+        when i > axis { stride = stride * dims[i]; };
+    };
+    term (idx / stride) % dims[axis];
+};
+
+defn quantize_linear(node: OnnxNode, x: Tensor, scale: Tensor, zp: Result<Tensor, String>) -> Tensor {
+    let axis: Int = attr_int(node, "axis", 1);
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n {
+        let c: Int = 0;
+        when scale.n > 1 { c = axis_channel(i, x.dims, axis); };
+        let s: Float = tensor_get(scale, c);
+        let z: Float = match zp { Ok(zt) => tensor_get(zt, c), Err(_) => 0.0 };
+        let q: Float = round_even(tensor_get(x, i) / s) + z;
+        when q < 0.0 - 128.0 { q = 0.0 - 128.0; };
+        when q > 127.0 { q = 127.0; };
+        tensor_set(result, i, q);
+    };
+    term result;
+};
+
+defn dequantize_linear(node: OnnxNode, x: Tensor, scale: Tensor, zp: Result<Tensor, String>) -> Tensor {
+    let axis: Int = attr_int(node, "axis", 1);
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n {
+        let c: Int = 0;
+        when scale.n > 1 { c = axis_channel(i, x.dims, axis); };
+        let s: Float = tensor_get(scale, c);
+        let z: Float = match zp { Ok(zt) => tensor_get(zt, c), Err(_) => 0.0 };
+        tensor_set(result, i, (tensor_get(x, i) - z) * s);
+    };
+    term result;
+};
+
+defn axes_of(node: OnnxNode, env: List<Tensor>, ins: List<String>, fallback: List<Int>) -> List<Int> {
+    when ins.Count#() > 1 {
+        let ar: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_ok(ar) {
+            let at: Tensor = unwrap(ar);
+            let axes_out: List<Int> = [];
+            foreach i in 0..at.n { axes_out <- tensor_get(at, i) as Int; };
+            term axes_out;
+        };
+    };
+    term attr_ints(node, "axes", fallback);
+};
+
+defn tensor_unsqueeze(x: Tensor, axes: List<Int>) -> Tensor {
+    let new_rank: Int = x.dims.Count#() + axes.Count#();
+    let od: List<Int> = [];
+    let k: Int = 0;
+    foreach pos in 0..new_rank {
+        let is_axis: Bool = false;
+        foreach ai in 0..axes.Count#() {
+            let a: Int = axes[ai];
+            when a < 0 { a = a + new_rank; };
+            when a == pos { is_axis = true; };
+        };
+        when is_axis { od <- 1; };
+        when !is_axis { od <- x.dims[k]; k = k + 1; };
+    };
+    let result: Tensor = tensor_take("", od, x.n);
+    foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
+    term result;
+};
+
+defn tensor_squeeze(x: Tensor, axes: List<Int>) -> Tensor {
+    let rank: Int = x.dims.Count#();
+    let od: List<Int> = [];
+    foreach pos in 0..rank {
+        let drop: Bool = false;
+        when axes.Count#() == 0 && x.dims[pos] == 1 { drop = true; };
+        foreach ai in 0..axes.Count#() {
+            let a: Int = axes[ai];
+            when a < 0 { a = a + rank; };
+            when a == pos { drop = true; };
+        };
+        when !drop { od <- x.dims[pos]; };
+    };
+    let result: Tensor = tensor_take("", od, x.n);
+    foreach i in 0..x.n { tensor_set(result, i, tensor_get(x, i)); };
+    term result;
+};
+
+defn slice_bounds(s: Int, e: Int, dim: Int, step: Int) -> (Int, Int) {
+    let st: Int = s;
+    when st < 0 { st = st + dim; };
+    when st < 0 { st = 0; };
+    when st > dim { st = dim; };
+    let en: Int = e;
+    when en < 0 { en = en + dim; };
+    when en < 0 { en = 0; };
+    when en > dim { en = dim; };
+    term (st, en);
+};
+
+defn tensor_slice(node: OnnxNode, x: Tensor, starts: Tensor, ends_t: Tensor, axes_t: Result<Tensor, String>, steps_t: Result<Tensor, String>) -> Result<Tensor, String> {
+    let rank: Int = x.dims.Count#();
+    let ax: List<Int> = [];
+    when is_ok(axes_t) {
+        let at: Tensor = unwrap(axes_t);
+        foreach i in 0..at.n { ax <- tensor_get(at, i) as Int; };
+    };
+    when ax.Count#() == 0 {
+        foreach i in 0..rank { ax <- i; };
+    };
+    let stp: List<Int> = [];
+    foreach i in 0..ax.Count#() {
+        let v: Int = 1;
+        when is_ok(steps_t) {
+            let stt: Tensor = unwrap(steps_t);
+            when i < stt.n { v = tensor_get(stt, i) as Int; };
+        };
+        when v <= 0 { term Err("Slice negative step unsupported"); };
+        stp <- v;
+    };
+    let lo: List<Int> = [];
+    foreach i in 0..rank { lo <- 0; };
+    let hi: List<Int> = [];
+    foreach i in 0..rank { hi <- x.dims[i]; };
+    let step: List<Int> = [];
+    foreach i in 0..rank { step <- 1; };
+    foreach i in 0..ax.Count#() {
+        let a: Int = ax[i];
+        let an: Int = a;
+        when an < 0 { an = an + rank; };
+        let dimf: Float = x.dims[an] as Float;
+        let sf: Float = tensor_get(starts, i);
+        let ef: Float = tensor_get(ends_t, i);
+        when sf > dimf { sf = dimf; };
+        when sf < 0.0 - dimf { sf = 0.0 - dimf; };
+        when ef > dimf { ef = dimf; };
+        when ef < 0.0 - dimf { ef = 0.0 - dimf; };
+        let (s0, e0) = slice_bounds(sf as Int, ef as Int, x.dims[an], stp[i]);
+        lo[an] = s0;
+        hi[an] = e0;
+        step[an] = stp[i];
+    };
+    let od: List<Int> = [];
+    foreach i in 0..rank {
+        let d: Int = (hi[i] - lo[i] + step[i] - 1) / step[i];
+        when d < 0 { d = 0; };
+        od <- d;
+    };
+    let n: Int = dims_product(od);
+    let result: Tensor = tensor_take("", od, n);
+    foreach idx in 0..n {
+        let rem: Int = idx;
+        let in_idx: Int = 0;
+        let stride: Int = 1;
+        foreach k in 0..rank {
+            let axis: Int = rank - 1 - k;
+            let coord: Int = rem % od[axis];
+            rem = rem / od[axis];
+            in_idx = in_idx + (lo[axis] + coord * step[axis]) * stride;
+            stride = stride * x.dims[axis];
+        };
+        tensor_set(result, idx, tensor_get(x, in_idx));
+    };
+    term Ok(result);
+};
+
+defn pow_float(a: Float, b: Float) -> Float {
+    let bi: Int = b as Int;
+    let is_int: Bool = (bi as Float) == b;
+    when is_int && bi >= 0 {
+        let acc: Float = 1.0;
+        foreach i in 0..bi { acc = acc * a; };
+        term acc;
+    };
+    when is_int && bi < 0 {
+        let acc: Float = 1.0;
+        let n: Int = 0 - bi;
+        foreach i in 0..n { acc = acc * a; };
+        term 1.0 / acc;
+    };
+    when b == 0.5 { term Sqrt#(a); };
+    term 0.0;
+};
+
+defn apply_binop(a: Float, b: Float, op: Int) -> Float {
+    let v: Float = a + b;
+    when op == 1 { v = a - b; };
+    when op == 2 { v = a * b; };
+    when op == 3 { v = a / b; };
+    when op == 4 { v = pow_float(a, b); };
+    term v;
+};
+
+defn bcast_index(idx: Int, out_dims: List<Int>, dims: List<Int>) -> Int {
+    let rank: Int = out_dims.Count#();
+    let in_rank: Int = dims.Count#();
+    let rem: Int = idx;
+    let acc: Int = 0;
+    let stride: Int = 1;
+    foreach k in 0..rank {
+        let axis: Int = rank - 1 - k;
+        let coord: Int = rem % out_dims[axis];
+        rem = rem / out_dims[axis];
+        let ia: Int = axis - (rank - in_rank);
+        let ic: Int = 0;
+        when ia >= 0 && dims[ia] != 1 { ic = coord; };
+        when ia >= 0 { acc = acc + ic * stride; };
+        when ia >= 0 { stride = stride * dims[ia]; };
+    };
+    term acc;
+};
+
+defn tensor_binary(x: Tensor, y: Tensor, op: Int) -> Result<Tensor, String> {
+    when x.n != y.n {
+        // Broadcast path: right-align dims; every dim must match or be 1.
+        let xr: Int = x.dims.Count#();
+        let yr: Int = y.dims.Count#();
+        let rank: Int = xr;
+        when yr > rank { rank = yr; };
+        let od: List<Int> = [];
+        foreach i in 0..rank {
+            let xa: Int = i - (rank - xr);
+            let ya: Int = i - (rank - yr);
+            let xd: Int = 1;
+            let yd: Int = 1;
+            when xa >= 0 { xd = x.dims[xa]; };
+            when ya >= 0 { yd = y.dims[ya]; };
+            let d: Int = xd;
+            when yd > d { d = yd; };
+            when xd != yd && xd != 1 && yd != 1 { term Err("binary broadcast mismatch"); };
+            od <- d;
+        };
+        let n: Int = dims_product(od);
+        let result: Tensor = tensor_take("", od, n);
+        foreach i in 0..n {
+            let xa: Int = bcast_index(i, od, x.dims);
+            let ya: Int = bcast_index(i, od, y.dims);
+            tensor_set(result, i, apply_binop(tensor_get(x, xa), tensor_get(y, ya), op));
+        };
+        term Ok(result);
+    };
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n {
+        tensor_set(result, i, apply_binop(tensor_get(x, i), tensor_get(y, i), op));
+    };
+    term Ok(result);
+};
+
+defn strides_of(dims: List<Int>) -> List<Int> {
+    let rank: Int = dims.Count#();
+    let st: List<Int> = [];
+    foreach i in 0..rank { st <- 1; };
+    let acc: Int = 1;
+    foreach k in 0..rank {
+        let axis: Int = rank - 1 - k;
+        st[axis] = acc;
+        acc = acc * dims[axis];
+    };
+    term st;
+};
+
+defn tensor_gather(node: OnnxNode, x: Tensor, idx_t: Tensor) -> Result<Tensor, String> {
+    let axis: Int = attr_int(node, "axis", 0);
+    let rank: Int = x.dims.Count#();
+    let an: Int = axis;
+    when an < 0 { an = an + rank; };
+    when an < 0 || an >= rank { term Err("Gather axis out of range"); };
+    let ir: Int = idx_t.dims.Count#();
+    let od: List<Int> = [];
+    foreach i in 0..an { od <- x.dims[i]; };
+    foreach i in 0..ir { od <- idx_t.dims[i]; };
+    foreach i in (an + 1)..rank { od <- x.dims[i]; };
+    let orank: Int = od.Count#();
+    let dst: List<Int> = strides_of(x.dims);
+    let ist: List<Int> = strides_of(idx_t.dims);
+    let n: Int = dims_product(od);
+    let result: Tensor = tensor_take("", od, n);
+    foreach out_idx in 0..n {
+        let rem: Int = out_idx;
+        let data_idx: Int = 0;
+        let idx_idx: Int = 0;
+        foreach k in 0..orank {
+            let ax: Int = orank - 1 - k;
+            let coord: Int = rem % od[ax];
+            rem = rem / od[ax];
+            when ax < an { data_idx = data_idx + coord * dst[ax]; };
+            when ax >= an + ir { data_idx = data_idx + coord * dst[ax - ir + 1]; };
+            when ax >= an && ax < an + ir { idx_idx = idx_idx + coord * ist[ax - an]; };
+        };
+        let g: Int = tensor_get(idx_t, idx_idx) as Int;
+        when g < 0 { g = g + x.dims[an]; };
+        when g < 0 || g >= x.dims[an] { term Err("Gather index out of range"); };
+        tensor_set(result, out_idx, tensor_get(x, data_idx + g * dst[an]));
+    };
+    term Ok(result);
+};
+
+defn split_into(node: OnnxNode, x: Tensor, sizes: Result<Tensor, String>, env0: List<Tensor>) -> Result<List<Tensor>, String> {
+    let axis: Int = attr_int(node, "axis", 0);
+    let rank: Int = x.dims.Count#();
+    let an: Int = axis;
+    when an < 0 { an = an + rank; };
+    let parts: Int = node.outs.Count#();
+    let dst: List<Int> = strides_of(x.dims);
+    let env: List<Tensor> = env0;
+    let offset: Int = 0;
+    foreach part in 0..parts {
+        let sz: Int = x.dims[an] / parts;
+        when is_ok(sizes) {
+            let st: Tensor = unwrap(sizes);
+            when part < st.n { sz = tensor_get(st, part) as Int; };
+        };
+        let od: List<Int> = [];
+        foreach i in 0..rank {
+            when i == an { od <- sz; };
+            when i != an { od <- x.dims[i]; };
+        };
+        let n: Int = dims_product(od);
+        let y: Tensor = tensor_named(node.outs[part], od, n);
+        foreach out_idx in 0..n {
+            let rem: Int = out_idx;
+            let in_idx: Int = 0;
+            foreach k in 0..rank {
+                let ax: Int = rank - 1 - k;
+                let coord: Int = rem % od[ax];
+                rem = rem / od[ax];
+                let src: Int = coord;
+                when ax == an { src = coord + offset; };
+                in_idx = in_idx + src * dst[ax];
+            };
+            tensor_set(y, out_idx, tensor_get(x, in_idx));
+        };
+        env <- y;
+        offset = offset + sz;
+    };
+    term Ok(env);
+};
+
+defn tensor_concat(node: OnnxNode, parts: List<Tensor>) -> Result<Tensor, String> {
+    when parts.Count#() == 0 { term Err("Concat needs inputs"); };
+    let first: Tensor = parts[0];
+    let rank: Int = first.dims.Count#();
+    let axis: Int = attr_int(node, "axis", 0);
+    let an: Int = axis;
+    when an < 0 { an = an + rank; };
+    let od: List<Int> = [];
+    foreach i in 0..rank { od <- first.dims[i]; };
+    let total: Int = 0;
+    foreach k in 0..parts.Count#() { total = total + parts[k].dims[an]; };
+    od[an] = total;
+    let n: Int = dims_product(od);
+    let result: Tensor = tensor_take("", od, n);
+    let offset: Int = 0;
+    foreach k in 0..parts.Count#() {
+        let t: Tensor = parts[k];
+        let src: List<Int> = strides_of(t.dims);
+        foreach out_idx in 0..n {
+            let rem: Int = out_idx;
+            let coord_axis: Int = 0;
+            let in_idx: Int = 0;
+            foreach kk in 0..rank {
+                let ax: Int = rank - 1 - kk;
+                let coord: Int = rem % od[ax];
+                rem = rem / od[ax];
+                when ax == an { coord_axis = coord; };
+                when ax != an { in_idx = in_idx + coord * src[ax]; };
+            };
+            when coord_axis >= offset && coord_axis < offset + t.dims[an] {
+                let local: Int = coord_axis - offset;
+                tensor_set(result, out_idx, tensor_get(t, in_idx + local * src[an]));
+            };
+        };
+        offset = offset + t.dims[an];
+    };
+    term Ok(result);
+};
+
+defn tensor_pad(node: OnnxNode, x: Tensor, pads: Tensor, value: Float) -> Tensor {
+    let rank: Int = x.dims.Count#();
+    let od: List<Int> = [];
+    foreach i in 0..rank {
+        let before: Int = tensor_get(pads, i) as Int;
+        let after: Int = tensor_get(pads, rank + i) as Int;
+        od <- x.dims[i] + before + after;
+    };
+    let n: Int = dims_product(od);
+    let result: Tensor = tensor_take("", od, n);
+    foreach idx in 0..n {
+        let rem: Int = idx;
+        let in_idx: Int = 0;
+        let stride: Int = 1;
+        let ok: Bool = true;
+        foreach k in 0..rank {
+            let axis: Int = rank - 1 - k;
+            let coord: Int = rem % od[axis];
+            rem = rem / od[axis];
+            let ic: Int = coord - (tensor_get(pads, axis) as Int);
+            when ic < 0 || ic >= x.dims[axis] { ok = false; };
+            in_idx = in_idx + ic * stride;
+            stride = stride * x.dims[axis];
+        };
+        let v: Float = value;
+        when ok { v = tensor_get(x, in_idx); };
+        tensor_set(result, idx, v);
+    };
+    term result;
+};
+
+defn tensor_sqrt(x: Tensor) -> Tensor {
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n { tensor_set(result, i, Sqrt#(tensor_get(x, i))); };
+    term result;
+};
+
+defn tensor_tanh(x: Tensor) -> Tensor {
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n {
+        let v: Float = tensor_get(x, i);
+        tensor_set(result, i, 2.0 / (1.0 + Exp#(0.0 - 2.0 * v)) - 1.0);
+    };
+    term result;
+};
+
+defn tensor_sigmoid(x: Tensor) -> Tensor {
+    let result: Tensor = tensor_named("", x.dims, x.n);
+    foreach i in 0..x.n {
+        let v: Float = tensor_get(x, i);
+        tensor_set(result, i, 1.0 / (1.0 + Exp#(0.0 - v)));
+    };
+    term result;
+};
+
+defn transpose4(node: OnnxNode, x: Tensor) -> Result<Tensor, String> {
+    let p: List<Int> = attr_ints(node, "perm", [0, 1, 2, 3]);
+    when p.Count#() != 4 || x.dims.Count#() != 4 { term Err("Transpose expects 4-D perm"); };
+    let d: List<Int> = x.dims;
+    let od: List<Int> = [d[p[0]], d[p[1]], d[p[2]], d[p[3]]];
+    let n: Int = x.n;
+    let result: Tensor = tensor_take("", od, n);
+    foreach idx in 0..n {
+        let o3: Int = idx % od[3];
+        let r3: Int = idx / od[3];
+        let o2: Int = r3 % od[2];
+        let r2: Int = r3 / od[2];
+        let o1: Int = r2 % od[1];
+        let o0: Int = r2 / od[1];
+        let i0: Int = 0;
+        let i1: Int = 0;
+        let i2: Int = 0;
+        let i3: Int = 0;
+        when p[0] == 0 { i0 = o0; };
+        when p[0] == 1 { i1 = o0; };
+        when p[0] == 2 { i2 = o0; };
+        when p[0] == 3 { i3 = o0; };
+        when p[1] == 0 { i0 = o1; };
+        when p[1] == 1 { i1 = o1; };
+        when p[1] == 2 { i2 = o1; };
+        when p[1] == 3 { i3 = o1; };
+        when p[2] == 0 { i0 = o2; };
+        when p[2] == 1 { i1 = o2; };
+        when p[2] == 2 { i2 = o2; };
+        when p[2] == 3 { i3 = o2; };
+        when p[3] == 0 { i0 = o3; };
+        when p[3] == 1 { i1 = o3; };
+        when p[3] == 2 { i2 = o3; };
+        when p[3] == 3 { i3 = o3; };
+        let src: Int = ((i0 * d[1] + i1) * d[2] + i2) * d[3] + i3;
+        tensor_set(result, idx, tensor_get(x, src));
+    };
+    term Ok(result);
+};
+
+defn resize_nearest(node: OnnxNode, x: Tensor, scales: Tensor) -> Result<Tensor, String> {
+    let d: List<Int> = x.dims;
+    when d.Count#() != 4 || scales.n != 4 { term Err("Resize expects 4-D input + 4 scales"); };
+    let oh: Int = (d[2] as Float * tensor_get(scales, 2)) as Int;
+    let ow: Int = (d[3] as Float * tensor_get(scales, 3)) as Int;
+    let od: List<Int> = [d[0], d[1], oh, ow];
+    let result: Tensor = tensor_take("", od, d[0] * d[1] * oh * ow);
+    let sh: Float = tensor_get(scales, 2);
+    let sw: Float = tensor_get(scales, 3);
+    foreach idx in 0..result.n {
+        let ox: Int = idx % ow;
+        let r1: Int = idx / ow;
+        let oy: Int = r1 % oh;
+        let r2: Int = r1 / oh;
+        let ci: Int = r2 % d[1];
+        let ni: Int = r2 / d[1];
+        let iy: Int = (oy as Float / sh) as Int;
+        let ix: Int = (ox as Float / sw) as Int;
+        let src: Int = ((ni * d[1] + ci) * d[2] + iy) * d[3] + ix;
+        tensor_set(result, idx, tensor_get(x, src));
+    };
+    term Ok(result);
+};
+
+defn run_node(node: OnnxNode, env: List<Tensor>) -> Result<List<Tensor>, String> {
+    let ins: List<String> = node.ins;
+    when ins.Count#() == 0 { term Err("ONNX node has no inputs"); };
+    let xr: Result<Tensor, String> = tensor_of(env, ins[0]);
+    when is_err(xr) { term Err("node input not found"); };
+    let x: Tensor = unwrap(xr);
+    when node.op_type == "Sign" {
+        let y: Tensor = tensor_rename(tensor_sign(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Relu" {
+        let y: Tensor = tensor_rename(tensor_relu(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Mul" {
+        let yr: Result<Tensor, String> = tensor_binary(x, unwrap(tensor_of(env, ins[1])), 2);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Sub" {
+        let yr: Result<Tensor, String> = tensor_binary(x, unwrap(tensor_of(env, ins[1])), 1);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Div" {
+        let yr: Result<Tensor, String> = tensor_binary(x, unwrap(tensor_of(env, ins[1])), 3);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Pow" {
+        let yr: Result<Tensor, String> = tensor_binary(x, unwrap(tensor_of(env, ins[1])), 4);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Add" {
+        let yr: Result<Tensor, String> = tensor_binary(x, unwrap(tensor_of(env, ins[1])), 0);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Conv" {
+        let wr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(wr) { term Err("Conv weight missing"); };
+        let br: Result<Tensor, String> = Err("no bias");
+        when ins.Count#() > 2 { br = tensor_of(env, ins[2]); };
+        let yr: Result<Tensor, String> = Err("bad conv rank");
+        when x.dims.Count#() == 4 { yr = conv2d(node, x, unwrap(wr), br); };
+        when x.dims.Count#() == 3 { yr = conv1d(node, x, unwrap(wr), br); };
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Gemm" {
+        let br: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(br) { term Err("Gemm weight missing"); };
+        let cr: Result<Tensor, String> = Err("no bias");
+        when ins.Count#() > 2 { cr = tensor_of(env, ins[2]); };
+        let yr: Result<Tensor, String> = gemm(node, x, unwrap(br), cr);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "MaxPool" {
+        let yr: Result<Tensor, String> = maxpool(node, x);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "ReduceMean" {
+        let axr: Result<Tensor, String> = Err("no axes");
+        when ins.Count#() > 1 { axr = tensor_of(env, ins[1]); };
+        let yr: Result<Tensor, String> = tensor_reduce_mean(node, x, axr);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "GlobalAveragePool" {
+        let yr: Result<Tensor, String> = global_avg(x);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Identity" {
+        let y: Tensor = tensor_rename(tensor_identity(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "QuantizeLinear" {
+        let sr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(sr) { term Err("QuantizeLinear scale missing"); };
+        let zr: Result<Tensor, String> = Err("no zp");
+        when ins.Count#() > 2 { zr = tensor_of(env, ins[2]); };
+        let y: Tensor = tensor_rename(quantize_linear(node, x, unwrap(sr), zr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "DequantizeLinear" {
+        let sr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(sr) { term Err("DequantizeLinear scale missing"); };
+        let zr: Result<Tensor, String> = Err("no zp");
+        when ins.Count#() > 2 { zr = tensor_of(env, ins[2]); };
+        let y: Tensor = tensor_rename(dequantize_linear(node, x, unwrap(sr), zr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Pad" {
+        let pr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(pr) { term Err("Pad pads missing"); };
+        let cv: Float = attr_float(node, "value", 0.0);
+        when ins.Count#() > 2 {
+            let cvr: Result<Tensor, String> = tensor_of(env, ins[2]);
+            when is_ok(cvr) { cv = tensor_get(unwrap(cvr), 0); };
+        };
+        let y: Tensor = tensor_rename(tensor_pad(node, x, unwrap(pr), cv), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Concat" {
+        let parts: List<Tensor> = [];
+        foreach i in 0..ins.Count#() { parts <- unwrap(tensor_of(env, ins[i])); };
+        let cr: Result<Tensor, String> = tensor_concat(node, parts);
+        when is_err(cr) { match cr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(cr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Split" {
+        let szr: Result<Tensor, String> = Err("no split");
+        when ins.Count#() > 1 { szr = tensor_of(env, ins[1]); };
+        let er: Result<List<Tensor>, String> = split_into(node, x, szr, env);
+        when is_err(er) { match er { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        term Ok(unwrap(er));
+    };
+    when node.op_type == "Gather" {
+        let ir: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(ir) { term Err("Gather indices missing"); };
+        let yr: Result<Tensor, String> = tensor_gather(node, x, unwrap(ir));
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Slice" {
+        when ins.Count#() < 3 { term Err("Slice needs starts/ends"); };
+        let sr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        let er: Result<Tensor, String> = tensor_of(env, ins[2]);
+        when is_err(sr) || is_err(er) { term Err("Slice bounds missing"); };
+        let axr: Result<Tensor, String> = Err("no axes");
+        when ins.Count#() > 3 { axr = tensor_of(env, ins[3]); };
+        let str: Result<Tensor, String> = Err("no steps");
+        when ins.Count#() > 4 { str = tensor_of(env, ins[4]); };
+        let yr: Result<Tensor, String> = tensor_slice(node, x, unwrap(sr), unwrap(er), axr, str);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Unsqueeze" {
+        let ax: List<Int> = axes_of(node, env, ins, []);
+        let y: Tensor = tensor_rename(tensor_unsqueeze(x, ax), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Squeeze" {
+        let ax: List<Int> = axes_of(node, env, ins, []);
+        let y: Tensor = tensor_rename(tensor_squeeze(x, ax), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Sqrt" {
+        let y: Tensor = tensor_rename(tensor_sqrt(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Tanh" {
+        let y: Tensor = tensor_rename(tensor_tanh(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Sigmoid" {
+        let y: Tensor = tensor_rename(tensor_sigmoid(x), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Transpose" {
+        let yr: Result<Tensor, String> = transpose4(node, x);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Resize" {
+        let sr: Result<Tensor, String> = tensor_of(env, ins[2]);
+        when is_err(sr) { term Err("Resize scales missing"); };
+        let yr: Result<Tensor, String> = resize_nearest(node, x, unwrap(sr));
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Reshape" {
+        let sr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        when is_err(sr) { term Err("Reshape shape missing"); };
+        let yr: Result<Tensor, String> = reshape(node, x, unwrap(sr));
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "BatchNormalization" {
+        let sr: Result<Tensor, String> = tensor_of(env, ins[1]);
+        let br: Result<Tensor, String> = tensor_of(env, ins[2]);
+        let mr: Result<Tensor, String> = tensor_of(env, ins[3]);
+        let vr: Result<Tensor, String> = tensor_of(env, ins[4]);
+        when is_err(sr) || is_err(br) || is_err(mr) || is_err(vr) { term Err("BatchNormalization operand missing"); };
+        let yr: Result<Tensor, String> = batchnorm(node, x, unwrap(sr), unwrap(br), unwrap(mr), unwrap(vr));
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    when node.op_type == "Flatten" {
+        let yr: Result<Tensor, String> = flatten(node, x);
+        when is_err(yr) { match yr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+        let y: Tensor = tensor_rename(unwrap(yr), node.outs[0]);
+        term Ok(env_add(env, y));
+    };
+    term Err(concat("unsupported ONNX op: ", node.op_type));
+};
+
+defn execute_env_inputs(graph: OnnxGraph, inputs: List<Tensor>) -> Result<List<Tensor>, String> {
+    when inputs.Count#() != graph.ins.Count#() { term Err("input count mismatch"); };
+    let env: List<Tensor> = [];
+    foreach i in 0..graph.inits.Count#() {
+        env <- graph.inits[i];
+    };
+    foreach j in 0..inputs.Count#() {
+        let src: Tensor = inputs[j];
+        let named: Tensor = tensor_named(graph.ins[j].name, graph.ins[j].dims, src.n);
+        foreach i in 0..src.n {
+            tensor_set(named, i, tensor_get(src, i));
+        };
+        env <- named;
+    };
+    foreach i in 0..graph.nodes.Count#() {
+        let step: Result<List<Tensor>, String> = run_node(graph.nodes[i], env);
+        match step {
+            Err(reason) => { term Err(reason); },
+            Ok(next_env) => { env = next_env; },
+        };
+    };
+    when graph.outs.Count#() == 0 { term Err("ONNX graph has no outputs"); };
+    term Ok(env);
+};
+
+defn execute_env(graph: OnnxGraph, input: Tensor) -> Result<List<Tensor>, String> {
+    let inputs: List<Tensor> = [input];
+    term execute_env_inputs(graph, inputs);
+};
+
+defn execute(graph: OnnxGraph, input: Tensor, out_index: Int) -> Result<Tensor, String> {
+    let envr: Result<List<Tensor>, String> = execute_env(graph, input);
+    when is_err(envr) { match envr { Err(reason) => { term Err(reason); }, Ok(_) => {} }; };
+    let env: List<Tensor> = unwrap(envr);
+    when out_index < 0 || out_index >= graph.outs.Count#() { term Err("ONNX output index out of range"); };
+    term env_find(env, graph.outs[out_index].name);
+};

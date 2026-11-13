@@ -97,6 +97,41 @@ fn reg_defined_in_fn(out: &str, reg: &str) -> bool {
     out[current..].contains(&format!("{} = ", reg))
 }
 
+/// Parameters of an exported definition that are function-typed, with their
+/// arity. The host passes a flat C function pointer for each of these, which
+/// the export wrapper must adapt to Briev's closure-slot convention.
+/// 2026-11-12 (FFI callback ABI).
+fn callback_params(d: &crate::ast::Definition) -> Vec<(usize, usize)> {
+    d.parameters
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, ty))| match ty {
+            crate::ast::Type::Function(params, _) => Some((i, params.len())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The trampoline symbol bridging one callback parameter of an export.
+fn callback_symbol(export_name: &str, index: usize) -> String {
+    format!("{export_name}__c_cb{index}")
+}
+
+/// Resolve the boundary LLVM type for parameter `index`: the frontend's
+/// boundary table when it has one, else the declared type's LLVM spelling.
+fn boundary_type(
+    types: &Option<Vec<String>>,
+    index: usize,
+    fallback_ty: &crate::ast::Type,
+    backend: &LlvmBackend,
+) -> String {
+    types
+        .as_ref()
+        .and_then(|entries| entries.get(index))
+        .cloned()
+        .unwrap_or_else(|| backend.llvm_type(fallback_ty))
+}
+
 /// Byte size of an LLVM `[N x T]` aggregate type string, recursing into
 /// nested arrays. `None` for anything this conservative parser cannot size
 /// exactly (structs — padding makes their size layout-dependent — and
@@ -479,13 +514,20 @@ impl LlvmBackend {
     /// exactly once).
     pub(super) fn flush_defer_cleanup(&mut self, out: &mut String, indent: &str) {
         while let Some(body) = self.fun.defer_bodies.pop() {
-            for stmt in &body {
-                // 2026-11-09 (H5 seam refactor): deferred cleanup bodies are
-                // HIR; the seam falls back losslessly for any non-native kind.
-                let _ = crate::backend::llvm::emit_hir_stmt::emit_hir_statement(
-                    self, out, stmt, indent,
-                );
-            }
+            // 2026-11-12 (H5 phase C): children emit through the pair walk —
+            // native-first, splicing the SOURCE child for a declining native
+            // arm (no statement reconstruction at flush time).
+            let _ = super::emit_hir_stmt::emit_children_pair(
+                self,
+                out,
+                &body.hir,
+                &body.ast,
+                super::emit_hir_stmt::ChildPairWalk {
+                    indent,
+                    break_on_terminated: false,
+                    thread_last: false,
+                },
+            );
         }
     }
 
@@ -4888,32 +4930,23 @@ impl LlvmBackend {
     pub(super) fn emit_definition(
         &mut self,
         out: &mut String,
-        d: &crate::ast::Definition,
-        needs_state: bool,
+        spec: DefinitionEmitSpec<'_>,
     ) {
-        // 2026-11-05 (H4.2): by default (BRIEV_HIR_EMIT=0 opts out) the body comes from typed
-        // HIR (reconstructed losslessly). Debug builds pin it equal to the
-        // AST body; names without a converted body fall back here.
-        let hir_subst;
-        let d: &crate::ast::Definition = if crate::backend::hir_emit_enabled() {
-            let hir_body = self.hir_stmt_bodies.get(&d.name).cloned();
-            if let Some(hir_body) = hir_body {
-                {
-                    match super::emit_hir_stmt::hir_sourced_body(self, &hir_body, &d.body, &d.name)
-                    {
-                        Some(body) => {
-                            debug_assert_eq!(body, d.body, "HIR/AST defn body drift: {}", d.name);
-                            hir_subst = crate::ast::Definition { body, ..d.clone() };
-                            &hir_subst
-                        }
-                        None => d,
-                    }
-                }
-            } else {
-                d
-            }
+        let d: &crate::ast::Definition = spec.definition;
+        let needs_state = spec.needs_state;
+        // 2026-11-12 (H5 phase A): the caller supplies the callable's HIR
+        // body (unique top-level defns only — duplicates get None and fall
+        // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
+        let hir_body = spec.hir_body;
+        // 2026-11-12 (H5 phase C): the HIR body emits directly through the
+        // statement seam — no AST substitution, no reconstruction. The pair
+        // check validates slot alignment; on drift the plain AST body emits
+        // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
+        {
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &d.body))
         } else {
-            d
+            None
         };
         // A defn is not a state-machine transaction. Leaving the previous
         // txn's name here made emit_web_flush_batch treat every defn `term`
@@ -5415,45 +5448,72 @@ impl LlvmBackend {
             }
         }
         let body_len = d.body.len();
-        for (idx, s) in d.body.iter().enumerate() {
+        // 2026-11-12 (H5 phase C): the body loop walks the pair — pure
+        // inserts flush natively before each source slot; the paired HIR
+        // statement emits natively with the SOURCE statement as splice
+        // (counted native/fallback). Without a valid pair this is the plain
+        // AST walk; the HIR statement at the same index still attempts
+        // native emission first, exactly as before the pair seam existed.
+        let mut hi = 0usize;
+        let mut ai = 0usize;
+        while ai < body_len {
             if self.fun.terminated {
                 break;
             }
-            // 2026-10-05 (json.bv tail-match): a value-returning defn whose
-            // body ENDS in a bare `match` must emit the EXPRESSION match —
-            // the phi merges arm values and last_expr_reg points at the
-            // merge. The void statement-match path (.smt_*) is for matches
-            // used as statements; routed here it left last_expr_reg citing an
-            // arm-local register, producing non-dominating `ret` IR that
-            // clang rejected (silent miscompile). Void defns keep the
-            // statement path (their arms may be void txn calls).
-            if idx + 1 == body_len && ll_ret_ty != "void" {
-                if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
-                    let reg = self.emit_expr(out, e, "  ");
+            if let Some(pair) = pair_hir {
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                {
                     self.fun.last_expr_reg = Some(reg.name);
                     self.fun.last_expr_ty = Some(reg.ty.clone());
                     continue;
                 }
             }
-            // 2026-11-05 (H4 slice D): route through the HIR statement seam
-            // when this callable has a HIR body — native families emit
-            // without conversion; the seam's None falls back to the AST
-            // statement (and the substituted body already IS the converted
-            // AST when the flag is on).
-            if crate::backend::hir_emit_enabled() {
-                if let Some(hir_body) = self.hir_stmt_bodies.get(&d.name).cloned() {
-                    if let Some(hir_stmt) = hir_body.get(idx) {
-                        if let Some(reg) =
-                            super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
-                        {
-                            self.fun.last_expr_reg = Some(reg.name);
-                            self.fun.last_expr_ty = Some(reg.ty.clone());
-                            continue;
-                        }
-                    }
+            let s = &d.body[ai];
+            ai += 1;
+            let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+            // 2026-10-05 (json.bv tail-match): a value-returning defn whose
+            // body ENDS in a bare `match` must emit the EXPRESSION match —
+            // the phi merges arm values and last_expr_reg points at the
+            // merge. The void statement-match path (.smt_*) is for matches
+            // used as statements; routed here it left last_expr_reg citing
+            // an arm-local register, producing non-dominating `ret` IR that
+            // clang rejected (silent miscompile). Void defns keep the
+            // statement path (their arms may be void txn calls). The check
+            // fires on the true last slot: no trailing insert may follow.
+            let last_slot = ai == body_len
+                && pair_hir.is_none_or(|p| {
+                    p[hi + 1..].iter().all(|h| super::emit_hir_stmt::is_pure_insert(&h.kind))
+                });
+            if last_slot && ll_ret_ty != "void" {
+                if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
+                    let reg = self.emit_expr(out, e, "  ");
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                    hi += usize::from(hir_stmt.is_some());
+                    continue;
                 }
             }
-            emit_statement(self, out, s, "  ");
+            if let Some(reg) =
+                super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+            {
+                self.fun.last_expr_reg = Some(reg.name);
+                self.fun.last_expr_ty = Some(reg.ty.clone());
+            }
+            hi += usize::from(hir_stmt.is_some());
+        }
+        // Trailing pure inserts after the last source slot (skip when the
+        // body terminated — same statements the substituted walk skipped).
+        if let Some(pair) = pair_hir {
+            while !self.fun.terminated {
+                match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ") {
+                    Some(reg) => {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                    }
+                    None => break,
+                }
+            }
         }
         // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.
         self.flush_defer_cleanup(out, "  ");
@@ -5585,7 +5645,9 @@ impl LlvmBackend {
         // source, and debug builds pin HIR substitution == AST substitution
         // statement-for-statement (the golden: iter_chain_multi's trait
         // generics). A base without HIR (duplicates, non-top-level) keeps the
-        // pure-AST path.
+        // pure-AST path. 2026-11-12 (H5 phase A): the derived body is passed
+        // straight to emit_definition — no map insert/refill round-trip.
+        let mut spec_hir_body: Option<Vec<crate::hir::stmt::HirStmt>> = None;
         if crate::backend::hir_emit_enabled() {
             if let Some(base_hir) = self.ctx.generic_hir.get(base).cloned() {
                 let mut ids = crate::hir::ids::IdSupply::default();
@@ -5602,8 +5664,7 @@ impl LlvmBackend {
                     if let Err(err) = crate::hir::verify_single_callable(&spec_hir) {
                         panic!("specialized HIR verification failed for {mangled}: {err}");
                     }
-                    self.hir_stmt_bodies
-                        .insert(mangled.to_string(), spec_hir.body.statements.clone());
+                    spec_hir_body = Some(spec_hir.body.statements);
                 }
             }
         }
@@ -5613,7 +5674,14 @@ impl LlvmBackend {
             .get(mangled)
             .copied()
             .unwrap_or(true);
-        self.emit_definition(out, &specialized, needs_state);
+        self.emit_definition(
+            out,
+            DefinitionEmitSpec {
+                definition: &specialized,
+                needs_state,
+                hir_body: spec_hir_body.as_deref(),
+            },
+        );
     }
 
     // 2026-06-13: Added ptr %state param — definitions can access global state.
@@ -5927,40 +5995,24 @@ impl LlvmBackend {
     pub(super) fn emit_transaction(
         &mut self,
         out: &mut String,
-        txn: &crate::ast::Transaction,
+        spec: TransactionEmitSpec<'_>,
         name: &str,
         range_meta: &mut Vec<String>,
     ) {
-        // 2026-11-05 (H4.2): HIR-driven body when a unique converted body
-        // exists; AST fallback otherwise (members, duplicates, Other nodes).
-        let hir_subst;
-        let txn: &crate::ast::Transaction = if crate::backend::hir_emit_enabled() {
-            let hir_body = self.hir_stmt_bodies.get(&txn.name).cloned();
-            if let Some(hir_body) = hir_body {
-                {
-                    match super::emit_hir_stmt::hir_sourced_body(
-                        self, &hir_body, &txn.body, &txn.name,
-                    ) {
-                        Some(body) => {
-                            debug_assert_eq!(
-                                body, txn.body,
-                                "HIR/AST txn body drift: {}",
-                                txn.name
-                            );
-                            hir_subst = crate::ast::Transaction {
-                                body,
-                                ..txn.clone()
-                            };
-                            &hir_subst
-                        }
-                        None => txn,
-                    }
-                }
-            } else {
-                txn
-            }
+        let txn: &crate::ast::Transaction = spec.txn;
+        // 2026-11-12 (H5 phase A): the caller supplies the txn's HIR body
+        // (unique top-level txns only — duplicates/members get None and fall
+        // back to AST). Replaces the backend-wide `hir_stmt_bodies` map.
+        let hir_body = spec.hir_body;
+        // 2026-11-12 (H5 phase C): the HIR body emits directly through the
+        // statement seam — no AST substitution, no reconstruction. The pair
+        // check validates slot alignment; on drift the plain AST body emits
+        // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
+        {
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &txn.body))
         } else {
-            txn
+            None
         };
         let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
         // 2026-09-14 (machine-entry plan): non-reactive txns are CALLABLES —
@@ -5969,7 +6021,7 @@ impl LlvmBackend {
         // wrapper (@txn_<name>), while call sites emitted @<name> — the call
         // referenced an undefined symbol.
         if !txn.is_reactive {
-            self.emit_callable_txn(out, txn, name);
+            self.emit_callable_txn(out, txn, name, pair_hir);
             return;
         }
         // 2026-07-27: Set txn_name for per-function arena gating.
@@ -6435,28 +6487,46 @@ impl LlvmBackend {
             }
             // 2026-07-29: Statement reordering removed — proven counterproductive.
             // LLVM's scheduler does this better within each basic block.
-            // 2026-11-05 (H4 slice D): the txn body loop routes through the HIR
-            // statement seam too (native families emit without conversion; the
-            // seam's None falls back to the AST statement). Index-aligned with the
-            // substituted body, which is the converted AST when the flag is on.
-            for (idx, s) in txn.body.iter().enumerate() {
+            // 2026-11-12 (H5 phase C): the txn body loop walks the pair — pure
+            // inserts flush natively before each source slot; the paired HIR
+            // statement emits natively with the SOURCE statement as splice.
+            // Without a valid pair this is the plain AST walk; the HIR
+            // statement at the same index still attempts native emission
+            // first, exactly as before the pair seam existed.
+            let mut hi = 0usize;
+            for s in txn.body.iter() {
                 if self.fun.terminated {
                     break;
                 }
-                if crate::backend::hir_emit_enabled() {
-                    if let Some(hir_body) = self.hir_stmt_bodies.get(name).cloned() {
-                        if let Some(hir_stmt) = hir_body.get(idx) {
-                            if let Some(reg) =
-                                super::emit_hir_stmt::emit_hir_statement(self, out, hir_stmt, "  ")
-                            {
-                                self.fun.last_expr_reg = Some(reg.name);
-                                self.fun.last_expr_ty = Some(reg.ty.clone());
-                                continue;
-                            }
-                        }
+                if let Some(pair) = pair_hir {
+                    if let Some(reg) =
+                        super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                    {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                        continue;
                     }
                 }
-                emit_statement(self, out, s, "  ");
+                let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+                {
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                }
+                hi += usize::from(hir_stmt.is_some());
+            }
+            if let Some(pair) = pair_hir {
+                while !self.fun.terminated {
+                    match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                    {
+                        Some(reg) => {
+                            self.fun.last_expr_reg = Some(reg.name);
+                            self.fun.last_expr_ty = Some(reg.ty.clone());
+                        }
+                        None => break,
+                    }
+                }
             }
             // 2026-08-09 (Phase 10): a fallthrough exit runs registered defers.
             self.flush_defer_cleanup(out, "  ");
@@ -7770,6 +7840,7 @@ impl LlvmBackend {
         out: &mut String,
         txn: &crate::ast::Transaction,
         name: &str,
+        pair_hir: Option<&[crate::hir::stmt::HirStmt]>,
     ) {
         // 2026-11-01: entry allocas and body registers share one namespace.
         // Reset before emitting either; a later reset can reuse entry names.
@@ -8034,11 +8105,43 @@ impl LlvmBackend {
 
         writeln!(out, "body:").ok();
 
+        // 2026-11-12 (H5 phase C): the body loop walks the pair — pure
+        // inserts flush natively before each source slot; the paired HIR
+        // statement emits natively with the SOURCE statement as splice.
+        // Without a valid pair this is the plain AST walk.
+        let mut hi = 0usize;
         for s in &txn.body {
             if self.fun.terminated {
                 break;
             }
-            emit_statement(self, out, s, "  ");
+            if let Some(pair) = pair_hir {
+                if let Some(reg) =
+                    super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ")
+                {
+                    self.fun.last_expr_reg = Some(reg.name);
+                    self.fun.last_expr_ty = Some(reg.ty.clone());
+                    continue;
+                }
+            }
+            let hir_stmt = pair_hir.and_then(|p| p.get(hi));
+            if let Some(reg) =
+                super::emit_hir_stmt::emit_body_statement(self, out, hir_stmt, s, "  ")
+            {
+                self.fun.last_expr_reg = Some(reg.name);
+                self.fun.last_expr_ty = Some(reg.ty.clone());
+            }
+            hi += usize::from(hir_stmt.is_some());
+        }
+        if let Some(pair) = pair_hir {
+            while !self.fun.terminated {
+                match super::emit_hir_stmt::emit_pending_inserts(self, out, pair, &mut hi, "  ") {
+                    Some(reg) => {
+                        self.fun.last_expr_reg = Some(reg.name);
+                        self.fun.last_expr_ty = Some(reg.ty.clone());
+                    }
+                    None => break,
+                }
+            }
         }
 
         // Foreign destructor cleanup: emit OnExit calls before loop exit
@@ -8656,6 +8759,23 @@ struct ExportWrapperCallSpec<'a> {
 }
 
 /// Inputs for one `#export` boundary wrapper.
+/// 2026-11-12 (H5 phase A): per-call emission data for `emit_transaction`.
+/// Same contract as `DefinitionEmitSpec` — HIR body from the analysis,
+/// `None` = AST emission.
+pub(super) struct TransactionEmitSpec<'a> {
+    pub(super) txn: &'a crate::ast::Transaction,
+    pub(super) hir_body: Option<&'a [crate::hir::stmt::HirStmt]>,
+}
+
+/// 2026-11-12 (H5 phase A): per-call emission data for `emit_definition`.
+/// The HIR body comes straight from the analysis (unique top-level defns;
+/// `None` = AST emission), replacing the backend-wide `hir_stmt_bodies` map.
+pub(super) struct DefinitionEmitSpec<'a> {
+    pub(super) definition: &'a crate::ast::Definition,
+    pub(super) needs_state: bool,
+    pub(super) hir_body: Option<&'a [crate::hir::stmt::HirStmt]>,
+}
+
 struct ExportWrapperSpec<'a> {
     definition: &'a crate::ast::Definition,
     ll_name: &'a str,
@@ -8670,6 +8790,16 @@ impl LlvmBackend {
             return;
         };
         let boundary_types = self.export_boundary_parameter_types(&d.name, &d.parameters);
+        // 2026-11-12 (FFI callback ABI): a fn-typed parameter of an EXPORTED
+        // function arrives as a flat C function pointer, but Briev's internal
+        // values are closure slots `[fn_ptr, caps..]` called as `(slot, args)`.
+        // Adapting here — instead of changing the internal convention — lets a
+        // host callback work while internal Briev closures keep their
+        // semantics unchanged.
+        let callbacks = callback_params(d);
+        for (index, arity) in &callbacks {
+            Self::emit_c_callback_trampoline(out, &callback_symbol(&export_name, *index), *arity);
+        }
         writeln!(out, "define dso_local {} @{}(", spec.ll_ret_ty, export_name).ok();
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
@@ -8678,14 +8808,32 @@ impl LlvmBackend {
             if spec.needs_state || i > 0 {
                 write!(out, ", ").ok();
             }
-            let ty = boundary_types
-                .as_ref()
-                .and_then(|types| types.get(i))
-                .cloned()
-                .unwrap_or_else(|| self.llvm_type(fallback_ty));
+            let ty = boundary_type(&boundary_types, i, fallback_ty, self);
             write!(out, "{} %arg{}", ty, i).ok();
         }
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        // Materialise one closure slot per callback parameter: slot[0] is the
+        // Briev-ABI trampoline, slot[1] is the host's C pointer.
+        for (index, _) in &callbacks {
+            let slot = format!("%cb{}", index);
+            writeln!(out, "  {} = alloca [2 x i64], align 8", slot).ok();
+            let slot_p = self.fun.gen_reg();
+            writeln!(out, "  {} = getelementptr i64, ptr {}, i64 0", slot_p, slot).ok();
+            let tramp = self.fun.gen_reg();
+            writeln!(
+                out,
+                "  {} = ptrtoint ptr @{} to i64",
+                tramp,
+                callback_symbol(&export_name, *index)
+            )
+            .ok();
+            writeln!(out, "  store i64 {}, ptr {}, align 8", tramp, slot_p).ok();
+            let host_p = self.fun.gen_reg();
+            writeln!(out, "  {} = getelementptr i64, ptr {}, i64 1", host_p, slot).ok();
+            let host = self.fun.gen_reg();
+            writeln!(out, "  {} = ptrtoint ptr %arg{} to i64", host, index).ok();
+            writeln!(out, "  store i64 {}, ptr {}, align 8", host, host_p).ok();
+        }
         write!(out, "  %res = call {} @{}(", spec.ll_ret_ty, spec.ll_name).ok();
         if spec.needs_state {
             write!(out, "ptr %state").ok();
@@ -8694,15 +8842,44 @@ impl LlvmBackend {
             if spec.needs_state || i > 0 {
                 write!(out, ", ").ok();
             }
-            let ty = boundary_types
-                .as_ref()
-                .and_then(|types| types.get(i))
-                .cloned()
-                .unwrap_or_else(|| self.llvm_type(fallback_ty));
-            write!(out, "{} %arg{}", ty, i).ok();
+            let ty = boundary_type(&boundary_types, i, fallback_ty, self);
+            let value = if callbacks.iter().any(|(index, _)| *index == i) {
+                format!("ptr %cb{}", i)
+            } else {
+                format!("%arg{}", i)
+            };
+            write!(out, "{} {}", ty, value).ok();
         }
         writeln!(out, ")").ok();
         writeln!(out, "  ret {} %res", spec.ll_ret_ty).ok();
+        writeln!(out, "}}").ok();
+    }
+
+    /// Emit the bridge between Briev's closure ABI and a host C callback.
+    ///
+    /// Signature `(ptr %env, i64 a0..aN) -> i64` matches how Briev calls a
+    /// closure value (env first, i64 arguments, i64 result). The host pointer
+    /// lives at `env[1]`, so the trampoline loads it and makes a FLAT C call —
+    /// exactly the `int64_t (*)(int64_t)` shape the binding generators
+    /// advertise.
+    fn emit_c_callback_trampoline(out: &mut String, symbol: &str, arity: usize) {
+        write!(out, "define internal i64 @{}(ptr %env", symbol).ok();
+        for i in 0..arity {
+            write!(out, ", i64 %a{}", i).ok();
+        }
+        writeln!(out, ") {{").ok();
+        writeln!(out, "  %pp = getelementptr i64, ptr %env, i64 1").ok();
+        writeln!(out, "  %fp = load i64, ptr %pp, align 8").ok();
+        writeln!(out, "  %fn = inttoptr i64 %fp to ptr").ok();
+        write!(out, "  %r = call i64 %fn(").ok();
+        for i in 0..arity {
+            if i > 0 {
+                write!(out, ", ").ok();
+            }
+            write!(out, "i64 %a{}", i).ok();
+        }
+        writeln!(out, ")").ok();
+        writeln!(out, "  ret i64 %r").ok();
         writeln!(out, "}}").ok();
     }
 
@@ -8748,6 +8925,13 @@ impl LlvmBackend {
             .ctx
             .generalized_destination_ownership
             .recursive_carrier_obligations(&d.name);
+        // 2026-11-12 (FFI callback ABI): a fn-typed param of an `export defn`
+        // arrives as a flat C function pointer, but internally a fn value is a
+        // closure slot called as (slot, args). Bridge them with a trampoline.
+        let callbacks = callback_params(d);
+        for (index, arity) in &callbacks {
+            Self::emit_c_callback_trampoline(out, &callback_symbol(&d.name, *index), *arity);
+        }
         write!(out, "define {}{} @{}(", visibility, ret_ty, d.name).ok();
         self.write_export_wrapper_args(
             out,
@@ -8757,8 +8941,33 @@ impl LlvmBackend {
                 boundary_types: boundary_types.as_deref(),
                 has_prefix: false,
             },
+            &[],
         );
         writeln!(out, ") local_unnamed_addr #0 {{").ok();
+        // One closure slot per callback: slot[0] is the trampoline (Briev ABI),
+        // slot[1] is the host's flat C pointer.
+        for (index, _) in &callbacks {
+            writeln!(out, "  %cbslot{index} = alloca [2 x i64], align 8").ok();
+            writeln!(
+                out,
+                "  %cbtramp{index} = ptrtoint ptr @{} to i64",
+                callback_symbol(&d.name, *index)
+            )
+            .ok();
+            writeln!(
+                out,
+                "  %cbz{index} = getelementptr i64, ptr %cbslot{index}, i64 0"
+            )
+            .ok();
+            writeln!(out, "  store i64 %cbtramp{index}, ptr %cbz{index}, align 8").ok();
+            writeln!(out, "  %cbhost{index} = ptrtoint ptr %arg{index} to i64").ok();
+            writeln!(
+                out,
+                "  %cbo{index} = getelementptr i64, ptr %cbslot{index}, i64 1"
+            )
+            .ok();
+            writeln!(out, "  store i64 %cbhost{index}, ptr %cbo{index}, align 8").ok();
+        }
         let hoisted_slots: Vec<String> = hoisted
             .iter()
             .enumerate()
@@ -8797,6 +9006,7 @@ impl LlvmBackend {
                 hoisted: &hoisted_slots,
                 carriers: &carrier_slots,
             },
+            &callbacks,
         );
         writeln!(out, ")").ok();
         if ret_ty == "void" {
@@ -8807,7 +9017,12 @@ impl LlvmBackend {
         writeln!(out, "}}").ok();
     }
 
-    fn write_export_wrapper_call_args(&self, out: &mut String, spec: ExportWrapperCallSpec<'_>) {
+    fn write_export_wrapper_call_args(
+        &self,
+        out: &mut String,
+        spec: ExportWrapperCallSpec<'_>,
+        callbacks: &[(usize, usize)],
+    ) {
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
@@ -8828,10 +9043,16 @@ impl LlvmBackend {
                 boundary_types: spec.boundary_types,
                 has_prefix: spec.needs_state || has_hidden,
             },
+            callbacks,
         );
     }
 
-    fn write_export_wrapper_args(&self, out: &mut String, spec: ExportWrapperArgs<'_>) {
+    fn write_export_wrapper_args(
+        &self,
+        out: &mut String,
+        spec: ExportWrapperArgs<'_>,
+        callbacks: &[(usize, usize)],
+    ) {
         if spec.needs_state {
             write!(out, "{}", self.ctx.state_ptr_param).ok();
         }
@@ -8844,7 +9065,13 @@ impl LlvmBackend {
                 .and_then(|types| types.get(i))
                 .cloned()
                 .unwrap_or_else(|| self.llvm_type(fallback_ty));
-            write!(out, "{} %arg{}", ty, i).ok();
+            // A callback parameter is passed as the adapted closure slot.
+            let value = if callbacks.iter().any(|(index, _)| *index == i) {
+                format!("%cbslot{}", i)
+            } else {
+                format!("%arg{}", i)
+            };
+            write!(out, "{} {}", ty, value).ok();
         }
     }
 
@@ -9720,7 +9947,16 @@ impl LlvmBackend {
         };
         // needs_state=true — the body shares the program state (the global
         // when ISR handlers exist; the wrapper passes it explicitly).
-        self.emit_definition(out, &body_defn, self.ctx.state_is_global);
+        // 2026-11-12 (H5 phase A): ISR bodies are synthetic (no top-level
+        // HIR callable) — no HIR body, AST emission as before.
+        self.emit_definition(
+            out,
+            DefinitionEmitSpec {
+                definition: &body_defn,
+                needs_state: self.ctx.state_is_global,
+                hir_body: None,
+            },
+        );
         writeln!(out).ok();
 
         // The interrupt wrapper — mechanism calling convention inline.

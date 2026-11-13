@@ -80,7 +80,13 @@ fn verify_body(body: &[HirStmt], nodes: &mut BTreeSet<NodeId>) -> Result<(), Str
 
 fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), String> {
     verify_node(nodes, stmt.id, "statement")?;
+    // 2026-11-12: compiler-inserted storage releases carry no source spans
+    // and their names are pass-allocated locals; identity is all we verify.
+    if let HirStmtKind::ReleaseOwned { .. } = &stmt.kind {
+        return Ok(());
+    }
     match &stmt.kind {
+        HirStmtKind::ReleaseOwned { .. } => unreachable!("filtered above"),
         HirStmtKind::Let { expr, .. } => verify_opt_expr(expr.as_ref(), nodes),
         HirStmtKind::Assign(left, right) => verify_exprs([left, right], nodes),
         HirStmtKind::ArrowAssign { target, value, .. } => {
@@ -88,6 +94,7 @@ fn verify_stmt(stmt: &HirStmt, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_expr(value, nodes)
         }
         HirStmtKind::Term(expr) => verify_opt_expr(expr.as_ref(), nodes),
+        HirStmtKind::TempTransfer { expr, .. } => verify_expr(expr, nodes),
         HirStmtKind::Tail(expr) | HirStmtKind::Check(expr) | HirStmtKind::Expression(expr) => {
             verify_expr(expr, nodes)
         }
@@ -179,6 +186,7 @@ fn verify_expr(expr: &HirExpr, nodes: &mut BTreeSet<NodeId>) -> Result<(), Strin
             verify_exprs(args, nodes)
         }
         HirExprKind::Index(array, index) => verify_exprs([array.as_ref(), index.as_ref()], nodes),
+        HirExprKind::Wildcard => Ok(()),
         HirExprKind::Slice { array, start, end, stride } => {
             verify_expr(array, nodes)?;
             verify_opt_expr(start.as_deref(), nodes)?;
@@ -460,6 +468,7 @@ fn verify_container_types(
             verify_expr_types(a, env, universe, graph)?;
             verify_expr_types(b, env, universe, graph)
         }
+        HirExprKind::Wildcard => Ok(()),
         HirExprKind::Slice { array, start, end, stride } => {
             verify_expr_types(array, env, universe, graph)?;
             for opt in [start, end, stride].into_iter().flatten() {

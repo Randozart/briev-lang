@@ -144,7 +144,13 @@ defn read_whole(fd: Int, s: Int, cap: Int, total: Int)
     };
     when n == 0 {
         Store#(s, total, 8);
-        term Ok((s as Data) as String);
+        // 2026-11-11: the Data->String door copies the [len][bytes] buffer
+        // into fresh owned String storage. The read buffer is an intermediate
+        // owned block; release it after the copy or every read_file leaks the
+        // final file-sized buffer. (Same pattern as int_to_str.)
+        let owned: String = (s as Data) as String;
+        Free#(s as Ptr<Bit<8>>);
+        term Ok(owned);
     };
     term read_whole(fd, s, cap, total + n);
 };

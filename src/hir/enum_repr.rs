@@ -3,7 +3,9 @@
 //!
 //! Mirror of `analysis::enum_repr::build_enum_representation_plan` (AST,
 //! authoritative until parity). Reuses `EnumRepresentation`; `sret_safe_defns`
-//! stays AST-only until its backend consumer moves (H4).
+//! stayed AST-only until the destination-model port needed it (2026-11-12):
+//! the HIR mirror now derives the same conservative sret-eligibility set from
+//! HIR callables — no `hir::to_ast` crossing.
 
 use super::expr::{HirExpr, HirExprKind};
 use super::program::{HirCallable, HirCallableKind, HirProgram, HirTypeDefKind};
@@ -208,6 +210,130 @@ fn constructor_shaped_return(
             .map(|e| constructor_shaped_return(e, variants, sret_calls))
             .unwrap_or(false),
         _ => false,
+    }
+}
+
+/// Conservative sret eligibility over HIR — mirror of
+/// `analysis::enum_repr::sret_safe_defns`: a `ReturnedSmallCandidate` is safe
+/// unless a non-candidate enum-returning defn calls it anywhere in its body,
+/// or a non-candidate enum-returning txn calls it in a return position.
+/// Wrapper-exported callables are excluded on both sides (the AST arms match
+/// only top-level `Definition`/`Transaction` items, and `export` always
+/// parses as a wrapper).
+pub fn sret_safe_defns(program: &HirProgram, plan: &HirEnumRepresentationPlan) -> Vec<String> {
+    let enum_defs: HashMap<&str, ()> = plan.defns.keys().map(|n| (n.as_str(), ())).collect();
+    let enum_names: HashMap<&str, ()> = program
+        .type_defs
+        .iter()
+        .filter(|td| matches!(td.kind, HirTypeDefKind::Enum { .. }))
+        .map(|td| td.name.as_str())
+        .map(|n| (n, ()))
+        .collect();
+    let mut unsafe_names: HashMap<String, ()> = HashMap::new();
+    for c in &program.callables {
+        if !c.sync_domains.is_empty() || c.exported {
+            continue;
+        }
+        scan_sret_unsafe_callable(c, plan, &enum_defs, &enum_names, &mut unsafe_names);
+    }
+    plan.defns
+        .iter()
+        .filter(|(name, class)| {
+            **class == EnumRepresentation::ReturnedSmallCandidate
+                && !unsafe_names.contains_key(*name)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// One callable's unsafe-caller scan: a non-candidate enum-returning defn
+/// marks every sret candidate it calls; a non-candidate enum-returning txn
+/// marks candidates called in return position only (AST parity).
+fn scan_sret_unsafe_callable(
+    c: &HirCallable,
+    plan: &HirEnumRepresentationPlan,
+    enum_defs: &HashMap<&str, ()>,
+    enum_names: &HashMap<&str, ()>,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    match c.kind {
+        HirCallableKind::Defn => {
+            if !enum_defs.contains_key(c.name.as_str())
+                || plan.defn_class(&c.name) == EnumRepresentation::ReturnedSmallCandidate
+            {
+                return;
+            }
+            super::expr_walk::walk_stmts(&c.body.statements, &mut |e| {
+                mark_sret_candidate_call(e, plan, unsafe_names);
+            });
+        }
+        HirCallableKind::Transaction => {
+            let returns_enum = c
+                .result
+                .as_ref()
+                .map(|ty| type_is_enum(ty, enum_names))
+                .unwrap_or(false);
+            if !returns_enum
+                || plan.defn_class(&c.name) == EnumRepresentation::ReturnedSmallCandidate
+            {
+                return;
+            }
+            collect_txn_return_calls(&c.body.statements, plan, unsafe_names);
+        }
+        _ => {}
+    }
+}
+
+fn mark_sret_candidate_call(
+    expr: &HirExpr,
+    plan: &HirEnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    if let HirExprKind::Call { callee, .. } = &expr.kind {
+        if plan.defn_class(callee) == EnumRepresentation::ReturnedSmallCandidate {
+            unsafe_names.insert(callee.clone(), ());
+        }
+    }
+}
+
+/// Calls inside txn return forms only (AST parity: the scan is
+/// return-position-scoped, not a whole-body walk).
+fn collect_txn_return_calls(
+    stmts: &[HirStmt],
+    plan: &HirEnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            HirStmtKind::Term(Some(expr)) | HirStmtKind::Tail(expr) => {
+                collect_return_expr_calls(expr, plan, unsafe_names);
+            }
+            HirStmtKind::Guarded(_, body)
+            | HirStmtKind::Block(body)
+            | HirStmtKind::SyncBlock(body)
+            | HirStmtKind::Mutex(body)
+            | HirStmtKind::Foreach { body, .. } => {
+                collect_txn_return_calls(body, plan, unsafe_names);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_return_expr_calls(
+    expr: &HirExpr,
+    plan: &HirEnumRepresentationPlan,
+    unsafe_names: &mut HashMap<String, ()>,
+) {
+    match &expr.kind {
+        HirExprKind::Call { .. } => mark_sret_candidate_call(expr, plan, unsafe_names),
+        HirExprKind::Match { arms, .. } => {
+            for arm in arms {
+                collect_return_expr_calls(&arm.body, plan, unsafe_names);
+            }
+        }
+        HirExprKind::Block(stmts) => collect_txn_return_calls(stmts, plan, unsafe_names),
+        _ => {}
     }
 }
 

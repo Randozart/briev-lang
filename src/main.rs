@@ -430,6 +430,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
     let mut raw_bin = false;
     let mut no_link = false;
     let mut verify_bodies = false;
+    let mut verify_report: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -458,6 +459,16 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
             // satisfies its own [pre][post] via the symbolic+Z3 prover.
             verify_bodies = true;
             i += 1;
+        } else if arg == "--verify-report" {
+            // 2026-11-12 (standalone roadmap C1): machine-readable verdicts.
+            // Tooling must not parse the human diagnostics, whose wording is
+            // not a contract. Asking for a report implies asking for the gate.
+            let val = args
+                .get(i + 1)
+                .ok_or("--verify-report requires a path argument")?;
+            verify_report = Some(val.clone());
+            verify_bodies = true;
+            i += 2;
         } else if arg == "--out" {
             let val = args
                 .get(i + 1)
@@ -767,6 +778,7 @@ fn parse_build_args(args: &[String]) -> Result<compile::BuildOptions, String> {
         no_link,
         web_page_key: None,
         verify_bodies,
+        verify_report,
     })
 }
 
@@ -1159,6 +1171,7 @@ fn run_bounty(args: &[String]) -> Result<(), String> {
         no_link: false,
         web_page_key: None,
         verify_bodies: false,
+        verify_report: None,
     };
     let source = std::fs::read_to_string(file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
@@ -1780,8 +1793,27 @@ fn run_check(args: &[String]) -> Result<(), String> {
 }
 
 fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
-    let file_path = args.first().ok_or("usage: brievc memcheck <file.bv>")?;
-    let source = std::fs::read_to_string(file_path)
+    let mut deny = false;
+    let mut stdlib_path: Option<std::path::PathBuf> = None;
+    let mut file_path = String::new();
+    let mut ai = 0usize;
+    while ai < args.len() {
+        match args[ai].as_str() {
+            "--deny-memory-ambiguity" => deny = true,
+            "--stdlib-path" => {
+                ai += 1;
+                if ai < args.len() {
+                    stdlib_path = Some(std::path::PathBuf::from(args[ai].clone()));
+                }
+            }
+            other => file_path = other.to_string(),
+        }
+        ai += 1;
+    }
+    if file_path.is_empty() {
+        return Err("usage: brievc memcheck [--deny-memory-ambiguity] [--stdlib-path <dir>] <file.bv>".to_string());
+    }
+    let source = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("cannot read '{}': {}", file_path, e))?;
     let tokens =
         briev_compiler::lexer::tokenize(&source).map_err(|e| format!("lex failed: {}", e))?;
@@ -1789,8 +1821,79 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
     let items = parser
         .parse_program()
         .map_err(|e| format!("parse failed: {}", e))?;
+    // Resolve imports so stdlib/saltpetre callables participate in the
+    // freshness/escape summaries (concat, get_env, face_param, ...).
+    if stdlib_path.is_none() {
+        if let Ok(home) = std::env::var("BRIEV_HOME") {
+            stdlib_path = Some(std::path::PathBuf::from(home).join("lib"));
+        }
+    }
+    let mut items = items;
+    if let Some(sp) = &stdlib_path {
+        let mut resolver = briev_compiler::import_resolver::ImportResolver::new()
+            .with_stdlib_path(Some(sp.clone()));
+        items = resolver
+            .resolve_imports(items, &std::path::PathBuf::from(&file_path))
+            .map_err(|e| format!("import resolution failed: {}", e))?;
+    }
     let report = briev_compiler::macros::memcheck::run_memcheck(&items);
     briev_compiler::macros::memcheck::print_memcheck(&report);
+
+    // ── owned-storage tier (function-local String/List) ────────────────
+    // Runs the real insert pass on a clone; the compiled program is
+    // unaffected. Events group into releases / conservative drops /
+    // undecided owners per the memory-decisions plan.
+    let mut program = briev_compiler::hir::lower_program(&items);
+    let universe = briev_compiler::type_universe::TypeUniverse::new();
+    let graph = briev_compiler::casting::graph::CastingGraph::new();
+    briev_compiler::hir::typing::annotate_types(&mut program, &universe, &graph);
+    let escapes = briev_compiler::analysis::allocation::summarize_escapes_pub(&items);
+    let events = briev_compiler::hir::owned_storage::memcheck_owned(&program, &escapes);
+    let mut releases = 0usize;
+    let mut undecided: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();
+    let mut drops: Vec<&briev_compiler::hir::owned_storage::OwnedEvent> = Vec::new();
+    for e in &events {
+        match &e.kind {
+            briev_compiler::hir::owned_storage::OwnedEventKind::Release { .. } => releases += 1,
+            briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(_) => undecided.push(e),
+            _ => drops.push(e),
+        }
+    }
+    println!("=== memcheck — owned String/List locals ===");
+    println!("  releases inserted: {releases}");
+    if !undecided.is_empty() {
+        println!("  undecided owners ({}) — the pass could not prove freshness:", undecided.len());
+        for e in &undecided {
+            let why = match &e.kind {
+                briev_compiler::hir::owned_storage::OwnedEventKind::UndecidedInit(w) => w.as_str(),
+                _ => "",
+            };
+            println!("    {} in {}: {why}", e.name, e.function);
+        }
+    }
+    if !drops.is_empty() {
+        println!("  conservative drops (leaks by design, never unsound): {}", drops.len());
+        for e in &drops {
+            let why = match &e.kind {
+                briev_compiler::hir::owned_storage::OwnedEventKind::Alias => "aliased".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::EscapeCall(c) => format!("escapes via {c}"),
+                briev_compiler::hir::owned_storage::OwnedEventKind::ConsumeCall(c) => format!("consumed by {c}"),
+                briev_compiler::hir::owned_storage::OwnedEventKind::Kept => "keep".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::ExplicitFree => "explicit free".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::Store => "stored into state/collection".to_string(),
+                briev_compiler::hir::owned_storage::OwnedEventKind::ReturnBorrow => "returned expression borrows it".to_string(),
+                _ => "other".to_string(),
+            };
+            println!("    {} in {}: {why}", e.name, e.function);
+        }
+    }
+    println!("=== end owned tier ===");
+    if deny && !undecided.is_empty() {
+        return Err(format!(
+            "--deny-memory-ambiguity: {} undecided owner(s) (see the owned tier above)",
+            undecided.len()
+        ));
+    }
     Ok(())
 }
 
@@ -1801,7 +1904,7 @@ fn run_memcheck_cmd(args: &[String]) -> Result<(), String> {
 /// This command compares the binary's mtime against the newest mtime in
 /// `src/` and `config/` (the two `include_str!` trees) and reports the
 /// offending file. Exit 0 = fresh, 1 = stale (rebuild required).
-fn run_freshness_check() -> Result<(), String> {
+pub(crate) fn run_freshness_check() -> Result<(), String> {
     let bin =
         std::env::current_exe().map_err(|e| format!("cannot resolve current executable: {}", e))?;
     let bin_mtime = std::fs::metadata(&bin)
@@ -1812,8 +1915,13 @@ fn run_freshness_check() -> Result<(), String> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let mut newest: Option<(i64, std::path::PathBuf)> = None;
+    // Scan the compiler's OWN tree, never the caller's working directory:
+    // resolving from cwd compared a consumer project's sources against this
+    // binary and called the consumer's files stale.
+    let resource_root = briev_compiler::resource_root();
     for dir in ["src", "config"] {
-        let root = Path::new(dir);
+        let root = resource_root.join(dir);
+        let root = root.as_path();
         if !root.exists() {
             continue;
         }
@@ -1852,13 +1960,15 @@ fn run_freshness_check() -> Result<(), String> {
         }
     }
     match newest {
+        // Return rather than exit: the build path (C6) calls this to WARN, and
+        // exiting here aborted a consumer's compile. The CLI still fails the
+        // command because `main` maps Err to a non-zero exit.
         Some((_, p)) => {
-            eprintln!(
+            return Err(format!(
                 "STALE: {} is newer than {} — run `cargo build --release` before trusting brievc",
                 p.display(),
                 bin.display()
-            );
-            std::process::exit(1);
+            ));
         }
         None => println!("fresh: {} is up to date with src/ + config/", bin.display()),
     }

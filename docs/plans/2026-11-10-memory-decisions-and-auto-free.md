@@ -477,3 +477,167 @@ This closes the application-level options: per-node env cannot be made
 copy-free with the current List representation, and allocation hooks lack
 base/size provenance. The next slice is compiler-owned storage for
 List/String (owned handle with base+cap+len), not another executor workaround.
+
+## 12. Closed-region request reclamation — feasibility result (2026-11-11)
+
+Added a `BRIEV_DIAG_RECLAMATION` closed/reason dump and probed the shape:
+
+- A function with List growth and a **scalar** result is both `regions` and
+  `closed_regions` (`compute: closed={"compute"}`).
+- Returning a **scalar-field object** makes the object image caller-owned:
+  `compute: "result image or payload can be caller-owned"`; no closed region.
+- Returning a List/String likewise puts an allocation on the returned value
+  and rejects the closed proof.
+
+Consequence: closed regions can only output scalars/void. Face detection needs
+multiple boxes/scores, so a closed call cannot carry the response without
+publishing into incoming storage or globals (both rejected). The closed-region
+route is **not applicable** to the request output path as designed.
+
+This leaves owned `List`/`String` storage (base + cap + len + owner) as the
+remaining correct route to the RSS plateau; alternative is to accept the
+residual and move to the NPU/VAD capability work.
+
+## 13. Owned List/String route — investigation (2026-11-11)
+
+### Current representation
+- `List<T>` is already a compiler-owned `coll obj`: `ListBuffer<T> { data: Ptr<T> }` plus hidden `cap`/`len` slots appended by the scaffold
+  (`lib/std/collections.bv`, `src/backend/llvm/coll_scaffold.rs`). Growth is
+  `op Grow` doubling the block; push writes `data[len]` then increments.
+- `String` is `[len][bytes]` (`string.bv`/runtime); slices are pointer views
+  into the same bytes.
+- Neither carries an **owner identity**, so returned List/String values cannot
+  be provably freed by the caller, and closed regions reject any allocation
+  reachable from the returned value.
+
+### Options examined
+1. Closed-region request: rejected for multi-box output; a closed call may
+   only return scalars/void. Detection must return multiple boxes, so it would
+   publish into incoming/global storage, which the closed proof rejects.
+2. Raw pointer Env (`Ptr<Int>` tensor handles): compiler object-handle casts
+   do not round-trip (`(t as Data) as Int` → `as T` loses fields); unsupported.
+3. Request allocator interception: rejected (no base/size provenance;
+   realloc/string overlap).
+4. **Owned List/String with destination ownership** remains correct.
+
+### Required design
+- Add an owner/lifetime fact to heap List/String storage. Because String data
+  may be reallocated and sliced, encode the owning base + capacity in a side
+  allocation record or a header word; never infer ownership from an interior
+  pointer.
+- Allocation sites choose storage from lifetime/escape facts (existing
+  `analyze_alloc_strategies` + new List/String site analysis). No new
+  user-facing keyword; `free`/`keep`/consume are the decisions.
+- On return, ownership transfers to the caller; compiler inserts a free at the
+  caller's last use when proven dead, or requires `free`/`keep` otherwise.
+  Slices/aliases keep the base alive (borrow), so destructor must be
+  base-identified and refcount-free.
+- HIR/AST reclamation storage facts learn the List/String owner; closed-region
+  output rule stays unchanged (allocations never escape a closed call).
+- First pilot: response String + Env List only (the request boundary), then
+  generalize to all List/String allocations.
+
+This is a compiler+stdlib ownership change (M2), not another executor
+workaround. It is the only route to the RSS plateau; alternatively accept the
+~0.2 MB/call residual and move to VAD/NPU.
+
+## 14. String-ownership results (2026-11-11)
+
+The first ownership slice landed at allocation sites rather than as general
+auto-free:
+
+- `read_whole` releases the file-sized Data buffer after the Data->String copy
+  (`lib/std/os/fs.bv`); the kiosk image path dropped ~0.14 MB/call by itself.
+- The stdlib Data->String lanes (`char_to_str`, `briev_str_substr`, getenv,
+  lower/upper, CLI/OpenVINO, HTTP/PG slices) release their intermediate blocks
+  after the copy.
+- `strip_frac_zeros` takes ownership of its input slice (every call site passes
+  a disposable copy), closing the `%g` formatter's per-format string stream.
+- Kiosk response builder is the owned-output pilot: fresh heap strings,
+  superseded intermediates freed, final `detect_faces` response freed by the
+  daemon after send.
+
+Measured on the daemon (single connection, JPEG face frame): 200 calls went
+from VmRSS 144→187 MB (~0.21 MB/call) to a flat 172 MB (peak 228 MB) over
+150–200 calls. The flat steady number is allocator-retained freed blocks, not
+per-request growth. Remaining unowned storage is Tensor object/List metadata;
+the owned List/String handle (base+cap+len+owner) is still required for the
+full plateau/explicit-free proof.
+
+## 15. HIR-owned String locals — first slice (2026-11-12)
+
+`src/hir/owned_strings.rs` adds the first body-derived ownership facts over
+typed HIR:
+
+- Fresh-return summaries are derived from bodies, not names: String
+  concatenation, Data->String copies, and calls to another fresh callable.
+  The fixed point runs over the callable graph.
+- Parameter modes come from the existing escape summaries plus body-derived
+  consume facts (`Free#`/`Consume` on a parameter).
+- A local owns its String when initialized/reassigned from a fresh expression.
+  Ownership is dropped (leak, never unsound free) on aliases, field/list/state
+  stores, escaping or consuming call arguments, and unknown calls.
+- `keep` suppresses; explicit `Free#`/`free` marks the value consumed.
+- Releases (`Free#`) are inserted at reassignment of a dead old value and at
+  function exit before a value-returning `term`/`tail`/`endprogram` when the
+  local is not transferred or mentioned by the return expression.
+
+The pass runs only on the HIR emission path, after the HIR/AST parity analyses
+have completed, so canonical plans stay identical. AST opt-out emission is
+unchanged. It is conservative: a local used inside a returned expression is
+not freed (future temp-transfer lowering), and List destruction is not yet
+covered (needs a coll destroy intrinsic/owner slot).
+
+Verification: `cargo test --lib` 3661 pass; kiosk native health/sentiment/face
+smoke and 150-call daemon soak remain output-stable at VmRSS 172 MB plateau.
+
+## 16. Owned List + temp-transfer — second slice (2026-11-12)
+
+Extends §15 to coll Lists and closes the return-expression gap:
+
+- `coll_destroy` (stdlib, `cast_lanes`/`cast_portable`): frees the
+  scaffold-allocated coll object always; frees the backing block only when
+  `coll_arena_owns(data)` is false. The C query checks the block's high-water
+  mark, so buffers retired by a request-arena reset are still recognized as
+  arena-owned (freeing an interior arena pointer would be invalid).
+- The pass emits first-class HIR: `ReleaseOwned { Str|List, name }` and
+  `TempTransfer { name, expr, releases, ret }`. Temp-transfer rewrites a fresh
+  return expression that borrows owned locals into bind→release→return,
+  preserving the original return form (Term/Tail/EndProgram).
+- Fresh-set soundness gate: a callable joins the fresh set only if NO
+  parameter escapes (escape-summary facts). A `wrap(s) -> [s]` stasher is not
+  fresh, so its callers stay conservative. Identity-return callables
+  (`param_return`) transfer ownership from the argument position.
+- Emission: the H4.2 body seam grew a two-cursor walk — the inserted kinds
+  consume no AST statement (they have no source syntax) and expand natively;
+  the drift asserts compare through `storage_release_view`, which strips the
+  inserts back to source shape. Known limitation: inserts nested inside
+  guard bodies still fall back to AST (leak, never unsound); MethodCall
+  receivers borrow (same trust class as field reads — a user method that
+  stashes its receiver escapes it silently).
+
+Verification: `cargo test --lib` 3728 (7 owned-storage tests incl. List
+release, param-return transfer, temp-transfer, alias/global/keep
+conservatism); dashboard `.rbv` IR verify on wasm32 (599 calls, coll_destroy
+clean at i32); daemon IR has 12 coll_destroy call sites; native smoke, ML
+smoke, VAD 187 chunks max |Δ| 3.057e-07; 200-call daemon soak flat at
+VmRSS 171 MB (HWM 227 MB).
+
+## 17. Nested-seam releases (2026-11-12)
+
+The §16 body seam only handled top-level inserts: any guard/block/loop/match
+containing a `ReleaseOwned`/`TempTransfer` failed conversion wholesale and fell
+back to source AST, silently dropping the release (leak). The seam now converts
+scoped statements recursively (`convert_scoped_seam`/`convert_children_seam`),
+`storage_release_view` strips nested inserts in the comparison view, and the
+stdlib-extension gate (`coll_destroy` in `defn_params`) keeps bare-compiler
+corpus tests link-clean by skipping List releases (conservative leak) instead
+of emitting an undefined symbol.
+
+Kiosk-neutral by measurement: the daemon's coll_destroy site count is
+unchanged (12) — the json-chain guards own no inserts (`term parsed` releases
+nothing). The slice is mechanism completeness that unblocks guard-scoped
+release patterns (per-iteration temporaries, early-return owners) without new
+compiler knowledge. Gates: 3739 lib (new seam test asserts an insert inside a
+guard survives `hir_sourced_body` and is stripped in the comparison view),
+wasm32 dashboard IR verify, native smoke.

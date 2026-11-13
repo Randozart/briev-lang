@@ -154,7 +154,9 @@ defn buf_slice_string(buf: ByteBuf, start: Int, count: Int)
         Copy#(addr + 8, buf.ptr + start, count);
     };
     Store#(addr + 8 + count, 0, 1);
-    term (addr as Data) as String;
+    let owned: String = (addr as Data) as String;
+    Free#(addr as Ptr<Bit<8>>);
+    term owned;
 };
 
 // ── Incremental request parse (Task 3.1) ────────────────────────────────────

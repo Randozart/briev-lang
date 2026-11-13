@@ -1,0 +1,129 @@
+// audio.bv — Saltpetre audio frontend + the Silero VAD streaming decoder.
+// TEMPORAL module (Rule-23-safe): the 512-sample chunk/state-carry loop is
+// an algorithm shape and lives here, not in the compiler. The executor ops
+// below the loop are the eternal core (exec.bv).
+
+import "./tensor.bv";
+import "./exec.bv";
+import "std/os/fs.bv";
+import "std/result.bv";
+import "std/string.bv";
+
+// audio_f32_load — raw mono f32 (16 kHz for Silero) file → tensor. Arena
+// allocation: allocate after the previous reset (same input-lifetime rule
+// as sp_run).
+defn audio_f32_load(path: String)
+    [CharCount#(path) >= 0][true]
+    -> Result<Tensor, String>
+{
+    let f: Result<String, Int> = read_file(path);
+    when is_err(f) { term Err("cannot read audio"); };
+    let bytes: String = unwrap(f);
+    let samples: Int = (bytes .^Length) / 4;
+    let audio: Tensor = tensor_take("pcm", [samples], samples);
+    foreach i in 0..samples {
+        tensor_set(audio, i, f32_from_bytes(bytes, 4 * i));
+    };
+    term Ok(audio);
+};
+
+// vad_new_state — Silero's (h, c) recurrent state, zeroed. Owned storage:
+// survives arena resets, so callers copy each new state into this shape
+// (tensor_copy_owned) before the next reset.
+defn vad_new_state() -> Tensor {
+    let state: Tensor = tensor_named_owned("state", [2, 1, 128], 256);
+    foreach i in 0..256 { tensor_set(state, i, 0.0); };
+    term state;
+};
+
+// vad_stream_probs — chunk the raw f32 stream, carry state across chunks,
+// return one speech probability per chunk. Resets the inference arena per
+// chunk; the raw bytes are read as a persistent String because the per-chunk
+// reset would wipe an arena-allocated audio tensor after chunk 0 (the
+// input-lifetime rule). graph.outs[0] is the probability, outs[1] the new
+// state (Silero layout).
+defn vad_stream_probs(graph: OnnxGraph, audio_path: String, chunk_len: Int)
+    [chunk_len > 0 && CharCount#(audio_path) >= 0][true]
+    -> Result<List<Float>, String>
+{
+    ml_arena_reset();
+    // Raw bytes, NOT an arena tensor: the per-chunk reset below would wipe
+    // an arena-allocated audio tensor after chunk 0 (the input-lifetime
+    // rule; the String from read_file is malloc'd and survives).
+    let rf: Result<String, Int> = read_file(audio_path);
+    when is_err(rf) { term Err("cannot read audio"); };
+    let bytes: String = unwrap(rf);
+    let samples: Int = (bytes .^Length) / 4;
+    let chunks: Int = samples / chunk_len;
+    let state: Tensor = vad_new_state();
+    let probs: List<Float> = [];
+    foreach c in 0..chunks {
+        let frame: Tensor = tensor_take("input", [1, chunk_len], chunk_len);
+        foreach i in 0..chunk_len {
+            tensor_set(frame, i, f32_from_bytes(bytes, (c * chunk_len + i) * 4));
+        };
+        let inputs: List<Tensor> = [];
+        inputs <- frame;
+        inputs <- state;
+        let envr: Result<List<Tensor>, String> = execute_env_inputs(graph, inputs);
+        when is_err(envr) { term Err("vad exec failed"); };
+        let env: List<Tensor> = unwrap(envr);
+        let pr: Result<Tensor, String> = env_find(env, graph.outs[0].name);
+        let sr: Result<Tensor, String> = env_find(env, graph.outs[1].name);
+        when is_err(pr) || is_err(sr) { term Err("vad outputs missing"); };
+        probs <- tensor_get(unwrap(pr), 0);
+        state = tensor_copy_owned(unwrap(sr));
+        ml_arena_reset();
+    };
+    term Ok(probs);
+};
+// ── Session-fed streaming (daemon vad_open/feed/close) ─────────────────
+// The final carried state lands in vad_last_state (owned copy): the daemon's
+// session table copies it into its slot after each feed. Single global is
+// safe — the serve loop is sequential.
+let vad_last_state: Int = 0;
+
+// vad_take_last_state — the carried state from the most recent
+// vad_feed_probs, as an owned Tensor handle for a session slot. Scalar Int
+// global by design (obj/coll globals have a broken init path — BUGS.md).
+defn vad_take_last_state() -> Tensor {
+    term vad_last_state as Tensor;
+};
+
+// vad_feed_probs — one feed request: chunk `audio_path` starting from
+// `state`, return this feed's per-chunk probabilities, and leave the final
+// carried state in `vad_last_state` (owned; copy it into the session slot
+// before the next request's arena resets).
+defn vad_feed_probs(graph: OnnxGraph, state: Tensor, audio_path: String, chunk_len: Int)
+    [chunk_len > 0 && CharCount#(audio_path) >= 0][true]
+    -> Result<List<Float>, String>
+{
+    ml_arena_reset();
+    let rf: Result<String, Int> = read_file(audio_path);
+    when is_err(rf) { term Err("cannot read audio"); };
+    let bytes: String = unwrap(rf);
+    let samples: Int = (bytes .^Length) / 4;
+    let chunks: Int = samples / chunk_len;
+    let cur: Tensor = state;
+    let probs: List<Float> = [];
+    foreach c in 0..chunks {
+        let frame: Tensor = tensor_take("input", [1, chunk_len], chunk_len);
+        foreach i in 0..chunk_len {
+            tensor_set(frame, i, f32_from_bytes(bytes, (c * chunk_len + i) * 4));
+        };
+        let inputs: List<Tensor> = [];
+        inputs <- frame;
+        inputs <- cur;
+        let envr: Result<List<Tensor>, String> = execute_env_inputs(graph, inputs);
+        when is_err(envr) { term Err("vad exec failed"); };
+        let env: List<Tensor> = unwrap(envr);
+        let pr: Result<Tensor, String> = env_find(env, graph.outs[0].name);
+        let sr: Result<Tensor, String> = env_find(env, graph.outs[1].name);
+        when is_err(pr) || is_err(sr) { term Err("vad outputs missing"); };
+        probs <- tensor_get(unwrap(pr), 0);
+        cur = tensor_copy_owned(unwrap(sr));
+        ml_arena_reset();
+    };
+    vad_last_state = (cur as Data) as Int;
+    term Ok(probs);
+};

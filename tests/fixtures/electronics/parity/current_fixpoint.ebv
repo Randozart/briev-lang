@@ -1,0 +1,8 @@
+
+            struct Pin { voltage: Float; current: Float; };
+            type Power { pin vout; reference "P"; spec Tolerance: any; };
+            type Load { pin vin; reference "L"; spec Tolerance: any; };
+            let p1: Power = Power { };
+            let l1: Load = Load { };
+            txn apply [p1.vout.voltage == l1.vin.voltage && p1.vout.voltage == 5.0] [l1.vin.current > 0.0] { }
+        

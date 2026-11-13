@@ -406,6 +406,10 @@ impl Builder<'_> {
                     // contents (which would alias unrelated local payloads).
                     let backing = self.graph.allocation(self.owner);
                     self.graph.growers.insert(self.owner.into());
+                    // 2026-11-12: mark the proxy as container storage, not an
+                    // element value. Element reads exclude it; container escape
+                    // still reaches it through `root_contents`.
+                    self.graph.container_storage.insert(backing);
                     self.graph
                         .constraints
                         .push(Constraint::Store(target, backing));

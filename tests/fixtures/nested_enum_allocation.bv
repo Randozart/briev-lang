@@ -1,0 +1,52 @@
+//===----------------------------------------------------------------------===//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//===----------------------------------------------------------------------===//
+obj Payload { value: Int; };
+enum Event { Accepted(Payload), Other(Int), };
+enum Action { Compute(Int), Persist(Int), Publish(Event), };
+enum Envelope { Wrapped(Action), Empty, };
+
+defn actions(value: Int) -> List<Action> {
+    term [Publish(Accepted(Payload { value: value })), Publish(Other(value+1)), Compute(value+2)];
+};
+
+defn event_value(event: Event) -> Int {
+    let result: Int = 0;
+    match event {
+        Accepted(payload) => { result = payload.value; },
+        Other(number) => { result = number; },
+    };
+    term result;
+};
+
+defn action_value(action: Action) -> Int {
+    let result: Int = 0;
+    match action {
+        Publish(event) => { result = event_value(event); },
+        Compute(number) => { result = number; },
+        Persist(number) => { result = number; },
+    };
+    term result;
+};
+
+defn consume(value: Int) -> Bool {
+    let entries: List<Action> = actions(value);
+    when action_value(entries[0]) != value { term false; };
+    when action_value(entries[1]) != value+1 { term false; };
+    when action_value(entries[2]) != value+2 { term false; };
+    let nested: List<Envelope> = [Wrapped(Publish(Accepted(Payload { value: value+3 })))];
+    let observed: Int = 0;
+    match nested[0] {
+        Wrapped(action) => { observed = action_value(action); },
+        Empty => { observed = 0; },
+    };
+    term observed == value+3;
+};
+
+let done: Bool = false;
+node main [!done][done] {
+    when !consume(get_env_int!("VALUE")) { trap; };
+    println!("nested_enum_allocation_ok");
+    done = true;
+    endprogram;
+};

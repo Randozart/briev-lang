@@ -64,6 +64,24 @@ pub enum HirStmtKind {
     Rollback(Option<HirExpr>),
     FreeHint(String),
     KeepHint(String),
+    /// 2026-11-12 (owned-storage pass): compiler-inserted storage release.
+    /// Not source syntax — the HIR/AST body seam consumes no AST statement
+    /// for it and emission expands to `Free#(name)` (Str) or
+    /// `coll_destroy(name)` (List).
+    ReleaseOwned { storage: StorageKind, name: String },
+    /// 2026-11-12 (owned-storage pass): temp-transfer for a fresh return
+    /// expression that borrows owned locals. Expands to
+    /// `let name = expr; <releases>; term name;` so the operands free after
+    /// the allocation evaluates. Same seam contract as ReleaseOwned.
+    TempTransfer {
+        name: String,
+        ty: Option<Type>,
+        expr: Box<HirExpr>,
+        releases: Vec<(StorageKind, String)>,
+        /// Which return form the transfer replaced (Term/Tail/EndProgram) —
+        /// emission must preserve the original return semantics.
+        ret: RetKind,
+    },
     SyncBlock(Vec<HirStmt>),
     Defer(Vec<HirStmt>),
     Mutex(Vec<HirStmt>),
@@ -79,4 +97,21 @@ pub enum HirStmtKind {
         span: Option<crate::errors::Span>,
     },
     Other(&'static str),
+}
+
+/// Which owned-storage destructor a ReleaseOwned statement expands to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageKind {
+    /// `Free#(name)` — a String handle.
+    Str,
+    /// `coll_destroy(name)` — a coll List handle (object + arena-aware data).
+    List,
+}
+
+/// The return form a TempTransfer replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetKind {
+    Term,
+    Tail,
+    EndProgram,
 }

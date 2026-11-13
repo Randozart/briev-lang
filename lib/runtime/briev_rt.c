@@ -301,3 +301,9 @@ int64_t __briev_setenv(const uint8_t* k, const uint8_t* v) {
 // owned @__briev_sched / @__briev_events head globals (TaskCall# dispatch);
 // the C bodies had no remaining callers. The stale C-symbol declares in
 // emit_task_runtime were deleted in the same change.
+
+/* 2026-11-12: request-scoped coll backing store. Generic `coll_resize` now
+ * calls `coll_alloc` (lib/std/cast_lanes.bv); include the arena so every
+ * runtime link (compiler, harness, tests) defines it. Inert until a caller
+ * opens a request (`coll_arena_begin`). */
+#include "../std/c/coll_arena.c"

@@ -38,6 +38,103 @@ is the struct. Both then marshalled the i64 register as a `ptr` operand
 
 **Status.** Fixed 2026-11-13.
 
+## 2026-11-12 — Nested enum constructor underallocates collection element images
+
+**Symptom.** A list containing an outer enum whose payload is another enum
+prints the expected result but Valgrind reports an eight-byte write/read beyond
+a sixteen-byte allocation. Two- and three-level nested enum images reproduce.
+
+**Cause.** `emit_enum_construct` sized allocation from ambient
+`expected_enum_type`, then resolved the actual constructor enum only for payload
+emission. Collection element context can be absent or stale, so allocation fell
+back to two words while payload emission wrote three or more.
+
+A second mismatch appeared at three levels: depth-limited planning truncated
+the nested image, while its constructor and match consumer used its standalone
+layout. Inline selection now requires the complete nested enum tree to fit the
+depth cap; otherwise that nested value is boxed intact.
+
+**Repair.** Resolve the constructor enum before destination selection and use
+that same concrete type for image size, caller-result eligibility and payload
+layout. Regression: `tests/nested_enum_allocation.rs` exercises native AST/HIR,
+O0/O3 and Valgrind when installed.
+
+**Status.** Fixed 2026-11-12 on `fix/nested-enum-allocation`. Native AST/HIR
+O0/O3 Valgrind regressions and the instrumented application journey pass. Full
+gate has nine failures reproduced on unchanged base `94eb8583`; details are in
+`docs/plans/2026-11-12-nested-enum-allocation.md`.
+
+## 2026-11-12 — Scalar element reads inherit their container's storage provenance
+
+**Symptom.** A function that reads a scalar element out of a grown collection
+and uses it (e.g. prints it, stores it in an object it returns) leaks the
+collection's header and backing store. The leak scales with usage: the load
+harness collector leaked exactly 224 bytes per `/proc` sample (96 direct + 128
+indirect), reproduced at 1/5/20/40 samples.
+
+**Discriminator.** Printing `proc_stat_read(pid).pid` (a directly computed
+scalar) is clean; changing only the selected field to `minor_faults` (a
+collection element) introduces a barrier in the parser and leaks. A standalone
+loop-grown `List<Int>` whose element is returned in an object and printed leaks
+24 + 128 bytes; the single-append variant does not.
+
+**Root cause.** `<-` models the fresh backing store as an allocation stored
+*through the handle* (`Constraint::Store(target, backing)`), which puts the
+storage proxy into the handle's `memory`. `Constraint::Load` (index/deref/
+foreach) then returned `contents(base)` including that proxy, so a scalar
+element read appeared to alias the container's storage. When the value reached
+an escape (a print/syscall), the container's owning callable became an escape
+barrier; its frame was suspended and the storage was never reclaimed.
+Diagnosed with `BRIEV_DIAG_RECLAMATION=1`: the read case adds the container's
+owner to `escape_barriers`, the direct-scalar case does not.
+
+**Fix.** Separate container *storage* from container *contents*. Storage proxies
+are recorded in a dedicated `container_storage` set and excluded from
+`Constraint::Load`, so an element read yields only the stored values. They stay
+in `memory`, so `root_contents`/`reachable` still keep a container's storage
+alive when the container itself escapes. Applied identically to the AST and HIR
+graphs to preserve the parity gate.
+
+**Regression.** `tests/reclamation_runtime.rs::collection_element_reads_do_not_escape_their_container`
+(fixture `tests/fixtures/load/reclamation_collection_element.bv`). The collector
+reduced from 1920/2560 bytes lost at 20 samples to zero at 1/5/20/40.
+
+**Status.** Fixed 2026-11-12.
+
+**Distinct, still-open sibling.** While reducing this, a separate leak appeared
+that is NOT the provenance bug: a list that grows past its initial 16-element
+capacity leaks every backing store allocated by `coll_resize`. `coll_resize` is
+classified as a barrier, so its region is suspended and its
+`__briev_region_malloc` runs with `__briev_region_owner()` returning null; the
+new backing is never tracked. Reproduction (no element read at all): a
+`foreach 0..count { values <- index; }` with a constant count leaks 0 bytes at
+8/16, 256 at 32 and 768 (256+512) at 64, on both this commit and the base. The
+caller's own initial 128-byte backing is tracked and freed, which is why only the
+post-growth backings leak. See the OPEN entry below.
+
+## 2026-11-12 — Barrier-callee allocations are untracked (collection growth leak)
+
+**Symptom.** A collection grown past its initial 16-element capacity leaks each
+new backing store. Measured on both `94eb8583` and the provenance fix: 0 bytes at
+8/16 elements, 256 at 32, 768 at 64. Independent of element reads.
+
+**Cause.** `coll_resize` is a barrier (`mode_for`), so its entry suspends the
+enclosing region (`@__briev_region_current = null`). Its
+`__briev_region_malloc` therefore calls `__briev_region_adopt`, whose
+`__briev_region_owner()` returns null and skips tracking. The fresh backing is
+plain untracked heap; nothing frees it, and the handle only records the new
+pointer, so the previous tracked backing is freed while the new one leaks.
+
+**Candidate directions (not implemented).** Either the caller adopts an owned
+barrier return (the `briev.owned_return`/`__briev_region_adopt` mechanism already
+used for the encoding provider), or growth is lowered without a suspending
+barrier. Both need the closed-region/owned-return design in
+`docs/plans/2026-11-03-lifetime-and-reclamation.md`; do not special-case
+`coll_resize` by name.
+
+**Status.** OPEN 2026-11-12. Not fixed here; the provenance fix deliberately keeps
+its regression fixture within the initial capacity so the two are not conflated.
+
 ## 2026-11-11 — `.bv` wasm32 emission rejects the stdlib prelude (i64 vs i32)
 
 **Symptom.** `brievc build <prog>.bv --triple wasm32-unknown-wasi --split`
@@ -12990,46 +13087,349 @@ to per-instruction fast flags via the dead `emit_fast_math_flags` helper, or
 retirement plan chooses — and add a regression that builds each hint.
 **Status:** OPEN (latent; not triggered by the keyword path).
 
-## `List<Float> <- call()` emits INVALID IR (`sitofp i64 <float>`) — OPEN 2026-11-10
+## FIXED — `List<Float> <- call()` emitted INVALID IR (`sitofp i64 <float>`) (2026-11-10, fixed 2026-11-12)
 
-**Symptom:** arrow-pushing a function result into a `List<Float>` produces IR
-that LLVM rejects:
+Same two-convention collision as the same-day literal-repro entry (below):
+the strategy push path boxed its value arg as i64 regardless of the
+element's real type, so a Float element — whether a literal or a `call()`
+result — crossed the boundary as bits and came back through the semantic
+`sitofp`. Fixed by `eecf9d66`: `StrategyCall` carries `value_ty`; member and
+free-fn dispatch bind the arg at its real LLVM width; the `box_scalar`
+pre-box was removed. Verified post-fix: call-RHS repro
+(`/tmp/opencode/f32call.bv`, `xs <- prob_at(i)` twice) prints the correct
+values and the emitted IR passes `opt -verify` clean.
+
+
+## 2026-11-12 — forwarding a callback parameter emits an i64 where the callee expects `ptr`
+
+**Status:** FIXED (2026-11-12) — the call-argument chain in `emit_expr.rs` now emits `inttoptr` when a `Type::Function` argument is the `%acN` handle and the callee declares `ptr`. Verified: the repro compiles to a library, a C host gets `agree=-1 diverge=10`, and `forwarded_fn_param_is_converted_to_ptr` pins it.
+
+### Symptom
+
+A defn that takes a fn-typed parameter and forwards it to another Briev
+function produces IR the verifier rejects:
 
 ```
-%t28 = call float @one()
-%t33 = sitofp i64 %t28 to float        ; operand already float
-error: '%t28' defined with type 'float' but expected 'i64'
+opt: s.ll:6523:33: error: '%ac0' defined with type 'i64' but expected 'ptr'
+  %t0 = call i64 @verify_at(ptr %ac0, ptr %ac1, i64 %arg2, i64 %t4)
 ```
 
-Literal pushes (`xs <- 1.0`) and integer lists are unaffected; the failure is
-the element expression being routed through an integer conversion before the
-list store. Discovered while building `briev/ml/onnx.bv` (packed float
-attribute reader); worked around by not accumulating floats in a `List`.
+Minimal repro (`/tmp/a4/s.bv`):
 
-**Repro:**
 ```briev
-defn one() -> Float { term 1.0; };
+export defn verify_samples(original: (Int) -> Int, shadow: (Int) -> Int, n: Int) -> Int {
+    term verify_at(original, shadow, n, 0);
+};
 
-node entry [beginprogram][true] {
-    let xs: List<Float> = [];
-    xs <- one();
-    let n: Int = xs.Count#();
-    let ignored: Int = print_int(n);
-    endprogram;
+defn verify_at(original: (Int) -> Int, shadow: (Int) -> Int, n: Int, i: Int) -> Int {
+    when i >= n { term -1; };
+    let expected: Int = shadow(i);
+    let actual: Int = original(i);
+    when actual != expected { term i; };
+    term verify_at(original, shadow, n, i + 1);
 };
 ```
-Build with the pinned compiler: IR verification fails at the emitted
-`sitofp`. The same shape inside a linked module (ONNX reader) fails the same
-way, so it is the construct, not the caller.
 
-**Root cause:** suspected in the arrow/InsertAt lowering for `List<Float>`:
-the element expression's type is not threaded into the conversion, so the
-Int→Float coercion is applied even when the source is already `Float`.
-Receiver/protocol handling should preserve the element type and emit no
-conversion (or a single fpext only for narrower float formats).
+### Cause
 
-**Fix direction:** add the construct as a regression fixture; in
-`emit_stmt`/InsertAt element lowering, key the coercion on the declared
-element type vs the expression type instead of an assumed Int source.
-**Status:** OPEN. Workaround: build the float list through a typed buffer
-(`Malloc#` + `Ptr<Float>`), as `briev/ml/tensor.bv` does.
+At function entry a ptr-typed ABI parameter is canonically stored as an i64
+handle (`%ac0 = ptrtoint ptr %arg0 to i64`) because locals are i64. At a call
+site the argument is then formatted with the declared parameter's LLVM type
+(`ptr` for `Type::Function`) while the value register is still that i64 — no
+`inttoptr` is emitted on the forwarding path.
+
+### Fix
+
+Coerce the argument to the declared parameter type at the call-argument site:
+when the parameter is `Type::Function` and the register is i64, emit
+`inttoptr i64 %x to ptr` and pass the pointer. Callbacks therefore remain
+first-class values that can be forwarded and recursed through.
+
+### Acceptance
+
+`/tmp/a4/s.bv` compiles to a library; a C host calling
+`verify_samples(original, shadow, n)` gets `-1` when all samples agree and the
+first divergent sample index otherwise. Regression test asserting the call site
+passes `ptr`, not an i64, for a forwarded fn-typed parameter.
+
+## 2026-11-12 — `brievc` is not relocatable (release artifacts cannot compile)
+
+**Status:** FIXED 2026-11-12 (`2172bbc6`, guarded by `tests/relocatability.rs`).
+Found while shipping a prebuilt compiler for `counsel`.
+
+### Symptom
+
+A `brievc` built and copied outside its build tree cannot compile a contract.
+The failure **cascades** — each directory added to the package reveals the next
+missing root, which is the signature of several independent path assumptions
+rather than one bug:
+
+| Package contents | Failure |
+|---|---|
+| `brievc` alone | `Cannot find module 'std/cli.bv'` (searches `/lib`, `/imports`, `/std`) |
+| + `lib/` `config/` `glue/` | `type mismatch: expected Float for term value vs declared return type, found Int` |
+| + `std/` `imports/` `spec/` … | `cannot read 'std/c/coll_arena.c'` |
+
+### Evidence — four negatives
+
+Each rules out the obvious explanation, so a packaging fix alone will not do:
+
+1. A **byte-identical** copy of `lib/` (0 symlinks, same file list, same size)
+   reproduces the typing failure → not a copy artifact.
+2. A self-contained package with the **source inside it** still fails → not the
+   source location.
+3. `--stdlib-path <packaged lib>` from a foreign cwd still fails → not the
+   stdlib root.
+4. `.config/` holds only `nextest.toml` → not type seeding.
+
+An apparent success with `--stdlib-path` turned out to be **confounded**: `/tmp`
+still held symlinks from an earlier experiment, so the compiler was reading the
+real repo tree. With them removed the failure returns.
+
+### Where the roots live
+
+- `src/import_resolver.rs` — `search_paths = ["lib", "imports", "."]`
+  (cwd-relative), `root_path` from the source file's directory, plus
+  exe-relative probes (~L400-430) that already include `exe_dir/lib`.
+- `src/config_resolver.rs` — `BRIEV_CONFIG_DIR` or defaults.
+- C sources read through a relative `std/c/...` path.
+
+### Proposed fix
+
+Resolve **one** resource root from `std::env::current_exe()` and use it for
+`lib/`, `config/`, `glue/`, `std/` and the C sources; allow a `BRIEV_ROOT`
+override for unusual layouts. Add an acceptance test that copies `brievc` + the
+resource tree to a temp dir, compiles a contract from an unrelated cwd, and
+asserts the verdicts equal the in-tree run — that test would catch all three
+cascade failures.
+
+## Resolution (2026-11-12)
+
+The `Int` → `Float` degradation *was* path resolution after all — just not the
+path anyone expected. `discover_system_plugins` looked for `./plugins` first and
+fell back to `<resource_root>/plugins`, then silently `continue`d when neither
+existed. But `plugins/parsed/prelude-native.bv` **is the prelude**: without it
+the fundamentals never load and the type checker, finding no `Int`, settles on
+`Float`. Nothing crashed; the compiler became quietly wrong. Because the working
+directory was consulted first, the identical tree typed differently depending
+on where you stood.
+
+That also explains the cascade: supplying `std/` and the rest changed which
+runs *looked* healthy, while the real dependency (`plugins/`) was never in any
+package. The earlier "`Int` → `Float` is independent of the stdlib root" note was
+true but misleading — it was independent of the *stdlib* root and entirely
+dependent on the *plugin* root.
+
+Rejected explanations, for the record: byte-identical `lib/` (correctly ruled
+out), source location (correctly ruled out), `--stdlib-path` (correctly ruled
+out), a `read_dir` ordering bug (wrong), and a missing C source (a later,
+unrelated failure that only appears once typing is fixed).
+
+Fix: the resource root wins; `./plugins` survives only as a development
+fallback; a missing or empty plugin directory is a hard error naming the
+expected path and `BRIEV_HOME`. `discover_system_plugins` now returns
+`Result`, propagated through `build_plugin_manager`'s call sites.
+
+How it was found, since the technique is reusable: `BRIEV_HOME=<original repo>`
+made the packaged binary compile from the package's own cwd, proving the
+resource *root* was the variable; then a bisect over the repo's 612 root
+entries converged on `plugins/` with "needed alone: YES". (The first bisect was
+inverted and converged on a random `.bc` with "needed alone: no" — the
+contradiction is what exposed the bug in the bisect rather than the compiler.)
+
+Release side: the artifact is now a tarball, `<prefix>/bin/brievc` +
+`<prefix>/share/briev/{lib,config,glue,std,spec,plugins}`, and the workflow
+extracts it in a temp directory and compiles from an unrelated cwd before
+publishing.
+## 2026-11-12 — HIR/AST reclamation-plan drift on `c_driver_boundary`
+
+**Symptom.** `cargo test --test c_driver_boundary` panics in debug builds:
+`HIR/AST reclamation-plan drift` (`src/backend/mod.rs`). AST barriers include
+`cstr_to_briev`, `greet`, `iter_{all,any,filter,flatmap,fold,map,partition,
+product,sum,take,zip}_loop`, `join`, `prefetch`, `rdtsc`, `rt_getcwd`,
+`stdout_byte`; the HIR plan omits them. Regions, reasons, known and
+closed_regions otherwise match. Reproduced identically on `main` and on the
+#92/#93 validation trees, so it is not caused by either PR.
+
+**Context.** Introduced by the stdlib coll-arena change (`376fd4d2`): generic
+`coll_resize` now calls the foreign `coll_alloc`, and `briev_rt.c` includes
+`lib/std/c/coll_arena.c`. `BRIEV_DIAG_RECLAMATION=1` shows which calls the HIR
+walk leaves unclassified; the likely divergence is the call/escape edges
+around the new foreign allocation in the HIR classification phase
+(`classify`'s retained/incoming branch, not registration).
+
+**Status.** FIXED (2026-11-12, `6b06d6e1`). Root cause: the HIR
+`reclamation::analyze` took `HirProgram` (which has no `TopLevel` items) and
+never registered `ProtocolDef` items into the casting graph — so
+`find_path(CStr → String)` returned `None`. Fix: `analyze` now takes
+`items: &[TopLevel]` and registers protocol defs, mirroring the AST.
+`c_driver_boundary boundary_types_roundtrip` passes.
+
+
+## FIXED — coll `List<Float>` push/index returned bit-reinterpreted values (2026-11-12, fixed same day)
+
+`List<Float>` element push (`<-`) followed by index read yielded the f32's bit
+pattern reinterpreted as Float: `0.0022557973861694336` read back as
+`9.91156e+08`. Repro: `/tmp/opencode/f32list.bv`. Root cause was NOT the
+scaffold's storage (payload slots are 8-byte words by design and native-width
+stores/loads hit the same slot start): `arrow_insert` force-boxed
+Bool/Char/Float scalars via `adapt_to_i64` (bits-as-int) while the inlined
+push member re-materialized its Float param with the SEMANTIC i64→float cast
+(`sitofp`) — two conventions, so the stored "float" was the bit pattern as a
+number. Fix: `StrategyCall` carries `value_ty`; both member and free-fn
+dispatch bind the value arg at its real LLVM width (Float stays a float
+register end-to-end), and the `box_scalar` pre-box in `arrow_insert` was
+removed (supersedes the 2026-11-10 bool-list-push note — native widths
+round-trip honestly through coerce once the arg is typed). Interpre
+comparison not needed (pure codegen). saltpetre's `vad_stream_probs` returned
+to `List<Float>`; the String workaround is deleted.
+
+## OPEN — coll-typed globals (`List<Int> = []`) emit a broken init_state store (2026-11-12)
+
+Sibling finding to the Float-collection bug: a module-global initialized to
+an empty coll (`let sp_slot_nodes: List<Int> = [];` in saltpetre/session.bv)
+makes `init_state` emit `ptrtoint ptr %tN to i64` where `%tN` is an i64
+constant — IR verify fails on any program that pulls the module in
+(`vad_stream.bv` caught it; opt line 25966 in the failing dump). The slot
+cache was rewound to scalar per-slot globals (sp_s0_*/sp_s1_*), which also
+matches the two-slot requirement. Fix the scaffold's global-init store path
+for coll-typed globals, then the scalar rewind can become a List again if
+dynamic slot growth is ever wanted.
+
+## 2026-11-14 — `--verify-bodies` cannot discharge a relational goal over a sum
+
+**Status:** open. Found while implementing loop-invariant preservation (Counsel
+P4); the same shape caps every accumulator proof, so it blocks more than one
+consumer.
+
+### Symptom
+
+```briev
+defn two_var(a: Int, b: Int) [a >= 0 && b >= 0][term >= 0] -> Int { term a + b; };
+```
+→ `warning: --verify-bodies could not prove: two_var: could not prove the
+postcondition on path 1 of 1 (goal: (term >= 0))`
+
+### What does and does not discharge
+
+| shape | verdict | route |
+|---|---|---|
+| `[a >= 0][term >= 0] { term a; }` | proven | symbolic (structural) |
+| `[a >= 5][term > 4] { term a; }` | proven | symbolic (bounds) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven | SMT (equality) |
+| `[a >= 0 && b >= 0][term >= 0] { term a + b; }` | **UNPROVEN** | SMT (relational) |
+
+So equality goals over a sum reach SMT and are discharged, while relational goals
+over a sum are not. Single-variable relational goals never needed SMT, which is
+why the gap stayed hidden: `verify_bodies`'s symbolic bounds answer those.
+
+### Ruled out
+
+- **Contract shape**: hand-written defns reproduce it, and the `[I][I]` form for
+  preservation is the standard one.
+- **Parenthesised bounds** (`i >= (0)`): same result without parens.
+- **Self-referential substitution** from `acc = acc + i`: the failure reproduces
+  with **no assignment at all** (`term a + b;`).
+- **Z3 availability**: the managed z3 is installed, and the `3 * a` equality goal
+  proves through the SMT path in the same invocation.
+
+### Suspect
+
+`smt_discharge` (src/analysis/verify_bodies.rs) downgrades `Sat` to "unproven"
+when the goal has free identifiers — correct policy, but it makes this defect
+**silent**: a query whose facts never reached the solver returns a model, gets
+downgraded, and reads as the prover merely lacking information.
+
+Next probe: `[a >= 0 && b >= 0][term >= 1]` with `term a + b + 1`. It is provable
+only if the facts are used, so it separates "facts not asserted" from
+"relational-over-sum unsupported". If it fails, inspect `build_vc_query` and the
+fact plumbing; if it passes, the fault is the `bvsge` encoding path.
+
+### Why it matters
+
+Any function that accumulates (`acc = acc + x`) has a postcondition of exactly
+this shape, so this single gap is what stops Counsel from verifying
+loop-accumulator kernels — 270 of 535 eligible functions in this repo contain a
+loop, 178 with dynamic bounds.
+
+### 2026-11-14 (amendment) — the SMT path appears not to use the path FACTS
+
+The original report above blamed the relational encoding. Three further probes
+show something sharper and worse:
+
+| probe | result |
+|---|---|
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` — provable **only** from the pre | **UNPROVEN** |
+| `[a >= 0 && b >= 0 && a + b >= 0][term >= 0] { term a + b; }` — same goal, fact added | **proven** (structurally) |
+| `[a >= 0][term == 3 * a] { term a + a + a; }` | proven |
+
+That last one is the tell: `a + a + a == 3 * a` holds in bitvector arithmetic for
+**every** `a`, so it never needed the precondition. Re-reading the earlier C4
+evidence with this in mind, **every** case believed to demonstrate SMT-assisted
+proof was fact-free:
+
+- `range_bound_does_not_pin` (`a + a == 2 * a`) — tautology.
+- `smt_discharges_arithmetic_identity` (`a + a + a == 3 * a`) — tautology.
+
+None of them exercised "the precondition constrains the goal". `needs_facts` is
+the first probe that does, and it fails.
+
+**Conclusion:** `--verify-bodies`'s SMT discharge is (at most) deciding closed
+formulas; it is not using `SymbolicState::path_constraints`. That is consistent
+with `smt_discharge`'s `Sat => unproven` policy hiding the failure: a query with
+no facts finds a model immediately, the model is silently downgraded to advisory,
+and the result reads as "the prover lacked information" rather than "the facts
+were never sent".
+
+**Where to look:** `smt_discharge` in src/analysis/verify_bodies.rs — does
+`state.path_constraints` actually contain the precondition by the time a path is
+discharged, and does `build_vc_query` emit each fact as its own `(assert …)`
+before `(assert (not <goal>))`? Add a probe that prints the generated SMT-LIB.
+
+**Impact:** this caps `--verify-bodies` at tautologies and bound-provable goals.
+Any contract whose goal depends on the declared precondition is unprovable today
+— which is most real contracts, and all of Counsel's accumulator VC2.
+
+### 2026-11-14 (RETRACTION) — not a defect: bitvector wraparound, correctly refused
+
+Both entries above are **withdrawn**. The prover is right and the report was
+wrong. Evidence, from an env-gated dump of the actual SMT-LIB
+(`BRIEV_DIAG_VC=1`) plus one discriminating probe:
+
+```lisp
+(declare-const a (_ BitVec 64))
+(declare-const b (_ BitVec 64))
+(assert (and (bvsge a #x0) (bvsge b #x0)))          ; the preconditions ARE sent
+(assert (not (bvsge (bvadd (bvadd a b) #x1) #x1)))
+(check-sat)                                          ; SAT — and genuinely so
+```
+
+`a = b = 2^63 - 1` makes `a + b` wrap negative, so `a >= 0 ∧ b >= 0` does **not**
+imply `a + b + 1 >= 1` in 64-bit wrapping arithmetic. The query is satisfiable,
+the model is real, and the `Sat => unproven` policy correctly declines to claim a
+proof.
+
+The discriminating probe:
+
+| defn | verdict |
+|---|---|
+| `[a >= 0 && a < 1000000 && b >= 0 && b < 1000000][term >= 1] { term a + b + 1; }` | **proven** |
+| `[a >= 0 && b >= 0][term >= 1] { term a + b + 1; }` | unproven |
+
+Bounding the operands rules out wraparound, and the same goal then proves. So:
+
+1. **Facts reach the solver.** The `path_constraints` plumbing and
+   `build_vc_query` were never at fault.
+2. **The relational encoding is correct** (`bvsge`/`bvadd` are exact).
+3. The earlier claim that "every C4 SMT success was a fact-free tautology" was
+   also **wrong**: `a + a == 2 * a` holds under wraparound, so those tests were
+   correct evidence — they simply never needed the preconditions.
+
+**The real lesson is a modelling constraint, not a bug:** Briev's `Int` is a
+wrapping 64-bit bitvector, so *no* arithmetic postcondition that can overflow is
+provable from unbounded range facts. Contracts and loop invariants must bound the
+values they reason about (e.g. `acc >= 0 && acc <= N`) or they are — correctly —
+refused.
+
+Recorded so this is not re-investigated: a future reader finding `needs_facts`
+unproven should add the bound first, not file a bug.

@@ -1,0 +1,7 @@
+
+            type Chip { pin gpio[4]; reference "U"; spec Tolerance: any; };
+            type Conn { pin p1; reference "J"; };
+            let u2: Chip = Chip { value: "u2" };
+            let j1: Conn = Conn { value: "x" };
+            node n [j1.p1.voltage == u2.gpio[*].voltage] { };
+        

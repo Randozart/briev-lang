@@ -285,3 +285,66 @@ refactors on owner instruction. The checkpoint did not build: it called
 Region was then integrated on top with a single `compute_link_vars` conflict
 resolved to the deterministic version. Gates: quick 41/41; region 16; sweep
 143/0; release A/B byte-identical.
+
+**Electronics HIR port — first subset (2026-11-11).**
+`src/hir/electronics.rs` (2.1k) ports the HIR-native core: pin declarations and
+classes/units/numbering, reference designators, instances and literal fields,
+precondition pin equalities, return-net union, participation
+(`unpop`/`shortcircuit`), dangling detection, decoupler bridging, decoupling
+and contention checks, contract voltage drives, static/top-level hold-law
+conditional drives, mutually-exclusive guards, and tolerance/current-bound
+checks. 14 parity tests; AST electronics suite 157; quick 41/41; sweep 143/0;
+A/B byte-identical. HIR fidelity added: `HirTypeDef`
+pins/reference/metadata/hold-laws/modes, `HirProgram` participation + top-level
+hold laws (snapshots refreshed).
+
+Still unsupported (documented in the module, never approximated): data tables
+and table-indexed fields, bus/wildcard equalities, constitutive-law elaboration
+(`electronics_laws`/`electronics_dc`), series synthesis, current/power proofs,
+budgets, `net<>`/`stdnet<>` membership, named modes, and mechanism synthesis.
+The consumer remains AST; finishing this coverage is the prerequisite for the
+electronics consumer flip.
+
+**Electronics full-surface attempt (2026-11-12, uncommitted WIP).**
+A follow-up attempt to close the documented gap reached 5.3k lines across 12
+files (new `hir/electronics_laws.rs`, fidelity in program/lower/expr/to_ast/
+walk/stats/needs_state/verify) before the worker hit its 5-hour quota. The WIP
+lives in worktree `/tmp/electronics-port2` (branch `electronics-hir-port2`)
+and is NOT integrated: its own parity suite has 12 failures, mostly message
+formatting (Rust string continuations leaving literal backslashes/double
+spaces; duplicated `V` suffixes around `format_volts`) plus wildcard/instance
+array net expansion returning 0 nets instead of 2. AST electronics (157) and
+the committed HIR subset (14) remain green on main.
+
+Next steps for that branch: normalize the HIR diagnostic strings against the
+AST messages, restore unit suffixes only where the argument is a raw number,
+debug wildcard instance-array expansion (`t[*].a.voltage`) against
+`partition_nets`, then run the full parity suite, Praetor, quick gate, sweep,
+and only then flip the electronics consumer. The scratch binary
+`src/bin/scratch_elec.rs` and the WIP plan file must be removed before merge.
+
+**Electronics WIP checkpoint (2026-11-12, branch `electronics-hir-port2`).**
+The full-surface attempt is now committed in its worktree branch as
+`a31c9d87` (not merged): HIR fidelity + `hir/electronics_laws.rs`, buses/
+wildcards, net labels, and stubs for budgets, currents, mechanisms, modes,
+laws/DC, and series synthesis. Diagnostic strings were normalized to the AST
+text (Rust continuation artifacts removed; raw-number messages regain their
+unit suffix). Parity is **34/45**.
+
+The remaining 11 failures are feature implementations, not formatting:
+
+- `budgets_pass_and_violate` — budget roll-up (`budget x.pin <= …`).
+- `current_bound_proven_by_fixpoint_and_vacuity` / `max_current_and_drive_capability_proofs_match`.
+- `mechanism_synthesis_matches` / `mechanism_without_candidate_is_a_hard_error`
+  — conditional bridges (`hold … through`) and candidate selection.
+- `named_modes_solve_per_mode_and_select_nodes` — per-mode DC state solving.
+- `resistor_law_dc_solve_proves_bounds` — component-law DC bounds.
+- `series_part_forcing_and_e_series_synthesis_match` — series-part forcing and
+  E-series synthesis.
+- `stdnet_membership_inferred_and_labeled` — net<>/stdnet<> resolution.
+- `wildcard_broadcast_and_instance_array_match` — instance-array wildcard net
+  expansion returns 0 nets instead of 2.
+- `voltage_obligation_pull_up_forcing_matches` — pull-up intent proof.
+
+Main keeps the green subset (hir 14; AST 157; quick 41/41; sweep 143/0; A/B
+byte-identical). Resume from the worktree branch; do not merge until 45/45.

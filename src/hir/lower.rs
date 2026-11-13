@@ -36,6 +36,10 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
     let mut trait_names = Vec::new();
     let mut cell_names = Vec::new();
     let mut trait_functions: Vec<(String, Vec<String>)> = Vec::new();
+    let mut participations = Vec::new();
+    let mut hold_laws = Vec::new();
+    let mut data_tables = Vec::new();
+    let mut budgets = Vec::new();
     let has_triggers;
     {
         let mut out = LowerOutputs {
@@ -56,10 +60,15 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
             cell_names: &mut cell_names,
             trait_functions: &mut trait_functions,
             always_stateful: &mut always_stateful,
+            participations: &mut participations,
+            hold_laws: &mut hold_laws,
+            data_tables: &mut data_tables,
+            budgets: &mut budgets,
             has_triggers: false,
         };
-        for item in items {
-            lower_item(item, false, None, &mut ids, &mut out);
+        for (top_index, item) in items.iter().enumerate() {
+            let ctx = ItemCtx { exported: false, export_symbol: None, top_index };
+            lower_item(item, ctx, &mut ids, &mut out);
         }
         has_triggers = out.has_triggers;
     }
@@ -81,6 +90,10 @@ pub fn lower_program(items: &[TopLevel]) -> HirProgram {
         cell_names,
         trait_functions,
         always_stateful,
+        participations,
+        hold_laws,
+        data_tables,
+        budgets,
         has_triggers,
     }
 }
@@ -103,6 +116,10 @@ struct LowerOutputs<'a> {
     cell_names: &'a mut Vec<String>,
     trait_functions: &'a mut Vec<(String, Vec<String>)>,
     always_stateful: &'a mut Vec<String>,
+    participations: &'a mut Vec<super::program::HirParticipation>,
+    hold_laws: &'a mut Vec<super::program::HirHoldLaw>,
+    data_tables: &'a mut Vec<super::program::HirDataTable>,
+    budgets: &'a mut Vec<super::program::HirBudget>,
     has_triggers: bool,
 }
 
@@ -123,7 +140,7 @@ fn lower_protocol_bindings(pd: &crate::ast::top::ProtocolDef, out: &mut LowerOut
 }
 
 /// TypeDef members (owner-qualified) plus the type declaration itself.
-fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
     for member in &td.body.members {
         match member {
             TopLevel::Definition(d) => {
@@ -140,7 +157,7 @@ fn lower_typedef_item(td: &crate::ast::TypeDef, ids: &mut IdSupply, out: &mut Lo
             _ => {}
         }
     }
-    if let Some(decl) = lower_type_def(td, ids) {
+    if let Some(decl) = lower_type_def(td, ids, top_index) {
         out.types.push(decl);
     }
 }
@@ -207,18 +224,26 @@ fn lower_trait_item(tr: &crate::ast::top::TraitDef, ids: &mut IdSupply, out: &mu
     }
 }
 
+/// Per-item lowering context: export wrapper state and the top-level item
+/// position (the `declaration_order` source for type declarations).
+#[derive(Clone, Default)]
+struct ItemCtx {
+    exported: bool,
+    export_symbol: Option<String>,
+    top_index: usize,
+}
+
 /// `sync<domains>`: lower the inner item and tag its callables with the
 /// domains (effective_txns parity).
 struct SyncGroupCtx<'a> {
     item: &'a TopLevel,
     domains: &'a [String],
-    exported: bool,
-    export_symbol: Option<String>,
+    item_ctx: ItemCtx,
 }
 
 fn lower_sync_group(ctx: &SyncGroupCtx<'_>, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
     let before = out.callables.len();
-    lower_item(ctx.item, ctx.exported, ctx.export_symbol.clone(), ids, out);
+    lower_item(ctx.item, ctx.item_ctx.clone(), ids, out);
     for c in &mut out.callables[before..] {
         c.sync_domains = ctx.domains.to_vec();
     }
@@ -231,7 +256,14 @@ fn lower_global_statement(
     ids: &mut IdSupply,
     out: &mut LowerOutputs<'_>,
 ) {
-    let crate::ast::Statement::Let { name, ty, expr, modifiers, .. } = stmt else {
+    let crate::ast::Statement::Let {
+        name,
+        ty,
+        expr,
+        modifiers,
+        ..
+    } = stmt
+    else {
         return;
     };
     let declared_storage = modifiers.iter().find_map(|m| match m.name.as_str() {
@@ -248,6 +280,10 @@ fn lower_global_statement(
         declared_storage,
         is_state_decl: false,
         modifiers: modifiers.iter().map(|m| m.name.clone()).collect(),
+        annotations: modifiers
+            .iter()
+            .map(|m| (m.name.clone(), m.value.as_ref().map(|v| lower_expr(v, ids))))
+            .collect(),
         span: None,
     });
 }
@@ -274,13 +310,8 @@ fn lower_init_item(i: &crate::ast::top::InitDecl, ids: &mut IdSupply, out: &mut 
     });
 }
 
-fn lower_item(
-    item: &TopLevel,
-    exported: bool,
-    export_symbol: Option<String>,
-    ids: &mut IdSupply,
-    out: &mut LowerOutputs<'_>,
-) {
+fn lower_item(item: &TopLevel, ctx: ItemCtx, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    let ItemCtx { exported, export_symbol, top_index } = ctx;
     match item {
         TopLevel::Definition(d) => out.callables.push(lower_definition(
             d,
@@ -324,22 +355,14 @@ fn lower_item(
                 out.trigger_bindings.push(name.clone());
             }
         }
-        TopLevel::ProtocolDef(pd) => lower_protocol_bindings(pd, out),
-        TopLevel::Export(export) => {
-            let symbol = export.export_name.clone().or_else(|| item_name(&export.inner));
-            lower_item(&export.inner, true, symbol, ids, out);
+        TopLevel::ProtocolDef(_) => lower_protocol_item(item, out),
+        // 2026-11-05 (H3.4b): `export`/`sync<group>` wrap a callable that the
+        // reactor still dispatches; HIR must contain the inner node.
+        TopLevel::Export(_) | TopLevel::SyncGroup { .. } => {
+            let wrapped = ItemCtx { exported, export_symbol, top_index };
+            lower_wrapped_item(item, wrapped, ids, out);
         }
-        // 2026-11-05 (H3.4b): `sync<group>` wraps a transaction that the
-        // reactor still dispatches. `analysis::effective_txns` walks these;
-        // HIR must contain them or live-field/dispatch analyses lose the node.
-        TopLevel::SyncGroup { item, domains } => {
-            let ctx = SyncGroupCtx { item, domains, exported, export_symbol };
-            lower_sync_group(&ctx, ids, out);
-        }
-        TopLevel::TypeDef(td) => {
-            out.type_names.push(td.name.clone());
-            lower_typedef_item(td, ids, out)
-        }
+        TopLevel::TypeDef(_) => lower_typedef_top(item, ids, out, top_index),
         // 2026-11-04 (H3.0): impl members are type-qualified (`Type::member`),
         // the keys the needs_state fixpoint and type_stateful_members use.
         TopLevel::Impl(imp) => lower_impl_item(imp, ids, out),
@@ -350,38 +373,29 @@ fn lower_item(
             lower_trait_item(tr, ids, out)
         }
         TopLevel::IsrHandler(h) => out.callables.push(lower_isr_handler(h, ids)),
+        // 2026-11-12 (electronics): participation facts and top-level static
+        // laws are electrical inputs; both are inert for other analyses.
+        TopLevel::Unpop(_) | TopLevel::ShortCircuit(_) => lower_electrical_item(item, ids, out),
+        // 2026-11-12 (electronics full-surface port): data tables and
+        // budgets lower through the electrical arm like the laws.
+        TopLevel::Data(_) | TopLevel::Budget(_) => lower_electrical_item(item, ids, out),
+        TopLevel::HoldLaw(_) if !exported => lower_electrical_item(item, ids, out),
         // 2026-11-04 (H3.0): top-level globals are the state-field leaf set
         // for needs_state/storage_class. `constant` items are deliberately
         // excluded (they lower to immutable loads, not %State).
-        TopLevel::Statement(stmt) if !exported => lower_global_statement(stmt, ids, out),
-        TopLevel::StateDecl(s) if !exported => out.globals.push(HirGlobal {
-            node: ids.node(),
-            item: ids.item(),
-            name: s.name.clone(),
-            ty: Some(s.ty.clone()),
-            expr: None,
-            declared_storage: None,
-            is_state_decl: true,
-            modifiers: Vec::new(),
-            span: s.span,
-        }),
-        TopLevel::ForeignBinding(fb) => out.foreign.push(HirForeign {
-            name: fb
-                .briev_name
-                .clone()
-                .unwrap_or_else(|| fb.foreign_name.clone()),
-            params: fb.inputs.clone(),
-            ret: fb.success_output.first().map(|(_, t)| t.clone()),
-        }),
+        TopLevel::Statement(_) | TopLevel::StateDecl(_) if !exported => {
+            lower_global_item(item, ids, out)
+        }
+        TopLevel::ForeignBinding(_) => lower_foreign_item(item, out),
         TopLevel::Constant(c) => lower_constant_item(c, ids, out),
         TopLevel::Init(i) => lower_init_item(i, ids, out),
         TopLevel::AsmFn(a) => out.always_stateful.push(a.name.clone()),
         TopLevel::BadFn(b) => out.always_stateful.push(b.name.clone()),
-        TopLevel::Enum(def) => out.types.push(lower_enum(def, ids)),
-        TopLevel::Obj(def) => out.types.push(lower_object(def, ids)),
+        TopLevel::Enum(def) => out.types.push(lower_enum(def, ids, top_index)),
+        TopLevel::Obj(def) => out.types.push(lower_object(def, ids, top_index)),
         TopLevel::StaticStruct(def) => {
             out.static_struct_names.push(def.name.clone());
-            out.types.push(lower_struct(def, ids))
+            out.types.push(lower_struct(def, ids, top_index))
         }
         _ => {}
     }
@@ -397,34 +411,234 @@ fn binding_fns(def: &crate::ast::TypeDef) -> Vec<String> {
     out
 }
 
-fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTypeDef> {
+fn lower_typedef_top(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>, top_index: usize) {
+    if let TopLevel::TypeDef(td) = item {
+        out.type_names.push(td.name.clone());
+        lower_typedef_item(td, ids, out, top_index);
+    }
+}
+
+fn lower_foreign_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
+    if let TopLevel::ForeignBinding(fb) = item {
+        out.foreign.push(HirForeign {
+            name: fb
+                .briev_name
+                .clone()
+                .unwrap_or_else(|| fb.foreign_name.clone()),
+            link_symbol: fb.foreign_name.clone(),
+            params: fb.inputs.clone(),
+            ret: fb.success_output.first().map(|(_, t)| t.clone()),
+        });
+    }
+}
+
+fn lower_protocol_item(item: &TopLevel, out: &mut LowerOutputs<'_>) {
+    if let TopLevel::ProtocolDef(pd) = item {
+        lower_protocol_bindings(pd, out);
+    }
+}
+
+fn lower_wrapped_item(
+    item: &TopLevel,
+    ctx: ItemCtx,
+    ids: &mut IdSupply,
+    out: &mut LowerOutputs<'_>,
+) {
+    match item {
+        TopLevel::Export(export) => {
+            let symbol = export
+                .export_name
+                .clone()
+                .or_else(|| item_name(&export.inner));
+            let inner = ItemCtx {
+                exported: true,
+                export_symbol: symbol,
+                top_index: ctx.top_index,
+            };
+            lower_item(&export.inner, inner, ids, out);
+        }
+        TopLevel::SyncGroup { item, domains } => {
+            let sync = SyncGroupCtx {
+                item,
+                domains,
+                item_ctx: ctx,
+            };
+            lower_sync_group(&sync, ids, out);
+        }
+        _ => {}
+    }
+}
+
+fn lower_electrical_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    match item {
+        TopLevel::Unpop(d) => out.participations.push(super::program::HirParticipation {
+            instance: d.instance.clone(),
+            shortcircuit: false,
+        }),
+        TopLevel::ShortCircuit(d) => out.participations.push(super::program::HirParticipation {
+            instance: d.instance.clone(),
+            shortcircuit: true,
+        }),
+        TopLevel::HoldLaw(w) => out.hold_laws.push(lower_hold_law(&w.guard, &w.facts, ids)),
+        // 2026-11-12 (electronics full-surface port): constant data tables and
+        // source-pin budgets are electrical inputs like the laws above.
+        TopLevel::Data(t) => out.data_tables.push(super::program::HirDataTable {
+            name: t.name.clone(),
+            dims: t.dims.clone(),
+            cells: t.cells.clone(),
+        }),
+        TopLevel::Budget(b) => out.budgets.push(super::program::HirBudget {
+            contract: lower_expr(&b.contract, ids),
+        }),
+        _ => {}
+    }
+}
+
+fn lower_global_item(item: &TopLevel, ids: &mut IdSupply, out: &mut LowerOutputs<'_>) {
+    match item {
+        TopLevel::Statement(stmt) => lower_global_statement(stmt, ids, out),
+        TopLevel::StateDecl(s) => out.globals.push(HirGlobal {
+            node: ids.node(),
+            item: ids.item(),
+            name: s.name.clone(),
+            ty: Some(s.ty.clone()),
+            expr: None,
+            declared_storage: None,
+            is_state_decl: true,
+            modifiers: Vec::new(),
+            annotations: Vec::new(),
+            span: s.span,
+        }),
+        _ => {}
+    }
+}
+
+fn lower_pins(def: &crate::ast::TypeDef) -> Vec<super::program::HirPinDecl> {
+    def.body
+        .pins
+        .iter()
+        .map(|p| super::program::HirPinDecl {
+            name: p.name.clone(),
+            number: p.number,
+            class_ref: p.class_ref.clone(),
+            unit: p.unit.clone(),
+        })
+        .collect()
+}
+
+fn lower_metadata(
+    def: &crate::ast::TypeDef,
+) -> std::collections::BTreeMap<String, crate::ast::PropertyValue> {
+    def.body
+        .metadata
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+fn lower_type_hold_laws(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+) -> Vec<super::program::HirHoldLaw> {
+    def.body
+        .hold_laws
+        .iter()
+        .map(|law| lower_hold_law(&law.guard, &law.facts, ids))
+        .collect()
+}
+
+/// 2026-11-12 (electronics full-surface port): named component modes with
+/// their equation facts — the constitutive-law elaborator's per-mode input.
+fn lower_mode_decls(
+    def: &crate::ast::TypeDef,
+    ids: &mut IdSupply,
+) -> Vec<super::program::HirModeDecl> {
+    def.body
+        .modes
+        .iter()
+        .map(|mode| super::program::HirModeDecl {
+            name: mode.name.clone(),
+            facts: lower_body(&mode.facts, ids),
+        })
+        .collect()
+}
+
+fn lower_hold_law(
+    guard: &Expr,
+    facts: &[Statement],
+    ids: &mut IdSupply,
+) -> super::program::HirHoldLaw {
+    super::program::HirHoldLaw {
+        guard: lower_expr(guard, ids),
+        facts: lower_body(facts, ids),
+    }
+}
+
+/// 2026-11-12 (destination-model port): the refinement parent's bare name.
+/// The parser guarantees `Expr::Identifier` for parents (generic-arg and
+/// hashword entries become traits/protocol), so a non-identifier expression
+/// is impossible from source; the empty-string fallback keeps the `Some`
+/// guard semantics for hand-built ASTs.
+fn parent_name(def: &crate::ast::TypeDef) -> Option<String> {
+    def.parent.as_ref().map(|expr| match expr.as_ref() {
+        Expr::Identifier(name) => name.clone(),
+        _ => String::new(),
+    })
+}
+
+fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> Option<HirTypeDef> {
     // A body-less declaration is a boundary alias (`type CStr: String<C_String>`)
-    // when it carries a protocol; otherwise it has no HIR shape.
-    if def.body.slots.is_empty() {
+    // when it carries a protocol; otherwise it has no HIR shape. Component
+    // types (`pin`/`hold`/mode clauses only) keep their declaration.
+    let has_electrical_body = !def.body.pins.is_empty()
+        || !def.body.hold_laws.is_empty()
+        || !def.body.modes.is_empty()
+        || !def.body.metadata.is_empty();
+    if def.body.slots.is_empty() && !has_electrical_body {
         let protocol = def.protocol.clone()?;
         return Some(HirTypeDef {
             node: ids.node(),
             item: ids.item(),
             name: def.name.clone(),
             type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+            parent: parent_name(def),
+            declaration_order: top_index,
             kind: HirTypeDefKind::Struct { fields: Vec::new() },
             protocol: Some(protocol),
             is_coll: def.coll,
             traits: def.traits.clone(),
-            op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
-        has_user_operators: has_user_operators(def),
+            op_bindings: def
+                .body
+                .op_bindings
+                .iter()
+                .map(|b| b.name.clone())
+                .collect(),
+            has_user_operators: has_user_operators(def),
             binding_fns: binding_fns(def),
+            pins: lower_pins(def),
+            reference: def.body.reference.clone(),
+            metadata: lower_metadata(def),
+            hold_laws: lower_type_hold_laws(def, ids),
+            modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+            mode_decls: lower_mode_decls(def, ids),
             span: def.span,
         });
     }
-    if def.body.slots.iter().all(|slot| slot.name.starts_with("__variant_")) {
-        return Some(lower_enum_type_def(def, ids));
+    if def
+        .body
+        .slots
+        .iter()
+        .all(|slot| slot.name.starts_with("__variant_"))
+    {
+        return Some(lower_enum_type_def(def, ids, top_index));
     }
     Some(HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: parent_name(def),
+        declaration_order: top_index,
         kind: HirTypeDefKind::Struct {
             fields: def
                 .body
@@ -439,9 +653,20 @@ fn lower_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> Option<HirTy
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         traits: def.traits.clone(),
-        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        op_bindings: def
+            .body
+            .op_bindings
+            .iter()
+            .map(|b| b.name.clone())
+            .collect(),
         has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
+        pins: lower_pins(def),
+        reference: def.body.reference.clone(),
+        metadata: lower_metadata(def),
+        hold_laws: lower_type_hold_laws(def, ids),
+        modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+        mode_decls: lower_mode_decls(def, ids),
         span: def.span,
     })
 }
@@ -455,7 +680,7 @@ fn has_user_operators(def: &crate::ast::TypeDef) -> bool {
     })
 }
 
-fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     let variants = def
         .body
         .slots
@@ -474,18 +699,31 @@ fn lower_enum_type_def(def: &crate::ast::TypeDef, ids: &mut IdSupply) -> HirType
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: parent_name(def),
+        declaration_order: top_index,
         kind: HirTypeDefKind::Enum { variants },
         protocol: def.protocol.clone(),
         is_coll: def.coll,
         traits: def.traits.clone(),
-        op_bindings: def.body.op_bindings.iter().map(|b| b.name.clone()).collect(),
+        op_bindings: def
+            .body
+            .op_bindings
+            .iter()
+            .map(|b| b.name.clone())
+            .collect(),
         has_user_operators: has_user_operators(def),
         binding_fns: binding_fns(def),
+        pins: lower_pins(def),
+        reference: def.body.reference.clone(),
+        metadata: lower_metadata(def),
+        hold_laws: lower_type_hold_laws(def, ids),
+        modes: def.body.modes.iter().map(|m| m.name.clone()).collect(),
+        mode_decls: lower_mode_decls(def, ids),
         span: def.span,
     }
 }
 
-fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     let variants = def
         .variants
         .iter()
@@ -511,6 +749,8 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Enum { variants },
         protocol: None,
         is_coll: false,
@@ -518,16 +758,24 @@ fn lower_enum(def: &crate::ast::EnumDefinition, ids: &mut IdSupply) -> HirTypeDe
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
 
-fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.clone(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Object {
             fields: def
                 .fields
@@ -544,16 +792,24 @@ fn lower_object(def: &crate::ast::StructDefinition, ids: &mut IdSupply) -> HirTy
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
 
-fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
+fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply, top_index: usize) -> HirTypeDef {
     HirTypeDef {
         node: ids.node(),
         item: ids.item(),
         name: def.name.clone(),
         type_params: def.type_params.iter().map(|p| p.name.clone()).collect(),
+        parent: None,
+        declaration_order: top_index,
         kind: HirTypeDefKind::Struct {
             fields: def
                 .fields
@@ -570,6 +826,12 @@ fn lower_struct(def: &crate::ast::StructDef, ids: &mut IdSupply) -> HirTypeDef {
         traits: Vec::new(),
         op_bindings: Vec::new(),
         binding_fns: Vec::new(),
+        pins: Vec::new(),
+        reference: None,
+        metadata: std::collections::BTreeMap::new(),
+        hold_laws: Vec::new(),
+        modes: Vec::new(),
+        mode_decls: Vec::new(),
         span: def.span,
     }
 }
@@ -895,6 +1157,9 @@ fn lower_special_expr(expr: &Expr, ids: &mut IdSupply) -> HirExpr {
             Box::new(lower_expr(array, ids)),
             Box::new(lower_expr(index, ids)),
         )),
+        // 2026-11-12 (electronics full-surface port): the `[*]` wildcard
+        // selector. Only ever an index; the electronics analysis expands it.
+        Expr::Wildcard => (None, HirExprKind::Wildcard),
         Expr::Slice { array, start, end, stride } => (None, HirExprKind::Slice {
             array: Box::new(lower_expr(array, ids)),
             start: start.as_ref().map(|expr| Box::new(lower_expr(expr, ids))),

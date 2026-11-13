@@ -61,6 +61,40 @@ pub struct BodyReport {
     pub violated: Vec<String>,
 }
 
+impl BodyReport {
+    /// Render the report as JSON for tooling (`--verify-report`).
+    ///
+    /// Entries become `{ "name", "reason" }` objects so a consumer never parses
+    /// prose. The internal strings are `name: reason` for the human diagnostic;
+    /// a declaration name is an identifier, so it cannot contain `: ` and the
+    /// split is unambiguous.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            // Names, not a bare count: a consumer has to be able to tell
+            // "proved" from "never examined", and a total cannot do that. The
+            // prelude is included in this list, so consumers intersect with
+            // their own declarations.
+            "proven": self.proven.iter().map(|name| serde_json::json!({
+                "name": name,
+                "reason": "",
+            })).collect::<Vec<_>>(),
+            "unproven": findings_json(&self.unproven),
+            "violated": findings_json(&self.violated),
+        })
+    }
+}
+
+/// Split `name: reason` entries into structured objects.
+fn findings_json(entries: &[String]) -> Vec<serde_json::Value> {
+    entries
+        .iter()
+        .map(|entry| {
+            let (name, reason) = entry.split_once(": ").unwrap_or((entry.as_str(), ""));
+            serde_json::json!({ "name": name, "reason": reason })
+        })
+        .collect()
+}
+
 /// Inclusive numeric bounds of one identifier, derived from path facts.
 #[derive(Debug, Clone, Copy, Default)]
 struct Bound {
@@ -81,6 +115,9 @@ struct Bound {
 /// off (the default) the historical consistency-only behaviour is unchanged.
 pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
     let mut report = BodyReport::default();
+    // C3: value summaries let a body be proved through the helpers it calls.
+    // Computed once, up front, so the result never depends on item order.
+    let sums = build_summaries(items);
     for item in items {
         let (name, contract, body) = match contract_target(item) {
             Some(t) => t,
@@ -92,11 +129,21 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
             continue;
         }
         // Soundness boundary: only prove bodies whose entire surface is
-        // within the pure-integer prover's reach.
-        if !body_supported(body) {
+        // within the pure-integer prover's reach (calls included, when the
+        // callee has a value summary).
+        if !body_supported(body, &sums) {
             continue;
         }
-        match verify_one(&contract.pre_condition, &contract.post_condition, body) {
+        // Substitute each summarised call with the callee's value expression,
+        // so the existing path walk reasons about one flat body.
+        let Ok(flattened) = inline_body(body, &sums) else {
+            continue;
+        };
+        match verify_one(
+            &contract.pre_condition,
+            &contract.post_condition,
+            &flattened,
+        ) {
             BodyOutcome::Proven => report.proven.push(name.to_string()),
             BodyOutcome::Unproven(why) => report.unproven.push(format!("{name}: {why}")),
             BodyOutcome::Violated(why) => report.violated.push(format!("{name}: {why}")),
@@ -123,9 +170,41 @@ fn trivially_true(expr: &Expr) -> bool {
 }
 
 /// Prove one (pre, body, post) triple across all of the body's paths.
+/// Bind identifiers that a fact pins to a single value (`a == 5`).
+///
+/// A point equality is a value fact, not a range. Recording it as an
+/// assignment lets arithmetic over the identifier fold *while the body is
+/// walked*, so the body's result and the postcondition are evaluated with the
+/// same knowledge — pinning only at verdict time leaves the two sides
+/// disagreeing (`a + a` already folded against an unpinned `a`).
+fn pin_points(state: &mut SymbolicState, fact: &Expr) {
+    match fact {
+        Expr::BinaryOp(BinaryOpKind::And, left, right) => {
+            pin_points(state, left);
+            pin_points(state, right);
+        }
+        Expr::BinaryOp(BinaryOpKind::Eq, left, right) => {
+            let pinned = match (left.as_ref(), right.as_ref()) {
+                (Expr::Identifier(name), Expr::Decimal(value))
+                | (Expr::Decimal(value), Expr::Identifier(name)) => Some((name.clone(), *value)),
+                _ => None,
+            };
+            if let Some((name, value)) = pinned {
+                state
+                    .assignments
+                    .entry(name)
+                    .or_insert(SymbolicValue::Literal(value, "int".to_string()));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
+    let mut initial = SymbolicState::new(pre);
+    pin_points(&mut initial, pre);
     let mut terminated = Vec::new();
-    walk_block(body, SymbolicState::new(pre), &mut terminated);
+    walk_block(body, initial, &mut terminated);
     if terminated.is_empty() {
         return BodyOutcome::Unproven(
             "body has no terminating value path — nothing to verify".to_string(),
@@ -133,7 +212,8 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
     }
     let mut violated: Option<String> = None;
     let mut undecided = 0usize;
-    for state in &terminated {
+    let mut first_undecided: Option<usize> = None;
+    for (index, state) in terminated.iter().enumerate() {
         match verdict_for_path(post, state) {
             ProofVerdict::Holds => {}
             ProofVerdict::Violated => {
@@ -141,18 +221,275 @@ fn verify_one(pre: &Expr, post: &Expr, body: &[Statement]) -> BodyOutcome {
                     violated = Some(render_counterexample(state));
                 }
             }
-            ProofVerdict::Undecided => undecided += 1,
+            ProofVerdict::Undecided => {
+                // C4: escalate an inconclusive symbolic verdict to the solver
+                // before reporting "could not prove". Only a real `Sat` becomes
+                // a violation; every other answer stays honest and undecided.
+                match smt_discharge(post, state) {
+                    Some(ProofVerdict::Violated) => {
+                        if violated.is_none() {
+                            violated = Some(render_counterexample(state));
+                        }
+                    }
+                    Some(ProofVerdict::Holds) => {}
+                    _ => {
+                        undecided += 1;
+                        if first_undecided.is_none() {
+                            first_undecided = Some(index);
+                        }
+                    }
+                }
+            }
         }
     }
     if let Some(v) = violated {
         return BodyOutcome::Violated(format!("body can violate its postcondition: {v}"));
     }
     if undecided > 0 {
+        // Name the first blocking path and render the goal. "could not prove"
+        // alone leaves the author guessing which branch needs the stronger
+        // fact — and that guess is what makes repairing a contract risky.
+        let path = first_undecided.map_or(1, |index| index + 1);
         return BodyOutcome::Unproven(format!(
-            "could not prove the postcondition on {undecided} path(s) — add a guard or a stronger precondition"
+            "could not prove the postcondition on path {path} of {} (goal: {post}) — add a guard or a stronger precondition",
+            terminated.len()
         ));
     }
     BodyOutcome::Proven
+}
+
+/// Try to decide an Undecided path with the SMT solver (C4).
+///
+/// Returns `None` — leaving the caller's honest `Undecided` verdict intact —
+/// when no solver is installed, when the goal falls outside the encodable
+/// subset, or when the path's state cannot be substituted unambiguously (a
+/// prior-state `@x` reference or an unknown value).
+fn smt_discharge(post: &Expr, state: &SymbolicState) -> Option<ProofVerdict> {
+    if !crate::proof_engine::smt::is_z3_available() {
+        return None;
+    }
+    // Soundness: a postcondition about the returned value only means something
+    // when THIS path actually bound one. If `term` reaches the solver as a free
+    // variable, `facts ∧ ¬post` is trivially satisfiable and the solver would
+    // manufacture a refutation for a body it never reasoned about.
+    for bound in ["term", "__result"] {
+        if mentions_ident(post, bound) && !state.assignments.contains_key(bound) {
+            return None;
+        }
+    }
+    let goal = substitute_all(post, &state.assignments)?;
+    // Defensive: substitution must have eliminated the return projections.
+    if mentions_ident(&goal, "term") || mentions_ident(&goal, "__result") {
+        return None;
+    }
+    if !encodable(&goal) {
+        return None;
+    }
+    let mut facts = Vec::new();
+    for fact in &state.path_constraints {
+        // Path constraints are facts about the state WHEN THEY WERE RECORDED —
+        // the entry precondition, or a guard at that moment. Substituting the
+        // FINAL assignment state into them rewrites an entry fact into the goal
+        // itself (`acc == i` becomes `acc == i + 6`), so the VC becomes
+        // fact ≡ goal, Z3 reports unsat, and a violated obligation is reported
+        // as PROVEN. That is a false proof, the one outcome this tool must never
+        // produce: the facts go to the solver exactly as they were recorded.
+        if !encodable(fact) {
+            return None;
+        }
+        facts.push(fact.clone());
+    }
+    if std::env::var_os("BRIEV_DIAG_VC").is_some() {
+        eprintln!("[vc] facts={facts:?}");
+        eprintln!("[vc] goal={goal:?}");
+    }
+    let query = crate::proof_engine::smt::build_vc_query(&facts, &goal);
+    if std::env::var_os("BRIEV_DIAG_VC").is_some() {
+        eprintln!("[vc] query=\n{query}");
+    }
+    match crate::proof_engine::smt::prove_smt_formula(&query, 1000) {
+        crate::proof_engine::smt::SmtResult::Unsat => Some(ProofVerdict::Holds),
+        // Refute only when the body's result is fully determined: with no free
+        // identifier left in the goal, a model means the body contradicts its
+        // contract for EVERY input. A parameter-dependent counterexample means
+        // "some input violates" — real, but the stdlib's optimistic contracts
+        // (`[true][term >= 0]`) hit that routinely, so those stay advisory
+        // (the caller keeps `Undecided` → warning) rather than failing builds.
+        crate::proof_engine::smt::SmtResult::Sat(_) if free_idents(&goal).is_empty() => {
+            Some(ProofVerdict::Violated)
+        }
+        crate::proof_engine::smt::SmtResult::Sat(_) => None,
+        crate::proof_engine::smt::SmtResult::Unknown => None,
+    }
+}
+
+/// Free identifiers of an expression (sorted, for determinism).
+fn free_idents(expr: &Expr) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    collect_idents(expr, &mut out);
+    out
+}
+
+/// Accumulate identifiers into `out`.
+fn collect_idents(expr: &Expr, out: &mut std::collections::BTreeSet<String>) {
+    match expr {
+        Expr::Identifier(name) => {
+            out.insert(name.clone());
+        }
+        Expr::BinaryOp(_, l, r) => {
+            collect_idents(l, out);
+            collect_idents(r, out);
+        }
+        Expr::UnaryOp(_, inner) => collect_idents(inner, out),
+        _ => {}
+    }
+}
+
+/// Maximum transitive substitution depth before the discharge gives up.
+const SUBST_DEPTH_CAP: usize = 8;
+
+/// Rewrite every identifier the path bound to a symbolic value.
+///
+/// Substitution is transitive (a local may be defined in terms of another) with
+/// a depth cap; it bails out (`None`) rather than guessing.
+fn substitute_all(expr: &Expr, assignments: &HashMap<String, SymbolicValue>) -> Option<Expr> {
+    // A body assignment is self-referential: `acc = acc + 1` binds
+    // `acc -> acc + 1`. Following that chain reaches the depth cap and returns
+    // None, which silently meant NO verification condition was ever built — so
+    // no accumulating body could ever reach the solver. The `seen` guard stops
+    // at the cycle and leaves the name free, which is what a VC needs.
+    let mut seen = Vec::new();
+    subst_expr(expr, assignments, 0, &mut seen)
+}
+
+/// One substitution step; `depth` caps transitive chains.
+fn subst_expr(
+    expr: &Expr,
+    assignments: &HashMap<String, SymbolicValue>,
+    depth: usize,
+    seen: &mut Vec<String>,
+) -> Option<Expr> {
+    if depth > SUBST_DEPTH_CAP {
+        return None;
+    }
+    match expr {
+        Expr::Identifier(name) => match assignments.get(name) {
+            Some(value) => {
+                // Guard the name BEFORE descending. `acc -> acc + 1` is
+                // self-referential, so without this the inner `acc` expands
+                // again and one `acc = acc + 1` becomes acc+2 in the goal.
+                if seen.iter().any(|seen_name| seen_name == name) {
+                    return Some(Expr::Identifier(name.clone()));
+                }
+                seen.push(name.clone());
+                let expanded = symbolic_to_expr(value, assignments, depth + 1, seen);
+                seen.pop();
+                expanded
+            }
+            None => Some(expr.clone()),
+        },
+        Expr::BinaryOp(kind, l, r) => Some(Expr::BinaryOp(
+            *kind,
+            Box::new(subst_expr(l, assignments, depth, seen)?),
+            Box::new(subst_expr(r, assignments, depth, seen)?),
+        )),
+        Expr::UnaryOp(kind, inner) => Some(Expr::UnaryOp(
+            *kind,
+            Box::new(subst_expr(inner, assignments, depth, seen)?),
+        )),
+        other => Some(other.clone()),
+    }
+}
+
+/// Convert a tracked symbolic value back into an expression for the solver.
+fn symbolic_to_expr(
+    value: &SymbolicValue,
+    assignments: &HashMap<String, SymbolicValue>,
+    depth: usize,
+    seen: &mut Vec<String>,
+) -> Option<Expr> {
+    match value {
+        SymbolicValue::Literal(n, _) => Some(Expr::Decimal(*n)),
+        SymbolicValue::Identifier(name) => {
+            // A cycle means "this name refers to itself": keep it free rather
+            // than expanding until the depth cap and giving up.
+            if seen.iter().any(|seen_name| seen_name == name) {
+                return Some(Expr::Identifier(name.clone()));
+            }
+            match assignments.get(name) {
+                Some(_) if depth > SUBST_DEPTH_CAP => Some(Expr::Identifier(name.clone())),
+                Some(inner) => {
+                    seen.push(name.clone());
+                    let expanded = symbolic_to_expr(inner, assignments, depth + 1, seen);
+                    seen.pop();
+                    expanded
+                }
+                None => Some(Expr::Identifier(name.clone())),
+            }
+        }
+        SymbolicValue::Binary(op, l, r) => Some(Expr::BinaryOp(
+            op_kind(op)?,
+            Box::new(symbolic_to_expr(l, assignments, depth + 1, seen)?),
+            Box::new(symbolic_to_expr(r, assignments, depth + 1, seen)?),
+        )),
+        // Prior-state (`@x`) and unknown values have no solver encoding here.
+        SymbolicValue::Previous(_) | SymbolicValue::Unknown => None,
+    }
+}
+
+/// Map a symbolic operator symbol to its AST kind.
+fn op_kind(symbol: &str) -> Option<BinaryOpKind> {
+    match symbol {
+        "+" => Some(BinaryOpKind::Add),
+        "-" => Some(BinaryOpKind::Sub),
+        "*" => Some(BinaryOpKind::Mul),
+        "/" => Some(BinaryOpKind::Div),
+        "%" => Some(BinaryOpKind::Mod),
+        _ => None,
+    }
+}
+
+/// Whether the SMT encoder models this expression exactly.
+///
+/// `encode_expr_smt` silently falls back to asserting equality for operators it
+/// does not know, so anything outside this set must never reach the solver.
+fn encodable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Decimal(_) | Expr::Bool(_) | Expr::Identifier(_) => true,
+        Expr::BinaryOp(kind, l, r) => {
+            matches!(
+                kind,
+                BinaryOpKind::Eq
+                    | BinaryOpKind::Neq
+                    | BinaryOpKind::Lt
+                    | BinaryOpKind::Gt
+                    | BinaryOpKind::Le
+                    | BinaryOpKind::Ge
+                    | BinaryOpKind::And
+                    | BinaryOpKind::Or
+                    | BinaryOpKind::Add
+                    | BinaryOpKind::Sub
+                    | BinaryOpKind::Mul
+                    | BinaryOpKind::Div
+                    | BinaryOpKind::Mod
+            ) && encodable(l)
+                && encodable(r)
+        }
+        Expr::UnaryOp(kind, inner) => {
+            matches!(kind, UnaryOpKind::Not | UnaryOpKind::Neg) && encodable(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Whether an expression mentions `name` anywhere.
+fn mentions_ident(expr: &Expr, name: &str) -> bool {
+    match expr {
+        Expr::Identifier(ident) => ident == name,
+        Expr::BinaryOp(_, l, r) => mentions_ident(l, name) || mentions_ident(r, name),
+        Expr::UnaryOp(_, inner) => mentions_ident(inner, name),
+        _ => false,
+    }
 }
 
 /// Walk one statement block, forking on guard blocks.
@@ -226,6 +563,7 @@ fn step_statement(
         Statement::Gate(c) | Statement::Check(c) => {
             let mut s = st;
             s.add_constraint(c, true);
+            pin_points(&mut s, c);
             next.push(s);
         }
         // Pure expression statement: no effect on the symbolic state.
@@ -249,6 +587,7 @@ fn step_guard(
     // inner block's end falls through with the guard still true.
     let mut taken = st.clone();
     taken.add_constraint(cond, true);
+    pin_points(&mut taken, cond);
     next.extend(walk_block(inner, taken, terminated));
     // Guard NOT taken: continue in the enclosing block with the negated fact.
     let mut skipped = st;
@@ -354,7 +693,33 @@ fn tighten(name: &str, op: BinaryOpKind, lit: i64, bounds: &mut HashMap<String, 
 /// Tri-state evaluation of the postcondition against one path's state.
 fn verdict_for_path(post: &Expr, state: &SymbolicState) -> ProofVerdict {
     let bounds = bounds_of(state);
-    eval_post(post, state, &bounds)
+    // 2026-11-12 (point bounds): a precondition that pins an identifier
+    // (`[a == 5]`) is a fact about its VALUE, not merely a range. Binding such
+    // an identifier to its literal lets arithmetic over it fold — otherwise
+    // `term == a + a` stays Undecided even though `a` is fully known.
+    let pinned = with_point_bounds(state, &bounds);
+    eval_post(post, &pinned, &bounds)
+}
+
+/// Clone a state with point-bounded identifiers bound to their literal value.
+///
+/// An existing assignment wins: a body-local that was actually computed is more
+/// precise than a constraint-derived pin.
+fn with_point_bounds(state: &SymbolicState, bounds: &HashMap<String, Bound>) -> SymbolicState {
+    let mut pinned = state.clone();
+    for (name, bound) in bounds {
+        let (Some(lower), Some(upper)) = (bound.lower, bound.upper) else {
+            continue;
+        };
+        if lower != upper {
+            continue;
+        }
+        pinned
+            .assignments
+            .entry(name.clone())
+            .or_insert(SymbolicValue::Literal(lower, "int".to_string()));
+    }
+    pinned
 }
 
 /// Recursive tri-state postcondition evaluator over the (term-bound) state.
@@ -601,38 +966,38 @@ fn render_counterexample(state: &SymbolicState) -> String {
 }
 
 /// Whether the entire body is within the supported pure-integer surface.
-fn body_supported(body: &[Statement]) -> bool {
-    body.iter().all(stmt_supported)
+fn body_supported(body: &[Statement], sums: &HashMap<String, Summary>) -> bool {
+    body.iter().all(|stmt| stmt_supported(stmt, sums))
 }
 
 /// Whether one statement is within the supported surface.
-fn stmt_supported(stmt: &Statement) -> bool {
+fn stmt_supported(stmt: &Statement, sums: &HashMap<String, Summary>) -> bool {
     match stmt {
-        Statement::Assign(lhs, e) => matches!(lhs, Expr::Identifier(_)) && expr_supported(e),
+        Statement::Assign(lhs, e) => matches!(lhs, Expr::Identifier(_)) && expr_supported(e, sums),
         Statement::Let { names, expr, .. } => {
-            names.is_empty() && expr.as_ref().map_or(true, |e| expr_supported(e))
+            names.is_empty() && expr.as_ref().map_or(true, |e| expr_supported(e, sums))
         }
-        Statement::Guarded(c, inner) => expr_supported(c) && body_supported(inner),
+        Statement::Guarded(c, inner) => expr_supported(c, sums) && body_supported(inner, sums),
         Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
-            expr_supported(e)
+            expr_supported(e, sums)
         }
         Statement::Term(None) | Statement::EndProgram(None) => true,
-        Statement::Gate(c) | Statement::Check(c) => expr_supported(c),
-        Statement::Expression(e) => expr_supported(e),
+        Statement::Gate(c) | Statement::Check(c) => expr_supported(c, sums),
+        Statement::Expression(e) => expr_supported(e, sums),
         // Paths that terminate without a value are always modelable.
         Statement::Rollback(_) | Statement::Halt | Statement::Trap => true,
-        // Loops, foreach/break, calls-in-statement position, yields, expects,
-        // metadata, arrows — outside the pure-integer prover's contract.
+        // Loops, foreach/break, yields, expects, metadata, arrows — outside the
+        // pure-integer prover's contract.
         _ => false,
     }
 }
 
 /// Whether an expression is within the supported pure-integer surface.
 ///
-/// Calls, fields, indexes, slices, ranges, spawns, quotes, and reflection are
-/// excluded: the prover must never claim a proof over a value it cannot
-/// evaluate.
-fn expr_supported(expr: &Expr) -> bool {
+/// Fields, indexes, slices, ranges, spawns, quotes and reflection stay
+/// excluded. A call is included **only** when the callee has a value summary,
+/// so the prover never claims a proof over a value it cannot evaluate.
+fn expr_supported(expr: &Expr, sums: &HashMap<String, Summary>) -> bool {
     match expr {
         Expr::Decimal(_)
         | Expr::Char(_)
@@ -642,11 +1007,226 @@ fn expr_supported(expr: &Expr) -> bool {
         | Expr::UnitLiteral { .. }
         | Expr::Identifier(_)
         | Expr::Wildcard => true,
-        Expr::BinaryOp(_, l, r) => expr_supported(l) && expr_supported(r),
-        Expr::UnaryOp(_, x) => expr_supported(x),
-        Expr::AddrOf(x) | Expr::Consume(x) => expr_supported(x),
+        Expr::BinaryOp(_, l, r) => expr_supported(l, sums) && expr_supported(r, sums),
+        Expr::UnaryOp(_, x) => expr_supported(x, sums),
+        Expr::AddrOf(x) | Expr::Consume(x) => expr_supported(x, sums),
+        Expr::Call(name, args, _) => {
+            sums.contains_key(name) && args.iter().all(|a| expr_supported(a, sums))
+        }
         _ => false,
     }
+}
+
+/// A function's returned value, as an expression over its parameters.
+///
+/// Only unconditional single-value bodies get one: a value that depends on a
+/// guard has no single expression to substitute, and guessing one would turn an
+/// unproved contract into a false proof.
+#[derive(Debug, Clone)]
+struct Summary {
+    params: Vec<String>,
+    value: Expr,
+}
+
+/// Build value summaries for pure-integer definitions, closing over callees.
+///
+/// Iterates to a fixpoint: a body calling a function with no summary yet is
+/// retried next round. Recursion therefore never acquires a summary — the sound
+/// answer, since a self-referential summary would be a guess rather than a
+/// proof.
+fn build_summaries(items: &[TopLevel]) -> HashMap<String, Summary> {
+    let candidates: Vec<(&str, Vec<String>, &[Statement])> =
+        items.iter().filter_map(summary_candidate).collect();
+    let mut sums: HashMap<String, Summary> = HashMap::new();
+    // Each round adds a summary or ends the loop, so this terminates.
+    for _ in 0..=candidates.len() {
+        let mut added = false;
+        for (name, params, body) in &candidates {
+            if sums.contains_key(*name) || !body_supported(body, &sums) {
+                continue;
+            }
+            let Ok(flattened) = inline_body(body, &sums) else {
+                continue;
+            };
+            let Ok(value) = evaluate_body(&flattened) else {
+                continue;
+            };
+            if !mentions_only(&value, params) {
+                continue;
+            }
+            sums.insert(
+                (*name).to_string(),
+                Summary {
+                    params: params.clone(),
+                    value,
+                },
+            );
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    sums
+}
+
+/// The (name, parameters, body) a summary could be built from.
+fn summary_candidate(item: &TopLevel) -> Option<(&str, Vec<String>, &[Statement])> {
+    match item {
+        TopLevel::Definition(d) => Some((
+            &d.name,
+            d.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            d.body.as_slice(),
+        )),
+        TopLevel::Transaction(t) => Some((
+            &t.name,
+            t.parameters.iter().map(|(n, _)| n.clone()).collect(),
+            t.body.as_slice(),
+        )),
+        _ => None,
+    }
+}
+
+/// Evaluate a call-free, guard-free body to the expression it returns.
+///
+/// Parameters are deliberately left UNBOUND: `eval_symbolic` already yields
+/// `Identifier(name)` for an unknown name, whereas binding `a -> Identifier(a)`
+/// is self-referential — `symbolic_to_expr` would follow it until the depth cap
+/// and give up, and no summary would ever be produced.
+fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
+    let mut state = SymbolicState::empty();
+    for stmt in body {
+        match stmt {
+            Statement::Assign(lhs, e) => {
+                let Expr::Identifier(name) = lhs else {
+                    return Err(());
+                };
+                state
+                    .assignments
+                    .insert(name.clone(), eval_symbolic(e, &state));
+            }
+            Statement::Let {
+                name, names, expr, ..
+            } => {
+                if !names.is_empty() {
+                    return Err(());
+                }
+                if let Some(e) = expr {
+                    state
+                        .assignments
+                        .insert(name.clone(), eval_symbolic(e, &state));
+                }
+            }
+            Statement::Term(Some(e)) | Statement::EndProgram(Some(e)) | Statement::Tail(e) => {
+                let mut seen = Vec::new();
+                return symbolic_to_expr(
+                    &eval_symbolic(e, &state),
+                    &state.assignments,
+                    0,
+                    &mut seen,
+                )
+                .ok_or(());
+            }
+            Statement::Gate(_) | Statement::Check(_) | Statement::Expression(_) => {}
+            // Guards pick between values; a non-value exit has no result.
+            _ => return Err(()),
+        }
+    }
+    Err(())
+}
+
+/// Replace every summarised call in a body with the callee's value form.
+fn inline_body(body: &[Statement], sums: &HashMap<String, Summary>) -> Result<Vec<Statement>, ()> {
+    body.iter().map(|stmt| inline_stmt(stmt, sums)).collect()
+}
+
+/// Replace summarised calls in one statement.
+fn inline_stmt(stmt: &Statement, sums: &HashMap<String, Summary>) -> Result<Statement, ()> {
+    Ok(match stmt {
+        Statement::Assign(lhs, e) => Statement::Assign(lhs.clone(), inline_expr(e, sums, 0)?),
+        Statement::Let {
+            name,
+            names,
+            ty,
+            expr,
+            modifiers,
+        } => Statement::Let {
+            name: name.clone(),
+            names: names.clone(),
+            ty: ty.clone(),
+            expr: match expr {
+                Some(e) => Some(inline_expr(e, sums, 0)?),
+                None => None,
+            },
+            modifiers: modifiers.clone(),
+        },
+        Statement::Guarded(c, inner) => {
+            Statement::Guarded(inline_expr(c, sums, 0)?, inline_body(inner, sums)?)
+        }
+        Statement::Term(Some(e)) => Statement::Term(Some(inline_expr(e, sums, 0)?)),
+        Statement::EndProgram(Some(e)) => Statement::EndProgram(Some(inline_expr(e, sums, 0)?)),
+        Statement::Tail(e) => Statement::Tail(inline_expr(e, sums, 0)?),
+        Statement::Gate(c) => Statement::Gate(inline_expr(c, sums, 0)?),
+        Statement::Check(c) => Statement::Check(inline_expr(c, sums, 0)?),
+        Statement::Expression(e) => Statement::Expression(inline_expr(e, sums, 0)?),
+        // Everything else is rejected before inlining is attempted.
+        _ => return Err(()),
+    })
+}
+
+/// Replace summarised calls in one expression.
+fn inline_expr(expr: &Expr, sums: &HashMap<String, Summary>, depth: usize) -> Result<Expr, ()> {
+    if depth > SUBST_DEPTH_CAP {
+        return Err(());
+    }
+    Ok(match expr {
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(inline_expr(l, sums, depth)?),
+            Box::new(inline_expr(r, sums, depth)?),
+        ),
+        Expr::UnaryOp(kind, x) => Expr::UnaryOp(*kind, Box::new(inline_expr(x, sums, depth)?)),
+        Expr::Call(name, args, _) => {
+            let Some(sum) = sums.get(name) else {
+                return Err(());
+            };
+            if sum.params.len() != args.len() {
+                return Err(());
+            }
+            let inlined: Vec<Expr> = args
+                .iter()
+                .map(|a| inline_expr(a, sums, depth + 1))
+                .collect::<Result<_, _>>()?;
+            substitute_params(&sum.value, &sum.params, &inlined)
+        }
+        other => other.clone(),
+    })
+}
+
+/// Replace the callee's parameters with the caller's argument expressions.
+fn substitute_params(expr: &Expr, params: &[String], args: &[Expr]) -> Expr {
+    match expr {
+        Expr::Identifier(name) => match params.iter().position(|p| p == name) {
+            Some(index) => args[index].clone(),
+            None => expr.clone(),
+        },
+        Expr::BinaryOp(kind, l, r) => Expr::BinaryOp(
+            *kind,
+            Box::new(substitute_params(l, params, args)),
+            Box::new(substitute_params(r, params, args)),
+        ),
+        Expr::UnaryOp(kind, x) => {
+            Expr::UnaryOp(*kind, Box::new(substitute_params(x, params, args)))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Whether every free identifier of `expr` is one of `allowed`.
+fn mentions_only(expr: &Expr, allowed: &[String]) -> bool {
+    free_idents(expr)
+        .iter()
+        .all(|name| allowed.iter().any(|p| p == name))
 }
 
 #[cfg(test)]
@@ -672,6 +1252,27 @@ mod tests {
         assert!(r.violated.is_empty(), "violated: {:?}", r.violated);
         assert!(r.unproven.is_empty(), "unproven: {:?}", r.unproven);
         assert_eq!(r.proven.len(), 1);
+    }
+
+    #[test]
+    fn json_report_splits_names_and_reasons() {
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 0] -> Int { term 5; };");
+        let r = verify_bodies(&[d]);
+        let json = r.to_json();
+        assert_eq!(json["proven"], serde_json::json!([]));
+        let violated = json["violated"].as_array().expect("violated array");
+        assert_eq!(violated.len(), 1);
+        assert_eq!(violated[0]["name"], "f");
+        assert!(
+            violated[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()),
+            "{json}"
+        );
+        // A finding without the "name: reason" separator still yields a name.
+        let bare = findings_json(&["solo".to_string()]);
+        assert_eq!(bare[0]["name"], "solo");
+        assert_eq!(bare[0]["reason"], "");
     }
 
     #[test]
@@ -720,5 +1321,230 @@ mod tests {
         let d = parse_defn("defn f(a: Int) [a >= 0][term >= 0] -> Int { term helper(a); };");
         let r = verify_bodies(&[d]);
         assert!(r.violated.is_empty() && r.unproven.is_empty() && r.proven.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod point_bound_tests {
+    use super::*;
+    use crate::ast::TopLevel;
+
+    /// Parse one defn through the real frontend.
+    fn parse_defn(src: &str) -> TopLevel {
+        let (items, _universe) = crate::library::parse_and_check("<test>", src).expect("parse");
+        items
+            .into_iter()
+            .find(|item| matches!(item, TopLevel::Definition(_)))
+            .expect("definition")
+    }
+
+    /// `a == 5` is a value fact, so `a + a` folds and the goal is decided.
+    #[test]
+    fn point_bound_decides_arithmetic() {
+        let d = parse_defn("defn f(a: Int) [a == 5][term == a + a] -> Int { term a + a; };");
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert_eq!(report.proven.len(), 1);
+    }
+
+    /// Pinned to 5 the body yields 10: `2 * a` holds, `11` does not.
+    #[test]
+    fn point_bound_proves_and_refutes() {
+        let ok = parse_defn("defn f(a: Int) [a == 5][term == 2 * a] -> Int { term a + a; };");
+        assert!(verify_bodies(&[ok]).violated.is_empty());
+        let bad = parse_defn("defn f(a: Int) [a == 5][term == 11] -> Int { term a + a; };");
+        assert_eq!(verify_bodies(&[bad]).violated.len(), 1);
+    }
+
+    /// A range is not a value: without a solver, arithmetic over it stays
+    /// undecided. With a solver (C4) the identity is discharged instead —
+    /// either way the verdict must never be a refutation.
+    #[test]
+    fn range_bound_does_not_pin() {
+        // `term == 2 * a` is NOT structurally equal to the body's `a + a`, so
+        // the symbolic engine alone could never decide it.
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 2 * a] -> Int { term a + a; };");
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "a true identity must never be refuted: {:?}",
+            report.violated
+        );
+        if crate::proof_engine::smt::is_z3_available() {
+            assert_eq!(
+                report.proven.len(),
+                1,
+                "the solver should discharge a+a == 2*a: unproven {:?}",
+                report.unproven
+            );
+        } else {
+            assert_eq!(
+                report.proven.len(),
+                0,
+                "a range must not fabricate a concrete value"
+            );
+            assert_eq!(report.unproven.len(), 1, "unproven: {:?}", report.unproven);
+        }
+    }
+
+    /// C4: the solver decides what pure symbolic tracking cannot.
+    #[test]
+    fn smt_discharges_arithmetic_identity() {
+        if !crate::proof_engine::smt::is_z3_available() {
+            return; // No solver installed: `unproven` is the honest answer.
+        }
+        let d = parse_defn("defn f(a: Int) [a >= 0][term == 3 * a] -> Int { term a + a + a; };");
+        let report = verify_bodies(&[d]);
+        assert_eq!(report.proven.len(), 1, "unproven: {:?}", report.unproven);
+        assert!(report.violated.is_empty());
+    }
+
+    /// C4: a parameter-dependent refutation stays advisory (the stdlib relies
+    /// on optimistic contracts like `[true][term >= 0]`).
+    #[test]
+    fn smt_parameter_dependent_refutation_is_advisory() {
+        if !crate::proof_engine::smt::is_z3_available() {
+            return;
+        }
+        let d = parse_defn("defn f(a: Int) [a >= 0][term >= 0] -> Int { term 0 - a; };");
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "input-dependent failures must not fail a build: {:?}",
+            report.violated
+        );
+    }
+
+    /// Parse every top-level item — the interprocedural tests need several.
+    fn parse_program(src: &str) -> Vec<TopLevel> {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+    }
+
+    /// C3: a caller is proved through the callee's value summary.
+    #[test]
+    fn summary_proves_through_a_call() {
+        let items = parse_program(
+            "defn inc(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; }\n\
+             defn uses(a: Int) [a >= 0][term == a + 2] -> Int { term inc(a) + 1; }",
+        );
+        let report = verify_bodies(&items);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert!(
+            report.unproven.is_empty(),
+            "unproven: {:?}",
+            report.unproven
+        );
+        assert_eq!(report.proven.len(), 2, "both should be proved");
+    }
+
+    /// C3: summaries close over callees, so a chain proves end to end.
+    #[test]
+    fn summary_chain_closes_to_a_fixpoint() {
+        let items = parse_program(
+            "defn base(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; }\n\
+             defn mid(a: Int) [a >= 0][term == a + 2] -> Int { term base(a) + 1; }\n\
+             defn top(a: Int) [a >= 0][term == a + 3] -> Int { term mid(a) + 1; }",
+        );
+        let report = verify_bodies(&items);
+        assert_eq!(
+            report.proven.len(),
+            3,
+            "proven {:?} unproven {:?}",
+            report.proven,
+            report.unproven
+        );
+    }
+
+    /// C3: substituting a callee's value still refutes a lying caller.
+    #[test]
+    fn summary_refutes_a_lying_caller() {
+        let items = parse_program(
+            "defn five(a: Int) [a >= 0][term == 5] -> Int { term 5; }\n\
+             defn lies(a: Int) [a >= 0][term == 0] -> Int { term five(a); }",
+        );
+        let report = verify_bodies(&items);
+        assert_eq!(
+            report.violated.len(),
+            1,
+            "proven {:?} unproven {:?}",
+            report.proven,
+            report.unproven
+        );
+        assert!(report.violated[0].contains("lies"));
+    }
+
+    /// C3: recursion never earns a summary — skipped, never guessed at.
+    #[test]
+    fn recursion_never_earns_a_summary() {
+        let items = parse_program(
+            "defn ping(a: Int) [a >= 0][term == a] -> Int { term pong(a); }\n\
+             defn pong(a: Int) [a >= 0][term == a] -> Int { term ping(a); }",
+        );
+        let report = verify_bodies(&items);
+        assert!(report.proven.is_empty(), "proven: {:?}", report.proven);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+    }
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+
+    /// Parse one defn through the real frontend.
+    fn parse_defn(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items
+            .into_iter()
+            .find(|item| matches!(item, TopLevel::Definition(_)))
+            .expect("expected a Definition")
+    }
+
+    /// A self-referential assignment must still produce a verification condition.
+    ///
+    /// Before the cycle guard, `acc = acc + 1` bound `acc -> acc + 1`, and
+    /// substitution followed that chain to the depth cap and returned `None` —
+    /// so `substitute_all` bailed and **no VC was ever built**. Every
+    /// accumulating body was therefore undecidable, silently.
+    #[test]
+    fn self_referential_assignment_is_decided_not_skipped() {
+        let d = parse_defn(
+            "defn f(n: Int, acc: Int) [n >= 0 && n <= 1000 && acc == n][acc == n] -> Int {\n\
+                 acc = acc + 1;\n\
+                 acc = acc - 1;\n\
+                 term 0;\n\
+             };",
+        );
+        let report = verify_bodies(&[d]);
+        assert!(
+            report.violated.is_empty(),
+            "violated: {:?}",
+            report.violated
+        );
+        assert_eq!(
+            report.proven.len(),
+            1,
+            "an accumulating body must be DECIDED, not skipped: unproven {:?}",
+            report.unproven
+        );
     }
 }
