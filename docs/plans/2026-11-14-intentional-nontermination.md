@@ -310,3 +310,38 @@ deliberately do not make.
 
 Whichever word is chosen, the `until [C]` half stays: it is what turns the waiver
 back into a checkable exit.
+
+## 10. Finding while implementing: the check it waives is not wired
+
+`check_convergence_safety` is defined at `analysis/provenance.rs:233` and has **no
+caller anywhere in the repository** - a repo-wide grep for `convergence_safety`
+returns the definition and nothing else. So the hard error for a guaranteed-infinite
+reactive txn that §9.1 assumed does not currently fire: it is dead code.
+
+Two consequences, and the second changes the plan:
+
+- The waiver is **honest but currently vacuous**. `unbounded` records intent where
+  no check runs. What it buys today is legibility and a place for the rules to
+  attach.
+- **The ordering in §7 is wrong.** The right sequence is to **wire the check up
+  first** - so accidents are caught - with `unbounded` as its exemption. Waiving an
+  error that never fires would make the feature a comment.
+
+That reframes the flag-day number: the **77** declarations carrying a `true`
+postcondition across **27 of 254** files are the population that starts being
+checked once the pass is wired, which is exactly the scale the waiver must be
+proportional to.
+
+### Status after this pass
+
+| item | state |
+|---|---|
+| `unbounded` and `until [C]` parsed and recorded | **done** - `322155a32`, tests in `tests/unbounded_parse.rs` |
+| wiring `check_convergence_safety` with the waiver as its exemption | not started |
+| rejecting `unbounded` + `variant` | not started |
+| the `yield` reachability check | not started |
+| SPEC §10.9 | deliberately withheld |
+
+SPEC §10.9 is withheld on purpose: it will state these rules, and writing it now
+would document behaviour that does not exist - the failure mode this line of work
+has had to correct three times (0.1.6, 0.2.0, and the verified-surface correction).
