@@ -301,7 +301,32 @@ variables** (an invariant often needs a counter that exists only in the proof �
   post-iterable position would collide with indexing.
 - There is no `variant` clause, so **termination is not proved** — the obligations
   give partial correctness only, as before.
-- Nothing infers invariants, so every annotation is manual.
+- ~~Nothing infers invariants~~ — inference shipped (`e04fada37`), so an
+  unannotated loop is proved when a candidate conjunct is inductive.
+
+### The stdlib payoff is currently zero, and the cause is candidate coverage
+
+Measured after shipping: running the verifier over `lib/std/numeric.bv`,
+`collections.bv`, `json.bv`, `cast_lanes.bv`, `cast_portable.bv` and `hashmap.bv`
+yields **no loop obligations proved and no loop skipped as a `foreach`** — the
+obligation machinery is never reached.
+
+The reason is not the inference:
+
+| `lib/std/numeric.bv` | count |
+|---|---|
+| plain `defn` | **0** |
+| compile-time `$defn` | **6** |
+
+`contract_target` considers `Definition`, `Transaction`, `Export` and `SyncGroup`
+— **never `CompileTimeDefn`** — and `collections.bv`'s declarations are members of
+collection types. So the loops are real but not *candidates*, and a whole-unit run
+still reads `proven=8 / skipped=154` with the same top reasons as before (`Load#`
+29, unsupported expression 18).
+
+**The next real blocker is verifier candidate coverage** — `$defn` bodies and
+member `defn`s — a wider surface than any invariant work, and one that would
+unlock the annotation payoff the invariant surface exists to collect.
 
 ### The tractable next step instead: a `variant`
 
