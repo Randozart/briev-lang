@@ -21,7 +21,7 @@
 // surface are skipped silently (declared coverage, per the plan's soundness
 // boundary).
 
-use crate::ast::{BinaryOpKind, Expr, Statement, TopLevel, UnaryOpKind};
+use crate::ast::{BinaryOpKind, Contract, Expr, Statement, TopLevel, UnaryOpKind};
 use crate::symbolic::{eval_symbolic, SymbolicState, SymbolicValue};
 use std::collections::HashMap;
 
@@ -133,6 +133,33 @@ pub fn verify_bodies(items: &[TopLevel]) -> BodyReport {
         // Skip unwritten contracts — `[true][true]` placeholders are not
         // propositions to prove.
         if !contract.explicit || trivially_true(&contract.post_condition) {
+            continue;
+        }
+        // A loop carrying an `invariant` annotation is proved by its three
+        // Hoare obligations, not as one straight-line body. Each obligation is
+        // loop-free, so the ordinary path walk discharges it.
+        if let Some(obligations) = loop_obligations(name, contract, body) {
+            for (obligation, pre, post, obligation_body) in obligations {
+                if let Some(reason) = unsupported_reason(&obligation_body, &sums) {
+                    report.skipped.push(format!("{obligation}: {reason}"));
+                    continue;
+                }
+                let Ok(flat) = inline_body(&obligation_body, &sums) else {
+                    report
+                        .skipped
+                        .push(format!("{obligation}: a call could not be inlined"));
+                    continue;
+                };
+                match verify_one(&pre, &post, &flat) {
+                    BodyOutcome::Proven => report.proven.push(obligation),
+                    BodyOutcome::Unproven(why) => {
+                        report.unproven.push(format!("{obligation}: {why}"))
+                    }
+                    BodyOutcome::Violated(why) => {
+                        report.violated.push(format!("{obligation}: {why}"))
+                    }
+                }
+            }
             continue;
         }
         // Soundness boundary: only prove bodies whose entire surface is
@@ -973,6 +1000,158 @@ fn render_counterexample(state: &SymbolicState) -> String {
         }
         _ => "a path produces a value that contradicts the contract".to_string(),
     }
+}
+
+/// `left op right`.
+fn binop(kind: BinaryOpKind, left: Expr, right: Expr) -> Expr {
+    Expr::BinaryOp(kind, Box::new(left), Box::new(right))
+}
+
+/// Conjoin the facts, right-associated. `true` when there are none.
+fn conjunction(parts: Vec<Expr>) -> Expr {
+    let mut iter = parts.into_iter().rev();
+    let Some(mut combined) = iter.next() else {
+        return Expr::Bool(true);
+    };
+    for part in iter {
+        combined = binop(BinaryOpKind::And, part, combined);
+    }
+    combined
+}
+
+/// The three Hoare obligations for a loop carrying an `invariant` annotation.
+///
+/// Returns `None` when the body has no annotated loop, leaving the ordinary
+/// straight-line obligation in charge. All three obligations are loop-free:
+///
+///   VC1  pre && locals = initialisers && i = lo   =>  I
+///   VC2  pre && I && i in range                   =>  I   after the body and i+1
+///   VC3  pre && I && i past the end               =>  post
+fn loop_obligations(
+    name: &str,
+    contract: &Contract,
+    body: &[Statement],
+) -> Option<Vec<(String, Expr, Expr, Vec<Statement>)>> {
+    let (at, var, lower, bound, inclusive, loop_body, invariant) =
+        body.iter().enumerate().find_map(|(at, stmt)| {
+            let Statement::Foreach {
+                item,
+                list,
+                body: inner,
+                modifiers,
+            } = stmt
+            else {
+                return None;
+            };
+            let invariant = modifiers
+                .iter()
+                .find(|annotation| annotation.name == "invariant")?
+                .value
+                .clone()?;
+            let Expr::Range {
+                start,
+                end,
+                inclusive,
+            } = list.as_ref()
+            else {
+                return None;
+            };
+            Some((
+                at,
+                item.clone(),
+                (**start).clone(),
+                (**end).clone(),
+                *inclusive,
+                inner.as_slice(),
+                invariant,
+            ))
+        })?;
+
+    // The function's value is whatever follows the loop.
+    let exit_body: Vec<Statement> = body.iter().skip(at + 1).cloned().collect();
+    if exit_body.is_empty() {
+        return None;
+    }
+    let loop_var = Expr::Identifier(var);
+    let zero = Expr::Decimal(0);
+
+    // VC1 — the locals the loop writes are pinned to the values they enter with.
+    let mut init = vec![contract.pre_condition.clone()];
+    for stmt in &body[..at] {
+        let Statement::Let {
+            name: local,
+            names,
+            expr: Some(value),
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        if names.len() <= 1 {
+            init.push(binop(
+                BinaryOpKind::Eq,
+                Expr::Identifier(local.clone()),
+                value.clone(),
+            ));
+        }
+    }
+    init.push(binop(
+        BinaryOpKind::Eq,
+        loop_var.clone(),
+        lower.clone(),
+    ));
+
+    // VC2 — the body preserves it, with the guard and the precondition available.
+    let within = if inclusive {
+        binop(BinaryOpKind::Le, loop_var.clone(), bound.clone())
+    } else {
+        binop(BinaryOpKind::Lt, loop_var.clone(), bound.clone())
+    };
+    let preserve = vec![
+        contract.pre_condition.clone(),
+        invariant.clone(),
+        binop(BinaryOpKind::Ge, loop_var.clone(), lower),
+        within,
+    ];
+    let mut preserve_body = loop_body.to_vec();
+    preserve_body.push(Statement::Assign(
+        loop_var.clone(),
+        binop(BinaryOpKind::Add, loop_var.clone(), Expr::Decimal(1)),
+    ));
+    preserve_body.push(Statement::Term(Some(zero.clone())));
+
+    // VC3 — the invariant at exit is enough for the contract.
+    let past = if inclusive {
+        binop(BinaryOpKind::Gt, loop_var, bound)
+    } else {
+        binop(BinaryOpKind::Ge, loop_var, bound)
+    };
+    let exit = vec![
+        contract.pre_condition.clone(),
+        invariant.clone(),
+        past,
+    ];
+
+    Some(vec![
+        (
+            format!("{name}_init"),
+            conjunction(init),
+            invariant.clone(),
+            vec![Statement::Term(Some(zero))],
+        ),
+        (
+            format!("{name}_preserve"),
+            conjunction(preserve),
+            invariant.clone(),
+            preserve_body,
+        ),
+        (
+            format!("{name}_exit"),
+            conjunction(exit),
+            contract.post_condition.clone(),
+            exit_body,
+        ),
+    ])
 }
 
 /// Whether the entire body is within the supported pure-integer surface.

@@ -2292,6 +2292,51 @@ txn critical()[ready][done] ![progress] within 100cyc {
 
 The watchdog `?`/`!` forms are contextual and do not conflict with expression propagation or compile-time expansion.
 
+### 10.4 Loop invariants
+
+A `foreach` may state an invariant in brackets between its binder and `in`:
+
+```briev
+defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {
+    let acc: Int = 0;
+    foreach i [acc == i && i <= n] in 0..n {
+        acc = acc + 1;
+    };
+    term acc;
+};
+```
+
+The bracket is optional; without it the loop is unchanged. It sits before `in`
+because the iterable is parsed as an expression and a postfix `[` is the index
+operator, so `0..n [I]` would read as indexing the range.
+
+The invariant is an **inductive hypothesis**, not an assertion: it is assumed at
+the loop head and must be shown to survive one pass. Verification is the
+while-rule, three loop-free obligations:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| entry — `<fn>_init` | the precondition, each written local at its initialiser, and `i == lo` | `I` |
+| preservation — `<fn>_preserve` | the precondition, `I`, and `i` in range | `I` after the body and `i + 1` |
+| exit — `<fn>_exit` | the precondition, `I`, and `i` past the end | the postcondition |
+
+All three must hold; a partial set proves nothing about the function. Each
+failing obligation is reported under its own name, so the author sees which one
+broke rather than a single undifferentiated failure.
+
+**Bound safety is the author's obligation.** `Int` wraps at 64 bits, so an
+invariant must bound the values it reasons about individually *and* survive the
+growth step. `acc >= 0` alone is not preserved — it can wrap. `acc <= K` is not
+preserved by `acc = acc + i` when `i` is unbounded. `acc == i && i <= n` with `n`
+bounded does both.
+
+This is distinct from §10.2's statement guards (`[cond] stmt;`) and convergence
+gates (`[cond];`), which assert on every pass. The loop invariant is the
+hypothesis that makes the loop's obligations provable at all.
+
+`node` and `txn` bodies are loops as well — an entry loop and the convergent loop
+— and will take the same treatment in the dedicated contract slot when specified.
+
 ## 11. Control flow
 
 ### 11.1 No `if`/`else`

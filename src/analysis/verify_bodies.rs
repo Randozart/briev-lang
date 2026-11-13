@@ -332,3 +332,55 @@ mod cycle_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod loop_invariant_tests {
+    use super::*;
+
+    /// Parse one `defn` through the real frontend.
+    fn parse_one(src: &str) -> TopLevel {
+        let (items, _universe) =
+            crate::library::parse_and_check("<test>", src).expect("parse_and_check");
+        items.into_iter().next().expect("one item")
+    }
+
+    /// A `foreach` carrying an invariant is proved by its three obligations.
+    #[test]
+    fn foreach_invariant_yields_three_obligations() {
+        let defn = parse_one(
+            "defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i [acc == i && i <= n] in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        for obligation in ["count_init", "count_preserve", "count_exit"] {
+            assert!(
+                report.proven.iter().any(|name| name == obligation),
+                "{obligation} not proven: unproven={:?} skipped={:?}",
+                report.unproven,
+                report.skipped
+            );
+        }
+    }
+
+    /// The obligations discriminate: a wrong invariant is refuted at entry
+    /// rather than accepted because the other two happen to hold.
+    #[test]
+    fn a_wrong_foreach_invariant_is_refuted_at_entry() {
+        let defn = parse_one(
+            "defn bad(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {\n\
+                 let acc: Int = 0;\n\
+                 foreach i [acc == i + 1 && i <= n] in 0..n { acc = acc + 1; };\n\
+                 term acc;\n\
+             };",
+        );
+        let report = verify_bodies(&[defn]);
+        assert!(
+            report.violated.iter().any(|line| line.starts_with("bad_init")),
+            "entry must be refuted: {:?}",
+            report.violated
+        );
+    }
+}
