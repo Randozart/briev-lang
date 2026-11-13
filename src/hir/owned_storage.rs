@@ -68,6 +68,7 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
     let mut releases_inserted: usize = 0;
     let fresh = fresh_callables(program, escapes);
     let param_return = param_return_summaries(program);
+    let ok_fresh = ok_fresh_callables(program, escapes, &param_return, &fresh);
     let consumed = consumed_params(program);
     let mut next = program
         .callables
@@ -86,7 +87,7 @@ fn insert_releases_with_report(program: &mut HirProgram, escapes: &HashMap<Strin
         for param in &callable.params {
             fresh_vars.insert(param.name.clone(), false);
         }
-        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, param_return: &param_return, locals: &locals, next, function: callable.name.clone(), events: &mut events };
+        let mut ctx = Pass { fresh: &fresh, escapes, consumed: &consumed, param_return: &param_return, ok_fresh: &ok_fresh, locals: &locals, next, function: callable.name.clone(), events: &mut events };
         let body = rewrite_list(
             &callable.body.statements,
             &mut owned,
@@ -293,12 +294,66 @@ fn param_return_summaries(program: &HirProgram) -> HashMap<String, usize> {
     out
 }
 
+fn is_result_type(ty: &Type) -> bool {
+    matches!(ty, Type::Generic(n, _) | Type::Applied(n, _) if n == "Result")
+}
+
+/// 2026-11-12 (memcheck census): OK-side freshness for Result-returning
+/// callables. A Result callable qualifies when EVERY return path is an
+/// `Ok(fresh)` payload or an `Err(whatever)` — Err payloads are irrelevant
+/// to ownership because `unwrap` only yields the Ok side. This discharges
+/// the read_file/get_env-style literal-Err families WITHOUT copying their
+/// cold-path literals (no behavior change, no new allocations).
+fn ok_fresh_callables(
+    program: &HirProgram,
+    escapes: &HashMap<String, Vec<bool>>,
+    pr: &HashMap<String, usize>,
+    fresh: &HashSet<String>,
+) -> HashSet<String> {
+    let mut ok = HashSet::new();
+    for _ in 0..program.callables.len().max(1) {
+        let mut changed = false;
+        for c in &program.callables {
+            let result_is_result = c.result.as_ref().is_some_and(is_result_type);
+            if !result_is_result || ok.contains(&c.name) { continue; }
+            // No blanket escape gate here: a Result builder may borrow
+            // operands (graph, state) while its OK payload is fresh. The
+            // wrap-stasher guard is enforced per-payload: a List payload is
+            // only fresh if every ITEM is fresh, and escaped parameters are
+            // never fresh (they are absent from the var map's true set).
+            let mut vars: HashMap<String, bool> = c.params.iter().map(|p| (p.name.clone(), false)).collect();
+            collect_fresh(&c.body.statements, &mut vars, fresh, pr, &ok);
+            let mut returns = Vec::new();
+            collect_returns(&c.body.statements, &mut returns);
+            if returns.is_empty() { continue; }
+            let all_ok = returns.iter().all(|e| match &e.kind {
+                HirExprKind::Call { callee, args, .. } => {
+                    if callee == "Err" { true }
+                    else if callee == "Ok" {
+                        args.first().is_some_and(|a| is_fresh(a, &vars, pr, fresh, &ok))
+                    } else { false }
+                }
+                _ => false,
+            });
+            if all_ok {
+                ok.insert(c.name.clone());
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    ok
+}
+
 fn fresh_callables(
     program: &HirProgram,
     escapes: &HashMap<String, Vec<bool>>,
 ) -> HashSet<String> {
     let mut fresh = HashSet::new();
     let pr = param_return_summaries(program);
+    // Ok-side freshness is derived first (it only needs pr + its own fixed
+    // point), so the plain-fresh derivation can consult it.
+    let ok0 = ok_fresh_callables(program, escapes, &pr, &fresh);
     for _ in 0..program.callables.len().max(1) {
         let mut changed = false;
         for c in &program.callables {
@@ -311,10 +366,10 @@ fn fresh_callables(
                 continue;
             }
             let mut vars: HashMap<String, bool> = c.params.iter().map(|p| (p.name.clone(), false)).collect();
-            collect_fresh(&c.body.statements, &mut vars, &fresh, &pr);
+            collect_fresh(&c.body.statements, &mut vars, &fresh, &pr, &ok0);
             let mut returns = Vec::new();
             collect_returns(&c.body.statements, &mut returns);
-            if !returns.is_empty() && returns.iter().all(|e| is_fresh(e, &vars, &pr, &fresh)) {
+            if !returns.is_empty() && returns.iter().all(|e| is_fresh(e, &vars, &pr, &fresh, &ok0)) {
                 fresh.insert(c.name.clone());
                 changed = true;
             }
@@ -324,27 +379,30 @@ fn fresh_callables(
     fresh
 }
 
-fn collect_fresh(stmts: &[HirStmt], vars: &mut HashMap<String, bool>, fresh: &HashSet<String>, pr: &HashMap<String, usize>) {
+fn collect_fresh(stmts: &[HirStmt], vars: &mut HashMap<String, bool>, fresh: &HashSet<String>, pr: &HashMap<String, usize>, ok: &HashSet<String>) {
     for s in stmts {
         match &s.kind {
             HirStmtKind::Let { name, expr: Some(e), ty, .. } => {
-                let fresh = is_fresh_rhs(e, vars, pr, fresh);
+                let fresh = is_fresh_rhs(e, vars, pr, fresh, ok);
                 let own = ty.as_ref().is_some_and(owned_ty) || e.ty.as_ref().is_some_and(owned_ty);
-                vars.insert(name.clone(), fresh && own);
+                // Result locals are not OWNED (unwrap yields the Ok side),
+                // but they carry freshness INTO that unwrap — track them.
+                let carries = own || ty.as_ref().is_some_and(is_result_type) || e.ty.as_ref().is_some_and(is_result_type);
+                vars.insert(name.clone(), fresh && carries);
             }
             HirStmtKind::Assign(l, r) => {
                 if let HirExprKind::Identifier(n) = &l.kind {
-                    let fresh = is_fresh_rhs(r, vars, pr, fresh);
+                    let fresh = is_fresh_rhs(r, vars, pr, fresh, ok);
                     vars.insert(n.clone(), fresh);
                 }
             }
             HirStmtKind::Guarded(_, b) | HirStmtKind::Block(b)
             | HirStmtKind::SyncBlock(b) | HirStmtKind::Mutex(b) | HirStmtKind::Defer(b) => {
-                collect_fresh(b, vars, fresh, pr);
+                collect_fresh(b, vars, fresh, pr, ok);
             }
-            HirStmtKind::Foreach { body, .. } => collect_fresh(body, vars, fresh, pr),
+            HirStmtKind::Foreach { body, .. } => collect_fresh(body, vars, fresh, pr, ok),
             HirStmtKind::Match { arms, .. } => {
-                for a in arms { collect_fresh(&a.body, vars, fresh, pr); }
+                for a in arms { collect_fresh(&a.body, vars, fresh, pr, ok); }
             }
             _ => {}
         }
@@ -369,16 +427,21 @@ fn collect_returns(stmts: &[HirStmt], out: &mut Vec<HirExpr>) {
     }
 }
 
-fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>) -> bool {
+fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>, ok: &HashSet<String>) -> bool {
     match &e.kind {
-        HirExprKind::List(_) => true,
+        // Scalar literals are copied values — always fresh.
+        HirExprKind::Literal(HirLiteral::Int(_) | HirLiteral::Float(_)
+        | HirLiteral::Bool(_) | HirLiteral::Char(_) | HirLiteral::TaggedInt(_, _)) => true,
+        // A List literal is fresh only if every element is — this is the
+        // wrap-stasher guard (`Ok([state])` must not discharge).
+        HirExprKind::List(items) => items.iter().all(|a| is_fresh(a, vars, pr, fresh, ok)),
         // 2026-11-12 (slicing doc): a String slice allocates a fresh copy.
         HirExprKind::Slice { array, .. } => string_expr(array),
         HirExprKind::Call { callee, args, .. } => {
-            if fresh.contains(callee) {
+            if fresh.contains(callee) || ok.contains(callee) {
                 true
             } else if let Some(i) = pr.get(callee) {
-                args.get(*i).is_some_and(|a| is_fresh(a, vars, pr, fresh))
+                args.get(*i).is_some_and(|a| is_fresh(a, vars, pr, fresh, ok))
             } else {
                 false
             }
@@ -389,15 +452,15 @@ fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usiz
         HirExprKind::Cast { inner, to, .. } => is_string(to) && !string_expr(inner),
         HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
         HirExprKind::If { then_branch, else_branch, .. } => {
-            else_branch.as_ref().is_some_and(|e| is_fresh(then_branch, vars, pr, fresh) && is_fresh(e, vars, pr, fresh))
+            else_branch.as_ref().is_some_and(|e| is_fresh(then_branch, vars, pr, fresh, ok) && is_fresh(e, vars, pr, fresh, ok))
         }
-        HirExprKind::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| is_fresh(&a.body, vars, pr, fresh)),
+        HirExprKind::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| is_fresh(&a.body, vars, pr, fresh, ok)),
         _ => false,
     }
 }
 
-fn is_fresh_rhs(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>) -> bool {
-    !matches!(e.kind, HirExprKind::Identifier(_)) && is_fresh(e, vars, pr, fresh)
+fn is_fresh_rhs(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usize>, fresh: &HashSet<String>, ok: &HashSet<String>) -> bool {
+    !matches!(e.kind, HirExprKind::Identifier(_)) && is_fresh(e, vars, pr, fresh, ok)
 }
 
 fn string_expr(e: &HirExpr) -> bool {
@@ -490,6 +553,7 @@ struct Pass<'a> {
     escapes: &'a HashMap<String, Vec<bool>>,
     consumed: &'a HashMap<String, HashSet<usize>>,
     param_return: &'a HashMap<String, usize>,
+    ok_fresh: &'a HashSet<String>,
     locals: &'a HashSet<String>,
     next: u32,
     function: String,
@@ -530,7 +594,7 @@ fn rewrite_list(
                 uses(e, owned, ctx);
                 let own_flag = ty.as_ref().is_some_and(owned_ty) || e.ty.as_ref().is_some_and(owned_ty);
                 let kind = ty.as_ref().or(e.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
-                let fresh = own_flag && is_fresh_rhs(e, fresh_vars, ctx.param_return, ctx.fresh);
+                let fresh = own_flag && is_fresh_rhs(e, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh);
                 if own_flag {
                     fresh_vars.insert(name.clone(), fresh);
                 }
@@ -574,7 +638,7 @@ fn rewrite_list(
                     }
                     let own_flag = lhs.ty.as_ref().is_some_and(owned_ty) || rhs.ty.as_ref().is_some_and(owned_ty);
                     let kind = lhs.ty.as_ref().or(rhs.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
-                    let fresh = own_flag && is_fresh_rhs(rhs, fresh_vars, ctx.param_return, ctx.fresh);
+                    let fresh = own_flag && is_fresh_rhs(rhs, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh);
                     fresh_vars.insert(n.clone(), fresh);
                     if fresh { owned.insert(n.clone(), kind); } else { owned.remove(n); }
                     if matches!(rhs.kind, HirExprKind::Identifier(_)) {
@@ -616,7 +680,7 @@ fn rewrite_list(
                 // borrowed operands can be released right after — bind the
                 // result to a synthetic local, release the operands, return
                 // the binding. Not-fresh returns keep the conservative drop.
-                let ret_fresh = is_fresh(e, fresh_vars, ctx.param_return, ctx.fresh);
+                let ret_fresh = is_fresh(e, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh);
                 let borrows_owned = transferred.is_none()
                     && ids.iter().any(|n| owned.contains_key(n));
                 if ret_fresh && borrows_owned {
@@ -888,6 +952,9 @@ fn use_arg(e: &HirExpr, mode: Mode, owned: &mut HashMap<String, OwnKind>, ctx: &
             mention(e, &mut ids);
             for id in ids {
                 owned.remove(&id);
+                // Ok/Err constructor payloads are RETURN TRANSFERS, not
+                // arg escapes into storage — they are the function's result.
+                if reason == "Ok" || reason == "Err" { continue; }
                 let kind = match mode {
                     Mode::Consume => OwnedEventKind::ConsumeCall(reason.to_string()),
                     _ => OwnedEventKind::EscapeCall(reason.to_string()),

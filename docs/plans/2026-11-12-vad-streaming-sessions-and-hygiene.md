@@ -64,3 +64,27 @@ across stdlib (`owned_literal`-style fresh returns) — tracked as the
 follow-up; `--deny-memory-ambiguity` wiring into kiosk CI happens after
 that census reaches zero. Nine owned-storage tests (events for release
 kinds, keep/alias/undecided).
+
+## Outcome 2 (2026-11-13): Ok-side freshness + honest census
+
+Family 1 became a DERIVATION, not discipline: `ok_fresh` — a
+Result-returning callable discharges when every return path is `Ok(fresh)`
+or `Err(anything)` (Err payloads are irrelevant to ownership; `unwrap` only
+yields the Ok side). Zero stdlib edits, zero behavior change, no cold-path
+allocations. Supporting derivations: scalar-literal freshness, per-item
+List-literal freshness (the wrap-stasher guard — `Ok([state])` cannot
+discharge), Result locals carry freshness into `unwrap`.
+
+The stricter per-item guard surfaced a REAL finding: `run_node` (the
+executor) returns `Ok(y)` where `y = tensor_rename(x)` — renamed aliases of
+the model inputs stored into the result. The pass now correctly refuses
+ownership for the env lists: releases 16 → 14 (the two withdrawn frees were
+the documented alias-leak class), undecided 147 → 159. The census is now
+dominated by that single sound frontier: env/Tensor handle ownership (the
+owned-Tensor-handle design), not derivable gaps.
+
+Also landed: `Ok`/`Err` payload transfers no longer log as arg-escape
+drops (they are the function's result); `--deny-memory-ambiguity` stays
+unwired in kiosk CI until the env-handle frontier lands. Gates: 3792 lib,
+conformance, kiosk native faces / vad_rpc golden / sessions equivalence /
+dashboard IR verify.
