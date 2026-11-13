@@ -268,10 +268,26 @@ invariant. Generate candidate conjuncts from the body (`acc == i`, `i <= n`,
 preserve both hold. Pure prover work, no syntax. This is what turns the feature
 from "provable if you annotate" into "usually proved without annotation".
 
-**3. Invariant-licensed parallelisation.** A proved independent-iteration
-invariant is exactly the proof the SPEC demands before reassociating a fold; with
-it, `approx` becomes **derivable** rather than asserted. The most Briev-shaped
-payoff on the list: verification earning a strategy keyword instead of taxing it.
+**3. Invariant-licensed parallelisation — BLOCKED, and not on invariants.**
+The idea was that a proved independent-iteration invariant is exactly the proof
+the SPEC demands before reassociating a fold, making `approx` derivable rather
+than asserted.
+
+It cannot be built yet, because the prover **cannot see memory at all**:
+
+```
+verify.rs:1434  if !matches!(lhs, Expr::Identifier(_)) {
+verify.rs:1435      return Some("an assignment whose target is not a plain name")
+verify.rs:1498  Expr::Index(..) => Some("indexing")
+```
+
+`out[i] = ...` — precisely the shape whose iterations are independent — is
+rejected before any invariant is consulted. Independence is a statement about
+*disjoint writes*, so it needs index, bounds and aliasing reasoning first: a
+different and much larger piece of work than everything in this document.
+
+So the ordering was wrong: parallelisation is downstream of memory reasoning, not
+of invariants. Recorded so it is not attempted again from this end.
 
 Two smaller ones, not scheduled: **counterexample → test generation** (a failed
 obligation already yields a concrete model; emit it as a `#[case]`), and **ghost
@@ -286,3 +302,30 @@ variables** (an invariant often needs a counter that exists only in the proof �
 - There is no `variant` clause, so **termination is not proved** — the obligations
   give partial correctness only, as before.
 - Nothing infers invariants, so every annotation is manual.
+
+### The tractable next step instead: a `variant`
+
+`foreach` terminates by construction (a bounded range), but `node`/`txn` do not:
+SPEC §10.5 states plainly that no progress obligation is proved, so their
+termination is unproved and "provably reachable" remains a shape check.
+
+A `variant` clause closes that, and needs **no** memory reasoning — it is
+arithmetic over the same locals the prover already tracks:
+
+```briev
+node converge [pre][done][x <= n] variant [n - x] {
+    x = x + 1;
+};
+```
+
+Two further obligations, both in the existing subset:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| bounded — `<fn>_variant_bound` | `pre ∧ I ∧ ¬post` | `0 <= V` |
+| decreases — `<fn>_variant_step` | `pre ∧ I ∧ ¬post` | `V` after one pass is strictly less than `V` before |
+
+Storage is again free (`Annotation { name: "variant", value }`), and it would
+replace the shape check on `beginprogram` reachability with an actual proof — the
+same "heuristic became a proof" payoff that motivated the whole loop-invariant
+line. It is a **new surface**, so it needs Randy's approval before it is built.
