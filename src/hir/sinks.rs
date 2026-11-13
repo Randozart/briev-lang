@@ -117,6 +117,13 @@ fn collect_stmt(facts: &mut HirSinkFacts, callable: &HirCallable, stmt: &HirStmt
         | HirStmtKind::MetadataAssignment(_, _)
         | HirStmtKind::InlineAsm { .. }
         | HirStmtKind::Other(_) => {}
+        // Inserted release: nothing to sink. Temp-transfer: the wrapped expr
+        // still occupies the return sink it was carved out of.
+        HirStmtKind::ReleaseOwned { .. } => {}
+        HirStmtKind::TempTransfer { expr, .. } => {
+            insert(facts, HirSinkKey::Return { callable: callable.id, expr: expr.id }, expr.id);
+            scan_expr(facts, expr);
+        }
     }
 }
 

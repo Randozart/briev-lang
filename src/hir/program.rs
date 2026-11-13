@@ -139,6 +139,61 @@ pub struct HirField {
     pub ty: Type,
 }
 
+/// 2026-11-12 (H5 electronics port): one `pin` declaration in a component
+/// type body. `number` is the KiCad pin number, `class_ref` the ascribed
+/// electrical-class fundamental name, `unit` the symbol unit clause.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirPinDecl {
+    pub name: String,
+    pub number: u64,
+    pub class_ref: Option<String>,
+    pub unit: Option<String>,
+}
+
+/// A static forced-fact law (`hold G { F₁; … }`) carried on the type or at
+/// top level. The electronics analysis reads the guard/facts to derive
+/// conditional voltage drives. Runtime `when` statements stay in bodies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirHoldLaw {
+    pub guard: HirExpr,
+    pub facts: Vec<HirStmt>,
+}
+
+/// A top-level `unpop`/`shortcircuit` participation fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirParticipation {
+    pub instance: String,
+    pub shortcircuit: bool,
+}
+
+/// 2026-11-12 (electronics full-surface port): one declared component
+/// operating mode — the name plus its equation facts. `HirTypeDef.modes`
+/// keeps the names-only view (TypeInfo parity); this carries the body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirModeDecl {
+    pub name: String,
+    pub facts: Vec<HirStmt>,
+}
+
+/// 2026-11-12 (electronics full-surface port): a `data name: T[d0][d1] = …`
+/// constant table. `dims` are the declared extents (row-major) and `cells`
+/// the row-major cell literals — plain data, resolved by the electronics
+/// instance collector exactly like the AST `DataTable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HirDataTable {
+    pub name: String,
+    pub dims: Vec<u64>,
+    pub cells: Vec<i64>,
+}
+
+/// 2026-11-12 (electronics full-surface port): a `budget inst.pin <= I;`
+/// source-pin current budget. The contract expression is carried whole; the
+/// electronics budget check classifies its comparison shape.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirBudget {
+    pub contract: HirExpr,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirEnumVariant {
     Unit(String),
@@ -159,6 +214,10 @@ pub enum HirTypeDefKind {
 pub struct HirForeign {
     /// Effective Briev name (`as <name>` or the foreign symbol).
     pub name: String,
+    /// 2026-11-12 (destination-model port): the linker symbol (`frgn local :
+    /// symbol from "libc"` — the AST `ForeignBinding.foreign_name`). The
+    /// boundary destination plan keys foreign boundaries by this symbol.
+    pub link_symbol: String,
     pub params: Vec<(String, Type)>,
     pub ret: Option<Type>,
 }
@@ -169,6 +228,17 @@ pub struct HirTypeDef {
     pub item: ItemId,
     pub name: String,
     pub type_params: Vec<String>,
+    /// 2026-11-12 (destination-model port): refinement parent name
+    /// (`type Int32: Int` → `Some("Int")`). The parser guarantees a bare
+    /// identifier here; generic-arg and hashword relationship entries are
+    /// traits/protocol, not the parent. The object-shape guard reads this —
+    /// a parented type is never a plain object.
+    pub parent: Option<String>,
+    /// 2026-11-12 (destination-model port): source index of the top-level
+    /// item this declaration came from (Export/SyncGroup wrappers count as
+    /// their inner item's position). The enum constructor-tag order and the
+    /// AST `declaration_order` read this.
+    pub declaration_order: usize,
     pub kind: HirTypeDefKind,
     /// Declared boundary protocol (`type CStr: String<C_String>`), if any.
     pub protocol: Option<String>,
@@ -184,6 +254,20 @@ pub struct HirTypeDef {
     pub has_user_operators: bool,
     /// Op-binding implementation fn names (`op Add: cstring_concat`).
     pub binding_fns: Vec<String>,
+    /// 2026-11-12 (electronics): first-class component pins, in declaration
+    /// order. Empty for non-component types.
+    pub pins: Vec<HirPinDecl>,
+    /// Declared schematic reference-designator prefix (`reference "R";`).
+    pub reference: Option<String>,
+    /// Type-level `spec`/`attr` metadata bag.
+    pub metadata: std::collections::BTreeMap<String, crate::ast::PropertyValue>,
+    /// Type-inherited static laws (`hold G { … }`).
+    pub hold_laws: Vec<HirHoldLaw>,
+    /// Declared named operating modes, in declaration order.
+    pub modes: Vec<String>,
+    /// 2026-11-12 (electronics): the same modes with their equation facts,
+    /// in declaration order — the constitutive-law elaborator's input.
+    pub mode_decls: Vec<HirModeDecl>,
     pub span: Option<Span>,
 }
 
@@ -205,6 +289,9 @@ pub struct HirGlobal {
     pub is_state_decl: bool,
     /// Declared modifier names (`out`, `vol`, `state`, `plain`, …).
     pub modifiers: Vec<String>,
+    /// Declared modifier payloads (`net: "…"`, `stdnet: "…"`) in declaration
+    /// order. The electronics analysis reads the author net attachments here.
+    pub annotations: Vec<(String, Option<HirExpr>)>,
     pub span: Option<Span>,
 }
 
@@ -240,6 +327,14 @@ pub struct HirProgram {
     /// 2026-11-10: top-level `trg name @ instance.port` binding names — the
     /// externally-driven input set the dependency graph seeds.
     pub trigger_bindings: Vec<String>,
+    /// 2026-11-12 (electronics): top-level `unpop`/`shortcircuit` facts.
+    pub participations: Vec<HirParticipation>,
+    /// 2026-11-12 (electronics): top-level static `hold` laws.
+    pub hold_laws: Vec<HirHoldLaw>,
+    /// 2026-11-12 (electronics): declared `data` constant tables.
+    pub data_tables: Vec<HirDataTable>,
+    /// 2026-11-12 (electronics): declared `budget` statements.
+    pub budgets: Vec<HirBudget>,
     /// 2026-11-10 (casing port): declared-name surfaces by origin. The AST
     /// advisory distinguishes `type` from `struct`, `trait`, and `cell`
     /// declarations; `type_defs` alone conflates TypeDef and StaticStruct.

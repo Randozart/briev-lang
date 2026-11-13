@@ -44,6 +44,17 @@ fn nested_incoming_storage_survives_the_publishing_call() {
     assert_memcheck_if_available(&binary);
 }
 
+/// 2026-11-12: reading a scalar element out of a grown collection and using it
+/// must not make the collection's storage look like it escaped. Before the fix
+/// the container's owner became an escape barrier, suspending its frame so the
+/// list header and backing store leaked (24 + 128 bytes here).
+#[test]
+fn collection_element_reads_do_not_escape_their_container() {
+    let (_directory, binary) = build_native_fixture("reclamation_collection_element");
+    assert_native_output(&binary, b"7\n");
+    assert_memcheck_if_available(&binary);
+}
+
 fn assert_memcheck_if_available(binary: &std::path::Path) {
     if Command::new("valgrind").arg("--version").output().is_err() { return; }
     let checked = Command::new("valgrind")

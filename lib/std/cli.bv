@@ -50,7 +50,9 @@ defn arg(i: Int)  -> String {
     Store#(buf, n, 8);
     Copy#(buf + 8, p, n);
     Store#(buf + 8 + n, 0, 1);
-    term (buf as Data) as String;
+    let owned: String = (buf as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
 };
 
 // cstr_equals — C-string p equals the Briev String key (byte compare).

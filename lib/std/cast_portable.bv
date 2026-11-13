@@ -52,12 +52,16 @@ out defn int_to_str(n: Int) [true][term .^Length >= 0] -> String {
         let buf: Int = Alloc#(8 + cnt + 1) as Int;
         Store#(buf, cnt, 8);
         Store#(buf + 8, 45, 1);
-        term (fill_neg(n, buf, 8 + cnt, buf) as Data) as String;
+        let owned: String = (fill_neg(n, buf, 8 + cnt, buf) as Data) as String;
+        Free#(buf as Ptr<Bit<8>>);
+        term owned;
     };
     let cnt: Int = pos_digit_count(n, 0);
     let buf: Int = Alloc#(8 + cnt + 1) as Int;
     Store#(buf, cnt, 8);
-    term (fill_pos(n, buf, 8 + cnt, buf) as Data) as String;
+    let owned: String = (fill_pos(n, buf, 8 + cnt, buf) as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
 };
 
 // pos_digit_count — decimal digit count (n >= 0).
@@ -129,7 +133,9 @@ out defn char_to_str(c: Int) [c >= 0][term .^Length >= 1] -> String {
     let addr: Int = Alloc#(13) as Int;
     let n: Int = utf8_encode(addr + 8, c);
     Store#(addr, n, 8);
-    term (addr as Data) as String;
+    let owned: String = (addr as Data) as String;
+    Free#(addr as Ptr<Bit<8>>);
+    term owned;
 };
 
 // utf8_encode — write codepoint c's UTF8 bytes at addr, return the byte
@@ -473,11 +479,18 @@ out defn briev_str_substr(s: String, a: Int, b: Int) [true][term .^Length >= 0] 
         Copy#(buf + 8, addr + 8 + lo, n);
     };
     Store#(buf + 8 + n, 0, 1);
-    term (buf as Data) as String;
+    let owned: String = (buf as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
 };
 
 // when_raw — max(a, 0) clamped to len.
 defn when_raw(a: Int, len: Int) [true][term >= 0] -> Int {
+    // A clamp is only meaningful for a non-negative bound: without this the
+    // declared [term >= 0] is false whenever len is negative.
+    when len < 0 {
+        term 0;
+    };
     when a < 0 {
         term 0;
     };
@@ -497,6 +510,10 @@ defn clamp_hi(b: Int, len: Int, lo: Int) [true][term >= 0] -> Int {
 };
 
 defn when_hi(b: Int, len: Int) [true][term >= 0] -> Int {
+    // Same contract rationale as when_raw: the bound participates in the result.
+    when len < 0 {
+        term 0;
+    };
     when b > len {
         term len;
     };
@@ -658,6 +675,13 @@ defn coll_count_true_i64(mask: Int, n: Int) [true][term >= 0] -> Int {
 
 // coll_min — min of two non-negative counts.
 defn coll_min(a: Int, b: Int) [true][term >= 0] -> Int {
+    // Both operands reach the result, so both need the bound the contract claims.
+    when a < 0 {
+        term 0;
+    };
+    when b < 0 {
+        term 0;
+    };
     when a > b {
         term b;
     };
@@ -837,6 +861,10 @@ out defn briev_slice_range64(data: Int, n: Int, lo: Int, hi: Int)
 
 // coll_hi_fix — max(h, lo) for the range clamp.
 defn coll_hi_fix(h: Int, lo: Int) [true][term >= 0] -> Int {
+    // `lo` is returned when h < lo, so the contract needs lo >= 0.
+    when lo < 0 {
+        term 0;
+    };
     when h < lo {
         term lo;
     };
@@ -910,6 +938,10 @@ defn coll_step_fix(step: Int) [step >= 0][term >= 1] -> Int {
 
 // coll_len_fix — 0 when hi < lo (empty range), else the computed len.
 defn coll_len_fix(h: Int, l: Int, len: Int) [true][term >= 0] -> Int {
+    // `len` is returned on the fall-through path, so the contract needs len >= 0.
+    when len < 0 {
+        term 0;
+    };
     when h < l {
         term 0;
     };
@@ -948,6 +980,34 @@ defn slice_f32_strided_copy(data: Int, obuf: Int, l: Int, s: Int, len: Int, i: I
     term slice_f32_strided_copy(data, obuf, l, s, len, i + 1);
 };
 
+// request-scoped coll backing arena (generic coll storage policy)
+frgn coll_arena_begin(bytes: Int) -> Void from "std/c/coll_arena.c";
+frgn coll_arena_reset() -> Void from "std/c/coll_arena.c";
+frgn coll_arena_end() -> Void from "std/c/coll_arena.c";
+frgn coll_alloc(bytes: Int) -> Int from "std/c/coll_arena.c";
+frgn coll_arena_owns(ptr: Int) -> Int from "std/c/coll_arena.c";
+
+// coll_destroy — release a compiler-owned coll handle: the scaffold-allocated
+// object is always freed; the backing block is freed only when it does NOT
+// live in an active request arena (coll_arena_owns covers retired buffers via
+// the block's high-water mark). If the scaffold ever allocates the object
+// itself from an arena, this intrinsic pair must grow an owns-check for the
+// object too.
+defn coll_destroy(handle: Int)
+    [handle >= 0][term == 0 || term != 0]
+    -> Int
+{
+    when handle == 0 { term 0; };
+    let data: Int = Load#(handle, 8);
+    when data != 0 {
+        when coll_arena_owns(data) == 0 {
+            Free#(data as Ptr<Bit<8>>);
+        };
+    };
+    Free#(handle as Ptr<Bit<8>>);
+    term 0;
+};
+
 // coll_resize — grow a coll handle's [data, cap, len] block to
 // new_cap word-elements. Arena semantics: the old buffer is NOT freed
 // (retired until arena reset); new_cap == 0 just clears the fields.
@@ -970,7 +1030,7 @@ out defn coll_resize(handle: Int, new_cap: Int)
     // 64-bit words. The old 8-byte stride overwrote the second appended
     // element with zeros (HTTP request queue corruption).
     let word: Int = 4;
-    let nd: Int = Alloc#(word * new_cap) as Int;
+    let nd: Int = coll_alloc(word * new_cap);
     let copy_n: Int = coll_min(old_cap, new_cap);
     when copy_n > 0 {
         Copy#(nd, old_data, word * copy_n);

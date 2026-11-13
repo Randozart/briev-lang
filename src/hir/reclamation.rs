@@ -66,6 +66,12 @@ pub(crate) fn constraints_for_test(
         index.casts = casts.clone();
     }
     walk::register(&mut index, program);
+    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+        eprintln!(
+            "reclamation HIR declared user operators: {:?}",
+            index.user_operators
+        );
+    }
     dump_constraints(&index)
 }
 
@@ -110,11 +116,20 @@ fn dump_constraints(
 /// owner on a fresh graph clone, solve, absorb into one plan.
 pub fn analyze(
     program: &HirProgram,
+    items: &[crate::ast::TopLevel],
     universe: Option<&crate::type_universe::TypeUniverse>,
 ) -> crate::analysis::reclamation::ReclamationPlan {
     let mut index = graph::Graph::default();
     if let Some(universe) = universe {
         index.universe = universe.clone();
+    }
+    // 2026-11-12 (drift fix): register protocol defs into the casting graph —
+    // the AST analyze does this, and without it CStr→String cast lanes are
+    // invisible (find_path returns None), causing spurious barriers.
+    for item in items {
+        if let crate::ast::TopLevel::ProtocolDef(protocol) = item {
+            index.casts.register_protocol_def(protocol);
+        }
     }
     walk::register(&mut index, program);
     let owners: Vec<_> = index.bodies.keys().cloned().collect();
@@ -163,6 +178,12 @@ impl Accumulator {
         plan: &crate::analysis::reclamation::ReclamationPlan,
         result: &mut crate::analysis::reclamation::ReclamationPlan,
     ) {
+        if std::env::var_os("BRIEV_DRIFT_DIR").is_some() {
+            eprintln!(
+                "ABSORB owner={owner} barriers={:?} escape={:?} unsupported={:?} publishers={:?}",
+                plan.barriers, plan.escape_barriers, graph.unsupported, graph.incoming_store_owners
+            );
+        }
         self.allocating
             .extend(graph.allocation_owner.values().cloned());
         for built in &graph.built {
@@ -342,7 +363,7 @@ mod tests {
             .collect();
         let expected =
             crate::analysis::reclamation::analyze(&items, &live, None);
-        let actual = analyze(&crate::hir::lower_program(&items), None);
+        let actual = analyze(&crate::hir::lower_program(&items), &items, None);
         assert_eq!(actual, expected, "plan drift:\n{src}");
     }
 
@@ -769,5 +790,53 @@ fn register_plain_callable(
     );
     if let Some(ty) = &callable.result {
         facts.return_types.insert(callable.name.clone(), ty.clone());
+    }
+}
+
+#[cfg(test)]
+mod tmp_drift {
+    use super::*;
+
+    #[test]
+    fn tmp_boundary_drift_diff() {
+        let path = "examples/glue-host/boundary.bv";
+        let src = std::fs::read_to_string(path).unwrap();
+        let opts = crate::pipeline::BuildOptions {
+            file_path: path.to_string(),
+            library_mode: true,
+            ..Default::default()
+        };
+        let (mut items, u) = crate::pipeline::compile_to_typed(path, &src, &opts).unwrap();
+        // Post-compile_to_typed stages from compile_source (the AST oracle
+        // sees these; mirror them to reproduce the backend drift).
+        crate::analysis::narrow_slice::narrow_slices(&mut items);
+        let _strategies = crate::analysis::allocation::analyze_alloc_strategies(&mut items);
+        let _arena = crate::analysis::allocation::analyze_arena_need(&mut items);
+        let ast = crate::analysis::reclamation::analyze(&items, &Default::default(), Some(&u));
+        let program = crate::hir::lower_program(&items);
+        let hir = analyze(&program, &items, Some(&u));
+        for (label, a, h) in [
+            ("regions", &ast.regions, &hir.regions),
+            ("barriers", &ast.barriers, &hir.barriers),
+            ("escape_barriers", &ast.escape_barriers, &hir.escape_barriers),
+            ("publish_only", &ast.publish_only, &hir.publish_only),
+        ] {
+            let only_ast: Vec<&String> = a.difference(h).collect();
+            let only_hir: Vec<&String> = h.difference(a).collect();
+            if !only_ast.is_empty() || !only_hir.is_empty() {
+                println!(
+                    "FIELD {} only-AST {:?} only-HIR {:?}",
+                    label, only_ast, only_hir
+                );
+            }
+        }
+        for (k, v) in &ast.reasons {
+            if hir.reasons.get(k) != Some(v) {
+                println!("REASON {} ast={:?} hir={:?}", k, v, hir.reasons.get(k));
+            }
+        }
+        // Plans may be equal here — the diag is for the backend-pipeline-only
+    // drift (see BUGS.md 2026-11-12). Use --nocapture to see the output.
+    println!("tmp_boundary_drift_diff: plans compared; see BUGS.md");
     }
 }

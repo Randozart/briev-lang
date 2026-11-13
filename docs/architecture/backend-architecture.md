@@ -4,6 +4,16 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-12: enum constructors resolve their own concrete enum before choosing
+an image destination. Allocation width, caller-result eligibility and payload
+stores consume that same resolved type. An absent/stale ambient expected type
+(notably inside collection literals) cannot size the allocation independently
+of the nested payload layout. `tests/nested_enum_allocation.rs` exercises nested
+collection images at O0/O3 under both emission paths, with Valgrind bounds checks.
+Nested inline payloads must also fit the full enum-depth budget. When they do
+not, the planner boxes the entire nested value rather than changing its deeper
+representation relative to standalone construction and match projection.
+
 2026-11-10: internally folded transactions retain their current field values
 in `pending_phi_backedge` until a publication boundary. A successful P-gated
 bare `term;` bypasses the counted-loop exit block, so `emit_bare_term_stop`

@@ -376,6 +376,10 @@ impl Builder<'_> {
                     let target = self.expression(target);
                     let backing = self.graph.allocation(self.owner);
                     self.graph.growers.insert(self.owner.into());
+                    // 2026-11-12: mark the proxy as container storage, not an
+                    // element value. Element reads exclude it; container escape
+                    // still reaches it through `root_contents`.
+                    self.graph.container_storage.insert(backing);
                     self.graph.constraints.push(Constraint::Store(target, backing));
                     self.graph.constraints.push(Constraint::Store(target, value));
                 }
@@ -489,6 +493,7 @@ impl Builder<'_> {
             | HirExprKind::Deref(receiver) => self.expression(receiver),
             _ => {
                 self.unsupported();
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                 return;
             }
         };
@@ -680,6 +685,7 @@ impl Builder<'_> {
                 }
                 if !matches!(name.as_str(), "Ptr" | "Data" | "Address") {
                     self.unsupported();
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                     self.capture(&[value]);
                 }
                 value
@@ -725,6 +731,7 @@ impl Builder<'_> {
                     eprintln!("reclamation HIR unsupported expression in {}: {expression:?}", self.owner);
                 }
                 self.unsupported();
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                 self.graph.root()
             }
         }
@@ -787,6 +794,7 @@ impl Builder<'_> {
             HirExprKind::MethodCall { receiver, name, args, analysis_id } => {
                 if analysis_id.is_some() {
                     self.unsupported();
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                     return self.graph.root();
                 }
                 if crate::intrinsic_signatures::get_intrinsic_signature(name)
@@ -812,6 +820,7 @@ impl Builder<'_> {
             }
             _ => {
                 self.unsupported();
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                 self.graph.root()
             }
         }
@@ -824,6 +833,7 @@ impl Builder<'_> {
             .is_none_or(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             self.capture(&[value]);
         }
         value
@@ -868,6 +878,7 @@ impl Builder<'_> {
         let result = self.binary_value(operator, left, right);
         if self.expression_type(lhs).is_none() || self.expression_type(rhs).is_none() {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             self.capture(&[left, right]);
         }
         if self
@@ -875,6 +886,7 @@ impl Builder<'_> {
             .is_some_and(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             self.capture(&[left, right]);
         }
         if matches!(
@@ -937,6 +949,7 @@ impl Builder<'_> {
             .is_none_or(|ty| self.has_user_operators(&ty))
         {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             self.capture(&[value]);
         }
         if operator == UnaryOpKind::Not {
@@ -1157,10 +1170,12 @@ impl Builder<'_> {
                 eprintln!("reclamation HIR unknown cast source in {}: {expression:?}", self.owner);
             }
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             return value;
         };
         if self.has_user_operators(&source) || self.has_user_operators(target) {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             return value;
         }
         let encoding_target = target.universe_key().map(str::to_owned);
@@ -1180,6 +1195,7 @@ impl Builder<'_> {
         else {
             if !address_cast {
                 self.unsupported();
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             }
             return value;
         };
@@ -1206,6 +1222,7 @@ impl Builder<'_> {
             LaneKind::CastFromBitCallback => {
                 let Some(target) = encoding_target else {
                     self.unsupported();
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                     return value;
                 };
                 self.graph.default_encoding_targets.insert(target.into());
@@ -1239,6 +1256,7 @@ impl Builder<'_> {
         let values = arguments.iter().map(|arg| self.expression(arg)).collect::<Vec<_>>();
         self.capture(&values);
         self.unsupported();
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
         self.graph.unknown_value()
     }
 
@@ -1359,6 +1377,7 @@ impl Builder<'_> {
             .collect::<Option<Vec<_>>>()
         else {
             self.unsupported();
+            if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             return self.graph.node();
         };
         let name =
@@ -1423,6 +1442,7 @@ impl Builder<'_> {
             "Alloc#" | "Malloc#" => {
                 if args.len() != 1 {
                     self.unsupported();
+                    if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
                 }
                 return self.graph.allocation(self.owner);
             }
@@ -1484,6 +1504,7 @@ impl Builder<'_> {
                 }
                 self.capture(args);
                 self.unsupported();
+                if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() { eprintln!("reclamation HIR unsupported {}", self.owner); }
             }
         }
         result
@@ -1497,6 +1518,13 @@ impl Builder<'_> {
     }
 
     fn unsupported(&mut self) {
+        if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
+            eprintln!(
+                "reclamation HIR unsupported owner={} bt={}",
+                self.owner,
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         self.graph.unsupported.insert(self.owner.into());
         let inputs: Vec<_> = self.bindings.values().copied().collect();
         self.capture(&inputs);

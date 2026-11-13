@@ -358,14 +358,18 @@ fn compare(case: &Case, directory: &Path) -> Result<(), String> {
             .args(["--stdlib-path", "lib", "--config-dir", "config", "--out"])
             .arg(directory),
     )?;
+    let ll_text = std::fs::read_to_string(directory.join("transition.ll")).unwrap_or_default();
+    let owned_start = ll_text.contains("define void @_start");
     for level in ["-O0", "-O3"] {
         let binary = directory.join(format!("transition{level}"));
+        let mut cmd = Command::new("timeout");
+        cmd.arg("60").arg("clang").arg(level);
+        if owned_start {
+            // Owned-_start programs carry their own entry; the CRT would duplicate it.
+            cmd.arg("-nostartfiles");
+        }
         checked(
-            Command::new("timeout")
-                .arg("60")
-                .arg("clang")
-                .arg(level)
-                .arg(directory.join("transition.ll"))
+            cmd.arg(directory.join("transition.ll"))
                 .arg(root.join("lib/runtime/briev_rt.c"))
                 .args(["-lm", "-ldl", "-o"])
                 .arg(&binary),

@@ -1,0 +1,17 @@
+
+        type Resistor { pin a; pin b; reference "R"; };
+        type Led { pin a; pin k; reference "D"; spec Tolerance: 3.6V; };
+        type Connector { pin vcc; pin gnd; reference "J"; };
+
+        let j1: Connector = Connector { value: "JST-2" };
+        let r1: Resistor = Resistor { value: "330", spec Resistance: 330Ohm; };
+        let d1: Led = Led { value: "red" };
+
+        budget j1.vcc <= 0.05;
+
+        txn on
+            [j1.vcc.voltage == 3.3V && j1.vcc.voltage == r1.a.voltage &&
+             r1.b.voltage == d1.a.voltage && d1.k.voltage == j1.gnd.voltage]
+            [d1.a.current > 0.0 && d1.a.current <= 0.02]
+        { }
+    

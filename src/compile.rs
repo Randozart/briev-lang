@@ -251,7 +251,7 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // 2026-07-23: If --update-lockfile, regenerate macro-lock.toml from
     // current plugin files and --allow-* flags. Otherwise validate the
     // lockfile against loaded plugins and apply approved capabilities.
-    let mut pm = build_plugin_manager(file_path, opts);
+    let mut pm = build_plugin_manager(file_path, opts)?;
     let project_root =
         std::env::current_dir().map_err(|e| format!("cannot determine project root: {}", e))?;
     let project_root_str = project_root.to_string_lossy().to_string();
@@ -833,12 +833,33 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
     // its own [pre][post] via symbolic execution over the body's paths. This
     // is opt-in and off by default, so the historical consistency-only
     // behaviour is unchanged without the flag.
-    if opts.verify_bodies {
+    // 2026-11-12 (C5): the strict profile proves bodies by default, so new code
+    // gets its contracts discharged without needing to know the flag exists.
+    if opts.verify_bodies || strict_profile {
+        // 2026-11-12 (C6): state which compiler produced these verdicts. A stale
+        // binary behaves like an older prover, which is indistinguishable from a
+        // feature not working — say so rather than let it pass silently.
+        match crate::run_freshness_check() {
+            Ok(()) => eprintln!(
+                "info: --verify-bodies: brievc {} (fresh build)",
+                env!("CARGO_PKG_VERSION")
+            ),
+            Err(stale) => eprintln!("warning: --verify-bodies: {stale}"),
+        }
         let report = briev_compiler::analysis::verify_bodies::verify_bodies(&items);
         // Advisory: supported bodies the prover could not decide. Never a
         // failure — only concrete counterexamples fail the build.
         for line in &report.unproven {
             eprintln!("warning: --verify-bodies could not prove: {line}");
+        }
+        // 2026-11-12 (standalone roadmap C1): a machine-readable report. Written
+        // before the failure return so a violating build still produces one —
+        // that is exactly when a tool needs the detail.
+        if let Some(path) = &opts.verify_report {
+            let json = serde_json::to_string_pretty(&report.to_json())
+                .map_err(|e| format!("cannot serialise the verify report: {e}"))?;
+            std::fs::write(path, json)
+                .map_err(|e| format!("cannot write verify report '{path}': {e}"))?;
         }
         if !report.violated.is_empty() {
             return Err(format!("--verify-bodies:\n{}", report.violated.join("\n")));
@@ -3856,6 +3877,7 @@ node go [done == false][done == true] {
             no_link: false,
             web_page_key: None,
             verify_bodies: false,
+            verify_report: None,
         }
     }
 

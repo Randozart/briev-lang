@@ -1,0 +1,37 @@
+
+            type Ground { spec KicadType: "power_in"; spec Return: true; };
+            type Power { spec KicadType: "power_in"; spec Supply: true; };
+            type Volt { spec Bits: 32; };
+            type Amp { spec Bits: 32; };
+            struct Pin { voltage: Volt; current: Amp; };
+            type Led {
+                pin a; pin k; reference "D"; spec Tolerance: any; spec Rating: any;
+                spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+                hold a.voltage - k.voltage >= ForwardVoltage {
+                    a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+                }
+                hold a.voltage - k.voltage < ForwardVoltage { a.current == 0Amp; }
+                hold true { a.current + k.current == 0; }
+            };
+            type Resistor {
+                pin a; pin b; reference "R"; spec Tolerance: any;
+                spec SeriesPart: true;
+                spec Resistance: Ohm;
+                hold true { a.voltage - b.voltage == Resistance * a.current; }
+            };
+            type Src { pin p: Power; reference "S"; spec Tolerance: any; };
+            type Sink { pin g; reference "X"; spec Tolerance: any; };
+
+            let d1: Led = Led { spec ForwardVoltage: 1.0Volt, spec DynamicResistance: 10Ohm, spec MaxCurrent: 0.1Amp };
+            let r1: Resistor = Resistor {};
+            let s1: Src = Src { };
+            let x1: Sink = Sink { };
+
+            txn powered
+                [s1.p.voltage == 10V && d1.k.voltage == 0V
+                 && d1.k.voltage == x1.g.voltage]
+                [true]
+            {
+                d1.a.current >= 0.01;
+            }
+        

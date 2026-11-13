@@ -564,7 +564,9 @@ impl LlvmBackend {
                             continue;
                         }
                     }
-                    last = match super::emit_hir_stmt::emit_hir_statement(self, out, child, indent) {
+                    last = match super::emit_hir_stmt::emit_hir_statement(
+                        self, out, child, Some(&ast_children[i]), indent,
+                    ) {
                         Some(reg) => reg,
                         // Unreachable (children pre-converted); kept total.
                         None => self.emit_statement(out, &ast_children[i], indent),
@@ -6722,12 +6724,17 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // sub-patterns extract elements from that image symmetrically.
         let payload_exprs: Vec<Expr> = args.to_vec();
         let _ = payload_exprs;
+        // 2026-11-12: collection elements can have no ambient enum type, or
+        // inherit an enclosing value's type. Resolve the constructor before
+        // sizing/selecting its image so nested payload stores fit. Remove only
+        // when every constructor arrives with its verified concrete destination.
+        let saved_expected_enum = self.resolve_constructor_enum(v);
         let inline_slot = self.fun.enum_construct_slot.take();
         let out_used = inline_slot.is_none()
             && self.fun.enum_return_context
             && !self.fun.enum_out_busy
             && self.fun.enum_out_slot.is_some()
-            && self.fun.expected_enum_type.as_ref() == self.fun.enum_out_type.as_ref();
+            && saved_expected_enum.as_ref() == self.fun.enum_out_type.as_ref();
         if out_used {
             self.fun.enum_out_busy = true;
         }
@@ -6737,7 +6744,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             let slot = self.fun.enum_out_slot.clone().unwrap();
             (slot.clone(), slot)
         } else {
-            let bytes = self.enum_image_words(self.fun.expected_enum_type.as_ref()) * 8;
+            let bytes = self.enum_image_words(saved_expected_enum.as_ref()) * 8;
             let raw = self.fun.gen_reg();
             writeln!(out, "{}{} = call ptr @malloc(i64 {})", indent, raw, bytes).ok();
             let img = self.fun.gen_reg();
@@ -6760,7 +6767,6 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // (`AdmissionError` around `OwnedOperationJob(WorkerTag)`). Only use it
         // when this variant actually belongs to that enum; otherwise resolve
         // the constructor's own enum from the plan-owned tag index.
-        let saved_expected_enum = self.resolve_constructor_enum(v);
         let payload_expected = saved_expected_enum
             .as_ref()
             .and_then(|t| self.enum_payload_type(t, v));
@@ -7533,6 +7539,21 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     let conv = self.fun.gen_reg();
                     writeln!(out, "{}{} = trunc i64 {} to {}", indent, conv, reg.name, expected_ty).ok();
                     call_args.push(format!("{} {}", expected_ty, conv));
+                } else if matches!(reg.ty, Type::Function(_, _))
+                    && expected_ty == "ptr"
+                    && reg.name.starts_with("%ac")
+                {
+                    // 2026-11-12 (forwarded callbacks): a fn-typed parameter is
+                    // ptrtoint'd to the i64 handle %acN at entry, and every
+                    // internal fn value is an i64 handle. The declared
+                    // parameter type is `ptr`, so the handle must be converted
+                    // back at the call: passing it raw made `opt` reject the
+                    // module ("'%ac0' defined with type 'i64' but expected
+                    // 'ptr'") and made forwarding/recursing through a callback
+                    // impossible.
+                    let conv = self.fun.gen_reg();
+                    writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, conv, reg.name).ok();
+                    call_args.push(format!("ptr {}", conv));
                 } else {
                     call_args.push(format!("{} {}", actual_ty, reg.name));
                 }
@@ -9383,6 +9404,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // the correct Ptr type — the value is i64 but the type system says Ptr.
         let src_ll = self.llvm_type(&src.ty);
         if matches!(target, Type::Ptr(_)) && src_ll == "i64" {
+            self.fun.reg_value_ll.insert(src.name.clone(), "i64".to_string());
             return Some(TypedRegister { name: src.name.clone(), ty: target.clone() });
         }
 
@@ -9413,6 +9435,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 }
             };
 
+            // 2026-11-12: record the ACTUAL register width this step produces.
+            // Cast lanes stamp Briev target types on values whose LLVM width
+            // differs (e.g. i64 handles stamped Ptr); width adapters must not
+            // guess from the stamped type.
+            self.fun.reg_value_ll.insert(dst.clone(), dst_ll.clone());
             match &step.lane {
                 crate::casting::graph::LaneKind::Bitcast => {
                     // 2026-08-13 (pack): LLVM `bitcast` requires equal-width
@@ -9585,6 +9612,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         writeln!(out, "{}{} = ptrtoint {} {} to i64",
                             indent, dst, cur_ll, cur).ok();
                     }
+                    // 2026-11-12: a PtrToInt step ALWAYS yields an i64 handle,
+                    // even as the last step (where the generic recorder stamps
+                    // the Briev target's ptr type). Width adapters need the
+                    // actual width, not the stamped one.
+                    self.fun.reg_value_ll.insert(dst.clone(), "i64".to_string());
                 }
                 crate::casting::graph::LaneKind::IntToPtr => {
                     // 2026-08-28: identity when the register is already a

@@ -4,10 +4,10 @@ program
   callable m kind=Transaction owner=None exported=false symbol=None result=None type_params=[] variadic=false sync=[] trait_default=false impl_fn=false isr=false outputs=[]
     params []
     contract pre
-      expr#NodeId(2) ty=Custom("Bool") lit Bool(true)
+      expr#NodeId(6) ty=Custom("Bool") lit Bool(true)
     contract post
-      expr#NodeId(3) ty=Custom("Bool") lit Bool(true)
-    guarded#NodeId(8)
-      expr#NodeId(5) ty=Custom("Bool") lit Bool(true)
-      term#NodeId(6)
-      metadata#NodeId(7) hold = Bool(true)
+      expr#NodeId(7) ty=Custom("Bool") lit Bool(true)
+    guarded#NodeId(12)
+      expr#NodeId(9) ty=Custom("Bool") lit Bool(true)
+      term#NodeId(10)
+      metadata#NodeId(11) hold = Bool(true)

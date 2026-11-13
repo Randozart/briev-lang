@@ -84,6 +84,12 @@ struct Graph {
     constants: Vec<BTreeSet<i64>>,
     inexact_constants: BTreeSet<Node>,
     memory: Vec<NodeSet>,
+    /// 2026-11-12: backing-storage proxies recorded by collection growth. They
+    /// model the storage a container owns: a container escaping must keep them
+    /// reachable, but reading an element must not inherit them. Undo by storing
+    /// them in `memory` again (the pre-2026-11-12 conflation that made scalar
+    /// element reads look like their container escaped).
+    container_storage: BTreeSet<Node>,
     named_memory: BTreeMap<(Node, String), NodeSet>,
     constraints: Vec<Constraint>,
     allocation_owner: BTreeMap<Node, String>,
@@ -133,6 +139,7 @@ impl Default for Graph {
             points: Vec::new(),
             constants: Vec::new(),
             memory: Vec::new(),
+            container_storage: BTreeSet::new(),
             inexact_constants: BTreeSet::new(),
             named_memory: BTreeMap::new(),
             constraints: Vec::new(),
@@ -256,7 +263,7 @@ impl Graph {
                     | inexact
             }
             Constraint::Load(base, result) => {
-                let refs = self.contents(base);
+                let refs = self.load_contents(base);
                 self.points[result].union_with(&refs) | self.inexact_constants.insert(result)
             }
             Constraint::Store(base, value) => self.store(base, self.points[value].clone()),
@@ -283,6 +290,21 @@ impl Graph {
 
     fn contents(&self, base: Node) -> NodeSet {
         storage::contents(&self.points[base], &self.memory, &self.named_memory)
+    }
+
+    /// 2026-11-12: a load reads the *values* stored in the container, never the
+    /// container's own backing storage. Storage proxies stay reachable through
+    /// `root_contents` (so an escaping container keeps its storage alive) but
+    /// must not become the provenance of an element read, or a plain scalar
+    /// element would appear to alias its container and force an escape barrier.
+    fn load_contents(&self, base: Node) -> NodeSet {
+        let mut refs = NodeSet::new();
+        for node in self.contents(base).iter() {
+            if !self.container_storage.contains(&node) {
+                refs.insert(node);
+            }
+        }
+        refs
     }
 
     fn root_contents(&self, root: Node) -> NodeSet {
@@ -654,7 +676,7 @@ pub fn analyze(
     walk::register(&mut index, items, live);
     if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
         eprintln!(
-            "reclamation declared user operators: {:?}",
+            "reclamation AST declared user operators: {:?}",
             index.user_operators
         );
     }
@@ -720,8 +742,8 @@ impl Accumulator {
         record_dependencies(graph, &mut self.dependencies);
         if std::env::var_os("BRIEV_DIAG_RECLAMATION").is_some() {
             eprintln!(
-                "reclamation root {owner}: barriers={:?}, unsupported={:?}",
-                plan.barriers, graph.unsupported
+                "reclamation root {owner}: barriers={:?}, closed={:?}, regions={:?}, reasons={:?}, unsupported={:?}",
+                plan.barriers, plan.closed_regions, plan.regions, plan.reasons, graph.unsupported
             );
         }
         if plan.regions.contains(owner) {

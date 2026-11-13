@@ -1,0 +1,20 @@
+{
+  "input_name": "x",
+  "output_name": "y",
+  "input_shape": [
+    1,
+    2
+  ],
+  "input": [
+    -3.5,
+    2.5
+  ],
+  "output_shape": [
+    1,
+    2
+  ],
+  "output": [
+    0.0,
+    2.5
+  ]
+}

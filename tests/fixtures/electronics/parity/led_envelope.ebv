@@ -1,0 +1,20 @@
+
+        type Power { spec KicadType: "power_in"; spec Supply: true; };
+        type Ground { spec KicadType: "power_in"; spec Return: true; };
+        type Rail { pin hi: Power; pin lo: Power; reference "P"; };
+        type Resistor { pin a; pin b; reference "R"; spec Resistance: Ohm;
+            hold true {
+                a.voltage - b.voltage == Resistance * a.current;
+                a.current + b.current == 0;
+            };
+        };
+        type Led { pin a; pin k; reference "D"; spec MaxCurrent: 20mA; spec ForwardVoltage: Volt; spec DynamicResistance: Ohm;
+            hold a.voltage - k.voltage >= ForwardVoltage {
+                a.current == (a.voltage - k.voltage - ForwardVoltage) / DynamicResistance;
+            };
+        };
+        let p: Rail = Rail { value: "rail" };
+        let r: Resistor = Resistor { spec Resistance: 330Ohm };
+        let d: Led = Led { spec ForwardVoltage: 1.8Volt; spec DynamicResistance: 10Ohm };
+        txn on [p.hi.voltage == r.a.voltage && r.b.voltage == d.a.voltage && d.k.voltage == p.lo.voltage && p.hi.voltage == 3.3Volt && p.lo.voltage == 0.0Volt] [d.a.current > 0] { }
+    

@@ -95,7 +95,9 @@ defn cstr_to_string(p: Int) -> String [true][term .^Length >= 0] {
     Store#(buf, len, 8);
     Copy#(buf + 8, p, len);
     Store#(buf + 8 + len, 0, 1);
-    term (buf as Data) as String;
+    let owned: String = (buf as Data) as String;
+    Free#(buf as Ptr<Bit<8>>);
+    term owned;
 };
 
 // cell_new — 8-byte out-parameter cell (a C `T**` target).

@@ -86,15 +86,25 @@ pub(crate) fn synthesize_row_softmax(
             Box::new(Expr::BinaryOp(
                 Add,
                 Box::new(lane.clone()),
-                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+                Box::new(Expr::BinaryOp(
+                    Mul,
+                    Box::new(t),
+                    Box::new(Expr::Decimal(32)),
+                )),
             )),
         )
     };
     let row_read = |t: Expr| -> Expr {
-        Expr::Index(Box::new(Expr::Identifier(red.row_buf.clone())), Box::new(elem(t)))
+        Expr::Index(
+            Box::new(Expr::Identifier(red.row_buf.clone())),
+            Box::new(elem(t)),
+        )
     };
     let out_write = |t: Expr| -> Expr {
-        Expr::Index(Box::new(Expr::Identifier(red.out_buf.clone())), Box::new(elem(t)))
+        Expr::Index(
+            Box::new(Expr::Identifier(red.out_buf.clone())),
+            Box::new(elem(t)),
+        )
     };
     let fty = Some(crate::ast::Type::float());
     let range = |a: i64, b: i64| Expr::Range {
@@ -127,12 +137,9 @@ pub(crate) fn synthesize_row_softmax(
                 expr: Some(row_read(id(&v))),
                 modifiers: vec![],
             },
-            Statement::Assign(
-                id(m),
-                Expr::Call("Max#".into(), vec![id(m), id(&v)], None),
-            ),
+            Statement::Assign(id(m), Expr::Call("Max#".into(), vec![id(m), id(&v)], None)),
         ],
-    modifiers: vec![],
+        modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(m),
@@ -156,12 +163,16 @@ pub(crate) fn synthesize_row_softmax(
                 Box::new(id(s)),
                 Box::new(Expr::Call(
                     "Exp#".into(),
-                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(&t))), Box::new(id(m)))],
+                    vec![Expr::BinaryOp(
+                        Sub,
+                        Box::new(row_read(id(&t))),
+                        Box::new(id(m)),
+                    )],
                     None,
                 )),
             ),
         )],
-    modifiers: vec![],
+        modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(s),
@@ -177,13 +188,17 @@ pub(crate) fn synthesize_row_softmax(
                 Div,
                 Box::new(Expr::Call(
                     "Exp#".into(),
-                    vec![Expr::BinaryOp(Sub, Box::new(row_read(id(&t))), Box::new(id(m)))],
+                    vec![Expr::BinaryOp(
+                        Sub,
+                        Box::new(row_read(id(&t))),
+                        Box::new(id(m)),
+                    )],
                     None,
                 )),
                 Box::new(id(s)),
             ),
         )],
-    modifiers: vec![],
+        modifiers: vec![],
     });
 
     out.kernel_stmts = stmts;
@@ -216,7 +231,11 @@ pub(crate) fn synthesize_row_dot(
             Box::new(Expr::BinaryOp(
                 Add,
                 Box::new(lane.clone()),
-                Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+                Box::new(Expr::BinaryOp(
+                    Mul,
+                    Box::new(t),
+                    Box::new(Expr::Decimal(32)),
+                )),
             )),
         )
     };
@@ -224,7 +243,11 @@ pub(crate) fn synthesize_row_dot(
         Expr::BinaryOp(
             Add,
             Box::new(lane.clone()),
-            Box::new(Expr::BinaryOp(Mul, Box::new(t), Box::new(Expr::Decimal(32)))),
+            Box::new(Expr::BinaryOp(
+                Mul,
+                Box::new(t),
+                Box::new(Expr::Decimal(32)),
+            )),
         )
     };
     let fty = Some(crate::ast::Type::float());
@@ -265,7 +288,7 @@ pub(crate) fn synthesize_row_dot(
                 )),
             ),
         )],
-    modifiers: vec![],
+        modifiers: vec![],
     });
     stmts.push(Statement::Assign(
         id(acc),
@@ -282,8 +305,6 @@ pub(crate) fn synthesize_row_dot(
     out.kernel_stmts = stmts;
     out
 }
-
-
 
 /// Cooperative row dot-product PTX (2026-09-17, M2a) — `y[i] = Σ_k a[i*K+k]
 /// * x[k]`, the CUDA-lane twin of the SPIR-V cooperative dot lowering.
@@ -334,10 +355,7 @@ pub fn has_warp_slice_with(
 ) -> bool {
     for stmt in kernel_stmts {
         let Statement::Foreach {
-            item,
-            list,
-            body,
-            ..
+            item, list, body, ..
         } = stmt
         else {
             continue;
@@ -515,11 +533,9 @@ impl LaneReductionPlan {
         let const_int = |e: &Expr| -> Option<i64> {
             match e {
                 Expr::Decimal(v) => Some(*v),
-                Expr::Identifier(n) => consts.get(n).and_then(|v| {
-                    match v {
-                        Expr::Decimal(w) => Some(*w),
-                        _ => None,
-                    }
+                Expr::Identifier(n) => consts.get(n).and_then(|v| match v {
+                    Expr::Decimal(w) => Some(*w),
+                    _ => None,
                 }),
                 _ => None,
             }
@@ -759,8 +775,7 @@ fn collect_stmt_sites(
         Statement::Assign(lhs, rhs) => {
             // A store inside the loop keeps its address via the per-slot
             // item register (regs[item]); only the rhs loads are preloaded.
-            if matches!(lhs, Expr::Index(_, idx) if linear_coeff(idx, ctx.item, consts).is_none())
-            {
+            if matches!(lhs, Expr::Index(_, idx) if linear_coeff(idx, ctx.item, consts).is_none()) {
                 return None;
             }
             vec![rhs]
@@ -855,12 +870,8 @@ fn stmt_mentions_ident(stmt: &Statement, name: &str) -> bool {
         }
     }
     match stmt {
-        Statement::Assign(lhs, rhs) => {
-            expr_mentions(lhs, name) || expr_mentions(rhs, name)
-        }
-        Statement::Let {
-            name: n, expr, ..
-        } => {
+        Statement::Assign(lhs, rhs) => expr_mentions(lhs, name) || expr_mentions(rhs, name),
+        Statement::Let { name: n, expr, .. } => {
             n == name || expr.as_ref().is_some_and(|e| expr_mentions(e, name))
         }
         _ => false,
@@ -1117,10 +1128,7 @@ impl<'a> Gen<'a> {
             // %r1, so the existing guard (%r1 >= count) still kills only
             // out-of-range blocks.
             self.decode_split_ctaid(&mut decl, &mut body);
-            body.push_str(&format!(
-                "    setp.ge.u32 %p1, %r1, {};\n",
-                self.count
-            ));
+            body.push_str(&format!("    setp.ge.u32 %p1, %r1, {};\n", self.count));
             body.push_str("    @%p1 ret;\n");
             // Bind index_var to %r1 (holds ctaid = work item).
             self.regs
@@ -1128,16 +1136,10 @@ impl<'a> Gen<'a> {
         } else {
             // Flat gid: gid = ctaid.x * BLOCK + tid.x
             body.push_str("    mov.u32 %r1, %ctaid.x;\n");
-            body.push_str(&format!(
-                "    mul.lo.u32 %r1, %r1, {};\n",
-                BLOCK
-            ));
+            body.push_str(&format!("    mul.lo.u32 %r1, %r1, {};\n", BLOCK));
             body.push_str("    mov.u32 %r2, %tid.x;\n");
             body.push_str("    add.u32 %r1, %r1, %r2;\n");
-            body.push_str(&format!(
-                "    setp.ge.u32 %p1, %r1, {};\n",
-                self.count
-            ));
+            body.push_str(&format!("    setp.ge.u32 %p1, %r1, {};\n", self.count));
             body.push_str("    @%p1 ret;\n");
             self.regs
                 .insert(shape.index_var.clone(), self.gid.to_string());
@@ -1171,7 +1173,8 @@ impl<'a> Gen<'a> {
         decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
-        match stmt {            Statement::Assign(lhs, rhs) => self.emit_assign(lhs, rhs, decl, body),
+        match stmt {
+            Statement::Assign(lhs, rhs) => self.emit_assign(lhs, rhs, decl, body),
             Statement::Let { name, expr, ty, .. } => {
                 // A pure local: lower the initializer into a register of the
                 // DECLARED class — Int locals are u32 with integer ops (the
@@ -1185,7 +1188,12 @@ impl<'a> Gen<'a> {
                 }
                 Ok(())
             }
-            Statement::Foreach { item, list, body: loop_body , ..} => {
+            Statement::Foreach {
+                item,
+                list,
+                body: loop_body,
+                ..
+            } => {
                 // 2026-09-17 (M2a): bounded loops in the general PTX kernel —
                 // `foreach c in start..end` lowers to a counter register +
                 // label/branch pair; the item binds like a local so body
@@ -1254,17 +1262,10 @@ impl<'a> Gen<'a> {
                 // the softmax's m/l) stay block-redundant: every thread
                 // computes the identical total, which is benign. See
                 // body_is_distributable for the exact gate.
-                if self.block_work_item
-                    && Self::body_is_distributable(loop_body, item, self.consts)
+                if self.block_work_item && Self::body_is_distributable(loop_body, item, self.consts)
                 {
-                    return self.emit_thread_distributed(
-                        loop_body,
-                        item,
-                        ctx.start,
-                        ctx.end,
-                        decl,
-                        body,
-                    );
+                    return self
+                        .emit_thread_distributed(loop_body, item, ctx.start, ctx.end, decl, body);
                 }
                 // 2026-09-19 (M1 warp-sliced reductions, plan
                 // general-machinery): a LONG serial reduction splits across
@@ -1289,9 +1290,7 @@ impl<'a> Gen<'a> {
                         end: ctx.end,
                         unroll: 4,
                     };
-                    if SerialUnrollPlan::match_body(loop_body, &slice_ctx, self.consts)
-                        .is_some()
-                    {
+                    if SerialUnrollPlan::match_body(loop_body, &slice_ctx, self.consts).is_some() {
                         return self.emit_warp_sliced(
                             WarpSliceEmit {
                                 body_stmts: loop_body,
@@ -1420,7 +1419,11 @@ impl<'a> Gen<'a> {
         body.push_str(&format!("    add.u32 {}, {}, 32;\n", dnext, dcur));
 
         self.regs.insert(r.acc.clone(), acc.clone());
-        eprintln!("[lane-dbg] ops={} first_is_assign={}", ops.len(), matches!(&r.inner_body[0], Statement::Assign(_, _)));
+        eprintln!(
+            "[lane-dbg] ops={} first_is_assign={}",
+            ops.len(),
+            matches!(&r.inner_body[0], Statement::Assign(_, _))
+        );
 
         if ops.is_empty() {
             // No pipelineable loads — the plain loop (previous behavior).
@@ -1471,8 +1474,7 @@ impl<'a> Gen<'a> {
             // Body: consumes the CURRENT registers via the pipelined map.
             self.regs.insert(r.inner_item.clone(), dcur.clone());
             for (op, creg) in ops.iter().zip(&cur) {
-                self.pipelined
-                    .insert(format!("{:?}", op), creg.clone());
+                self.pipelined.insert(format!("{:?}", op), creg.clone());
             }
             if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
                 self.emit_assign(lhs, rhs, decl, body)?;
@@ -1491,8 +1493,7 @@ impl<'a> Gen<'a> {
             body.push_str(&format!("{}:\n", tail));
             self.regs.insert(r.inner_item.clone(), dcur.clone());
             for (op, creg) in ops.iter().zip(&cur) {
-                self.pipelined
-                    .insert(format!("{:?}", op), creg.clone());
+                self.pipelined.insert(format!("{:?}", op), creg.clone());
             }
             if let Statement::Assign(lhs, rhs) = &r.inner_body[0] {
                 self.emit_assign(lhs, rhs, decl, body)?;
@@ -1617,7 +1618,10 @@ impl<'a> Gen<'a> {
 
         body.push_str(&format!("    mov.u32 {}, {};\n", cnt, plan.start));
         body.push_str(&format!("{}:\n", head));
-        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, cnt, plan.end));
+        body.push_str(&format!(
+            "    setp.ge.u32 {}, {}, {};\n",
+            pred, cnt, plan.end
+        ));
         body.push_str(&format!("    @{} bra {};\n", pred, tail));
         // One shot per slot: preloads first (all sites issue back-to-back),
         // then the statements consume them in source order.
@@ -1657,29 +1661,29 @@ impl<'a> Gen<'a> {
         Ok(())
     }
 
-/// The accumulator of a warp-slice body: the LAST `x = x + …` assign in
-/// the loop (the serial reduction's carried scalar). None = not a
-/// scalar-reduce body (the caller keeps the serial/unroll fallback).
-fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
-    let mut name: Option<String> = None;
-    for s in body_stmts {
-        let Statement::Assign(Expr::Identifier(lhs), rhs) = s else {
-            continue;
-        };
-        let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, _) = rhs else {
-            continue;
-        };
-        let Expr::Identifier(acc) = l.as_ref() else {
-            continue;
-        };
-        if acc == lhs {
-            name = Some(lhs.clone());
+    /// The accumulator of a warp-slice body: the LAST `x = x + …` assign in
+    /// the loop (the serial reduction's carried scalar). None = not a
+    /// scalar-reduce body (the caller keeps the serial/unroll fallback).
+    fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
+        let mut name: Option<String> = None;
+        for s in body_stmts {
+            let Statement::Assign(Expr::Identifier(lhs), rhs) = s else {
+                continue;
+            };
+            let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, l, _) = rhs else {
+                continue;
+            };
+            let Expr::Identifier(acc) = l.as_ref() else {
+                continue;
+            };
+            if acc == lhs {
+                name = Some(lhs.clone());
+            }
         }
+        name
     }
-    name
-}
 
-/// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
+    /// 2026-09-19 (M1 warp-sliced reductions, plan general-machinery):
     /// lower a serial foreach-reduce as FOUR warp-private slices over the
     /// block's single work item (P1 block-per-workitem dispatch, 128
     /// threads): warp w accumulates j ∈ [start + w·span/4,
@@ -1724,10 +1728,7 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         decl.push_str(&format!("    .reg .f32 {};\n", f_t));
         decl.push_str(&format!("    .reg .b64 {};\n", rd_part));
         // One f32 partial slot per warp (warps * 4 bytes).
-        decl.push_str(&format!(
-            "    .shared .align 4 .b8 wpart[{}];\n",
-            warps * 4
-        ));
+        decl.push_str(&format!("    .shared .align 4 .b8 wpart[{}];\n", warps * 4));
 
         let acc_reg = self.regs.get(&acc_name).cloned().ok_or_else(|| {
             format!("ptx general: warp slice accumulator '{acc_name}' is not bound")
@@ -1776,16 +1777,18 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         // merge: the accumulator becomes the sum of the warp partials
         // (warps of them; default 4 = the original shape).
         body.push_str(&format!("    mov.u64 {}, wpart;\n", rd_part));
-        body.push_str(&format!("    ld.shared.f32 {}, [{}+0];\n", acc_reg, rd_part));
+        body.push_str(&format!(
+            "    ld.shared.f32 {}, [{}+0];\n",
+            acc_reg, rd_part
+        ));
         for k in 1..warps {
             body.push_str(&format!(
                 "    ld.shared.f32 {}, [{}+{}];\n",
-                f_t, rd_part, k * 4
+                f_t,
+                rd_part,
+                k * 4
             ));
-            body.push_str(&format!(
-                "    add.f32 {}, {}, {};\n",
-                acc_reg, acc_reg, f_t
-            ));
+            body.push_str(&format!("    add.f32 {}, {}, {};\n", acc_reg, acc_reg, f_t));
         }
         Ok(())
     }
@@ -1794,12 +1797,7 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// end + 1) — the same contract the lane matcher's span arithmetic
     /// uses, factored so both arms share it.
     fn range_exclusive_end(&self, list: &Expr, fallback: i64) -> Result<i64, String> {
-        let Expr::Range {
-            end,
-            inclusive,
-            ..
-        } = list
-        else {
+        let Expr::Range { end, inclusive, .. } = list else {
             return Ok(fallback);
         };
         if *inclusive {
@@ -1938,7 +1936,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         if let Expr::Index(buf, idx) = lhs {
             let strip = self.strip_acc.clone();
             if let Some((buf_name_s, d_item, regs)) = &strip {
-                if *buf_name_s == self.field_of(buf)? && format!("{:?}", idx).contains(&format!("\"{}\"", d_item)) {
+                if *buf_name_s == self.field_of(buf)?
+                    && format!("{:?}", idx).contains(&format!("\"{}\"", d_item))
+                {
                     let acc_reg = regs[self.active_strip].clone();
                     let tmp = self.fresh_f();
                     decl.push_str(&format!("    .reg .f32 {};\n", tmp));
@@ -1950,9 +1950,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         }
         if let Expr::Index(buf, idx) = lhs {
             let buf_name = self.field_of(buf)?;
-            let off = self.field_off(&buf_name).ok_or_else(|| {
-                format!("ptx general: write buffer '{}' not in layout", buf_name)
-            })?;
+            let off = self
+                .field_off(&buf_name)
+                .ok_or_else(|| format!("ptx general: write buffer '{}' not in layout", buf_name))?;
             let elem = self.elem_bytes(&buf_name)?;
             let val = self.fresh_f();
             decl.push_str(&format!("    .reg .f32 {};\n", val));
@@ -1981,9 +1981,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 }
                 return Ok(());
             }
-            let off = self.field_off(name).ok_or_else(|| {
-                format!("ptx general: scalar '{}' not in layout", name)
-            })?;
+            let off = self
+                .field_off(name)
+                .ok_or_else(|| format!("ptx general: scalar '{}' not in layout", name))?;
             let val = self.fresh_f();
             decl.push_str(&format!("    .reg .f32 {};\n", val));
             self.emit_expr(rhs, &val, decl, body)?;
@@ -2012,7 +2012,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         self.emit_index(idx, &i_reg, decl, body)?;
         let addr = self.fresh_rd();
         decl.push_str(&format!("    .reg .b64 {};\n", addr));
-        body.push_str(&format!("    mul.wide.u32 {}, {}, {};\n", addr, i_reg, elem));
+        body.push_str(&format!(
+            "    mul.wide.u32 {}, {}, {};\n",
+            addr, i_reg, elem
+        ));
         body.push_str(&format!("    add.u64 {}, %rd1, {};\n", addr, addr));
         if off > 0 {
             body.push_str(&format!("    add.u64 {}, {}, {};\n", addr, addr, off));
@@ -2058,7 +2061,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                         name
                     ));
                 }
-                let sel = if name == "GetLocalId#" { "%tid.x" } else { self.gid };
+                let sel = if name == "GetLocalId#" {
+                    "%tid.x"
+                } else {
+                    self.gid
+                };
                 body.push_str(&format!("    mov.u32 {}, {};\n", out, sel));
                 Ok(())
             }
@@ -2119,8 +2126,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 // memory traffic; see emit_lane_reduction).
                 let key = format!("{:?}", expr);
                 if let Some(reg) = self.pipelined.get(&key) {
-                    body.push_str(&format!("    mov.f32 {}, {};
-", out, reg));
+                    body.push_str(&format!(
+                        "    mov.f32 {}, {};
+",
+                        out, reg
+                    ));
                     return Ok(());
                 }
                 // 2026-09-19 (M1-finish): inside a deferred region's strips,
@@ -2129,7 +2139,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 // the smem merge owns the cross-warp traffic).
                 let strip = self.strip_acc.clone();
                 if let Some((buf_name, d_item, regs)) = &strip {
-                    if *buf_name == self.field_of(buf)? && format!("{:?}", idx).contains(&format!("\"{}\"", d_item)) {
+                    if *buf_name == self.field_of(buf)?
+                        && format!("{:?}", idx).contains(&format!("\"{}\"", d_item))
+                    {
                         let r = regs[self.active_strip].clone();
                         body.push_str(&format!("    mov.f32 {}, {};\n", out, r));
                         return Ok(());
@@ -2193,13 +2205,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 // target resolves through the casting graph (rule 19 — no
                 // type-name matching); anything else (narrowing to f16,
                 // f64) stays outside the surface and errors honestly.
-                let shape = self
-                    .casting_graph
-                    .resolve_spirv_shape(self.universe, target, self.int_bits)?;
-                if matches!(
-                    shape,
-                    crate::casting::graph::SpirvShape::Float { bits: 32 }
-                ) {
+                let shape =
+                    self.casting_graph
+                        .resolve_spirv_shape(self.universe, target, self.int_bits)?;
+                if matches!(shape, crate::casting::graph::SpirvShape::Float { bits: 32 }) {
                     self.emit_expr(x, out, decl, body)?;
                 } else {
                     return Err(format!(
@@ -2242,9 +2251,9 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         } else if let Some(Expr::Float(f)) = self.consts.get(name) {
             body.push_str(&format!("    mov.f32 {}, {:e};\n", out, f));
         } else {
-            let off = self.field_off(name).ok_or_else(|| {
-                format!("ptx general: scalar '{}' not in layout or consts", name)
-            })?;
+            let off = self
+                .field_off(name)
+                .ok_or_else(|| format!("ptx general: scalar '{}' not in layout or consts", name))?;
             body.push_str(&format!("    ld.global.f32 {}, [%rd1+{}];\n", out, off));
         }
         Ok(())
@@ -2255,9 +2264,7 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// value operands; the compare rides the instruction, no setp).
     /// Same element addressing as the RMW family; swap iff equal,
     /// ALWAYS returns old.
-    fn emit_atomic_cas_at(
-        &mut self, args: &[Expr], out: &str,
-    ) -> Result<(String, String), String> {
+    fn emit_atomic_cas_at(&mut self, args: &[Expr], out: &str) -> Result<(String, String), String> {
         if args.len() < 4 {
             return Err("AtomicCasAt# takes (buf, i, cmp, v)".into());
         }
@@ -2306,7 +2313,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// expression emitter and converted into the u32 local; only pure
     /// integer arithmetic keeps the emit_index path.
     fn emit_local(
-        &mut self, name: &str, e: &Expr, ty: &Option<crate::ast::Type>,
+        &mut self,
+        name: &str,
+        e: &Expr,
+        ty: &Option<crate::ast::Type>,
     ) -> (String, String) {
         let mut d = String::new();
         let mut b = String::new();
@@ -2340,7 +2350,11 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// kernel-realistic magnitudes, `cvt.rni` for the round-trip); the
     /// RMW itself never touches an f32 register.
     fn emit_atomic_at(
-        &mut self, args: &[Expr], out: &str, op: AtomicAtOp, negate: bool,
+        &mut self,
+        args: &[Expr],
+        out: &str,
+        op: AtomicAtOp,
+        negate: bool,
     ) -> Result<(String, String), String> {
         if args.len() < 3 {
             return Err("the At-family atomics take (buf, i, v)".into());
@@ -2390,7 +2404,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
     /// gid the prologue computed (ctaid.x*BLOCK+tid.x); dims 1/2 see
     /// ctaid 0 (1D launches), so the global id is the raw tid.
     fn emit_work_id(
-        &mut self, name: &str, args: &[Expr], out: &str,
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        out: &str,
     ) -> Result<(String, String), String> {
         let Some(Expr::Decimal(dim)) = args.first() else {
             return Err(format!(
@@ -2534,7 +2551,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
                 self.emit_expr(&args[0], &areg, decl, body)?;
                 self.emit_expr(&args[1], &breg, decl, body)?;
                 self.emit_expr(&args[2], &creg, decl, body)?;
-                body.push_str(&format!("    fma.rn.f32 {}, {}, {}, {};\n", out, areg, breg, creg));
+                body.push_str(&format!(
+                    "    fma.rn.f32 {}, {}, {}, {};\n",
+                    out, areg, breg, creg
+                ));
                 Ok(())
             }
             "ShuffleDown#" | "ShuffleXor#" | "SubgroupBallot#" | "SubgroupBroadcast#" => {
@@ -2572,7 +2592,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
             self.emit_expr(&args[0], &xreg, decl, body)?;
             body.push_str(&format!("    setp.ne.f32 {}, {}, 0.0;\n", preg, xreg));
             // vote.sync.ballot: verified against sm_86 ptxas (2026-09-17)
-            body.push_str(&format!("    vote.sync.ballot.b32 {}, {}, 0xffffffff;\n", out, preg));
+            body.push_str(&format!(
+                "    vote.sync.ballot.b32 {}, {}, 0xffffffff;\n",
+                out, preg
+            ));
             return Ok(());
         }
         // Shuffle family: (f32 value, compile-time-constant lane selector).
@@ -2594,7 +2617,10 @@ fn slice_acc_name(body_stmts: &[Statement]) -> Option<String> {
         if let Expr::Decimal(n) = &args[1] {
             body.push_str(&format!("    mov.u32 {}, {};\n", sreg, n));
         } else {
-            return Err(format!("{} lane selector must be a compile-time constant", name));
+            return Err(format!(
+                "{} lane selector must be a compile-time constant",
+                name
+            ));
         }
         let mode = match name {
             "ShuffleDown#" => "down",
@@ -2735,7 +2761,11 @@ mod tests {
             linear_coeff(
                 &bin(
                     Add,
-                    bin(Add, bin(Mul, id("kh"), bin(Mul, id("NKV"), id("D"))), bin(Mul, id("j"), id("D"))),
+                    bin(
+                        Add,
+                        bin(Mul, id("kh"), bin(Mul, id("NKV"), id("D"))),
+                        bin(Mul, id("j"), id("D"))
+                    ),
                     id("di"),
                 ),
                 "j",
@@ -2746,10 +2776,7 @@ mod tests {
         // quadratic: j*j -> None
         assert_eq!(linear_coeff(&bin(Mul, id("j"), id("j")), "j", &c), None);
         // non-linear: nested index k[ii[j]] -> None
-        assert_eq!(
-            linear_coeff(&idx("k", idx("ii", id("j"))), "j", &c),
-            None
-        );
+        assert_eq!(linear_coeff(&idx("k", idx("ii", id("j"))), "j", &c), None);
     }
 
     #[test]
@@ -2785,7 +2812,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![Statement::Assign(id("acc"), pv_addend())],
-        modifiers: vec![],
+            modifiers: vec![],
         }];
         assert!(SerialUnrollPlan::match_body(&nested, &ctx("j", 0, 4096, 4), &c).is_none());
     }
@@ -2847,11 +2874,7 @@ mod tests {
                 name: "di".into(),
                 names: vec![],
                 ty: Some(crate::ast::Type::Custom("Int".into())),
-                expr: Some(bin(
-                    Sub,
-                    id("t"),
-                    bin(Mul, id("h"), id("D")),
-                )),
+                expr: Some(bin(Sub, id("t"), bin(Mul, id("h"), id("D")))),
                 modifiers: vec![],
             },
             Statement::Let {
@@ -2871,7 +2894,7 @@ mod tests {
                 inclusive: false,
             }),
             body: vec![Statement::Assign(id("acc"), pv_addend())],
-        modifiers: vec![],
+            modifiers: vec![],
         });
         kernel_stmts.push(Statement::Assign(idx("out", id("t")), id("acc")));
         crate::analysis::accel::KernelShape {
@@ -2952,7 +2975,10 @@ mod tests {
         // Warp id, exact quarter slices (4096/4), smem partials, barrier.
         assert!(ptx.contains("shr.u32"), "warp id: {ptx}");
         assert!(ptx.contains(", 1024, "), "slice quarter: {ptx}");
-        assert!(ptx.contains(".shared .align 4 .b8 wpart[16];"), "smem: {ptx}");
+        assert!(
+            ptx.contains(".shared .align 4 .b8 wpart[16];"),
+            "smem: {ptx}"
+        );
         assert!(ptx.contains("st.shared.f32"), "partial store: {ptx}");
         assert!(ptx.contains("bar.sync 0;"), "merge barrier: {ptx}");
         assert_eq!(ptx.matches("ld.shared.f32").count(), 4, "4 partial reads");
@@ -2975,7 +3001,11 @@ mod tests {
         let mut body = String::from("    mov.u32 %r1, %ctaid.x;\n");
         let body_stmts = vec![Statement::Assign(
             id("acc"),
-            bin(Add, id("acc"), bin(Mul, idx("o1", id("j")), idx("v", id("j")))),
+            bin(
+                Add,
+                id("acc"),
+                bin(Mul, idx("o1", id("j")), idx("v", id("j"))),
+            ),
         )];
         g.emit_warp_sliced(
             WarpSliceEmit {
@@ -2990,7 +3020,10 @@ mod tests {
         )
         .expect("emits");
         let ptx = format!("{decl}{body}");
-        assert!(ptx.contains(".shared .align 4 .b8 wpart[8];"), "smem = warps*4: {ptx}");
+        assert!(
+            ptx.contains(".shared .align 4 .b8 wpart[8];"),
+            "smem = warps*4: {ptx}"
+        );
         assert!(ptx.contains(", 2048, "), "quarter = span/2: {ptx}");
         assert_eq!(
             ptx.matches("ld.shared.f32").count(),
@@ -2998,7 +3031,10 @@ mod tests {
             "1 + (warps - 1) partial reads: {ptx}"
         );
         assert!(ptx.contains("bar.sync 0;"), "merge barrier: {ptx}");
-        assert!(ptx.contains("shr.u32"), "warp id stays a hardware fact: {ptx}");
+        assert!(
+            ptx.contains("shr.u32"),
+            "warp id stays a hardware fact: {ptx}"
+        );
     }
 
     #[test]
@@ -3068,9 +3104,22 @@ mod tests {
                 inclusive: false,
             });
         }
-        assert!(!has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 512, 4));
-        assert!(has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 4));
-        assert!(!has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 3), "256 % 3 != 0");
+        assert!(!has_warp_slice_with(
+            &shape.kernel_stmts,
+            &short_span_consts,
+            512,
+            4
+        ));
+        assert!(has_warp_slice_with(
+            &shape.kernel_stmts,
+            &short_span_consts,
+            64,
+            4
+        ));
+        assert!(
+            !has_warp_slice_with(&shape.kernel_stmts, &short_span_consts, 64, 3),
+            "256 % 3 != 0"
+        );
     }
 
     /// 2026-10-01 (D14 remainder): the declared `unroll<N>` overrides
@@ -3107,10 +3156,14 @@ mod tests {
         )
         .expect("emits");
         // 2 slots x 2 sites = 4 loads (the default 4x gives 8).
-        let loads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.f32")).collect();
+        let loads: Vec<&str> = ptx
+            .lines()
+            .filter(|l| l.contains("ld.global.f32"))
+            .collect();
         assert_eq!(loads.len(), 4, "2x unroll x 2 sites: {ptx}");
         assert!(
-            ptx.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 2;")),
+            ptx.lines()
+                .any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 2;")),
             "counter steps by 2: {ptx}"
         );
     }
@@ -3139,12 +3192,19 @@ mod tests {
             &pv_layout(),
             &consts,
             &crate::type_universe::TypeUniverse::new(),
-            GeneralEmitOpts { int_bits: 32, deferred_split: 1, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 1,
+                ..Default::default()
+            },
         )
         .expect("emits");
         assert!(!has_warp_slice(&shape.kernel_stmts, &consts));
         // 4 slots x 2 sites = 8 back-to-back loads per iteration.
-        let loads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.f32")).collect();
+        let loads: Vec<&str> = ptx
+            .lines()
+            .filter(|l| l.contains("ld.global.f32"))
+            .collect();
         assert_eq!(loads.len(), 8, "4x unroll x 2 sites: {ptx}");
         // Running pointers advance by the whole unroll span per iteration:
         // o1 by 4*1*4 = 16 bytes, v by 4*128*4 = 2048 bytes.
@@ -3152,7 +3212,8 @@ mod tests {
         assert!(ptx.contains(", 2048;\n"), "v pointer bump: {ptx}");
         // The loop counter advances by the unroll factor, not by 1.
         assert!(
-            ptx.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 4;")),
+            ptx.lines()
+                .any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 4;")),
             "counter steps by 4: {ptx}"
         );
     }
@@ -3179,15 +3240,28 @@ mod tests {
             &layout,
             "o1",
             "a_out",
-            CombineSpec { count: 32, dim: 128, split: 4 },
+            CombineSpec {
+                count: 32,
+                dim: 128,
+                split: 4,
+            },
         )
         .expect("combine emits");
         assert!(ptx.contains("ex2.approx.f32"), "exp merge: {ptx}");
         assert!(ptx.contains("max.f32"), "running max: {ptx}");
         assert!(ptx.contains("div.rn.f32"), "normalize: {ptx}");
-        assert!(ptx.contains("mul.lo.u32 %r3, %r3, 4;"), "split stride: {ptx}");
-        assert!(ptx.contains("setp.ge.u32 %p1, %r1, 32;"), "count guard: {ptx}");
-        assert!(ptx.contains("setp.ge.u32 %p2, %r2, 128;"), "dim guard: {ptx}");
+        assert!(
+            ptx.contains("mul.lo.u32 %r3, %r3, 4;"),
+            "split stride: {ptx}"
+        );
+        assert!(
+            ptx.contains("setp.ge.u32 %p1, %r1, 32;"),
+            "count guard: {ptx}"
+        );
+        assert!(
+            ptx.contains("setp.ge.u32 %p2, %r2, 128;"),
+            "dim guard: {ptx}"
+        );
         // 2026-10-01 (split device-validation): the merge's running-max init
         // must be the -inf immediate the JIT accepts (a one-nibble-short
         // literal was a parse error on-device; shape strings cannot see it).
@@ -3266,15 +3340,18 @@ mod tests {
             exact_declared: false,
         };
         let mut layout2 = layout;
-        layout2.fields.insert(1, RunnerField {
-            name: "res".into(),
-            offset: 4096,
-            proj_offset: 4096,
-            elem_bytes: 4,
-            count: 1024,
-            is_array: true,
-            type_is_float: true,
-        });
+        layout2.fields.insert(
+            1,
+            RunnerField {
+                name: "res".into(),
+                offset: 4096,
+                proj_offset: 4096,
+                elem_bytes: 4,
+                count: 1024,
+                is_array: true,
+                type_is_float: true,
+            },
+        );
         let consts = std::collections::HashMap::new();
         let universe = crate::type_universe::TypeUniverse::new();
         let ptx = emit_general_ptx(
@@ -3283,7 +3360,11 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                ..Default::default()
+            },
         )
         .unwrap_or_else(|e| panic!("atomic emits: {e}"));
         assert!(
@@ -3295,7 +3376,12 @@ mod tests {
         assert!(ptx.contains("mul.wide.u32"), "element addressing:\n{ptx}");
         assert_ptx_well_formed(&ptx);
         // ptxas smoke: the instruction syntax must assemble.
-        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if std::process::Command::new("ptxas")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             let blob = crate::backend::ptx::compile_cubin(&ptx, 0);
             assert!(blob.is_some(), "ptxas must accept the atomic PTX");
         }
@@ -3329,7 +3415,11 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                ..Default::default()
+            },
         )
         .unwrap_or_else(|e| panic!("sub emits: {e}"));
         assert!(ptx_sub.contains("neg.s64"), "the negation:\n{ptx_sub}");
@@ -3337,7 +3427,12 @@ mod tests {
             ptx_sub.contains("atom.acq_rel.gpu.global.add.u64"),
             "the same atomic:\n{ptx_sub}"
         );
-        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if std::process::Command::new("ptxas")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             assert!(
                 crate::backend::ptx::compile_cubin(&ptx_sub, 0).is_some(),
                 "ptxas must accept the sub PTX"
@@ -3372,14 +3467,23 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                ..Default::default()
+            },
         )
         .unwrap_or_else(|e| panic!("xchg emits: {e}"));
         assert!(
             ptx_xchg.contains("atom.acq_rel.gpu.global.exch.b64"),
             "the exchange:\n{ptx_xchg}"
         );
-        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if std::process::Command::new("ptxas")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             assert!(
                 crate::backend::ptx::compile_cubin(&ptx_xchg, 0).is_some(),
                 "ptxas must accept the xchg PTX"
@@ -3415,14 +3519,23 @@ mod tests {
             &layout2,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                ..Default::default()
+            },
         )
         .unwrap_or_else(|e| panic!("cas emits: {e}"));
         assert!(
             ptx_cas.contains("atom.acq_rel.gpu.global.cas.b64"),
             "the compare-exchange:\n{ptx_cas}"
         );
-        if std::process::Command::new("ptxas").arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        if std::process::Command::new("ptxas")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
             assert!(
                 crate::backend::ptx::compile_cubin(&ptx_cas, 0).is_some(),
                 "ptxas must accept the cas PTX"
@@ -3456,10 +3569,7 @@ mod tests {
             index_var: "i".into(),
             count_expr: Some(Expr::Decimal(1024)),
             kernel_stmts: vec![
-                Statement::Assign(
-                    idx("res", id("i")),
-                    bin(Add, idx("a", id("i")), call),
-                ),
+                Statement::Assign(idx("res", id("i")), bin(Add, idx("a", id("i")), call)),
                 Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
             ],
             host_stmts: vec![],
@@ -3493,7 +3603,11 @@ mod tests {
                 &layout,
                 &consts,
                 &universe,
-                GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+                GeneralEmitOpts {
+                    int_bits: 32,
+                    deferred_split: 0,
+                    ..Default::default()
+                },
             )
             .unwrap_or_else(|e| panic!("work-id emits: {e}"));
             assert!(ptx.contains(needle), "expected `{needle}`:\n{ptx}");
@@ -3516,7 +3630,11 @@ mod tests {
             &layout,
             &consts,
             &universe,
-            GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+            GeneralEmitOpts {
+                int_bits: 32,
+                deferred_split: 0,
+                ..Default::default()
+            },
         );
         assert!(bad.is_err(), "non-constant dim must error");
     }
@@ -3548,11 +3666,7 @@ mod tests {
             vec![
                 Statement::Assign(
                     idx("out", id("i")),
-                    Expr::Call(
-                        intrinsic.to_string(),
-                        vec![idx("a", id("i"))],
-                        None,
-                    ),
+                    Expr::Call(intrinsic.to_string(), vec![idx("a", id("i"))], None),
                 ),
                 Statement::Assign(id("i"), bin(Add, id("i"), num(1))),
             ]
@@ -3572,8 +3686,8 @@ mod tests {
                 reduction: None,
                 deferred_normalize: None,
                 idiom_lane: false,
-            approx_declared: false,
-            exact_declared: false,
+                approx_declared: false,
+                exact_declared: false,
             };
             let consts = std::collections::HashMap::new();
             let universe = crate::type_universe::TypeUniverse::new();
@@ -3583,7 +3697,11 @@ mod tests {
                 &layout,
                 &consts,
                 &universe,
-                GeneralEmitOpts { int_bits: 32, deferred_split: 0, ..Default::default() },
+                GeneralEmitOpts {
+                    int_bits: 32,
+                    deferred_split: 0,
+                    ..Default::default()
+                },
             )
             .unwrap_or_else(|e| panic!("{intrinsic} emits: {e}"));
             assert!(
@@ -3644,11 +3762,7 @@ mod tests {
             bin(
                 Add,
                 id("sc2"),
-                bin(
-                    Mul,
-                    idx("q", v4_q_idx()),
-                    idx("k", v4_kv_idx()),
-                ),
+                bin(Mul, idx("q", v4_q_idx()), idx("k", v4_kv_idx())),
             ),
         )]
     }
@@ -3686,20 +3800,18 @@ mod tests {
             end: Box::new(id("D")),
             inclusive: false,
         };
-        let dot = |sc: &str| {
-            Statement::Foreach {
-                item: "d".into(),
-                list: Box::new(d_range()),
-                body: vec![Statement::Assign(
+        let dot = |sc: &str| Statement::Foreach {
+            item: "d".into(),
+            list: Box::new(d_range()),
+            body: vec![Statement::Assign(
+                id(sc),
+                bin(
+                    Add,
                     id(sc),
-                    bin(
-                        Add,
-                        id(sc),
-                        bin(Mul, idx("q", v4_q_idx()), idx("k", v4_kv_idx())),
-                    ),
-                )],
+                    bin(Mul, idx("q", v4_q_idx()), idx("k", v4_kv_idx())),
+                ),
+            )],
             modifiers: vec![],
-            }
         };
         let pass_a = Statement::Foreach {
             item: "j".into(),
@@ -3712,7 +3824,7 @@ mod tests {
                     Expr::Call("Max#".into(), vec![id("m"), id("sc")], None),
                 ),
             ],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         let pass_b = Statement::Foreach {
             item: "j".into(),
@@ -3736,10 +3848,10 @@ mod tests {
                             bin(Mul, id("p"), idx("v", v4_kv_idx())),
                         ),
                     )],
-                modifiers: vec![],
+                    modifiers: vec![],
                 },
             ],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         let norm = Statement::Foreach {
             item: "d".into(),
@@ -3748,7 +3860,7 @@ mod tests {
                 idx("a_out", v4_q_idx()),
                 bin(Div, idx("o1", v4_q_idx()), id("l")),
             )],
-        modifiers: vec![],
+            modifiers: vec![],
         };
         v4_shape_kernel(vec![
             v4_let("kh", "Int", bin(Div, id("r"), id("G"))),
@@ -3841,11 +3953,15 @@ mod tests {
         let ptx = v4_emit(128, 1);
         // ONE v4 load per buffer per j (q hoists above the loop; k/v at
         // the loop top) — 8 scalar LDG → 3 LDG.128.
-        let quads: Vec<&str> = ptx.lines().filter(|l| l.contains("ld.global.v4.f32")).collect();
+        let quads: Vec<&str> = ptx
+            .lines()
+            .filter(|l| l.contains("ld.global.v4.f32"))
+            .collect();
         assert_eq!(quads.len(), 3, "q + k + v quads: {ptx}");
         // The flip: d0 = lane*4 (not mov lane), strips step by 1.
         assert!(
-            ptx.lines().any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
+            ptx.lines()
+                .any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
             "d0 = lane*4: {ptx}"
         );
         // No scalar f32 load survives — every global read rides a quad.
@@ -3864,11 +3980,15 @@ mod tests {
         // No flip marker (d0 = lane*4) and the strips step by 32 — the
         // original d mapping.
         assert!(
-            !two_pass.lines().any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
+            !two_pass
+                .lines()
+                .any(|l| l.trim().starts_with("mul.lo.u32") && l.trim_end().ends_with(", 4;")),
             "two-pass must keep the original d map: {two_pass}"
         );
         assert!(
-            two_pass.lines().any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 96;")),
+            two_pass
+                .lines()
+                .any(|l| l.trim().starts_with("add.u32") && l.trim_end().ends_with(", 96;")),
             "strips at lane + 32·i: {two_pass}"
         );
         assert!(
@@ -3891,8 +4011,7 @@ mod probe_tmp {
     use super::*;
     #[test]
     fn dump_flash2p_stmts() {
-        let src = std::fs::read_to_string("examples/gpu/flash2p_fixture_tmp.abv")
-            .expect("fixture");
+        let src = std::fs::read_to_string("examples/gpu/flash2p_fixture_tmp.abv").expect("fixture");
         let tokens = crate::lexer::tokenize(&src).expect("lex");
         let mut parser = crate::parser::Parser::new(tokens, &src);
         let items = parser.parse_program().expect("parse");
@@ -3901,10 +4020,22 @@ mod probe_tmp {
         for item in &items {
             if let crate::ast::TopLevel::Transaction(t) = item {
                 let shape = crate::analysis::accel::prove_kernel_pub(
-                    &t.name, &t.body, &t.contract, &info, &universe, &items,
+                    &t.name,
+                    &t.body,
+                    &t.contract,
+                    &info,
+                    &universe,
+                    &items,
                 );
-                println!("=== {} eligible={} deferred={} ===", t.name, shape.eligible, detect_deferred_region(&shape.kernel_stmts, &shape.index_var).is_some());
-                for r in &shape.reasons { println!("reason: {}", r); }
+                println!(
+                    "=== {} eligible={} deferred={} ===",
+                    t.name,
+                    shape.eligible,
+                    detect_deferred_region(&shape.kernel_stmts, &shape.index_var).is_some()
+                );
+                for r in &shape.reasons {
+                    println!("reason: {}", r);
+                }
                 for (i, s) in shape.kernel_stmts.iter().enumerate() {
                     println!("[{}] {:#?}", i, s);
                 }
@@ -3964,7 +4095,11 @@ fn detect_deferred_region(
     let mut region_end = 0usize;
     for (i, stmt) in stmts.iter().enumerate() {
         match stmt {
-            Statement::Let { name, expr: Some(e), .. } => {
+            Statement::Let {
+                name,
+                expr: Some(e),
+                ..
+            } => {
                 // leading scalar inits: kh (head/G), m (neg float), l (zero)
                 if let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, a, _) = e {
                     if matches!(a.as_ref(), Expr::Identifier(n) if n == index_var) {
@@ -3997,7 +4132,10 @@ fn detect_deferred_region(
                         continue;
                     }
                 }
-                if matches!(e, Expr::Decimal(0) | Expr::Float(0.0)) && l_name.is_none() && m_name.is_some() {
+                if matches!(e, Expr::Decimal(0) | Expr::Float(0.0))
+                    && l_name.is_none()
+                    && m_name.is_some()
+                {
                     l_name = Some(name.clone());
                     l_init = Some(e.clone());
                     region_start = region_start.min(i);
@@ -4023,19 +4161,48 @@ fn detect_deferred_region(
     }
     let (Some(la), Some(lb), Some(lc)) = (loop_a, loop_b, loop_c) else {
         return None;
-    }
-    ;
+    };
     let _ = kh;
-    let Statement::Foreach { item: ja, list: la_range, body: la_body , ..} = la else { return None };
+    let Statement::Foreach {
+        item: ja,
+        list: la_range,
+        body: la_body,
+        ..
+    } = la
+    else {
+        return None;
+    };
     let j_name = ja.clone();
-    let Expr::Range { end: la_end, .. } = la_range.as_ref() else { return None };
-    let Statement::Foreach { item: jb, list: lb_range, body: lb_body , ..} = lb else { return None };
-    let Expr::Range { end: lb_end, .. } = lb_range.as_ref() else { return None };
+    let Expr::Range { end: la_end, .. } = la_range.as_ref() else {
+        return None;
+    };
+    let Statement::Foreach {
+        item: jb,
+        list: lb_range,
+        body: lb_body,
+        ..
+    } = lb
+    else {
+        return None;
+    };
+    let Expr::Range { end: lb_end, .. } = lb_range.as_ref() else {
+        return None;
+    };
     if format!("{:?}", la_end) != format!("{:?}", lb_end) || jb != &j_name {
         return None;
     }
-    let Statement::Foreach { item: dc, list: lc_range, body: lc_body , ..} = lc else { return None };
-    let Expr::Range { end: lc_end, .. } = lc_range.as_ref() else { return None };
+    let Statement::Foreach {
+        item: dc,
+        list: lc_range,
+        body: lc_body,
+        ..
+    } = lc
+    else {
+        return None;
+    };
+    let Expr::Range { end: lc_end, .. } = lc_range.as_ref() else {
+        return None;
+    };
 
     let m_name = m_name?;
     let l_name = l_name.clone()?;
@@ -4047,11 +4214,25 @@ fn detect_deferred_region(
         return None;
     }
     let (sc_a, dot_a) = match &la_stmts[0] {
-        Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &la_stmts[1]),
+        Statement::Let {
+            name,
+            expr: Some(Expr::Decimal(0)),
+            ..
+        } => (name.clone(), &la_stmts[1]),
         _ => return None,
     };
-    let Statement::Foreach { item: da, list: da_range, body: da_body , ..} = dot_a else { return None };
-    let Expr::Range { end: da_end, .. } = da_range.as_ref() else { return None };
+    let Statement::Foreach {
+        item: da,
+        list: da_range,
+        body: da_body,
+        ..
+    } = dot_a
+    else {
+        return None;
+    };
+    let Expr::Range { end: da_end, .. } = da_range.as_ref() else {
+        return None;
+    };
     if da_body.len() != 1 {
         return None;
     }
@@ -4059,12 +4240,18 @@ fn detect_deferred_region(
         return None;
     }
     let (q_buf, k_buf) = dot_buffers(&da_body[0], da);
-    let Statement::Assign(max_lhs, max_rhs) = &la_stmts[2] else { return None };
-    let Expr::Identifier(m_target) = max_lhs else { return None };
+    let Statement::Assign(max_lhs, max_rhs) = &la_stmts[2] else {
+        return None;
+    };
+    let Expr::Identifier(m_target) = max_lhs else {
+        return None;
+    };
     if m_target != &m_name {
         return None;
     }
-    let Expr::Call(max_fn, max_args, _) = max_rhs else { return None };
+    let Expr::Call(max_fn, max_args, _) = max_rhs else {
+        return None;
+    };
     if max_fn != "Max#" || max_args.len() != 2 {
         return None;
     }
@@ -4083,39 +4270,78 @@ fn detect_deferred_region(
         return None;
     }
     let (sc_b, dot_b) = match &lb_stmts[0] {
-        Statement::Let { name, expr: Some(Expr::Decimal(0)), .. } => (name.clone(), &lb_stmts[1]),
+        Statement::Let {
+            name,
+            expr: Some(Expr::Decimal(0)),
+            ..
+        } => (name.clone(), &lb_stmts[1]),
         _ => return None,
     };
-    let Statement::Foreach { item: db, list: db_range, body: db_body , ..} = dot_b else { return None };
-    let Expr::Range { end: db_end, .. } = db_range.as_ref() else { return None };
+    let Statement::Foreach {
+        item: db,
+        list: db_range,
+        body: db_body,
+        ..
+    } = dot_b
+    else {
+        return None;
+    };
+    let Expr::Range { end: db_end, .. } = db_range.as_ref() else {
+        return None;
+    };
     if format!("{:?}", db_end) != format!("{:?}", da_end) || db_body.len() != 1 {
         return None;
     }
     if !dot_shape(&db_body[0], &sc_b, &db) {
         return None;
     }
-    let Statement::Let { name: p_name, expr: Some(p_expr), .. } = &lb_stmts[2] else { return None };
+    let Statement::Let {
+        name: p_name,
+        expr: Some(p_expr),
+        ..
+    } = &lb_stmts[2]
+    else {
+        return None;
+    };
     if !format!("{:?}", p_expr).contains(&format!("\"{}\"", sc_b)) {
         return None;
     }
-    let Statement::Assign(l_lhs, l_rhs) = &lb_stmts[3] else { return None };
-    let Expr::Identifier(l_t) = l_lhs else { return None };
+    let Statement::Assign(l_lhs, l_rhs) = &lb_stmts[3] else {
+        return None;
+    };
+    let Expr::Identifier(l_t) = l_lhs else {
+        return None;
+    };
     if l_t != &l_name {
         return None;
     }
     if !format!("{:?}", l_rhs).contains(&format!("\"{}\"", p_name)) {
         return None;
     }
-    let Statement::Foreach { item: dc2, list: dc2_range, body: dc2_body , ..} = &lb_stmts[4] else { return None };
+    let Statement::Foreach {
+        item: dc2,
+        list: dc2_range,
+        body: dc2_body,
+        ..
+    } = &lb_stmts[4]
+    else {
+        return None;
+    };
     if format!("{:?}", dc2_range) != format!("{:?}", lc_range) || dc2_body.is_empty() {
         return None;
     }
     // every acc statement: element-wise RMW on the same buffer, d-affine
     let mut acc_buf = String::new();
     for s in dc2_body {
-        let Statement::Assign(lhs_a, rhs) = s else { return None };
-        let Expr::Index(b1, i1) = lhs_a else { return None };
-        let Expr::Identifier(bname) = b1.as_ref() else { return None };
+        let Statement::Assign(lhs_a, rhs) = s else {
+            return None;
+        };
+        let Expr::Index(b1, i1) = lhs_a else {
+            return None;
+        };
+        let Expr::Identifier(bname) = b1.as_ref() else {
+            return None;
+        };
         if !format!("{:?}", i1).contains(&format!("\"{}\"", dc2)) {
             return None;
         }
@@ -4137,17 +4363,31 @@ fn detect_deferred_region(
     if lc_stmts.len() != 1 {
         return None;
     }
-    let Statement::Assign(lhs_c, out_val) = &lc_stmts[0] else { return None };
-    let Expr::Index(cbuf, idx_c) = lhs_c else { return None };
-    let Expr::Identifier(out_buf) = cbuf.as_ref() else { return None };
+    let Statement::Assign(lhs_c, out_val) = &lc_stmts[0] else {
+        return None;
+    };
+    let Expr::Index(cbuf, idx_c) = lhs_c else {
+        return None;
+    };
+    let Expr::Identifier(out_buf) = cbuf.as_ref() else {
+        return None;
+    };
     let out_buf = out_buf.clone();
-    let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, num, den) = out_val else { return None };
-    let Expr::Index(nbuf, _) = num.as_ref() else { return None };
-    let Expr::Identifier(num_buf) = nbuf.as_ref() else { return None };
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Div, num, den) = out_val else {
+        return None;
+    };
+    let Expr::Index(nbuf, _) = num.as_ref() else {
+        return None;
+    };
+    let Expr::Identifier(num_buf) = nbuf.as_ref() else {
+        return None;
+    };
     if num_buf != &acc_buf {
         return None;
     }
-    let Expr::Identifier(den_name) = den.as_ref() else { return None };
+    let Expr::Identifier(den_name) = den.as_ref() else {
+        return None;
+    };
     if den_name != &l_name {
         return None;
     }
@@ -4203,7 +4443,11 @@ fn collect_written_arrays(stmts: &[Statement], out: &mut std::collections::HashS
                     }
                 }
             }
-            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Term(Some(e)) | Statement::Tail(e) | Statement::Gate(e) => {
+            Statement::Let { expr: Some(e), .. }
+            | Statement::Expression(e)
+            | Statement::Term(Some(e))
+            | Statement::Tail(e)
+            | Statement::Gate(e) => {
                 collect_written_expr_arrays(e, out);
             }
             Statement::Guarded(_, body) | Statement::Block(body) => {
@@ -4247,7 +4491,12 @@ fn expr_references(e: &Expr, name: &str) -> bool {
     }
 }
 
-fn gather_j_invariant_reads(stmts: &[Statement], j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
+fn gather_j_invariant_reads(
+    stmts: &[Statement],
+    j: &str,
+    written: &std::collections::HashSet<String>,
+    reads: &mut Vec<Expr>,
+) {
     fn walk(e: &Expr, j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
         if let Expr::Index(base, idx) = e {
             if let Expr::Identifier(bn) = base.as_ref() {
@@ -4270,11 +4519,18 @@ fn gather_j_invariant_reads(stmts: &[Statement], j: &str, written: &std::collect
             _ => {}
         }
     }
-    fn ws(stmts: &[Statement], j: &str, written: &std::collections::HashSet<String>, reads: &mut Vec<Expr>) {
+    fn ws(
+        stmts: &[Statement],
+        j: &str,
+        written: &std::collections::HashSet<String>,
+        reads: &mut Vec<Expr>,
+    ) {
         for s in stmts {
             match s {
                 Statement::Assign(_, rhs) => walk(rhs, j, written, reads),
-                Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) => walk(e, j, written, reads),
+                Statement::Let { expr: Some(e), .. }
+                | Statement::Expression(e)
+                | Statement::Gate(e) => walk(e, j, written, reads),
                 Statement::Term(Some(e)) | Statement::Tail(e) => walk(e, j, written, reads),
                 Statement::Guarded(_, body) | Statement::Block(body) => ws(body, j, written, reads),
                 Statement::Foreach { list, body, .. } => {
@@ -4320,7 +4576,11 @@ fn rewrite_j_stmts(stmts: &mut [Statement], pairs: &[(String, Expr)]) {
                 rewrite_j_expr(lhs, pairs);
                 rewrite_j_expr(rhs, pairs);
             }
-            Statement::Let { expr: Some(e), .. } | Statement::Expression(e) | Statement::Gate(e) | Statement::Term(Some(e)) | Statement::Tail(e) => {
+            Statement::Let { expr: Some(e), .. }
+            | Statement::Expression(e)
+            | Statement::Gate(e)
+            | Statement::Term(Some(e))
+            | Statement::Tail(e) => {
                 rewrite_j_expr(e, pairs);
             }
             Statement::Guarded(_, body) | Statement::Block(body) => rewrite_j_stmts(body, pairs),
@@ -4370,9 +4630,7 @@ fn collect_j_invariant_reads(
 fn expr_count(e: &Expr, name: &str) -> u32 {
     match e {
         Expr::Identifier(n) => u32::from(n == name),
-        Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => {
-            expr_count(a, name) + expr_count(b, name)
-        }
+        Expr::BinaryOp(_, a, b) | Expr::Index(a, b) => expr_count(a, name) + expr_count(b, name),
         Expr::UnaryOp(_, a) => expr_count(a, name),
         Expr::Cast(x, _) => expr_count(x, name),
         Expr::Call(_, args, _) => args.iter().map(|a| expr_count(a, name)).sum(),
@@ -4395,9 +4653,11 @@ fn v4_strip_d(e: &Expr, d: &str) -> Option<Expr> {
                 match (strip(a, d), strip(b, d)) {
                     (Some(x), None) => Some(x),
                     (None, Some(x)) => Some(x),
-                    (Some(x), Some(y)) => {
-                        Some(Expr::BinaryOp(crate::ast::BinaryOpKind::Add, Box::new(x), Box::new(y)))
-                    }
+                    (Some(x), Some(y)) => Some(Expr::BinaryOp(
+                        crate::ast::BinaryOpKind::Add,
+                        Box::new(x),
+                        Box::new(y),
+                    )),
                     (None, None) => None,
                 }
             }
@@ -4430,7 +4690,8 @@ fn v4_first_d_idx(stmts: &[Statement], buf: &str, d: &str) -> Option<Expr> {
                 Statement::Let { expr: Some(e), .. }
                 | Statement::Expression(e)
                 | Statement::Gate(e)
-                | Statement::Term(Some(e)) | Statement::Tail(e) => walk_expr(e, buf, d, out),
+                | Statement::Term(Some(e))
+                | Statement::Tail(e) => walk_expr(e, buf, d, out),
                 Statement::Guarded(_, body) | Statement::Block(body) => {
                     walk_stmts(body, buf, d, out)
                 }
@@ -4485,7 +4746,9 @@ fn v4_all_d_idxs(stmts: &[Statement], buf: &str, d: &str) -> Vec<Expr> {
         if let Expr::Index(b, idx) = e {
             if matches!(b.as_ref(), Expr::Identifier(bn) if bn == buf)
                 && v4_strip_d(idx, d).is_some()
-                && !out.iter().any(|x| format!("{:?}", x) == format!("{:?}", idx))
+                && !out
+                    .iter()
+                    .any(|x| format!("{:?}", x) == format!("{:?}", idx))
             {
                 out.push((**idx).clone());
             }
@@ -4515,7 +4778,8 @@ fn v4_all_d_idxs(stmts: &[Statement], buf: &str, d: &str) -> Vec<Expr> {
                 Statement::Let { expr: Some(e), .. }
                 | Statement::Expression(e)
                 | Statement::Gate(e)
-                | Statement::Term(Some(e)) | Statement::Tail(e) => walk_expr(e, buf, d, out),
+                | Statement::Term(Some(e))
+                | Statement::Tail(e) => walk_expr(e, buf, d, out),
                 Statement::Guarded(_, body) | Statement::Block(body) => {
                     walk_stmts(body, buf, d, out)
                 }
@@ -4542,7 +4806,9 @@ fn v4_plan_q_idxs(parts: &DeferredRegionParts, hoisted: &[(usize, Expr)]) -> Vec
         if let Expr::Index(b, idx) = e {
             if matches!(b.as_ref(), Expr::Identifier(bn) if bn == &parts.q_buf)
                 && v4_strip_d(idx, &parts.da).is_some()
-                && !q_idxs.iter().any(|x| format!("{:?}", x) == format!("{:?}", idx))
+                && !q_idxs
+                    .iter()
+                    .any(|x| format!("{:?}", x) == format!("{:?}", idx))
             {
                 q_idxs.push((**idx).clone());
             }
@@ -4684,20 +4950,39 @@ struct PartialStore<'a> {
 /// The dot statement shape: `sc = sc + a * b` (either mul order), where at
 /// least one side is an index expression mentioning the loop item.
 fn dot_shape(stmt: &Statement, sc: &str, d_item: &str) -> bool {
-    let Statement::Assign(Expr::Identifier(lhs), rhs) = stmt else { return false };
+    let Statement::Assign(Expr::Identifier(lhs), rhs) = stmt else {
+        return false;
+    };
     if lhs != sc {
         return false;
     }
-    let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs else { return false };
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Add, a, b) = rhs else {
+        return false;
+    };
     let is_self = |e: &Expr| matches!(e, Expr::Identifier(n) if n == sc);
-    let mul = if is_self(a) { b.as_ref() } else if is_self(b) { a.as_ref() } else { return false };
-    let Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) = mul else { return false };
+    let mul = if is_self(a) {
+        b.as_ref()
+    } else if is_self(b) {
+        a.as_ref()
+    } else {
+        return false;
+    };
+    let Expr::BinaryOp(crate::ast::BinaryOpKind::Mul, l, r) = mul else {
+        return false;
+    };
     let mentions_d = |e: &Expr| {
         let mut found = false;
         fn walk(e: &Expr, name: &str, found: &mut bool) {
             match e {
-                Expr::Identifier(n) => { if n == name { *found = true; } }
-                Expr::BinaryOp(_, l, r) => { walk(l, name, found); walk(r, name, found); }
+                Expr::Identifier(n) => {
+                    if n == name {
+                        *found = true;
+                    }
+                }
+                Expr::BinaryOp(_, l, r) => {
+                    walk(l, name, found);
+                    walk(r, name, found);
+                }
                 Expr::Index(_, i) => walk(i, name, found),
                 Expr::Cast(x, _) => walk(x, name, found),
                 _ => {}
@@ -4716,9 +5001,16 @@ fn dot_buffers(stmt: &Statement, _d_item: &str) -> (String, String) {
     if let Statement::Assign(_, rhs) = stmt {
         fn walk(e: &Expr, bufs: &mut Vec<String>) {
             match e {
-                Expr::Index(b, _) => { if let Expr::Identifier(bn) = b.as_ref() { bufs.push(bn.clone()); } }
+                Expr::Index(b, _) => {
+                    if let Expr::Identifier(bn) = b.as_ref() {
+                        bufs.push(bn.clone());
+                    }
+                }
                 Expr::Cast(x, _) => walk(x, bufs),
-                Expr::BinaryOp(_, l, r) => { walk(l, bufs); walk(r, bufs); }
+                Expr::BinaryOp(_, l, r) => {
+                    walk(l, bufs);
+                    walk(r, bufs);
+                }
                 _ => {}
             }
         }
@@ -4732,14 +5024,25 @@ fn dot_buffers(stmt: &Statement, _d_item: &str) -> (String, String) {
 /// The V buffer of the accumulation pass: the load inside the acc statements
 /// that is not the accumulator itself.
 fn acc_v_buf(lb_body: &[Statement], acc_buf: &str) -> String {
-    let Some(Statement::Foreach { body, .. }) = lb_body.iter().nth(4) else { return String::new() };
+    let Some(Statement::Foreach { body, .. }) = lb_body.iter().nth(4) else {
+        return String::new();
+    };
     let mut found = String::new();
     if let Some(Statement::Assign(_, rhs)) = body.first() {
         fn walk(e: &Expr, acc: &str, found: &mut String) {
             match e {
-                Expr::Index(b, _) => { if let Expr::Identifier(bn) = b.as_ref() { if bn != acc { *found = bn.clone(); } } }
+                Expr::Index(b, _) => {
+                    if let Expr::Identifier(bn) = b.as_ref() {
+                        if bn != acc {
+                            *found = bn.clone();
+                        }
+                    }
+                }
                 Expr::Cast(x, _) => walk(x, acc, found),
-                Expr::BinaryOp(_, l, r) => { walk(l, acc, found); walk(r, acc, found); }
+                Expr::BinaryOp(_, l, r) => {
+                    walk(l, acc, found);
+                    walk(r, acc, found);
+                }
                 _ => {}
             }
         }
@@ -4844,7 +5147,11 @@ fn imm0f_starts(lb: &[u8]) -> Vec<usize> {
 fn malformed_float_immediates(ptx: &str) -> Vec<String> {
     ptx.lines()
         .enumerate()
-        .flat_map(|(li, line)| imm0f_starts(line.as_bytes()).into_iter().map(move |i| (li, line, i)))
+        .flat_map(|(li, line)| {
+            imm0f_starts(line.as_bytes())
+                .into_iter()
+                .map(move |i| (li, line, i))
+        })
         .filter_map(|(li, line, i)| {
             let end = hex_run_end(line.as_bytes(), i + 2);
             if end <= i + 2 || end - (i + 2) == 8 {
@@ -4880,11 +5187,7 @@ pub(crate) fn assert_ptx_well_formed(ptx: &str) {
     );
 }
 
-
-fn fold_f32(
-    e: &Expr,
-    consts: &std::collections::HashMap<String, Expr>,
-) -> Option<f32> {
+fn fold_f32(e: &Expr, consts: &std::collections::HashMap<String, Expr>) -> Option<f32> {
     match e {
         Expr::Float(f) => Some(*f as f32),
         Expr::Decimal(n) => Some(*n as f32),
@@ -5046,8 +5349,12 @@ impl Gen<'_> {
             }
             self.strip_acc = None;
             match saved_l2 {
-                Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
-                None => { self.regs.remove(&parts.l_name); }
+                Some(v) => {
+                    self.regs.insert(parts.l_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.l_name);
+                }
             }
         }
         let _ = warps;
@@ -5159,10 +5466,17 @@ impl Gen<'_> {
         decl: &mut String,
         body: &mut String,
     ) -> Result<(), String> {
-        let QuadLoad { buf, idx, d_binder, d_regs, quad, prefix } = spec;
-        let off = self.field_off(buf).ok_or_else(|| {
-            format!("ptx general: quad load buffer '{}' not in layout", buf)
-        })?;
+        let QuadLoad {
+            buf,
+            idx,
+            d_binder,
+            d_regs,
+            quad,
+            prefix,
+        } = spec;
+        let off = self
+            .field_off(buf)
+            .ok_or_else(|| format!("ptx general: quad load buffer '{}' not in layout", buf))?;
         let elem = self.elem_bytes(buf)?;
         if elem != 4 {
             return Err(format!(
@@ -5243,7 +5557,8 @@ impl Gen<'_> {
     ) -> Result<(), String> {
         let v4 = self.deferred_v4.clone();
         for i in 0..spec.d_regs.len() {
-            self.regs.insert(spec.da.to_string(), spec.d_regs[i].clone());
+            self.regs
+                .insert(spec.da.to_string(), spec.d_regs[i].clone());
             for (jdx, (_, expr)) in spec.hoisted.iter().enumerate() {
                 let let_expr = match &v4 {
                     // The hoisted entry is the FULL read `q[<idx>]`; the
@@ -5393,10 +5708,7 @@ impl Gen<'_> {
         body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
         body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
         body.push_str(&format!("{}:\n", h2h));
-        body.push_str(&format!(
-            "    setp.ge.u32 {}, {}, {};\n",
-            pred, r_cnt, r_hi
-        ));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
         body.push_str(&format!("    @{} bra {};\n", pred, h2e));
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
         // 2026-10-02 (float4): the loop's global traffic — ONE v4 load per
@@ -5410,7 +5722,9 @@ impl Gen<'_> {
             self.regs.insert(parts.db.clone(), d_regs[i].clone());
             self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
             let mut body_b = parts.dot_b_body.clone();
-            let pairs_b: Vec<(String, Expr)> = hoisted.iter().enumerate()
+            let pairs_b: Vec<(String, Expr)> = hoisted
+                .iter()
+                .enumerate()
                 .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
                 .collect();
             rewrite_j_stmts(&mut body_b, &pairs_b);
@@ -5427,15 +5741,16 @@ impl Gen<'_> {
             }
         }
         match saved_d {
-            Some(v) => { self.regs.insert(parts.db.clone(), v); }
-            None => { self.regs.remove(&parts.db); }
+            Some(v) => {
+                self.regs.insert(parts.db.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.db);
+            }
         }
         self.emit_butterfly_add(sc_lane.to_string(), sc_w.to_string(), decl, body)?;
         // running-max update: if z_w > m, rescale acc/l to the new max.
-        body.push_str(&format!(
-            "    setp.gt.f32 {}, {}, {};\n",
-            pred, sc_w, m_reg
-        ));
+        body.push_str(&format!("    setp.gt.f32 {}, {}, {};\n", pred, sc_w, m_reg));
         body.push_str(&format!("    @{} bra {};\n", pred, rsc_r));
         body.push_str(&format!("    bra {};\n", rsc_e));
         body.push_str(&format!("{}:\n", rsc_r));
@@ -5461,10 +5776,7 @@ impl Gen<'_> {
         let saved_l = self.regs.insert(parts.l_name.clone(), l_reg.to_string());
         let saved_p = self.regs.insert(parts.p_name.clone(), p_reg.to_string());
         self.emit_stmt(
-            &Statement::Assign(
-                Expr::Identifier(parts.l_name.clone()),
-                parts.l_rhs.clone(),
-            ),
+            &Statement::Assign(Expr::Identifier(parts.l_name.clone()), parts.l_rhs.clone()),
             decl,
             body,
         )?;
@@ -5483,27 +5795,47 @@ impl Gen<'_> {
         }
         self.strip_acc = None;
         match saved_p {
-            Some(v) => { self.regs.insert(parts.p_name.clone(), v); }
-            None => { self.regs.remove(&parts.p_name); }
+            Some(v) => {
+                self.regs.insert(parts.p_name.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.p_name);
+            }
         }
         match saved_l {
-            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
-            None => { self.regs.remove(&parts.l_name); }
+            Some(v) => {
+                self.regs.insert(parts.l_name.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.l_name);
+            }
         }
         match saved_m1 {
-            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
-            None => { self.regs.remove(&parts.m_name); }
+            Some(v) => {
+                self.regs.insert(parts.m_name.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.m_name);
+            }
         }
         match saved_sc1 {
-            Some(v) => { self.regs.insert(parts.sc_b.clone(), v); }
-            None => { self.regs.remove(&parts.sc_b); }
+            Some(v) => {
+                self.regs.insert(parts.sc_b.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.sc_b);
+            }
         }
         body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
         body.push_str(&format!("    bra {};\n", h2h));
         body.push_str(&format!("{}:\n", h2e));
         match saved_j {
-            Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
-            None => { self.regs.remove(&parts.j_name); }
+            Some(v) => {
+                self.regs.insert(parts.j_name.clone(), v);
+            }
+            None => {
+                self.regs.remove(&parts.j_name);
+            }
         }
         // per-warp running max → redm (the merge's rescale baseline).
         let rd_m = self.fresh_rd();
@@ -5550,10 +5882,7 @@ impl Gen<'_> {
         // global max over the warp running maxes.
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
         body.push_str(&format!("{}:\n", l_loop));
-        body.push_str(&format!(
-            "    setp.ge.u32 {}, {}, {};\n",
-            pred, r_w, warps
-        ));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
         body.push_str(&format!("    @{} bra {};\n", pred, l_done));
         body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
         body.push_str(&format!(
@@ -5561,10 +5890,7 @@ impl Gen<'_> {
             rd_m, r_w, rd_m
         ));
         body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
-        body.push_str(&format!(
-            "    max.f32 {}, {}, {};\n",
-            m_reg, m_reg, f_t
-        ));
+        body.push_str(&format!("    max.f32 {}, {}, {};\n", m_reg, m_reg, f_t));
         body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
         body.push_str(&format!("    bra {};\n", l_loop));
         body.push_str(&format!("{}:\n", l_done));
@@ -5572,10 +5898,7 @@ impl Gen<'_> {
         body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", l_tot));
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
         body.push_str(&format!("{}:\n", a_loop));
-        body.push_str(&format!(
-            "    setp.ge.u32 {}, {}, {};\n",
-            pred, r_w, warps
-        ));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
         body.push_str(&format!("    @{} bra {};\n", pred, a_done));
         body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
         body.push_str(&format!(
@@ -5615,10 +5938,7 @@ impl Gen<'_> {
         }
         body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
         body.push_str(&format!("{}:\n", m_loop));
-        body.push_str(&format!(
-            "    setp.ge.u32 {}, {}, {};\n",
-            pred, r_w, warps
-        ));
+        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
         body.push_str(&format!("    @{} bra {};\n", pred, m_done));
         body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
         body.push_str(&format!(
@@ -5650,10 +5970,7 @@ impl Gen<'_> {
                     rd_a,
                     i * 128
                 ));
-                body.push_str(&format!(
-                    "    mul.f32 {}, {}, {};\n",
-                    f_t, f_t, ff
-                ));
+                body.push_str(&format!("    mul.f32 {}, {}, {};\n", f_t, f_t, ff));
                 body.push_str(&format!(
                     "    add.f32 {}, {}, {};\n",
                     a_regs[i], a_regs[i], f_t
@@ -5668,8 +5985,17 @@ impl Gen<'_> {
         // a_out is never written (the got=0 probe). The merge results
         // (l_tot/a_regs/m_reg) feed the tail's split-store or normalize.
         self.emit_deferred_softmax_tail(
-            parts, d_regs, a_regs, &l_tot, &m_reg, self.deferred_split, &r_lane,
-            strips, warps, decl, body,
+            parts,
+            d_regs,
+            a_regs,
+            &l_tot,
+            &m_reg,
+            self.deferred_split,
+            &r_lane,
+            strips,
+            warps,
+            decl,
+            body,
         )?;
         Ok(())
     }
@@ -5824,14 +6150,21 @@ impl Gen<'_> {
                 }
             }
             match saved_j0 {
-                Some(v) => { self.regs.insert(parts.j_name.clone(), v); }
-                None => { self.regs.remove(&parts.j_name); }
+                Some(v) => {
+                    self.regs.insert(parts.j_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.j_name);
+                }
             }
         }
 
         let strip_pairs: Vec<(String, Expr)> = (0..strips)
             .flat_map(|i| {
-                hoisted.iter().enumerate().map(move |(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                hoisted
+                    .iter()
+                    .enumerate()
+                    .map(move |(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
             })
             .collect();
 
@@ -5840,28 +6173,8 @@ impl Gen<'_> {
         // two passes + the smem merges) is the two-pass form.
         if self.online != 0 {
             return self.emit_deferred_region_online(
-                parts,
-                &hoisted,
-                &d_regs,
-                &a_regs,
-                l_reg,
-                m_reg,
-                sc_lane,
-                sc_w,
-                r_cnt,
-                r_warp,
-                r_lane,
-                pred,
-                r_lo,
-                r_hi,
-                r_w,
-                p_reg,
-                l_tot,
-                jslice,
-                warps,
-                &sbase,
-                strips,
-                decl,
+                parts, &hoisted, &d_regs, &a_regs, l_reg, m_reg, sc_lane, sc_w, r_cnt, r_warp,
+                r_lane, pred, r_lo, r_hi, r_w, p_reg, l_tot, jslice, warps, &sbase, strips, decl,
                 body,
             );
         }
@@ -5874,87 +6187,101 @@ impl Gen<'_> {
         let saved_j = self.regs.insert(parts.j_name.clone(), r_cnt.clone());
         self.label += 3;
         if self.skip_pass != 1 {
-        body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
-        body.push_str(&format!(
-            "    mad.lo.u32 {}, {}, {}, {};\n",
-            r_lo, r_warp, jslice, r_lo
-        ));
-        if let Some(sb) = &sbase {
-            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
-        }
-        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
-        body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
-
-        let h1h = format!("L{}_a", lab);
-        let h1e = format!("L{}_ax", lab);
-        let m_loop = format!("L{}_m", lab);
-        let m_done = format!("L{}_md", lab);
-        body.push_str(&format!("{}:\n", h1h));
-        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
-        body.push_str(&format!("    @{} bra {};\n", pred, h1e));
-        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
-        // 2026-09-20 (M1-finish NaN fix): emit the dot body directly,
-        // NOT the Foreach — emit_stmt on a Foreach overwrites the d binding
-        // with its own loop counter, producing a full-D serial loop instead
-        // of the inlined strip computation.
-        let saved_d = self.regs.insert(parts.da.clone(), d_regs[0].clone());
-        for i in 0..strips {
-            self.active_strip = i;
-            self.regs.insert(parts.da.clone(), d_regs[i].clone());
-            self.regs.insert(parts.sc_a.clone(), sc_lane.clone());
-            let mut body_i = parts.dot_a_body.clone();
-            let pairs_i: Vec<(String, Expr)> = hoisted.iter().enumerate()
-                .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
-                .collect();
-            rewrite_j_stmts(&mut body_i, &pairs_i);
-            for s in &body_i {
-                self.emit_stmt(s, decl, body)?;
+            body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
+            body.push_str(&format!(
+                "    mad.lo.u32 {}, {}, {}, {};\n",
+                r_lo, r_warp, jslice, r_lo
+            ));
+            if let Some(sb) = &sbase {
+                body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
             }
-        }
-        match saved_d {
-            Some(v) => { self.regs.insert(parts.da.clone(), v); }
-            None => { self.regs.remove(&parts.da); }
-        }
-        self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
-        let saved_sc = self.regs.insert(parts.sc_a.clone(), sc_w.clone());
-        let saved_m0 = self.regs.insert(parts.m_name.clone(), m_reg.clone());
-        self.emit_stmt(&parts.max_stmt, decl, body)?;
-        match saved_m0 {
-            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
-            None => { self.regs.remove(&parts.m_name); }
-        }
-        match saved_sc {
-            Some(v) => { self.regs.insert(parts.sc_a.clone(), v); }
-            None => { self.regs.remove(&parts.sc_a); }
-        }
-        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
-        body.push_str(&format!("    bra {};\n", h1h));
-        body.push_str(&format!("{}:\n", h1e));
-        // per-warp max → smem → M (32-slot max loop; base reset per iter).
-        let rd_m = self.fresh_rd();
-        decl.push_str(&format!("    .reg .b64 {};\n", rd_m));
-        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
-        body.push_str(&format!(
-            "    mad.wide.u32 {}, {}, 4, {};\n",
-            rd_m, r_warp, rd_m
-        ));
-        body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_m, m_reg));
-        body.push_str("    bar.sync 0;\n");
-        body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-1e30)));
-        body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
-        body.push_str(&format!("{}:\n", m_loop));
-        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
-        body.push_str(&format!("    @{} bra {};\n", pred, m_done));
-        body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
-        body.push_str(&format!(
-            "    mad.wide.u32 {}, {}, 4, {};\n",
-            rd_m, r_w, rd_m
-        ));
-        body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
-        body.push_str(&format!("    max.f32 {}, {}, {};\n", m_reg, m_reg, f_t));
-        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
-        body.push_str(&format!("    bra {};\n", m_loop));
-        body.push_str(&format!("{}:\n", m_done));
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
+            body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
+
+            let h1h = format!("L{}_a", lab);
+            let h1e = format!("L{}_ax", lab);
+            let m_loop = format!("L{}_m", lab);
+            let m_done = format!("L{}_md", lab);
+            body.push_str(&format!("{}:\n", h1h));
+            body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
+            body.push_str(&format!("    @{} bra {};\n", pred, h1e));
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+            // 2026-09-20 (M1-finish NaN fix): emit the dot body directly,
+            // NOT the Foreach — emit_stmt on a Foreach overwrites the d binding
+            // with its own loop counter, producing a full-D serial loop instead
+            // of the inlined strip computation.
+            let saved_d = self.regs.insert(parts.da.clone(), d_regs[0].clone());
+            for i in 0..strips {
+                self.active_strip = i;
+                self.regs.insert(parts.da.clone(), d_regs[i].clone());
+                self.regs.insert(parts.sc_a.clone(), sc_lane.clone());
+                let mut body_i = parts.dot_a_body.clone();
+                let pairs_i: Vec<(String, Expr)> = hoisted
+                    .iter()
+                    .enumerate()
+                    .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                    .collect();
+                rewrite_j_stmts(&mut body_i, &pairs_i);
+                for s in &body_i {
+                    self.emit_stmt(s, decl, body)?;
+                }
+            }
+            match saved_d {
+                Some(v) => {
+                    self.regs.insert(parts.da.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.da);
+                }
+            }
+            self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
+            let saved_sc = self.regs.insert(parts.sc_a.clone(), sc_w.clone());
+            let saved_m0 = self.regs.insert(parts.m_name.clone(), m_reg.clone());
+            self.emit_stmt(&parts.max_stmt, decl, body)?;
+            match saved_m0 {
+                Some(v) => {
+                    self.regs.insert(parts.m_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.m_name);
+                }
+            }
+            match saved_sc {
+                Some(v) => {
+                    self.regs.insert(parts.sc_a.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.sc_a);
+                }
+            }
+            body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
+            body.push_str(&format!("    bra {};\n", h1h));
+            body.push_str(&format!("{}:\n", h1e));
+            // per-warp max → smem → M (32-slot max loop; base reset per iter).
+            let rd_m = self.fresh_rd();
+            decl.push_str(&format!("    .reg .b64 {};\n", rd_m));
+            body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+            body.push_str(&format!(
+                "    mad.wide.u32 {}, {}, 4, {};\n",
+                rd_m, r_warp, rd_m
+            ));
+            body.push_str(&format!("    st.shared.f32 [{}], {};\n", rd_m, m_reg));
+            body.push_str("    bar.sync 0;\n");
+            body.push_str(&format!("    mov.f32 {}, {};\n", m_reg, f32_imm(-1e30)));
+            body.push_str(&format!("    mov.u32 {}, 0;\n", r_w));
+            body.push_str(&format!("{}:\n", m_loop));
+            body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_w, warps));
+            body.push_str(&format!("    @{} bra {};\n", pred, m_done));
+            body.push_str(&format!("    mov.u64 {}, redm;\n", rd_m));
+            body.push_str(&format!(
+                "    mad.wide.u32 {}, {}, 4, {};\n",
+                rd_m, r_w, rd_m
+            ));
+            body.push_str(&format!("    ld.shared.f32 {}, [{}];\n", f_t, rd_m));
+            body.push_str(&format!("    max.f32 {}, {}, {};\n", m_reg, m_reg, f_t));
+            body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_w, r_w));
+            body.push_str(&format!("    bra {};\n", m_loop));
+            body.push_str(&format!("{}:\n", m_done));
         } // skip_pass != 1
 
         // ── pass B: unnormalized accumulation (dot recompute, p, l, acc strips) ──
@@ -5965,81 +6292,100 @@ impl Gen<'_> {
         let a_loop = format!("L{}_s", lab);
         let a_done = format!("L{}_sd", lab);
         if self.skip_pass != 2 {
-        body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
-        body.push_str(&format!(
-            "    mad.lo.u32 {}, {}, {}, {};\n",
-            r_lo, r_warp, jslice, r_lo
-        ));
-        if let Some(sb) = &sbase {
-            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
-        }
-        body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
-        body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
-        body.push_str(&format!("{}:\n", h2h));
-        body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
-        body.push_str(&format!("    @{} bra {};\n", pred, h2e));
-        body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
-        let saved_d = self.regs.insert(parts.db.clone(), d_regs[0].clone());
-        for i in 0..strips {
-            self.active_strip = i;
-            self.regs.insert(parts.db.clone(), d_regs[i].clone());
-            self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
-            let mut body_b = parts.dot_b_body.clone();
-            let pairs_b: Vec<(String, Expr)> = hoisted.iter().enumerate()
-                .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
-                .collect();
-            rewrite_j_stmts(&mut body_b, &pairs_b);
-            for s in &body_b {
-                self.emit_stmt(s, decl, body)?;
+            body.push_str(&format!("    mov.u32 {}, 0;\n", r_lo));
+            body.push_str(&format!(
+                "    mad.lo.u32 {}, {}, {}, {};\n",
+                r_lo, r_warp, jslice, r_lo
+            ));
+            if let Some(sb) = &sbase {
+                body.push_str(&format!("    add.u32 {}, {}, {};\n", r_lo, r_lo, sb));
             }
-        }
-        match saved_d {
-            Some(v) => { self.regs.insert(parts.db.clone(), v); }
-            None => { self.regs.remove(&parts.db); }
-        }
-        self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
-        let saved_sc = self.regs.insert(parts.sc_b.clone(), sc_w.clone());
-        let saved_m = self.regs.insert(parts.m_name.clone(), m_reg.clone());
-        self.emit_expr(&parts.p_expr, &p_reg, decl, body)?;
-        let saved_l = self.regs.insert(parts.l_name.clone(), l_reg.clone());
-        let saved_p = self.regs.insert(parts.p_name.clone(), p_reg.clone());
-        self.emit_stmt(
-            &Statement::Assign(
-                Expr::Identifier(parts.l_name.clone()),
-                parts.l_rhs.clone(),
-            ),
-            decl,
-            body,
-        )?;
-        // acc strips: registers; the smem merge owns cross-warp traffic.
-        self.strip_acc = Some((parts.acc_buf.clone(), parts.dc2.clone(), a_regs.clone()));
-        for i in 0..strips {
-            self.active_strip = i;
-            self.regs.insert(parts.dc2.clone(), d_regs[i].clone());
-            for s in &parts.acc_stmts {
-                self.emit_stmt(s, decl, body)?;
+            body.push_str(&format!("    add.u32 {}, {}, {};\n", r_hi, r_lo, jslice));
+            body.push_str(&format!("    mov.u32 {}, {};\n", r_cnt, r_lo));
+            body.push_str(&format!("{}:\n", h2h));
+            body.push_str(&format!("    setp.ge.u32 {}, {}, {};\n", pred, r_cnt, r_hi));
+            body.push_str(&format!("    @{} bra {};\n", pred, h2e));
+            body.push_str(&format!("    mov.f32 {}, 0f00000000;\n", sc_lane));
+            let saved_d = self.regs.insert(parts.db.clone(), d_regs[0].clone());
+            for i in 0..strips {
+                self.active_strip = i;
+                self.regs.insert(parts.db.clone(), d_regs[i].clone());
+                self.regs.insert(parts.sc_b.clone(), sc_lane.clone());
+                let mut body_b = parts.dot_b_body.clone();
+                let pairs_b: Vec<(String, Expr)> = hoisted
+                    .iter()
+                    .enumerate()
+                    .map(|(jdx, (_, e))| (strip_name(i, jdx), e.clone()))
+                    .collect();
+                rewrite_j_stmts(&mut body_b, &pairs_b);
+                for s in &body_b {
+                    self.emit_stmt(s, decl, body)?;
+                }
             }
-        }
-        self.strip_acc = None;
-        match saved_p {
-            Some(v) => { self.regs.insert(parts.p_name.clone(), v); }
-            None => { self.regs.remove(&parts.p_name); }
-        }
-        match saved_l {
-            Some(v) => { self.regs.insert(parts.l_name.clone(), v); }
-            None => { self.regs.remove(&parts.l_name); }
-        }
-        match saved_m {
-            Some(v) => { self.regs.insert(parts.m_name.clone(), v); }
-            None => { self.regs.remove(&parts.m_name); }
-        }
-        match saved_sc {
-            Some(v) => { self.regs.insert(parts.sc_b.clone(), v); }
-            None => { self.regs.remove(&parts.sc_b); }
-        }
-        body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
-        body.push_str(&format!("    bra {};\n", h2h));
-        body.push_str(&format!("{}:\n", h2e));
+            match saved_d {
+                Some(v) => {
+                    self.regs.insert(parts.db.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.db);
+                }
+            }
+            self.emit_butterfly_add(sc_lane.clone(), sc_w.clone(), decl, body)?;
+            let saved_sc = self.regs.insert(parts.sc_b.clone(), sc_w.clone());
+            let saved_m = self.regs.insert(parts.m_name.clone(), m_reg.clone());
+            self.emit_expr(&parts.p_expr, &p_reg, decl, body)?;
+            let saved_l = self.regs.insert(parts.l_name.clone(), l_reg.clone());
+            let saved_p = self.regs.insert(parts.p_name.clone(), p_reg.clone());
+            self.emit_stmt(
+                &Statement::Assign(Expr::Identifier(parts.l_name.clone()), parts.l_rhs.clone()),
+                decl,
+                body,
+            )?;
+            // acc strips: registers; the smem merge owns cross-warp traffic.
+            self.strip_acc = Some((parts.acc_buf.clone(), parts.dc2.clone(), a_regs.clone()));
+            for i in 0..strips {
+                self.active_strip = i;
+                self.regs.insert(parts.dc2.clone(), d_regs[i].clone());
+                for s in &parts.acc_stmts {
+                    self.emit_stmt(s, decl, body)?;
+                }
+            }
+            self.strip_acc = None;
+            match saved_p {
+                Some(v) => {
+                    self.regs.insert(parts.p_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.p_name);
+                }
+            }
+            match saved_l {
+                Some(v) => {
+                    self.regs.insert(parts.l_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.l_name);
+                }
+            }
+            match saved_m {
+                Some(v) => {
+                    self.regs.insert(parts.m_name.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.m_name);
+                }
+            }
+            match saved_sc {
+                Some(v) => {
+                    self.regs.insert(parts.sc_b.clone(), v);
+                }
+                None => {
+                    self.regs.remove(&parts.sc_b);
+                }
+            }
+            body.push_str(&format!("    add.u32 {}, {}, 1;\n", r_cnt, r_cnt));
+            body.push_str(&format!("    bra {};\n", h2h));
+            body.push_str(&format!("{}:\n", h2e));
         } // skip_pass != 2
 
         // ── merges: l (warp-direct smem sum), acc strips (smem sum) ──
@@ -6133,8 +6479,7 @@ impl Gen<'_> {
         // 2026-10-01 (5a): the split-store / normalize tail — shared by
         // the two-pass path and the fused online path.
         self.emit_deferred_softmax_tail(
-            parts, &d_regs, &a_regs, &l_tot, &m_reg, split, &r_lane, strips, warps,
-            decl, body,
+            parts, &d_regs, &a_regs, &l_tot, &m_reg, split, &r_lane, strips, warps, decl, body,
         )?;
         let _ = warps;
         Ok(())
@@ -6192,10 +6537,10 @@ pub fn emit_deferred_combine_ptx(
     let out_off = off(out_buf)?;
     let stride = 2 + dim;
     let log2e = "0f3FB8AA3B"; // 1.4426950408889634
-    // 2026-10-01 (split device-validation): derived via `f32_imm` — the
-    // hand-written "0ff800000" was one hex nibble short of `-inf`
-    // (`0fFF800000`), a PTX parse error the CUDA lane died on. Immediates
-    // are never hand-typed; `assert_ptx_well_formed` pins the digit count.
+                              // 2026-10-01 (split device-validation): derived via `f32_imm` — the
+                              // hand-written "0ff800000" was one hex nibble short of `-inf`
+                              // (`0fFF800000`), a PTX parse error the CUDA lane died on. Immediates
+                              // are never hand-typed; `assert_ptx_well_formed` pins the digit count.
     let neg_inf = f32_imm(f32::NEG_INFINITY);
     let mut out = String::new();
     out.push_str(".version 8.0\n.target sm_86\n.address_size 64\n");
@@ -6272,14 +6617,15 @@ pub fn emit_deferred_combine_ptx(
     Ok(out)
 }
 
-
 #[cfg(test)]
 mod probe_gemm_tmp {
     use super::*;
     #[test]
     fn probe_gemm_fixtures() {
         fn walk(dir: &str, out: &mut Vec<String>) {
-            let Ok(rd) = std::fs::read_dir(dir) else { return };
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
             for e in rd.flatten() {
                 let p = e.path().to_string_lossy().to_string();
                 if p.ends_with(".bv") || p.ends_with(".abv") {
@@ -6295,10 +6641,16 @@ mod probe_gemm_tmp {
         }
         paths.sort();
         for path in &paths {
-            let Ok(src) = std::fs::read_to_string(path) else { println!("{path}: unreadable"); continue };
+            let Ok(src) = std::fs::read_to_string(path) else {
+                println!("{path}: unreadable");
+                continue;
+            };
             let tokens = crate::lexer::tokenize(&src).expect("lex");
             let mut parser = crate::parser::Parser::new(tokens, &src);
-            let Ok(mut items) = parser.parse_program() else { println!("{path}: PARSE FAIL"); continue };
+            let Ok(mut items) = parser.parse_program() else {
+                println!("{path}: PARSE FAIL");
+                continue;
+            };
             // Declared composites expand before analysis — the probe sees
             // what the compiler sees.
             if src.contains("!(") {
@@ -6322,19 +6674,28 @@ mod probe_gemm_tmp {
             for item in &items {
                 if let crate::ast::TopLevel::Transaction(t) = item {
                     let shape = crate::analysis::accel::prove_kernel_pub(
-                        &t.name, &t.body, &t.contract, &info, &universe, &items,
+                        &t.name,
+                        &t.body,
+                        &t.contract,
+                        &info,
+                        &universe,
+                        &items,
                     );
                     let g = crate::analysis::gemm_shape::detect_gemm_shape(&shape, &items);
                     let dm = crate::analysis::gemm_shape::declared_matmul(&shape);
-                    println!("{path} :: {} eligible={} declared_matmul={dm} gemm={g:?}", path, shape.eligible);
+                    println!(
+                        "{path} :: {} eligible={} declared_matmul={dm} gemm={g:?}",
+                        path, shape.eligible
+                    );
                     any = true;
                 }
             }
-            if !any { println!("{path}: no transactions"); }
+            if !any {
+                println!("{path}: no transactions");
+            }
         }
     }
 }
-
 
 #[cfg(test)]
 mod probe_float_defect_tmp {
@@ -6377,7 +6738,14 @@ mod probe_float_defect_tmp {
         {
             let mut items = items.clone();
             let errs = crate::typechecker::check_program(&mut items, &universe);
-            println!("UNEXPANDED: {}", if errs.is_ok() { "OK".into() } else { format!("{:?}", errs.unwrap_err()) });
+            println!(
+                "UNEXPANDED: {}",
+                if errs.is_ok() {
+                    "OK".into()
+                } else {
+                    format!("{:?}", errs.unwrap_err())
+                }
+            );
         }
         // stage 2: EXPANDED
         let mut pm = crate::plugin::PluginManager::new();
@@ -6388,7 +6756,14 @@ mod probe_float_defect_tmp {
         }
         {
             let errs = crate::typechecker::check_program(&mut items, &universe);
-            println!("EXPANDED: {}", if errs.is_ok() { "OK".into() } else { format!("{:?}", errs.unwrap_err()) });
+            println!(
+                "EXPANDED: {}",
+                if errs.is_ok() {
+                    "OK".into()
+                } else {
+                    format!("{:?}", errs.unwrap_err())
+                }
+            );
         }
     }
 
@@ -6400,7 +6775,8 @@ mod probe_float_defect_tmp {
         };
         let mut pm = crate::plugin::PluginManager::new();
         let opts = crate::pipeline::BuildOptions::default();
-        pm = crate::pipeline::build_plugin_manager("/tmp/opencode/dot_row_ref.abv", &opts);
+        pm = crate::pipeline::build_plugin_manager("/tmp/opencode/dot_row_ref.abv", &opts)
+            .expect("system plugins");
         let mut source = fixture.clone();
         pm.run_source(crate::ast::StageKind::PreLex, &mut source)
             .expect("prelex");
@@ -6416,6 +6792,9 @@ mod probe_float_defect_tmp {
         let numeric_bv = std::fs::read_to_string("lib/std/numeric.bv").expect("numeric.bv");
         check_items(&float_bv, "float.bv ALONE");
         check_items(&numeric_bv, "numeric.bv ALONE");
-        check_items(&format!("{float_bv}\n{numeric_bv}"), "float.bv + numeric.bv");
+        check_items(
+            &format!("{float_bv}\n{numeric_bv}"),
+            "float.bv + numeric.bv",
+        );
     }
 }
