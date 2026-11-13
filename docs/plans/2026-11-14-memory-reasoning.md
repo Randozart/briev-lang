@@ -217,9 +217,19 @@ The array theory is **not** the next thing to write. The earlier claim in this d
 extrapolated from the buffer-parameter count to element reasoning without checking
 that any contract mentions an element. None does.
 
-The one remaining route to element reasoning is *transitive*: a postcondition about a
-value returned by a callee whose body reads elements. That needs element-dependent
-bodies inlined before `select` is reachable at all, and it is speculative enough to
-require its own measurement rather than a plan. The invariant and termination line
-is therefore finished at this boundary, and the honest status is "closed pending a
-measurement that does not exist yet" rather than "blocked".
+The one remaining route to element reasoning was *transitive*: a postcondition about
+a value returned by a callee whose body reads elements. That route was then measured,
+and it is empty as well — of the contracted buffer-parameter declarations, exactly
+**one** passes a buffer to a known callee (`extract_calls_from_body -> len`), and
+**none** of those callees indexes its own buffer. There is no element-dependent body
+to inline, so `select` is unreachable even transitively.
+
+The memory line is therefore **closed by measurement, not deferred**. Both routes have
+a population of zero: direct (a contract mentioning an element) and transitive (a
+callee reading one). If element reasoning is ever wanted, it has to arrive with new
+Briev code that states something about buffer *contents* in a contract — and this
+census is the check to re-run at that moment, not before.
+
+**The re-entry condition in one line:** a contract containing `buf[...]`. Zero exist
+today; the day one does, `select` acquires a caller and this document becomes a plan
+again.
