@@ -56,7 +56,19 @@ fn unbounded_until_records_the_exit_condition() {
     );
 }
 
-/// A plain node records neither: the waiver is opt-in.
+/// `unbounded` and `variant` contradict: one waives termination, the other proves
+/// it. The declaration must be rejected rather than silently resolved.
+#[test]
+fn unbounded_with_variant_is_rejected() {
+    let err = parse_and_check(
+        "<test>",
+        "let done: Bool = false;\nlet x: Int = 0;\n\
+         unbounded node server [x >= 0][done][x >= 0] variant [x] { done = true; term; };",
+    )
+    .expect_err("the two contradict");
+    assert!(err.contains("unbounded"), "{err}");
+}
+
 #[test]
 fn a_plain_node_carries_no_waiver() {
     let txn = node_item("let done: Bool = false;\nnode poll [true][done] { done = true; term; };");

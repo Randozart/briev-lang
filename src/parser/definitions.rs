@@ -1706,6 +1706,19 @@ impl<'a> Parser<'a> {
     ) -> Result<TopLevel, SyntaxError> {
         txn.is_async = txn.is_async || prefix.is_async;
         txn.modifiers.extend(prefix.annotations);
+        // `unbounded` waives the termination obligation that `variant` proves.
+        // Accepting both would be a contradiction: the declaration would say "do
+        // not prove this stops" and "here is the proof that it stops" at once.
+        let waived = txn.modifiers.iter().any(|m| m.name == "unbounded");
+        let proved = txn.modifiers.iter().any(|m| m.name == "variant");
+        if waived && proved {
+            return Err(SyntaxError::InvalidStatement {
+                reason: "`unbounded` waives the termination obligation that `variant` \
+                         proves — keep one of them, not both"
+                    .to_string(),
+                span: Span::dummy(),
+            });
+        }
         if let Some(groups) = prefix.sync_groups {
             Ok(TopLevel::SyncGroup {
                 domains: groups,
