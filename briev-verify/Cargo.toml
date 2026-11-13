@@ -1,0 +1,8 @@
+[package]
+name = "briev-verify"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 WITH LLVM-exception"
+description = "Briev's body prover: symbolic execution and SMT discharge over the Briev AST"
+
+[dependencies]

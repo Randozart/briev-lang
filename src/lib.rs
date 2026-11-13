@@ -27,7 +27,7 @@ pub mod annotator;
 pub mod address_resolver;
 pub mod casting;
 pub mod assertion_verify;
-pub mod ast;
+pub use briev_verify::ast;
 pub mod analysis;
 pub mod hir;
 pub mod archive;

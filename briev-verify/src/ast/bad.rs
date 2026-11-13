@@ -11,7 +11,7 @@
 // every instruction line that follows it until the next top-level item
 // (zero braces, no indentation sensitivity — see plan 2026-09-21).
 
-use crate::errors::Span;
+use crate::span::Span;
 
 /// A whole .bad file. `items` preserves source order — label membership is
 /// positional (instructions belong to the nearest preceding owner).

@@ -15,7 +15,7 @@ mod canonical;
 mod expr;
 pub mod top;
 pub mod bad;
-pub(crate) mod bld;
+pub mod bld;
 mod types;
 pub mod visit;
 pub mod visit_mut;
