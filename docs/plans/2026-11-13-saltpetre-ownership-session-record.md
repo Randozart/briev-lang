@@ -135,3 +135,18 @@ largest honest block).
   `brievc memcheck [--deny-memory-ambiguity] [--stdlib-path lib] <file>`.
 - Repro programs from this campaign: `/tmp/opencode/{f32list,f32call,concatprobe,plusprobe,okprobe}.bv`,
   failing old dump `/tmp/vdstd3/vad_stream.ll:25966`.
+
+## Correction (2026-11-13, post-campaign): String slices are VIEWS
+
+The census campaign briefly classified `String[a:b]` as fresh ("slice =
+copy") — WRONG. Per the slicing doc, a contiguous slice is a free
+pointer-rebase VIEW. Consequence caught by the saltpetre conformance gate:
+`external_bytes` returns `all[off:off+len]` — a view into the file buffer —
+and the pass released `all` at exit → use-after-free → conv_ext weights
+corrupted (output[5] 1.527 vs 1.380). Fixed: slices classify as Borrow
+(view escapes ⇒ the source is demoted from ownership and never released),
+and the slice-fresh arm is removed. Census 19 → 18 undecided (proto_bytes /
+face_param / http slice families are honestly borrowed). saltpetre
+conformance green again; all other gates re-verified. LESSON: before
+asserting "X allocates fresh", read the representation doc — the slicing
+doc said "zero-copy view" all along.

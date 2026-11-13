@@ -391,7 +391,10 @@ fn param_return_summaries(program: &HirProgram) -> HashMap<String, usize> {
 }
 
 fn is_result_type(ty: &Type) -> bool {
-    matches!(ty, Type::Generic(n, _) | Type::Applied(n, _) if n == "Result")
+    // 2026-11-13: the typechecker may normalize `Result<T, E>` to a bare
+    // Custom("Result") (e.g. after alias resolution / type-param erasure on
+    // non-generic callables), so accept every shape.
+    matches!(ty, Type::Generic(n, _) | Type::Applied(n, _) | Type::Custom(n) if n == "Result")
 }
 
 /// 2026-11-12 (memcheck census): OK-side freshness for Result-returning
@@ -412,7 +415,6 @@ fn ok_fresh_callables(
         let mut changed = false;
         for c in &program.callables {
             let freed_set = freed.get(&c.name).cloned().unwrap_or_default();
-            let freed_set = freed.get(&c.name).cloned().unwrap_or_default();
             let result_is_result = c.result.as_ref().is_some_and(is_result_type);
             if !result_is_result || ok.contains(&c.name) { continue; }
             // No escape gate (2026-11-13, see fresh_callables). Payload
@@ -427,18 +429,22 @@ fn ok_fresh_callables(
             if returns.is_empty() { continue; }
             let all_ok = returns.iter().all(|e| match &e.kind {
                 HirExprKind::Call { callee, args, .. } => {
-                    if callee == "Err" { true }
-                    else if callee == "Ok" {
+                    if callee == "Err" {
+                        true
+                    } else if callee == "Ok" {
                         args.first().is_some_and(|a| is_fresh(a, &vars, pr, fresh, &ok, &freed_set))
+                    } else if *callee == c.name {
+                        // Tail self-recursion carries the Result through
+                        // unchanged (read_whole recursing on its own
+                        // accumulator): the recursive path is exactly as
+                        // Ok-side-fresh as the base paths. (Must precede the
+                        // generic Call arm — it shadows a bare-call arm.)
+                        true
                     } else { false }
                 }
                 // Freshness flows through locals: read_file returns the
                 // Result it unpacked into a local after its guard.
                 HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
-                // Tail self-recursion carries the Result through unchanged
-                // (read_whole recursing on its own accumulator): the recursive
-                // path is exactly as Ok-side-fresh as the base paths.
-                HirExprKind::Call { callee, .. } if *callee == c.name => true,
                 _ => false,
             });
             if all_ok {
@@ -561,7 +567,7 @@ fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usiz
         // not here. Hence: unconditionally fresh.
         HirExprKind::List(_) => true,
         // 2026-11-12 (slicing doc): a String slice allocates a fresh copy.
-        HirExprKind::Slice { array, .. } => string_expr(array),
+        HirExprKind::Slice { array, .. } => string_expr(array, fresh),
         HirExprKind::Cast { inner, to, .. } if is_string(to) => {
             // 2026-11-13 (buffer-transfer): `(buf as Data) as String` where
             // buf is FREED in the same body is an ownership transfer — the
@@ -569,7 +575,7 @@ fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usiz
             // remaining owner (read_whole/int_to_str buffer pattern). The
             // source may be a String-typed param (string_expr would say
             // "borrow"); the freed record overrides it.
-            if !string_expr(inner) { return true; }
+            if !string_expr(inner, fresh) { return true; }
             let mut src = inner;
             while let HirExprKind::Cast { inner: deeper, .. } = &src.kind { src = deeper; }
             if let HirExprKind::Identifier(n) = &src.kind {
@@ -587,9 +593,9 @@ fn is_fresh(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, usiz
             }
         }
         HirExprKind::Binary { op: BinaryOpKind::Add, left, right } => {
-            string_expr(left) && string_expr(right)
+            string_expr(left, fresh) && string_expr(right, fresh)
         }
-        HirExprKind::Cast { inner, to, .. } => is_string(to) && !string_expr(inner),
+        HirExprKind::Cast { inner, to, .. } => is_string(to) && !string_expr(inner, fresh),
         HirExprKind::Identifier(n) => vars.get(n).copied().unwrap_or(false),
         HirExprKind::If { then_branch, else_branch, .. } => {
             else_branch.as_ref().is_some_and(|e| is_fresh(then_branch, vars, pr, fresh, ok, freed) && is_fresh(e, vars, pr, fresh, ok, freed))
@@ -603,11 +609,14 @@ fn is_fresh_rhs(e: &HirExpr, vars: &HashMap<String, bool>, pr: &HashMap<String, 
     !matches!(e.kind, HirExprKind::Identifier(_)) && is_fresh(e, vars, pr, fresh, ok, freed)
 }
 
-fn string_expr(e: &HirExpr) -> bool {
+fn string_expr(e: &HirExpr, fresh: &HashSet<String>) -> bool {
+    // 2026-11-13: a call whose callable is in the fresh set returns fresh
+    // String storage (digits_of_int recursion, concat chains).
     e.ty.as_ref().is_some_and(is_string) || match &e.kind {
         HirExprKind::Literal(HirLiteral::Bytes(_)) => true,
         HirExprKind::Identifier(_) => true,
-        HirExprKind::Binary { op: BinaryOpKind::Add, left, right } => string_expr(left) && string_expr(right),
+        HirExprKind::Call { callee, .. } if fresh.contains(callee) => true,
+        HirExprKind::Binary { op: BinaryOpKind::Add, left, right } => string_expr(left, fresh) && string_expr(right, fresh),
         _ => false,
     }
 }
@@ -738,9 +747,15 @@ fn rewrite_list(
             HirStmtKind::Let { name, expr: Some(e), ty, .. } => {
                 uses(e, owned, ctx);
                 let own_flag = ty.as_ref().is_some_and(owned_ty) || e.ty.as_ref().is_some_and(owned_ty);
+                // Result locals are not OWNED, but they CARRY freshness into
+                // the pr-identity chain (unwrap): track them in fresh_vars so
+                // `bytes = unwrap(f)` sees f's ok_fresh verdict.
+                let carries = own_flag
+                    || ty.as_ref().is_some_and(is_result_type)
+                    || e.ty.as_ref().is_some_and(is_result_type);
                 let kind = ty.as_ref().or(e.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
-                let fresh = own_flag && is_fresh_rhs(e, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
-                if own_flag {
+                let fresh = carries && is_fresh_rhs(e, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
+                if carries {
                     fresh_vars.insert(name.clone(), fresh);
                 }
                 if fresh {
@@ -761,7 +776,7 @@ fn rewrite_list(
                         let borrow_call = matches!(&e.kind, HirExprKind::Call { callee, .. }
                             if ctx.borrow_returns.contains(callee));
                         if borrow_call || matches!(&e.kind, HirExprKind::Field { .. } | HirExprKind::Index(..)
-                            | HirExprKind::Deref(_) | HirExprKind::Reflect { .. }) {
+                            | HirExprKind::Slice { .. } | HirExprKind::Deref(_) | HirExprKind::Reflect { .. }) {
                             ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: name.clone(), kind: OwnedEventKind::Borrow });
                         } else if matches!(&e.kind, HirExprKind::Literal(_)) {
                             // Literal-backed local: static storage, allocates
@@ -796,10 +811,13 @@ fn rewrite_list(
                         }
                     }
                     let own_flag = lhs.ty.as_ref().is_some_and(owned_ty) || rhs.ty.as_ref().is_some_and(owned_ty);
+                    let carries = own_flag
+                        || lhs.ty.as_ref().is_some_and(is_result_type)
+                        || rhs.ty.as_ref().is_some_and(is_result_type);
                     let kind = lhs.ty.as_ref().or(rhs.ty.as_ref()).map(kind_of).unwrap_or(OwnKind::Str);
-                    let fresh = own_flag && is_fresh_rhs(rhs, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
+                    let fresh = carries && is_fresh_rhs(rhs, fresh_vars, ctx.param_return, ctx.fresh, ctx.ok_fresh, &fn_freed);
                     fresh_vars.insert(n.clone(), fresh);
-                    if fresh { owned.insert(n.clone(), kind); } else { owned.remove(n); }
+                    if fresh && own_flag { owned.insert(n.clone(), kind); } else { owned.remove(n); }
                     if matches!(rhs.kind, HirExprKind::Identifier(_)) {
                         for id in rhs_ids {
                             owned.remove(&id);
@@ -1068,6 +1086,17 @@ fn uses(e: &HirExpr, owned: &mut HashMap<String, OwnKind>, ctx: &mut Pass<'_>) {
         | HirExprKind::Field { receiver: inner, .. } | HirExprKind::Reflect { receiver: inner, .. }
         | HirExprKind::Deref(inner) | HirExprKind::Await(inner) => use_arg(inner, Mode::Borrow, owned, ctx, ""),
         HirExprKind::Index(a, b) => { use_arg(a, Mode::Borrow, owned, ctx, ""); use_arg(b, Mode::Borrow, owned, ctx, ""); }
+        // 2026-11-13 (view semantics): slicing an OWNED local escapes a view
+        // into it — the local can no longer be released while the view lives.
+        HirExprKind::Slice { array, .. } => {
+            if let HirExprKind::Identifier(n) = &array.kind {
+                if owned.remove(n).is_some() {
+                    ctx.events.push(OwnedEvent { function: ctx.function.clone(), name: n.clone(), kind: OwnedEventKind::Borrow });
+                }
+            } else {
+                use_arg(array, Mode::Borrow, owned, ctx, "");
+            }
+        }
         HirExprKind::If { condition, then_branch, else_branch } => {
             use_arg(condition, Mode::Borrow, owned, ctx, "");
             use_arg(then_branch, Mode::Borrow, owned, ctx, "");

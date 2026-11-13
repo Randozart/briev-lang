@@ -221,7 +221,9 @@ defn http_need_more() -> HttpParse {
 // or the whole block if there is no CRLF (single-line header block).
 defn http_request_line(head: String, line_end: Int) [true][CharCount#(term) >= 0] -> String {
     when line_end < 0 {
-        term head;
+        // 2026-11-13 (owners census): the passthrough returns caller storage —
+        // copy it so every path is fresh (§13 discipline).
+        term fresh_string(head);
     };
     term head[0:line_end];
 };
@@ -267,7 +269,9 @@ defn http_path(req_line: String) [true][CharCount#(term) >= 0] -> String {
 // the text after the colon with one optional leading space trimmed. HTTP header
 // names are case-insensitive (RFC 7230), so we lower-case both sides to compare.
 defn http_header(req: HttpRequest, name: String) [true][CharCount#(term) >= 0] -> String {
-    term http_header_scan(req.headers, name, 0);
+    // 2026-11-13 (owners census): the scan returns copies or fresh empties on
+    // every path; wrap so the identity path is fresh too (§13 discipline).
+    term fresh_string(http_header_scan(req.headers, name, 0));
 };
 
 // http_header_scan - walk the header block from offset `off`, testing each
@@ -295,7 +299,8 @@ defn http_header_scan(block: String, name: String, off: Int)
 // http_first_line - the text of `rest` up to the first CRLF (or all of it).
 defn http_first_line(rest: String, nl: Int) [true][CharCount#(term) >= 0] -> String {
     when nl < 0 {
-        term rest;
+        // 2026-11-13 (owners census): passthrough of caller storage — copy.
+        term fresh_string(rest);
     };
     term rest[0:nl];
 };
