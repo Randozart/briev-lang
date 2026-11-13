@@ -25,6 +25,7 @@ import "std/float_fmt.bv";
 // from briev_rt.c) — cast_lanes owns the raw byte accessor so string.bv and
 // the lane parsers share one definition.
 import "std/byte_at.bv";
+import { I64_MAX, I64_MIN, PAGE_SIZE } from "std/constants.bv";
 
 
 // ── value → String lanes ─────────────────────────────────────────────────
@@ -205,14 +206,14 @@ defn parse_int_digits(s: String, i: Int, acc: Int, sign: Int)
     let d: Int = b - 48;
     when sign == 1 {
         // positive: clamp at INT64_MAX
-        when acc > (9223372036854775807 - d) / 10 {
-            term 9223372036854775807;
+        when acc > (I64_MAX - d) / 10 {
+            term I64_MAX;
         };
         term parse_int_digits(s, i + 1, acc * 10 + d, sign);
     };
     // negative: accumulate negative, clamp at INT64_MIN
-    when acc < (0 - 9223372036854775807 - 1 + d) / 10 {
-        term 0 - 9223372036854775807 - 1;
+    when acc < (I64_MIN + d) / 10 {
+        term I64_MIN;
     };
     term parse_int_digits(s, i + 1, acc * 10 - d, sign);
 };
@@ -1205,8 +1206,8 @@ out defn watchdog_fail() [true][term >= 0] -> Int {
 // C-STRING address: the GetCwd# call site strlen's it (the C ABI preserved
 // so the site's null-check + dance is untouched). Failure → 0 (null).
 out defn rt_getcwd() [true][term >= 0] -> Int {
-    let buf: Int = Alloc#(4096) as Int;
-    let r: Int = SysCall#(63, buf, 4096, 0, 0, 0, 0);
+    let buf: Int = Alloc#(PAGE_SIZE) as Int;
+    let r: Int = SysCall#(63, buf, PAGE_SIZE, 0, 0, 0, 0);
     when r < 0 {
         term 0;
     };

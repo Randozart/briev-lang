@@ -1,0 +1,42 @@
+// std/constants.bv gate — named constants compile, fold, and keep their values.
+//
+// Each limit is asserted at runtime against the literal it names, and the
+// golden output pins the failure count at 0, so a drifted constants module
+// fails this fixture instead of silently shifting a bound. Contract folding
+// is exercised too: clamp_byte's [pre][post] name U8_MAX, and the program
+// compiles only if the proof engine folds the imported constant.
+import { I8_MAX, I16_MAX, I32_MAX, I64_MAX } from "std/constants.bv";
+import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
+import { KIB, MIB, PAGE_SIZE, UTF16_OFFSET, NSEC_PER_SEC } from "std/constants.bv";
+import { print_int } from "std/io";
+
+defn clamp_byte(v: Int) [v >= 0 && v <= U8_MAX][term >= 0 && term <= U8_MAX] -> Int {
+    when v > 100 { term U8_MAX; };
+    term v;
+};
+
+defn mismatches(acc: Int, actual: Int, want: Int) [acc >= 0][term >= acc] -> Int {
+    when actual != want { term acc + 1; };
+    term acc;
+};
+
+let done: Int = 0;
+let failures: Int = 0;
+
+node entry [done == 0][done == 1] {
+    failures = mismatches(failures, clamp_byte(200), 255);
+    failures = mismatches(failures, I8_MAX, 127);
+    failures = mismatches(failures, I16_MAX, 32767);
+    failures = mismatches(failures, I32_MAX, 2147483647);
+    failures = mismatches(failures, I64_MAX, 9223372036854775807);
+    failures = mismatches(failures, U16_MAX, 65535);
+    failures = mismatches(failures, U32_MAX, 4294967295);
+    failures = mismatches(failures, KIB, 1024);
+    failures = mismatches(failures, MIB, 1048576);
+    failures = mismatches(failures, PAGE_SIZE, 4096);
+    failures = mismatches(failures, UTF16_OFFSET, 65536);
+    failures = mismatches(failures, NSEC_PER_SEC, 1000000000);
+    print_int(failures);
+    done = 1;
+    term;
+};

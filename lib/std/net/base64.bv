@@ -13,6 +13,7 @@
 // uses the '=' count to know how many real bytes the final group held.
 
 import "std/net/bytes.bv";
+import { U8_MAX } from "std/constants.bv";
 
 // b64_char - map a 6-bit value (0..63) to its Base64 alphabet character.
 //   0..25  -> 'A'..'Z'   (ASCII 65..90)

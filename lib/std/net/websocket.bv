@@ -47,6 +47,7 @@ const WS_PROTOCOL:  Int = 2;
 
 import "std/net/bytes";
 import "std/result";
+import { U8_MAX, U16_MAX } from "std/constants.bv";
 
 // WsMessage - the application-facing view of one frame: the header fields,
 // the UNMASKED payload materialized as a String, and the exact byte count the
@@ -190,7 +191,7 @@ defn ws_min_len16(buf: ByteBuf, off: Int, b0: Int, b1: Int, v: Int)
 defn ws_min_len64(buf: ByteBuf, off: Int, b0: Int, b1: Int, v: Int)
     -> Result<WsFrame, String>
 {
-    when v <= 65535 || v < 0 {
+    when v <= U16_MAX || v < 0 {
         term Err("protocol");
     };
     term Ok(ws_partial(buf, off, b0, b1, v, 10));
@@ -236,7 +237,7 @@ defn ws_payload_byte(buf: ByteBuf, off: Int, f: WsFrame, i: Int)
         term raw;
     };
     let shift: Int = 8 * (3 - (i & 3));
-    term raw ^ ((f.mask_key >> shift) & 255);
+    term raw ^ ((f.mask_key >> shift) & U8_MAX);
 };
 
 // ws_frame_fits - does the whole frame decoded at `off` fit in the buffer?
@@ -249,7 +250,7 @@ defn ws_frame_fits(buf: ByteBuf, off: Int, f: WsFrame) -> Bool {
 // where key byte 0 is the first byte on the wire — the top byte of the
 // big-endian Int ws_decode produced).
 defn ws_key_byte(key: Int, i: Int) -> Int {
-    term (key >> (8 * (3 - (i & 3)))) & 255;
+    term (key >> (8 * (3 - (i & 3)))) & U8_MAX;
 };
 
 // ws_encode - write one complete frame onto `out` (a growing buffer, so no
@@ -285,7 +286,7 @@ defn ws_encode(dst: GrowBuf, fin: Bool, opcode: Int, mask: Bool, key: Int,
         let after_len: GrowBuf = head.put_u8(b1 | len);
         term ws_encode_mask(after_len, mask, key, src, len);
     };
-    when len <= 65535 {
+    when len <= U16_MAX {
         let after_len: GrowBuf = head.put_u8(b1 | 126).put_u16_be(len);
         term ws_encode_mask(after_len, mask, key, src, len);
     };
@@ -299,10 +300,10 @@ defn ws_encode_mask(buf: GrowBuf, mask: Bool, key: Int, src: Int, len: Int)
     -> GrowBuf
 {
     when mask {
-        let k1: GrowBuf = buf.put_u8((key >> 24) & 255);
-        let k2: GrowBuf = k1.put_u8((key >> 16) & 255);
-        let k3: GrowBuf = k2.put_u8((key >> 8) & 255);
-        let k4: GrowBuf = k3.put_u8(key & 255);
+        let k1: GrowBuf = buf.put_u8((key >> 24) & U8_MAX);
+        let k2: GrowBuf = k1.put_u8((key >> 16) & U8_MAX);
+        let k3: GrowBuf = k2.put_u8((key >> 8) & U8_MAX);
+        let k4: GrowBuf = k3.put_u8(key & U8_MAX);
         term ws_copy_payload(k4, src, len, key, mask, 0);
     };
     term ws_copy_payload(buf, src, len, key, mask, 0);

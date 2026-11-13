@@ -13393,3 +13393,76 @@ refused.
 
 Recorded so this is not re-investigated: a future reader finding `needs_facts`
 unproven should add the bound first, not file a bug.
+
+## 2026-11-13 — daily_use_smoke E2E suite broken on this machine: `--stdlib-path` breaks C-file reads
+
+**OPEN — pre-existing on main (`b10ca88e4`, verified identical there), environmental.**
+
+`cargo nextest run -E 'binary(daily_use_smoke)'` fails all 42 tests with
+`cannot read 'std/c/coll_arena.c': No such file or directory`. Reproduced by hand:
+
+```bash
+brievc build tests/tier1/arena_smoke.bv --llvm --out /tmp/a --stdlib-path "$PWD/lib/std"   # FAILS
+brievc build tests/tier1/arena_smoke.bv --llvm --out /tmp/a                                # works
+```
+
+The harness (`build_link_run`, tests/daily_use_smoke.rs) always passes
+`--stdlib-path $CARGO_MANIFEST_DIR/lib/std`; with the flag set, the plugin that
+loads `std/c/coll_arena.c` resolves it relative to the WRONG root (the flag
+semantics strip `std/` for `.bv` imports, but the C attach path evidently does
+not share that resolution). Without the flag, `std/` resolves through the
+cwd/lib walk-up and everything compiles.
+
+Secondary symptom, same suite run: `brievc test tests/tier1/strexp.bv` (library
+surface, zero imports) fails at link with `multiple definition of '_start'`
+against gcc-16 `Scrt1.o` — also fails at the baseline commit, so it is a
+toolchain/link-flag issue in `brievc test`'s library-surface path, not a
+compiler regression.
+
+Impact: the stdlib-constants lane's `constants_gate_golden_output` E2E test
+compiles+links+runs correctly when invoked the way the harness does WITHOUT the
+flag (verified: stdout `0`, byte-identical binaries literal-vs-named), but the
+suite as wired cannot run on this machine until the `--stdlib-path` C-file
+resolution is fixed. The interpreter path (`brievc test tests/tier1/constants_gate.bv`)
+passes and pins the same golden.
+
+## FIXED — const identifiers in exported contracts are unprovable in importers (2026-11-13, fixed same day)
+
+**Cue:** a named constant (`U8_MAX`) replaced a literal inside a defn's
+`[pre][post]` contract, where the constant came from a (private or
+`export import`) import of `lib/std/constants.bv`.
+
+**Failure:** the conformance sweep flagged `lib/std/string.bv` and
+`lib/std/db/pg.bv` with `int_to_char — precondition not provable`. The
+mechanism: imported defns are GRAFTED as declaration text, and the proof
+engine evaluates a grafted contract in the IMPORTER'S scope — where the
+contract's const identifier has no declaration (constants.bv is the
+importing module's private import and does not graft transitively). The
+postcondition of prelude-grafted `byte_at` (`term <= U8_MAX`) therefore
+became an unresolvable atom, unbounding every `byte_at` result and breaking
+each downstream range proof. MASK32 in `sha1.bv` never hit this because it
+is declared and used in the SAME module.
+
+**What did not work:** `export import { U8_MAX } from "std/constants.bv";`
+(SPEC §7 re-export) — the re-export does not give the proof engine a
+resolvable constant in the importer's item list.
+
+**Fix (kept, in this branch):** constants appear in BODIES only; contracts
+spell the same predicate with literals. The obligation is unchanged (same
+numbers); only the spelling reverts. Same-module const-in-contract stays
+legal (MASK32 precedent) — the stdlib-constants migration documents this
+boundary in `lib/std/constants.bv`'s header comment.
+
+**Body constants across module boundaries are verified correct:** grafted
+`cast_lanes.bv` bodies using `I64_MAX`/`I64_MIN`/`PAGE_SIZE` compile, fold,
+and produce literal-identical machine code (`str_to_int("42")` → 42,
+`"−7"` → −7 through the I64_MIN clamp branch; byte-identical binaries
+vs the literal spelling under `-O3 -flto`).
+
+**Companion backend fix (same branch):** `const X: Int = 0 - 9223372036854775807 - 1;`
+emitted `@X = constant i64 0` — the global-value match arms only understood
+literal shapes and the `_` fallback zeroed every arithmetic declaration,
+so proof-time values and runtime loads disagreed. The emitter now folds
+integer-arithmetic const expressions through the analysis-owned const table
+(`gemm_shape::fold_consts` + `lit`) before the literal-shape match;
+unresolved shapes keep the old behavior.
