@@ -852,6 +852,10 @@ pub fn compile_source(file_path: &str, source: &str, opts: &BuildOptions) -> Res
         for line in &report.unproven {
             eprintln!("warning: --verify-bodies could not prove: {line}");
         }
+        // "Not proved" and "never examined" are different answers; say which.
+        for line in &report.skipped {
+            eprintln!("info: --verify-bodies skipped: {line}");
+        }
         // 2026-11-12 (standalone roadmap C1): a machine-readable report. Written
         // before the failure return so a violating build still produces one —
         // that is exactly when a tool needs the detail.

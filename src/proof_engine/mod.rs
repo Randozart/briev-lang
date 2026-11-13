@@ -5,7 +5,7 @@
 
 pub(crate) mod callgate;
 pub(crate) mod ledger;
-pub(crate) mod smt;
+pub(crate) use briev_verify::smt;
 pub use smt::*;
 
 use crate::ast::{Expr, Statement, TopLevel, Type};

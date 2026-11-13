@@ -37,6 +37,9 @@ fn report_is_written_for_a_violation_and_a_pass() {
     let (code, json) = run("defn f(a: Int) [a >= 0][term == a + 1] -> Int { term a + 1; };");
     assert_eq!(code, 0, "the honest body passes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-    assert!(value["proven"].as_u64().is_some_and(|n| n >= 1), "{value}");
+    assert!(
+        value["proven"].as_array().is_some_and(|names| !names.is_empty()),
+        "{value}"
+    );
     assert_eq!(value["violated"].as_array().map(Vec::len), Some(0));
 }

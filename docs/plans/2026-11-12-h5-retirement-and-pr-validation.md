@@ -159,3 +159,92 @@ convert-then-substitute seam (H4.2) is deleted:
   quick ALL DETERMINISTIC; quick gate 3788 lib + 42 integration green;
   tier1 corpus 52/54 (same two pre-existing `strexp`/`strexp2` link failures
   as baseline HEAD); Praetor at-or-below baseline on every changed file.
+
+## Execution record (2026-11-12, Phase A+C)
+
+**Phase A — emitter entries switch (DONE, `e7ea2e04`).**
+`hir_stmt_bodies` HashMap eliminated entirely. `emit_definition`/`emit_transaction`
+receive HIR bodies via per-call spec structs (`DefinitionEmitSpec`/`TransactionEmitSpec`).
+Specialization passes HIR body directly. ISR synthetic body passes None.
+
+**Phase C (statement-level) — DONE (`37c1a2b2`).**
+`hir_sourced_body` is now a pair validator (slot alignment only). Deleted:
+`convert_hir_statement`, `convert_children_seam`, `convert_scoped_seam`,
+`reconstruct_match_arms`, `release_ast_stmt`, `storage_release_view`/`strip_view`.
+One shared pair walk (`emit_children_pair`) for nested scopes, match arms, foreach
+bodies, defer flush. New native arms for Open/TrgBinding/MetadataAssignment/InlineAsm.
+`to_ast` in `emit_hir_stmt.rs`: **22 → 8** (expression-level gates only).
+
+**Phase B — destination_ownership + destination_model ports (DONE).**
+`hir::destination_ownership` (13 parity) + `hir::destination_model` (33 parity)
+with HIR fidelity (`HirTypeDef.parent`, `declaration_order`, `HirForeign.link_symbol`,
+`ItemCtx` threading).
+
+**Phase C (expression-level) — REMAINING (48 to_ast refs, was 56).**
+Breakdown:
+- `emit_expr.rs` (22): structural dispatch reconstructs AST for Field/Reflect/
+  MethodCall/Match/Slice/StructLiteral to reuse AST-shaped helpers. Each needs
+  a HIR-native version. Multi-session.
+- `emit_hir_stmt.rs` (8): expression-level `to_ast::expr` gates for Assign/
+  Guarded/Term/Match scrutinee. Same category.
+- `accel.rs` (6) + `batch_shape.rs` (4) + `region.rs` (1) + `electronics.rs` (1):
+  result-boundary crossings, ratified as accepted exceptions.
+- `emit_stmt.rs` (3) + `backend/mod.rs` (3): declaration/ABI surfaces, deferred
+  to Phase D.
+
+These 30 emission-path refs (emit_expr + emit_hir_stmt) require HIR-native
+dispatch for the remaining expression families. Each family (Field, MethodCall,
+Reflect, Match, Slice, StructLiteral) needs its own HIR-native emitter mirroring
+the AST-shaped helper. This is the last major Phase C slice.
+
+## Phase C, expression-emission slice (2026-11-13, partial)
+
+`emit_expr.rs` no longer reconstructs AST for the structural expression
+families. Converted to HIR-native dispatch:
+
+- **Match**: scrutinee, patterns (condition + payload binding), guards and
+  arm bodies emit from HIR. `MatchArms::Hir` no longer carries an AST arm
+  slice; the probe binds/decomposes HIR patterns directly. Expression-position
+  matches used as their own statement keep the AST statement route (`.smt_*`)
+  — `hir_expr_family_covered` deliberately excludes Match so the statement
+  seam still reaches that path; the operand path opts Match in explicitly.
+- **Slice**: the shared helper takes an `ExprView` (AST/HIR) for the array and
+  bounds; String/vector shape probes read the HIR identifier and bounds emit
+  through `emit_hir_operand`.
+- **StructLiteral**: image allocation and field-store tail are shared; HIR
+  field values emit through the operand path. `open_struct_image` /
+  `close_struct_image` / `StructSlot` keep both paths on one implementation.
+- **Tuple**: `TupleElems::Hir` carries only HIR items; constant-element
+  placement now mirrors the AST predicate (`is_hir_compile_time_const`).
+- **Field**: the full field dispatch (pooled-instance column, deref receiver,
+  tuple element, layout read, array field) moved into one
+  `emit_field_expression` shared by AST and HIR; receiver shape probes use
+  `ExprView`.
+- **Spawn**: the redundant AST conversion in the HIR argument path is gone
+  (`emit_hir_operand` already converts per leaf).
+
+`to_ast` in `emit_expr.rs`: **22 → 14** textual references (**21 → 9** code
+references). Remaining code crossings and why they stay:
+
+- **Index**: the helper threads the index into `emit_method_call` for tier-2
+  `op At` inlining, and mask operands store the AST receiver.
+- **MethodCall / Reflect**: dispatch reads receiver AST identity
+  (`Expr::Index` collection-element detection, dynamic-dispatch concrete
+  resolution) and `.^Ptr` constructs `AddrOf(receiver)`; member bodies take
+  AST argument slices.
+- **Call**: intrinsic/enum/struct/frgn callee surfaces take AST argument
+  slices (ordinary user-call args already emit through the HIR operand path).
+- **Short-circuit Binary**: `logical.rs` consumes AST operands and AST purity
+  predicates.
+- **Block children**: `to_ast::stmt` supplies the SOURCE statement to the
+  statement seam's splice fallback (not a dispatch reconstruction).
+- **Match `List` arm bodies**: accepted collection-witness constructor
+  exception.
+
+Gates: `cargo build` (no new warnings); `scripts/gate.sh quick` lib 3782/3782
+(the pre-existing `verify_report` JSON-schema failure remains in the
+integration batch — reproduced on unmodified main); `hir_emit_ab.sh` full
+corpus ALL BYTE-IDENTICAL; `ll_determinism_check.sh --quick` ALL
+DETERMINISTIC; focused HIR/match/field/tier2/corpus suites 28/28; Praetor
+on `src/backend/llvm` produces no new diagnostics (net one fewer issue in
+`emit_match`/`emit_struct_literal`).
