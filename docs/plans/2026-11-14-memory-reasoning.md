@@ -171,7 +171,7 @@ parameter *and* carry a contract — that is the population a memory model could
 serve. If it is a handful, the honest conclusion is that memory reasoning is not
 where the value is and the invariant line should be declared finished.
 
-### Result: 104, so it is not a handful
+### Result: 54 contracted declarations, and **none of them need `select`**
 
 Measured over `lib/` + `examples/` (1,462 top-level declarations):
 
@@ -181,21 +181,55 @@ Measured over `lib/` + `examples/` (1,462 top-level declarations):
 | non-integer parameter | 699 |
 | ... and a contract | 353 |
 | **buffer-shaped** parameter (`Data`, `Ptr`, `&`, `*`, `List`, `Map`, `Set`, `Buffer`, `Vec`, `Array`) | 221 |
-| **... and a contract — the memory population** | **104** |
+| **... and a contract, extracted strictly** | **54** |
 
-The looser rows are the shape of a measurement error worth keeping in view:
-`Bool`, `String` and `Expr` inflate 104 to 353. Only the last row is the
-population a memory model would serve.
+Two figures needed correcting, and the shape of both errors is worth keeping. `Bool`,
+`String` and `Expr` inflate the buffer row to 353. Then the loose contract detector —
+`[` anywhere in a fixed 160-character window after `)` — reported 104, because the
+window ran past the body's `{` and matched array literals. Extracting the contract
+properly (everything between `)` and the opening `{`) gives **54**.
 
-**104 against 68.** The invariant line already covers 68 in-subset loops; a working
-memory model would roughly double the verifiable surface, and it is the only path
-to the GPU-shaped code in `lib/std/numeric.bv`. That is material, not a handful, so
-memory reasoning is worth building for and this gate passes.
+Then the question that actually decides the work: what do those 54 contracts *say*
+about the buffer?
 
-What the number does **not** say is that an array theory is the next thing to
-write. Those 104 declarations first have to be *admitted*, and the blocker is that
-the prover takes integer parameters only. The next question is therefore narrower
-and much cheaper than `select`/`store`:
+| contract mentions | count |
+|---|---|
+| nothing about the buffer at all | 36 |
+| the buffer by name, never indexed | 18 |
+| the buffer's length (`buf.^Length`) | 0 |
+| **an element (`buf[i]`)** | **0** |
 
-> What is the smallest admission that lets one buffer-shaped parameter into a
-> candidate, without pretending to model its contents?
+**Zero.** No contract in `lib/` or `examples/` indexes a buffer, and none asks about
+its length. Element contents are never the subject of a contract, so an SMT array
+theory has no population to serve — `select` would be written and never called. The
+payoffs that motivated it (buffer loops, the GPU-shaped code in `lib/std/numeric.bv`)
+are reached through `$defn` metaprogramming and collection members, which SPEC §10.7
+excludes from candidacy anyway.
+
+**Admission was the whole payoff, and it shipped.** The 36 silent and 18 name-only
+declarations are exactly what `counsel 0.4.0` now admits: the parameter is opaque and
+the contract is about the integers. Nothing further is required of them.
+
+### What this closes
+
+The array theory is **not** the next thing to write. The earlier claim in this document
+— "memory reasoning would roughly double the verifiable surface" — was wrong: it
+extrapolated from the buffer-parameter count to element reasoning without checking
+that any contract mentions an element. None does.
+
+The one remaining route to element reasoning was *transitive*: a postcondition about
+a value returned by a callee whose body reads elements. That route was then measured,
+and it is empty as well — of the contracted buffer-parameter declarations, exactly
+**one** passes a buffer to a known callee (`extract_calls_from_body -> len`), and
+**none** of those callees indexes its own buffer. There is no element-dependent body
+to inline, so `select` is unreachable even transitively.
+
+The memory line is therefore **closed by measurement, not deferred**. Both routes have
+a population of zero: direct (a contract mentioning an element) and transitive (a
+callee reading one). If element reasoning is ever wanted, it has to arrive with new
+Briev code that states something about buffer *contents* in a contract — and this
+census is the check to re-run at that moment, not before.
+
+**The re-entry condition in one line:** a contract containing `buf[...]`. Zero exist
+today; the day one does, `select` acquires a caller and this document becomes a plan
+again.
