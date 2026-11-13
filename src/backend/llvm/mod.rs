@@ -3389,6 +3389,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let hir_tail = crate::hir::tail_recursion::build_tail_recursion_plan(&analysis.hir);
             let hir_loop = crate::hir::tail_recursion::build_tail_loop_plan(&analysis.hir);
             debug_assert_eq!(hir_tail.defns, ast_tail.defns, "HIR/AST tail-class drift");
+            if hir_loop.defns != ast_loop.defns {
+                let only_hir: Vec<_> = hir_loop.defns.difference(&ast_loop.defns).collect();
+                let only_ast: Vec<_> = ast_loop.defns.difference(&hir_loop.defns).collect();
+                for n in only_hir.iter().chain(only_ast.iter()) {
+                    eprintln!("[tail-loop-dbg] {n}: ast predicates (sig,cleanup,arity_match,#calls) = {:?}",
+                        crate::analysis::tail_recursion::debug_loop_predicates(&reordered_items, n));
+                }
+            }
             debug_assert_eq!(hir_loop.defns, ast_loop.defns, "HIR/AST tail-loop drift");
             (hir_tail, hir_loop)
         } else {
