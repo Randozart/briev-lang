@@ -2490,9 +2490,17 @@ Two consequences follow, both consistent with the rest of the language:
 - A proved variant makes a watchdog **redundant for that reason**, so the compiler
   can eventually diagnose it — the same move as diagnosing a redundant `seq` when
   the iteration order is provably unobservable.
-- `Convergence::Unprovable` forces a **conservative** reactor loop. A proven
-  measure is exactly the evidence needed to justify the aggressive form, so a
-  variant pays in performance as well as correctness. Contracts are fuel.
+- `Convergence::Unprovable` is **declared but never constructed**. Measured: a
+  repo-wide grep finds one occurrence of that name — the variant's own declaration
+  at `analysis/loop_shape.rs:62` — so nothing in the compiler produces it, and the
+  "conservative reactor loop" its doc comment promises is an intention, not
+  behaviour. A proven variant therefore buys correctness today; the performance
+  consequence follows only once the classifier is wired to emit it.
+
+That is the third dead analysis in this area (`check_convergence_safety` had no
+caller either, and now does; `check_dangling_ptrs` remains test-only). The pattern
+is worth naming: a declared-but-unwired analysis reads as a guarantee in the source
+and delivers nothing, which is exactly the failure this section is about.
 
 The watchdog keeps its place wherever no measure can be given: dynamic bounds,
 buffer work, or anything else outside the integer subset covered by §10.7.
