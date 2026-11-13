@@ -98,18 +98,25 @@ The `[I]` bracket landed in §10.4, its inference in §10.4, the obligations in 
 prover — so the machinery to *carry* `0 <= d < dlen` across iterations already
 exists. What is missing is only the memory model that consumes it.
 
-## 7. Measurement before building
+## 7. Measured: C carries a 37-loop population
 
-The census (`briev-verify`'s skip reasons, measured 2026-11-14) says `Load#`/`Store#`
-account for 34 skipped declarations and `indexing` for many of the rest. Before
-writing an array theory, measure the *payoff*:
+Scanned all **185** `foreach` bodies in `lib/` and classified them by what they
+need beyond integer arithmetic:
 
-1. Of the 221 `foreach` in `lib/`, how many bodies are integer-only **apart from**
-   indexing? Those are the ones C unlocks, and they can be counted today.
-2. How many need element *contents* (A), versus only addresses (C)?
+| class | loops | unlocked by |
+|---|---|---|
+| index only | **37** | **C** — address arithmetic |
+| index + something else (`Float`, `Data`, `String`, `Load#`, `Store#`, `.^`) | 49 | A, and more |
+| something else, no indexing | 31 | — |
+| neither | 68 | already in the subset |
 
-If C's population is large, build C. If it is a handful, the GPU buffers need A
-anyway and the ordering changes.
+So **37 loops are unlocked by C alone**: the largest single group after the 68
+already supported, and roughly three times the population that guarded-callee
+summaries would have reached (about 14). That settles the ordering — build C first.
+
+The 49 index-plus-other loops stay out of reach until the prover also models
+buffers or intrinsics, so A is the second step, not the first. The 68 `neither`
+loops are the ones the invariant and inference work already covers.
 
 ## 8. Sequence
 
