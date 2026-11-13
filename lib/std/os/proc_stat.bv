@@ -7,6 +7,7 @@
 // Keep the pure parser independently testable when adding other OS providers.
 import { Ok, Err, is_err, unwrap, unwrap_err } from "std/result.bv";
 import { read_file } from "std/os/fs.bv";
+import { I64_MAX } from "std/constants.bv";
 
 obj ProcStat {
     pid: Int;
@@ -45,7 +46,7 @@ defn proc_stat_unsigned(text: String, start: Int, end: Int) -> Result<Int,Int> {
     foreach index in start..end {
         let digit: Int = byte_at(text,index) - 48;
         when digit < 0 || digit > 9 { term Err(0 - 22); };
-        when value > (9223372036854775807 - digit) / 10 { term Err(0 - 34); };
+        when value > (I64_MAX - digit) / 10 { term Err(0 - 34); };
         value = value * 10 + digit;
     };
     term Ok(value);

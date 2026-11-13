@@ -52,6 +52,23 @@
 
 ## Standard Modules
 
+### Constants (`constants.bv`)
+**Status:** ✅ 100% native
+
+Named numeric constants shared across the standard library. Import
+selectively — a selective import grafts only the names you list:
+
+```briev
+import { I64_MAX, U8_MAX } from "std/constants.bv";
+```
+
+Families: signed/unsigned integer limits (`I8_MIN`..`I64_MAX`,
+`U8_MAX`..`U32_MAX`), powers of two (`POW2_15`..`POW2_32`), byte multiples
+(`KIB`, `MIB`, `GIB`, `TIB`, `PAGE_SIZE`), UTF-16 surrogate boundaries
+(`UTF16_HIGH_MIN`..`UTF16_LOW_MAX`, `UTF16_SPAN`, `UTF16_OFFSET`), and time
+units (`SEC_PER_MIN`, `SEC_PER_HOUR`, `SEC_PER_DAY`, `NSEC_PER_SEC`). Each
+declaration carries its derivation in a comment.
+
 ### Math (`math.bv`)
 **Status:** ✅ 100% native
 

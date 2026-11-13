@@ -10,9 +10,10 @@
 //! `hir::to_ast` any more. Compiler-inserted statements (`ReleaseOwned`,
 //! `TempTransfer`) have no source slot in the walk (`ReleaseOwned` is a pure
 //! insert; `TempTransfer` consumed the return statement it replaced) and
-//! always emit through their native arms. Expression leaves still cross
-//! `hir::to_ast::expr` inside the operand path until the expression families
-//! (slice D) replace them.
+//! always emit through their native arms. 2026-11-13 (H5 phase C): the
+//! value-binding and term/match statement arms take their shape and fallback
+//! expressions from the SOURCE statement at the same pair slot too, so this
+//! module no longer touches `hir::to_ast` at all.
 
 use super::{emit_stmt::emit_statement, LlvmBackend, TypedRegister};
 use std::fmt::Write;
@@ -125,10 +126,20 @@ fn emit_temp_transfer_statement(
     backend: &mut LlvmBackend,
     out: &mut String,
     stmt: &HirStmt,
+    ast: Option<&Statement>,
     indent: &str,
 ) -> Option<TypedRegister> {
     let HirStmtKind::TempTransfer { name, ty, expr, releases, ret } = &stmt.kind else {
         return None;
+    };
+    // 2026-11-13 (H5 phase C): the transfer replaced a source return
+    // statement at this pair slot; its expression is the source shape for the
+    // synthetic binding — never reconstructed from HIR.
+    let ast_expr = match ast {
+        Some(Statement::Term(Some(e)))
+        | Some(Statement::Tail(e))
+        | Some(Statement::EndProgram(Some(e))) => Some(e),
+        _ => None,
     };
     let binding = HirStmt {
         id: crate::hir::ids::NodeId(0),
@@ -141,7 +152,7 @@ fn emit_temp_transfer_statement(
             modifiers: vec![],
         },
     };
-    let bound = emit_value_statement(backend, out, &binding, indent);
+    let bound = emit_let_pair(backend, out, &binding, ast_expr, indent)?;
     for (storage, n) in releases {
         emit_release_owned_statement(backend, out, *storage, n, indent);
     }
@@ -160,8 +171,11 @@ fn emit_temp_transfer_statement(
             crate::hir::stmt::RetKind::EndProgram => HirStmtKind::EndProgram(Some(ret_expr)),
         },
     };
+    // The synthetic return reads the temp binding, so its source expression is
+    // the identifier — never the replaced statement's original expression.
+    let ret_ast = Statement::Term(Some(crate::ast::Expr::Identifier(name.clone())));
     let _ = bound;
-    emit_hir_statement(backend, out, &ret_stmt, None, indent)
+    emit_hir_statement(backend, out, &ret_stmt, Some(&ret_ast), indent)
 }
 
 /// Advance a pair-walk HIR cursor over pure inserts scheduled before the
@@ -406,82 +420,77 @@ fn emit_block_children(
 }
 
 /// H4 slice D dispatch group: value-binding statements (ArrowAssign, Let, Assign).
-fn emit_value_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
-    // 2026-11-05 (H4 slice D): native ArrowAssign — the dispatch reads the
-    // reconstructed target/value shapes (wire-fire, streams, insert/extract
-    // strategies, provenance); covered value leaves emit natively through
-    // the dual-fueled value path. Reconstructibility checked BEFORE any
-    // emission (wire-fire and stream paths emit immediately).
+fn emit_value_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    ast: Option<&Statement>,
+    indent: &str,
+) -> Option<TypedRegister> {
+    // 2026-11-13 (H5 phase C): shape dispatch and fallback come from the
+    // SOURCE AST at the same pair slot — never a reconstruction. HIR still
+    // drives native value emission through the dual-fueled helpers.
     if let HirStmtKind::ArrowAssign { target, value, consume } = &stmt.kind {
-        // 2026-11-09 (H5 seam refactor): dispatch by name/type; the AST is only
-        // a lossless fallback for an uncovered value leaf. Check that fallback
-        // exists before any emission (wire/stream paths emit immediately).
-        if crate::hir::to_ast::expr(value).is_none() {
+        let Some(Statement::ArrowAssign { target: ast_target, value: ast_value, .. }) = ast else {
             return None;
-        }
+        };
+        let target = match (target.as_ref(), ast_target.as_deref()) {
+            (Some(h), Some(a)) => Some(super::emit_stmt::ArrowOperand::HirSourced(h, a)),
+            (None, None) => None,
+            _ => return None,
+        };
         let ctx = super::emit_stmt::ArrowAssignCtx {
-            target: target.as_ref().map(super::emit_stmt::ArrowOperand::Hir),
-            value: super::emit_stmt::ArrowOperand::Hir(value),
+            target,
+            value: super::emit_stmt::ArrowOperand::HirSourced(value, ast_value),
             consume: *consume,
         };
         return Some(super::emit_stmt::emit_arrow_assign_statement(
             backend, out, indent, &ctx,
         ));
     }
-    // 2026-11-05 (H4 slice D): native Let — the binding dispatch reads the
-    // reconstructed shapes (spawn handles, bare-let slots, collection
-    // scaffolds); covered initializer leaves emit natively through the
-    // dual-fueled value path. Reconstructibility checked BEFORE any
-    // emission (task-handle registration and slot binding come first).
-    if let HirStmtKind::Let { name, names, ty, expr, modifiers, .. } = &stmt.kind {
-        let Some(ast_expr) = expr.as_ref().and_then(crate::hir::to_ast::expr) else {
-            if expr.is_some() {
-                return None;
-            }
-            return Some(super::emit_stmt::emit_let_statement(
-                backend,
-                out,
-                indent,
-                name,
-                names,
-                ty.as_ref(),
-                modifiers,
-                &super::emit_stmt::LetValue::Ast(None),
-            ));
-        };
-        return Some(super::emit_stmt::emit_let_statement(
-            backend,
-            out,
-            indent,
-            name,
-            names,
-            ty.as_ref(),
-            modifiers,
-            &super::emit_stmt::LetValue::Hir(Some(expr.as_ref().unwrap()), &ast_expr),
-        ));
-    }
-    // 2026-11-05 (H4 slice D): native Assign — the dispatch reads the
-    // reconstructed LHS/RHS shapes (provenance/collection assignment), so
-    // both cross the boundary; covered RHS leaves emit natively through the
-    // dual-fueled value path. Reconstructibility is checked BEFORE any
-    // emission (the AddrOf-pop path early-returns emit no IR, but the
-    // collection-construction path starts emitting immediately).
-    if let HirStmtKind::Assign(lhs, rhs) = &stmt.kind {
-        let Some(ast_lhs) = crate::hir::to_ast::expr(lhs) else {
+    if let HirStmtKind::Let { .. } = &stmt.kind {
+        let Some(Statement::Let { expr: ast_expr, .. }) = ast else {
             return None;
         };
-        let Some(ast_rhs) = crate::hir::to_ast::expr(rhs) else {
+        return emit_let_pair(backend, out, stmt, ast_expr.as_ref(), indent);
+    }
+    if let HirStmtKind::Assign(lhs, rhs) = &stmt.kind {
+        let Some(Statement::Assign(ast_lhs, ast_rhs)) = ast else {
             return None;
         };
         return Some(super::emit_stmt::emit_assign_statement(
             backend,
             out,
             indent,
-            &ast_lhs,
-            &super::emit_stmt::AssignValue::Hir(rhs, &ast_rhs),
+            ast_lhs,
+            &super::emit_stmt::AssignValue::Hir(rhs, ast_rhs),
         ));
     }
     None
+}
+
+/// 2026-11-13 (H5 phase C): pair a Let HIR statement with its SOURCE AST
+/// initializer (both `None` = bare let). The value dispatch reads the source
+/// shape; a HIR initializer without a source expression cannot dispatch and
+/// declines so the caller splices the source statement.
+fn emit_let_pair(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    ast_expr: Option<&crate::ast::Expr>,
+    indent: &str,
+) -> Option<TypedRegister> {
+    let HirStmtKind::Let { name, names, ty, expr, modifiers, .. } = &stmt.kind else {
+        return None;
+    };
+    let value = match (expr.as_ref(), ast_expr) {
+        (Some(h), Some(a)) => super::emit_stmt::LetValue::Hir(Some(h), a),
+        (None, None) => super::emit_stmt::LetValue::Ast(None),
+        _ => return None,
+    };
+    Some(super::emit_stmt::emit_let_statement(
+        backend, out, indent, name, names, ty.as_ref(), modifiers, &value,
+    ))
 }
 
 /// H4 slice D dispatch group: Foreach (shared loop-engine helper).
@@ -522,66 +531,86 @@ fn emit_foreach_statement_hir(
 }
 
 /// H4 slice D dispatch group: Term + Tail (the P-gated transaction exit).
-fn emit_term_statement(backend: &mut LlvmBackend, out: &mut String, stmt: &HirStmt, indent: &str) -> Option<TypedRegister> {
+fn emit_term_statement(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    stmt: &HirStmt,
+    ast: Option<&Statement>,
+    indent: &str,
+) -> Option<TypedRegister> {
     match &stmt.kind {
-        HirStmtKind::Term(val) => emit_term_value(backend, out, val, indent),
+        HirStmtKind::Term(val) => {
+            emit_term_value(backend, out, val, term_source_value(ast), indent)
+        }
         HirStmtKind::Tail(e) => {
             let term = HirStmt {
                 id: stmt.id,
                 span: stmt.span,
                 kind: HirStmtKind::Term(Some(e.clone())),
             };
-            emit_hir_statement(backend, out, &term, None, indent)
+            emit_hir_statement(backend, out, &term, ast, indent)
         }
         _ => None,
     }
 }
 
-/// Term value emission + the P-gated exit (body verbatim from the arm).
+/// The SOURCE value expression a paired Term/Tail statement carries.
+fn term_source_value(ast: Option<&Statement>) -> Option<&crate::ast::Expr> {
+    match ast? {
+        Statement::Term(Some(e)) | Statement::Tail(e) => Some(e),
+        _ => None,
+    }
+}
+
+/// Term value emission + the P-gated exit. The value emits natively through
+/// the operand path, falling back to the SOURCE AST expression at the pair
+/// slot (no reconstruction).
 fn emit_term_value(
     backend: &mut LlvmBackend,
     out: &mut String,
     val: &Option<crate::hir::expr::HirExpr>,
+    ast_v: Option<&crate::ast::Expr>,
     indent: &str,
 ) -> Option<TypedRegister> {
-        if let Some(v) = val {
-            if crate::hir::to_ast::expr(v).is_none() {
-                return None;
-            }
-        }
-        if val.is_some() && backend.fun.inline_member_exit.is_none() {
-            super::emit_stmt::emit_web_flush_batch(backend, out, indent);
-            backend.flush_defer_cleanup(out, indent);
-        }
-        if let Some(v) = val {
-            let saved = super::emit_stmt::begin_term_return_context(backend);
-            let ast_v = crate::hir::to_ast::expr(v).expect("guarded above");
-            let returned_collection = if matches!(v.kind, HirExprKind::List(_)) {
-                backend.fun.item_return_type.clone().and_then(|ty| {
-                    backend
-                        .construct_local_collection(out, indent, &ty, &ast_v)
-                        .map(|(value, _)| value)
-                })
-            } else {
-                None
-            };
-            let reg = returned_collection.unwrap_or_else(|| {
-                match backend.emit_hir_operand(out, v, indent) {
-                    Some(r) => r,
-                    // Unreachable under the reconstructibility guard; kept
-                    // total so no path can double-emit.
-                    None => backend.emit_expr(out, &ast_v, indent),
-                }
-            });
-            super::emit_stmt::emit_term_value_tail(backend, out, indent, reg, saved);
+    // 2026-11-13 (H5 phase C): a value term needs its source expression for
+    // the collection-witness construction and the uncovered-leaf fallback.
+    // Decline BEFORE the web flush so an unpaired term can never leave
+    // partial IR (the caller then splices the source statement).
+    if val.is_some() && ast_v.is_none() {
+        return None;
+    }
+    if val.is_some() && backend.fun.inline_member_exit.is_none() {
+        super::emit_stmt::emit_web_flush_batch(backend, out, indent);
+        backend.flush_defer_cleanup(out, indent);
+    }
+    if let Some(v) = val {
+        let saved = super::emit_stmt::begin_term_return_context(backend);
+        let ast_v = ast_v.expect("guarded above");
+        let returned_collection = if matches!(v.kind, HirExprKind::List(_)) {
+            backend.fun.item_return_type.clone().and_then(|ty| {
+                backend
+                    .construct_local_collection(out, indent, &ty, ast_v)
+                    .map(|(value, _)| value)
+            })
         } else {
-            super::emit_stmt::emit_bare_term_gate(backend, out, indent);
-        }
-        return Some(TypedRegister {
-            name: backend.fun.gen_reg(),
-            ty: crate::ast::Type::void(),
+            None
+        };
+        let reg = returned_collection.unwrap_or_else(|| {
+            match backend.emit_hir_operand(out, v, indent) {
+                Some(r) => r,
+                // The source AST covers every leaf the HIR operand path
+                // declines; no reconstruction, no double emission.
+                None => backend.emit_expr(out, ast_v, indent),
+            }
         });
-    
+        super::emit_stmt::emit_term_value_tail(backend, out, indent, reg, saved);
+    } else {
+        super::emit_stmt::emit_bare_term_gate(backend, out, indent);
+    }
+    Some(TypedRegister {
+        name: backend.fun.gen_reg(),
+        ty: crate::ast::Type::void(),
+    })
 }
 
 /// H4 slice D dispatch group: statement Match (phi chain).
@@ -595,12 +624,12 @@ fn emit_match_statement(
     let HirStmtKind::Match { expr: scrutinee, arms } = &stmt.kind else {
         return None;
     };
-    // 2026-11-12 (H5 phase C): arm patterns and bodies come from the SOURCE
-    // statement (no reconstruction). Reconstructibility gate BEFORE any
-    // emission (scrutinee included); arm count and per-arm body pairing are
-    // checked before the label chain emits.
-    crate::hir::to_ast::expr(scrutinee)?;
-    let Some(Statement::Match { arms: ast_arms, .. }) = ast else {
+    // 2026-11-13 (H5 phase C): scrutinee, arm patterns and bodies all come
+    // from the SOURCE statement (no reconstruction). Arm count and per-arm
+    // body pairing are checked before the label chain emits; the scrutinee
+    // emits natively through the operand path with the source AST as its
+    // uncovered-leaf fallback.
+    let Some(Statement::Match { expr: ast_scrutinee, arms: ast_arms }) = ast else {
         return None;
     };
     if ast_arms.len() != arms.len() {
@@ -611,7 +640,10 @@ fn emit_match_statement(
             return None;
         }
     }
-    let scrut = backend.emit_hir_operand(out, scrutinee, indent)?;
+    let scrut = match backend.emit_hir_operand(out, scrutinee, indent) {
+        Some(reg) => reg,
+        None => backend.emit_expr(out, ast_scrutinee, indent),
+    };
     let counter = backend.fun.txn_counter;
     backend.fun.txn_counter += 1;
     let merge = format!(".smt_end_{}", counter);
@@ -992,17 +1024,19 @@ pub(crate) fn emit_hir_statement(
         HirStmtKind::ReleaseOwned { storage, name } => {
             emit_release_owned_statement(backend, out, *storage, name, indent)
         }
-        HirStmtKind::TempTransfer { .. } => emit_temp_transfer_statement(backend, out, stmt, indent),
+        HirStmtKind::TempTransfer { .. } => {
+            emit_temp_transfer_statement(backend, out, stmt, ast, indent)
+        }
         HirStmtKind::Expression(_) => emit_expr_statement(backend, out, stmt, indent),
         HirStmtKind::Guarded(..) | HirStmtKind::Block(_) => {
             emit_scoped_statement(backend, out, stmt, ast, indent)
         }
         HirStmtKind::ArrowAssign { .. } | HirStmtKind::Let { .. } | HirStmtKind::Assign(..) => {
-            emit_value_statement(backend, out, stmt, indent)
+            emit_value_statement(backend, out, stmt, ast, indent)
         }
         HirStmtKind::Foreach { .. } => emit_foreach_statement_hir(backend, out, stmt, ast, indent),
         HirStmtKind::Term(_) | HirStmtKind::Tail(_) => {
-            emit_term_statement(backend, out, stmt, indent)
+            emit_term_statement(backend, out, stmt, ast, indent)
         }
         HirStmtKind::Match { .. } => emit_match_statement(backend, out, stmt, ast, indent),
         HirStmtKind::SyncBlock(children) | HirStmtKind::Mutex(children) => {

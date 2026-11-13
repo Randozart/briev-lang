@@ -23,6 +23,7 @@ import {
     SYS_SOCKET, SYS_CONNECT, SYS_BIND, SYS_LISTEN, SYS_ACCEPT,
     SYS_SEND, SYS_RECV, SYS_SHUTDOWN, SYS_SETSOCKOPT, SYS_FCNTL, SYS_CLOSE
 } from "std/posix/syscall.bv";
+import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
 
 // L1 framing - the fixed ByteBuf and its ByteSink writers. The 16-byte
 // sockaddr_in is assembled with exactly these writers (put_u8 for the
@@ -153,16 +154,16 @@ defn make_sockaddr_in(addr: Int, port: Int)
     // sin_port and sin_addr big-endian (network order on the wire), then
     // 8 bytes of zero padding filling the struct to 16.
     let b0: ByteBuf = buf_new(16);
-    let b1: ByteBuf = b0.put_u8(AF_INET & 255);
-    let b2: ByteBuf = b1.put_u8((AF_INET >> 8) & 255);
+    let b1: ByteBuf = b0.put_u8(AF_INET & U8_MAX);
+    let b2: ByteBuf = b1.put_u8((AF_INET >> 8) & U8_MAX);
     // sin_port, network byte order
-    let b3: ByteBuf = b2.put_u8((port >> 8) & 255);
-    let b4: ByteBuf = b3.put_u8(port & 255);
+    let b3: ByteBuf = b2.put_u8((port >> 8) & U8_MAX);
+    let b4: ByteBuf = b3.put_u8(port & U8_MAX);
     // sin_addr, network byte order
-    let b5: ByteBuf = b4.put_u8((addr >> 24) & 255);
-    let b6: ByteBuf = b5.put_u8((addr >> 16) & 255);
-    let b7: ByteBuf = b6.put_u8((addr >> 8) & 255);
-    let b8: ByteBuf = b7.put_u8(addr & 255);
+    let b5: ByteBuf = b4.put_u8((addr >> 24) & U8_MAX);
+    let b6: ByteBuf = b5.put_u8((addr >> 16) & U8_MAX);
+    let b7: ByteBuf = b6.put_u8((addr >> 8) & U8_MAX);
+    let b8: ByteBuf = b7.put_u8(addr & U8_MAX);
     term b8.pad_zeros(8);
 };
 
@@ -361,8 +362,8 @@ defn sock_set_recv_timeout(s: Socket, seconds: Int)
     -> Int
 {
     let opt: ByteBuf = buf_new(16)
-        .put_u8(seconds & 255).put_u8((seconds >> 8) & 255)
-        .put_u8((seconds >> 16) & 255).put_u8((seconds >> 24) & 255)
+        .put_u8(seconds & U8_MAX).put_u8((seconds >> 8) & U8_MAX)
+        .put_u8((seconds >> 16) & U8_MAX).put_u8((seconds >> 24) & U8_MAX)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0)
         .put_u8(0).put_u8(0).put_u8(0).put_u8(0);
@@ -388,8 +389,8 @@ defn make_sockaddr_un(path: String)
     -> ByteBuf
 {
     let b0: ByteBuf = buf_new(110);
-    let b1: ByteBuf = b0.put_u8(AF_UNIX & 255);
-    let b2: ByteBuf = b1.put_u8((AF_UNIX >> 8) & 255);
+    let b1: ByteBuf = b0.put_u8(AF_UNIX & U8_MAX);
+    let b2: ByteBuf = b1.put_u8((AF_UNIX >> 8) & U8_MAX);
     term b2.put_cstr(path);
 };
 

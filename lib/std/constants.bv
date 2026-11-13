@@ -1,0 +1,67 @@
+// std/constants.bv — named numeric constants for the whole standard library.
+//
+// One shared home for the values that recur across modules as bare literals:
+// two's-complement integer limits, power-of-two byte multiples, UTF-16
+// surrogate boundaries, and calendar/nanosecond units. Every constant carries
+// its derivation in a comment. Import selectively:
+//
+//     import { I64_MAX, U8_MAX } from "std/constants.bv";
+//
+// SCOPE RULE (see BUGS.md 2026-11-13): use these names in BODIES and
+// same-module contracts. A defn contract that is GRAFTED into importers
+// (every exported defn's surface) must spell its literals — the proof engine
+// evaluates grafted contracts in the importer's scope, where these names are
+// not declared, and an unresolvable contract atom unproves the obligation.
+//
+// `const` is compile-time-stable: the value is fixed at declaration, body
+// reads fold at emission (see `gemm_shape::fold_consts`), and clang -O3
+// folds the emitted `constant` global — named bodies produce
+// literal-identical machine code.
+
+// ── Signed integer limits (two's complement) ─────────────────────────────
+// I64_MIN cannot be written as a bare literal (its magnitude overflows the
+// decimal lexer); it is built arithmetically and folded like the rest.
+const I8_MIN: Int = 0 - 128;                    // -2^7
+const I8_MAX: Int = 127;                        // 2^7 - 1
+const I16_MIN: Int = 0 - 32768;                 // -2^15
+const I16_MAX: Int = 32767;                     // 2^15 - 1
+const I32_MIN: Int = 0 - 2147483648;            // -2^31
+const I32_MAX: Int = 2147483647;                // 2^31 - 1
+const I64_MIN: Int = 0 - 9223372036854775807 - 1; // -2^63
+const I64_MAX: Int = 9223372036854775807;       // 2^63 - 1
+
+// ── Unsigned integer limits ──────────────────────────────────────────────
+// (U64_MAX is omitted: 2^64 - 1 is not representable in the 64-bit Int.)
+const U8_MAX: Int = 255;                        // 2^8 - 1
+const U16_MAX: Int = 65535;                     // 2^16 - 1
+const U32_MAX: Int = 4294967295;                // 2^32 - 1
+
+// ── Powers of two (sign-fixup thresholds, wrap constants) ────────────────
+// Reinterpreting a width-N bit pattern as its signed sibling subtracts
+// 2^N when the pattern is >= 2^(N-1): `raw >= POW2_15 → raw - POW2_16`.
+const POW2_15: Int = 32768;                     // 2^15 — i16 sign threshold
+const POW2_16: Int = 65536;                     // 2^16 — i16 wrap
+const POW2_24: Int = 16777216;                  // 2^24 — 16 MiB element counts
+const POW2_31: Int = 2147483648;                // 2^31 — i32 sign threshold
+const POW2_32: Int = 4294967296;                // 2^32 — i32 wrap
+
+// ── Byte multiples ───────────────────────────────────────────────────────
+const KIB: Int = 1024;                          // 2^10 bytes
+const MIB: Int = 1048576;                       // 2^20 bytes
+const GIB: Int = 1073741824;                    // 2^30 bytes
+const TIB: Int = 1099511627776;                 // 2^40 bytes
+const PAGE_SIZE: Int = 4096;                    // 2^12 — native page / buffer granularity
+
+// ── UTF-16 surrogate boundaries (JSON \uXXXX pairs) ──────────────────────
+const UTF16_HIGH_MIN: Int = 55296;              // 0xD800 — high-surrogate start
+const UTF16_HIGH_MAX: Int = 56319;              // 0xDBFF — high-surrogate end
+const UTF16_LOW_MIN: Int = 56320;               // 0xDC00 — low-surrogate start
+const UTF16_LOW_MAX: Int = 57343;               // 0xDFFF — low-surrogate end
+const UTF16_SPAN: Int = 1024;                   // 0x0400 — code points per surrogate half
+const UTF16_OFFSET: Int = 65536;                // 0x10000 — astral-plane offset
+
+// ── Time units ───────────────────────────────────────────────────────────
+const SEC_PER_MIN: Int = 60;                    // 60 s
+const SEC_PER_HOUR: Int = 3600;                 // 60 * 60
+const SEC_PER_DAY: Int = 86400;                 // 24 * 60 * 60
+const NSEC_PER_SEC: Int = 1000000000;           // 10^9 ns

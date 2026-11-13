@@ -26,9 +26,11 @@ defn read_u16(bc: Ptr<Int>, addr: Int) -> Int {
     term read_u8(bc, addr) | (read_u8(bc, addr + 1) << 8);
 };
 
+import { POW2_15, POW2_16, POW2_31, POW2_32 } from "std/constants.bv";
+
 defn read_i16(bc: Ptr<Int>, addr: Int) -> Int {
     let raw = read_u16(bc, addr);
-    when raw >= 32768 { term raw - 65536; };
+    when raw >= POW2_15 { term raw - POW2_16; };
     term raw;
 };
 
@@ -41,7 +43,7 @@ defn read_u32(bc: Ptr<Int>, addr: Int) -> Int {
 
 defn read_i32(bc: Ptr<Int>, addr: Int) -> Int {
     let raw = read_u32(bc, addr);
-    when raw >= 2147483648 { term raw - 4294967296; };
+    when raw >= POW2_31 { term raw - POW2_32; };
     term raw;
 };
 

@@ -30,9 +30,11 @@ defn read_u16(bc: Ptr<Int>, addr: Int) -> Int {
     term (word >> (byte_off * 8)) & 0xFFFF;
 };
 
+import { POW2_15, POW2_16, POW2_31, POW2_32 } from "std/constants.bv";
+
 defn read_i16(bc: Ptr<Int>, addr: Int) -> Int {
     let val = read_u16(bc, addr);
-    when val >= 32768 { term val - 65536; };
+    when val >= POW2_15 { term val - POW2_16; };
     term val;
 };
 

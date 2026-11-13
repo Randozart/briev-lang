@@ -6,6 +6,7 @@
 // construction, keeping the walk free of field-level arrow mutation.
 
 import "./proto.bv";
+import { POW2_15, POW2_16, POW2_31, POW2_32 } from "std/constants.bv";
 import "./tensor.bv";
 import "std/string.bv";
 import "std/os/fs.bv";
@@ -367,8 +368,8 @@ defn tensor_copy_f32(t: Tensor, bytes: String, count: Int) -> Void {
 defn tensor_copy_int(t: Tensor, bytes: String, count: Int, width: Int) -> Void {
     foreach i in 0..count {
         let v: Int = int_from_bytes_le(bytes, width * i, width);
-        when width == 2 && v >= 32768 { v = v - 65536; };
-        when width == 4 && v >= 2147483648 { v = v - 4294967296; };
+        when width == 2 && v >= POW2_15 { v = v - POW2_16; };
+        when width == 4 && v >= POW2_31 { v = v - POW2_32; };
         tensor_set(t, i, v as Float);
     };
     term;

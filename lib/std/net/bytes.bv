@@ -3,6 +3,7 @@
 // 2026-10-18 (fixture 1): WebSocket frame codec appended (RFC 6455 §5.2) —
 // ws_decode / ws_payload_byte / ws_encode on top of the L1 readers/writers.
 import "std/result";
+import { U8_MAX, U16_MAX, U32_MAX } from "std/constants.bv";
 //
 // 2026-10-09 (fullstack-webapp net stack): PostgreSQL and HTTP need exact
 // byte-level framing - lengths in network byte order, NUL-terminated strings,
@@ -47,32 +48,32 @@ trait ByteSink {
     // and HTTP use for multi-byte lengths. Built on put_u8, so the two writes
     // inherit whatever room contract the concrete put_u8 carries.
     defn put_u16_be(sink: Self, val: Int) -> Self {
-        let high: Self = put_u8(sink, (val >> 8) & 255);
-        term put_u8(high, val & 255);
+        let high: Self = put_u8(sink, (val >> 8) & U8_MAX);
+        term put_u8(high, val & U8_MAX);
     };
 
     // put_u32_be - write a 32-bit value (0..4294967295) in BIG-ENDIAN order:
     // four bytes, most significant first. This is the Postgres message length
     // prefix. Built by chaining put_u8, inheriting its room contract per byte.
     defn put_u32_be(sink: Self, val: Int) -> Self {
-        let byte0: Self = put_u8(sink,  (val >> 24) & 255);
-        let byte1: Self = put_u8(byte0, (val >> 16) & 255);
-        let byte2: Self = put_u8(byte1, (val >> 8) & 255);
-        term put_u8(byte2, val & 255);
+        let byte0: Self = put_u8(sink,  (val >> 24) & U8_MAX);
+        let byte1: Self = put_u8(byte0, (val >> 16) & U8_MAX);
+        let byte2: Self = put_u8(byte1, (val >> 8) & U8_MAX);
+        term put_u8(byte2, val & U8_MAX);
     };
 
     // put_u64_be - write a 64-bit value in BIG-ENDIAN order: eight bytes, most
     // significant first. This is the WebSocket 64-bit frame length field (RFC
     // 6455 caps it at 2^63-1). Built by chaining put_u8 like put_u32_be.
     defn put_u64_be(sink: Self, val: Int) -> Self {
-        let byte0: Self = put_u8(sink,  (val >> 56) & 255);
-        let byte1: Self = put_u8(byte0, (val >> 48) & 255);
-        let byte2: Self = put_u8(byte1, (val >> 40) & 255);
-        let byte3: Self = put_u8(byte2, (val >> 32) & 255);
-        let byte4: Self = put_u8(byte3, (val >> 24) & 255);
-        let byte5: Self = put_u8(byte4, (val >> 16) & 255);
-        let byte6: Self = put_u8(byte5, (val >> 8) & 255);
-        term put_u8(byte6, val & 255);
+        let byte0: Self = put_u8(sink,  (val >> 56) & U8_MAX);
+        let byte1: Self = put_u8(byte0, (val >> 48) & U8_MAX);
+        let byte2: Self = put_u8(byte1, (val >> 40) & U8_MAX);
+        let byte3: Self = put_u8(byte2, (val >> 32) & U8_MAX);
+        let byte4: Self = put_u8(byte3, (val >> 24) & U8_MAX);
+        let byte5: Self = put_u8(byte4, (val >> 16) & U8_MAX);
+        let byte6: Self = put_u8(byte5, (val >> 8) & U8_MAX);
+        term put_u8(byte6, val & U8_MAX);
     };
 
     // put_cstr - write a String as a NUL-terminated C string: the raw UTF-8

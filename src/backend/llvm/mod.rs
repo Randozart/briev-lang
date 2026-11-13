@@ -4554,6 +4554,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Deduplicate identical constants to avoid redundant cache lines.
         // LLVM `@alias` maps multiple names to the same global without
         // allocating separate storage.
+        // 2026-11-13 (stdlib constants): a const declared as pure integer
+        // arithmetic (`const I64_MIN: Int = 0 - 9223372036854775807 - 1;`)
+        // must emit its folded value — the match arms below only understand
+        // literal shapes, and the `_` fallback silently emitted a zero global
+        // for any arithmetic declaration (proof-time and runtime disagreed).
+        // Fold through the analysis-owned const table (the same
+        // `gemm_shape::fold_consts` + `lit` mechanism dimension resolution
+        // uses, populated above); shapes that still do not resolve keep the
+        // existing literal-shape handling untouched.
+        let fold_to_int = |expr: &Expr| -> Option<Expr> {
+            crate::analysis::gemm_shape::lit(
+                &crate::analysis::gemm_shape::fold_consts(expr, &self.ctx.const_values),
+                &self.ctx.const_values,
+            )
+            .map(Expr::Decimal)
+        };
         let mut dedup_map: HashMap<String, String> = HashMap::new(); // key → canonical_name
         let mut alias_map: HashMap<String, String> = HashMap::new(); // name → canonical_name
         // 2026-07-19: Sorted for deterministic IR order.
@@ -4561,6 +4577,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_constants.sort();
         for name in &sorted_constants {
             let (ty, expr) = &self.ctx.constants[name];
+            let expr: &Expr = &fold_to_int(expr).unwrap_or_else(|| expr.clone());
             // 2026-10-22: constants must honor target-sized flexible Int just
             // like ordinary values; universe metadata alone may describe the
             // 64-bit maximum on wasm32. Keep declarations, aliases and reads
@@ -4595,6 +4612,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_constants2.sort();
         for name in &sorted_constants2 {
             let (ty, expr) = &self.ctx.constants[name];
+            let expr: &Expr = &fold_to_int(expr).unwrap_or_else(|| expr.clone());
             let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.clone());
             if canonical != *name {
                 let llvm_ty = self.llvm_type(ty);

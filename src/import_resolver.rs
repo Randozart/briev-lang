@@ -1330,6 +1330,16 @@ impl ImportResolver {
         let mut changed = true;
         while changed {
             changed = false;
+            // 2026-11-13 (stdlib constants): a kept trait's DEFAULT method
+            // bodies reference the module's own imports (`& U8_MAX` inside
+            // `put_u32_be`). Retain same-module traits BEFORE the ref walk so
+            // their bodies join the closure — running retention only after
+            // the loop dropped every constant (and transitively every name)
+            // the defaults read: the trait item is reachable only through
+            // `retain_module_traits`, never through `item_name(keep)`, so
+            // its refs never entered the fixpoint and the typechecker saw
+            // `undefined variable 'U8_MAX'` in every named-import unit.
+            retain_module_traits(items, origins, &mut keep);
             let mut refs: std::collections::HashSet<String> = std::collections::HashSet::new();
             for item in items {
                 if Self::item_name(item).map_or(false, |n| keep.contains(n)) {
@@ -3290,6 +3300,46 @@ fn test_dbv_import_rejected() {
             names.contains(&"count"),
             "module state read by a kept defn must be pulled in by the \
              state-closure pass: {names:?}"
+        );
+    }
+
+    #[test]
+    fn named_import_keeps_consts_read_by_kept_trait_defaults() {
+        // 2026-11-13 (stdlib constants): a trait DEFAULT body reads the
+        // module's own const import (`& U8_MAX` inside `put_u32_be`). The
+        // trait item is reachable only through `retain_module_traits`, so
+        // retention must run inside the closure fixpoint — running it after
+        // the loop dropped the const and the typechecker saw
+        // `undefined variable 'U8_MAX'` in every named-import unit.
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("wire.bv"),
+            "import { U8_MAX } from \"./dep.bv\";\n\
+             const LIMIT: Int = 100;\n\
+             trait Sink { defn put(s: Self, v: Int) -> Self { term put_raw(s, v & U8_MAX); }; };\n\
+             defn put_raw(s: Int, v: Int) -> Int { term v; };\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("dep.bv"), "const U8_MAX: Int = 255;\n").unwrap();
+        let src = dir.path().join("main.bv");
+        fs::write(&src, "").unwrap();
+
+        let items = vec![TopLevel::Import(Import::literal(
+            "wire.bv",
+            vec![("put_raw".to_string(), "put_raw".to_string())],
+        ))];
+        let mut resolver = ImportResolver::new();
+        resolver.add_search_path(dir.path().to_path_buf());
+        let result = resolver.resolve_imports(items, &src).unwrap();
+
+        let names: Vec<&str> = result.iter().filter_map(ImportResolver::item_name).collect();
+        assert!(
+            names.contains(&"put_raw"),
+            "the named defn is kept: {names:?}"
+        );
+        assert!(
+            names.contains(&"U8_MAX"),
+            "a const read by a retained trait default must ride the closure: {names:?}"
         );
     }
 }
