@@ -1157,7 +1157,11 @@ fn evaluate_body(body: &[Statement]) -> Result<Expr, ()> {
             Statement::Let {
                 name, names, expr, ..
             } => {
-                if !names.is_empty() {
+                // A plain `let x = e;` carries one name; only a multi-target
+                // binding stops the body from having a single value. Requiring
+                // an empty list silently denied a summary to every callee whose
+                // body contained an ordinary `let`.
+                if names.len() > 1 {
                     return Err(());
                 }
                 if let Some(e) = expr {
