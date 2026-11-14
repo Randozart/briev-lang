@@ -4940,11 +4940,14 @@ impl LlvmBackend {
         // statement seam — no AST substitution, no reconstruction. The pair
         // check validates slot alignment; on drift the plain AST body emits
         // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
-        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled() {
-            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &d.body))
-        } else {
-            None
-        };
+        // 2026-11-14 (A/B byte-identity): the pair walk runs in BOTH modes.
+        // The statement walk emits compiler-inserted statements (owned-storage
+        // releases, temp transfers); gating it on HIR mode made `BRIEV_HIR_EMIT=0`
+        // skip every release and diverge (recommender: HIR freed a consumed
+        // substring, AST leaked it). The mode now selects expression dispatch
+        // only, which is what the A/B tripwire is meant to compare.
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> =
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &d.body));
         // A defn is not a state-machine transaction. Leaving the previous
         // txn's name here made emit_web_flush_batch treat every defn `term`
         // as a commit: a recursive title lookup flushed all 32 bound fields
@@ -6002,11 +6005,10 @@ impl LlvmBackend {
         // statement seam — no AST substitution, no reconstruction. The pair
         // check validates slot alignment; on drift the plain AST body emits
         // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
-        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled() {
-            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &txn.body))
-        } else {
-            None
-        };
+        // 2026-11-14 (A/B byte-identity): pair walk in both modes — see
+        // `emit_definition`.
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> =
+            hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &txn.body));
         let has_output = txn.output_type.is_some() || !txn.outputs.is_empty();
         // 2026-09-14 (machine-entry plan): non-reactive txns are CALLABLES —
         // bare-name emission for ALL of them, not just param/output ones.

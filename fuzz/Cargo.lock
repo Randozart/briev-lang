@@ -114,6 +114,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "briev-verify",
  "dirs",
  "flate2",
  "js-sys",
@@ -151,6 +152,13 @@ version = "0.0.0"
 dependencies = [
  "briev-compiler",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "briev-verify"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
