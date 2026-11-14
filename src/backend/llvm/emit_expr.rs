@@ -25,8 +25,11 @@
 //     surfaces take AST argument slices. Ordinary user-call arguments are
 //     already emitted through the HIR operand path; the eager slice is the
 //     reconstructibility gate for those AST-only callee surfaces.
-//   - short-circuit Binary: `logical.rs` control-flow helpers consume AST
-//     operands and AST purity predicates.
+//   - short-circuit Binary: CONVERTED for the register-level fast path
+//     (2026-11-13): `emit_short_circuit_hir` shares the exact predicate
+//     (`short_circuit_register_fast`) and emission with the AST path; the
+//     CFG form (impure RHS / beginprogram) declines to whole-expression
+//     conversion, keeping today's AST routing.
 //   - Block children: `to_ast::stmt` supplies the SOURCE statement to the
 //     statement seam's splice fallback. It is not a dispatch reconstruction,
 //     and stays necessary while the families above can decline.
@@ -251,7 +254,7 @@ impl ExprView<'_> {
 
 /// Emit a viewed operand. HIR views are lossless on this path (the coverage
 /// predicate checked the whole expression before emission).
-fn emit_view_expr(
+pub(super) fn emit_view_expr(
     backend: &mut LlvmBackend,
     out: &mut String,
     view: ExprView<'_>,
@@ -765,9 +768,29 @@ impl LlvmBackend {
                 self.emit_unary_op(out, &v, op, &operand, indent)
             }
             HirExprKind::Binary { op, left, right } => {
-                // And/Or short-circuit: emit_short_circuit consumes AST
-                // operands; fall back to whole-expression conversion.
+                // And/Or short-circuit (2026-11-13, H5 phase C): the
+                // register-level fast path emits both operands through the
+                // view path when the shared predicate holds and both operands
+                // are lossless (coverage guarantees this on the operand path;
+                // the gate repeats it for direct callers). Otherwise decline:
+                // whole-expression conversion keeps the CFG form on today's
+                // AST routing.
                 if matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) {
+                    let short_value = matches!(op, crate::ast::BinaryOpKind::Or);
+                    if hir_expr_lossless(left)
+                        && hir_expr_lossless(right)
+                        && Self::short_circuit_register_fast(
+                            ExprView::Hir(left),
+                            ExprView::Hir(right),
+                        )
+                    {
+                        return Some(self.short_circuit_register_level(
+                            out,
+                            (ExprView::Hir(left), ExprView::Hir(right)),
+                            short_value,
+                            indent,
+                        ));
+                    }
                     return None;
                 }
                 // 2026-07-21 Mod special case (phi-tracked counter dividend),
@@ -10634,6 +10657,22 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
         {
             hir_expr_family_covered(left) && hir_expr_family_covered(right)
         }
+        // 2026-11-13 (H5 phase C): short-circuit And/Or is native when the
+        // register-level fast path applies — the exact predicate
+        // `emit_short_circuit` uses, plus operand losslessness (the view
+        // path cannot fall back mid-emission). Impure RHS / beginprogram
+        // stays uncovered: the reconstruct fallback keeps the CFG form on
+        // today's AST routing.
+        K::Binary { op, left, right }
+            if matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>
+        {
+            hir_expr_lossless(left)
+                && hir_expr_lossless(right)
+                && LlvmBackend::short_circuit_register_fast(
+                    ExprView::Hir(left),
+                    ExprView::Hir(right),
+                )
+        }
         // 2026-11-13 (H5 phase C): the match and struct-literal families are
         // native. Coverage additionally requires losslessness (no `Other`
         // anywhere) because the emitter takes the HIR path without an AST
@@ -10653,7 +10692,7 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
 /// `Other` placeholder — the one shape `hir::to_ast` cannot reconstruct and
 /// therefore the one shape the native emitter cannot fall back from. This is
 /// a pure predicate: it builds no AST.
-fn hir_expr_lossless(expr: &crate::hir::expr::HirExpr) -> bool {
+pub(super) fn hir_expr_lossless(expr: &crate::hir::expr::HirExpr) -> bool {
     use crate::hir::expr::HirExprKind as K;
     match &expr.kind {
         K::Other(_) => false,

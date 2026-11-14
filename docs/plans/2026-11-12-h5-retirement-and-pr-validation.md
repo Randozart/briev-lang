@@ -346,3 +346,19 @@ rebinding). `emit_expr.rs` to_ast code refs: 10 (was 11; Reflect receiver
 gate gone). Gates: quick 42/42, full A/B BYTE-IDENTICAL, determinism clean.
 Next: Index + MethodCall receiver/args (needs `emit_member_body` ArgsView),
 then Call eager-arg gate, short-circuit, mod.rs closure arm.
+
+### C-4 step 2 done (2026-11-13): short-circuit And/Or fast path native
+
+`logical.rs` now owns the shared predicate (`short_circuit_register_fast`)
+and the register-level emission (`short_circuit_register_level`) over
+`ExprView`, with HIR twins of `expr_is_side_effect_free` /
+`expr_contains_beginprogram` that mirror the AST matches one-for-one (to_ast's
+literal map is 1:1 — Bytes→Quoted, Int→Decimal, BeginProgram→BeginProgram —
+so fast-vs-CFG routing cannot diverge). `hir_expr_family_covered` admits
+fast-safe, lossless And/Or; the HIR Binary arm emits them through the view
+path. The CFG form declines to whole-expression conversion (today's AST
+routing), including `emit_exit_short_circuit` (loop_engine, unchanged).
+Gates: quick 42/42, logical 4/4, full A/B BYTE-IDENTICAL, determinism clean.
+Remaining C-4: Index + MethodCall (emit_member_body ArgsView), Call eager-arg
+gate, Block-children splice, mod.rs closure fallback (accepted leaf
+fallback), Match-List constructor exception (accepted).
