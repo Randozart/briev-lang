@@ -6307,9 +6307,19 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             // LTO renaming would dangle those references.
             writeln!(out, "@llvm.used = appending global [2 x ptr] [ptr @main, ptr @__briev_environ]").ok();
             if triple.starts_with("x86_64") {
+                // 2026-11-14 (BUGS.md argc dropped at owned _start): main's
+                // signature is main(i32 %argc, ptr %argv). The asm read argc
+                // into %rax (for the environ pointer) and argv into %rsi but
+                // never moved argc into %edi before `call main`, so Argc#/
+                // Args# saw an undefined register (exit 192 under -O0, 0 under
+                // -O3). aarch64 already loads x0 from the stack (see below);
+                // this mirrors it. Undo: delete the `movl %eax, %edi;` before
+                // `leaq 8(%rsp)` — it must stay after the argc load and
+                // before the call, and %rax must still hold argc for the
+                // environ GEP.
                 writeln!(out, "define void @_start() naked noinline {{").ok();
                 writeln!(out, "entry:").ok();
-                writeln!(out, "  call void asm sideeffect \"movq (%rsp), %rax; leaq 8(%rsp), %rsi; leaq 16(%rsp,%rax,8), %rdx; movq %rdx, __briev_environ(%rip); xorl %ebp, %ebp; call main; movl %eax, %edi; movl $$231, %eax; syscall\", \"~{{rdi}},~{{rsi}},~{{rdx}},~{{rax}},~{{rcx}},~{{r11}},~{{memory}}\" ()").ok();
+                writeln!(out, "  call void asm sideeffect \"movq (%rsp), %rax; movl %eax, %edi; leaq 8(%rsp), %rsi; leaq 16(%rsp,%rax,8), %rdx; movq %rdx, __briev_environ(%rip); xorl %ebp, %ebp; call main; movl %eax, %edi; movl $$231, %eax; syscall\", \"~{{rdi}},~{{rsi}},~{{rdx}},~{{rax}},~{{rcx}},~{{r11}},~{{memory}}\" ()").ok();
                 writeln!(out, "  unreachable").ok();
                 writeln!(out, "}}").ok();
             } else if triple.starts_with("aarch64") {
