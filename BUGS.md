@@ -13658,3 +13658,26 @@ Instruction-shape tests still assert the same operations/register dataflow,
 without demanding invalid overflow promises. Specialized loop-counter assertions
 are retained. The new runtime-input regression covers O0/O3 and both AST/HIR,
 including MIN negation and add/sub/mul overflow; the quick gate runs it.
+
+## 2026-11-15 — floating division guard compared incompatible SSA types
+
+A permitted integer-spelled literal in `7 / denom` (Float denominator) built
+LLVM containing `fcmp oeq i64 %float_register, 0.0`; clang rejected it. The
+new zero check preceded operand normalization and took its type from the
+numerator. The binary-expression boundary now uses the existing numeric
+mixed-operand adapter before checking the promoted divisor's Float category
+and emitting division. This also removes the older trunc/bitcast approximation.
+CLI regressions cover literal operands on either side, zero/nonzero behavior,
+and both AST/HIR paths. Variable Int/Float mixing still requires explicit casts.
+
+## 2026-11-15 — Float64 printing lacked its C declaration and lost buffered output
+
+A Float64 println called `__print_float64(double)` without a declaration,
+although the runtime implemented it. After declaring it, a piped program using
+endprogram still exited 0 with no numeric output: libc buffered printf while
+Briev's newline and exit used direct syscalls. The printer declaration phase
+now includes the double ABI and respects existing Briev/foreign providers.
+The retained C formatter flushes before returning; its %.9g format is unchanged.
+The native regression requires exact `0.5\n` output at O3 and checks Float64
+zero/negative-zero traps under both emission paths. This does not establish a
+full Float64 formatting or precision theorem.

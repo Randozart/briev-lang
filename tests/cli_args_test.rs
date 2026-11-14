@@ -10,6 +10,7 @@
 // process's own argc (Rule 5: the interpreter is the reference the backend
 // reproduces; here both engines read the same OS argv).
 
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -18,6 +19,12 @@ const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 /// Build + link the given source (written to a scratch .bv) and run it with
 /// `argv`. Returns (stdout, exit_code).
 fn build_link_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, i32) {
+    let hir = std::env::var("BRIEV_HIR_EMIT").unwrap_or_else(|_| "1".into());
+    build_link_run_argv_hir(name, src, argv, &hir)
+}
+
+/// Exercise a selected emission path without changing process-global environment.
+fn build_link_run_argv_hir(name: &str, src: &str, argv: &[&str], hir: &str) -> (String, i32) {
     let brievc = env!("CARGO_BIN_EXE_brievc");
     let out_dir = Path::new(PROJECT_ROOT)
         .join("target/briev_cli_args")
@@ -28,6 +35,7 @@ fn build_link_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, i32) {
     std::fs::write(&bv, src).unwrap();
 
     let build = Command::new(brievc)
+        .env("BRIEV_HIR_EMIT", hir)
         .args([
             "build",
             &bv.to_string_lossy(),
@@ -83,10 +91,14 @@ fn build_link_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, i32) {
         .args(argv)
         .output()
         .unwrap_or_else(|e| panic!("{name}: failed to run: {e}"));
-    (
-        String::from_utf8_lossy(&run.stdout).to_string(),
-        run.status.code().unwrap_or(-1),
-    )
+    // 2026-11-14: @llvm.trap() emits ud2 → SIGILL (signal 4), not an exit code.
+    // status.code() is None when killed by a signal; report the signal number
+    // as a negative exit code so callers can match on -4 (SIGILL).
+    let code = run
+        .status
+        .code()
+        .unwrap_or_else(|| -run.status.signal().unwrap_or(-1));
+    (String::from_utf8_lossy(&run.stdout).to_string(), code)
 }
 
 const GREET: &str = r#"
@@ -203,4 +215,96 @@ node run [n == 0][n == 1] {
         Some(std::env::args().count() as i64),
         "interpreter Argc#() must equal the process argc"
     );
+}
+
+// ── Float division-by-zero (stability) ────────────────────────────────
+//
+// 2026-11-14: the interpreter raises RuntimeError::DivisionByZero for
+// Float / 0.0. Native LLVM codegen must match — the backend emits
+// `fcmp oeq <denom>, 0.0` → `br i1` → `call void @llvm.trap()` before
+// every user-level `fdiv`. This test proves the native binary traps
+// (exit 132 = SIGILL from ud2) on zero denominator and returns the
+// correct result (exit 0) on a non-zero one.
+
+const FDIV_SRC: &str = r#"
+let n: Int = 0;
+node main [n == 0][n == 1] {
+    n = 1;
+    let denom: Float = arg_float("--denom");
+    let result: Float = 1.0 / denom;
+    println!(result);
+    endprogram 0;
+};
+"#;
+
+#[test]
+fn float_div_by_zero_traps_in_native_mode() {
+    // denom=0 → fcmp oeq %denom, 0.0 → true → llvm.trap() → ud2 → SIGILL (exit 132)
+    let (_, code) = build_link_run_argv("fdiv_zero", FDIV_SRC, &["--denom", "0"]);
+    assert_eq!(code, -4, "float div/0 must trap (ud2 → SIGILL, signal 4)");
+}
+
+#[test]
+fn float_div_nonzero_returns_correct_value() {
+    // denom=2 → fcmp oeq %denom, 0.0 → false → fdiv → 0.5, exit 0
+    let (out, code) = build_link_run_argv("fdiv_two", FDIV_SRC, &["--denom", "2"]);
+    assert_eq!(code, 0, "non-zero float div must exit 0");
+    assert_eq!(out.trim(), "0.5", "1.0 / 2.0 = 0.5");
+}
+
+#[test]
+fn float_div_four_returns_correct_value() {
+    // denom=4 → 1.0 / 4.0 = 0.25
+    let (out, code) = build_link_run_argv("fdiv_four", FDIV_SRC, &["--denom", "4"]);
+    assert_eq!(code, 0, "non-zero float div must exit 0");
+    assert_eq!(out.trim(), "0.25", "1.0 / 4.0 = 0.25");
+}
+
+#[test]
+fn mixed_float_division_uses_the_promoted_divisor_type() {
+    let integer_left = FDIV_SRC.replace("1.0 / denom", "7 / denom");
+    let integer_right = FDIV_SRC.replace("1.0 / denom", "denom / 2");
+    for hir in ["0", "1"] {
+        for (shape, source, value, expected) in [
+            ("literal_left", integer_left.as_str(), "2", Some("3.5\n")),
+            ("literal_left_zero", integer_left.as_str(), "0", None),
+            ("literal_right", integer_right.as_str(), "2", Some("1\n")),
+            (
+                "literal_right_zero",
+                integer_right.as_str(),
+                "0",
+                Some("0\n"),
+            ),
+        ] {
+            let name = format!("mixed_{shape}_{hir}");
+            let (out, code) = build_link_run_argv_hir(&name, source, &["--denom", value], hir);
+            if let Some(expected) = expected {
+                assert_eq!((out.as_str(), code), (expected, 0), "{name}");
+            } else {
+                assert_eq!(code, -4, "{name}: zero divisor must trap");
+            }
+        }
+    }
+}
+
+#[test]
+fn float64_division_and_printing_preserve_the_runtime_abi() {
+    let source = FDIV_SRC
+        .replace(
+            "let denom: Float = arg_float(\"--denom\");",
+            "let denom: Float64 = arg_float(\"--denom\") as Float64;",
+        )
+        .replace(
+            "let result: Float = 1.0 / denom;",
+            "let result: Float64 = (1.0 as Float64) / denom;",
+        );
+    for hir in ["0", "1"] {
+        let name = format!("wide_division_{hir}");
+        let (out, code) = build_link_run_argv_hir(&name, &source, &["--denom", "2"], hir);
+        assert_eq!((out.as_str(), code), ("0.5\n", 0));
+        for zero in ["0", "-0"] {
+            let (_, code) = build_link_run_argv_hir(&name, &source, &["--denom", zero], hir);
+            assert_eq!(code, -4, "{name}: {zero} divisor must trap");
+        }
+    }
 }

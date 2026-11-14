@@ -2165,41 +2165,40 @@ impl LlvmBackend {
                 } else {
                     let l = self.emit_expr(out, lhs, indent);
                     let r = self.emit_expr(out, rhs, indent);
-                    // 2026-07-21: Convert operands to matching types if they differ
-                    // (e.g., i64 constant in float operation). Native float types in
-                    // %State expose this — previously all values were i64.
-                    if l.ty != r.ty && (l.ty == Type::float() || r.ty == Type::float()) {
-                        let (conv_l, conv_r) = if l.ty == Type::float() && r.ty == Type::int() {
-                            let conv = self.fun.gen_reg();
-                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, conv, r.name).ok();
-                            let fl = self.fun.gen_reg();
-                            writeln!(out, "{}{} = bitcast i32 {} to float", indent, fl, conv).ok();
-                            (
-                                l.clone(),
-                                TypedRegister {
-                                    name: fl,
-                                    ty: Type::float(),
-                                },
-                            )
-                        } else if l.ty == Type::int() && r.ty == Type::float() {
-                            let conv = self.fun.gen_reg();
-                            writeln!(out, "{}{} = trunc i64 {} to i32", indent, conv, l.name).ok();
-                            let fl = self.fun.gen_reg();
-                            writeln!(out, "{}{} = bitcast i32 {} to float", indent, fl, conv).ok();
-                            (
-                                TypedRegister {
-                                    name: fl,
-                                    ty: Type::float(),
-                                },
-                                r.clone(),
-                            )
-                        } else {
-                            (l.clone(), r.clone())
-                        };
-                        self.emit_normalized_binary_op(out, (v, indent), kind, (&conv_l, &conv_r))
-                    } else {
-                        self.emit_normalized_binary_op(out, (v, indent), kind, (&l, &r))
+                    // 2026-07-21: Convert operands to matching types before emission.
+                    // 2026-11-15: share numeric promotion with binary dispatch and
+                    // type the zero check from the promoted divisor.
+                    let (l, r) = self
+                        .adapt_mixed_float_operands(out, indent, &l, &r)
+                        .unwrap_or((l, r));
+                    if matches!(kind, crate::ast::BinaryOpKind::Div)
+                        && self.float_category_bits(&r.ty).is_some()
+                    {
+                        // 2026-11-14 (stability): user-level float div zero-check.
+                        // The interpreter raises RuntimeError::DivisionByZero;
+                        // native codegen must match via @llvm.trap().
+                        let ty_str = self.llvm_type(&r.ty);
+                        let cmp = self.fun.next_label("cmp");
+                        let divzero = self.fun.next_label("divzero");
+                        let cont = self.fun.next_label("divcont");
+                        writeln!(
+                            out,
+                            "{}  %{} = fcmp oeq {} {}, 0.0",
+                            indent, cmp, ty_str, r.name
+                        )
+                        .ok();
+                        writeln!(
+                            out,
+                            "{}  br i1 %{}, label %{}, label %{}",
+                            indent, cmp, divzero, cont
+                        )
+                        .ok();
+                        writeln!(out, "{}{}:", indent, divzero).ok();
+                        writeln!(out, "{}  call void @llvm.trap()", indent).ok();
+                        writeln!(out, "{}  br label %{}", indent, cont).ok();
+                        writeln!(out, "{}{}:", indent, cont).ok();
                     }
+                    self.emit_normalized_binary_op(out, (v, indent), kind, (&l, &r))
                 }
             }
 

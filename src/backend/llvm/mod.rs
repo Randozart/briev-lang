@@ -5058,17 +5058,7 @@ impl LlvmBackend {
         .ok();
         writeln!(out, "declare i64 @__ioctl__(i64, i64, i64) #1").ok();
         writeln!(out, "declare i64 @__isatty__(i64) #1").ok();
-        if !defined.contains("print_str_raw") {
-            writeln!(out, "declare i64 @__print(ptr) #1").ok();
-        }
-        // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
-        // declaration in lib/std/ffi/io.bv was removed (it declared a wrong
-        // symbol and a { i64, i64 } String type); the intrinsic owns this
-        // call site, so the backend declares the ABI: String = ptr to a
-        // length-prefixed [len][bytes] buffer.
-        if !defined.contains("print_str") {
-            writeln!(out, "declare i64 @__print_str(ptr) #1").ok();
-        }
+        self.emit_print_runtime_declares(&mut out, &defined);
         // 2026-08-13 (dynamic String slice): `s[a:b]` emits a byte-wise
         // substring (the runtime's briev_str_substr; bounds clamp to [0,len]).
         // Skipped when a `frgn briev_str_substr` import already declares it
@@ -7732,6 +7722,33 @@ impl LlvmBackend {
                 self.ctx.target_triple,
                 limit
             );
+        }
+    }
+
+    /// Declare printer fallbacks only when no Briev or foreign provider owns them.
+    fn emit_print_runtime_declares(
+        &self,
+        out: &mut String,
+        defined: &std::collections::HashSet<String>,
+    ) {
+        // 2026-08-01 (B0): Print# intrinsic runtime symbol. The dead frgn
+        // declaration in lib/std/ffi/io.bv was removed (it declared a wrong
+        // symbol and a { i64, i64 } String type); the intrinsic owns this
+        // call site, so the backend declares the ABI: String = ptr to a
+        // length-prefixed [len][bytes] buffer.
+        // Float64 printing retains the C runtime's double-argument ABI.
+        for (helper, symbol, argument) in [
+            ("print_str_raw", "__print", "ptr"),
+            ("print_str", "__print_str", "ptr"),
+            ("print_float64", "__print_float64", "double"),
+        ] {
+            if defined.contains(helper)
+                || defined.contains(symbol)
+                || self.ctx.frgn_map.contains_key(symbol)
+            {
+                continue;
+            }
+            writeln!(out, "declare i64 @{symbol}({argument}) #1").ok();
         }
     }
 

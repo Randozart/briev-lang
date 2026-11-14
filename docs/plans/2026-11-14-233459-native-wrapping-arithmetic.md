@@ -102,3 +102,56 @@ The increment predicate must also follow materialized constants: actual IR adds
 maintained assertion now recognizes constant-one registers and requires a
 register-plus-one definition, still exactly four stores. A direct inspection of
 the retained failure IR confirms four such stores before recompilation.
+
+### 2026-11-15T00:13:34+01:00 — Checked fix and upstream reconciliation
+
+Committed the native repair as 74311bce0 after build, quick (3787 library +43
+integration), full library (3788), Lean/Kani and full ten-program IR determinism
+checks passed. Backend Praetor matched all 504 baseline findings. The installed
+clang matrix recorded clang 23.1.5 recommender=OK, two no-input skips because
+u.data is absent, then exited 2 on the empty output glob. Keep the matrix
+incomplete rather than inventing dataset coverage. No local u.data was found.
+
+Main advanced to 3a2fea32f (Float division trap plus CLI regressions). Its merge
+is prepared without committing; preserve all incoming behavior. Repeat required
+gates on the combined source before the merge commit, including the incoming
+CLI test binary, and refresh final evidence afterward. Compare Praetor with an
+isolated baseline at 3a2fea32f so incoming diagnostics are not attributed to the
+wrapping repair. Evidence directories are separate from the earlier checked fix.
+
+### 2026-11-15T00:25:28+01:00 — Integration counterexamples and scope amendment
+
+Probing the incoming guard found actual invalid LLVM for `7 / denom` with a
+Float divisor: `fcmp oeq i64 %float_register, 0.0`. Clang rejects it. The guard
+runs before operand promotion and derives its type from the numerator. Reuse
+the existing numeric mixed-operand adapter before guarding and dispatching,
+removing the older trunc/bitcast approximation. Guard using the promoted divisor
+and its Float protocol width. Test both operand orders, zero/negative-zero and
+nonzero results under AST/HIR.
+
+A Float64 probe independently exposed a missing declaration for the existing
+C-backed `__print_float64(double)` helper. `lib/std/ffi/io.bv` explicitly assigns
+that declaration to emit_declares; briev_rt.c already implements the ABI. Repair
+the printer-fallback declaration phase, preserving program/foreign providers
+instead of duplicating symbols, and test Float64 division/printing end to end.
+This is a separate declaration defect, not evidence that the wide division
+itself caused the original clang error. Add CLI regressions to the quick gate.
+Affected additional files: LLVM declaration emission, CLI tests and bug/architecture
+notes. No changes to the C formatter or floating precision guarantees. Formal
+floating semantics and arbitrary-program/native refinement remain outside these
+regressions. Preserve interrupted checks and restart on the amended frozen source.
+
+### 2026-11-15T00:30:58+01:00 — Literal typing and Float64 stream boundary
+
+The reciprocal test using a Float and an Int variable was rejected by the
+language's explicit-cast rule; it is not a supported implicit promotion. Narrow
+the regression to integer-spelled literals in Float expressions, in both operand
+positions. Preserve the typechecker's rejection of uncast variable mixing.
+
+After restoring the Float64 declaration, the native probe exited 0 with empty
+stdout: the C printf buffer was not flushed before Briev's raw exit. Also,
+pure-Briev newline writes bypass libc. Amend the earlier no-C-formatter-edit
+boundary solely to flush the existing Float64 printf before returning; retain
+%.9g and make no new precision/round-trip guarantee. The regression must assert
+exact `0.5\n` order before endprogram, not merely trimmed output. Read runtime
+instructions before touching lib/runtime/briev_rt.c; no nested AGENTS.md exists.

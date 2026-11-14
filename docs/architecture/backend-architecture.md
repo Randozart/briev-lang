@@ -4,6 +4,16 @@
 
 **Status:** Living document — updated as the backend evolves.
 
+2026-11-15 (integration boundary): scalar floating division normalizes
+integer-spelled operands before checking the promoted divisor for zero. The
+check's LLVM type comes from that divisor's Float protocol, including Float64.
+Actual Int variables still require the language's explicit cast/overload rules.
+`tests/cli_args_test.rs` covers allowed literal combinations, zero traps and
+Float64 printing at O3 under AST/HIR; the quick gate includes that binary.
+C-backed printer declarations defer to program/foreign providers. Float64's
+retained C printf must flush before returning to interoperate with direct
+Briev writes and endprogram's raw exit. Its existing format is unchanged.
+
 2026-11-14 (compiler assurance): ordinary integer add/sub/mul and negation
 wrap at the selected carrier width. General expression emission and shared
 intrinsic templates must not attach unconditional `nsw`/`nuw` promises. LLVM can

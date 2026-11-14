@@ -52,3 +52,16 @@ Division/remainder domains, specialized loop-counter arithmetic, target-width
 semantics and Rust/Lean/native refinement remain separate obligations. The
 passing native regression repairs the demonstrated failure; it is not a proof
 of every lowering or optimization pass.
+
+## Floating integration regressions
+
+The incoming Float zero-divisor guard exposed a physical-type boundary: an
+integer-spelled literal can be accepted in a Float expression while its emitted
+register still needs numeric promotion. The guard now runs after the shared
+promotion adapter and compares the divisor using its actual Float LLVM type.
+The language's explicit-cast rule for Int variables is retained. Float64 binary
+division/printing regressions cover the double guard/declaration ABI and stdout
+flush ordering with raw exit. The CLI integration binary runs in the quick gate.
+These are native regressions; the Lean integer VC model contains no floating
+semantics or precision guarantee. Direct intrinsic division and exceptional
+integer division remain separate obligations.

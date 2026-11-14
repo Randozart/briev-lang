@@ -169,11 +169,11 @@ int64_t briev_sysconf(int64_t name) {
     return sysconf((int)name);
 }
 
-// 2026-08-01 (audit): the Print# convenience intrinsic routes Float64 (double)
-// values here — %.9g round-trips any double uniquely (~17 sig digits for the
-// mantissa+exponent range, more than enough for a canonical print).
+// Print# routes Float64 values here. Flush before returning so output stays
+// ordered with Briev's direct writes and survives its raw-syscall endprogram.
 __attribute__((always_inline)) int64_t __print_float64(double f) {
     printf("%.9g", f);
+    fflush(stdout);
     return 0;
 }
 
