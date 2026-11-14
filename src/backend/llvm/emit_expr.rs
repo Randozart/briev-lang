@@ -14,11 +14,13 @@
 //   - Index: the helper threads the index expression into `emit_method_call`
 //     for tier-2 `op At` inlining, and `MaskIndexOperands` stores the AST
 //     receiver. Porting needs the method-call family first.
-//   - MethodCall / Reflect: dispatch reads receiver AST identity
+//   - MethodCall: dispatch reads receiver AST identity
 //     (`Expr::Index` collection-element detection, dynamic-dispatch
-//     `resolve_dyn_concrete`, `.^Ptr` builds `AddrOf(receiver)`), and member
-//     bodies take AST argument slices. `emit_member_body` is the shared
-//     AST-shaped consumer.
+//     `resolve_dyn_concrete`), and member bodies take AST argument slices.
+//     `emit_member_body` is the shared AST-shaped consumer. Reflect is
+//     CONVERTED (2026-11-13): `emit_reflection` takes an `ExprView` and
+//     probes via `identifier()` / `is_semantic_string_ident` / a native
+//     AddrOf view, gated by `hir_expr_lossless`.
 //   - Call: intrinsic / enum-constructor / struct-constructor / frgn callee
 //     surfaces take AST argument slices. Ordinary user-call arguments are
 //     already emitted through the HIR operand path; the eager slice is the
@@ -227,7 +229,7 @@ pub(crate) enum MatchScrutinee<'a> {
 /// dispatch that only needs an identifier/shape probe or an operand
 /// emission. The AST side answers exactly as before; the HIR side probes the
 /// 1:1 HIR shape and emits through `emit_hir_operand`.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ExprView<'a> {
     Ast(&'a Expr),
     Hir(&'a crate::hir::expr::HirExpr),
@@ -729,10 +731,15 @@ impl LlvmBackend {
                 self.emit_field_expression(out, ExprView::Hir(receiver), (&v, name), indent)
             }
             HirExprKind::Reflect { receiver, name, kind } => {
-                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                // 2026-11-13 (H5 phase C): the receiver crosses as a view.
+                // The lossless gate is the exact `to_ast` reconstructibility
+                // predicate (Other is the one shape to_ast cannot rebuild);
+                // declining returns None for the statement seam's source
+                // splice, as before.
+                if !hir_expr_lossless(receiver) {
                     return None;
-                };
-                self.emit_reflection(out, &v, &ast_recv, name, *kind, indent)
+                }
+                self.emit_reflection(out, &v, ExprView::Hir(receiver), name, *kind, indent)
             }
             HirExprKind::MethodCall { receiver, name, args, .. } => {
                 let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
@@ -1925,7 +1932,7 @@ impl LlvmBackend {
                 return self.emit_field_access(out, None, ExprView::Ast(recv), name, indent);
             }
             Expr::Reflect(recv, target, kind) => {
-                return self.emit_reflection(out, v, recv, target, *kind, indent);
+                return self.emit_reflection(out, v, ExprView::Ast(recv), target, *kind, indent);
             }
             Expr::MethodCall(recv, name, args, _) => {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
@@ -5096,7 +5103,7 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         v: &str,
-        recv: &Expr,
+        recv: ExprView<'_>,
         target: &str,
         kind: ReflectKind,
         indent: &str,
@@ -5106,7 +5113,7 @@ pub(crate) fn emit_index_with_obj(
         // event port (SPEC §9.5). Checked BEFORE emitting the receiver: a
         // wire binding has no value of its own to evaluate.
         if target == "Ready" {
-            if let Expr::Identifier(wname) = recv {
+            if let Some(wname) = recv.identifier() {
                 let is_wire = self
                     .fun
                     .let_original_types
@@ -5128,8 +5135,7 @@ pub(crate) fn emit_index_with_obj(
                 }
             }
         }
-        let recv_tmp = self.fun.gen_reg();
-        let recv_reg = self.emit_expr_inner(out, &recv_tmp, recv, indent);
+        let recv_reg = emit_view_expr(self, out, recv, indent);
         match (target, kind) {
             // 2026-08-09 (Phase 12, SPEC §19.3): `feature.^^Available` — a
             // compile-time descriptor reflect that folds to a runtime
@@ -5137,27 +5143,15 @@ pub(crate) fn emit_index_with_obj(
             // receiver is the frgn's local name; its FOREIGN symbol is what
             // gets checked (the codegen resolves it via the frgn declaration).
             ("Available", ReflectKind::CompileTime) => {
-                let symbol = match recv {
-                    Expr::Identifier(n) => {
-                        let fb = self.ctx.frgn_map.get(n.as_str()).cloned();
-                        let sym = match fb {
-                            Some(sig) => sig.name.clone(),
-                            None => n.clone(),
-                        };
-                        sym
-                    }
-                    _ => String::new(),
-                };
-                let symbol = match recv {
-                    Expr::Identifier(n) => {
-                        let fb = self.ctx.frgn_map.get(n.as_str()).cloned();
-                        let sym = match fb {
-                            Some(sig) => sig.name.clone(),
-                            None => n.clone(),
-                        };
-                        sym
-                    }
-                    _ => String::new(),
+                let symbol = match recv.identifier() {
+                    Some(n) => self
+                        .ctx
+                        .frgn_map
+                        .get(n)
+                        .cloned()
+                        .map(|sig| sig.name)
+                        .unwrap_or_else(|| n.to_string()),
+                    None => String::new(),
                 };
                 // Emit the symbol as a stack NUL-terminated buffer (avoid the
                 // pre-collected string-global pass, which runs before bodies).
@@ -5230,8 +5224,26 @@ pub(crate) fn emit_index_with_obj(
             }
             ("Ptr", ReflectKind::Runtime) => {
                 // x.^Ptr ≡ &x — reuse the address-of path.
-                let ptr_tmp = self.fun.gen_reg();
-                self.emit_expr_inner(out, &ptr_tmp, &Expr::AddrOf(Box::new(recv.clone())), indent)
+                match recv {
+                    ExprView::Ast(e) => {
+                        let ptr_tmp = self.fun.gen_reg();
+                        self.emit_expr_inner(out, &ptr_tmp, &Expr::AddrOf(Box::new(e.clone())), indent)
+                    }
+                    ExprView::Hir(h) => {
+                        // Native address-of dispatch (same shape as
+                        // `emit_hir_expr`'s AddrOf arm): the receiver is
+                        // lossless (caller gate), so the operand path's
+                        // reconstruct fallback cannot fire mid-emission.
+                        let addrof = crate::hir::expr::HirExpr {
+                            id: h.id,
+                            span: h.span.clone(),
+                            ty: None,
+                            kind: crate::hir::expr::HirExprKind::AddrOf(Box::new(h.clone())),
+                        };
+                        self.emit_hir_operand(out, &addrof, indent)
+                            .expect("lossless AddrOf receiver")
+                    }
+                }
             }
             ("Length", ReflectKind::Runtime) => match &recv_reg.ty {
                 Type::Vector(_, _) => {
@@ -5277,7 +5289,7 @@ pub(crate) fn emit_index_with_obj(
                  // from the binding (the let's declared type) and inttoptr the
                  // handle before the byte-header read. 2026-08-12: `.^Length` is
                  // the STORED byte count; `CharCount#` is the char scan.
-                 other if self.is_semantic_string(recv, &recv_reg) => {
+                 other if self.is_semantic_string_ident(recv.identifier(), &recv_reg) => {
                      let p = self.string_ptr(out, indent, &recv_reg);
                      let full = self.fun.gen_reg();
                      writeln!(out, "{}{} = load i64, ptr {}", indent, full, p).ok();

@@ -332,3 +332,17 @@ Required work, in dependency order:
 Recognition gate: every step must keep full `hir_emit_ab.sh` BYTE-IDENTICAL
 and `--quick` determinism clean; no IR-visible change is acceptable in this
 phase.
+
+### C-4 step 1 done (2026-11-13): Reflect converted to ExprView
+
+`emit_reflection` now takes `ExprView<'_>`; both callers pass views (Hir arm
+gates with `hir_expr_lossless` — the exact `to_ast` reconstructibility
+predicate — before declining to the seam splice, as before). Receiver
+emission goes through `emit_view_expr`; the Ready/Available probes use
+`identifier()`; `is_semantic_string` replaced by its ident twin; `.^Ptr`
+emits a native AddrOf view (shared H4/AST AddrOf arms are structurally
+identical). The duplicated Available symbol block was collapsed (identical
+rebinding). `emit_expr.rs` to_ast code refs: 10 (was 11; Reflect receiver
+gate gone). Gates: quick 42/42, full A/B BYTE-IDENTICAL, determinism clean.
+Next: Index + MethodCall receiver/args (needs `emit_member_body` ArgsView),
+then Call eager-arg gate, short-circuit, mod.rs closure arm.
