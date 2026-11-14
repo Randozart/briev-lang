@@ -163,11 +163,12 @@ pass `hir::owned_storage`), owned List destruction + temp-transfer (§16:
 `ReleaseOwned`/`TempTransfer` first-class HIR kinds, body-seam two-cursor
 walk, fresh-set gated on zero escaping params, identity-return transfer).
 Kiosk face soak: 144→187 MB pre-slices → flat 171 MB at 200 calls. DONE SINCE: guard-nested seam (§17), owned List + temp-transfer (§16),
-tensor dims owner slot + cached-model session, VAD chunks RPC + slot-keyed
-cache + audio frontend, coll Float-collection fix (strategy args carry
-value_ty; BUGS entry closed). Saltpetre v0 op ledger is canonical
-(docs/architecture/saltpetre.md). NEXT: VAD streaming sessions
-(vad_open/feed/close, plan 2026-11-12-vad-streaming-sessions).
+tensor dims owner slot + cached-model session, VAD chunks RPC + sessions,
+coll Float fix, Saltpetre op ledger, census campaigns 1–2 (undecided
+147→12, releases 58, ratchet live), coll-object owns-check + self-tail fix.
+NEXT: post-re-land hygiene, soak truth, tail-loop-aware destruction, census
+12→0 then deny-at-zero (`2026-11-14-post-reland-hygiene-soak-tailloop.md`).
+STT/TTS/visemes + NPU await owner decisions.
 
 **Lifetime and reclamation — north star (2026-11-03, ACTIVE):**
 `docs/plans/2026-11-03-lifetime-and-reclamation.md` (+ decision-record Part
