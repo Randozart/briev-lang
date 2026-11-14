@@ -78,7 +78,7 @@ else
     negative_status=$?
 fi
 if [[ "$negative_status" -ne 1 ]] \
-    || ! grep -Fq 'Tactic `decide` proved that the proposition' "$artifact_dir/negative.log" \
+    || ! grep -Fq "Tactic \`decide\` proved that the proposition" "$artifact_dir/negative.log" \
     || ! grep -Fq 'is false' "$artifact_dir/negative.log"; then
     echo "The negative control failed for an unexpected reason; inspect negative.log." >&2
     exit 1
