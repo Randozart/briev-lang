@@ -106,3 +106,26 @@ jobs:
 
       - name: Parity corpora
         run: bash benchmarks/parity/run.sh cast_cases float_cases float_fmt_cases int_cases parse_cases string_cases
+
+      - name: Counsel static verification (LLVM backend — non-blocking)
+        # Clones counsel-crate, builds counsel-check (static half), runs it over
+        # the LLVM backend. Non-blocking until contracts are added to backend
+        # functions in the pure-integer subset. counsel-crate:
+        # https://github.com/Randozart/counsel
+        continue-on-error: true
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/Randozart/counsel.git /tmp/counsel-crate
+          (cd /tmp/counsel-crate && cargo build --release --features static --bin counsel-check)
+          /tmp/counsel-crate/target/release/counsel-check \
+            --format human \
+            src/backend/llvm \
+            | tee /tmp/counsel-check.log
+
+      - name: Counsel verification artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: counsel-check-report
+          path: /tmp/counsel-check.log
+          if-no-files-found: ignore
