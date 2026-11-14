@@ -152,7 +152,14 @@ fn emit_temp_transfer_statement(
             modifiers: vec![],
         },
     };
-    let bound = emit_let_pair(backend, out, &binding, ast_expr, indent)?;
+    // 2026-11-14 (#96): ownership cleanup makes this call non-tail even
+    // when the original AST return was tail-recursive. It must return before
+    // its borrowed arguments are released; a backedge here emitted frees
+    // after a terminator and would free the next iteration's input.
+    let tail_fn = backend.fun.tail_loop_fn.take();
+    let bound = emit_let_pair(backend, out, &binding, ast_expr, indent);
+    backend.fun.tail_loop_fn = tail_fn;
+    let bound = bound?;
     for (storage, n) in releases {
         emit_release_owned_statement(backend, out, *storage, n, indent);
     }

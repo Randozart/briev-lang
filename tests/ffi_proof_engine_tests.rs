@@ -10,6 +10,26 @@ fn parse_program(src: &str) -> Vec<TopLevel> {
 }
 
 #[test]
+fn contract_satisfiability_rejects_jointly_inconsistent_bounds() {
+    let condition = Expr::BinaryOp(
+        BinaryOpKind::And,
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Gt,
+            Box::new(Expr::Identifier("x".into())),
+            Box::new(Expr::Decimal(10)),
+        )),
+        Box::new(Expr::BinaryOp(
+            BinaryOpKind::Lt,
+            Box::new(Expr::Identifier("x".into())),
+            Box::new(Expr::Decimal(0)),
+        )),
+    );
+    assert!(proof_engine::prove_contract(
+        &condition, &Expr::Bool(true), &[("x".into(), Type::int())], false,
+    ).is_err());
+}
+
+#[test]
 fn test_frgn_binding_parses() {
     let program = parse_program(
         r#"frgn read_file(path: String) -> Int from "libc.so.6";"#,
