@@ -22,6 +22,7 @@
 // Store# the real length there once the payload length is known.
 
 import "std/net/socket.bv";
+import { U8_MAX, U16_MAX, U32_MAX, POW2_31, POW2_32 } from "std/constants.bv";
 import "std/net/bytes.bv";
 import "std/string.bv";
 
@@ -440,8 +441,8 @@ defn pg_read_i32_at(buf: ByteBuf, off: Int)
         term 0;
     };
     let u: Int = get_u32_be(buf, off);
-    when u >= 2147483648 {
-        term u - 4294967296;
+    when u >= POW2_31 {
+        term u - POW2_32;
     };
     term u;
 };

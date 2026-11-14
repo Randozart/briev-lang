@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 import "std/net/bytes.bv";
+import { I64_MAX } from "std/constants.bv";
 
 // 2026-11-05: bounded GET-response framing for nonblocking clients. Retain
 // explicit limits and rejection of unsupported framing when extending this
@@ -12,7 +13,7 @@ obj HttpResponseFrame {
 };
 
 defn http_response_frame(header_limit: Int, body_limit: Int) -> HttpResponseFrame {
-    when header_limit < 16 || body_limit < 0 || body_limit > 9223372036854775807-header_limit { trap; };
+    when header_limit < 16 || body_limit < 0 || body_limit > I64_MAX-header_limit { trap; };
     term HttpResponseFrame { header_limit: header_limit, body_limit: body_limit,
         scanned: 0, previous: 0, header_bytes: 0, body_bytes: -1, status: 0, failed: false };
 };

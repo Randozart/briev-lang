@@ -1,3 +1,6 @@
+[workspace]
+members = ["briev-verify"]
+
 [package]
 name = "briev-compiler"
 version = "0.1.0"
@@ -23,6 +26,7 @@ name = "brievc"
 path = "src/main.rs"
 
 [dependencies]
+briev-verify = { path = "briev-verify" }
 logos = "0.13"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }

@@ -39,6 +39,7 @@ pub mod gpu_strategy;
 pub mod hold_law;
 pub mod image_storage;
 pub mod inline_cost;
+pub mod interruptibility;
 pub mod kernel_plan;
 pub mod layout_optimizer;
 pub mod licm;

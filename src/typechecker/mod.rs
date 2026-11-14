@@ -7560,26 +7560,6 @@ fn isr_body_exprs(stmts: &[Statement]) -> Vec<&Expr> {
     out
 }
 
-// ── BinaryOpKind helpers ───────────────────────────────────────────────
-
-impl BinaryOpKind {
-    fn is_comparison(&self) -> bool {
-        matches!(
-            self,
-            BinaryOpKind::Eq
-                | BinaryOpKind::Neq
-                | BinaryOpKind::Lt
-                | BinaryOpKind::Gt
-                | BinaryOpKind::Le
-                | BinaryOpKind::Ge
-        )
-    }
-
-    fn is_logical(&self) -> bool {
-        matches!(self, BinaryOpKind::And | BinaryOpKind::Or)
-    }
-}
-
 /// 2026-07-31: Resolve `p.name` on a struct/obj/tuple receiver.
 /// Numeric field names (`.0`, `.1`) are tuple-element indices.
 /// Pin-field resolution for both pin tables.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 import "std/result.bv";
+import { I16_MAX, I32_MAX, MIB, U32_MAX } from "std/constants.bv";
 
 // 2026-11-03: Linux x86_64 pollfd storage is 4-byte fd + two 2-byte
 // masks. Keep the ABI explicit here; replace with target ABI metadata when
@@ -14,11 +15,12 @@ const POLL_INVALID: Int = 32;
 obj PollSet { address: Int; count: Int; };
 
 defn poll_new(count: Int) -> Result<PollSet,Int> {
-    when count < 1 || count > 1048576 { term Err(-22); };
+    // 2^20-entry cap: the address span stays within MIB * 8 bytes of storage.
+    when count < 1 || count > MIB { term Err(-22); };
     let address: Int = Malloc#(count * 8) as Int;
     when address == 0 { term Err(-12); };
     foreach index in 0..count {
-        Store#(address + index * 8, 4294967295, 4);
+        Store#(address + index * 8, U32_MAX, 4);
         Store#(address + index * 8 + 4, 0, 4);
     };
     term Ok(PollSet { address: address, count: count });
@@ -26,7 +28,7 @@ defn poll_new(count: Int) -> Result<PollSet,Int> {
 
 defn poll_set(polls: PollSet, index: Int, fd: Int, events: Int) -> Void {
     when polls.address == 0 || index < 0 || index >= polls.count { trap; };
-    when fd < -1 || fd > 2147483647 || events < 0 || events > 32767 { trap; };
+    when fd < -1 || fd > I32_MAX || events < 0 || events > I16_MAX { trap; };
     Store#(polls.address + index * 8, fd, 4);
     Store#(polls.address + index * 8 + 4, events, 2);
     Store#(polls.address + index * 8 + 6, 0, 2);
@@ -35,7 +37,7 @@ defn poll_set(polls: PollSet, index: Int, fd: Int, events: Int) -> Void {
 // Finite waits only. EINTR is returned; the caller recomputes its deadline.
 // Clear prior events even on syscall failure, so stale readiness is not reused.
 defn poll_wait(polls: PollSet, timeout_ms: Int) -> Int {
-    when polls.address == 0 || timeout_ms < 0 || timeout_ms > 2147483647 { trap; };
+    when polls.address == 0 || timeout_ms < 0 || timeout_ms > I32_MAX { trap; };
     foreach index in 0..polls.count { Store#(polls.address + index * 8 + 6, 0, 2); };
     term SysCall#(7, polls.address, polls.count, timeout_ms);
 };

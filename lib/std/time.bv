@@ -8,6 +8,10 @@
 // the pure duration arithmetic below.
 
 // ===== NATIVE DEFINITIONS =====
+// 2026-11-13 (stdlib constants): bodies name the units; the contracts spell
+// the same numbers as literals — a grafted contract must stay literal so
+// every importer can prove it without this module's import scope.
+import { SEC_PER_MIN, SEC_PER_HOUR, SEC_PER_DAY } from "std/constants.bv";
 
 // Duration helpers - native arithmetic
 
@@ -20,15 +24,15 @@ defn duration_millis(ms: Int) [term == ms] -> Int {
 };
 
 defn duration_minutes(mins: Int) [term == mins * 60] -> Int {
-  term mins * 60;
+  term mins * SEC_PER_MIN;
 };
 
 defn duration_hours(hours: Int) [term == hours * 3600] -> Int {
-  term hours * 3600;
+  term hours * SEC_PER_HOUR;
 };
 
 defn duration_days(days: Int) [term == days * 86400] -> Int {
-  term days * 86400;
+  term days * SEC_PER_DAY;
 };
 
 // Time arithmetic - native
@@ -37,15 +41,15 @@ defn add_seconds(timestamp: Int, secs: Int) [true][term == timestamp + secs] -> 
 };
 
 defn add_minutes(timestamp: Int, mins: Int) [true][term == timestamp + mins * 60] -> Int {
-  term timestamp + mins * 60;
+  term timestamp + mins * SEC_PER_MIN;
 };
 
 defn add_hours(timestamp: Int, hours: Int) [true][term == timestamp + hours * 3600] -> Int {
-  term timestamp + hours * 3600;
+  term timestamp + hours * SEC_PER_HOUR;
 };
 
 defn add_days(timestamp: Int, days: Int) [true][term == timestamp + days * 86400] -> Int {
-  term timestamp + days * 86400;
+  term timestamp + days * SEC_PER_DAY;
 };
 
 // Time differences - native
@@ -54,7 +58,7 @@ defn diff_seconds(t1: Int, t2: Int) [true][term == t1 - t2] -> Int {
 };
 
 defn diff_days(t1: Int, t2: Int) [term == (t1 - t2) / 86400] -> Int {
-  term (t1 - t2) / 86400;
+  term (t1 - t2) / SEC_PER_DAY;
 };
 
 // Constants (durations) are plain native Ints — no frgn involvement.

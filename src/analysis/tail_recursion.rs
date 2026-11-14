@@ -313,3 +313,62 @@ mod tests {
         assert!(!plan.is_lowerable("f"));
     }
 }
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn debug_strip_lowerable() {
+        let src = r#"
+defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
+    when frac .^Length == 0 {
+        term fresh_string(frac);
+    };
+    let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
+    when last != 0 {
+        term fresh_string(frac);
+    };
+    let trimmed: String = frac[0:frac .^Length - 1];
+    term strip_frac_zeros(trimmed);
+};
+"#;
+        let tokens = crate::lexer::tokenize(src).expect("lex");
+        let mut parser = crate::parser::Parser::new(tokens, src);
+        let items = parser.parse_program().expect("parse");
+        let d = items.iter().find_map(|i| match i {
+            TopLevel::Definition(d) if d.name == "strip_frac_zeros" => Some(d.clone()),
+            _ => None,
+        }).expect("defn");
+        let tail = build_tail_recursion_plan(&items);
+        eprintln!("dbg class={:?}", tail.class("strip_frac_zeros"));
+        eprintln!("dbg sig={} (type_params={:?} variadic={:?} params={:?})",
+            loop_lowerable_signature(&d), d.type_params, d.variadic_param, d.parameters);
+        eprintln!("dbg cleanup={}", has_cleanup_or_boundary(&d.body));
+        let calls = tail_self_calls_in_body(&d.body, "strip_frac_zeros");
+        eprintln!("dbg calls={calls:?} arity={}", d.parameters.len());
+        eprintln!("dbg arity_match={}", tail_calls_match_arity(&calls, d.parameters.len()));
+        let plan = build_tail_loop_plan(&items);
+        eprintln!("dbg lowerable={}", plan.is_lowerable("strip_frac_zeros"));
+    }
+}
+
+/// 2026-11-13: temporary drift diagnostics — evaluate the four loop-lowering
+/// predicates for one defn against a given item list.
+pub fn debug_loop_predicates(items: &[TopLevel], name: &str) -> (bool, bool, bool, usize) {
+    let dupes = items.iter().filter(|i| matches!(i, TopLevel::Definition(d) if d.name == name)).count();
+    eprintln!("[tail-loop-dbg] {name}: defs={dupes}");
+    let d = items.iter().rev().find_map(|i| match i {
+        TopLevel::Definition(d) if d.name == name => Some(d.clone()),
+        _ => None,
+    });
+    let Some(d) = d else { return (false, false, false, 0) };
+    let class = build_tail_recursion_plan(items).class(name);
+    let builder_contains = build_tail_loop_plan(items).defns.contains(name);
+    eprintln!("[tail-loop-dbg] {name}: class={class:?} builder_contains={builder_contains}");
+    let sig = loop_lowerable_signature(&d);
+    let cleanup = has_cleanup_or_boundary(&d.body);
+    let calls = tail_self_calls_in_body(&d.body, name);
+    let arity = tail_calls_match_arity(&calls, d.parameters.len());
+    (sig, cleanup, arity, calls.len())
+}

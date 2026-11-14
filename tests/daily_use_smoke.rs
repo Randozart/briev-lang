@@ -784,3 +784,18 @@ fn unix_socket_loopback_golden_output() {
         "unix socket loopback golden stdout drifted: {out:?}"
     );
 }
+
+/// 2026-11-13 (stdlib constants): the shared named-constants module must keep
+/// its values through the compiled pipeline. Each limit is asserted against
+/// the literal it names in the fixture; golden stdout pins the mismatch count
+/// at 0. The fixture's defn contracts name U8_MAX, so the run also proves the
+/// proof engine folds imported constants.
+#[test]
+fn constants_gate_golden_output() {
+    if !has("clang") {
+        eprintln!("SKIP: clang not available");
+        return;
+    }
+    let out = build_link_run("constants_gate", "golden", &[]);
+    assert_eq!(out, "0", "constants gate reported mismatches: {out:?}");
+}

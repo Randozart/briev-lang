@@ -5,6 +5,7 @@
 import { syscall, SYS_CLOCK_GETTIME, SYS_NANOSLEEP } from "std/posix/syscall.bv";
 
 import { Ok, Err, is_err, unwrap } from "std/result.bv";
+import { I64_MAX, NSEC_PER_SEC } from "std/constants.bv";
 
 const CLOCK_MONOTONIC: Int = 1;
 
@@ -19,9 +20,9 @@ defn clock_ns_res(clock_id: Int) -> Result<Int,Int> {
     let sec: Int = Load#(ts,8);
     let nsec: Int = Load#(ts+8,8);
     Free#(ts as Ptr);
-    when sec < 0 || nsec < 0 || nsec >= 1000000000 { term Err(0 - 34); };
-    when sec > (9223372036854775807 - nsec) / 1000000000 { term Err(0 - 34); };
-    term Ok(sec * 1000000000 + nsec);
+    when sec < 0 || nsec < 0 || nsec >= NSEC_PER_SEC { term Err(0 - 34); };
+    when sec > (I64_MAX - nsec) / NSEC_PER_SEC { term Err(0 - 34); };
+    term Ok(sec * NSEC_PER_SEC + nsec);
 };
 
 // Preserve the existing nonnegative contract: unavailable time traps rather

@@ -1,6 +1,8 @@
 //===----------------------------------------------------------------------===//
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
+import { I64_MAX } from "std/constants.bv";
+
 // 2026-11-03: fixed-width histograms bound endurance-test storage. Quantiles
 // return inclusive bucket upper bounds, not invented exact samples. Overflow
 // samples remain counted and return the observed maximum. Replace this layout
@@ -9,14 +11,14 @@ obj Histogram { width: Int; bins: List<Int>; count: Int; overflow: Int; maximum:
 
 defn histogram_new(width: Int, buckets: Int) -> Histogram {
     when width < 1 || buckets < 1 || buckets > 1000000 { trap; };
-    when width > 9223372036854775807 / buckets { trap; };
+    when width > I64_MAX / buckets { trap; };
     let bins: List<Int> = [];
     foreach index in 0..buckets { bins <- 0; };
     term Histogram { width: width, bins: bins, count: 0, overflow: 0, maximum: 0 };
 };
 
 defn histogram_record(histogram: Histogram, value: Int) -> Histogram {
-    when value < 0 || histogram.count == 9223372036854775807 { trap; };
+    when value < 0 || histogram.count == I64_MAX { trap; };
     let next: Histogram = histogram;
     let bucket: Int = value / next.width;
     when bucket < next.bins .^Length { next.bins[bucket] = next.bins[bucket] + 1; };
@@ -28,7 +30,7 @@ defn histogram_record(histogram: Histogram, value: Int) -> Histogram {
 
 defn histogram_merge(left: Histogram, right: Histogram) -> Histogram {
     when left.width != right.width || left.bins .^Length != right.bins .^Length { trap; };
-    when left.count > 9223372036854775807 - right.count { trap; };
+    when left.count > I64_MAX - right.count { trap; };
     let merged: Histogram = left;
     foreach index in 0..merged.bins .^Length {
         merged.bins[index] = merged.bins[index] + right.bins[index];

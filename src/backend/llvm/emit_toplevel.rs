@@ -1381,7 +1381,9 @@ impl LlvmBackend {
             return "ptr".to_string();
         }
         // 2026-08-03: a fn value (callback param / CallPtr# operand) is a
-        // function pointer — `ptr` under opaque pointers.
+        // two-word code/env PAIR — `ptr` under opaque pointers points at the
+        // pair, not at the code. Dispatch loads word 0 and passes the pair as
+        // env; see emit_call_ptr (2026-11-14 fix, it used to call the pair).
         if matches!(ty, Type::Function(_, _)) {
             return "ptr".to_string();
         }
@@ -4927,11 +4929,7 @@ impl LlvmBackend {
             .unwrap_or_else(|| "i64".to_string())
     }
 
-    pub(super) fn emit_definition(
-        &mut self,
-        out: &mut String,
-        spec: DefinitionEmitSpec<'_>,
-    ) {
+    pub(super) fn emit_definition(&mut self, out: &mut String, spec: DefinitionEmitSpec<'_>) {
         let d: &crate::ast::Definition = spec.definition;
         let needs_state = spec.needs_state;
         // 2026-11-12 (H5 phase A): the caller supplies the callable's HIR
@@ -4942,8 +4940,7 @@ impl LlvmBackend {
         // statement seam — no AST substitution, no reconstruction. The pair
         // check validates slot alignment; on drift the plain AST body emits
         // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
-        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
-        {
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled() {
             hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &d.body))
         } else {
             None
@@ -5483,7 +5480,9 @@ impl LlvmBackend {
             // fires on the true last slot: no trailing insert may follow.
             let last_slot = ai == body_len
                 && pair_hir.is_none_or(|p| {
-                    p[hi + 1..].iter().all(|h| super::emit_hir_stmt::is_pure_insert(&h.kind))
+                    p[hi + 1..]
+                        .iter()
+                        .all(|h| super::emit_hir_stmt::is_pure_insert(&h.kind))
                 });
             if last_slot && ll_ret_ty != "void" {
                 if let crate::ast::Statement::Expression(e @ crate::ast::Expr::Match(..)) = s {
@@ -6008,8 +6007,7 @@ impl LlvmBackend {
         // statement seam — no AST substitution, no reconstruction. The pair
         // check validates slot alignment; on drift the plain AST body emits
         // as before (`BRIEV_HIR_EMIT=0` opts out entirely).
-        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled()
-        {
+        let pair_hir: Option<&[crate::hir::stmt::HirStmt]> = if crate::backend::hir_emit_enabled() {
             hir_body.filter(|h| super::emit_hir_stmt::hir_sourced_body(h, &txn.body))
         } else {
             None

@@ -15122,3 +15122,50 @@ defn apply_one(f: (Int) -> Int, x: Int) -> Int {
         "the callee declares a ptr parameter:\n{body}"
     );
 }
+
+/// 2026-11-13 (stdlib constants): a const declared as pure integer
+/// arithmetic (`const I64_MIN: Int = 0 - 9223372036854775807 - 1;`) must
+/// emit its folded value — the literal-shape match arms zeroed every
+/// arithmetic declaration, so proof-time values and runtime loads
+/// disagreed. Imports it needs: TopLevel::Constant + a body read.
+#[test]
+fn test_arithmetic_const_expr_folds_into_global() {
+    use crate::ast::{Constant, Expr, Type, UnaryOpKind};
+    let mut backend = LlvmBackend::new();
+    let items = vec![
+        TopLevel::Constant(Constant {
+            name: "I64_MIN".to_string(),
+            expr: Expr::BinaryOp(
+                crate::ast::BinaryOpKind::Sub,
+                Box::new(Expr::BinaryOp(
+                    crate::ast::BinaryOpKind::Sub,
+                    Box::new(Expr::Decimal(0)),
+                    Box::new(Expr::Decimal(9223372036854775807)),
+                )),
+                Box::new(Expr::Decimal(1)),
+            ),
+            ty: Type::int(),
+            section: None,
+        }),
+        TopLevel::Statement(Box::new(Statement::Let {
+            name: "lo".to_string(),
+            names: vec![],
+            ty: Some(Type::int()),
+            expr: Some(Expr::UnaryOp(
+                UnaryOpKind::Neg,
+                Box::new(Expr::Decimal(1)),
+            )),
+            modifiers: vec![],
+        })),
+    ];
+    let output = backend.generate(&items, None);
+    assert!(
+        output.contains("@I64_MIN = constant i64 -9223372036854775808"),
+        "an arithmetic const expr must emit its folded value, got globals:\n{}",
+        output
+            .lines()
+            .filter(|l| l.starts_with("@I64_MIN"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

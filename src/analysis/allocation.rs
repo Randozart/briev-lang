@@ -220,6 +220,13 @@ fn expr_alias_set(
             out
         }
         Expr::BinaryOp(_, l, r) => {
+            // 2026-11-13: keep ALIASING here. Pointer arithmetic (`q = p + 8`)
+            // genuinely aliases p — the AST walker has no types to tell it
+            // from String concat, and a wrong "non-aliasing" answer would let
+            // a returned pointer-derived value be arena-freed
+            // (analysis::allocation test pointer_aliases_still_escape...).
+            // String helpers no longer need this to be false: freshness is
+            // derived from body shape, not from escape summaries.
             let mut out = expr_alias_set(l, aliases, summaries, state_fields, escaped);
             out.extend(expr_alias_set(r, aliases, summaries, state_fields, escaped));
             out
@@ -596,6 +603,8 @@ impl<'a> DagBuilder<'a> {
             | Expr::UnaryOp(_, e)
             | Expr::Field(e, _) => self.return_alias_vars(e),
             Expr::BinaryOp(_, l, r) => {
+                // Conservative: pointer arithmetic aliases (see
+                // expr_alias_set's 2026-11-13 note).
                 let mut out = self.return_alias_vars(l);
                 out.extend(self.return_alias_vars(r));
                 out

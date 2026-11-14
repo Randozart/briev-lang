@@ -28,6 +28,7 @@ import "std/iterator.bv";
 // with database/string users; keep the alias if builder internals change.
 import { StringBuilder, new_builder, append_char, append_str, json_builder_string: to_string } from "std/string_builder";
 import "std/result";
+import { UTF16_HIGH_MIN, UTF16_HIGH_MAX, UTF16_LOW_MIN, UTF16_LOW_MAX, UTF16_SPAN, UTF16_OFFSET } from "std/constants.bv";
 
 obj ParseFrame {
     value: JsonValue;
@@ -333,14 +334,14 @@ defn json_unicode(text: String, pos: Int, builder: StringBuilder) -> Result<Pars
     let escaped: Result<Int,String> = parse_hex_escape(text,pos);
     when is_err(escaped) { term err_frame(e_invesc()); };
     let code: Int = unwrap(escaped);
-    when code >= 56320 && code <= 57343 { term err_frame(e_invesc()); };
-    when code < 55296 || code > 56319 { term parse_str_chars(text,pos+4,append_char(builder,code as Char)); };
+    when code >= UTF16_LOW_MIN && code <= UTF16_LOW_MAX { term err_frame(e_invesc()); };
+    when code < UTF16_HIGH_MIN || code > UTF16_HIGH_MAX { term parse_str_chars(text,pos+4,append_char(builder,code as Char)); };
     when pos+10 > (text .^Length) || char_at(text,pos+4) != '\\' || char_at(text,pos+5) != 'u' { term err_frame(e_invesc()); };
     let second: Result<Int,String> = parse_hex_escape(text,pos+6);
     when is_err(second) { term err_frame(e_invesc()); };
     let low: Int = unwrap(second);
-    when low < 56320 || low > 57343 { term err_frame(e_invesc()); };
-    let combined: Int = 65536+(code-55296)*1024+low-56320;
+    when low < UTF16_LOW_MIN || low > UTF16_LOW_MAX { term err_frame(e_invesc()); };
+    let combined: Int = UTF16_OFFSET+(code-UTF16_HIGH_MIN)*UTF16_SPAN+low-UTF16_LOW_MIN;
     term parse_str_chars(text,pos+10,append_char(builder,combined as Char));
 };
 
