@@ -324,7 +324,7 @@ defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
     -> String {
     let missing: Int = len - s .^Length;
     when missing == 0 {
-        term s;
+        term fresh_string(s);
     };
     term zeros(missing) + s;
 };
@@ -332,19 +332,21 @@ defn pad_digits(s: String, len: Int) [s .^Length >= 1 && s .^Length <= len]
 // strip_frac_zeros - strip trailing zeros from a fraction digit string
 // (returns "" when all zeros). The integer part is untouched by %g.
 defn strip_frac_zeros(frac: String) [true][term .^Length >= 0] -> String {
+    // 2026-11-13 (owners census + tail-class drift): base cases FIRST, the
+    // recursive call LAST in true tail position — the previous shape
+    // (recursion inside a guard followed by a trailing statement) classified
+    // differently on the AST and HIR sides. All paths return OWNED copies:
+    // every call site hands this helper a disposable slice, and the copies
+    // keep the helper fresh for the owners census (formatting is cold).
     when frac .^Length == 0 {
-        term frac;
+        term fresh_string(frac);
     };
     let last: Int = frac[frac .^Length - 1:frac .^Length] as Int;
-    when last == 0 {
-        // 2026-11-11 (string ownership): every call site hands this helper a
-        // freshly allocated digit slice. Take ownership: the shorter slice is
-        // a copy, so the input can be released before recursing.
-        let trimmed: String = frac[0:frac .^Length - 1];
-        Free#(frac as Ptr<Bit<8>>);
-        term strip_frac_zeros(trimmed);
+    when last != 0 {
+        term fresh_string(frac);
     };
-    term frac;
+    let trimmed: String = frac[0:frac .^Length - 1];
+    term strip_frac_zeros(trimmed);
 };
 
 // exp_style - exponential %g form: d[.ddd]e±XX from the digit string + k.

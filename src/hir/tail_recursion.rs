@@ -110,6 +110,11 @@ fn collect_tail_self_calls(body: &[HirStmt], name: &str, out: &mut Vec<Vec<HirEx
             HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) => {
                 collect_tail_self_calls_expr(e, name, out);
             }
+            // 2026-11-13 (owned-storage seam): the transfer REPLACED the
+            // original Term/Tail — collect through its wrapped expression.
+            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+                collect_tail_self_calls_expr(expr, name, out);
+            }
             HirStmtKind::Guarded(_, inner) | HirStmtKind::Block(inner) => {
                 collect_tail_self_calls(inner, name, out);
             }
@@ -150,6 +155,11 @@ fn tail_calls_in_body(body: &[HirStmt], name: &str) -> usize {
             HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) => {
                 total += tail_calls_in_expr(e, name)
             }
+            // 2026-11-13 (owned-storage seam): the transfer REPLACED the
+            // original Term/Tail — its wrapped expression is the tail.
+            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+                total += tail_calls_in_expr(expr, name)
+            }
             HirStmtKind::Guarded(_, inner) | HirStmtKind::Block(inner) => {
                 total += tail_calls_in_body(inner, name)
             }
@@ -173,6 +183,14 @@ fn tail_calls_in_expr(expr: &HirExpr, name: &str) -> usize {
 fn tail_calls_in_block(stmts: &[HirStmt], name: &str) -> usize {
     for stmt in stmts.iter().rev() {
         match &stmt.kind {
+            // 2026-11-13 (owned-storage seam): a TempTransfer REPLACED the
+            // original tail expression (bind → releases → return the
+            // binding). Its wrapped expression occupies the same tail
+            // position — count it, or AST/HIR tail classes drift whenever
+            // the owned-storage pass converts a self-recursive tail.
+            HirStmtKind::TempTransfer { expr, ret, .. } if !matches!(ret, crate::hir::stmt::RetKind::EndProgram) => {
+                return tail_calls_in_expr(expr, name);
+            }
             HirStmtKind::Term(Some(e)) | HirStmtKind::Tail(e) | HirStmtKind::Expression(e) => {
                 return tail_calls_in_expr(e, name);
             }
@@ -181,7 +199,6 @@ fn tail_calls_in_block(stmts: &[HirStmt], name: &str) -> usize {
     }
     0
 }
-
 // ── Full expression walk (total self-call count) ────────────────────────
 
 fn count_self_calls_stmts(stmts: &[HirStmt], name: &str) -> usize {
@@ -203,6 +220,9 @@ fn count_self_calls_stmt(stmt: &HirStmt, name: &str) -> usize {
         | HirStmtKind::Check(e)
         | HirStmtKind::Gate(e)
         | HirStmtKind::Expression(e) => expr(e),
+        // 2026-11-13 (owned-storage seam): count the wrapped tail
+        // expression — the transfer REPLACED the original Term/Tail.
+        HirStmtKind::TempTransfer { expr: boxed, .. } => expr(boxed.as_ref()),
         HirStmtKind::Guarded(c, b) => expr(c) + count_self_calls_stmts(b, name),
         HirStmtKind::Block(b)
         | HirStmtKind::SyncBlock(b)

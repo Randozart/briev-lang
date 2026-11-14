@@ -3389,6 +3389,14 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             let hir_tail = crate::hir::tail_recursion::build_tail_recursion_plan(&analysis.hir);
             let hir_loop = crate::hir::tail_recursion::build_tail_loop_plan(&analysis.hir);
             debug_assert_eq!(hir_tail.defns, ast_tail.defns, "HIR/AST tail-class drift");
+            if hir_loop.defns != ast_loop.defns {
+                let only_hir: Vec<_> = hir_loop.defns.difference(&ast_loop.defns).collect();
+                let only_ast: Vec<_> = ast_loop.defns.difference(&hir_loop.defns).collect();
+                for n in only_hir.iter().chain(only_ast.iter()) {
+                    eprintln!("[tail-loop-dbg] {n}: ast predicates (sig,cleanup,arity_match,#calls) = {:?}",
+                        crate::analysis::tail_recursion::debug_loop_predicates(&reordered_items, n));
+                }
+            }
             debug_assert_eq!(hir_loop.defns, ast_loop.defns, "HIR/AST tail-loop drift");
             (hir_tail, hir_loop)
         } else {
@@ -4546,6 +4554,22 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         // Deduplicate identical constants to avoid redundant cache lines.
         // LLVM `@alias` maps multiple names to the same global without
         // allocating separate storage.
+        // 2026-11-13 (stdlib constants): a const declared as pure integer
+        // arithmetic (`const I64_MIN: Int = 0 - 9223372036854775807 - 1;`)
+        // must emit its folded value — the match arms below only understand
+        // literal shapes, and the `_` fallback silently emitted a zero global
+        // for any arithmetic declaration (proof-time and runtime disagreed).
+        // Fold through the analysis-owned const table (the same
+        // `gemm_shape::fold_consts` + `lit` mechanism dimension resolution
+        // uses, populated above); shapes that still do not resolve keep the
+        // existing literal-shape handling untouched.
+        let fold_to_int = |expr: &Expr| -> Option<Expr> {
+            crate::analysis::gemm_shape::lit(
+                &crate::analysis::gemm_shape::fold_consts(expr, &self.ctx.const_values),
+                &self.ctx.const_values,
+            )
+            .map(Expr::Decimal)
+        };
         let mut dedup_map: HashMap<String, String> = HashMap::new(); // key → canonical_name
         let mut alias_map: HashMap<String, String> = HashMap::new(); // name → canonical_name
         // 2026-07-19: Sorted for deterministic IR order.
@@ -4553,6 +4577,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_constants.sort();
         for name in &sorted_constants {
             let (ty, expr) = &self.ctx.constants[name];
+            let expr: &Expr = &fold_to_int(expr).unwrap_or_else(|| expr.clone());
             // 2026-10-22: constants must honor target-sized flexible Int just
             // like ordinary values; universe metadata alone may describe the
             // 64-bit maximum on wasm32. Keep declarations, aliases and reads
@@ -4587,6 +4612,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
         sorted_constants2.sort();
         for name in &sorted_constants2 {
             let (ty, expr) = &self.ctx.constants[name];
+            let expr: &Expr = &fold_to_int(expr).unwrap_or_else(|| expr.clone());
             let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.clone());
             if canonical != *name {
                 let llvm_ty = self.llvm_type(ty);
@@ -6615,7 +6641,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], "  ");
+            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", emit_expr::ArgsView::Ast(&[]), "  ");
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -6647,7 +6673,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], "  ");
+            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", emit_expr::ArgsView::Ast(&[arg]), "  ");
             if row_size == 0 {
                 // Scalar/string element collection: one snapshot word per item.
                 let word64 = self.view_projection_word(out, "  ", &word);

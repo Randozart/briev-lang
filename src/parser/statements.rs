@@ -471,6 +471,21 @@ impl<'a> Parser<'a> {
         // form remains a tolerated legacy form during migration.
         let had_paren = self.eat(&Token::LParen);
         let item = self.expect_identifier()?;
+        // Optional loop invariant, written between the binder and `in`:
+        //
+        //   foreach i [acc == i && i <= n] in 0..n { ... }
+        //
+        // It cannot sit after the iterable: the list is parsed as an expression
+        // and a postfix `[` is the index operator, so `0..n [I]` would read as
+        // indexing the range.
+        let invariant = if self.check(&Token::LBracket) {
+            self.pos += 1;
+            let property = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            Some(property)
+        } else {
+            None
+        };
         self.eat_identifier("in");
         let list = self.parse_expression()?;
         if had_paren {
@@ -484,7 +499,13 @@ impl<'a> Parser<'a> {
             item,
             list: Box::new(list),
             body,
-        modifiers: vec![],
+        modifiers: match invariant {
+            Some(property) => vec![crate::ast::Annotation {
+                name: "invariant".to_string(),
+                value: Some(property),
+            }],
+            None => vec![],
+        },
         })
     }
 

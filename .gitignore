@@ -393,3 +393,6 @@ benchmarks/queue_drain_c
 benchmarks/series_converge_c
 benchmarks/utf8_ops_c
 benchmarks/parity/_out/
+
+# Out-of-tree CARGO_TARGET_DIR. Build output must never be committed.
+.phase-c-target/

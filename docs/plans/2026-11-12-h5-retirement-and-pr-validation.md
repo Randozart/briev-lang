@@ -159,3 +159,218 @@ convert-then-substitute seam (H4.2) is deleted:
   quick ALL DETERMINISTIC; quick gate 3788 lib + 42 integration green;
   tier1 corpus 52/54 (same two pre-existing `strexp`/`strexp2` link failures
   as baseline HEAD); Praetor at-or-below baseline on every changed file.
+
+## Execution record (2026-11-12, Phase A+C)
+
+**Phase A — emitter entries switch (DONE, `e7ea2e04`).**
+`hir_stmt_bodies` HashMap eliminated entirely. `emit_definition`/`emit_transaction`
+receive HIR bodies via per-call spec structs (`DefinitionEmitSpec`/`TransactionEmitSpec`).
+Specialization passes HIR body directly. ISR synthetic body passes None.
+
+**Phase C (statement-level) — DONE (`37c1a2b2`).**
+`hir_sourced_body` is now a pair validator (slot alignment only). Deleted:
+`convert_hir_statement`, `convert_children_seam`, `convert_scoped_seam`,
+`reconstruct_match_arms`, `release_ast_stmt`, `storage_release_view`/`strip_view`.
+One shared pair walk (`emit_children_pair`) for nested scopes, match arms, foreach
+bodies, defer flush. New native arms for Open/TrgBinding/MetadataAssignment/InlineAsm.
+`to_ast` in `emit_hir_stmt.rs`: **22 → 8** (expression-level gates only).
+
+**Phase B — destination_ownership + destination_model ports (DONE).**
+`hir::destination_ownership` (13 parity) + `hir::destination_model` (33 parity)
+with HIR fidelity (`HirTypeDef.parent`, `declaration_order`, `HirForeign.link_symbol`,
+`ItemCtx` threading).
+
+**Phase C (expression-level) — REMAINING (48 to_ast refs, was 56).**
+Breakdown:
+- `emit_expr.rs` (22): structural dispatch reconstructs AST for Field/Reflect/
+  MethodCall/Match/Slice/StructLiteral to reuse AST-shaped helpers. Each needs
+  a HIR-native version. Multi-session.
+- `emit_hir_stmt.rs` (8): expression-level `to_ast::expr` gates for Assign/
+  Guarded/Term/Match scrutinee. Same category.
+- `accel.rs` (6) + `batch_shape.rs` (4) + `region.rs` (1) + `electronics.rs` (1):
+  result-boundary crossings, ratified as accepted exceptions.
+- `emit_stmt.rs` (3) + `backend/mod.rs` (3): declaration/ABI surfaces, deferred
+  to Phase D.
+
+These 30 emission-path refs (emit_expr + emit_hir_stmt) require HIR-native
+dispatch for the remaining expression families. Each family (Field, MethodCall,
+Reflect, Match, Slice, StructLiteral) needs its own HIR-native emitter mirroring
+the AST-shaped helper. This is the last major Phase C slice.
+
+## Phase C, expression-emission slice (2026-11-13, partial)
+
+`emit_expr.rs` no longer reconstructs AST for the structural expression
+families. Converted to HIR-native dispatch:
+
+- **Match**: scrutinee, patterns (condition + payload binding), guards and
+  arm bodies emit from HIR. `MatchArms::Hir` no longer carries an AST arm
+  slice; the probe binds/decomposes HIR patterns directly. Expression-position
+  matches used as their own statement keep the AST statement route (`.smt_*`)
+  — `hir_expr_family_covered` deliberately excludes Match so the statement
+  seam still reaches that path; the operand path opts Match in explicitly.
+- **Slice**: the shared helper takes an `ExprView` (AST/HIR) for the array and
+  bounds; String/vector shape probes read the HIR identifier and bounds emit
+  through `emit_hir_operand`.
+- **StructLiteral**: image allocation and field-store tail are shared; HIR
+  field values emit through the operand path. `open_struct_image` /
+  `close_struct_image` / `StructSlot` keep both paths on one implementation.
+- **Tuple**: `TupleElems::Hir` carries only HIR items; constant-element
+  placement now mirrors the AST predicate (`is_hir_compile_time_const`).
+- **Field**: the full field dispatch (pooled-instance column, deref receiver,
+  tuple element, layout read, array field) moved into one
+  `emit_field_expression` shared by AST and HIR; receiver shape probes use
+  `ExprView`.
+- **Spawn**: the redundant AST conversion in the HIR argument path is gone
+  (`emit_hir_operand` already converts per leaf).
+
+`to_ast` in `emit_expr.rs`: **22 → 14** textual references (**21 → 9** code
+references). Remaining code crossings and why they stay:
+
+- **Index**: the helper threads the index into `emit_method_call` for tier-2
+  `op At` inlining, and mask operands store the AST receiver.
+- **MethodCall / Reflect**: dispatch reads receiver AST identity
+  (`Expr::Index` collection-element detection, dynamic-dispatch concrete
+  resolution) and `.^Ptr` constructs `AddrOf(receiver)`; member bodies take
+  AST argument slices.
+- **Call**: intrinsic/enum/struct/frgn callee surfaces take AST argument
+  slices (ordinary user-call args already emit through the HIR operand path).
+- **Short-circuit Binary**: `logical.rs` consumes AST operands and AST purity
+  predicates.
+- **Block children**: `to_ast::stmt` supplies the SOURCE statement to the
+  statement seam's splice fallback (not a dispatch reconstruction).
+- **Match `List` arm bodies**: accepted collection-witness constructor
+  exception.
+
+Gates: `cargo build` (no new warnings); `scripts/gate.sh quick` lib 3782/3782
+(the pre-existing `verify_report` JSON-schema failure remains in the
+integration batch — reproduced on unmodified main); `hir_emit_ab.sh` full
+corpus ALL BYTE-IDENTICAL; `ll_determinism_check.sh --quick` ALL
+DETERMINISTIC; focused HIR/match/field/tier2/corpus suites 28/28; Praetor
+on `src/backend/llvm` produces no new diagnostics (net one fewer issue in
+`emit_match`/`emit_struct_literal`).
+
+## Phase C, statement-operand slice (2026-11-13, done)
+
+`emit_hir_stmt.rs` no longer crosses `hir::to_ast` at all: **8 → 0** code
+references (the module doc is the only remaining textual mention). The
+value-binding and term/match statement arms now take their shape and fallback
+expressions from the SOURCE statement at the same pair slot, and HIR still
+drives native value emission:
+
+- **ArrowAssign (gate + operand)**: new `ArrowOperand::HirSourced(hir, source_ast)`
+  carries the pair slot's AST leaf. `name()`/`declared_type()` read HIR; `emit()`
+  prefers `emit_hir_operand` and falls back to the source AST; `to_ast()` is the
+  source AST, so the `#StdOut` `Print#` path needs no reconstruction. The
+  reconstructibility gate is gone (the source slot always exists).
+- **Let**: `emit_let_pair` takes the paired `HirStmt` plus the SOURCE
+  initializer (`LetValue::Hir(hir, source_ast)`); bare lets pass `Ast(None)`.
+- **Assign**: LHS/RHS shape and RHS fallback come from
+  `Statement::Assign`; the RHS still emits through `AssignValue::Hir`.
+- **Term/Tail**: `term_source_value` extracts the paired source expression;
+  the value emits through `emit_hir_operand` with the source AST as the
+  uncovered-leaf fallback. A value term with no source declines before the web
+  flush (no partial IR).
+- **Match scrutinee**: emitted through `emit_hir_operand`, falling back to the
+  paired `Statement::Match` scrutinee; arm patterns/bodies were already sourced.
+- **TempTransfer**: the synthetic binding uses the replaced return statement's
+  source expression at the pair slot; its synthetic return carries a
+  synthetic `Identifier` source so the term arm never crosses `to_ast`.
+
+No `to_ast` site in this file is kept as an AST-only exception. The remaining
+`to_ast` families in `emit_expr.rs` (Index/MethodCall/Reflect/Call/short-circuit/
+Block children) are unchanged and remain the next expression slice.
+
+Gates (re-verified independently 2026-11-13 after the interruption):
+`cargo build`/`--release` green, no new warnings; `cargo nextest run --lib`
+3767/3767; `scripts/gate.sh quick` 42/42; `hir_emit_ab.sh` full corpus ALL
+BYTE-IDENTICAL; `ll_determinism_check.sh --quick` ALL DETERMINISTIC.
+`cargo test --all --no-fail-fast` shows 72 failures — all exec/toolchain
+golden suites plus contract proof binaries (host clang currently degraded:
+`unknown platform, assuming -mfloat-abi=soft`) — and the failure set is
+IDENTICAL at the base commit `33b4ca0c0` in a temp worktree
+(`daily_use_smoke` 41/41, `inferred_output` 4/4, `tail_expr` 1/2 pass,
+`pgated_term_backend` 2/2, `c_driver_callback`,
+`frgn_contract_preconditions`); each sampled failure also fails with
+`BRIEV_HIR_EMIT=0`. No failure implicates this slice. Praetor on the
+changed files: `emit_hir_stmt.rs` clean; `emit_stmt.rs` has the identical
+27-diagnostic pre-existing set at HEAD (line-number shifts only).
+
+## Phase C-4 design (recorded 2026-11-13, not started)
+
+Remaining `to_ast` code refs: `emit_expr.rs` 9, `mod.rs` 1 (8029), plus
+result-boundary 12 (ratified) and decl/ABI surfaces 6 (Phase D).
+
+All remaining `emit_expr` crossings are receiver/callee dispatch surfaces.
+The shared blocker is `emit_method_call` (line ~4089): it probes receiver AST
+identity, resolves dynamic dispatch, and hands member bodies AST argument
+slices via `emit_member_body`. `emit_reflection` (~5095) additionally probes
+`Expr::Identifier` (wire `Ready`), `Expr::AddrOf` (`.^Ptr`), and calls
+`is_semantic_string(recv, ..)`. `Index` threads its operands into the tier-2
+`op At` method-call path and `MaskIndexOperands` stores AST receivers.
+
+Required work, in dependency order:
+1. Extend `ExprView` with the probes these families need: `as_addr_of()`,
+   `is_index()`, `is_literal()`, `index_parts()`, and a `shape()` that
+   covers the tuple/collection/dynamic-receiver discriminations currently
+   done by matching on `Expr`. Every probe must be answered from the 1:1 HIR
+   node (`HirExprKind`), not by reconstruction.
+2. Convert `emit_method_call` + `emit_member_body` to take `ExprView`
+   receiver and `ArgsView` (Ast slice / Hir slice) — mirroring `SpawnArgs`.
+   Member bodies that genuinely require AST statement surfaces (none known;
+   statement path is native now) are the only allowed leaf conversions.
+3. Convert `emit_reflection` to `ExprView` (Ready/AddrOf/string probes).
+4. Convert `Index` via `emit_index_with_obj` with `ExprView` operands.
+5. Convert `Call`'s eager `ast_args` gate: the AST slice exists only for
+   intrinsic/enum-ctor/struct-ctor/frgn callee surfaces; those callee arms
+   take HIR args once (2) lands.
+6. Short-circuit Binary: add a `logical.rs` HIR operand variant.
+7. `mod.rs:8029` closure match-arm body: convert to HIR statement emission
+   (the statement path is native).
+8. Block children `to_ast::stmt` and the Match `List` arm stay: they supply
+   the source statement / collection-witness constructor, not dispatch.
+
+Recognition gate: every step must keep full `hir_emit_ab.sh` BYTE-IDENTICAL
+and `--quick` determinism clean; no IR-visible change is acceptable in this
+phase.
+
+### C-4 step 1 done (2026-11-13): Reflect converted to ExprView
+
+`emit_reflection` now takes `ExprView<'_>`; both callers pass views (Hir arm
+gates with `hir_expr_lossless` — the exact `to_ast` reconstructibility
+predicate — before declining to the seam splice, as before). Receiver
+emission goes through `emit_view_expr`; the Ready/Available probes use
+`identifier()`; `is_semantic_string` replaced by its ident twin; `.^Ptr`
+emits a native AddrOf view (shared H4/AST AddrOf arms are structurally
+identical). The duplicated Available symbol block was collapsed (identical
+rebinding). `emit_expr.rs` to_ast code refs: 10 (was 11; Reflect receiver
+gate gone). Gates: quick 42/42, full A/B BYTE-IDENTICAL, determinism clean.
+Next: Index + MethodCall receiver/args (needs `emit_member_body` ArgsView),
+then Call eager-arg gate, short-circuit, mod.rs closure arm.
+
+### C-4 step 2 done (2026-11-13): short-circuit And/Or fast path native
+
+`logical.rs` now owns the shared predicate (`short_circuit_register_fast`)
+and the register-level emission (`short_circuit_register_level`) over
+`ExprView`, with HIR twins of `expr_is_side_effect_free` /
+`expr_contains_beginprogram` that mirror the AST matches one-for-one (to_ast's
+literal map is 1:1 — Bytes→Quoted, Int→Decimal, BeginProgram→BeginProgram —
+so fast-vs-CFG routing cannot diverge). `hir_expr_family_covered` admits
+fast-safe, lossless And/Or; the HIR Binary arm emits them through the view
+path. The CFG form declines to whole-expression conversion (today's AST
+routing), including `emit_exit_short_circuit` (loop_engine, unchanged).
+Gates: quick 42/42, logical 4/4, full A/B BYTE-IDENTICAL, determinism clean.
+Remaining C-4: Index + MethodCall (emit_member_body ArgsView), Call eager-arg
+gate, Block-children splice, mod.rs closure fallback (accepted leaf
+fallback), Match-List constructor exception (accepted).
+
+### C-4 step 3 done (2026-11-13): MethodCall arguments via ArgsView
+
+`ArgsView` (mirrors `SpawnArgs`) threads call-site arguments through
+`emit_method_call` and the whole dyn family (MethodCall/switch/inline/vtable
+arg loops evaluate through `emit_arg`: AST keeps gen_reg + emit_expr_inner,
+HIR goes through the operand path). The HIR arm gates receiver+args
+losslessness up front; the UFCS desugar leaf converts via `as_ast()`
+(documented exception — the desugared `Expr::Call` is AST-shaped).
+10 external callers wrapped in `ArgsView::Ast`. Receiver still crosses as
+AST (receiver-view slice is the remaining step). Gates: quick 42/42,
+full A/B BYTE-IDENTICAL, determinism clean.

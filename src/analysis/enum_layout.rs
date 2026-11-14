@@ -173,19 +173,27 @@ impl EnumLayoutPlanner {
             return self.enum_payload_tree_fits(element, depth);
         }
         if let Type::Tuple(elements) = ty {
-            return elements.iter().all(|element| self.enum_payload_tree_fits(element, depth));
+            return elements
+                .iter()
+                .all(|element| self.enum_payload_tree_fits(element, depth));
         }
         let (name, args) = match ty {
             Type::Custom(name) => (name.as_str(), &[][..]),
             Type::Applied(name, args) => (name.as_str(), args.as_slice()),
             _ => return true,
         };
-        let Some(definition) = self.enums.get(name) else { return true };
+        let Some(definition) = self.enums.get(name) else {
+            return true;
+        };
         if depth >= self.max_depth {
             return false;
         }
-        let substitutions: HashMap<String, Type> = definition.params.iter().cloned()
-            .zip(args.iter().cloned()).collect();
+        let substitutions: HashMap<String, Type> = definition
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
         definition.variants.iter().all(|(_, payload)| {
             let concrete = crate::typechecker::substitute_type(payload, &substitutions);
             self.enum_payload_tree_fits(&concrete, depth + 1)

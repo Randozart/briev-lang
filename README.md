@@ -154,7 +154,7 @@ node increment [count < 10][count == 10] {
 };
 ```
 
-The node fires repeatedly while the precondition `[count < 10]` holds. When the goal `[count == 10]` is reached, it stops. The compiler checks the program against your declared intent, proves what it can, and reports what it can't — the honest boundary is visible, not hidden.
+The node fires repeatedly while the precondition `[count < 10]` holds. When the goal `[count == 10]` is reached, it stops. The compiler checks the program against your declared intent, proves what it can, and reports what it can't — the honest boundary is visible, not hidden. SPEC §10.7 states exactly which declarations and constructs that boundary currently covers.
 
 ### 3. Compile and Run
 

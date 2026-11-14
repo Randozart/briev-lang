@@ -400,7 +400,7 @@ txn fold_upper_copy(src: Int, dst: Int, j: Int, n: Int) [j < n][j == n] -> Void 
 
 defn to_lower_str(s: String) [true][term .^Length == s .^Length] -> String {
     let n: Int = s .^Length;
-    when n == 0 { term ""; };
+    when n == 0 { term fresh_string(""); };
     let dstp: Int = Malloc#(n + 9) as Int;
     Store#(dstp, n, 8);
     fold_lower_copy((s as Data) as Int + 8, dstp + 8, 0, n);

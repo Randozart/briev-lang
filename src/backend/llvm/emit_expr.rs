@@ -7,6 +7,35 @@
 // on deeply nested || chains (32+ terms = 13M+ calls). LLVM -O3 does the same.
 // See patches/2026-06-13-remove-simplify-from-emit-expr.patch for exact removed code.
 //
+// 2026-11-13 (H5 phase C, expression slice): HIR-native dispatch now covers
+// Match (scrutinee, patterns, guards, bodies), Slice, StructLiteral, Tuple,
+// and Field. The `to_ast` crossings that remain are AST-shaped CALLEE
+// surfaces, each left with its reason:
+//   - Index: the helper threads the index expression into `emit_method_call`
+//     for tier-2 `op At` inlining, and `MaskIndexOperands` stores the AST
+//     receiver. Porting needs the method-call family first.
+//   - MethodCall: dispatch reads receiver AST identity
+//     (`Expr::Index` collection-element detection, dynamic-dispatch
+//     `resolve_dyn_concrete`), and member bodies take AST argument slices.
+//     `emit_member_body` is the shared AST-shaped consumer. Reflect is
+//     CONVERTED (2026-11-13): `emit_reflection` takes an `ExprView` and
+//     probes via `identifier()` / `is_semantic_string_ident` / a native
+//     AddrOf view, gated by `hir_expr_lossless`.
+//   - Call: intrinsic / enum-constructor / struct-constructor / frgn callee
+//     surfaces take AST argument slices. Ordinary user-call arguments are
+//     already emitted through the HIR operand path; the eager slice is the
+//     reconstructibility gate for those AST-only callee surfaces.
+//   - short-circuit Binary: CONVERTED for the register-level fast path
+//     (2026-11-13): `emit_short_circuit_hir` shares the exact predicate
+//     (`short_circuit_register_fast`) and emission with the AST path; the
+//     CFG form (impure RHS / beginprogram) declines to whole-expression
+//     conversion, keeping today's AST routing.
+//   - Block children: `to_ast::stmt` supplies the SOURCE statement to the
+//     statement seam's splice fallback. It is not a dispatch reconstruction,
+//     and stays necessary while the families above can decline.
+//   - Match `List` arm bodies: accepted collection-witness constructor
+//     exception (needs the declared result type to construct via the
+//     collection ops).
 // 2026-06-28: fix empty-indent emit_expr — default indent prevents %t{N} violations.
 
 use crate::ast::*;
@@ -97,6 +126,25 @@ pub(crate) fn is_compile_time_const(e: &Expr) -> bool {
     )
 }
 
+/// 2026-11-13 (H5 phase C): HIR twin of `is_compile_time_const`. Matches the
+/// same literal set the AST predicate accepts (`Quoted`/`Bytes` and
+/// `BeginProgram` are NOT compile-time-constant for the preheader-allocation
+/// decision).
+fn is_hir_compile_time_const(e: &crate::hir::expr::HirExpr) -> bool {
+    use crate::hir::expr::{HirExprKind, HirLiteral};
+    matches!(
+        &e.kind,
+        HirExprKind::Literal(
+            HirLiteral::Int(_)
+                | HirLiteral::Char(_)
+                | HirLiteral::TaggedInt(..)
+                | HirLiteral::TaggedBytes(..)
+                | HirLiteral::Bool(_)
+                | HirLiteral::Float(_)
+        )
+    )
+}
+
 pub(crate) struct MemberInvocation<'a> {
     pub recv_reg: &'a TypedRegister,
     pub type_name: &'a str,
@@ -148,21 +196,77 @@ use std::fmt::Write;
 /// allocates first, so a mid-loop fallback would double-emit.
 pub(crate) enum TupleElems<'a> {
     Ast(&'a [Expr]),
-    Hir(&'a [crate::hir::expr::HirExpr], &'a [Expr]),
+    Hir(&'a [crate::hir::expr::HirExpr]),
 }
 
 /// 2026-11-05 (H4 slice D): dual-fueled match arms — `Ast` keeps the legacy
-/// path; `Hir` emits covered guard/body leaves natively through
-/// `emit_hir_operand` (uncovered leaves convert per-element; List bodies keep
-/// the AST collection-witness path). Patterns/guards dispatch and the probe
-/// stay on the reconstructed AST arms. The caller reconstruct-checks
-/// EVERYTHING before the scrutinee emits (the phi machinery has no mid-loop
-/// fallback).
+/// path; `Hir` emits every part natively: patterns drive the condition/bind
+/// helpers directly, guards and bodies go through `emit_hir_operand`. List
+/// bodies keep the AST collection-witness path (declared result type) — an
+/// accepted constructor exception, converted at that single leaf.
+/// 2026-11-13 (H5 phase C expression slice): the AST arm slice is gone;
+/// nothing is reconstructed for dispatch.
 pub(crate) enum MatchArms<'a> {
     Ast(&'a [crate::ast::MatchArm]),
-    Hir(&'a [crate::hir::expr::HirMatchArm], &'a [crate::ast::MatchArm]),
+    Hir(&'a [crate::hir::expr::HirMatchArm]),
 }
 
+impl MatchArms<'_> {
+    fn len(&self) -> usize {
+        match self {
+            MatchArms::Ast(arms) => arms.len(),
+            MatchArms::Hir(arms) => arms.len(),
+        }
+    }
+}
+
+/// 2026-11-13 (H5 phase C): the match scrutinee without an AST reconstruction.
+/// `emit_match` evaluates it through the same path the source form used.
+pub(crate) enum MatchScrutinee<'a> {
+    Ast(&'a Expr),
+    Hir(&'a crate::hir::expr::HirExpr),
+}
+
+
+/// 2026-11-13 (H5 phase C): a borrowed expression view for AST-shaped helper
+/// dispatch that only needs an identifier/shape probe or an operand
+/// emission. The AST side answers exactly as before; the HIR side probes the
+/// 1:1 HIR shape and emits through `emit_hir_operand`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExprView<'a> {
+    Ast(&'a Expr),
+    Hir(&'a crate::hir::expr::HirExpr),
+}
+
+impl ExprView<'_> {
+    /// The bare identifier this expression names, if any.
+    fn identifier(&self) -> Option<&str> {
+        match self {
+            ExprView::Ast(Expr::Identifier(n)) => Some(n.as_str()),
+            ExprView::Hir(crate::hir::expr::HirExpr {
+                kind: crate::hir::expr::HirExprKind::Identifier(n),
+                ..
+            }) => Some(n.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Emit a viewed operand. HIR views are lossless on this path (the coverage
+/// predicate checked the whole expression before emission).
+pub(super) fn emit_view_expr(
+    backend: &mut LlvmBackend,
+    out: &mut String,
+    view: ExprView<'_>,
+    indent: &str,
+) -> TypedRegister {
+    match view {
+        ExprView::Ast(e) => backend.emit_expr(out, e, indent),
+        ExprView::Hir(h) => backend
+            .emit_hir_operand(out, h, indent)
+            .expect("lossless slice operand"),
+    }
+}
 
 /// 2026-11-09 (H5 seam refactor): spawn arguments by index. The helpers below
 /// evaluate args at the same points as before; HIR args prefer the operand
@@ -195,11 +299,9 @@ impl SpawnArgs<'_> {
     ) -> TypedRegister {
         match self {
             SpawnArgs::Ast(args) => backend.emit_expr(out, &args[index], indent),
-            SpawnArgs::Hir(args) => backend.emit_hir_operand(out, &args[index], indent)
-                .unwrap_or_else(|| {
-                    let ast = crate::hir::to_ast::expr(&args[index]).expect("reconstructible spawn arg");
-                    backend.emit_expr(out, &ast, indent)
-                }),
+            SpawnArgs::Hir(args) => backend
+                .emit_hir_operand(out, &args[index], indent)
+                .expect("reconstructible spawn arg"),
         }
     }
 
@@ -217,6 +319,60 @@ impl SpawnArgs<'_> {
         match self {
             SpawnArgs::Ast(args) => matches!(args[index], Expr::Field(..)),
             SpawnArgs::Hir(args) => matches!(args[index].kind, crate::hir::expr::HirExprKind::Field { .. }),
+        }
+    }
+}
+
+/// 2026-11-13 (H5 phase C, MethodCall slice): call-site arguments by view.
+/// Mirrors `SpawnArgs`: each arg evaluates at the same point as before; HIR
+/// args prefer the operand path and fall back to the reconstructed AST leaf.
+/// The HIR caller gates whole-expression losslessness first (receiver AND
+/// args), so the operand path's fallback cannot fire mid-list.
+#[derive(Clone, Copy)]
+pub(crate) enum ArgsView<'a> {
+    Ast(&'a [Expr]),
+    Hir(&'a [crate::hir::expr::HirExpr]),
+}
+
+impl ArgsView<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            ArgsView::Ast(args) => args.len(),
+            ArgsView::Hir(args) => args.len(),
+        }
+    }
+
+    /// Emit argument `index` at the same point the AST loop did (one result
+    /// register per argument, allocated before its emission).
+    pub(crate) fn emit_arg(
+        &self,
+        backend: &mut LlvmBackend,
+        out: &mut String,
+        indent: &str,
+        index: usize,
+    ) -> TypedRegister {
+        match self {
+            ArgsView::Ast(args) => {
+                let arg_tmp = backend.fun.gen_reg();
+                backend.emit_expr_inner(out, &arg_tmp, &args[index], indent)
+            }
+            ArgsView::Hir(args) => backend
+                .emit_hir_operand(out, &args[index], indent)
+                .expect("lossless method-call argument"),
+        }
+    }
+
+    /// The argument list as AST — for the UFCS desugar leaf, which builds an
+    /// AST-shaped `Expr::Call` (documented exception; the HIR caller's
+    /// losslessness gate makes the conversion infallible here).
+    pub(crate) fn as_ast(&self) -> Vec<Expr> {
+        match self {
+            ArgsView::Ast(args) => args.to_vec(),
+            ArgsView::Hir(args) => args
+                .iter()
+                .map(crate::hir::to_ast::expr)
+                .collect::<Option<Vec<_>>>()
+                .expect("lossless UFCS argument list"),
         }
     }
 }
@@ -491,38 +647,19 @@ impl LlvmBackend {
                 TypedRegister { name: v.clone(), ty: pointee_ty }
             }
             HirExprKind::Match { scrutinee, arms } => {
-                // Dispatch-only: the scrutinee, patterns, guards and bodies
-                // all reconstruct BEFORE the scrutinee emits (emit_match
-                // evaluates the scrutinee first; the phi machinery has no
-                // mid-loop fallback). Covered-body nativeness lands with the
-                // emit_match bodies split (queued with the Cast.via arc).
-                let Some(ast_scrutinee) = crate::hir::to_ast::expr(scrutinee) else {
-                    return None;
-                };
-                let mut ast_arms = Vec::with_capacity(arms.len());
-                for arm in arms {
-                    let Some(pat) = crate::hir::to_ast::pattern(&arm.pattern) else {
-                        return None;
-                    };
-                    let guard = match arm.guard.as_ref().map(crate::hir::to_ast::expr) {
-                        Some(Some(g)) => Some(g),
-                        _ => return None,
-                    };
-                    let Some(body) = crate::hir::to_ast::expr(&arm.body) else {
-                        return None;
-                    };
-                    ast_arms.push(crate::ast::MatchArm {
-                        pattern: pat,
-                        guard,
-                        body: Box::new(body),
-                    });
+                // Mirror the AST arm: an armless match is a void value and
+                // emits no scrutinee.
+                if arms.is_empty() {
+                    return Some(TypedRegister { name: v.clone(), ty: Type::void() });
                 }
+                // 2026-11-13 (H5 phase C): HIR-native dispatch — the
+                // scrutinee, patterns, guards and bodies all emit through the
+                // operand path; nothing is reconstructed for shape.
                 self.emit_match(
                     out,
                     &v,
-                    Some(scrutinee),
-                    &ast_scrutinee,
-                    &MatchArms::Hir(arms, &ast_arms),
+                    MatchScrutinee::Hir(scrutinee),
+                    &MatchArms::Hir(arms),
                     indent,
                 )
             }
@@ -557,10 +694,13 @@ impl LlvmBackend {
                             ..
                         }) = &child.kind
                         {
-                            let Some(ast_match) = crate::hir::to_ast::expr(e) else {
-                                return None;
-                            };
-                            last = self.emit_expr(out, &ast_match, indent);
+                            // 2026-11-13 (H5 phase C): emit the trailing
+                            // expression match natively. The per-child source
+                            // reconstruction above already proves this node
+                            // lossless for the statement seam.
+                            last = self
+                                .emit_hir_expr(out, e, indent)
+                                .expect("lossless trailing match expression");
                             continue;
                         }
                     }
@@ -575,46 +715,19 @@ impl LlvmBackend {
                 last
             }
             HirExprKind::Slice { array, start, end, stride } => {
-                // Reconstruct-check array AND bounds BEFORE the array emits
-                // (the dispatch reads their AST shapes; only the array
-                // register is operand-split — covered arrays emit native).
-                let Some(ast_array) = crate::hir::to_ast::expr(array) else {
-                    return None;
-                };
-                let ast_start = match start {
-                    Some(s) => match crate::hir::to_ast::expr(s) {
-                        Some(e) => Some(e),
-                        None => return None,
-                    },
-                    None => None,
-                };
-                let ast_end = match end {
-                    Some(e) => match crate::hir::to_ast::expr(e) {
-                        Some(x) => Some(x),
-                        None => return None,
-                    },
-                    None => None,
-                };
-                let ast_stride = match stride {
-                    Some(x) => match crate::hir::to_ast::expr(x) {
-                        Some(v) => Some(v),
-                        None => return None,
-                    },
-                    None => None,
-                };
+                // 2026-11-13 (H5 phase C): HIR views drive the shared slice
+                // helper — shape probes read HIR, bounds emit through the
+                // operand path. No AST reconstruction.
                 let Some(array_reg) = self.emit_hir_operand(out, array, indent) else {
                     return None;
                 };
-                let boxed_start = ast_start.map(Box::new);
-                let boxed_end = ast_end.map(Box::new);
-                let boxed_stride = ast_stride.map(Box::new);
                 self.emit_slice_with_array(
                     out,
                     &v,
-                    &ast_array,
-                    &boxed_start,
-                    &boxed_end,
-                    &boxed_stride,
+                    ExprView::Hir(array),
+                    start.as_deref().map(ExprView::Hir),
+                    end.as_deref().map(ExprView::Hir),
+                    stride.as_deref().map(ExprView::Hir),
                     array_reg,
                     indent,
                 )
@@ -636,24 +749,16 @@ impl LlvmBackend {
                 self.emit_index_with_obj(out, &v, &ast_obj, &ast_index, obj_reg, indent)
             }
             HirExprKind::StructLiteral { type_name, fields, .. } => {
-                // Dispatch-only: every field reconstructs BEFORE the call —
-                // emit_struct_literal allocates the image first, so a
-                // mid-loop None would double-emit the allocation.
-                let ast_fields: Vec<(String, Expr)> = fields
-                    .iter()
-                    .map(|(n, e)| Some((n.clone(), crate::hir::to_ast::expr(e)?)))
-                    .collect::<Option<Vec<_>>>()?;
-                self.emit_struct_literal(out, &v, type_name, &ast_fields, indent)
+                // 2026-11-13 (H5 phase C): HIR-native field emission; the
+                // image allocation and store tail are shared with the AST
+                // path.
+                self.emit_hir_struct_literal(out, type_name, fields, indent)
             }
             HirExprKind::Tuple(items) => {
-                // Reconstruct-check every element BEFORE materialization:
-                // the malloc precedes element emission, so a mid-loop
-                // fallback would double-emit the allocation.
-                let ast_items: Vec<Expr> = items
-                    .iter()
-                    .map(crate::hir::to_ast::expr)
-                    .collect::<Option<Vec<_>>>()?;
-                self.emit_tuple(out, &v, &TupleElems::Hir(items, &ast_items), indent)
+                // 2026-11-13 (H5 phase C): elements emit through the operand
+                // path; coverage proved the whole tuple lossless before the
+                // materializer allocates.
+                self.emit_tuple(out, &v, &TupleElems::Hir(items), indent)
             }
             HirExprKind::Cast { inner, to, .. } => {
                 let Some(src) = self.emit_hir_operand(out, inner, indent) else {
@@ -677,35 +782,35 @@ impl LlvmBackend {
                 reg
             }
             HirExprKind::Field { receiver, name } => {
-                // Dispatch-only: the helper inspects the (reconstructed)
-                // receiver syntactically — nothing emits before this point,
-                // so a None here falls back cleanly.
-                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
-                    return None;
-                };
-                // 2026-11-05: HIR dispatch has not evaluated this receiver.
-                // Let the shared loader evaluate it once; pass Some only if
-                // this route later starts emitting the receiver itself.
-                self.emit_field_access(out, None, &ast_recv, name, indent)
+                // 2026-11-13 (H5 phase C): HIR-native field dispatch; the
+                // shared helper probes the HIR receiver directly and emits it
+                // once through the operand path.
+                self.emit_field_expression(out, ExprView::Hir(receiver), (&v, name), indent)
             }
             HirExprKind::Reflect { receiver, name, kind } => {
-                let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
+                // 2026-11-13 (H5 phase C): the receiver crosses as a view.
+                // The lossless gate is the exact `to_ast` reconstructibility
+                // predicate (Other is the one shape to_ast cannot rebuild);
+                // declining returns None for the statement seam's source
+                // splice, as before.
+                if !hir_expr_lossless(receiver) {
                     return None;
-                };
-                self.emit_reflection(out, &v, &ast_recv, name, *kind, indent)
+                }
+                self.emit_reflection(out, &v, ExprView::Hir(receiver), name, *kind, indent)
             }
             HirExprKind::MethodCall { receiver, name, args, .. } => {
+                // 2026-11-13 (H5 phase C): arguments cross as a view (the
+                // operand path emits each; losslessness of receiver AND args
+                // is gated first, so neither the UFCS desugar leaf nor the
+                // operand fallback can fire mid-list). The receiver still
+                // crosses as AST pending the receiver-view slice.
+                if !hir_expr_lossless(receiver) || !args.iter().all(hir_expr_lossless) {
+                    return None;
+                }
                 let Some(ast_recv) = crate::hir::to_ast::expr(receiver) else {
                     return None;
                 };
-                let Some(ast_args) = args
-                    .iter()
-                    .map(crate::hir::to_ast::expr)
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    return None;
-                };
-                self.emit_method_call(out, &v, &ast_recv, name, &ast_args, indent)
+                self.emit_method_call(out, &v, &ast_recv, name, ArgsView::Hir(args), indent)
             }
             HirExprKind::IsType { .. } => {
                 writeln!(out, "{}{} = add i8 0, 1", indent, v).ok();
@@ -718,9 +823,29 @@ impl LlvmBackend {
                 self.emit_unary_op(out, &v, op, &operand, indent)
             }
             HirExprKind::Binary { op, left, right } => {
-                // And/Or short-circuit: emit_short_circuit consumes AST
-                // operands; fall back to whole-expression conversion.
+                // And/Or short-circuit (2026-11-13, H5 phase C): the
+                // register-level fast path emits both operands through the
+                // view path when the shared predicate holds and both operands
+                // are lossless (coverage guarantees this on the operand path;
+                // the gate repeats it for direct callers). Otherwise decline:
+                // whole-expression conversion keeps the CFG form on today's
+                // AST routing.
                 if matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) {
+                    let short_value = matches!(op, crate::ast::BinaryOpKind::Or);
+                    if hir_expr_lossless(left)
+                        && hir_expr_lossless(right)
+                        && Self::short_circuit_register_fast(
+                            ExprView::Hir(left),
+                            ExprView::Hir(right),
+                        )
+                    {
+                        return Some(self.short_circuit_register_level(
+                            out,
+                            (ExprView::Hir(left), ExprView::Hir(right)),
+                            short_value,
+                            indent,
+                        ));
+                    }
                     return None;
                 }
                 // 2026-07-21 Mod special case (phi-tracked counter dividend),
@@ -796,7 +921,11 @@ impl LlvmBackend {
         // `emit_hir_expr` allocates its result register up front, so routing
         // an uncovered leaf through it burned one register per argument and
         // drifted every downstream register number versus the AST path.
-        if hir_expr_family_covered(expr) {
+        // 2026-11-13 (H5 phase C): Match is native in operand position (the
+        // statement seam keeps its `.smt_*` routing for discarded expression
+        // matches, so `hir_expr_family_covered` excludes it).
+        let match_native = matches!(&expr.kind, crate::hir::expr::HirExprKind::Match { .. });
+        if match_native || hir_expr_family_covered(expr) {
             if let Some(reg) = self.emit_hir_expr(out, expr, indent) {
                 return Some(reg);
             }
@@ -1802,101 +1931,7 @@ impl LlvmBackend {
 
             // ── Field access ─────────────────────────────────────────
             Expr::Field(obj, field) => {
-                // 2026-08-07 (object instance pools): an unpacked obj
-                // instance's member (`b.total`, `b.data`) is a top-level field
-                // slot `{recv}.{member}`. A scalar member loads the slot; an
-                // array member returns a PTR to the slot's array (typed with
-                // its Vector), so a following `[i]` indexes it via the
-                // row-view path. Checked BEFORE emitting the receiver — `b`
-                // itself has no slot (it unpacked), so emitting it would
-                // produce an undefined `@b` global.
-                if let Expr::Identifier(recv_name) = obj.as_ref() {
-                    if let Some((base, row_reg)) = self.instance_prefix_for(recv_name) {
-                        let slot = format!("{}.{}", base, field);
-                        if let Some(&idx) = self.ctx.field_index_map.get(&slot) {
-                            let (row, row_ty, load_ty) = self.emit_instance_column_row(out, indent, idx, &row_reg);
-                            if matches!(&row_ty, Type::Vector(_, _)) {
-                                return TypedRegister { name: row, ty: row_ty };
-                            }
-                            let loaded = self.fun.gen_reg();
-                            writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
-                            return TypedRegister { name: loaded, ty: row_ty };
-                        }
-                    }
-                }
-                // 2026-08-23 (bugfix): `(*p).field` — route the receiver
-                // through the pointer handle (deref_struct_receiver); a plain
-                // emit_expr would load the struct BY VALUE here.
-                let obj_reg = match self.deref_struct_receiver(out, indent, obj) {
-                    Some(r) => r,
-                    None => self.emit_expr(out, obj, indent),
-                };
-                // 2026-08-17 (tuple correctness, plan
-                // 2026-08-17-hashmap-storage-tuple-correctness.md): a NUMERIC
-                // field name on a TUPLE value is a tuple ELEMENT access
-                // (`t.0`/`t.1`). A tuple is a boxed i64 handle to the
-                // emit_tuple `[len, e0, e1, …]` heap block; element n lives at
-                // `GEP i64 slot (n+1)`. resolve_field_type (typechecker) already
-                // resolves numeric names; this emits the read.
-                if let Ok(n) = field.parse::<usize>() {
-                    if let crate::ast::Type::Tuple(ts) = &obj_reg.ty {
-                        let elem_ty = ts.get(n).cloned().unwrap_or_else(Type::int);
-                        return self.emit_tuple_element(out, indent, &obj_reg, (n, &elem_ty));
-                    }
-                }
-                // 2026-07-14: Layout field access — #fieldname triggers bit-shift/mask
-                if field.starts_with('#') {
-                    return self.emit_layout_field_read(out, v, &obj_reg, field, indent);
-                }
-                // 2026-07-25: Array field access — GEP into struct for Int[N] fields.
-                // Check if the field type is an array (Type::Vector with dimension).
-                let field_idx = self.resolve_field_index(&obj_reg.ty, field);
-                let field_ty = self.resolve_field_type(&obj_reg.ty, field);
-                if let Some(Type::Vector(inner, dims)) = &field_ty {
-                    if !dims.is_empty() {
-                        // Emit GEP to get a pointer to the array field.
-                        // 2026-07-31 (A7): the receiver register holds the
-                        // struct's ADDRESS (state-slot or struct-literal), so
-                        // GEP the address + field offset directly — no alloca
-                        // spill (which treated the address as a struct value).
-                        // 2026-08-07: MULTI-dim — the field read returns a PTR
-                        // to the array (typed with the FULL Vector) so a
-                        // following index (`m.data[i][j]`) GEPs through the
-                        // row-view path.
-                        let obj_type = match &obj_reg.ty {
-                            Type::Custom(n) => n.clone(),
-                            _ => {
-                                if let Expr::Identifier(nm) = obj.as_ref() {
-                                    self.ctx.field_index_map.get(nm)
-                                        .and_then(|i| self.ctx.field_briev_types.get(*i))
-                                        .and_then(|t| match t {
-                                            Type::Custom(n) => Some(n.clone()),
-                                            _ => None,
-                                        })
-                                } else { None }
-                            }.unwrap_or_else(|| "".to_string()),
-                        };
-                        let offset = self.lookup_field_offset(&obj_type, field);
-                        let base = self.fun.gen_reg();
-                        // 2026-08-11 (wasm32): obj handles are i{int_bits}.
-                        let hw = format!("i{}", self.ctx.int_bits);
-                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, obj_reg.name).ok();
-                        let gep = self.fun.gen_reg();
-                        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, base, offset).ok();
-                        let _ = (field_idx, inner);
-                        return TypedRegister {
-                            name: gep,
-                            ty: field_ty.clone().unwrap(),
-                        };
-                    }
-                }
-                // Struct field access via extractvalue (numeric index required)
-                // 2026-07-31 (A7): replaced by emit_field_access — a struct
-                // field's register holds the instance ADDRESS (state-slot or
-                // struct-literal), so GEP-by-offset + load is the correct
-                // access; extractvalue on an address is invalid IR.
-                let _ = (field_idx, field_ty);
-                return self.emit_field_access(out, Some(&obj_reg), obj, field, indent);
+                return self.emit_field_expression(out, ExprView::Ast(obj), (v, field), indent);
             }
 
             // ── Index ────────────────────────────────────────────────
@@ -1934,7 +1969,7 @@ impl LlvmBackend {
                 if arms.is_empty() {
                     return TypedRegister { name: v.to_string(), ty: Type::void() };
                 }
-                self.emit_match(out, v, None, scrutinee, &MatchArms::Ast(arms), indent)
+                self.emit_match(out, v, MatchScrutinee::Ast(scrutinee), &MatchArms::Ast(arms), indent)
             }
 
             // ── Lambda ───────────────────────────────────────────────
@@ -1972,16 +2007,16 @@ impl LlvmBackend {
 
             // ── Field access / reflection / method call (2026-07-31) ─
             Expr::Field(recv, name) => {
-                return self.emit_field_access(out, None, recv, name, indent);
+                return self.emit_field_access(out, None, ExprView::Ast(recv), name, indent);
             }
             Expr::Reflect(recv, target, kind) => {
-                return self.emit_reflection(out, v, recv, target, *kind, indent);
+                return self.emit_reflection(out, v, ExprView::Ast(recv), target, *kind, indent);
             }
             Expr::MethodCall(recv, name, args, _) => {
                 // 2026-07-31 (A5): self-bound member emission. Emit the
                 // receiver's struct address, bind `self`, bind the params,
                 // emit the member body inline, restore the previous binding.
-                return self.emit_method_call(out, v, recv, name, args, indent);
+                return self.emit_method_call(out, v, recv, name, ArgsView::Ast(args), indent);
             }
             Expr::DerivationBlock(_) | Expr::FormattingAnnotation(_) => {
                 writeln!(out, "{}{} = add i64 0, 0", indent, v).ok();
@@ -2004,7 +2039,16 @@ impl LlvmBackend {
                 // The narrowing pass converts constant-bounds slices to Vector<T,N>
                 // before codegen; this arm handles dynamic slices.
                 let array_reg = self.emit_expr(out, array, indent);
-                self.emit_slice_with_array(out, v, array, start, end, stride, array_reg, indent)
+                self.emit_slice_with_array(
+                    out,
+                    v,
+                    ExprView::Ast(array),
+                    start.as_deref().map(ExprView::Ast),
+                    end.as_deref().map(ExprView::Ast),
+                    stride.as_deref().map(ExprView::Ast),
+                    array_reg,
+                    indent,
+                )
             }
 
             // 2026-08-07 (Phase 7): a range is an ITERABLE, consumed only by
@@ -2428,10 +2472,10 @@ pub(crate) fn emit_slice_with_array(
     &mut self,
     out: &mut String,
     v: &str,
-    array: &Expr,
-    start: &Option<Box<Expr>>,
-    end: &Option<Box<Expr>>,
-    stride: &Option<Box<Expr>>,
+    array: ExprView<'_>,
+    start: Option<ExprView<'_>>,
+    end: Option<ExprView<'_>>,
+    stride: Option<ExprView<'_>>,
     array_reg: TypedRegister,
     indent: &str,
 ) -> TypedRegister {
@@ -2441,12 +2485,12 @@ pub(crate) fn emit_slice_with_array(
                 // silently produced the full string (documented in BUGS.md).
                 // The runtime half (briev_str_substr) has always existed; wire
                 // it here. Vector slices stay on the narrowing-pass path.
-                let arr_is_str = self.is_semantic_string(array, &array_reg);
+                let arr_is_str = self.is_semantic_string_ident(array.identifier(), &array_reg);
                 if arr_is_str {
                     let sp = self.string_ptr(out, indent, &array_reg);
                     let hw = format!("i{}", self.ctx.int_bits);
                     let lo = match start {
-                        Some(s) => self.emit_expr(out, s, indent),
+                        Some(s) => emit_view_expr(self, out, s, indent),
                         None => {
                             let z = self.fun.gen_reg();
                             writeln!(out, "{}{} = add {} 0, 0", indent, z, hw).ok();
@@ -2454,7 +2498,7 @@ pub(crate) fn emit_slice_with_array(
                         }
                     };
                     let hi = match end {
-                        Some(e) => self.emit_expr(out, e, indent),
+                        Some(e) => emit_view_expr(self, out, e, indent),
                         None => {
                             let n = self.fun.gen_reg();
                             writeln!(out, "{}{} = add {} 0, 0", indent, n, hw).ok();
@@ -2479,8 +2523,8 @@ pub(crate) fn emit_slice_with_array(
                 // old fallthrough returned the base array, so `data[0:2]`
                 // was invalid IR or silently the WHOLE column (offset lost).
                 // `data[:]` / `data[...]` are the full-copy case lo=0,hi=N.
-                let vec_field: Option<(usize, Type)> = match array {
-                    Expr::Identifier(nm) => self.ctx.field_index_map.get(nm).and_then(|&fidx| {
+                let vec_field: Option<(usize, Type)> = match array.identifier() {
+                    Some(nm) => self.ctx.field_index_map.get(nm).and_then(|&fidx| {
                         self.ctx.field_briev_types.get(fidx).and_then(|t| {
                             if matches!(t, Type::Vector(_, dims) if dims.len() == 1) {
                                 Some((fidx, t.clone()))
@@ -2489,7 +2533,7 @@ pub(crate) fn emit_slice_with_array(
                             }
                         })
                     }),
-                    _ => None,
+                    None => None,
                 };
                 if let Some((fidx, vec_ty)) = vec_field {
                     let n = self.vector_element_count(&vec_ty) as i64;
@@ -2506,7 +2550,7 @@ pub(crate) fn emit_slice_with_array(
                         panic!("slicing on Float64 (double) vectors is not yet supported");
                     }
                     let lo = match start {
-                        Some(sx) => self.emit_expr(out, sx, indent),
+                        Some(sx) => emit_view_expr(self, out, sx, indent),
                         None => TypedRegister {
                             name: {
                                 let z = self.fun.gen_reg();
@@ -2517,7 +2561,7 @@ pub(crate) fn emit_slice_with_array(
                         },
                     };
                     let hi = match end {
-                        Some(ex) => self.emit_expr(out, ex, indent),
+                        Some(ex) => emit_view_expr(self, out, ex, indent),
                         None => TypedRegister {
                             name: {
                                 let nn = self.fun.gen_reg();
@@ -2540,7 +2584,7 @@ pub(crate) fn emit_slice_with_array(
                         } else {
                             "@briev_slice_strided64"
                         };
-                        let st = self.emit_expr(out, stride_expr, indent);
+                        let st = emit_view_expr(self, out, stride_expr, indent);
                         // 2026-09-10 (Family D): state prefix for pure-Briev gathers.
                         let gp = if self.ctx.defn_takes_state(&helper[1..]) { "ptr %state, " } else { "" };
                         let buf = self.fun.gen_reg();
@@ -2565,9 +2609,9 @@ pub(crate) fn emit_slice_with_array(
                     // the strided gather stays for `data[a:b:c]`.)
                     return self.emit_contiguous_slice_view(out, indent, fidx, &data_ptr, &vec_ty, &lo, &hi, n);
                 }
-                if let Some(s) = start { self.emit_expr(out, s, indent); }
-                if let Some(e) = end { self.emit_expr(out, e, indent); }
-                if let Some(s) = stride { self.emit_expr(out, s, indent); }
+                if let Some(s) = start { emit_view_expr(self, out, s, indent); }
+                if let Some(e) = end { emit_view_expr(self, out, e, indent); }
+                if let Some(s) = stride { emit_view_expr(self, out, s, indent); }
                 array_reg
 }
 
@@ -2652,7 +2696,7 @@ pub(crate) fn emit_index_with_obj(
                         self.fun.current_dyn_collection = Some(name.clone());
                     }
                     let out_tmp = self.fun.gen_reg();
-                    let r = self.emit_method_call(out, &out_tmp, obj, "At", &[index.clone()], indent);
+                    let r = self.emit_method_call(out, &out_tmp, obj, "At", ArgsView::Ast(&[index.clone()]), indent);
                     self.fun.current_dyn_collection = saved_dyn_coll;
                     return r;
                 }
@@ -3107,7 +3151,7 @@ pub(crate) fn emit_index_with_obj(
         // are body-defined and cannot dominate a preheader definition.
         let const_elements = match elems {
             TupleElems::Ast(exprs) => exprs.iter().all(is_compile_time_const),
-            TupleElems::Hir(..) => false,
+            TupleElems::Hir(items) => items.iter().all(is_hir_compile_time_const),
         };
         if self.fun.defer_struct_allocas && const_elements {
             let mut tmp = String::new();
@@ -3130,11 +3174,10 @@ pub(crate) fn emit_index_with_obj(
         elems: &TupleElems<'_>,
         indent: &str,
     ) -> TypedRegister {
-        let exprs: &[Expr] = match elems {
-            TupleElems::Ast(exprs) => exprs,
-            TupleElems::Hir(_, ast) => ast,
+        let count = match elems {
+            TupleElems::Ast(exprs) => exprs.len(),
+            TupleElems::Hir(items) => items.len(),
         };
-        let count = exprs.len();
         let mut element_types = Vec::with_capacity(count);
         if count == 0 {
             let raw = self.fun.gen_reg();
@@ -3151,17 +3194,12 @@ pub(crate) fn emit_index_with_obj(
             let hdr = self.fun.gen_reg();
             writeln!(out, "{}{} = bitcast ptr {} to ptr", indent, hdr, raw).ok();
             writeln!(out, "{}store i64 {}, ptr {}", indent, count as i64, hdr).ok();
-            for (i, elem) in exprs.iter().enumerate() {
+            for i in 0..count {
                 let e = match elems {
-                    TupleElems::Ast(_) => self.emit_expr(out, elem, indent),
-                    TupleElems::Hir(hir, _) => {
-                        match self.emit_hir_operand(out, &hir[i], indent) {
-                            Some(r) => r,
-                            // The caller reconstruct-checked every element,
-                            // so this arm is unreachable; kept total.
-                            None => self.emit_expr(out, elem, indent),
-                        }
-                    }
+                    TupleElems::Ast(exprs) => self.emit_expr(out, &exprs[i], indent),
+                    TupleElems::Hir(items) => self
+                        .emit_hir_operand(out, &items[i], indent)
+                        .expect("lossless tuple element"),
                 };
                 // 2026-11-03 (Proof 3 condition 2): a tuple element stored as a
                 // handle must not point at the producing callable's stack image,
@@ -3332,47 +3370,8 @@ pub(crate) fn emit_index_with_obj(
         fields: &[(String, Expr)],
         indent: &str,
     ) -> TypedRegister {
-        let total_size = self.struct_type_size(type_name);
-        let struct_ty = crate::ast::Type::Custom(type_name.to_string());
-        let object_out_type = self.fun.object_out_type.as_ref().and_then(|ty| ty.universe_key());
-        let object_out = self.fun.object_return_context
-            && object_out_type == Some(type_name);
-        let stack_object = !object_out && self.object_literal_can_stack(type_name);
-        let alloca_reg = if object_out {
-            self.fun
-                .object_out_slot
-                .clone()
-                .expect("object return context without object_out_slot")
-        } else {
-            self.fun.gen_reg()
-        };
-
-        // 2026-08-13 (struct value lifetime): a struct literal must live on the
-        // HEAP, not the stack. The handle (`ptrtoint`) crosses function
-        // boundaries (`term StringBuilder { ... }` from new_builder/append_*),
-        // and a stack alloca's handle dangles once the constructing function
-        // returns — the caller then reads a dead frame (append_str("") returned
-        // a builder whose buffer read garbage). State-slot/field consumers read
-        // the handle in the same function, so heap is a strict superset.
-        // 2026-08-13 (reactor fix, merged with main's heap lifetime): the
-        // allocation (heap malloc per main, so the handle survives function
-        // boundaries) is deferred to the loop PREHEADER when inside a reactor
-        // loop body (flush_pending_struct_allocas) — an allocation in the loop
-        // makes clang -O3 peel the loop and emit a bogus exit assumption (the
-        // node fires once). Elsewhere it stays inline.
-        // 2026-10-27: only constant-field literals may share one preheader
-        // allocation. A dynamic field is re-evaluated per iteration; hoisting
-        // its allocation made every list/collection entry alias the last
-        // iteration's object (`List<Item>` parsed from JSON read the final
-        // title for every element). Dynamic literals allocate per evaluation.
         let const_fields = fields.iter().all(|(_, expr)| is_compile_time_const(expr));
-        if !object_out && self.fun.defer_struct_allocas && const_fields {
-            self.fun.pending_struct_allocas.push(format!("{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size));
-        } else if stack_object {
-            writeln!(out, "{}  {} = alloca i8, i64 {}", indent, alloca_reg, total_size).ok();
-        } else if !object_out {
-            writeln!(out, "{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size).ok();
-        }
+        let alloca_reg = self.open_struct_image(out, indent, type_name, const_fields);
 
         self.emit_struct_literal_fields(
             out,
@@ -3384,6 +3383,130 @@ pub(crate) fn emit_index_with_obj(
             },
         );
 
+        self.close_struct_image(out, indent, type_name, &alloca_reg)
+    }
+
+    /// 2026-11-13 (H5 phase C): HIR-native struct literal. The allocation /
+    /// lifetime prologue and the field store tail are shared with the AST
+    /// path; only the field-value emission differs (operand recursion instead
+    /// of a reconstructed AST leaf).
+    pub(crate) fn emit_hir_struct_literal(
+        &mut self,
+        out: &mut String,
+        type_name: &str,
+        fields: &[(String, crate::hir::expr::HirExpr)],
+        indent: &str,
+    ) -> TypedRegister {
+        let const_fields = fields
+            .iter()
+            .all(|(_, expr)| is_hir_compile_time_const(expr));
+        let alloca_reg = self.open_struct_image(out, indent, type_name, const_fields);
+        for (field_name, field_expr) in fields {
+            self.emit_hir_struct_field_store(
+                out,
+                indent,
+                StructSlot { type_name, name: field_name, base_ptr: &alloca_reg },
+                field_expr,
+            );
+        }
+        self.close_struct_image(out, indent, type_name, &alloca_reg)
+    }
+
+    /// Allocate (or defer) the struct image and return its pointer register.
+    /// 2026-08-13 (struct value lifetime): a struct literal must live on the
+    /// HEAP, not the stack. The handle (`ptrtoint`) crosses function
+    /// boundaries (`term StringBuilder { ... }` from new_builder/append_*),
+    /// and a stack alloca's handle dangles once the constructing function
+    /// returns — the caller then reads a dead frame (append_str("") returned
+    /// a builder whose buffer read garbage). State-slot/field consumers read
+    /// the handle in the same function, so heap is a strict superset.
+    /// 2026-08-13 (reactor fix, merged with main's heap lifetime): the
+    /// allocation (heap malloc per main, so the handle survives function
+    /// boundaries) is deferred to the loop PREHEADER when inside a reactor
+    /// loop body (flush_pending_struct_allocas) — an allocation in the loop
+    /// makes clang -O3 peel the loop and emit a bogus exit assumption (the
+    /// node fires once). Elsewhere it stays inline.
+    /// 2026-10-27: only constant-field literals may share one preheader
+    /// allocation. A dynamic field is re-evaluated per iteration; hoisting
+    /// its allocation made every list/collection entry alias the last
+    /// iteration's object (`List<Item>` parsed from JSON read the final
+    /// title for every element). Dynamic literals allocate per evaluation.
+    fn open_struct_image(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        type_name: &str,
+        const_fields: bool,
+    ) -> String {
+        let total_size = self.struct_type_size(type_name);
+        let object_out_type = self.fun.object_out_type.as_ref().and_then(|ty| ty.universe_key());
+        let object_out = self.fun.object_return_context && object_out_type == Some(type_name);
+        let stack_object = !object_out && self.object_literal_can_stack(type_name);
+        let alloca_reg = if object_out {
+            self.fun
+                .object_out_slot
+                .clone()
+                .expect("object return context without object_out_slot")
+        } else {
+            self.fun.gen_reg()
+        };
+        self.emit_struct_image_alloc(out, indent, &alloca_reg, (total_size, object_out, stack_object, const_fields));
+        alloca_reg
+    }
+
+    /// The image-placement decision, split from `open_struct_image` to keep
+    /// both helpers small.
+    fn emit_struct_image_alloc(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        alloca_reg: &str,
+        plan: (u64, bool, bool, bool),
+    ) {
+        let (total_size, object_out, stack_object, const_fields) = plan;
+        match self.struct_image_placement(object_out, stack_object, const_fields) {
+            ImagePlacement::Deferred => self
+                .fun
+                .pending_struct_allocas
+                .push(format!("{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size)),
+            ImagePlacement::Stack => {
+                writeln!(out, "{}  {} = alloca i8, i64 {}", indent, alloca_reg, total_size).ok();
+            }
+            ImagePlacement::Heap => {
+                writeln!(out, "{}  {} = call ptr @malloc(i64 {})", indent, alloca_reg, total_size).ok();
+            }
+            ImagePlacement::ObjectOut => {}
+        }
+    }
+
+    /// Classify where a struct image lives (the caller supplied the image).
+    fn struct_image_placement(
+        &self,
+        object_out: bool,
+        stack_object: bool,
+        const_fields: bool,
+    ) -> ImagePlacement {
+        if object_out {
+            return ImagePlacement::ObjectOut;
+        }
+        if self.fun.defer_struct_allocas && const_fields {
+            return ImagePlacement::Deferred;
+        }
+        if stack_object {
+            ImagePlacement::Stack
+        } else {
+            ImagePlacement::Heap
+        }
+    }
+
+    /// Turn a resolved struct image pointer into the value handle.
+    fn close_struct_image(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        type_name: &str,
+        alloca_reg: &str,
+    ) -> TypedRegister {
         let result = self.fun.gen_reg();
         // 2026-08-11 (wasm32 obj-member fix): obj/struct handles are
         // i{int_bits} (i32 on wasm32), not a hardcoded i64 — the state slot
@@ -3392,8 +3515,8 @@ pub(crate) fn emit_index_with_obj(
         writeln!(out, "{}  {} = ptrtoint ptr {} to {}", indent, result, alloca_reg, hw).ok();
         // 2026-07-24: Record the alloca pointer so &let_var on a struct-typed
         // binding retrieves the stack address, not the ptrtoint value.
-        self.fun.struct_literal_allocas.insert(result.clone(), alloca_reg.clone());
-        TypedRegister { name: result, ty: struct_ty }
+        self.fun.struct_literal_allocas.insert(result.clone(), alloca_reg.to_string());
+        TypedRegister { name: result, ty: crate::ast::Type::Custom(type_name.to_string()) }
     }
 
 
@@ -3415,19 +3538,55 @@ pub(crate) fn emit_index_with_obj(
 
     fn emit_struct_field_store(&mut self, out: &mut String, indent: &str, field: StructField<'_>) {
         let val = self.emit_struct_field_value(out, indent, &field);
-        let val = self.own_enum_value(out, indent, &val);
-        let offset = self.lookup_field_offset(field.type_name, field.name);
+        let slot = StructSlot { type_name: field.type_name, name: field.name, base_ptr: field.base_ptr };
+        self.emit_struct_field_store_value(out, indent, slot, &val);
+    }
+
+    /// 2026-11-13 (H5 phase C): HIR-native field value + the shared store
+    /// tail. Mirrors `emit_struct_field_value` (enum-context swap + one
+    /// register) without an AST reconstruction.
+    fn emit_hir_struct_field_store(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        slot: StructSlot<'_>,
+        expr: &crate::hir::expr::HirExpr,
+    ) {
+        // 2026-11-01: a field constructor belongs to its declared enum, never
+        // an enclosing return's enum (whose tags/capacity may differ).
+        let field_enum = self.struct_field_type(slot.type_name, slot.name)
+            .filter(|ty| self.enum_layout(ty).is_some());
+        let saved = std::mem::replace(&mut self.fun.expected_enum_type, field_enum.clone());
+        let mut value = self
+            .emit_hir_operand(out, expr, indent)
+            .expect("lossless struct field value");
+        self.fun.expected_enum_type = saved;
+        if let Some(ty) = field_enum { value.ty = ty; }
+        self.emit_struct_field_store_value(out, indent, slot, &value);
+    }
+
+    /// Shared store tail: own/coerce the value, then GEP + the atomic /
+    /// packed / regular field store.
+    fn emit_struct_field_store_value(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        slot: StructSlot<'_>,
+        value: &TypedRegister,
+    ) {
+        let val = self.own_enum_value(out, indent, value);
+        let offset = self.lookup_field_offset(slot.type_name, slot.name);
         let ptr_reg = self.fun.gen_reg();
-        writeln!(out, "{}  {} = getelementptr i8, ptr {}, i64 {}", indent, ptr_reg, field.base_ptr, offset).ok();
-        if let Some(ordering) = self.atomic_field_ordering(field.type_name, field.name) {
+        writeln!(out, "{}  {} = getelementptr i8, ptr {}, i64 {}", indent, ptr_reg, slot.base_ptr, offset).ok();
+        if let Some(ordering) = self.atomic_field_ordering(slot.type_name, slot.name) {
             self.emit_struct_atomic_field(out, indent, &val, &ptr_reg, ordering);
             return;
         }
-        if let Some(pf) = self.packed_field(field.type_name, field.name) {
+        if let Some(pf) = self.packed_field(slot.type_name, slot.name) {
             out.push_str(&self.emit_packed_field_store(indent, &ptr_reg, &pf, &val));
             return;
         }
-        self.emit_struct_regular_field(out, indent, field, &val, &ptr_reg);
+        self.emit_struct_regular_field(out, indent, slot, &val, &ptr_reg);
     }
 
     fn struct_field_type(&self, type_name: &str, name: &str) -> Option<Type> {
@@ -3483,11 +3642,11 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         indent: &str,
-        field: StructField<'_>,
+        slot: StructSlot<'_>,
         val: &TypedRegister,
         ptr_reg: &str,
     ) {
-        if self.is_ptr_field(field.type_name, field.name)
+        if self.is_ptr_field(slot.type_name, slot.name)
             && (val.ty == Type::int() || matches!(val.ty, Type::Ptr(_)))
         {
             let conv = self.fun.gen_reg();
@@ -3495,7 +3654,7 @@ pub(crate) fn emit_index_with_obj(
             writeln!(out, "{}  store ptr {}, ptr {}", indent, conv, ptr_reg).ok();
             return;
         }
-        let field_ty = self.struct_field_type(field.type_name, field.name)
+        let field_ty = self.struct_field_type(slot.type_name, slot.name)
             .unwrap_or_else(|| val.ty.clone());
         let stored = self.coerce_register_value(out, indent, val, &field_ty);
         let fty = self.llvm_type(&field_ty);
@@ -3606,15 +3765,157 @@ pub(crate) fn emit_index_with_obj(
         TypedRegister { name: fat_handle, ty: Type::Dyn(Box::new(Type::Custom(trait_name.to_string()))) }
     }
 
-    fn field_receiver(&mut self, out: &mut String, receiver: &Expr, indent: &str) -> TypedRegister {
-        if let Some(value) = self.deref_struct_receiver(out, indent, receiver) { return value; }
-        self.emit_expr(out, receiver, indent)
+    fn field_receiver(&mut self, out: &mut String, receiver: ExprView<'_>, indent: &str) -> TypedRegister {
+        if let Some(value) = self.deref_struct_receiver_view(out, indent, receiver) { return value; }
+        emit_view_expr(self, out, receiver, indent)
     }
+
+    /// 2026-11-13 (H5 phase C): view twin of `deref_struct_receiver` — the HIR
+    /// `Deref` node is probed directly, with no AST reconstruction.
+    fn deref_struct_receiver_view(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        recv: ExprView<'_>,
+    ) -> Option<TypedRegister> {
+        let inner = match recv {
+            ExprView::Ast(Expr::Deref(p)) => ExprView::Ast(p.as_ref()),
+            ExprView::Hir(crate::hir::expr::HirExpr {
+                kind: crate::hir::expr::HirExprKind::Deref(p),
+                ..
+            }) => ExprView::Hir(p.as_ref()),
+            _ => return None,
+        };
+        let p_reg = emit_view_expr(self, out, inner, indent);
+        let pointee = match &p_reg.ty {
+            Type::Ptr(inner) => (**inner).clone(),
+            other => other.clone(),
+        };
+        Some(TypedRegister { name: p_reg.name.clone(), ty: pointee })
+    }
+
+    /// 2026-11-13 (H5 phase C): the complete field-access dispatch, shared by
+    /// the AST and HIR arms. Shape probes read the view; the receiver emits
+    /// through the view's own path. Originally `emit_expr_inner`'s
+    /// `Expr::Field` arm.
+    /// 2026-08-07 (object instance pools): an unpacked obj instance's member
+    /// (`b.total`, `b.data`) is a top-level field slot `{recv}.{member}`. A
+    /// scalar member loads the slot; an array member returns a PTR to the
+    /// slot's array (typed with its Vector), so a following `[i]` indexes it
+    /// via the row-view path. Checked BEFORE emitting the receiver — `b` itself
+    /// has no slot (it unpacked), so emitting it would produce an undefined
+    /// `@b` global.
+    fn emit_pooled_field_member(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        recv: ExprView<'_>,
+        field: &str,
+    ) -> Option<TypedRegister> {
+        let recv_name = recv.identifier()?;
+        let (base, row_reg) = self.instance_prefix_for(recv_name)?;
+        let slot = format!("{}.{}", base, field);
+        let &idx = self.ctx.field_index_map.get(&slot)?;
+        let (row, row_ty, load_ty) = self.emit_instance_column_row(out, indent, idx, &row_reg);
+        if matches!(&row_ty, Type::Vector(_, _)) {
+            return Some(TypedRegister { name: row, ty: row_ty });
+        }
+        let loaded = self.fun.gen_reg();
+        writeln!(out, "{}{} = load {}, ptr {}", indent, loaded, load_ty, row).ok();
+        Some(TypedRegister { name: loaded, ty: row_ty })
+    }
+
+    fn emit_field_expression(
+        &mut self,
+        out: &mut String,
+        recv: ExprView<'_>,
+        site: (&str, &str),
+        indent: &str,
+    ) -> TypedRegister {
+        let (v, field) = site;
+                if let Some(value) = self.emit_pooled_field_member(out, indent, recv, field) {
+                    return value;
+                }
+                // 2026-08-23 (bugfix): `(*p).field` — route the receiver
+                // through the pointer handle (deref_struct_receiver); a plain
+                // emit_expr would load the struct BY VALUE here.
+                let obj_reg = match self.deref_struct_receiver_view(out, indent, recv) {
+                    Some(r) => r,
+                    None => emit_view_expr(self, out, recv, indent),
+                };
+                // 2026-08-17 (tuple correctness, plan
+                // 2026-08-17-hashmap-storage-tuple-correctness.md): a NUMERIC
+                // field name on a TUPLE value is a tuple ELEMENT access
+                // (`t.0`/`t.1`). A tuple is a boxed i64 handle to the
+                // emit_tuple `[len, e0, e1, …]` heap block; element n lives at
+                // `GEP i64 slot (n+1)`. resolve_field_type (typechecker) already
+                // resolves numeric names; this emits the read.
+                if let Ok(n) = field.parse::<usize>() {
+                    if let crate::ast::Type::Tuple(ts) = &obj_reg.ty {
+                        let elem_ty = ts.get(n).cloned().unwrap_or_else(Type::int);
+                        return self.emit_tuple_element(out, indent, &obj_reg, (n, &elem_ty));
+                    }
+                }
+                // 2026-07-14: Layout field access — #fieldname triggers bit-shift/mask
+                if field.starts_with('#') {
+                    return self.emit_layout_field_read(out, v, &obj_reg, field, indent);
+                }
+                // 2026-07-25: Array field access — GEP into struct for Int[N] fields.
+                // Check if the field type is an array (Type::Vector with dimension).
+                let field_idx = self.resolve_field_index(&obj_reg.ty, field);
+                let field_ty = self.resolve_field_type(&obj_reg.ty, field);
+                if let Some(Type::Vector(inner, dims)) = &field_ty {
+                    if !dims.is_empty() {
+                        // Emit GEP to get a pointer to the array field.
+                        // 2026-07-31 (A7): the receiver register holds the
+                        // struct's ADDRESS (state-slot or struct-literal), so
+                        // GEP the address + field offset directly — no alloca
+                        // spill (which treated the address as a struct value).
+                        // 2026-08-07: MULTI-dim — the field read returns a PTR
+                        // to the array (typed with the FULL Vector) so a
+                        // following index (`m.data[i][j]`) GEPs through the
+                        // row-view path.
+                        let obj_type = match &obj_reg.ty {
+                            Type::Custom(n) => n.clone(),
+                            _ => {
+                                if let Some(nm) = recv.identifier() {
+                                    self.ctx.field_index_map.get(nm)
+                                        .and_then(|i| self.ctx.field_briev_types.get(*i))
+                                        .and_then(|t| match t {
+                                            Type::Custom(n) => Some(n.clone()),
+                                            _ => None,
+                                        })
+                                } else { None }
+                            }.unwrap_or_else(|| "".to_string()),
+                        };
+                        let offset = self.lookup_field_offset(&obj_type, field);
+                        let base = self.fun.gen_reg();
+                        // 2026-08-11 (wasm32): obj handles are i{int_bits}.
+                        let hw = format!("i{}", self.ctx.int_bits);
+                        writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, obj_reg.name).ok();
+                        let gep = self.fun.gen_reg();
+                        writeln!(out, "{}{} = getelementptr i8, ptr {}, i64 {}", indent, gep, base, offset).ok();
+                        let _ = (field_idx, inner);
+                        return TypedRegister {
+                            name: gep,
+                            ty: field_ty.clone().unwrap(),
+                        };
+                    }
+                }
+                // Struct field access via extractvalue (numeric index required)
+                // 2026-07-31 (A7): replaced by emit_field_access — a struct
+                // field's register holds the instance ADDRESS (state-slot or
+                // struct-literal), so GEP-by-offset + load is the correct
+                // access; extractvalue on an address is invalid IR.
+                let _ = (field_idx, field_ty);
+                return self.emit_field_access(out, Some(&obj_reg), recv, field, indent);
+            }
+
     fn emit_field_access(
         &mut self,
         out: &mut String,
         evaluated: Option<&TypedRegister>,
-        recv: &Expr,
+        recv: ExprView<'_>,
         name: &str,
         indent: &str,
     ) -> TypedRegister {
@@ -3623,7 +3924,7 @@ pub(crate) fn emit_index_with_obj(
         // Field path. The read BLOCKS inside a task segment (unready → the
         // {0,2} blocked aggregate); outside a task it traps (gate with
         // .^Ready, SPEC §9.5).
-        if let Expr::Identifier(wname) = recv {
+        if let Some(wname) = recv.identifier() {
             let is_wire = self
                 .fun
                 .let_original_types
@@ -3633,7 +3934,7 @@ pub(crate) fn emit_index_with_obj(
                 .unwrap_or(false);
             if is_wire {
                 if let Some(id_reg) = self.fun.let_bindings.get(wname).cloned() {
-                    return self.emit_event_payload_read(out, indent, &id_reg, recv, name);
+                    return self.emit_event_payload_read(out, indent, &id_reg, wname, name);
                 }
             }
         }
@@ -3642,7 +3943,7 @@ pub(crate) fn emit_index_with_obj(
         // unpack into `{base}.{member}` columns) must route to the column at
         // row 0 — emitting the receiver as a box handle produces an undefined
         // `@c` global. Mirrors the member-call receiver prefix path.
-        if let Expr::Identifier(rname) = recv {
+        if let Some(rname) = recv.identifier() {
             if let Some((base, row_reg)) = self.instance_prefix_for(rname) {
                 let slot = format!("{}.{}", base, name);
                 if let Some(&idx) = self.ctx.field_index_map.get(&slot) {
@@ -3876,7 +4177,7 @@ pub(crate) fn emit_index_with_obj(
         v: &str,
         recv: &Expr,
         name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         indent: &str,
     ) -> TypedRegister {
         // 2026-10-09 (dyn derive-don't-fix, Phase B): receiver resolution
@@ -3902,25 +4203,27 @@ pub(crate) fn emit_index_with_obj(
             // `#`-suffixed name, strip `#` and dispatch as a call (reaching the
             // generative op dispatch or a registered intrinsic); for a plain
             // name, call the top-level function with the receiver prepended.
+            // The desugared `Expr::Call` is AST-shaped (documented leaf
+            // exception); the HIR caller's losslessness gate makes
+            // `as_ast` infallible here.
             if name.ends_with('#') {
                 // 2026-08-14 (UOL §6b): keep the `#` — `a.Add#(b)` dispatches
                 // through the intrinsic signature (`Add#`) or generative op
                 // identity, NOT a bare top-level function named `Add`.
                 let mut all = vec![(*recv).clone()];
-                all.extend(args.iter().cloned());
+                all.extend(args.as_ast());
                 return self.emit_expr_inner(out, v, &Expr::Call(name.to_string(), all, None), indent);
             }
             if self.ctx.defn_params.contains_key(name) {
                 let mut all = vec![(*recv).clone()];
-                all.extend(args.iter().cloned());
+                all.extend(args.as_ast());
                 return self.emit_user_call(out, v, name, &all, indent);
             }
             panic!("method call '.{}()': no member '{}' on '{}'", name, name, type_name);
         };
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        arg_regs.extend(args.iter().map(|a| {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        arg_regs.extend((0..args.len()).map(|i| {
+            let r = args.emit_arg(self, out, indent, i);
             (r.name, r.ty)
         }));
         self.emit_member_body(out, v, MemberInvocation { recv_reg: &recv_reg, type_name: &type_name, member: &member, arg_regs: &arg_regs, prefix: recv_prefix }, indent)
@@ -4013,7 +4316,7 @@ pub(crate) fn emit_index_with_obj(
         v: &str,
         recv: &Expr,
         name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_reg: &TypedRegister,
         recv_prefix: Option<(String, String)>,
         indent: &str,
@@ -4176,7 +4479,7 @@ pub(crate) fn emit_index_with_obj(
         recv_reg: &TypedRegister,
         concretes: &[String],
         lookup_name: &str,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_prefix: Option<(String, String)>,
         tag_reg: String,
         indent: &str,
@@ -4192,9 +4495,8 @@ pub(crate) fn emit_index_with_obj(
         // Pre-emit the call args (after the Self) once — shared by every arm
         // (SSA registers are valid in any block that dominates their def).
         let mut arg_regs: Vec<(String, Type)> = Vec::new();
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             arg_regs.push((r.name, r.ty));
         }
         // Labels: one per arm, plus the default and the end (phi) block.
@@ -4308,7 +4610,7 @@ pub(crate) fn emit_index_with_obj(
         recv_reg: &TypedRegister,
         concrete: &str,
         member: &crate::ast::TopLevel,
-        args: &[Expr],
+        args: ArgsView<'_>,
         recv_prefix: Option<(String, String)>,
         indent: &str,
     ) -> TypedRegister {
@@ -4325,9 +4627,8 @@ pub(crate) fn emit_index_with_obj(
         // then the call-site args, each in its Briev type.
         let self_ty = Type::Custom(concrete.to_string());
         let mut arg_regs: Vec<(String, Type)> = vec![(data_v, self_ty)];
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             arg_regs.push((r.name, r.ty));
         }
         // The receiver register is the fat pointer (typed as the concrete so
@@ -4354,7 +4655,7 @@ pub(crate) fn emit_index_with_obj(
         lookup_name: &str,
         slots: &[String],
         recv_reg: &TypedRegister,
-        args: &[Expr],
+        args: ArgsView<'_>,
         indent: &str,
     ) -> TypedRegister {
         // Requirement slot index = the member's position in the trait's
@@ -4406,9 +4707,8 @@ pub(crate) fn emit_index_with_obj(
         writeln!(out, "{}{} = load i64, ptr {}", indent, data_v, data_p).ok();
         // Emit the call args (after the Self).
         let mut arg_regs: Vec<String> = Vec::new();
-        for a in args {
-            let arg_tmp = self.fun.gen_reg();
-            let r = self.emit_expr_inner(out, &arg_tmp, a, indent);
+        for i in 0..args.len() {
+            let r = args.emit_arg(self, out, indent, i);
             // The thunk fn's params are declared in their native LLVM types
             // (i64 for Int, etc.). adapt_to_i64 the boxed scalars.
             arg_regs.push(self.adapt_to_i64(out, indent, &r));
@@ -4880,7 +5180,7 @@ pub(crate) fn emit_index_with_obj(
         &mut self,
         out: &mut String,
         v: &str,
-        recv: &Expr,
+        recv: ExprView<'_>,
         target: &str,
         kind: ReflectKind,
         indent: &str,
@@ -4890,7 +5190,7 @@ pub(crate) fn emit_index_with_obj(
         // event port (SPEC §9.5). Checked BEFORE emitting the receiver: a
         // wire binding has no value of its own to evaluate.
         if target == "Ready" {
-            if let Expr::Identifier(wname) = recv {
+            if let Some(wname) = recv.identifier() {
                 let is_wire = self
                     .fun
                     .let_original_types
@@ -4912,8 +5212,7 @@ pub(crate) fn emit_index_with_obj(
                 }
             }
         }
-        let recv_tmp = self.fun.gen_reg();
-        let recv_reg = self.emit_expr_inner(out, &recv_tmp, recv, indent);
+        let recv_reg = emit_view_expr(self, out, recv, indent);
         match (target, kind) {
             // 2026-08-09 (Phase 12, SPEC §19.3): `feature.^^Available` — a
             // compile-time descriptor reflect that folds to a runtime
@@ -4921,27 +5220,15 @@ pub(crate) fn emit_index_with_obj(
             // receiver is the frgn's local name; its FOREIGN symbol is what
             // gets checked (the codegen resolves it via the frgn declaration).
             ("Available", ReflectKind::CompileTime) => {
-                let symbol = match recv {
-                    Expr::Identifier(n) => {
-                        let fb = self.ctx.frgn_map.get(n.as_str()).cloned();
-                        let sym = match fb {
-                            Some(sig) => sig.name.clone(),
-                            None => n.clone(),
-                        };
-                        sym
-                    }
-                    _ => String::new(),
-                };
-                let symbol = match recv {
-                    Expr::Identifier(n) => {
-                        let fb = self.ctx.frgn_map.get(n.as_str()).cloned();
-                        let sym = match fb {
-                            Some(sig) => sig.name.clone(),
-                            None => n.clone(),
-                        };
-                        sym
-                    }
-                    _ => String::new(),
+                let symbol = match recv.identifier() {
+                    Some(n) => self
+                        .ctx
+                        .frgn_map
+                        .get(n)
+                        .cloned()
+                        .map(|sig| sig.name)
+                        .unwrap_or_else(|| n.to_string()),
+                    None => String::new(),
                 };
                 // Emit the symbol as a stack NUL-terminated buffer (avoid the
                 // pre-collected string-global pass, which runs before bodies).
@@ -5014,8 +5301,26 @@ pub(crate) fn emit_index_with_obj(
             }
             ("Ptr", ReflectKind::Runtime) => {
                 // x.^Ptr ≡ &x — reuse the address-of path.
-                let ptr_tmp = self.fun.gen_reg();
-                self.emit_expr_inner(out, &ptr_tmp, &Expr::AddrOf(Box::new(recv.clone())), indent)
+                match recv {
+                    ExprView::Ast(e) => {
+                        let ptr_tmp = self.fun.gen_reg();
+                        self.emit_expr_inner(out, &ptr_tmp, &Expr::AddrOf(Box::new(e.clone())), indent)
+                    }
+                    ExprView::Hir(h) => {
+                        // Native address-of dispatch (same shape as
+                        // `emit_hir_expr`'s AddrOf arm): the receiver is
+                        // lossless (caller gate), so the operand path's
+                        // reconstruct fallback cannot fire mid-emission.
+                        let addrof = crate::hir::expr::HirExpr {
+                            id: h.id,
+                            span: h.span.clone(),
+                            ty: None,
+                            kind: crate::hir::expr::HirExprKind::AddrOf(Box::new(h.clone())),
+                        };
+                        self.emit_hir_operand(out, &addrof, indent)
+                            .expect("lossless AddrOf receiver")
+                    }
+                }
             }
             ("Length", ReflectKind::Runtime) => match &recv_reg.ty {
                 Type::Vector(_, _) => {
@@ -5061,7 +5366,7 @@ pub(crate) fn emit_index_with_obj(
                  // from the binding (the let's declared type) and inttoptr the
                  // handle before the byte-header read. 2026-08-12: `.^Length` is
                  // the STORED byte count; `CharCount#` is the char scan.
-                 other if self.is_semantic_string(recv, &recv_reg) => {
+                 other if self.is_semantic_string_ident(recv.identifier(), &recv_reg) => {
                      let p = self.string_ptr(out, indent, &recv_reg);
                      let full = self.fun.gen_reg();
                      writeln!(out, "{}{} = load i64, ptr {}", indent, full, p).ok();
@@ -7714,7 +8019,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
 
     fn probe_match_result_types(
         &mut self,
-        arms: &[crate::ast::MatchArm],
+        arms: &MatchArms<'_>,
         scrut: &TypedRegister,
         indent: &str,
         expected_result: Option<&Type>,
@@ -7736,7 +8041,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         let saved_orig_types = self.fun.let_original_types.clone();
         let mut sink = String::new();
         let mut tys = Vec::with_capacity(arms.len());
-        for arm in arms {
+        for i in 0..arms.len() {
             // 2026-10-21: only arms reaching the merge contribute a value
             // type. A trap/return arm has no merge edge, so its Void result
             // must not erase another arm's value. Use the emitter's termination
@@ -7744,14 +8049,30 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // Undo only when match lowering carries frontend control-flow facts.
             self.fun.terminated = false;
             self.fun.tail_loop_backedge = false;
-            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
-            if matches!(*arm.body, Expr::List(_)) {
+            let is_list = match arms {
+                MatchArms::Ast(a) => {
+                    let arm = &a[i];
+                    self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, &mut sink, indent);
+                    matches!(*arm.body, Expr::List(_))
+                }
+                MatchArms::Hir(h) => {
+                    let arm = &h[i];
+                    self.bind_hir_pattern(&arm.pattern, ScrutRef { reg: &scrut.name, ty: &scrut.ty }, &mut sink, indent);
+                    matches!(arm.body.kind, crate::hir::expr::HirExprKind::List(_))
+                }
+            };
+            if is_list {
                 if let Some(expected) = expected_result {
                     tys.push(expected.clone());
                     continue;
                 }
             }
-            let reg = self.emit_expr(&mut sink, &arm.body, indent);
+            let reg = match arms {
+                MatchArms::Ast(a) => self.emit_expr(&mut sink, &a[i].body, indent),
+                MatchArms::Hir(h) => self
+                    .emit_hir_operand(&mut sink, &h[i].body, indent)
+                    .expect("lossless match arm body"),
+            };
             if !self.fun.terminated {
                 tys.push(reg.ty);
             }
@@ -7770,20 +8091,20 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
 
     /// 2026-11-05 (H4 slice D): dual-fueled arm body. List bodies keep the
     /// AST path (the collection-witness special needs the declared result
-    /// type); other bodies emit covered leaves natively through operand
-    /// recursion, converting per-element otherwise.
+    /// type); other bodies emit through the operand path.
+    /// 2026-11-13 (H5 phase C): HIR arms no longer carry an AST body slice;
+    /// the only conversion left is the List collection-witness leaf.
     fn emit_match_arm_dual(
         &mut self,
         out: &mut String,
         arms: &MatchArms<'_>,
         i: usize,
-        ast_body: &Expr,
         expected_result: Option<&Type>,
         indent: &str,
     ) -> TypedRegister {
-        let hir_body: Option<&crate::hir::expr::HirExpr> = match arms {
-            MatchArms::Ast(_) => None,
-            MatchArms::Hir(h, _) => Some(&h[i].body),
+        let (hir_body, ast_body) = match arms {
+            MatchArms::Ast(a) => (None, Some(&a[i].body)),
+            MatchArms::Hir(h) => (Some(&h[i].body), None),
         };
         if let Some(h) = hir_body {
             if !matches!(h.kind, crate::hir::expr::HirExprKind::List(_)) {
@@ -7791,8 +8112,13 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                     return reg;
                 }
             }
+            // Accepted constructor exception: the collection-witness path
+            // needs the declared result type and constructs through the
+            // collection's own ops; it consumes the AST literal leaf.
+            let ast = crate::hir::to_ast::expr(h).expect("lossless match arm body");
+            return self.emit_match_arm_value(out, &ast, expected_result, indent);
         }
-        self.emit_match_arm_value(out, ast_body, expected_result, indent)
+        self.emit_match_arm_value(out, ast_body.expect("AST arm body"), expected_result, indent)
     }
 
     fn emit_match_arm_value(
@@ -7821,52 +8147,37 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         &mut self,
         out: &mut String,
         v: &str,
-        scrutinee_hir: Option<&crate::hir::expr::HirExpr>,
-        scrutinee: &Expr,
+        scrutinee: MatchScrutinee<'_>,
         arms: &MatchArms<'_>,
         indent: &str,
     ) -> TypedRegister {
-        let arms_ast: &[crate::ast::MatchArm] = match arms {
-            MatchArms::Ast(a) => a,
-            MatchArms::Hir(_, a) => a,
-        };
-        let scrut = match scrutinee_hir {
-            // The caller reconstruct-checked the scrutinee; operand recursion
-            // emits covered leaves natively, others convert per-element.
-            Some(h) => match self.emit_hir_operand(out, h, indent) {
-                Some(reg) => reg,
-                None => self.emit_expr(out, scrutinee, indent),
-            },
-            None => self.emit_expr(out, scrutinee, indent),
-        };
-        // 2026-08-22 (Phase 3b): typed sum bindings dispatch through the
-        // tagged-union ABI — the scrutinee handle's tag selects the arm and
-        // the payload unboxes into the binding. If the scrutinee ISN'T
-        // already a union (a bare member value), box it so tags exist.
-        let scrut = if arms_ast.iter().any(|a| matches!(a.pattern, crate::ast::Pattern::TypedBinding(_, _)))
-            && !matches!(scrut.ty, Type::Union(_))
-        {
-            // Infer the union shape from the first TypedBinding arm is
-            // impossible statically — this path only triggers for direct
-            // member values, which the typechecker rejects at the match
-            // scrutinee position. Leave untouched; conditions below test
-            // handles only when scrut.ty is a Union.
-            scrut
-        } else {
-            scrut
+        let scrut = match scrutinee {
+            // Both routes evaluate the scrutinee exactly once; HIR operand
+            // recursion emits covered leaves natively and converts uncovered
+            // ones per-element.
+            MatchScrutinee::Ast(a) => self.emit_expr(out, a, indent),
+            MatchScrutinee::Hir(h) => self
+                .emit_hir_operand(out, h, indent)
+                .expect("lossless match scrutinee"),
         };
         let counter = self.fun.txn_counter;
         self.fun.txn_counter += 1;
         let end_label = format!(".match_end_{}", counter);
-        let n = arms_ast.len();
+        let n = arms.len();
         let mut arm_labels: Vec<String> = Vec::with_capacity(n);
         let mut next_labels: Vec<String> = Vec::with_capacity(n);
         // Phase 1: the condition chain — each arm's condition branches to the
         // arm block or the next arm's condition.
-        for (i, arm) in arms_ast.iter().enumerate() {
+        for i in 0..n {
             let arm_label = format!(".match_arm_{}_{}", counter, i);
             let next_label = format!(".match_next_{}_{}", counter, i);
-            let cond = self.emit_pattern_condition(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
+            let cond = match arms {
+                MatchArms::Ast(a) => {
+                    self.emit_pattern_condition(&a[i].pattern, &scrut.name, &scrut.ty, out, indent)
+                }
+                MatchArms::Hir(h) => self
+                    .emit_hir_pattern_condition(&h[i].pattern, ScrutRef { reg: &scrut.name, ty: &scrut.ty }, out, indent),
+            };
             writeln!(out, "  br i1 {}, label %{}, label %{}", cond, arm_label, next_label).ok();
             writeln!(out, "{}:", next_label).ok();
             // Track the insertion block so the merge phi can cite the TRUE
@@ -7895,9 +8206,9 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             _ => false,
         });
         let probe_types = if let Some(expected) = expected_enum_result {
-            vec![expected.clone(); arms_ast.len()]
+            vec![expected.clone(); n]
         } else {
-            self.probe_match_result_types(arms_ast, &scrut, indent, match_result_hint.as_ref())
+            self.probe_match_result_types(arms, &scrut, indent, match_result_hint.as_ref())
         };
         // 2026-10-05 (json.bv): canonicalize enum-handle probe types. An enum
         // CONSTRUCTOR (`Err(e)`) reports `Type::int()` (the i64 handle) while
@@ -7938,7 +8249,7 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
         // its value into `synth_ty` ahead of the branch so the phi merges
         // uniform i64 tagged handles.
         let mut phi_incoming: Vec<(String, String, crate::ast::Type)> = Vec::with_capacity(n);
-        for (i, arm) in arms_ast.iter().enumerate() {
+        for i in 0..n {
             writeln!(out, "{}:", arm_labels[i]).ok();
             self.fun.cur_block = Some(arm_labels[i].clone());
             // 2026-10-05 (json.bv): reset per arm — an arm that `term`s sets
@@ -7946,10 +8257,23 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
             // the merge is mis-emitted.
             self.fun.terminated = false;
             self.fun.tail_loop_backedge = false;
-            self.bind_pattern(&arm.pattern, &scrut.name, &scrut.ty, out, indent);
+            match arms {
+                MatchArms::Ast(a) => {
+                    self.bind_pattern(&a[i].pattern, &scrut.name, &scrut.ty, out, indent)
+                }
+                MatchArms::Hir(h) => {
+                    self.bind_hir_pattern(&h[i].pattern, ScrutRef { reg: &scrut.name, ty: &scrut.ty }, out, indent)
+                }
+            }
+            let guard_reg = match arms {
+                MatchArms::Ast(a) => a[i].guard.as_ref().map(|g| self.emit_expr(out, g, indent)),
+                MatchArms::Hir(h) => h[i].guard.as_ref().map(|g| {
+                    self.emit_hir_operand(out, g, indent)
+                        .expect("lossless match guard")
+                }),
+            };
             let body_reg;
-            if let Some(guard) = &arm.guard {
-                let gv = self.emit_expr(out, guard, indent);
+            if let Some(gv) = guard_reg {
                 // Briev bool comparisons emit i8 (0/1) — narrow to i1 for `br`.
                 let g1 = self.fun.gen_reg();
                 writeln!(out, "{}{} = icmp ne i8 {}, 0", indent, g1, gv.name).ok();
@@ -7961,11 +8285,11 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                 writeln!(out, "{}:", body_label).ok();
                 self.fun.cur_block = Some(body_label.clone());
                 body_reg = self.emit_match_arm_dual(
-                    out, arms, i, &arm.body, match_result_hint.as_ref(), indent,
+                    out, arms, i, match_result_hint.as_ref(), indent,
                 );
             } else {
                 body_reg = self.emit_match_arm_dual(
-                    out, arms, i, &arm.body, match_result_hint.as_ref(), indent,
+                    out, arms, i, match_result_hint.as_ref(), indent,
                 );
             }
             // 2026-10-05 (json.bv): an arm that TERMINATED (its body ran a
@@ -8410,6 +8734,320 @@ pub(crate) fn atomic_field_ordering(&self, type_name: &str, field_name: &str) ->
                         self.fun.let_original_types.insert(bn.clone(), et);
                     }
                 }
+            }
+            _ => {}
+        }
+        let _ = scrut_ty;
+    }
+
+    // ── HIR-native match patterns (2026-11-13, H5 phase C) ──────────────
+    // These mirror the AST pattern helpers above instruction-for-instruction:
+    // the pattern surface is 1:1 (`hir::to_ast::pattern` is lossless), so the
+    // HIR dispatch needs no reconstructed AST. Literal leaves emit through
+    // `emit_hir_operand` (the same helper the arm bodies use).
+
+    /// HIR twin of `emit_pattern_condition`.
+    pub(crate) fn emit_hir_pattern_condition(
+        &mut self,
+        pat: &crate::hir::pattern::HirPattern,
+        scrut: ScrutRef<'_>,
+        out: &mut String,
+        indent: &str,
+    ) -> String {
+        use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
+        use crate::hir::pattern::HirPatternKind as K;
+        let (scrut, scrut_ty) = (scrut.reg, scrut.ty);
+        match &pat.kind {
+            K::Wildcard | K::Binding(_) => {
+                let r = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp eq i64 0, 0", indent, r).ok();
+                r
+            }
+            K::TypedBinding(_, member) => {
+                self.emit_union_tag_test(out, indent, scrut, scrut_ty, member)
+            }
+            K::EnumVariant(vname, _) => {
+                let Some((_, tag_idx)) = self.enum_variant_ctor(vname) else {
+                    let r = self.fun.gen_reg();
+                    writeln!(out, "{}{} = icmp eq i64 0, 1", indent, r).ok();
+                    return r;
+                };
+                let base = self.fun.gen_reg();
+                { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok(); }
+                let slot = self.fun.gen_reg();
+                writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 0", indent, slot, base).ok();
+                let tag = self.fun.gen_reg();
+                writeln!(out, "{}{} = load i64, ptr {}", indent, tag, slot).ok();
+                let r = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, r, tag, tag_idx).ok();
+                r
+            }
+            K::Literal(lit) => {
+                let literal = self
+                    .emit_hir_operand(out, lit, indent)
+                    .expect("lossless pattern literal");
+                let literal = self.coerce_register_value(out, indent, &literal, scrut_ty);
+                let value = TypedRegister { name: scrut.to_string(), ty: scrut_ty.clone() };
+                let result = self.fun.gen_reg();
+                let compared = self.emit_normalized_binary_op(out, (&result, indent), &BinaryOpKind::Eq, (&value, &literal));
+                let boolean = self.coerce_to_i8_bool(out, indent, &compared);
+                let condition = self.fun.gen_reg();
+                writeln!(out, "{indent}{condition} = icmp ne i8 {}, 0", boolean.name).ok();
+                condition
+            }
+            K::Tuple(subpats) => {
+                self.emit_hir_tuple_pattern_condition(out, indent, subpats, scrut)
+            }
+            K::Range(start, end) | K::RangeInclusive(start, end) => {
+                let ls = self.emit_hir_pattern_literal(out, start, indent);
+                let le = self.emit_hir_pattern_literal(out, end, indent);
+                let inclusive = matches!(pat.kind, K::RangeInclusive(..));
+                let ge = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp sge i64 {}, {}", indent, ge, scrut, ls).ok();
+                let cmp = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp {} i64 {}, {}", indent, cmp,
+                    if inclusive { "sle" } else { "slt" }, scrut, le).ok();
+                let r = self.fun.gen_reg();
+                writeln!(out, "{}{} = and i1 {}, {}", indent, r, ge, cmp).ok();
+                r
+            }
+            _ => {
+                let r = self.fun.gen_reg();
+                writeln!(out, "{}{} = icmp eq i64 1, 0", indent, r).ok();
+                r
+            }
+        }
+    }
+
+    /// HIR tuple-pattern condition (memberwise literal comparison).
+    fn emit_hir_tuple_pattern_condition(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        subpats: &[crate::hir::pattern::HirPattern],
+        scrut: &str,
+    ) -> String {
+        use crate::hir::expr::{HirExpr, HirExprKind, HirLiteral};
+        use crate::hir::pattern::HirPatternKind as K;
+        let mut chain: Option<String> = None;
+        for (i, sp) in subpats.iter().enumerate() {
+            let scalar = match &sp.kind {
+                K::Literal(HirExpr { kind: HirExprKind::Literal(HirLiteral::Int(n)), .. }) => Some(*n),
+                K::Literal(HirExpr { kind: HirExprKind::Literal(HirLiteral::Bool(b)), .. }) => Some(i64::from(*b)),
+                K::Wildcard | K::Binding(_) => None,
+                _ => None,
+            };
+            let Some(elem_val) = scalar else { continue };
+            let base = self.fun.gen_reg();
+            { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, scrut).ok(); }
+            let slot = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, slot, base, i + 1).ok();
+            let lv = self.fun.gen_reg();
+            writeln!(out, "{}{} = load i64, ptr {}", indent, lv, slot).ok();
+            let cmp = self.fun.gen_reg();
+            writeln!(out, "{}{} = icmp eq i64 {}, {}", indent, cmp, lv, elem_val).ok();
+            chain = Some(match chain {
+                None => cmp,
+                Some(prev) => {
+                    let anded = self.fun.gen_reg();
+                    writeln!(out, "{}{} = and i1 {}, {}", indent, anded, prev, cmp).ok();
+                    anded
+                }
+            });
+        }
+        chain.unwrap_or_else(|| {
+            let r = self.fun.gen_reg();
+            writeln!(out, "{}{} = icmp eq i64 0, 0", indent, r).ok();
+            r
+        })
+    }
+
+    /// HIR twin of `emit_pattern_literal` (range endpoints).
+    fn emit_hir_pattern_literal(
+        &mut self,
+        out: &mut String,
+        lit: &crate::hir::expr::HirExpr,
+        indent: &str,
+    ) -> String {
+        use crate::hir::expr::{HirExprKind, HirLiteral};
+        let r = self.fun.gen_reg();
+        match &lit.kind {
+            HirExprKind::Literal(HirLiteral::Int(n)) => {
+                writeln!(out, "{}{} = add i64 0, {}", indent, r, n).ok();
+            }
+            HirExprKind::Literal(HirLiteral::Bool(b)) => {
+                writeln!(out, "{}{} = add i64 0, {}", indent, r, if *b { 1 } else { 0 }).ok();
+            }
+            HirExprKind::Literal(HirLiteral::Float(f)) => {
+                writeln!(out, "{}{} = fptosi double {} to i64", indent, r, f).ok();
+            }
+            _ => {
+                writeln!(out, "{}{} = add i64 0, 0", indent, r).ok();
+            }
+        }
+        r
+    }
+
+    /// HIR enum-variant payload binding (single or multi payload).
+    fn bind_hir_enum_variant(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        pat: &crate::hir::pattern::HirPattern,
+        scrut: ScrutRef<'_>,
+    ) {
+        use crate::hir::pattern::HirPatternKind as K;
+        let K::EnumVariant(vname, subpats) = &pat.kind else { return };
+        let nested = subpats.iter().any(|sp| {
+            matches!(
+                sp.kind,
+                K::Literal(_)
+                    | K::Tuple(_)
+                    | K::EnumVariant(_, _)
+                    | K::TypedBinding(_, _)
+                    | K::Range(_, _)
+                    | K::RangeInclusive(_, _)
+                    | K::Multi(_)
+            )
+        });
+        if nested {
+            panic!(
+                "enum variant '{vname}' with literal/nested \
+                 sub-patterns is staged — bind names or use `_`"
+            );
+        }
+        let ctx = EnumBindCtx { vname, subpats, scrut: scrut.reg, scrut_ty: scrut.ty };
+        let declared = self.enum_payload_type(scrut.ty, vname);
+        if subpats.len() <= 1 {
+            self.bind_hir_enum_single(out, indent, ctx, declared);
+        } else {
+            self.bind_hir_enum_multi(out, indent, ctx, declared);
+        }
+    }
+
+    /// Single/zero-payload enum binding: slot 1 carries the payload.
+    fn bind_hir_enum_single(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        ctx: EnumBindCtx<'_>,
+        declared: Option<Type>,
+    ) {
+        use crate::hir::pattern::HirPatternKind as K;
+        let scrut_ty = ctx.scrut_ty;
+        let pty = declared.unwrap_or(Type::int());
+        let tag_idx = self
+            .enum_variant_ctor(ctx.vname)
+            .map(|(_, idx)| idx)
+            .unwrap_or(usize::MAX);
+        debug_assert!(
+            tag_idx == usize::MAX
+                || self.ctx.enum_lowering.agrees_with_tag(scrut_ty, tag_idx, ctx.vname),
+            "match/layout disagreement for variant {} tag {tag_idx}",
+            ctx.vname
+        );
+        let inline_payload = self
+            .enum_layout(scrut_ty)
+            .and_then(|l| l.variant_payload_inline.get(tag_idx).copied())
+            .unwrap_or(false);
+        let inline_object = self
+            .enum_layout(scrut_ty)
+            .and_then(|l| l.variant_payload_inline_object.get(tag_idx).copied())
+            .unwrap_or(false);
+        let payload = if inline_object {
+            self.emit_owned_object_payload(out, indent, ctx.scrut, &pty)
+        } else if inline_payload {
+            let base = self.fun.gen_reg();
+            { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, ctx.scrut).ok(); }
+            let nested = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 1", indent, nested, base).ok();
+            let handle = self.fun.gen_reg();
+            { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = ptrtoint ptr {} to {}", indent, handle, nested, hw).ok(); }
+            TypedRegister { name: handle, ty: pty.clone() }
+        } else {
+            self.unwrap_union_payload(out, indent, ctx.scrut, &pty)
+        };
+        for sp in ctx.subpats {
+            if let K::Binding(bn) = &sp.kind {
+                self.bind_payload_name(bn, &payload.name, &pty);
+            }
+        }
+    }
+
+    /// Multi-payload enum binding: slot 1 holds a `[count, e0, …]` tuple image.
+    fn bind_hir_enum_multi(
+        &mut self,
+        out: &mut String,
+        indent: &str,
+        ctx: EnumBindCtx<'_>,
+        declared: Option<Type>,
+    ) {
+        use crate::hir::pattern::HirPatternKind as K;
+        let base = self.fun.gen_reg();
+        { let hw = format!("i{}", self.ctx.int_bits); writeln!(out, "{}{} = inttoptr {} {} to ptr", indent, base, hw, ctx.scrut).ok(); }
+        let slot = self.fun.gen_reg();
+        writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 1", indent, slot, base).ok();
+        let raw = self.fun.gen_reg();
+        writeln!(out, "{}{} = load i64, ptr {}", indent, raw, slot).ok();
+        let elems: Vec<Type> = match declared {
+            Some(Type::Tuple(es)) => es,
+            _ => Vec::new(),
+        };
+        for (j, sp) in ctx.subpats.iter().enumerate() {
+            let K::Binding(bn) = &sp.kind else {
+                continue;
+            };
+            let et = elems.get(j).cloned().unwrap_or(Type::int());
+            let tbase = self.fun.gen_reg();
+            writeln!(out, "{}{} = inttoptr i64 {} to ptr", indent, tbase, raw).ok();
+            let eslot = self.fun.gen_reg();
+            writeln!(out, "{}{} = getelementptr i64, ptr {}, i64 {}", indent, eslot, tbase, j + 1).ok();
+            let ev = self.fun.gen_reg();
+            writeln!(out, "{}{} = load i64, ptr {}", indent, ev, eslot).ok();
+            self.bind_payload_name(bn, &ev, &et);
+        }
+    }
+
+    /// Record a pattern payload name in every lookup map the arm body reads.
+    fn bind_payload_name(&mut self, name: &str, reg: &str, ty: &Type) {
+        self.fun.last_val_temps.insert(name.to_string(), reg.to_string());
+        self.fun.last_val_types.insert(name.to_string(), ty.clone());
+        self.fun.let_bindings.insert(name.to_string(), reg.to_string());
+        self.fun.let_binding_types.insert(name.to_string(), ty.clone());
+        self.fun.let_original_types.insert(name.to_string(), ty.clone());
+    }
+
+    /// HIR twin of `bind_pattern` (payload unboxing + name binding).
+    pub(crate) fn bind_hir_pattern(
+        &mut self,
+        pat: &crate::hir::pattern::HirPattern,
+        scrut: ScrutRef<'_>,
+        out: &mut String,
+        indent: &str,
+    ) {
+        use crate::hir::pattern::HirPatternKind as K;
+        let (scrut, scrut_ty) = (scrut.reg, scrut.ty);
+        match &pat.kind {
+            K::Binding(name) => {
+                self.fun.last_val_temps.insert(name.clone(), scrut.to_string());
+                self.fun.last_val_types.insert(name.clone(), Type::int());
+                self.fun.let_bindings.insert(name.clone(), scrut.to_string());
+                self.fun.let_binding_types.insert(name.clone(), Type::int());
+                self.fun.let_original_types.insert(name.clone(), Type::int());
+            }
+            K::TypedBinding(name, ty) => {
+                let payload = self.unwrap_union_payload(out, indent, scrut, ty);
+                let reg = payload.name;
+                self.fun.last_val_temps.insert(name.clone(), reg.clone());
+                self.fun.last_val_types.insert(name.clone(), ty.clone());
+                self.fun.let_bindings.insert(name.clone(), reg);
+                self.fun.let_binding_types.insert(name.clone(), ty.clone());
+                self.fun.let_original_types.insert(name.clone(), ty.clone());
+            }
+            K::EnumVariant(_, subpats)
+                if subpats.iter().all(|pattern| matches!(pattern.kind, K::Wildcard)) => {}
+            K::EnumVariant(_, _) => {
+                self.bind_hir_enum_variant(out, indent, pat, ScrutRef { reg: scrut, ty: scrut_ty });
             }
             _ => {}
         }
@@ -9790,6 +10428,41 @@ struct StructField<'a> {
     base_ptr: &'a str,
 }
 
+/// 2026-11-13 (H5 phase C): a field's destination without its value
+/// expression — lets the AST and HIR store paths share one tail without
+/// exceeding the parameter budget.
+#[derive(Clone, Copy)]
+struct StructSlot<'a> {
+    type_name: &'a str,
+    name: &'a str,
+    base_ptr: &'a str,
+}
+
+/// 2026-11-13 (H5 phase C): scrutinee register + type, bundled for helpers
+/// that would otherwise exceed the parameter budget.
+enum ImagePlacement {
+    Deferred,
+    Stack,
+    Heap,
+    ObjectOut,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScrutRef<'a> {
+    reg: &'a str,
+    ty: &'a Type,
+}
+
+/// 2026-11-13 (H5 phase C): enum-variant binding inputs, bundled to keep the
+/// single/multi payload helpers within the parameter budget.
+#[derive(Clone, Copy)]
+struct EnumBindCtx<'a> {
+    vname: &'a str,
+    subpats: &'a [crate::hir::pattern::HirPattern],
+    scrut: &'a str,
+    scrut_ty: &'a Type,
+}
+
 #[derive(Clone, Copy)]
 struct EnumPayload<'a> {
     args: &'a [Expr],
@@ -9905,7 +10578,7 @@ impl crate::backend::llvm::LlvmBackend {
         out: &mut String,
         indent: &str,
         id_reg: &str,
-        recv: &Expr,
+        wire_name: &str,
         field: &str,
     ) -> TypedRegister {
         let slot = self.fun.gen_reg();
@@ -9922,18 +10595,12 @@ impl crate::backend::llvm::LlvmBackend {
             writeln!(out, "{indent}{r} = call i64 @briev_event_read_impl({st}i64 {events_i}, i64 {sched_i}, i64 {id_reg}, i64 {slot_i})").ok();
 
         // Payload type from the wire's declared Event<P>.
-        let wire_name = match recv {
-            Expr::Identifier(n) => Some(n.clone()),
-            _ => None,
-        };
-        let wire_ty = wire_name
-            .as_ref()
-            .and_then(|n| self.fun.let_original_types.get(n).cloned())
-            .or_else(|| {
-                wire_name
-                    .as_ref()
-                    .and_then(|n| self.fun.let_binding_types.get(n).cloned())
-            });
+        let wire_ty = self
+            .fun
+            .let_original_types
+            .get(wire_name)
+            .cloned()
+            .or_else(|| self.fun.let_binding_types.get(wire_name).cloned());
         let payload_ty = wire_ty.and_then(|t| match t {
             Type::Applied(_, args) => args.first().cloned(),
             _ => None,
@@ -10044,6 +10711,143 @@ pub(crate) fn hir_expr_family_covered(expr: &crate::hir::expr::HirExpr) -> bool 
         {
             hir_expr_family_covered(left) && hir_expr_family_covered(right)
         }
+        // 2026-11-13 (H5 phase C): short-circuit And/Or is native when the
+        // register-level fast path applies — the exact predicate
+        // `emit_short_circuit` uses, plus operand losslessness (the view
+        // path cannot fall back mid-emission). Impure RHS / beginprogram
+        // stays uncovered: the reconstruct fallback keeps the CFG form on
+        // today's AST routing.
+        K::Binary { op, left, right }
+            if matches!(op, crate::ast::BinaryOpKind::And | crate::ast::BinaryOpKind::Or) =>
+        {
+            hir_expr_lossless(left)
+                && hir_expr_lossless(right)
+                && LlvmBackend::short_circuit_register_fast(
+                    ExprView::Hir(left),
+                    ExprView::Hir(right),
+                )
+        }
+        // 2026-11-13 (H5 phase C): the match and struct-literal families are
+        // native. Coverage additionally requires losslessness (no `Other`
+        // anywhere) because the emitter takes the HIR path without an AST
+        // fallback.
+        // Match is deliberately excluded here: an expression-position match
+        // used as its own STATEMENT must reach the AST statement-match path
+        // (`.smt_*`), mirroring `emit_statement`'s `Expr::Match` rewrite. The
+        // operand path opts Match in explicitly (see `emit_hir_operand`).
+        K::StructLiteral { .. } | K::Slice { .. } | K::Field { .. } => {
+            hir_expr_lossless(expr)
+        }
         _ => false,
+    }
+}
+
+/// 2026-11-13 (H5 phase C): true when no node in this expression is the
+/// `Other` placeholder — the one shape `hir::to_ast` cannot reconstruct and
+/// therefore the one shape the native emitter cannot fall back from. This is
+/// a pure predicate: it builds no AST.
+pub(super) fn hir_expr_lossless(expr: &crate::hir::expr::HirExpr) -> bool {
+    use crate::hir::expr::HirExprKind as K;
+    match &expr.kind {
+        K::Other(_) => false,
+        K::Literal(_) | K::Identifier(_) | K::Wildcard | K::UnitLiteral { .. } => true,
+        K::Call { args, .. } | K::Spawn { args, .. } | K::Tuple(args) | K::List(args) => {
+            args.iter().all(hir_expr_lossless)
+        }
+        K::Binary { left, right, .. } | K::Index(left, right) => {
+            hir_expr_lossless(left) && hir_expr_lossless(right)
+        }
+        K::Unary { inner, .. }
+        | K::Cast { inner, .. }
+        | K::Deref(inner)
+        | K::AddrOf(inner)
+        | K::Consume(inner)
+        | K::Await(inner)
+        | K::IsType { inner, .. } => hir_expr_lossless(inner),
+        K::Field { receiver, .. } | K::Reflect { receiver, .. } => hir_expr_lossless(receiver),
+        K::MethodCall { receiver, args, .. } => {
+            hir_expr_lossless(receiver) && args.iter().all(hir_expr_lossless)
+        }
+        K::Slice { array, start, end, stride } => {
+            hir_expr_lossless(array)
+                && [start, end, stride]
+                    .iter()
+                    .all(|opt| opt.as_ref().map_or(true, |e| hir_expr_lossless(e)))
+        }
+        K::Range { start, end, .. } => hir_expr_lossless(start) && hir_expr_lossless(end),
+        K::If { condition, then_branch, else_branch } => {
+            hir_expr_lossless(condition)
+                && hir_expr_lossless(then_branch)
+                && else_branch.as_ref().map_or(true, |e| hir_expr_lossless(e))
+        }
+        K::Lambda { body, .. } => hir_expr_lossless(body),
+        K::PluginIntercept { args, receiver, .. } => {
+            args.iter().all(hir_expr_lossless)
+                && receiver.as_ref().map_or(true, |e| hir_expr_lossless(e))
+        }
+        K::StructLiteral { fields, specs, .. } => fields
+            .iter()
+            .chain(specs.iter())
+            .all(|(_, e)| hir_expr_lossless(e)),
+        K::Match { scrutinee, arms } => {
+            hir_expr_lossless(scrutinee)
+                && arms.iter().all(|arm| {
+                    hir_pattern_lossless(&arm.pattern)
+                        && arm.guard.as_ref().map_or(true, hir_expr_lossless)
+                        && hir_expr_lossless(&arm.body)
+                })
+        }
+        K::Block(body) => body.iter().all(hir_stmt_lossless),
+    }
+}
+
+fn hir_pattern_lossless(pat: &crate::hir::pattern::HirPattern) -> bool {
+    use crate::hir::pattern::HirPatternKind as K;
+    match &pat.kind {
+        K::Wildcard | K::Binding(_) | K::TypedBinding(_, _) => true,
+        K::Literal(e) => hir_expr_lossless(e),
+        K::EnumVariant(_, sub) | K::Tuple(sub) | K::Multi(sub) => {
+            sub.iter().all(hir_pattern_lossless)
+        }
+        K::Range(a, b) | K::RangeInclusive(a, b) => {
+            hir_expr_lossless(a) && hir_expr_lossless(b)
+        }
+    }
+}
+
+fn hir_stmt_lossless(stmt: &crate::hir::stmt::HirStmt) -> bool {
+    use crate::hir::stmt::HirStmtKind as K;
+    let expr = hir_expr_lossless;
+    let body = |b: &[crate::hir::stmt::HirStmt]| b.iter().all(hir_stmt_lossless);
+    match &stmt.kind {
+        K::Let { expr: e, .. } => e.as_ref().map_or(true, expr),
+        K::Assign(a, b) => expr(a) && expr(b),
+        K::ArrowAssign { target, value, .. } => {
+            target.as_ref().map_or(true, expr) && expr(value)
+        }
+        K::Term(e) | K::EndProgram(e) | K::Rollback(e) => e.as_ref().map_or(true, expr),
+        K::Tail(e) | K::Check(e) | K::Expression(e) | K::Gate(e) => expr(e),
+        K::Guarded(c, b) => expr(c) && body(b),
+        K::Block(b) | K::SyncBlock(b) | K::Defer(b) | K::Mutex(b) => body(b),
+        K::Foreach { list, body: b, .. } => expr(list) && body(b),
+        K::Match { expr: e, arms } => {
+            expr(e)
+                && arms.iter().all(|arm| {
+                    arm.patterns.iter().all(hir_pattern_lossless) && body(&arm.body)
+                })
+        }
+        K::TempTransfer { expr: e, .. } => expr(e),
+        K::Open(a, b) => expr(a) && expr(b),
+        K::TrgBinding { instance, .. } => expr(instance),
+        K::Break
+        | K::Trap
+        | K::Halt
+        | K::Yield
+        | K::FreeHint(_)
+        | K::KeepHint(_)
+        | K::ReleaseOwned { .. }
+        | K::MetadataAssignment(..)
+        | K::InlineAsm { .. } => true,
+        K::Other(_) => false,
     }
 }

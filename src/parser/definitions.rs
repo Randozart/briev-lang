@@ -31,9 +31,13 @@ impl<'a> Parser<'a> {
         let name = match self.peek() {
             Some(Token::String(s)) => s.clone(),
             other => {
-                let found = other.map(|t| format!("{:?}", t))
+                let found = other
+                    .map(|t| format!("{:?}", t))
                     .unwrap_or_else(|| "EOF".to_string());
-                let span = self.tokens.get(self.pos).map(|(_, s)| s.clone())
+                let span = self
+                    .tokens
+                    .get(self.pos)
+                    .map(|(_, s)| s.clone())
                     .unwrap_or(0..0);
                 return Err(SyntaxError::UnexpectedToken {
                     expected: "a quoted ELF section name".to_string(),
@@ -84,7 +88,10 @@ impl<'a> Parser<'a> {
         // attribute). Carried on the item; the typechecker proves the
         // obligations, the backend consumes the placement.
         if self.check_identifier("section")
-            && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::LParen))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                Some(Token::LParen)
+            )
         {
             let section = self.parse_section_prefix()?;
             match self.peek() {
@@ -102,7 +109,9 @@ impl<'a> Parser<'a> {
                     return Ok(TopLevel::Constant(konst));
                 }
                 _ => {
-                    let found = self.peek().map(|t| format!("{:?}", t))
+                    let found = self
+                        .peek()
+                        .map(|t| format!("{:?}", t))
                         .unwrap_or_else(|| "EOF".to_string());
                     return Err(SyntaxError::UnexpectedToken {
                         expected: "'defn' or 'const' after section(\"...\") — state fields                                    live in %State and have no linker section of their own"
@@ -153,39 +162,72 @@ impl<'a> Parser<'a> {
             // and/or non-vectorized array access. Recorded as a modifier
             // annotation; the backend consumes it (never a speed win — a
             // modifier-beaten default is a compiler bug).
-            Some(Token::Pack) => self.parse_struct_def(false, false).map(TopLevel::StaticStruct),
-            Some(Token::Union) => self.parse_struct_def(true, false).map(TopLevel::StaticStruct),
-            Some(Token::Seq) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Struct) | Some(Token::Pack)) => {
+            Some(Token::Pack) => self
+                .parse_struct_def(false, false)
+                .map(TopLevel::StaticStruct),
+            Some(Token::Union) => self
+                .parse_struct_def(true, false)
+                .map(TopLevel::StaticStruct),
+            Some(Token::Seq)
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                    Some(Token::Struct) | Some(Token::Pack)
+                ) =>
+            {
                 // 2026-08-05 (Phase 4): `seq struct` — parse_struct_def consumes
                 // the seq modifier itself. 2026-08-13: `pack`/`seq` prefixes are
                 // order-independent (`pack seq struct`, `seq pack struct`); the
                 // struct parser consumes whichever flags precede `struct`.
-                self.parse_struct_def(false, false).map(TopLevel::StaticStruct)
+                self.parse_struct_def(false, false)
+                    .map(TopLevel::StaticStruct)
             }
             // 2026-08-15 (coll plan): `coll` prefix on obj/struct — the native
             // strategy keyword for collections. Order-independent with pack/seq
             // for structs (`coll pack struct`, `pack coll struct`).
-            Some(Token::Coll) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Obj)) => {
+            Some(Token::Coll)
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                    Some(Token::Obj)
+                ) =>
+            {
                 self.pos += 1; // consume coll
                 self.parse_obj_like(true, false).map(TopLevel::TypeDef)
             }
             // 2026-08-15 (coll plan addendum): `seq coll obj` / `coll seq obj` —
             // seq forces the contiguous element block.
-            Some(Token::Coll) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Seq))
-                && matches!(self.tokens.get(self.pos + 2).map(|(t, _)| t), Some(Token::Obj)) =>
+            Some(Token::Coll)
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                    Some(Token::Seq)
+                ) && matches!(
+                    self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                    Some(Token::Obj)
+                ) =>
             {
                 self.pos += 2; // consume coll seq
                 self.parse_obj_like(true, true).map(TopLevel::TypeDef)
             }
-            Some(Token::Seq) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Coll))
-                && matches!(self.tokens.get(self.pos + 2).map(|(t, _)| t), Some(Token::Obj)) =>
+            Some(Token::Seq)
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                    Some(Token::Coll)
+                ) && matches!(
+                    self.tokens.get(self.pos + 2).map(|(t, _)| t),
+                    Some(Token::Obj)
+                ) =>
             {
                 self.pos += 2; // consume seq coll
                 self.parse_obj_like(true, true).map(TopLevel::TypeDef)
             }
-            Some(Token::Coll) if matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Struct) | Some(Token::Pack) | Some(Token::Seq)) => {
+            Some(Token::Coll)
+                if matches!(
+                    self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                    Some(Token::Struct) | Some(Token::Pack) | Some(Token::Seq)
+                ) =>
+            {
                 self.pos += 1; // consume coll
-                self.parse_struct_def(false, true).map(TopLevel::StaticStruct)
+                self.parse_struct_def(false, true)
+                    .map(TopLevel::StaticStruct)
             }
             // 2026-09-22 (order-free-modifiers plan): `<keywords>* <identifier>
             // <name>`. Modifiers compose in any order before a node/txn/let/
@@ -195,9 +237,7 @@ impl<'a> Parser<'a> {
             // modifier token, a `net<>`/`stdnet<>` identifier, or a
             // `stage<>`/`tile<>` shape identifier (the latter two only when
             // directly followed by `<`).
-            Some(_) if self.starts_modifier_run() => {
-                self.parse_modifier_prefixed()
-            }
+            Some(_) if self.starts_modifier_run() => self.parse_modifier_prefixed(),
             Some(Token::Cell) => self.parse_cell().map(TopLevel::Cell),
             // 2026-08-27 (cbv-HW plan Slice A): `extern Name<T>(ports)
             // -> outs from "path";` — a FOREIGN hardware module import.
@@ -215,7 +255,10 @@ impl<'a> Parser<'a> {
                          GLUE descriptors, explicit protocol cast edges, ownership \
                          contracts, and effects"
                     .into(),
-                span: self.peek_with_span().map(|(_, s)| self.make_span(s.clone())).unwrap_or_else(crate::errors::Span::dummy),
+                span: self
+                    .peek_with_span()
+                    .map(|(_, s)| self.make_span(s.clone()))
+                    .unwrap_or_else(crate::errors::Span::dummy),
             }),
             Some(Token::Trg) => self.parse_top_level_trg().map(TopLevel::Trigger),
             // 2026-11-08 (attr plan): top-level non-physical consumer
@@ -241,7 +284,9 @@ impl<'a> Parser<'a> {
             Some(Token::Impl) => self.parse_impl().map(TopLevel::Impl),
             // 2026-07-14: Handle `struct Name { fields }` as TypeDef
             Some(Token::Obj) => self.parse_obj_like(false, false).map(TopLevel::TypeDef),
-            Some(Token::Struct) => self.parse_struct_def(false, false).map(TopLevel::StaticStruct),
+            Some(Token::Struct) => self
+                .parse_struct_def(false, false)
+                .map(TopLevel::StaticStruct),
             // 2026-07-26: Handle `render struct Name { <html> }` and `render obj Name { <html> }`
             Some(Token::Render) => self.parse_render_block(),
             // 2026-09-23 (fab plan): the physical-layout section.
@@ -254,16 +299,14 @@ impl<'a> Parser<'a> {
                 Ok(TopLevel::Statement(Box::new(stmt)))
             }
             // 2026-07-14: Top-level const — compile-time constant
-            Some(Token::Const) => {
-                Ok(TopLevel::Constant(self.parse_const_declaration()?))
-            }
+            Some(Token::Const) => Ok(TopLevel::Constant(self.parse_const_declaration()?)),
             // 2026-07-15: $(Stage) compile-time metaprogramming block
             Some(Token::Dollar) => {
                 // Check if the next token is LParen without consuming
                 if self.tokens.get(self.pos + 1).map(|(t, _)| t) == Some(&Token::LParen) {
                     self.parse_stage_block().map(TopLevel::StageBlock)
                 } else {
-        let name = self.expect_identifier()?;
+                    let name = self.expect_identifier()?;
                     self.error_unknown_item(&name, "top-level item")
                 }
             }
@@ -370,7 +413,8 @@ impl<'a> Parser<'a> {
     /// then the name, then reads the raw HTML body between braces.
     pub fn parse_render_block(&mut self) -> Result<TopLevel, SyntaxError> {
         // Capture span from the 'render' keyword
-        let start_span = self.peek_with_span()
+        let start_span = self
+            .peek_with_span()
             .map(|(_, s)| self.make_span(s.clone()))
             .unwrap_or(Span::dummy());
         // Consume 'render' keyword
@@ -455,9 +499,8 @@ impl<'a> Parser<'a> {
     fn parse_fab_board(&mut self) -> Result<(f64, f64), SyntaxError> {
         let w = self.parse_fab_length()?;
         if !self.eat_identifier("x") {
-            return self.error_at_current(
-                "expected 'x' between board dimensions (`board 30mm x 20mm;`)",
-            );
+            return self
+                .error_at_current("expected 'x' between board dimensions (`board 30mm x 20mm;`)");
         }
         let h = self.parse_fab_length()?;
         self.expect(Token::Semicolon)?;
@@ -487,11 +530,7 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     v
                 }
-                _ => {
-                    return self.error_at_current(
-                        "expected a rotation in degrees (`rot 90;`)",
-                    )
-                }
+                _ => return self.error_at_current("expected a rotation in degrees (`rot 90;`)"),
             };
         }
         self.expect(Token::Semicolon)?;
@@ -656,7 +695,8 @@ impl<'a> Parser<'a> {
                             }
                             other => {
                                 return self.error_at_current(&format!(
-                                    "expected '>' to close #Link<...>, got {:?}", other
+                                    "expected '>' to close #Link<...>, got {:?}",
+                                    other
                                 ));
                             }
                         }
@@ -692,7 +732,10 @@ impl<'a> Parser<'a> {
                         self.advance();
                     }
                     other => {
-                        let msg = format!("expected '>' to close compiler-relative path, found {:?}", other);
+                        let msg = format!(
+                            "expected '>' to close compiler-relative path, found {:?}",
+                            other
+                        );
                         return self.error_at_current(&msg);
                     }
                 }
@@ -854,7 +897,9 @@ impl<'a> Parser<'a> {
                     let span_start = span.start;
                     // Find the start of this line in source
                     let line_start = self.source[..span_start.min(self.source.len())]
-                        .rfind("\n").map(|p| p + 1).unwrap_or(0);
+                        .rfind("\n")
+                        .map(|p| p + 1)
+                        .unwrap_or(0);
                     if span_start - line_start == 0 {
                         // 2026-10-16 (stability S2): consume the boundary brace
                         // (plus its trailing semicolons) — breaking ON it left
@@ -911,7 +956,10 @@ impl<'a> Parser<'a> {
     /// Split a chain body into steps at `into <cond>;` sign-offs. Returns
     /// (actions, optional sign-off) per step; the trailing action run (no
     /// sign-off) is the final step.
-    fn chain_steps(&mut self, name: &str) -> Result<Vec<(Vec<Statement>, Option<Expr>)>, SyntaxError> {
+    fn chain_steps(
+        &mut self,
+        name: &str,
+    ) -> Result<Vec<(Vec<Statement>, Option<Expr>)>, SyntaxError> {
         let mut steps: Vec<(Vec<Statement>, Option<Expr>)> = Vec::new();
         let mut current: Vec<Statement> = Vec::new();
         while !self.check(&Token::RBrace) && !self.is_at_end() {
@@ -1157,9 +1205,7 @@ impl<'a> Parser<'a> {
                 let name = self.expect_identifier()?;
                 Ok(BoundTerm::Ref(name))
             }
-            _ => self.error_at_current(
-                "expected a number or an identifier in an init bound set",
-            ),
+            _ => self.error_at_current("expected a number or an identifier in an init bound set"),
         }
     }
 
@@ -1185,6 +1231,7 @@ impl<'a> Parser<'a> {
         // 2026-07-31: Contract may precede or follow the `-> Type` return
         // type (see parse_output_and_contract).
         let (output_type, contract) = self.parse_output_and_contract()?;
+        let invariant = self.parse_optional_invariant()?;
         // 2026-07-28: Body is optional — `txn f -> T := { ... }` has no { body }.
         let body = if self.check(&Token::LBrace) {
             self.parse_block()?
@@ -1208,7 +1255,7 @@ impl<'a> Parser<'a> {
             body,
             metadata: std::collections::HashMap::new(),
             derivation,
-            modifiers: vec![],
+            modifiers: invariant,
             span: None,
             variadic_param,
             doc,
@@ -1238,9 +1285,9 @@ impl<'a> Parser<'a> {
     /// dissolved). 2026-09-14 (machine-entry plan).
     fn parse_node_item(&mut self) -> Result<TopLevel, SyntaxError> {
         self.pos += 1; // consume 'node'
-        // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
-        // (`async node name`). The `node async` postfix is removed — the
-        // modifier scanner sets is_async before dispatch.
+                       // 2026-09-22 (order-free-modifiers plan): `async` is PREFIX-only
+                       // (`async node name`). The `node async` postfix is removed — the
+                       // modifier scanner sets is_async before dispatch.
         let is_async = false;
         let name = self.expect_identifier()?;
         let name_span = self
@@ -1336,6 +1383,7 @@ impl<'a> Parser<'a> {
         }
         // node has no parameters and no return value (purely reactive)
         let contract = self.parse_contract()?;
+        let invariant = self.parse_optional_invariant()?;
         // 2026-07-28: Body is optional for consistency with defn/txn.
         let body = if self.check(&Token::LBrace) {
             self.parse_block()?
@@ -1355,7 +1403,7 @@ impl<'a> Parser<'a> {
             body,
             metadata: std::collections::HashMap::new(),
             derivation,
-            modifiers: vec![],
+            modifiers: invariant,
             span: None,
             variadic_param: None,
             doc: self.take_doc(),
@@ -1468,6 +1516,9 @@ impl<'a> Parser<'a> {
     fn starts_modifier_run(&self) -> bool {
         match self.peek() {
             Some(t) if Self::is_modifier_token(t) || Self::is_net_modifier(t) => true,
+            // `unbounded` / `unbounded until [C]` open a modifier run: the loop
+            // carries no termination obligation (SPEC 10.9).
+            Some(Token::Identifier(word)) if word == "unbounded" => true,
             // 2026-10-17 (plain storage): `state let` / `plain let` — the
             // storage-class assertions open a modifier run.
             Some(Token::Identifier(s))
@@ -1499,7 +1550,10 @@ impl<'a> Parser<'a> {
                     // declaration is a per-lane decision (unroll: PTX
                     // serial-unroll override; the rest: capability
                     // errors at the dispatchers until filled).
-                    matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Lt))
+                    matches!(
+                        self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                        Some(Token::Lt)
+                    )
                 }
             }
             _ => false,
@@ -1577,7 +1631,11 @@ impl<'a> Parser<'a> {
     /// 2026-09-25 (E14b-7): `net<>`/`stdnet<>` name a let's supply net —
     /// reject them on node/txn/defn, which have no supply pins.
     fn reject_net_names(&self, prefix: &ModifierPrefix, what: &str) -> Result<(), SyntaxError> {
-        if prefix.annotations.iter().any(|a| a.name == "net" || a.name == "stdnet") {
+        if prefix
+            .annotations
+            .iter()
+            .any(|a| a.name == "net" || a.name == "stdnet")
+        {
             self.error_at_current(&format!(
                 "`net<>`/`stdnet<>` names a let's supply net — {what} has no supply pins"
             ))
@@ -1607,14 +1665,12 @@ impl<'a> Parser<'a> {
     }
 
     /// `vol`/`mem`/`reg` are let-only pins — reject them on a node/txn.
-    fn reject_memory_pins(
-        &self,
-        prefix: &ModifierPrefix,
-        why: &str,
-    ) -> Result<(), SyntaxError> {
-        if prefix.annotations.iter().any(|a| {
-            matches!(a.name.as_str(), "vol" | "mem" | "reg")
-        }) {
+    fn reject_memory_pins(&self, prefix: &ModifierPrefix, why: &str) -> Result<(), SyntaxError> {
+        if prefix
+            .annotations
+            .iter()
+            .any(|a| matches!(a.name.as_str(), "vol" | "mem" | "reg"))
+        {
             self.error_at_current(&format!("'vol'/'mem'/'reg' apply to `let` only — {why}"))
         } else {
             Ok(())
@@ -1650,6 +1706,19 @@ impl<'a> Parser<'a> {
     ) -> Result<TopLevel, SyntaxError> {
         txn.is_async = txn.is_async || prefix.is_async;
         txn.modifiers.extend(prefix.annotations);
+        // `unbounded` waives the termination obligation that `variant` proves.
+        // Accepting both would be a contradiction: the declaration would say "do
+        // not prove this stops" and "here is the proof that it stops" at once.
+        let waived = txn.modifiers.iter().any(|m| m.name == "unbounded");
+        let proved = txn.modifiers.iter().any(|m| m.name == "variant");
+        if waived && proved {
+            return Err(SyntaxError::InvalidStatement {
+                reason: "`unbounded` waives the termination obligation that `variant` \
+                         proves — keep one of them, not both"
+                    .to_string(),
+                span: Span::dummy(),
+            });
+        }
         if let Some(groups) = prefix.sync_groups {
             Ok(TopLevel::SyncGroup {
                 domains: groups,
@@ -1734,9 +1803,13 @@ impl<'a> Parser<'a> {
         if !self.eat(&Token::From) {
             return Err(SyntaxError::UnexpectedToken {
                 expected: "`from \"path\"` after extern header".to_string(),
-                found: self.peek_with_span()
-                    .map(|(t, _)| format!("{}", t)).unwrap_or_else(|| "end of file".into()),
-                span: self.peek_with_span().map(|(_, s)| self.make_span(s.clone()))
+                found: self
+                    .peek_with_span()
+                    .map(|(t, _)| format!("{}", t))
+                    .unwrap_or_else(|| "end of file".into()),
+                span: self
+                    .peek_with_span()
+                    .map(|(_, s)| self.make_span(s.clone()))
                     .unwrap_or_else(crate::errors::Span::dummy),
             });
         }
@@ -1836,10 +1909,7 @@ impl<'a> Parser<'a> {
                 self.parse_metadata_clause(&mut metadata)?;
                 continue;
             }
-            if self.check(&Token::Txn)
-                || self.check(&Token::Node)
-                || self.check(&Token::Defn)
-            {
+            if self.check(&Token::Txn) || self.check(&Token::Node) || self.check(&Token::Defn) {
                 if self.check(&Token::Txn) {
                     let t = self.parse_transaction(false, false)?;
                     members.push(crate::ast::TopLevel::Transaction(t));
@@ -1953,8 +2023,14 @@ impl<'a> Parser<'a> {
             loop {
                 if self.check(&Token::Star) {
                     return Err(SyntaxError::StagedFeature {
-                        feature: "glob imports are invalid (SPEC 7.2) — import explicit symbols instead".into(),
-                        span: self.make_span(self.peek_with_span().map(|(_, s)| s.clone()).unwrap_or(0..0)),
+                        feature:
+                            "glob imports are invalid (SPEC 7.2) — import explicit symbols instead"
+                                .into(),
+                        span: self.make_span(
+                            self.peek_with_span()
+                                .map(|(_, s)| s.clone())
+                                .unwrap_or(0..0),
+                        ),
                     });
                 }
                 let local = self.expect_identifier()?;
@@ -2081,7 +2157,10 @@ impl<'a> Parser<'a> {
                 _ => unreachable!(),
             };
             return Err(SyntaxError::InvalidExpression {
-                reason: format!("stage '{}' was removed in the 2026-07-21 pipeline redesign. {}", stage_str, hint),
+                reason: format!(
+                    "stage '{}' was removed in the 2026-07-21 pipeline redesign. {}",
+                    stage_str, hint
+                ),
                 span: crate::errors::Span::dummy(),
             });
         }
@@ -2181,7 +2260,13 @@ impl<'a> Parser<'a> {
         self.expect(Token::Eq)?;
         let cells = self.parse_data_cells(&name, &dims)?;
         self.eat(&Token::Semicolon);
-        Ok(TopLevel::Data(crate::ast::top::DataTable { name, ty, dims, cells, span: None }))
+        Ok(TopLevel::Data(crate::ast::top::DataTable {
+            name,
+            ty,
+            dims,
+            cells,
+            span: None,
+        }))
     }
 
     /// The declared shape of a data table: a Vector of first-class Int
@@ -2336,7 +2421,10 @@ impl<'a> Parser<'a> {
     /// 2026-09-22 (Slice B): `unpop <inst>;` — a participation fact naming
     /// an instance excluded from the BOM. Also consumed for the shared
     /// `shortcircuit unpop …` prefix via the same parse shape.
-    fn parse_top_level_participation(&mut self, consumed_shortcircuit: bool) -> Result<TopLevel, SyntaxError> {
+    fn parse_top_level_participation(
+        &mut self,
+        consumed_shortcircuit: bool,
+    ) -> Result<TopLevel, SyntaxError> {
         if !consumed_shortcircuit {
             self.pos += 1; // consume `unpop`
         }
@@ -2543,7 +2631,11 @@ impl<'a> Parser<'a> {
             .get(start)
             .map(|(_, range)| self.make_span(range.clone()))
             .unwrap_or_else(crate::errors::Span::dummy);
-        Ok(crate::ast::top::ModeDecl { name, facts, span: Some(span) })
+        Ok(crate::ast::top::ModeDecl {
+            name,
+            facts,
+            span: Some(span),
+        })
     }
 
     fn parse_top_level_trg(&mut self) -> Result<Trigger, SyntaxError> {
@@ -2636,12 +2728,10 @@ impl<'a> Parser<'a> {
                     let n = self.rest_bound_number(rest_name, "min")?;
                     min = n;
                 } else {
-                    return self.error_at_current(
-                        &format!(
-                            "the rest bound on `...{rest_name}` must be `[<=N]`, \
+                    return self.error_at_current(&format!(
+                        "the rest bound on `...{rest_name}` must be `[<=N]`, \
                              `[>=M]`, or `[>=M, <=N]`"
-                        ),
-                    );
+                    ));
                 }
                 if self.eat(&Token::Comma) {
                     continue;
@@ -2684,10 +2774,12 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 n
             }
-            _ => return self.error_at_current(&format!(
-                "the rest {what} bound on `...{rest_name}` must be an integer \
+            _ => {
+                return self.error_at_current(&format!(
+                    "the rest {what} bound on `...{rest_name}` must be an integer \
                  literal"
-            )),
+                ))
+            }
         };
         Ok(n)
     }
@@ -2774,6 +2866,40 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse contract: [pre][post], [[post], [pre]]
+    /// Optional third contract bracket: the invariant of a convergent body.
+    ///
+    /// `txn f [pre][post][I] { ... }` — the body runs until the postcondition
+    /// holds, so `I` is the property that survives every pass. A third `[` after
+    /// a contract cannot be anything else: the contract parser stops at a
+    /// terminator, and the watchdog forms start with `?` or `!`.
+    fn parse_optional_invariant(&mut self) -> Result<Vec<Annotation>, SyntaxError> {
+        let mut out = Vec::new();
+        // `[I]` — the invariant.
+        if self.check(&Token::LBracket) {
+            self.pos += 1;
+            let property = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            out.push(Annotation {
+                name: "invariant".to_string(),
+                value: Some(property),
+            });
+        }
+        // `variant [V]` — the measure that proves the loop makes progress.
+        // `variant` is an ordinary identifier, so no new token is needed, and no
+        // existing program can reach this position: after a contract the parser
+        // expects a terminator or the body.
+        if self.eat_identifier("variant") {
+            self.expect(Token::LBracket)?;
+            let measure = self.parse_expression()?;
+            self.expect(Token::RBracket)?;
+            out.push(Annotation {
+                name: "variant".to_string(),
+                value: Some(measure),
+            });
+        }
+        Ok(out)
+    }
+
     fn parse_contract(&mut self) -> Result<Contract, SyntaxError> {
         let mut pre = Expr::Bool(true);
         let mut post = Expr::Bool(true);
@@ -2855,9 +2981,7 @@ impl<'a> Parser<'a> {
                         n as u64
                     }
                     _ => {
-                        return self.error_at_current(
-                            "expected a numeric bound after 'within'",
-                        );
+                        return self.error_at_current("expected a numeric bound after 'within'");
                     }
                 };
                 match self.peek() {
@@ -2947,8 +3071,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let explicit =
-            contract_saw_bracket && saw_pre_bracket && saw_post_bracket;
+        let explicit = contract_saw_bracket && saw_pre_bracket && saw_post_bracket;
         Ok(Contract {
             pre_condition: pre,
             post_condition: post,
@@ -2976,8 +3099,13 @@ impl<'a> Parser<'a> {
         if !self.check(&Token::LBracket) {
             return false;
         }
-        self.tokens.get(self.pos + 1).map_or(false, |(t, _)| matches!(t, Token::Not))
-            && self.tokens.get(self.pos + 2).map_or(false, |(t, _)| matches!(t, Token::Slash))
+        self.tokens
+            .get(self.pos + 1)
+            .map_or(false, |(t, _)| matches!(t, Token::Not))
+            && self
+                .tokens
+                .get(self.pos + 2)
+                .map_or(false, |(t, _)| matches!(t, Token::Slash))
     }
 
     fn parse_contract_invert(&mut self) -> Result<(Expr, Expr), SyntaxError> {
@@ -2987,7 +3115,10 @@ impl<'a> Parser<'a> {
         if let Expr::UnaryOp(UnaryOpKind::Not, y) = &inner {
             Ok(((**y).clone(), Expr::UnaryOp(UnaryOpKind::Not, y.clone())))
         } else {
-            Ok((Expr::UnaryOp(UnaryOpKind::Not, Box::new(inner.clone())), inner))
+            Ok((
+                Expr::UnaryOp(UnaryOpKind::Not, Box::new(inner.clone())),
+                inner,
+            ))
         }
     }
 
@@ -3000,7 +3131,9 @@ impl<'a> Parser<'a> {
     /// 2026-07-29: Parse a single segment after :=: either { examples } or identifier.
     /// Returns (examples, ref_name, ref_tolerance) for a derivation segment,
     /// or Ok(None) for the last segment when the next token isn't := or {.
-    fn parse_derivation_segment(&mut self) -> Result<Option<(Vec<DerivationExample>, Option<String>, Option<f64>)>, SyntaxError> {
+    fn parse_derivation_segment(
+        &mut self,
+    ) -> Result<Option<(Vec<DerivationExample>, Option<String>, Option<f64>)>, SyntaxError> {
         if self.check(&Token::LBrace) {
             self.expect(Token::LBrace)?;
             let mut examples = Vec::new();
@@ -3018,8 +3151,10 @@ impl<'a> Parser<'a> {
             if self.eat(&Token::LBracket) {
                 self.expect(Token::Identifier("tol".into())).ok();
                 self.eat(&Token::Colon);
-                ref_tolerance = self.parse_expression().ok().and_then(|e| {
-                    match e { Expr::Float(f) => Some(f), Expr::Decimal(n) => Some(n as f64), _ => None }
+                ref_tolerance = self.parse_expression().ok().and_then(|e| match e {
+                    Expr::Float(f) => Some(f),
+                    Expr::Decimal(n) => Some(n as f64),
+                    _ => None,
                 });
                 self.eat(&Token::RBracket);
             }
@@ -3043,7 +3178,7 @@ impl<'a> Parser<'a> {
     fn parse_isr_handler(&mut self) -> Result<IsrHandler, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'isr'
-        // Optional <mechanism> — explicit beats configured.
+                        // Optional <mechanism> — explicit beats configured.
         let mechanism = if self.eat(&Token::Lt) {
             let mech = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3067,18 +3202,28 @@ impl<'a> Parser<'a> {
         let contract = self.parse_contract()?;
         let body = self.parse_block()?;
         self.eat(&Token::Semicolon);
-        let span = self.tokens.get(start)
+        let span = self
+            .tokens
+            .get(start)
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(IsrHandler { mechanism, vector, name, params, contract, body, span })
+        Ok(IsrHandler {
+            mechanism,
+            vector,
+            name,
+            params,
+            contract,
+            body,
+            span,
+        })
     }
 
     /// 2026-07-29: Parse asm<target> name(args) -> T { "instr"; "instr"; };
     fn parse_asm_fn(&mut self) -> Result<AsmFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'asm'
-        // expect '<'
+                        // expect '<'
         self.expect(Token::Lt)?;
         // expect target identifier
         let target = self.expect_identifier()?;
@@ -3107,11 +3252,21 @@ impl<'a> Parser<'a> {
         self.expect(Token::RBrace)?;
         // expect ';'
         self.eat(&Token::Semicolon);
-        let span = self.tokens.get(start)
+        let span = self
+            .tokens
+            .get(start)
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(AsmFn { target, name, params, ret_type, contract, body, span })
+        Ok(AsmFn {
+            target,
+            name,
+            params,
+            ret_type,
+            contract,
+            body,
+            span,
+        })
     }
 
     /// 2026-07-29: Parse the body of an asm block: string literals separated by semicolons.
@@ -3134,8 +3289,8 @@ impl<'a> Parser<'a> {
     fn parse_bad_fn(&mut self, bootstrap: bool) -> Result<BadFn, SyntaxError> {
         let start = self.pos;
         self.advance(); // consume 'bad'
-        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
-        // explicit target marker (D26 disclosure); absent = host triple.
+                        // 2026-10-01 (bad-ptx-family plan M2): `bad<ptx> fn` — the
+                        // explicit target marker (D26 disclosure); absent = host triple.
         let target = if self.eat(&Token::Lt) {
             let t = self.expect_identifier()?;
             self.expect(Token::Gt)?;
@@ -3159,44 +3314,72 @@ impl<'a> Parser<'a> {
         // Capture raw body text between { and } — preserve whitespace
         // exactly as written (the .bad body is hand-scheduled asm).
         self.expect(Token::LBrace)?;
-        let brace_start = self.tokens.get(self.pos - 1)
+        let brace_start = self
+            .tokens
+            .get(self.pos - 1)
             .map(|(_, r)| r.end)
             .unwrap_or(0);
         let mut depth = 1u32;
         while depth > 0 {
             match self.peek() {
-                Some(Token::LBrace) => { self.advance(); depth += 1; }
+                Some(Token::LBrace) => {
+                    self.advance();
+                    depth += 1;
+                }
                 Some(Token::RBrace) => {
                     depth -= 1;
-                    if depth > 0 { self.advance(); }
+                    if depth > 0 {
+                        self.advance();
+                    }
                 }
                 None => {
                     return Err(SyntaxError::UnexpectedToken {
                         expected: "}".to_string(),
                         found: "end of file".to_string(),
-                        span: self.make_span(self.tokens.get(self.pos)
-                            .map(|(_, s)| s.clone()).unwrap_or(0..0)),
+                        span: self.make_span(
+                            self.tokens
+                                .get(self.pos)
+                                .map(|(_, s)| s.clone())
+                                .unwrap_or(0..0),
+                        ),
                     });
                 }
-                _ => { self.advance(); }
+                _ => {
+                    self.advance();
+                }
             }
         }
         // The matching } is at self.pos now; its start is the end of the body.
-        let body_end = self.tokens.get(self.pos)
+        let body_end = self
+            .tokens
+            .get(self.pos)
             .map(|(_, r)| r.start)
             .unwrap_or(brace_start);
         let body = self.source[brace_start..body_end].to_string();
         self.advance(); // consume closing }
         self.eat(&Token::Semicolon);
-        let span = self.tokens.get(start)
+        let span = self
+            .tokens
+            .get(start)
             .and_then(|(_, s1)| self.tokens.get(self.pos - 1).map(|(_, s2)| (s1, s2)))
             .map(|(s1, s2)| Span::new(s1.start, s2.end, 0, 0))
             .unwrap_or(Span::new(0, 0, 0, 0));
-        Ok(BadFn { name, params, ret_type, contract, body, bootstrap, target, span })
+        Ok(BadFn {
+            name,
+            params,
+            ret_type,
+            contract,
+            body,
+            bootstrap,
+            target,
+            span,
+        })
     }
 
     fn parse_derivation_block(&mut self) -> Result<Option<DerivationBlock>, SyntaxError> {
-        let colon_eq_span = self.tokens.get(self.pos)
+        let colon_eq_span = self
+            .tokens
+            .get(self.pos)
             .map(|(_, s)| s.clone())
             .unwrap_or(0..0);
         if !self.eat(&Token::ColonEq) {
@@ -3222,7 +3405,9 @@ impl<'a> Parser<'a> {
                 chain.push(ChainSegment::Ref(name));
             }
         } else {
-            return self.error_at_current("expected '{' for examples or identifier for reference function after ':='");
+            return self.error_at_current(
+                "expected '{' for examples or identifier for reference function after ':='",
+            );
         }
 
         // Parse additional segments
@@ -3231,10 +3416,14 @@ impl<'a> Parser<'a> {
                 if !ex.is_empty() {
                     // Standalone examples block (no ref): := { ex }
                     chain.push(ChainSegment::Derivation(Box::new(DerivationBlock {
-                        examples: ex, synthesized: None,
-                        postcondition: None, precondition: None,
-                        ref_name: None, ref_tolerance: None,
-                        chain: vec![], span: crate::errors::Span::dummy(),
+                        examples: ex,
+                        synthesized: None,
+                        postcondition: None,
+                        precondition: None,
+                        ref_name: None,
+                        ref_tolerance: None,
+                        chain: vec![],
+                        span: crate::errors::Span::dummy(),
                     })));
                 } else if let Some(name) = rn {
                     chain.push(ChainSegment::Ref(name));
@@ -3246,7 +3435,9 @@ impl<'a> Parser<'a> {
 
         // Contract parsing: [[post], [pre][post], [pre]]
         let (precondition, postcondition) = if self.check(&Token::LBracket) {
-            let next_is_bracket = self.tokens.get(self.pos + 1)
+            let next_is_bracket = self
+                .tokens
+                .get(self.pos + 1)
                 .map(|(t, _)| matches!(t, Token::LBracket))
                 .unwrap_or(false);
             if next_is_bracket {
@@ -3280,7 +3471,11 @@ impl<'a> Parser<'a> {
             (None, None)
         };
 
-        let end = self.tokens.get(self.pos).map(|(_, s)| s.start).unwrap_or(colon_eq_span.start + 2);
+        let end = self
+            .tokens
+            .get(self.pos)
+            .map(|(_, s)| s.start)
+            .unwrap_or(colon_eq_span.start + 2);
         let span = Span::new(colon_eq_span.start, end, 0, 0);
         Ok(Some(DerivationBlock {
             examples,
@@ -3350,7 +3545,7 @@ impl<'a> Parser<'a> {
     /// 2026-07-14: Parse: type Name : Parent { slot; slot; }
     fn parse_type_or_group(&mut self) -> Result<Box<TypeDef>, SyntaxError> {
         self.pos += 1; // consume `type` token
-        // 2026-07-16: All type names are Token::Identifier after Type token removal.
+                       // 2026-07-16: All type names are Token::Identifier after Type token removal.
         let name = self.expect_identifier()?;
         // 2026-07-20: Parse type parameters: type List<T: String, V>
         let type_params = self.parse_type_params()?;
@@ -3413,7 +3608,7 @@ impl<'a> Parser<'a> {
                     self.eat(&Token::Semicolon);
                 } else if self.check(&Token::Op) {
                     self.pos += 1; // consume 'op' — expect_identifier would
-                    // otherwise accept the keyword itself as the name
+                                   // otherwise accept the keyword itself as the name
                     self.parse_op_definition(&mut op_bindings, None)?;
                 } else {
                     return self.error_at_current("expected 'defn' or 'op' in impl block");
@@ -3663,14 +3858,20 @@ impl<'a> Parser<'a> {
             return self.error_at_current(&format!(
                 "{} '{}' declares {} pin(s) but no reference clause — every schematic symbol \
                  needs a reference-designator prefix; add e.g. reference \"X\";",
-                form, name, pins.len()
+                form,
+                name,
+                pins.len()
             ));
         }
         Ok(())
     }
 
     /// 2026-07-24: Parse `type Name [ : [Parent] [Protocol] ] { body }`.
-    fn parse_type_body(&mut self, name: String, type_params: Vec<crate::ast::top::TypeParam>) -> Result<Box<TypeDef>, SyntaxError> {
+    fn parse_type_body(
+        &mut self,
+        name: String,
+        type_params: Vec<crate::ast::top::TypeParam>,
+    ) -> Result<Box<TypeDef>, SyntaxError> {
         let mut parent: Option<Box<Expr>> = None;
         let mut protocol: Option<String> = None;
         let mut traits: Vec<String> = Vec::new();
@@ -3717,7 +3918,8 @@ impl<'a> Parser<'a> {
                             self.pos += 1; // consume '<'
                             let variant = self.expect_identifier()?;
                             if !self.eat_type_close() {
-                                return self.error_at_current("expected '>' in protocol variant base");
+                                return self
+                                    .error_at_current("expected '>' in protocol variant base");
                             }
                             protocol = Some(format!("{}<{}>", pname, variant));
                         } else if has_args {
@@ -3738,7 +3940,11 @@ impl<'a> Parser<'a> {
                             traits.push(pname);
                         }
                     }
-                    _ => return self.error_at_current("expected a parent, trait, or protocol hashword after ':'"),
+                    _ => {
+                        return self.error_at_current(
+                            "expected a parent, trait, or protocol hashword after ':'",
+                        )
+                    }
                 }
                 if !self.eat(&Token::Comma) {
                     break;
@@ -3764,7 +3970,7 @@ impl<'a> Parser<'a> {
         if self.eat(&Token::LBrace) {
             // 2026-09-24 (SPST modes): component header clauses share one
             // dispatch so the type-body scanner does not grow branchy again.
-        let mut targets = TypeBodyTargets {
+            let mut targets = TypeBodyTargets {
                 hold_laws: &mut hold_laws,
                 modes: &mut modes,
                 pins: &mut pins,
@@ -3792,7 +3998,11 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Colon)?;
                 let slot_ty = self.parse_type()?;
                 self.eat(&Token::Semicolon);
-                slots.push(TypeDefSlot { name: slot_name, ty: slot_ty, bit_range: None });
+                slots.push(TypeDefSlot {
+                    name: slot_name,
+                    ty: slot_ty,
+                    bit_range: None,
+                });
             }
             self.expect(Token::RBrace)?;
         }
@@ -3848,7 +4058,11 @@ impl<'a> Parser<'a> {
     ///   op Add(Int): int_add(#Lh, #Rh);
     ///   op Parse(Decimal, pre:"0x"): parse_hex(#Lh);
     ///   op Parse(Decimal, suf:"h"): to_f16(#Lh);
-    fn parse_op_definition(&mut self, op_bindings: &mut Vec<OperatorBinding>, members: Option<&mut Vec<crate::ast::TopLevel>>) -> Result<(), SyntaxError> {
+    fn parse_op_definition(
+        &mut self,
+        op_bindings: &mut Vec<OperatorBinding>,
+        members: Option<&mut Vec<crate::ast::TopLevel>>,
+    ) -> Result<(), SyntaxError> {
         let name = self.expect_identifier()?;
         // 2026-08-12 (Iterable protocol, op-as-member): `op Name(params) -> Ret
         // { body }` — the operator IS a defn-shaped member (SPEC §15.2).
@@ -3866,7 +4080,10 @@ impl<'a> Parser<'a> {
                     Some(Token::Identifier(_)) => {
                         // `i: Int` parameter list → op-as-member; a bare type or
                         // discriminator (`Decimal, pre:"0x"`) → legacy form.
-                        matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Colon))
+                        matches!(
+                            self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                            Some(Token::Colon)
+                        )
                     }
                     _ => false,
                 };
@@ -3915,12 +4132,20 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Colon)?;
                 let val = self.expect_string()?;
                 match key.as_str() {
-                    "pre" => { pre = Some(val); }
-                    "suf" => { suf = Some(val); }
-                    "reg" => { reg = Some(val); }
+                    "pre" => {
+                        pre = Some(val);
+                    }
+                    "suf" => {
+                        suf = Some(val);
+                    }
+                    "reg" => {
+                        reg = Some(val);
+                    }
                     _ => {
                         let msg = format!(
-                            "unknown discriminator '{}', expected 'pre', 'suf', or 'reg'", key);
+                            "unknown discriminator '{}', expected 'pre', 'suf', or 'reg'",
+                            key
+                        );
                         return self.error_at_current(&msg);
                     }
                 }
@@ -4028,16 +4253,34 @@ impl<'a> Parser<'a> {
         self.expect(Token::RParen)?;
         self.expect(Token::Semicolon)?;
         let expr = Expr::Call(fn_name, args, None);
-        op_bindings.push(OperatorBinding { name, protocol_variant, pre, suf, reg, expr, trusted_axiom: false, span: None });
+        op_bindings.push(OperatorBinding {
+            name,
+            protocol_variant,
+            pre,
+            suf,
+            reg,
+            expr,
+            trusted_axiom: false,
+            span: None,
+        });
         Ok(())
     }
 
     /// 2026-07-26: Parse a hash marker (#Lh, #Rh, #T) or an identifier.
     fn parse_hash_marker(&mut self) -> Result<Expr, SyntaxError> {
         match self.peek() {
-            Some(Token::HashL) => { self.pos += 1; Ok(Expr::Identifier("#Lh".to_string())) }
-            Some(Token::HashR) => { self.pos += 1; Ok(Expr::Identifier("#Rh".to_string())) }
-            Some(Token::HashT) => { self.pos += 1; Ok(Expr::Identifier("#T".to_string())) }
+            Some(Token::HashL) => {
+                self.pos += 1;
+                Ok(Expr::Identifier("#Lh".to_string()))
+            }
+            Some(Token::HashR) => {
+                self.pos += 1;
+                Ok(Expr::Identifier("#Rh".to_string()))
+            }
+            Some(Token::HashT) => {
+                self.pos += 1;
+                Ok(Expr::Identifier("#T".to_string()))
+            }
             _ => {
                 let ident = self.expect_identifier()?;
                 Ok(Expr::Identifier(ident))
@@ -4049,14 +4292,16 @@ impl<'a> Parser<'a> {
     /// Rejects symbols that conflict with language operators or syntax.
     fn validate_discriminator(&self, val: &str) -> Result<(), crate::errors::SyntaxError> {
         const FORBIDDEN: &[&str] = &[
-            "#", "!", "@", "&", "$", "(", ")", "[", "]", "<", ">",
-            "*", ",", ";", ":", "=", "~", "%", "{", "}", "\"", "'",
-            "|", "\\",
+            "#", "!", "@", "&", "$", "(", ")", "[", "]", "<", ">", "*", ",", ";", ":", "=", "~",
+            "%", "{", "}", "\"", "'", "|", "\\",
         ];
         for sym in FORBIDDEN {
             if val.contains(sym) {
                 return Err(crate::errors::SyntaxError::InvalidExpression {
-                    reason: format!("invalid discriminator '{}': symbol '{}' is reserved by the language", val, sym),
+                    reason: format!(
+                        "invalid discriminator '{}': symbol '{}' is reserved by the language",
+                        val, sym
+                    ),
                     span: crate::errors::Span::new(0, 0, 0, 0),
                 });
             }
@@ -4179,8 +4424,8 @@ impl<'a> Parser<'a> {
             }
             // 2026-09-21 (E12/E13): boolean spec keys — `true`/`false`
             // lex as dedicated Bool tokens, not identifiers.
-            "no_connect" | "supply" | "return" | "decoupler" | "can_drive"
-            | "control" | "switchable" | "wired_and" | "pull_up" | "series_part" | "bistable" => {
+            "no_connect" | "supply" | "return" | "decoupler" | "can_drive" | "control"
+            | "switchable" | "wired_and" | "pull_up" | "series_part" | "bistable" => {
                 return self.parse_boolean_spec(name, key, metadata);
             }
             // 2026-09-21 (E13): the stated convention value — a string
@@ -4214,7 +4459,12 @@ impl<'a> Parser<'a> {
             }
             // Max-current envelope (Phase 4) + E8 drive_current (same shape).
             "max_current" | "drive_current" => {
-                return parse_qualified_envelope_spec(self, key, crate::ast::QuantityDim::Amp, metadata)
+                return parse_qualified_envelope_spec(
+                    self,
+                    key,
+                    crate::ast::QuantityDim::Amp,
+                    metadata,
+                )
             }
             // 2026-09-14 (Matrix type plan): shape keys accept an INTEGER
             // (fixed shape) or an IDENTIFIER referencing a type parameter
@@ -4245,7 +4495,9 @@ impl<'a> Parser<'a> {
         metadata: &mut std::collections::HashMap<String, PropertyValue>,
     ) -> Result<(), SyntaxError> {
         let dimension = match self.peek() {
-            Some(Token::Identifier(dim)) if crate::parser::quantity::parse_unit_suffix(dim).is_some() => {
+            Some(Token::Identifier(dim))
+                if crate::parser::quantity::parse_unit_suffix(dim).is_some() =>
+            {
                 Some(dim.clone())
             }
             _ => None,
@@ -4272,13 +4524,18 @@ impl<'a> Parser<'a> {
             let Some(crate::parser::quantity::UnitSuffix::Explicit { scale, dim }) =
                 crate::parser::quantity::parse_unit_suffix(unit)
             else {
-                return self.error_at_current(&format!(
-                    "'{unit}' is not an ASCII unit for spec {name}"
-                ));
+                return self
+                    .error_at_current(&format!("'{unit}' is not an ASCII unit for spec {name}"));
             };
             self.pos += 1;
             let key = name.to_lowercase();
-            metadata.insert(key, PropertyValue::Quantity { si: value * scale, dimension: dim });
+            metadata.insert(
+                key,
+                PropertyValue::Quantity {
+                    si: value * scale,
+                    dimension: dim,
+                },
+            );
             self.eat(&Token::Semicolon);
             return Ok(());
         }
@@ -4335,8 +4592,7 @@ impl<'a> Parser<'a> {
         // The cursor is on the number; the unit identifier is adjacent.
         // Diagnose a non-ASCII/wrong suffix before the generic quantity path.
         if let Some((Token::Identifier(suffix), _)) = self.tokens.get(number_pos + 1) {
-            let resistance =
-                crate::parser::quantity::is_resistance_suffix(suffix);
+            let resistance = crate::parser::quantity::is_resistance_suffix(suffix);
             if !resistance {
                 return self.error_at_current(&format!(
                     "spec Resistance needs an ASCII ohm unit — write `{suffix}` as e.g. `330R`, `4k7`, or `4.7kOhm`"
@@ -4407,13 +4663,22 @@ impl<'a> Parser<'a> {
         // until one exists, never a silent no-op.
         if dim != crate::ast::QuantityDim::Watt
             && matches!(self.peek(), Some(Token::Identifier(_)))
-            && matches!(self.tokens.get(self.pos + 1).map(|(t, _)| t), Some(Token::Colon))
+            && matches!(
+                self.tokens.get(self.pos + 1).map(|(t, _)| t),
+                Some(Token::Colon)
+            )
         {
             loop {
                 let pin = self.expect_identifier()?;
                 self.expect(Token::Colon)?;
                 let (si, resolved) = self.parse_spec_quantity(dim)?;
-                metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+                metadata.insert(
+                    format!("{key}:{pin}"),
+                    PropertyValue::Quantity {
+                        si,
+                        dimension: resolved,
+                    },
+                );
                 if !self.eat(&Token::Comma) {
                     break;
                 }
@@ -4443,7 +4708,13 @@ impl<'a> Parser<'a> {
                 "spec {name} needs an explicit ASCII {unit_hint} unit (e.g. `{example}`) or `any` to declare it unrated",
             ));
         }
-        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
+        metadata.insert(
+            key.into(),
+            PropertyValue::Quantity {
+                si,
+                dimension: resolved,
+            },
+        );
         self.eat(&Token::Semicolon);
         Ok(())
     }
@@ -4470,11 +4741,9 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 v
             }
-            _ => {
-                return self.error_at_current(
-                    "expected a quantity (a number with an optional unit suffix, e.g. `2mA` or `100n`)",
-                )
-            }
+            _ => return self.error_at_current(
+                "expected a quantity (a number with an optional unit suffix, e.g. `2mA` or `100n`)",
+            ),
         };
         // An identifier after the number MUST be a unit suffix — a typo is
         // an error, never a silent bare number.
@@ -4630,7 +4899,11 @@ impl<'a> Parser<'a> {
                 self.expect(Token::Colon)?;
                 let slot_ty = self.parse_type()?;
                 self.eat(&Token::Semicolon);
-                slots.push(TypeDefSlot { name: slot_name, ty: slot_ty, bit_range: None });
+                slots.push(TypeDefSlot {
+                    name: slot_name,
+                    ty: slot_ty,
+                    bit_range: None,
+                });
             }
             self.expect(Token::RBrace)?;
         }
@@ -4639,13 +4912,31 @@ impl<'a> Parser<'a> {
             record_atomic_fields(&mut metadata, &atomic_slots);
         }
         Ok(Box::new(TypeDef {
-            name, type_params, parent: None,
+            name,
+            type_params,
+            parent: None,
             protocol: None,
             traits: vec![],
-            ports_in, ports_out,
-            bit_range: None, span: None, coll, seq,
+            ports_in,
+            ports_out,
+            bit_range: None,
+            span: None,
+            coll,
+            seq,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None, metadata, projections: vec![], bindings: vec![], operators, op_bindings, constraints: vec![], members, hold_laws, modes, span: None,
+                slots,
+                pins: vec![],
+                reference: None,
+                metadata,
+                projections: vec![],
+                bindings: vec![],
+                operators,
+                op_bindings,
+                constraints: vec![],
+                members,
+                hold_laws,
+                modes,
+                span: None,
             },
         }))
     }
@@ -4690,11 +4981,26 @@ impl<'a> Parser<'a> {
                         // 2026-09-22: an ordering keyword AFTER `atomic` is a
                         // real `atomic:` ordering, not a dangling field name.
                         match self.peek() {
-                            Some(Token::Relaxed) => { self.pos += 1; "relaxed".to_string() }
-                            Some(Token::Acquire) => { self.pos += 1; "acquire".to_string() }
-                            Some(Token::Release) => { self.pos += 1; "release".to_string() }
-                            Some(Token::Bartered) => { self.pos += 1; "bartered".to_string() }
-                            Some(Token::Seq) => { self.pos += 1; "seq".to_string() }
+                            Some(Token::Relaxed) => {
+                                self.pos += 1;
+                                "relaxed".to_string()
+                            }
+                            Some(Token::Acquire) => {
+                                self.pos += 1;
+                                "acquire".to_string()
+                            }
+                            Some(Token::Release) => {
+                                self.pos += 1;
+                                "release".to_string()
+                            }
+                            Some(Token::Bartered) => {
+                                self.pos += 1;
+                                "bartered".to_string()
+                            }
+                            Some(Token::Seq) => {
+                                self.pos += 1;
+                                "seq".to_string()
+                            }
                             _ => "seq".to_string(),
                         }
                     });
@@ -4731,11 +5037,20 @@ impl<'a> Parser<'a> {
         if !union {
             loop {
                 match self.tokens.get(self.pos).map(|(t, _)| t) {
-                    Some(Token::Seq) => { seq = true; self.pos += 1; }
-                    Some(Token::Pack) => { pack = true; self.pos += 1; }
+                    Some(Token::Seq) => {
+                        seq = true;
+                        self.pos += 1;
+                    }
+                    Some(Token::Pack) => {
+                        pack = true;
+                        self.pos += 1;
+                    }
                     // 2026-08-15 (coll plan): `coll` is order-independent with
                     // `pack`/`seq` (`pack coll struct`, `coll pack struct`).
-                    Some(Token::Coll) => { coll = true; self.pos += 1; }
+                    Some(Token::Coll) => {
+                        coll = true;
+                        self.pos += 1;
+                    }
                     _ => break,
                 }
             }
@@ -4747,13 +5062,15 @@ impl<'a> Parser<'a> {
         // 2026-07-31: Generic struct: struct ListBuffer<T> { ... }.
         let type_params = self.parse_type_params()?;
         let mut fields = Vec::new();
-        let mut annotations: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut annotations: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         // 2026-08-13 (layout-keywords plan Phase 5): `atomic` field names.
         let mut atomic_fields = Vec::new();
         // 2026-08-13 (layout-keywords plan): structs gain physical-layout
         // metadata (`spec Bits`, `spec Align`, `spec Bytes`, `spec MaxBits`,
         // `spec Endian`) consumed at StaticStruct registration (llvm/mod.rs).
-        let mut metadata: std::collections::HashMap<String, PropertyValue> = std::collections::HashMap::new();
+        let mut metadata: std::collections::HashMap<String, PropertyValue> =
+            std::collections::HashMap::new();
         if self.eat(&Token::LBrace) {
             while !self.check(&Token::RBrace) && !self.is_at_end() {
                 // spec PascalCase: value; — declared physical layout;
@@ -4774,9 +5091,10 @@ impl<'a> Parser<'a> {
                 let field_type = self.parse_type()?;
                 self.eat(&Token::Semicolon);
                 fields.push((field_name.clone(), field_type));
-                if let Some(ordering) = field_prefixes.iter().find_map(|a| {
-                    a.strip_prefix("atomic:").map(|o| o.to_string())
-                }) {
+                if let Some(ordering) = field_prefixes
+                    .iter()
+                    .find_map(|a| a.strip_prefix("atomic:").map(|o| o.to_string()))
+                {
                     atomic_fields.push(format!("{}:{}", field_name, ordering));
                 }
                 // `atomic` is carried by the structured `atomic_fields`
@@ -4795,7 +5113,10 @@ impl<'a> Parser<'a> {
         }
         self.eat(&Token::Semicolon);
         if !annotations.is_empty() {
-            metadata.insert("annotations".to_string(), crate::ast::PropertyValue::String(format!("{:?}", annotations)));
+            metadata.insert(
+                "annotations".to_string(),
+                crate::ast::PropertyValue::String(format!("{:?}", annotations)),
+            );
         }
         if !atomic_fields.is_empty() {
             record_atomic_fields(&mut metadata, &atomic_fields);
@@ -4880,7 +5201,9 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(StructDef {
-            name, type_params, fields,
+            name,
+            type_params,
+            fields,
             metadata,
             span: None,
             seq,
@@ -4921,21 +5244,41 @@ impl<'a> Parser<'a> {
                     Type::Void
                 };
                 self.eat(&Token::Comma);
-                slots.push(TypeDefSlot { name: format!("__variant_{}", variant_name), ty: variant_ty, bit_range: None });
+                slots.push(TypeDefSlot {
+                    name: format!("__variant_{}", variant_name),
+                    ty: variant_ty,
+                    bit_range: None,
+                });
             }
             self.expect(Token::RBrace)?;
         }
         self.eat(&Token::Semicolon);
         Ok(Box::new(TypeDef {
-            name, type_params, parent: None,
+            name,
+            type_params,
+            parent: None,
             protocol: None,
             traits: vec![],
-            ports_in: vec![], ports_out: vec![],
-            bit_range: None, span: None, coll: false, seq: false,
+            ports_in: vec![],
+            ports_out: vec![],
+            bit_range: None,
+            span: None,
+            coll: false,
+            seq: false,
             body: TypeDefBody {
-                slots, pins: vec![], reference: None,
+                slots,
+                pins: vec![],
+                reference: None,
                 metadata: std::collections::HashMap::new(),
-                projections: vec![], bindings: vec![], operators: vec![], op_bindings: vec![], constraints: vec![], members: vec![], hold_laws: vec![], modes: vec![], span: None,
+                projections: vec![],
+                bindings: vec![],
+                operators: vec![],
+                op_bindings: vec![],
+                constraints: vec![],
+                members: vec![],
+                hold_laws: vec![],
+                modes: vec![],
+                span: None,
             },
         }))
     }
@@ -4964,13 +5307,20 @@ impl<'a> Parser<'a> {
         let derivation = self.parse_derivation_block()?;
         let metadata = self.parse_body_metadata()?;
         Ok(TopLevel::CompileTimeDefn(Definition {
-            name, type_params, parameters,
+            name,
+            type_params,
+            parameters,
             output_type: output_type.clone(),
             outputs: vec![],
-            contract, body, metadata,
-            derivation, modifiers: vec![], annotations: vec![],
+            contract,
+            body,
+            metadata,
+            derivation,
+            modifiers: vec![],
+            annotations: vec![],
             variadic_param: self.pending_variadic.take(),
-            span: None, doc: self.take_doc(),
+            span: None,
+            doc: self.take_doc(),
         }))
     }
 
@@ -5008,21 +5358,39 @@ impl<'a> Parser<'a> {
                 value: Some(Expr::Quoted(vp.name.as_bytes().to_vec())),
             });
             Ok(TopLevel::CompileTimeTxn(Transaction {
-                name, type_params, parameters,
+                name,
+                type_params,
+                parameters,
                 output_type: output_type.clone(),
                 outputs: vec![],
-                contract, body, metadata,
-                is_reactive: true, is_async: false,
-                derivation, modifiers, span: None, variadic_param: None, doc: self.take_doc(),
+                contract,
+                body,
+                metadata,
+                is_reactive: true,
+                is_async: false,
+                derivation,
+                modifiers,
+                span: None,
+                variadic_param: None,
+                doc: self.take_doc(),
             }))
         } else {
             Ok(TopLevel::CompileTimeTxn(Transaction {
-                name, type_params, parameters,
+                name,
+                type_params,
+                parameters,
                 output_type: output_type.clone(),
                 outputs: vec![],
-                contract, body, metadata,
-                is_reactive: true, is_async: false,
-                derivation, modifiers: vec![], span: None, variadic_param: None, doc: self.take_doc(),
+                contract,
+                body,
+                metadata,
+                is_reactive: true,
+                is_async: false,
+                derivation,
+                modifiers: vec![],
+                span: None,
+                variadic_param: None,
+                doc: self.take_doc(),
             }))
         }
     }
@@ -5061,9 +5429,12 @@ impl<'a> Parser<'a> {
             {
                 name.clone()
             }
-            _ => return self.error_at_current(&format!(
-                "expected a fundamental category like 'String', got '{}'", category_type
-            )),
+            _ => {
+                return self.error_at_current(&format!(
+                    "expected a fundamental category like 'String', got '{}'",
+                    category_type
+                ))
+            }
         };
 
         // Parse optional contract [expr]
@@ -5117,12 +5488,13 @@ impl<'a> Parser<'a> {
                         // Bits is a compiler construct (Rule 19 exception) —
                         // the universal cast target (`op CastTo(Bits)`).
                         Type::Bits(_) => ("Bits".to_string(), String::new()),
-                        Type::Custom(name) if name == "Bits" => {
-                            ("Bits".to_string(), String::new())
+                        Type::Custom(name) if name == "Bits" => ("Bits".to_string(), String::new()),
+                        _ => {
+                            return self.error_at_current(&format!(
+                                "expected a protocol variant like 'String<UTF8>', got '{}'",
+                                target_type
+                            ))
                         }
-                        _ => return self.error_at_current(&format!(
-                            "expected a protocol variant like 'String<UTF8>', got '{}'", target_type
-                        )),
                     };
                     self.expect(Token::RParen)?;
                     // Check for binding: = fn_name(#Lh)
@@ -5132,17 +5504,28 @@ impl<'a> Parser<'a> {
                             PropertyValue::List(items) => {
                                 if let Some(PropertyValue::Identifier(name)) = items.first() {
                                     name.clone()
-                                } else { format!("{:?}", impl_args) }
+                                } else {
+                                    format!("{:?}", impl_args)
+                                }
                             }
                             PropertyValue::Identifier(name) => name.clone(),
                             _ => format!("{:?}", impl_args),
                         };
-                        Some(CastBinding { fn_name, param: "L".to_string() })
+                        Some(CastBinding {
+                            fn_name,
+                            param: "L".to_string(),
+                        })
                     } else {
                         None
                     };
                     self.eat(&Token::Semicolon);
-                    cast_edges.push(CastEdge { direction, target_category, target_variant, binding, trusted_axiom: is_axiom });
+                    cast_edges.push(CastEdge {
+                        direction,
+                        target_category,
+                        target_variant,
+                        binding,
+                        trusted_axiom: is_axiom,
+                    });
                 } else if item_name == "op" {
                     let op_name = self.expect_identifier()?;
                     self.expect(Token::LParen)?;
@@ -5150,7 +5533,9 @@ impl<'a> Parser<'a> {
                         let mut p = Vec::new();
                         loop {
                             p.push(self.parse_type()?);
-                            if !self.eat(&Token::Comma) { break; }
+                            if !self.eat(&Token::Comma) {
+                                break;
+                            }
                         }
                         p
                     } else {
@@ -5180,7 +5565,8 @@ impl<'a> Parser<'a> {
                     });
                 } else {
                     return self.error_at_current(&format!(
-                        "expected 'CastTo', 'CastFrom', or 'op' in protocol body, got '{}'", item_name
+                        "expected 'CastTo', 'CastFrom', or 'op' in protocol body, got '{}'",
+                        item_name
                     ));
                 }
             }
@@ -5225,7 +5611,12 @@ fn record_atomic_fields(
 ) {
     metadata.insert(
         "atomic_fields".to_string(),
-        PropertyValue::List(atomic_fields.iter().map(|n| PropertyValue::String(n.clone())).collect()),
+        PropertyValue::List(
+            atomic_fields
+                .iter()
+                .map(|n| PropertyValue::String(n.clone()))
+                .collect(),
+        ),
     );
 }
 
@@ -5266,14 +5657,26 @@ fn parse_qualified_envelope_spec(
             let pin = parser.expect_identifier()?;
             parser.expect(Token::Colon)?;
             let (si, resolved) = parser.parse_spec_quantity(dim)?;
-            metadata.insert(format!("{key}:{pin}"), PropertyValue::Quantity { si, dimension: resolved });
+            metadata.insert(
+                format!("{key}:{pin}"),
+                PropertyValue::Quantity {
+                    si,
+                    dimension: resolved,
+                },
+            );
             if !parser.eat(&Token::Comma) {
                 break;
             }
         }
     } else {
         let (si, resolved) = parser.parse_spec_quantity(dim)?;
-        metadata.insert(key.into(), PropertyValue::Quantity { si, dimension: resolved });
+        metadata.insert(
+            key.into(),
+            PropertyValue::Quantity {
+                si,
+                dimension: resolved,
+            },
+        );
     }
     // Spec arms own their terminator (parse_envelope_spec's convention) —
     // the type-body loop expects the next item, not a stray `;`.
@@ -5394,10 +5797,18 @@ mod tests {
         };
         assert_eq!(c.name, "UartTop");
         assert_eq!(c.extern_source.as_deref(), Some("rtl/uart.v"));
-        assert!(c.fields.is_empty() && c.transactions.is_empty(),
-            "extern cells have no body");
-        assert_eq!(c.ports_in, vec![("rx".to_string(), crate::ast::Type::int())]);
-        assert_eq!(c.ports_out, vec![("byte_out".to_string(), crate::ast::Type::int())]);
+        assert!(
+            c.fields.is_empty() && c.transactions.is_empty(),
+            "extern cells have no body"
+        );
+        assert_eq!(
+            c.ports_in,
+            vec![("rx".to_string(), crate::ast::Type::int())]
+        );
+        assert_eq!(
+            c.ports_out,
+            vec![("byte_out".to_string(), crate::ast::Type::int())]
+        );
     }
 
     #[test]
@@ -5415,7 +5826,9 @@ mod tests {
     fn test_data_table_1d_parses_row_major_cells() {
         // `data r: Int[4] = [ 10, 20, 30, 40 ];` — dims + declaration order.
         let tl = parse_top("data r: Int[4] = [ 10, 20, 30, 40 ];").unwrap();
-        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        let crate::ast::TopLevel::Data(t) = tl else {
+            panic!("expected Data, got {:?}", tl)
+        };
         assert_eq!(t.name, "r");
         assert_eq!(t.dims, vec![4]);
         assert_eq!(t.cells, vec![10, 20, 30, 40]);
@@ -5425,7 +5838,9 @@ mod tests {
     fn test_data_table_2d_parses_row_major_cells() {
         // `data m: Int[2][3]` — chained dims, flattened row-major cells.
         let tl = parse_top("data m: Int[2][3] = [ [1, 2, 3], [4, 5, 6] ];").unwrap();
-        let crate::ast::TopLevel::Data(t) = tl else { panic!("expected Data, got {:?}", tl) };
+        let crate::ast::TopLevel::Data(t) = tl else {
+            panic!("expected Data, got {:?}", tl)
+        };
         assert_eq!(t.name, "m");
         assert_eq!(t.dims, vec![2, 3]);
         assert_eq!(t.cells, vec![1, 2, 3, 4, 5, 6]);
@@ -5463,9 +5878,9 @@ mod tests {
         assert!(err.contains("dimension of 0"), "{err}");
     }
 
+    use crate::ast::top::{CastDirection, ProtocolDef};
     use crate::lexer::tokenize;
     use crate::parser::Parser;
-    use crate::ast::top::{CastDirection, ProtocolDef};
 
     fn parse_type(src: &str) -> Result<crate::ast::Type, crate::errors::SyntaxError> {
         let tokens = tokenize(src).unwrap();
@@ -5491,17 +5906,26 @@ mod tests {
         let ty = parse_type("Float<Posit>").unwrap();
         assert_eq!(
             ty,
-            crate::ast::Type::Applied("Float".into(), vec![crate::ast::Type::Custom("Posit".into())])
+            crate::ast::Type::Applied(
+                "Float".into(),
+                vec![crate::ast::Type::Custom("Posit".into())]
+            )
         );
         let ty = parse_type("String<C_String>").unwrap();
         assert_eq!(
             ty,
-            crate::ast::Type::Applied("String".into(), vec![crate::ast::Type::Custom("C_String".into())])
+            crate::ast::Type::Applied(
+                "String".into(),
+                vec![crate::ast::Type::Custom("C_String".into())]
+            )
         );
         let ty = parse_type("Char<ASCII>").unwrap();
         assert_eq!(
             ty,
-            crate::ast::Type::Applied("Char".into(), vec![crate::ast::Type::Custom("ASCII".into())])
+            crate::ast::Type::Applied(
+                "Char".into(),
+                vec![crate::ast::Type::Custom("ASCII".into())]
+            )
         );
     }
 
@@ -5510,16 +5934,24 @@ mod tests {
         // A fundamental-with-variant in the parent clause is the protocol
         // parent — NOT a trait (fundamentals take no generic args).
         let tl = parse_top("type CStr: String<C_String> { };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_eq!(td.protocol.as_deref(), Some("String<C_String>"));
-        assert!(td.traits.is_empty(), "variant parent must not leak into traits: {:?}", td.traits);
+        assert!(
+            td.traits.is_empty(),
+            "variant parent must not leak into traits: {:?}",
+            td.traits
+        );
     }
 
     #[test]
     fn test_generic_trait_parent_still_routes_to_traits() {
         // Non-fundamental with args stays a trait assertion.
         let tl = parse_top("type Stack<T>: Comparable<T> { };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert!(td.protocol.is_none());
         assert_eq!(td.traits, vec!["Comparable".to_string()]);
     }
@@ -5581,7 +6013,9 @@ mod tests {
         // 2026-08-13 (layout-keywords plan): `spec Bits: 4` maps to the
         // lowercase metadata key `bits` (same read path as `!> bits`).
         let tl = parse_top("type W4: Int { spec Bits: 4; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         match td.body.metadata.get("bits") {
             Some(crate::ast::PropertyValue::Int(4)) => {}
             other => panic!("expected bits=4, got {:?}", other),
@@ -5608,17 +6042,23 @@ mod tests {
         // the key's dimension (the quantities doctrine: quantities are
         // physics, written bare).
         let tl = parse_top("type C { spec Decouple: 100n; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_decouple_farad(&td, 100e-9);
     }
 
     #[test]
     fn test_spec_quantity_prefix_and_base() {
         let tl = parse_top("type C { spec Decouple: 10uF; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_decouple_farad(&td, 10e-6);
         let tl = parse_top("type C { spec Decouple: 2.2uF; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_decouple_farad(&td, 2.2e-6);
     }
 
@@ -5627,7 +6067,9 @@ mod tests {
         // A bare number is the base unit of the key's dimension — 100
         // farads (valid, if odd).
         let tl = parse_top("type C { spec Decouple: 100; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_decouple_farad(&td, 100.0);
     }
 
@@ -5635,7 +6077,9 @@ mod tests {
     fn test_spec_quantity_e_series_fraction() {
         // `4k7` — the E-series fraction: 4.7 kilo = 4700.
         let tl = parse_top("type C { spec Decouple: 4k7; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_decouple_farad(&td, 4700.0);
     }
 
@@ -5663,20 +6107,25 @@ mod tests {
         // the Length dimension in SI (metres); `mA` must still resolve via
         // the prefix path (the `m` length addition must not break it).
         use crate::parser::quantity::{parse_unit_suffix, UnitSuffix};
-        let expect = |suffix: &str, si: f64, dim: crate::ast::QuantityDim| {
-            match parse_unit_suffix(suffix) {
+        let expect =
+            |suffix: &str, si: f64, dim: crate::ast::QuantityDim| match parse_unit_suffix(suffix) {
                 Some(UnitSuffix::Explicit { scale, dim: got }) => {
                     assert_eq!(got, dim, "suffix {suffix}");
-                    assert!((scale - si).abs() < 1e-12, "suffix {suffix}: {scale} vs {si}");
+                    assert!(
+                        (scale - si).abs() < 1e-12,
+                        "suffix {suffix}: {scale} vs {si}"
+                    );
                 }
                 other => panic!("suffix {suffix}: expected Explicit, got {other:?}"),
-            }
-        };
+            };
         expect("m", 1.0, crate::ast::QuantityDim::Length);
         expect("mm", 1e-3, crate::ast::QuantityDim::Length);
         expect("cm", 1e-2, crate::ast::QuantityDim::Length);
         expect("mA", 1e-3, crate::ast::QuantityDim::Amp);
-        assert!(parse_unit_suffix("mmA").is_none(), "double prefix is invalid");
+        assert!(
+            parse_unit_suffix("mmA").is_none(),
+            "double prefix is invalid"
+        );
     }
 
     #[test]
@@ -5688,19 +6137,27 @@ mod tests {
                 "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {dimension}; }};"
             );
             let tl = parse_top(&src).unwrap();
-            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            let crate::ast::TopLevel::TypeDef(td) = tl else {
+                panic!("expected TypeDef")
+            };
             assert_eq!(
                 td.body.metadata.get("resistance"),
                 Some(&crate::ast::PropertyValue::Identifier(dimension.into()))
             );
         }
 
-        for (value, expected) in [("330R", 330.0), ("4.7kR", 4700.0), ("4k7", 4700.0), ("4.7kOhm", 4700.0)] {
-            let src = format!(
-                "type R {{ pin a; pin b; reference \"R\"; spec Resistance: {value}; }};"
-            );
+        for (value, expected) in [
+            ("330R", 330.0),
+            ("4.7kR", 4700.0),
+            ("4k7", 4700.0),
+            ("4.7kOhm", 4700.0),
+        ] {
+            let src =
+                format!("type R {{ pin a; pin b; reference \"R\"; spec Resistance: {value}; }};");
             let tl = parse_top(&src).unwrap();
-            let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+            let crate::ast::TopLevel::TypeDef(td) = tl else {
+                panic!("expected TypeDef")
+            };
             match td.body.metadata.get("resistance") {
                 Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
                     assert_eq!(*dimension, crate::ast::QuantityDim::Ohm);
@@ -5715,18 +6172,14 @@ mod tests {
     fn test_spec_resistance_requires_explicit_ascii_unit() {
         // Component physics is not dimensionless. ASCII compact units are
         // valid; non-ASCII symbols are not.
-        let err = parse_top(
-            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330; };",
-        )
-        .unwrap_err();
+        let err = parse_top("type R { pin a; pin b; reference \"R\"; spec Resistance: 330; };")
+            .unwrap_err();
         assert!(
             format!("{err}").contains("explicit ASCII ohm unit"),
             "bare number: {err}"
         );
-        let err = parse_top(
-            "type R { pin a; pin b; reference \"R\"; spec Resistance: 330Ω; };",
-        )
-        .unwrap_err();
+        let err = parse_top("type R { pin a; pin b; reference \"R\"; spec Resistance: 330Ω; };")
+            .unwrap_err();
         assert!(
             !format!("{err}").contains("internal"),
             "Ω must be rejected at the quantity surface: {err}"
@@ -5748,7 +6201,9 @@ mod tests {
         let crate::ast::Statement::Let { expr, .. } = stmt.as_ref() else {
             panic!("expected let")
         };
-        let Some(expr) = expr else { panic!("expected let initializer") };
+        let Some(expr) = expr else {
+            panic!("expected let initializer")
+        };
         let crate::ast::Expr::StructLiteral { fields, specs, .. } = expr else {
             panic!("expected struct literal")
         };
@@ -5790,7 +6245,9 @@ mod tests {
              spec ForwardVoltage: Volt; spec DynamicResistance: Ohm; };",
         )
         .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_eq!(
             td.body.metadata.get("forwardvoltage"),
             Some(&crate::ast::PropertyValue::Identifier("Volt".into()))
@@ -5805,7 +6262,9 @@ mod tests {
              spec ForwardVoltage: 1.8Volt; };",
         )
         .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         match td.body.metadata.get("forwardvoltage") {
             Some(crate::ast::PropertyValue::Quantity { si, dimension }) => {
                 assert_eq!(*dimension, crate::ast::QuantityDim::Volt);
@@ -5825,8 +6284,15 @@ mod tests {
              mode open { a.current == 0Amp; b.current == 0Amp; } };",
         )
         .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        let names: Vec<_> = td.body.modes.iter().map(|mode| mode.name.as_str()).collect();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        let names: Vec<_> = td
+            .body
+            .modes
+            .iter()
+            .map(|mode| mode.name.as_str())
+            .collect();
         assert_eq!(names, ["closed", "open"]);
         assert_eq!(td.body.modes[0].facts.len(), 2);
         assert_eq!(td.body.modes[1].facts.len(), 2);
@@ -5840,26 +6306,42 @@ mod tests {
              spec Bytes: 4;\n  spec Endian: Big;\n};",
         )
         .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        assert_eq!(td.body.metadata["alignment"], crate::ast::PropertyValue::Int(2));
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        assert_eq!(
+            td.body.metadata["alignment"],
+            crate::ast::PropertyValue::Int(2)
+        );
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(12));
-        assert_eq!(td.body.metadata["maxbits"], crate::ast::PropertyValue::Int(16));
+        assert_eq!(
+            td.body.metadata["maxbits"],
+            crate::ast::PropertyValue::Int(16)
+        );
         assert_eq!(td.body.metadata["bytes"], crate::ast::PropertyValue::Int(4));
-        assert_eq!(td.body.metadata["endian"], crate::ast::PropertyValue::Identifier("Big".into()));
+        assert_eq!(
+            td.body.metadata["endian"],
+            crate::ast::PropertyValue::Identifier("Big".into())
+        );
     }
 
     #[test]
     fn test_spec_in_struct_body() {
         let tl = parse_top("struct Header { spec Bytes: 2; tag: Int; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert_eq!(s.metadata["bytes"], crate::ast::PropertyValue::Int(2));
         assert_eq!(s.fields.len(), 1);
     }
 
     #[test]
     fn test_pack_struct_flag() {
-        let tl = parse_top("pack struct Eth { dst: Bits<48>; src: Bits<48>; etype: Bits<16>; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let tl = parse_top("pack struct Eth { dst: Bits<48>; src: Bits<48>; etype: Bits<16>; };")
+            .unwrap();
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert!(s.pack, "pack flag must be set");
         assert!(!s.seq, "pack alone must not set seq");
         assert_eq!(s.fields.len(), 3);
@@ -5870,8 +6352,12 @@ mod tests {
         // `pack`/`seq` are order-independent prefix flags (plan Phase 2).
         let tl1 = parse_top("pack seq struct P { a: Bits<4>; };").unwrap();
         let tl2 = parse_top("seq pack struct P { a: Bits<4>; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s1) = tl1 else { panic!("expected StaticStruct") };
-        let crate::ast::TopLevel::StaticStruct(s2) = tl2 else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s1) = tl1 else {
+            panic!("expected StaticStruct")
+        };
+        let crate::ast::TopLevel::StaticStruct(s2) = tl2 else {
+            panic!("expected StaticStruct")
+        };
         assert!(s1.pack && s1.seq, "pack seq struct sets both flags");
         assert!(s2.pack && s2.seq, "seq pack struct sets both flags");
     }
@@ -5903,14 +6389,19 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
-        let crate::ast::TopLevel::Definition(def) = &items[0] else { panic!("expected defn") };
+        let crate::ast::TopLevel::Definition(def) = &items[0] else {
+            panic!("expected defn")
+        };
         let has_trap = def.body.iter().any(|s| match s {
-            crate::ast::Statement::Guarded(_, body) => {
-                body.iter().any(|t| matches!(t, crate::ast::Statement::Trap))
-            }
+            crate::ast::Statement::Guarded(_, body) => body
+                .iter()
+                .any(|t| matches!(t, crate::ast::Statement::Trap)),
             _ => false,
         });
-        assert!(has_trap, "trap; in a guarded body must parse to Statement::Trap");
+        assert!(
+            has_trap,
+            "trap; in a guarded body must parse to Statement::Trap"
+        );
     }
 
     #[test]
@@ -5928,11 +6419,16 @@ mod tests {
         // 2026-09-06: entries carry the ordering — plain `atomic` defaults
         // to `seq` (backward compatible with the pre-ordering backend).
         let tl = parse_top("struct Counter { atomic count: Int; other: Int; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         match s.metadata.get("atomic_fields") {
             Some(crate::ast::PropertyValue::List(entries)) => {
                 assert_eq!(entries.len(), 1);
-                assert_eq!(entries[0], crate::ast::PropertyValue::String("count:seq".into()));
+                assert_eq!(
+                    entries[0],
+                    crate::ast::PropertyValue::String("count:seq".into())
+                );
             }
             other => panic!("expected atomic_fields list, got {other:?}"),
         }
@@ -5943,11 +6439,16 @@ mod tests {
         // The `atomic` modifier also applies to obj/type body slots.
         // 2026-09-06: carrier entries carry the ordering (default `seq`).
         let tl = parse_top("type Meter: Int { atomic ticks: Int; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         match td.body.metadata.get("atomic_fields") {
             Some(crate::ast::PropertyValue::List(entries)) => {
                 assert_eq!(entries.len(), 1);
-                assert_eq!(entries[0], crate::ast::PropertyValue::String("ticks:seq".into()));
+                assert_eq!(
+                    entries[0],
+                    crate::ast::PropertyValue::String("ticks:seq".into())
+                );
             }
             other => panic!("expected atomic_fields list, got {other:?}"),
         }
@@ -5957,25 +6458,38 @@ mod tests {
     fn test_atomic_ordering_keywords_parse() {
         // 2026-09-06 (plan 2026-09-06-cpp-expressiveness.md): ordering
         // qualifiers before `atomic` — relaxed/acquire/release/bartered.
-        for (kw, ord) in [("relaxed", "relaxed"), ("acquire", "acquire"),
-                          ("release", "release"), ("bartered", "bartered")] {
+        for (kw, ord) in [
+            ("relaxed", "relaxed"),
+            ("acquire", "acquire"),
+            ("release", "release"),
+            ("bartered", "bartered"),
+        ] {
             let src = format!("struct S {{ {} atomic f: Int; }};", kw);
             let tl = parse_top(&src).unwrap();
-            let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+            let crate::ast::TopLevel::StaticStruct(s) = tl else {
+                panic!("expected StaticStruct")
+            };
             match s.metadata.get("atomic_fields") {
                 Some(crate::ast::PropertyValue::List(entries)) => {
-                    assert_eq!(entries[0],
-                        crate::ast::PropertyValue::String(format!("f:{}", ord)));
+                    assert_eq!(
+                        entries[0],
+                        crate::ast::PropertyValue::String(format!("f:{}", ord))
+                    );
                 }
                 other => panic!("expected atomic_fields list for {kw}, got {other:?}"),
             }
         }
         // `seq atomic` is the explicit default.
         let tl = parse_top("struct S { seq atomic f: Int; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         match s.metadata.get("atomic_fields") {
             Some(crate::ast::PropertyValue::List(entries)) => {
-                assert_eq!(entries[0], crate::ast::PropertyValue::String("f:seq".into()));
+                assert_eq!(
+                    entries[0],
+                    crate::ast::PropertyValue::String("f:seq".into())
+                );
             }
             other => panic!("expected atomic_fields list, got {other:?}"),
         }
@@ -5986,13 +6500,17 @@ mod tests {
         // 2026-09-06: the canonical printer re-renders the ordering keyword.
         let tl = parse_top("struct S { relaxed atomic f: Int; g: Int; };").unwrap();
         let printed = crate::ast::format_item(&tl);
-        assert!(printed.contains("relaxed atomic f: Int;"),
-            "ordering keyword must round-trip, got: {printed}");
+        assert!(
+            printed.contains("relaxed atomic f: Int;"),
+            "ordering keyword must round-trip, got: {printed}"
+        );
         // Plain `atomic` (seq default) prints without an ordering prefix.
         let tl = parse_top("struct S { atomic f: Int; };").unwrap();
         let printed = crate::ast::format_item(&tl);
-        assert!(printed.contains("atomic f: Int;") && !printed.contains("seq atomic"),
-            "seq default must not print a keyword, got: {printed}");
+        assert!(
+            printed.contains("atomic f: Int;") && !printed.contains("seq atomic"),
+            "seq default must not print a keyword, got: {printed}"
+        );
     }
 
     #[test]
@@ -6001,23 +6519,35 @@ mod tests {
         // literal, bare mechanism + named board vector, bare + literal.
         let tl = parse_top(
             "isr<arm_cortex_m> handler @ 0x1C: tim2_irq() [true][done == true] { done = true; };",
-        ).unwrap();
-        let crate::ast::TopLevel::IsrHandler(h) = tl else { panic!("expected IsrHandler") };
+        )
+        .unwrap();
+        let crate::ast::TopLevel::IsrHandler(h) = tl else {
+            panic!("expected IsrHandler")
+        };
         assert_eq!(h.mechanism.as_deref(), Some("arm_cortex_m"));
         assert_eq!(h.name, "tim2_irq");
-        assert!(matches!(h.vector, crate::ast::Expr::Decimal(28)), "0x1C parses as 28, got {:?}", h.vector);
+        assert!(
+            matches!(h.vector, crate::ast::Expr::Decimal(28)),
+            "0x1C parses as 28, got {:?}",
+            h.vector
+        );
         assert!(h.contract.explicit, "contract is mandatory");
         assert_eq!(h.body.len(), 1);
 
         let tl = parse_top(
             "isr handler @ TIM2: tim2_irq() [hits == 0][hits == 1] { hits = hits + 1; };",
-        ).unwrap();
-        let crate::ast::TopLevel::IsrHandler(h) = tl else { panic!("expected IsrHandler") };
+        )
+        .unwrap();
+        let crate::ast::TopLevel::IsrHandler(h) = tl else {
+            panic!("expected IsrHandler")
+        };
         assert!(h.mechanism.is_none(), "no explicit mechanism");
         assert!(matches!(h.vector, crate::ast::Expr::Identifier(ref s) if s == "TIM2"));
 
         let tl = parse_top("isr handler @ 28: tick() [true][n == 1] { n = n + 1; };").unwrap();
-        let crate::ast::TopLevel::IsrHandler(h) = tl else { panic!("expected IsrHandler") };
+        let crate::ast::TopLevel::IsrHandler(h) = tl else {
+            panic!("expected IsrHandler")
+        };
         assert!(h.mechanism.is_none());
         assert!(matches!(h.vector, crate::ast::Expr::Decimal(28)));
     }
@@ -6029,8 +6559,10 @@ mod tests {
         let src = "isr<arm_cortex_m> handler @ 5: tick() [true][n == 1] { n = n + 1; };";
         let tl = parse_top(src).unwrap();
         let printed = crate::ast::format_item(&tl);
-        assert!(printed.contains("isr<arm_cortex_m> handler @ 5: tick()"),
-            "mechanism + vector must round-trip, got: {printed}");
+        assert!(
+            printed.contains("isr<arm_cortex_m> handler @ 5: tick()"),
+            "mechanism + vector must round-trip, got: {printed}"
+        );
     }
 
     #[test]
@@ -6045,7 +6577,9 @@ mod tests {
         // 2026-08-13 (layout-keywords plan Phase 6): `union Name { … };` is a
         // standalone untagged overlay (no `struct` keyword).
         let tl = parse_top("union Word { i: Int; f: Float; bytes: Bits<64>; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert!(s.union, "union flag must be set");
         assert!(!s.seq && !s.pack, "union is exclusive of seq/pack");
         assert_eq!(s.fields.len(), 3);
@@ -6056,21 +6590,29 @@ mod tests {
         // 2026-08-15 (coll plan): `coll obj`/`coll struct` set the coll flag;
         // `coll pack struct` and `pack coll struct` are order-independent.
         let tl = parse_top("coll obj MyQueue { data: Ptr<Int>; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(t) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(t) = tl else {
+            panic!("expected TypeDef")
+        };
         assert!(t.coll, "coll obj must set the coll flag");
         assert_eq!(t.body.slots.len(), 1);
 
         let tl = parse_top("coll struct Fixed { data: Int[4]; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert!(s.coll, "coll struct must set the coll flag");
         assert!(!s.union, "coll is not a union");
 
         let tl = parse_top("coll pack struct P { a: Bit<4>; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert!(s.coll && s.pack, "coll pack struct must set both flags");
 
         let tl = parse_top("pack coll struct Q { a: Bit<4>; };").unwrap();
-        let crate::ast::TopLevel::StaticStruct(s) = tl else { panic!("expected StaticStruct") };
+        let crate::ast::TopLevel::StaticStruct(s) = tl else {
+            panic!("expected StaticStruct")
+        };
         assert!(s.coll && s.pack, "pack coll struct must set both flags");
     }
 
@@ -6079,11 +6621,15 @@ mod tests {
         // 2026-08-15 (coll plan addendum): `seq coll obj` / `coll seq obj`
         // set both flags — seq forces the contiguous element block.
         let tl = parse_top("seq coll obj Q { data: Ptr<Int>; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(t) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(t) = tl else {
+            panic!("expected TypeDef")
+        };
         assert!(t.coll && t.seq, "seq coll obj must set both flags");
 
         let tl = parse_top("coll seq obj R { data: Ptr<Int>; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(t) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(t) = tl else {
+            panic!("expected TypeDef")
+        };
         assert!(t.coll && t.seq, "coll seq obj must set both flags");
     }
 
@@ -6099,7 +6645,9 @@ mod tests {
     #[test]
     fn test_spec_in_obj_body() {
         let tl = parse_top("obj Widget { spec Bits: 8; x: Int; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef (obj)") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef (obj)")
+        };
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(8));
     }
 
@@ -6151,18 +6699,14 @@ mod tests {
 
     #[test]
     fn test_spec_envelope_rejects_bare_number_and_wrong_dimension() {
-        let err = parse_top(
-            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6; };",
-        )
-        .unwrap_err();
+        let err = parse_top("type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6; };")
+            .unwrap_err();
         assert!(
             err.contains("explicit ASCII volt unit"),
             "bare number needs the unit: {err}"
         );
-        let err = parse_top(
-            "type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6Ohm; };",
-        )
-        .unwrap_err();
+        let err = parse_top("type D { pin a; pin k; reference \"D\"; spec Tolerance: 3.6Ohm; };")
+            .unwrap_err();
         assert!(
             err.contains("key expects volts"),
             "dimension conflict names both sides: {err}"
@@ -6175,7 +6719,10 @@ mod tests {
         // literals — derating semantics; the instance value replaces the
         // type default. The dimension stays a parse-time hard error.
         let parsed = parse_top("let d: D = D { spec Tolerance: 3.6V; };");
-        assert!(parsed.is_ok(), "instance envelope override parses: {parsed:?}");
+        assert!(
+            parsed.is_ok(),
+            "instance envelope override parses: {parsed:?}"
+        );
         let err = parse_top("let d: D = D { spec MaxCurrent: 3.3V; };").unwrap_err();
         assert!(
             err.contains("the key expects amp"),
@@ -6193,7 +6740,9 @@ mod tests {
 
     fn parse_pins(src: &str) -> Vec<crate::ast::top::PinDecl> {
         let tl = parse_top(src).unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         td.body.pins
     }
 
@@ -6204,16 +6753,21 @@ mod tests {
         // dispatched only at file scope before; bodies already accept
         // defn/txn/node members.
         let tl = parse_top("obj DieInner { let scratch: Int; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         let member = td
             .body
             .members
             .iter()
             .find_map(|m| match m {
                 crate::ast::TopLevel::Statement(s) => match s.as_ref() {
-                    crate::ast::Statement::Let { name, expr: None, ty: Some(_), .. } => {
-                        Some(name.clone())
-                    }
+                    crate::ast::Statement::Let {
+                        name,
+                        expr: None,
+                        ty: Some(_),
+                        ..
+                    } => Some(name.clone()),
                     _ => None,
                 },
                 _ => None,
@@ -6223,7 +6777,9 @@ mod tests {
         // An initialized member let is still a member let (runtime state,
         // not a boundary pin — the projection only reads file scope).
         let tl = parse_top("obj X { let seed: Int = 7; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert!(td.body.members.iter().any(|m| matches!(
             m,
             crate::ast::TopLevel::Statement(s) if matches!(s.as_ref(), crate::ast::Statement::Let { name, .. } if name == "seed")
@@ -6250,9 +6806,7 @@ mod tests {
         // 2026-09-21 (E11): `pin gpio[3]` expands to gpio[0]…gpio[2] with
         // consecutive numbers; the high-water rule continues after the
         // array; the class ascription copies to every element.
-        let pins = parse_pins(
-            "type U { pin en = 7; pin gpio[3]: Nc; pin a; reference \"U\"; };",
-        );
+        let pins = parse_pins("type U { pin en = 7; pin gpio[3]: Nc; pin a; reference \"U\"; };");
         assert_eq!(pins.len(), 5);
         assert_eq!((pins[0].name.as_str(), pins[0].number), ("en", 7));
         assert_eq!(pins[1].name, "gpio[0]");
@@ -6269,9 +6823,8 @@ mod tests {
         // 2026-09-21 (E12): the class fundamental name is stored verbatim —
         // resolution against declared types happens in analysis, never here
         // (design record D6: the parser carries no class vocabulary).
-        let pins = parse_pins(
-            "type C { pin vbus: Power; pin p2 = 3: Nc; pin plain; reference \"C\"; };",
-        );
+        let pins =
+            parse_pins("type C { pin vbus: Power; pin p2 = 3: Nc; pin plain; reference \"C\"; };");
         assert_eq!(pins[0].class_ref.as_deref(), Some("Power"));
         assert_eq!(pins[1].class_ref.as_deref(), Some("Nc"));
         assert_eq!(pins[1].number, 3);
@@ -6311,11 +6864,10 @@ mod tests {
         // 2026-09-02 (revised plan): the texel format is ELEMENT-level
         // physical metadata on an ordinary fundamental-child type.
         // Image-ness is a compiler storage decision — no container keys.
-        let tl = parse_top(
-            "type R32: Float { spec Bits: 32; spec Format: R32Float; };",
-        )
-        .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let tl = parse_top("type R32: Float { spec Bits: 32; spec Format: R32Float; };").unwrap();
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_eq!(
             td.body.metadata["format"],
             crate::ast::PropertyValue::Identifier("R32Float".into())
@@ -6336,15 +6888,23 @@ mod tests {
     #[test]
     fn test_spec_non_integer_width_rejected() {
         let err = parse_top("type W: Int { spec Bits: many; };").unwrap_err();
-        assert!(err.contains("expected integer") || err.contains("integer"), "got: {err}");
+        assert!(
+            err.contains("expected integer") || err.contains("integer"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn test_spec_and_attr_coexist() {
         // `attr` and `spec` coexist in one body (2026-11-08).
         let tl = parse_top("type W: Int { attr ctd: Add; spec Bits: 8; };").unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
-        assert_eq!(td.body.metadata["ctd"], crate::ast::PropertyValue::Identifier("Add".into()));
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
+        assert_eq!(
+            td.body.metadata["ctd"],
+            crate::ast::PropertyValue::Identifier("Add".into())
+        );
         assert_eq!(td.body.metadata["bits"], crate::ast::PropertyValue::Int(8));
     }
 
@@ -6401,12 +6961,17 @@ mod tests {
     fn test_frgn_colon_binds_external_symbol() {
         // SPEC §19.1: the declaration name is the LOCAL Briev name; `:` binds a
         // different external (link) symbol. `as` is not an alias operator.
-        let fb = parse_frgn(
-            r#"frgn local_add(a: Int, b: Int) -> Int: external_add from #System;"#,
-        )
-        .unwrap();
-        assert_eq!(fb.foreign_name, "external_add", "the `:` symbol is the link name");
-        assert_eq!(fb.briev_name.as_deref(), Some("local_add"), "the declaration name is the local Briev name");
+        let fb = parse_frgn(r#"frgn local_add(a: Int, b: Int) -> Int: external_add from #System;"#)
+            .unwrap();
+        assert_eq!(
+            fb.foreign_name, "external_add",
+            "the `:` symbol is the link name"
+        );
+        assert_eq!(
+            fb.briev_name.as_deref(),
+            Some("local_add"),
+            "the declaration name is the local Briev name"
+        );
         assert_eq!(fb.effective_briev_name(), "local_add");
     }
 
@@ -6468,7 +7033,8 @@ mod tests {
             assert!(
                 err.contains("is retired") && err.contains(&format!("write {}", bare)),
                 "{} must be rejected with the fix, got: {}",
-                spelling, err
+                spelling,
+                err
             );
         }
     }
@@ -6482,7 +7048,10 @@ mod tests {
         let ty = parse_type("String<UTF8>").unwrap();
         assert_eq!(
             ty,
-            crate::ast::Type::Applied("String".into(), vec![crate::ast::Type::Custom("UTF8".into())])
+            crate::ast::Type::Applied(
+                "String".into(),
+                vec![crate::ast::Type::Custom("UTF8".into())]
+            )
         );
     }
 
@@ -6492,7 +7061,9 @@ mod tests {
     fn test_reference_clause_on_type() {
         let tl = parse_top("type Led { pin a; pin k; reference \"D\"; spec Tolerance: 3.6V; };")
             .unwrap();
-        let crate::ast::TopLevel::TypeDef(td) = tl else { panic!("expected TypeDef") };
+        let crate::ast::TopLevel::TypeDef(td) = tl else {
+            panic!("expected TypeDef")
+        };
         assert_eq!(td.body.reference.as_deref(), Some("D"));
         assert_eq!(td.body.pins.len(), 2);
         match td.body.metadata.get("tolerance") {
@@ -6508,25 +7079,31 @@ mod tests {
     fn test_retired_tolerance_clause_reports_rewrite() {
         // 2026-09-24 (quantities Phase 2): the clause is gone; the error
         // names the replacement spelling with an explicit unit.
-        let err =
-            parse_top("type J { pin p1; reference \"J\"; tolerance any; };").unwrap_err().to_string();
+        let err = parse_top("type J { pin p1; reference \"J\"; tolerance any; };")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("retired"), "{err}");
         assert!(err.contains("spec Tolerance: any;"), "{err}");
     }
 
     #[test]
     fn test_retired_rating_clause_reports_rewrite() {
-        let err =
-            parse_top("type R { pin a; pin b; reference \"R\"; rating 0.25; };").unwrap_err().to_string();
+        let err = parse_top("type R { pin a; pin b; reference \"R\"; rating 0.25; };")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("retired"), "{err}");
         assert!(err.contains("spec Rating: 0.25W;"), "{err}");
     }
 
     #[test]
     fn test_pins_without_reference_is_a_parse_error() {
-        let err = parse_top("type Led { pin a; pin k; };").unwrap_err().to_string();
+        let err = parse_top("type Led { pin a; pin k; };")
+            .unwrap_err()
+            .to_string();
         assert!(
-            err.contains("no reference clause") && err.contains("Led") && err.contains("reference \"X\""),
+            err.contains("no reference clause")
+                && err.contains("Led")
+                && err.contains("reference \"X\""),
             "mandatory-reference diagnostic must name the type and the fix, got: {err}"
         );
     }
@@ -6534,7 +7111,9 @@ mod tests {
     #[test]
     fn test_cell_clauses_parse() {
         let tl = parse_top("cell Uart { pin tx; pin rx; reference \"U\"; };").unwrap();
-        let crate::ast::TopLevel::Cell(c) = tl else { panic!("expected Cell") };
+        let crate::ast::TopLevel::Cell(c) = tl else {
+            panic!("expected Cell")
+        };
         assert_eq!(c.pins.len(), 2);
         assert_eq!(c.reference.as_deref(), Some("U"));
     }
@@ -6577,9 +7156,8 @@ mod tests {
 
     #[test]
     fn test_op_as_member_parses() {
-        let ops = parse_op_members(
-            "obj Counter { count: Int; op Count() -> Int { term count; }; };",
-        );
+        let ops =
+            parse_op_members("obj Counter { count: Int; op Count() -> Int { term count; }; };");
         assert_eq!(ops.len(), 1, "one operator member");
         assert_eq!(ops[0].name, "Count");
         assert_eq!(ops[0].parameters.len(), 0);
@@ -6605,7 +7183,10 @@ mod tests {
             panic!("expected TypeDefOperator");
         };
         assert_eq!(op.name, "At");
-        assert_eq!(op.parameters, vec![("i".to_string(), crate::ast::Type::int())]);
+        assert_eq!(
+            op.parameters,
+            vec![("i".to_string(), crate::ast::Type::int())]
+        );
         assert_eq!(td.body.op_bindings[0].name, "InsertAt");
     }
 
@@ -6630,9 +7211,7 @@ mod tests {
 
     #[test]
     fn test_op_binding_with_markers() {
-        let ops = parse_op_from_type_def(
-            "type T { op InsertAt: push(#Lh, #Rh); };"
-        );
+        let ops = parse_op_from_type_def("type T { op InsertAt: push(#Lh, #Rh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].name, "InsertAt");
         assert!(ops[0].protocol_variant.is_none());
@@ -6677,9 +7256,7 @@ mod tests {
 
     #[test]
     fn test_protocol_def_with_contract() {
-        let pd = parse_protocol(
-            "proto ASCII: String [#Self < 128] { CastTo(String<UTF8>); };"
-        );
+        let pd = parse_protocol("proto ASCII: String [#Self < 128] { CastTo(String<UTF8>); };");
         assert_eq!(pd.name, "ASCII");
         assert!(pd.contract.is_some(), "contract should be parsed");
         assert_eq!(pd.cast_edges.len(), 1);
@@ -6696,7 +7273,7 @@ mod tests {
     #[test]
     fn test_protocol_def_both_edges() {
         let pd = parse_protocol(
-            "proto ASCII: String { CastTo(String<UTF8>); CastFrom(String<UTF8>); };"
+            "proto ASCII: String { CastTo(String<UTF8>); CastFrom(String<UTF8>); };",
         );
         assert_eq!(pd.cast_edges.len(), 2);
         assert_eq!(pd.cast_edges[0].direction, CastDirection::CastTo);
@@ -6705,9 +7282,8 @@ mod tests {
 
     #[test]
     fn test_protocol_def_multiple_edges() {
-        let pd = parse_protocol(
-            "proto multi: String { CastTo(String<UTF8>); CastTo(String<UTF16>); };"
-        );
+        let pd =
+            parse_protocol("proto multi: String { CastTo(String<UTF8>); CastTo(String<UTF16>); };");
         assert_eq!(pd.cast_edges.len(), 2);
         assert_eq!(pd.cast_edges[0].target_variant, "UTF8");
         assert_eq!(pd.cast_edges[1].target_variant, "UTF16");
@@ -6722,11 +7298,19 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let expr = p.parse_expression().unwrap();
         match expr {
-            crate::ast::Expr::Slice { array, start, end, stride } => {
+            crate::ast::Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 assert_eq!(format!("{}", array), "arr");
-                assert!(start.is_some()); assert_eq!(format!("{}", start.unwrap()), "2");
-                assert!(end.is_some()); assert_eq!(format!("{}", end.unwrap()), "8");
-                assert!(stride.is_some()); assert_eq!(format!("{}", stride.unwrap()), "1");
+                assert!(start.is_some());
+                assert_eq!(format!("{}", start.unwrap()), "2");
+                assert!(end.is_some());
+                assert_eq!(format!("{}", end.unwrap()), "8");
+                assert!(stride.is_some());
+                assert_eq!(format!("{}", stride.unwrap()), "1");
             }
             _ => panic!("expected Expr::Slice"),
         }
@@ -6739,9 +7323,15 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let expr = p.parse_expression().unwrap();
         match expr {
-            crate::ast::Expr::Slice { array, start, end, stride } => {
+            crate::ast::Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 assert!(start.is_none());
-                assert!(end.is_some()); assert_eq!(format!("{}", end.unwrap()), "10");
+                assert!(end.is_some());
+                assert_eq!(format!("{}", end.unwrap()), "10");
                 assert!(stride.is_none());
             }
             _ => panic!("expected Expr::Slice"),
@@ -6755,9 +7345,16 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let expr = p.parse_expression().unwrap();
         match expr {
-            crate::ast::Expr::Slice { array, start, end, stride } => {
-                assert!(start.is_some()); assert_eq!(format!("{}", start.unwrap()), "2");
-                assert!(end.is_some()); assert_eq!(format!("{}", end.unwrap()), "8");
+            crate::ast::Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
+                assert!(start.is_some());
+                assert_eq!(format!("{}", start.unwrap()), "2");
+                assert!(end.is_some());
+                assert_eq!(format!("{}", end.unwrap()), "8");
                 assert!(stride.is_none());
             }
             _ => panic!("expected Expr::Slice"),
@@ -6771,11 +7368,19 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let expr = p.parse_expression().unwrap();
         match expr {
-            crate::ast::Expr::Slice { array, start, end, stride } => {
+            crate::ast::Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 assert_eq!(format!("{}", array), "arr");
-                assert!(start.is_some()); assert_eq!(format!("{}", start.unwrap()), "i");
-                assert!(end.is_some()); assert_eq!(format!("{}", end.unwrap()), "j");
-                assert!(stride.is_some()); assert_eq!(format!("{}", stride.unwrap()), "k");
+                assert!(start.is_some());
+                assert_eq!(format!("{}", start.unwrap()), "i");
+                assert!(end.is_some());
+                assert_eq!(format!("{}", end.unwrap()), "j");
+                assert!(stride.is_some());
+                assert_eq!(format!("{}", stride.unwrap()), "k");
             }
             _ => panic!("expected Expr::Slice"),
         }
@@ -6788,7 +7393,12 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let expr = p.parse_expression().unwrap();
         match expr {
-            crate::ast::Expr::Slice { array, start, end, stride } => {
+            crate::ast::Expr::Slice {
+                array,
+                start,
+                end,
+                stride,
+            } => {
                 assert!(start.is_none());
                 assert!(end.is_none());
                 assert!(stride.is_none());
@@ -6811,40 +7421,52 @@ mod tests {
 
     #[test]
     fn test_parse_render_struct() {
-        let rb = parse_render_block(
-            "render Foo { <div>Hello</div> };");
+        let rb = parse_render_block("render Foo { <div>Hello</div> };");
         assert_eq!(rb.struct_name, "Foo");
-        assert!(rb.view_html.contains("<div>Hello</div>"),
-            "HTML content should be preserved: got '{}'", rb.view_html);
+        assert!(
+            rb.view_html.contains("<div>Hello</div>"),
+            "HTML content should be preserved: got '{}'",
+            rb.view_html
+        );
     }
 
     #[test]
     fn test_parse_render_accepts_any_declaration_kind() {
         // 2026-08-05 (Phase 3): `render Name` resolves the kind; struct/obj
         // keywords are gone from the attachment form.
-        let rb = parse_render_block(
-            "render Bar { <span b-text=\"x\">0</span> };");
+        let rb = parse_render_block("render Bar { <span b-text=\"x\">0</span> };");
         assert_eq!(rb.struct_name, "Bar");
-        assert!(rb.view_html.contains("b-text"),
-            "HTML should include b-* attribute: got '{}'", rb.view_html);
+        assert!(
+            rb.view_html.contains("b-text"),
+            "HTML should include b-* attribute: got '{}'",
+            rb.view_html
+        );
     }
 
     #[test]
     fn test_parse_render_struct_with_style_attr() {
         let rb = parse_render_block(
-            "render Styled { <div class=\"box\" style=\"color: red;\">Content</div> };");
+            "render Styled { <div class=\"box\" style=\"color: red;\">Content</div> };",
+        );
         assert_eq!(rb.struct_name, "Styled");
-        assert!(rb.view_html.contains("class=\"box\""),
-            "HTML should preserve attributes: got '{}'", rb.view_html);
+        assert!(
+            rb.view_html.contains("class=\"box\""),
+            "HTML should preserve attributes: got '{}'",
+            rb.view_html
+        );
     }
 
     #[test]
     fn test_parse_render_struct_nested_tags() {
         let rb = parse_render_block(
-            "render Nest { <ul><li b-each:item=\"list\" b-text=\"item\"></li></ul> };");
+            "render Nest { <ul><li b-each:item=\"list\" b-text=\"item\"></li></ul> };",
+        );
         assert_eq!(rb.struct_name, "Nest");
-        assert!(rb.view_html.contains("b-each:item"),
-            "HTML should preserve b-each: got '{}'", rb.view_html);
+        assert!(
+            rb.view_html.contains("b-each:item"),
+            "HTML should preserve b-each: got '{}'",
+            rb.view_html
+        );
     }
 
     #[test]
@@ -6931,15 +7553,17 @@ mod tests {
                 assert_eq!(name, "my");
                 // The string "hello" is a separate expression — not consumed
             }
-            _ => panic!("expected Identifier(\"my\") with space separator, got {:?}", expr),
+            _ => panic!(
+                "expected Identifier(\"my\") with space separator, got {:?}",
+                expr
+            ),
         }
     }
 
     #[test]
     fn test_op_parse_with_pre_discriminator() {
-        let ops = parse_op_from_type_def(
-            "type T { op Parse(Decimal, pre:\"0x\"): parse_hex(#Lh); };"
-        );
+        let ops =
+            parse_op_from_type_def("type T { op Parse(Decimal, pre:\"0x\"): parse_hex(#Lh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].name, "Parse");
         assert_eq!(ops[0].protocol_variant.as_deref(), Some("Decimal"));
@@ -6950,9 +7574,8 @@ mod tests {
 
     #[test]
     fn test_op_parse_with_suf_discriminator() {
-        let ops = parse_op_from_type_def(
-            "type T { op Parse(Decimal, suf:\"km\"): parse_km(#Lh); };"
-        );
+        let ops =
+            parse_op_from_type_def("type T { op Parse(Decimal, suf:\"km\"): parse_km(#Lh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].name, "Parse");
         assert_eq!(ops[0].suf.as_deref(), Some("km"));
@@ -6961,7 +7584,7 @@ mod tests {
     #[test]
     fn test_op_parse_with_regex_discriminator() {
         let ops = parse_op_from_type_def(
-            "type T { op Parse(Decimal, reg:\"[0-9]+\"): parse_num(#Lh); };"
+            "type T { op Parse(Decimal, reg:\"[0-9]+\"): parse_num(#Lh); };",
         );
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].reg.as_deref(), Some("[0-9]+"));
@@ -6970,7 +7593,7 @@ mod tests {
     #[test]
     fn test_op_parse_multiple_discriminators() {
         let ops = parse_op_from_type_def(
-            "type T { op Parse(Decimal, pre:\"0x\", suf:\"h\"): parse_hex(#Lh); };"
+            "type T { op Parse(Decimal, pre:\"0x\", suf:\"h\"): parse_hex(#Lh); };",
         );
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].pre.as_deref(), Some("0x"));
@@ -6979,18 +7602,14 @@ mod tests {
 
     #[test]
     fn test_op_parse_quoted_form() {
-        let ops = parse_op_from_type_def(
-            "type T { op Parse(Quoted): parse_string(#Lh); };"
-        );
+        let ops = parse_op_from_type_def("type T { op Parse(Quoted): parse_string(#Lh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].protocol_variant.as_deref(), Some("Quoted"));
     }
 
     #[test]
     fn test_op_parse_bare_form() {
-        let ops = parse_op_from_type_def(
-            "type T { op Parse(Bare): parse_bool(#Lh); };"
-        );
+        let ops = parse_op_from_type_def("type T { op Parse(Bare): parse_bool(#Lh); };");
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].protocol_variant.as_deref(), Some("Bare"));
     }
@@ -7002,7 +7621,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         match p.parse_top_level()? {
             crate::ast::TopLevel::Definition(d) => Ok(d),
-            other => panic!("expected Definition, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Definition, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -7011,7 +7633,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         match p.parse_top_level()? {
             crate::ast::TopLevel::Transaction(t) => Ok(t),
-            other => panic!("expected Transaction, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected Transaction, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 
@@ -7057,10 +7682,12 @@ mod tests {
     /// A tail can be a match expression (the json-shaped body).
     #[test]
     fn defn_body_match_tail_parses() {
-        let d = parse_defn("defn f(x: Int) -> Int { match x { 0 => 1, _ => 2 } }")
-            .expect("parse");
+        let d = parse_defn("defn f(x: Int) -> Int { match x { 0 => 1, _ => 2 } }").expect("parse");
         assert!(
-            matches!(d.body.last(), Some(crate::ast::Statement::Tail(crate::ast::Expr::Match(..)))),
+            matches!(
+                d.body.last(),
+                Some(crate::ast::Statement::Tail(crate::ast::Expr::Match(..)))
+            ),
             "{:?}",
             d.body.last()
         );
@@ -7080,10 +7707,9 @@ mod tests {
 
     #[test]
     fn test_defn_contract_after_return_type() {
-        let d = parse_defn(
-            "defn f(a: Int, b: Int) -> Int [b != 0][result == a / b] { term a / b; };",
-        )
-        .unwrap();
+        let d =
+            parse_defn("defn f(a: Int, b: Int) -> Int [b != 0][result == a / b] { term a / b; };")
+                .unwrap();
         assert!(is_single(&d.output_type));
         assert!(has_pre(&d.contract));
         assert!(has_post(&d.contract));
@@ -7091,10 +7717,9 @@ mod tests {
 
     #[test]
     fn test_defn_contract_before_return_type() {
-        let d = parse_defn(
-            "defn f(a: Int, b: Int) [b != 0][result == a / b] -> Int { term a / b; };",
-        )
-        .unwrap();
+        let d =
+            parse_defn("defn f(a: Int, b: Int) [b != 0][result == a / b] -> Int { term a / b; };")
+                .unwrap();
         assert!(is_single(&d.output_type));
         assert!(has_pre(&d.contract));
         assert!(has_post(&d.contract));
@@ -7110,10 +7735,7 @@ mod tests {
 
     #[test]
     fn test_txn_contract_after_return_type() {
-        let t = parse_txn(
-            "txn f(a: Int) -> Bool [a > 0][a >= 0] { term a > 0; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f(a: Int) -> Bool [a > 0][a >= 0] { term a > 0; };").unwrap();
         assert!(is_single(&t.output_type));
         assert!(has_pre(&t.contract));
         assert!(has_post(&t.contract));
@@ -7124,10 +7746,9 @@ mod tests {
         // Int[8] is a vector; the following [pre] is the contract, not an
         // array size. Regression: parse_type must only consume `[` as an
         // array suffix when the next token is an integer literal.
-        let d = parse_defn(
-            "defn f(v: Int[8]) -> Int[8] [v[0] == 0][result == v[0]] { term v[0]; };",
-        )
-        .unwrap();
+        let d =
+            parse_defn("defn f(v: Int[8]) -> Int[8] [v[0] == 0][result == v[0]] { term v[0]; };")
+                .unwrap();
         assert!(is_single(&d.output_type));
         assert!(has_pre(&d.contract));
     }
@@ -7144,20 +7765,14 @@ mod tests {
 
     #[test]
     fn test_watchdog_optional_parses() {
-        let t = parse_txn(
-            "txn f() [true][done] ?[5000ms] { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[5000ms] { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         assert!(!w.is_required);
     }
 
     #[test]
     fn test_watchdog_required_parses() {
-        let t = parse_txn(
-            "txn f() [true][done] ![1000ms] { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ![1000ms] { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         assert!(w.is_required);
     }
@@ -7165,10 +7780,7 @@ mod tests {
     #[test]
     fn test_watchdog_on_fire_parses() {
         // 2026-08-01 (C1): `-> handler(val)` on-fire callback.
-        let t = parse_txn(
-            "txn f() [true][done] ?[x < 5] -> report(val) { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[x < 5] -> report(val) { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         let on = w.on_fire.expect("on_fire must parse");
         assert_eq!(on.handler, "report");
@@ -7177,10 +7789,7 @@ mod tests {
 
     #[test]
     fn test_watchdog_on_fire_empty_parens() {
-        let t = parse_txn(
-            "txn f() [true][done] ?[x < 5] -> report() { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[x < 5] -> report() { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         let on = w.on_fire.expect("on_fire must parse");
         assert_eq!(on.handler, "report");
@@ -7248,10 +7857,7 @@ mod tests {
     #[test]
     fn test_watchdog_within_ms_deadline_ns() {
         // 2026-08-01 (D2): `?[cond] within 10 ms` → deadline_ns = 10 * 1e6.
-        let t = parse_txn(
-            "txn f() [true][done] ?[x < 5] within 10 ms { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[x < 5] within 10 ms { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         assert_eq!(w.deadline_ns, Some(10_000_000));
         assert!(w.cycles_bound.is_none());
@@ -7260,10 +7866,7 @@ mod tests {
     #[test]
     fn test_watchdog_within_cyc_cycles_bound() {
         // 2026-08-01 (D2): `?[cond] within 1000 cyc` → cycles_bound = 1000.
-        let t = parse_txn(
-            "txn f() [true][done] ?[x < 5] within 1000 cyc { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[x < 5] within 1000 cyc { term; };").unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         assert_eq!(w.cycles_bound, Some(1000));
         assert!(w.deadline_ns.is_none());
@@ -7272,13 +7875,14 @@ mod tests {
     #[test]
     fn test_watchdog_within_then_handler() {
         // `within` comes before `-> handler`.
-        let t = parse_txn(
-            "txn f() [true][done] ?[x < 5] within 10 ms -> report(val) { term; };",
-        )
-        .unwrap();
+        let t = parse_txn("txn f() [true][done] ?[x < 5] within 10 ms -> report(val) { term; };")
+            .unwrap();
         let w = t.contract.watchdog.expect("watchdog must parse");
         assert_eq!(w.deadline_ns, Some(10_000_000));
-        assert_eq!(w.on_fire.as_ref().map(|f| f.handler.as_str()), Some("report"));
+        assert_eq!(
+            w.on_fire.as_ref().map(|f| f.handler.as_str()),
+            Some("report")
+        );
     }
 
     // ── 2026-08-01 (Phase 2): `[#]` entry marker removal ──────────────
@@ -7326,7 +7930,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         match item {
-            crate::ast::TopLevel::SyncGroup { domains, item: inner } => {
+            crate::ast::TopLevel::SyncGroup {
+                domains,
+                item: inner,
+            } => {
                 assert_eq!(domains, vec!["counters".to_string()]);
                 if let crate::ast::TopLevel::Transaction(t) = inner.as_ref() {
                     assert_eq!(t.name, "inc_a");
@@ -7362,7 +7969,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            assert!(t.modifiers.iter().any(|m| m.name == "seq"), "seq modifier must be recorded");
+            assert!(
+                t.modifiers.iter().any(|m| m.name == "seq"),
+                "seq modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7542,7 +8152,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            assert!(t.modifiers.iter().any(|m| m.name == "accel"), "accel modifier must be recorded");
+            assert!(
+                t.modifiers.iter().any(|m| m.name == "accel"),
+                "accel modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7557,7 +8170,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            assert!(t.modifiers.iter().any(|m| m.name == "accel"), "accel modifier must be recorded");
+            assert!(
+                t.modifiers.iter().any(|m| m.name == "accel"),
+                "accel modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7573,8 +8189,16 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            let stage = t.modifiers.iter().find(|m| m.name == "stage").expect("stage recorded");
-            assert!(matches!(stage.value, Some(crate::ast::Expr::Decimal(3))), "stage value: {:?}", stage.value);
+            let stage = t
+                .modifiers
+                .iter()
+                .find(|m| m.name == "stage")
+                .expect("stage recorded");
+            assert!(
+                matches!(stage.value, Some(crate::ast::Expr::Decimal(3))),
+                "stage value: {:?}",
+                stage.value
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7584,10 +8208,20 @@ mod tests {
         let mut p2 = Parser::new(tokens2, src2);
         let item2 = p2.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item2 {
-            let tile = t.modifiers.iter().find(|m| m.name == "tile").expect("tile recorded");
+            let tile = t
+                .modifiers
+                .iter()
+                .find(|m| m.name == "tile")
+                .expect("tile recorded");
             match tile.value {
                 Some(crate::ast::Expr::Tuple(ref v)) => {
-                    assert_eq!(v, &vec![crate::ast::Expr::Decimal(128), crate::ast::Expr::Decimal(256)]);
+                    assert_eq!(
+                        v,
+                        &vec![
+                            crate::ast::Expr::Decimal(128),
+                            crate::ast::Expr::Decimal(256)
+                        ]
+                    );
                 }
                 ref other => panic!("tile value: {other:?}"),
             }
@@ -7605,7 +8239,11 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            let irr = t.modifiers.iter().find(|m| m.name == "irr").expect("irr recorded");
+            let irr = t
+                .modifiers
+                .iter()
+                .find(|m| m.name == "irr")
+                .expect("irr recorded");
             assert!(irr.value.is_none(), "irr is payload-less: {:?}", irr.value);
         } else {
             panic!("expected Transaction, got {item:?}");
@@ -7635,7 +8273,11 @@ mod tests {
         assert_eq!(items.len(), 2, "block + node: {items:?}");
         match &items[0] {
             crate::ast::TopLevel::ModuleConfig(cfg) => {
-                assert!(cfg.source.contains("ptx_tensor_stages: 2;"), "{}", cfg.source);
+                assert!(
+                    cfg.source.contains("ptx_tensor_stages: 2;"),
+                    "{}",
+                    cfg.source
+                );
                 assert!(cfg.source.contains("warn: deny;"), "{}", cfg.source);
             }
             other => panic!("expected ModuleConfig first, got {other:?}"),
@@ -7671,7 +8313,10 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err();
-        assert!(err.to_string().contains("node/txn"), "expected helpful diagnostic, got: {err}");
+        assert!(
+            err.to_string().contains("node/txn"),
+            "expected helpful diagnostic, got: {err}"
+        );
     }
 
     #[test]
@@ -7681,7 +8326,10 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err();
-        assert!(err.to_string().contains("node/txn"), "expected helpful diagnostic, got: {err}");
+        assert!(
+            err.to_string().contains("node/txn"),
+            "expected helpful diagnostic, got: {err}"
+        );
     }
 
     #[test]
@@ -7691,8 +8339,10 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err();
-        assert!(err.to_string().contains("node/txn"),
-            "expected helpful diagnostic, got: {err}");
+        assert!(
+            err.to_string().contains("node/txn"),
+            "expected helpful diagnostic, got: {err}"
+        );
     }
 
     #[test]
@@ -7724,9 +8374,11 @@ mod tests {
         match item {
             crate::ast::TopLevel::ModuleMetadata(map) => {
                 assert_eq!(map.len(), 2, "expected two merged keys, got {map:?}");
-                assert!(matches!(map.get("target"),
+                assert!(
+                    matches!(map.get("target"),
                     Some(crate::ast::PropertyValue::Identifier(s)) if s == "b"),
-                    "last binding must win, got {map:?}");
+                    "last binding must win, got {map:?}"
+                );
                 assert!(matches!(map.get("flag"),
                     Some(crate::ast::PropertyValue::Identifier(s)) if s == "on"));
             }
@@ -7742,7 +8394,11 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let items = p.parse_program().unwrap();
-        assert_eq!(items.len(), 2, "expected ModuleMetadata + node, got {items:?}");
+        assert_eq!(
+            items.len(),
+            2,
+            "expected ModuleMetadata + node, got {items:?}"
+        );
         assert!(matches!(items[0], crate::ast::TopLevel::ModuleMetadata(_)));
         assert!(matches!(items[1], crate::ast::TopLevel::Transaction(_)));
     }
@@ -7757,10 +8413,21 @@ mod tests {
         let item = p.parse_top_level().unwrap();
         match item {
             crate::ast::TopLevel::ModuleMetadata(map) => {
-                assert!(matches!(map.get("a"), Some(crate::ast::PropertyValue::Int(7))));
-                assert!(matches!(map.get("b"), Some(crate::ast::PropertyValue::Bool(true))));
-                assert!(matches!(map.get("c"), Some(crate::ast::PropertyValue::String(s)) if s == "hi"));
-                assert!(matches!(map.get("d"), Some(crate::ast::PropertyValue::List(_))));
+                assert!(matches!(
+                    map.get("a"),
+                    Some(crate::ast::PropertyValue::Int(7))
+                ));
+                assert!(matches!(
+                    map.get("b"),
+                    Some(crate::ast::PropertyValue::Bool(true))
+                ));
+                assert!(
+                    matches!(map.get("c"), Some(crate::ast::PropertyValue::String(s)) if s == "hi")
+                );
+                assert!(matches!(
+                    map.get("d"),
+                    Some(crate::ast::PropertyValue::List(_))
+                ));
             }
             other => panic!("expected ModuleMetadata, got {other:?}"),
         }
@@ -7798,7 +8465,11 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         p.parse_top_level().unwrap();
-        assert!(p.warnings.is_empty(), "claimed key must not warn: {:?}", p.warnings);
+        assert!(
+            p.warnings.is_empty(),
+            "claimed key must not warn: {:?}",
+            p.warnings
+        );
 
         // An unregistered bare key has no consumer → one advisory warning,
         // deduped across occurrences.
@@ -7815,7 +8486,11 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         p.parse_top_level().unwrap();
-        assert!(p.warnings.is_empty(), "owned attr must not warn: {:?}", p.warnings);
+        assert!(
+            p.warnings.is_empty(),
+            "owned attr must not warn: {:?}",
+            p.warnings
+        );
     }
 
     #[test]
@@ -7825,7 +8500,10 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err().to_string();
-        assert!(err.contains("webstack"), "must name the claiming owner: {err}");
+        assert!(
+            err.contains("webstack"),
+            "must name the claiming owner: {err}"
+        );
 
         // Unknown owner is a plugin domain — any key accepted.
         let src = "attr<plugin_x> anything: 1;";
@@ -7841,7 +8519,10 @@ mod tests {
         let tokens = tokenize(src).unwrap();
         let mut p = Parser::new(tokens, src);
         let err = p.parse_top_level().unwrap_err().to_string();
-        assert!(err.contains("--accel"), "fix hint must name the flag: {err}");
+        assert!(
+            err.contains("--accel"),
+            "fix hint must name the flag: {err}"
+        );
     }
 
     #[test]
@@ -7886,7 +8567,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Definition(d) = item {
-            assert!(d.modifiers.iter().any(|m| m.name == "out"), "out modifier must be recorded");
+            assert!(
+                d.modifiers.iter().any(|m| m.name == "out"),
+                "out modifier must be recorded"
+            );
         } else {
             panic!("expected Definition, got {item:?}");
         }
@@ -7900,7 +8584,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            assert!(t.modifiers.iter().any(|m| m.name == "out"), "out modifier must be recorded");
+            assert!(
+                t.modifiers.iter().any(|m| m.name == "out"),
+                "out modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7914,7 +8601,10 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            assert!(t.modifiers.iter().any(|m| m.name == "out"), "out modifier must be recorded");
+            assert!(
+                t.modifiers.iter().any(|m| m.name == "out"),
+                "out modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
@@ -7944,19 +8634,28 @@ mod tests {
         let mut p = Parser::new(tokens, src);
         let item = p.parse_top_level().unwrap();
         if let crate::ast::TopLevel::Transaction(t) = item {
-            let lets: Vec<_> = t.body.iter().filter_map(|s| match s {
-                crate::ast::Statement::Let { modifiers, .. } => Some(modifiers.clone()),
-                _ => None,
-            }).collect();
+            let lets: Vec<_> = t
+                .body
+                .iter()
+                .filter_map(|s| match s {
+                    crate::ast::Statement::Let { modifiers, .. } => Some(modifiers.clone()),
+                    _ => None,
+                })
+                .collect();
             let mods = lets.first().expect("expected a let");
-            assert!(mods.iter().any(|m| m.name == "out"), "out modifier must be recorded");
-            assert!(mods.iter().any(|m| m.name == "vol"), "vol modifier must be recorded");
+            assert!(
+                mods.iter().any(|m| m.name == "out"),
+                "out modifier must be recorded"
+            );
+            assert!(
+                mods.iter().any(|m| m.name == "vol"),
+                "vol modifier must be recorded"
+            );
         } else {
             panic!("expected Transaction, got {item:?}");
         }
     }
 }
-
 
 #[cfg(test)]
 mod phase3_tests {
@@ -8019,32 +8718,42 @@ mod phase3_tests {
         let kinds: Vec<String> = body
             .iter()
             .filter_map(|s| match s {
-                crate::ast::Statement::ArrowAssign { target, consume, .. } => Some(format!(
-                    "arrow:{}-{}",
-                    consume,
-                    target.is_some()
-                )),
+                crate::ast::Statement::ArrowAssign {
+                    target, consume, ..
+                } => Some(format!("arrow:{}-{}", consume, target.is_some())),
                 _ => None,
             })
             .collect();
-        assert_eq!(kinds, vec!["arrow:false-true", "arrow:true-true", "arrow:false-false", "arrow:true-false"]);
+        assert_eq!(
+            kinds,
+            vec![
+                "arrow:false-true",
+                "arrow:true-true",
+                "arrow:false-false",
+                "arrow:true-false"
+            ]
+        );
     }
 
     #[test]
     fn test_invert_contract_expands_pair() {
         // [!/X] → pre !X, post X ; [!/!X] → pre X, post !X
-        let prog = parse_prog(
-            "node n [!/ a > 0] { term; };\nnode m [!/! (b == 0)] { term; };\n",
-        );
+        let prog = parse_prog("node n [!/ a > 0] { term; };\nnode m [!/! (b == 0)] { term; };\n");
         // node n: pre = !(a > 0), post = a > 0
         let n = prog.iter().find_map(|t| match t {
             crate::ast::TopLevel::Transaction(tr) if tr.name == "n" => Some(tr.contract.clone()),
             _ => None,
         });
         let n = n.expect("node n");
-        let pre_not = matches!(n.pre_condition, crate::ast::Expr::UnaryOp(crate::ast::UnaryOpKind::Not, _));
+        let pre_not = matches!(
+            n.pre_condition,
+            crate::ast::Expr::UnaryOp(crate::ast::UnaryOpKind::Not, _)
+        );
         assert!(pre_not, "node n pre must be !(a > 0)");
-        assert!(!matches!(n.post_condition, crate::ast::Expr::UnaryOp(crate::ast::UnaryOpKind::Not, _)));
+        assert!(!matches!(
+            n.post_condition,
+            crate::ast::Expr::UnaryOp(crate::ast::UnaryOpKind::Not, _)
+        ));
     }
 
     #[test]
@@ -8139,8 +8848,14 @@ mod phase3_tests {
         match &bit.bound {
             Some(crate::ast::BoundSpec::Choice(parts)) => {
                 assert_eq!(parts.len(), 3);
-                assert_eq!(parts[0], crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(16)));
-                assert_eq!(parts[2], crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64)));
+                assert_eq!(
+                    parts[0],
+                    crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(16))
+                );
+                assert_eq!(
+                    parts[2],
+                    crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64))
+                );
             }
             other => panic!("expected Choice(16|32|64), got {:?}", other),
         }
@@ -8149,7 +8864,10 @@ mod phase3_tests {
         match &shift.bound {
             Some(crate::ast::BoundSpec::Choice(parts)) => {
                 assert_eq!(parts.len(), 2);
-                assert_eq!(parts[0], crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64)));
+                assert_eq!(
+                    parts[0],
+                    crate::ast::BoundSpec::Single(crate::ast::BoundTerm::Lit(64))
+                );
                 assert_eq!(
                     parts[1],
                     crate::ast::BoundSpec::Range(
@@ -8165,9 +8883,7 @@ mod phase3_tests {
     #[test]
     fn test_parse_init_body_form() {
         // Body form: seeds once before beginprogram; no `= expr`.
-        let items = parse_prog(
-            "init Layout: [16 | 32 | 64] Int {\n    term pick(target);\n};\n",
-        );
+        let items = parse_prog("init Layout: [16 | 32 | 64] Int {\n    term pick(target);\n};\n");
         let init: &crate::ast::top::InitDecl = items
             .iter()
             .find_map(|t| match t {
@@ -8201,10 +8917,12 @@ mod phase3_tests {
                  let b: Stack<Int, 5> = 0;\n",
         );
         let txn_init = items.iter().any(|t| match t {
-            crate::ast::TopLevel::TypeDef(td) => td.body.members.iter().any(|member| match member {
-                crate::ast::TopLevel::Transaction(tr) => tr.name == "init",
-                _ => false,
-            }),
+            crate::ast::TopLevel::TypeDef(td) => {
+                td.body.members.iter().any(|member| match member {
+                    crate::ast::TopLevel::Transaction(tr) => tr.name == "init",
+                    _ => false,
+                })
+            }
             _ => false,
         });
         assert!(txn_init, "txn init must remain legal inside obj");
@@ -8299,11 +9017,16 @@ mod isr_halt_tests {
              done = true;\n\
              halt;\n\
              };\n",
-        ).unwrap();
-        let crate::ast::TopLevel::IsrHandler(h) = tl else { panic!("expected IsrHandler") };
-        assert!(matches!(h.body[1], crate::ast::Statement::Halt),
+        )
+        .unwrap();
+        let crate::ast::TopLevel::IsrHandler(h) = tl else {
+            panic!("expected IsrHandler")
+        };
+        assert!(
+            matches!(h.body[1], crate::ast::Statement::Halt),
             "halt; in an ISR body must parse to Statement::Halt, got: {:?}",
-            h.body[1]);
+            h.body[1]
+        );
     }
 }
 
@@ -8314,16 +9037,26 @@ mod section_prefix_tests {
     #[test]
     fn test_section_prefix_on_defn_and_const() {
         // 2026-09-06 (Phase 8): section(".name") placement prefix.
-        let tl = parse_top(
-            "section(\".init\") defn startup() -> Int { term 1; };",
-        ).unwrap();
-        let crate::ast::TopLevel::Definition(d) = tl else { panic!("expected Definition") };
+        let tl = parse_top("section(\".init\") defn startup() -> Int { term 1; };").unwrap();
+        let crate::ast::TopLevel::Definition(d) = tl else {
+            panic!("expected Definition")
+        };
         let section = crate::typechecker::defn_section_name(&d);
-        assert_eq!(section.as_deref(), Some(".init"), "section modifier carried");
+        assert_eq!(
+            section.as_deref(),
+            Some(".init"),
+            "section modifier carried"
+        );
 
         let tl = parse_top("section(\".rodata\") const TABLE: Int = 5;").unwrap();
-        let crate::ast::TopLevel::Constant(k) = tl else { panic!("expected Constant") };
-        assert_eq!(k.section.as_deref(), Some(".rodata"), "section field carried");
+        let crate::ast::TopLevel::Constant(k) = tl else {
+            panic!("expected Constant")
+        };
+        assert_eq!(
+            k.section.as_deref(),
+            Some(".rodata"),
+            "section field carried"
+        );
     }
 
     #[test]
@@ -8331,8 +9064,10 @@ mod section_prefix_tests {
         // The canonical printer re-renders the placement.
         let tl = parse_top("section(\".rodata\") const TABLE: Int = 5;").unwrap();
         let printed = crate::ast::format_item(&tl);
-        assert!(printed.contains(".rodata") || printed.contains("TABLE"),
-            "const must round-trip, got: {printed}");
+        assert!(
+            printed.contains(".rodata") || printed.contains("TABLE"),
+            "const must round-trip, got: {printed}"
+        );
     }
 
     #[test]
@@ -8362,14 +9097,28 @@ fn bootstrap_node_parses_with_handoff_postcondition() {
         panic!("expected a transaction, got {:?}", items[0]);
     };
     assert_eq!(t.name, "reset");
-    assert!(t.modifiers.iter().any(|m| m.name == "bootstrap"),
-        "the bootstrap modifier must be recorded: {:?}", t.modifiers);
+    assert!(
+        t.modifiers.iter().any(|m| m.name == "bootstrap"),
+        "the bootstrap modifier must be recorded: {:?}",
+        t.modifiers
+    );
     assert!(t.is_reactive);
-    assert!(matches!(t.contract.pre_condition, crate::ast::Expr::Bool(true)));
+    assert!(matches!(
+        t.contract.pre_condition,
+        crate::ast::Expr::Bool(true)
+    ));
     // The single bracket is the HANDOFF postcondition, not a precondition.
-    assert!(matches!(t.contract.post_condition, crate::ast::Expr::BinaryOp(_, _, _)),
-        "postcondition carries the bracket expression");
-    assert!(t.contract.explicit, "a written bracket is an explicit contract");
+    assert!(
+        matches!(
+            t.contract.post_condition,
+            crate::ast::Expr::BinaryOp(_, _, _)
+        ),
+        "postcondition carries the bracket expression"
+    );
+    assert!(
+        t.contract.explicit,
+        "a written bracket is an explicit contract"
+    );
 }
 
 #[test]
@@ -8382,7 +9131,10 @@ fn bootstrap_node_without_brackets_has_no_obligation() {
         panic!("expected a transaction, got {:?}", items[0]);
     };
     assert!(!t.contract.explicit, "no brackets = no declared obligation");
-    assert!(matches!(t.contract.post_condition, crate::ast::Expr::Bool(true)));
+    assert!(matches!(
+        t.contract.post_condition,
+        crate::ast::Expr::Bool(true)
+    ));
 }
 
 #[test]
@@ -8394,10 +9146,7 @@ fn bootstrap_node_rejects_pre_post_double_form() {
     let mut p = Parser::new(tokens, src);
     let err = p.parse_program().unwrap_err();
     let msg = format!("{}", err);
-    assert!(
-        msg.contains("single handoff postcondition"),
-        "{msg}"
-    );
+    assert!(msg.contains("single handoff postcondition"), "{msg}");
 }
 
 // ── 2026-09-22 (plan 2026-09-22-core-chain-into): chain/into ─────────────
@@ -8415,114 +9164,141 @@ mod chain_tests {
 
     #[test]
     fn chain_desugars_to_nodes_with_accumulated_guards() {
-    // The D9 fixture, software-shaped: two sign-offs → three nodes, each
-    // later node guarded by the base AND all prior sign-offs.
-    let src = "chain power_up [dc_present] {\n\
+        // The D9 fixture, software-shaped: two sign-offs → three nodes, each
+        // later node guarded by the base AND all prior sign-offs.
+        let src = "chain power_up [dc_present] {\n\
                \x20   u_buck5.en = high;\n\
                \x20   into u_buck5.pgood;\n\
                \x20   u_buck3.en = high;\n\
                \x20   into u_buck3.pgood;\n\
                \x20   u_core.en = high;\n\
                };\n";
-    let items = parse_prog(src);
-    assert_eq!(items.len(), 3, "3 steps → 3 nodes, got {:?}", items);
-    let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
-        panic!("step 1 must be a transaction");
-    };
-    assert_eq!(t1.name, "power_up_1");
-    assert!(t1.is_reactive, "chain steps are reactive nodes");
-    // pre = base guard; post = true
-    let crate::ast::Expr::Identifier(b) = &t1.contract.pre_condition else {
-        panic!("step 1 pre should be the base guard, got {:?}", t1.contract.pre_condition);
-    };
-    assert_eq!(b, "dc_present");
-    assert!(matches!(t1.contract.post_condition, crate::ast::Expr::Bool(true)));
-    assert_eq!(t1.body.len(), 1, "one action per step");
+        let items = parse_prog(src);
+        assert_eq!(items.len(), 3, "3 steps → 3 nodes, got {:?}", items);
+        let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
+            panic!("step 1 must be a transaction");
+        };
+        assert_eq!(t1.name, "power_up_1");
+        assert!(t1.is_reactive, "chain steps are reactive nodes");
+        // pre = base guard; post = true
+        let crate::ast::Expr::Identifier(b) = &t1.contract.pre_condition else {
+            panic!(
+                "step 1 pre should be the base guard, got {:?}",
+                t1.contract.pre_condition
+            );
+        };
+        assert_eq!(b, "dc_present");
+        assert!(matches!(
+            t1.contract.post_condition,
+            crate::ast::Expr::Bool(true)
+        ));
+        assert_eq!(t1.body.len(), 1, "one action per step");
 
-    let crate::ast::TopLevel::Transaction(t2) = &items[1] else { panic!("step 2") };
-    assert_eq!(t2.name, "power_up_2");
-    // pre = dc_present && u_buck5.pgood
-    let crate::ast::Expr::BinaryOp(kind, l, r) = &t2.contract.pre_condition else {
-        panic!("step 2 pre should be a conjunction, got {:?}", t2.contract.pre_condition);
-    };
-    assert_eq!(*kind, crate::ast::BinaryOpKind::And);
-    let crate::ast::Expr::Identifier(b2) = l.as_ref() else { panic!("step2 pre lhs") };
-    assert_eq!(b2, "dc_present");
-    let crate::ast::Expr::Field(base2, f2) = r.as_ref() else { panic!("step2 pre rhs") };
-    let crate::ast::Expr::Identifier(i2) = base2.as_ref() else { panic!("step2 pre rhs base") };
-    assert_eq!(i2, "u_buck5");
-    assert_eq!(f2, "pgood");
+        let crate::ast::TopLevel::Transaction(t2) = &items[1] else {
+            panic!("step 2")
+        };
+        assert_eq!(t2.name, "power_up_2");
+        // pre = dc_present && u_buck5.pgood
+        let crate::ast::Expr::BinaryOp(kind, l, r) = &t2.contract.pre_condition else {
+            panic!(
+                "step 2 pre should be a conjunction, got {:?}",
+                t2.contract.pre_condition
+            );
+        };
+        assert_eq!(*kind, crate::ast::BinaryOpKind::And);
+        let crate::ast::Expr::Identifier(b2) = l.as_ref() else {
+            panic!("step2 pre lhs")
+        };
+        assert_eq!(b2, "dc_present");
+        let crate::ast::Expr::Field(base2, f2) = r.as_ref() else {
+            panic!("step2 pre rhs")
+        };
+        let crate::ast::Expr::Identifier(i2) = base2.as_ref() else {
+            panic!("step2 pre rhs base")
+        };
+        assert_eq!(i2, "u_buck5");
+        assert_eq!(f2, "pgood");
 
-    let crate::ast::TopLevel::Transaction(t3) = &items[2] else { panic!("step 3") };
-    assert_eq!(t3.name, "power_up_3");
-    let crate::ast::Expr::BinaryOp(_, l3, r3) = &t3.contract.pre_condition else {
-        panic!("step 3 pre should be a conjunction");
-    };
-    let crate::ast::Expr::BinaryOp(_, _, _) = l3.as_ref() else {
-        panic!("step 3 pre lhs should be the nested conjunction");
-    };
-    let crate::ast::Expr::Field(base3, f3) = r3.as_ref() else { panic!("step3 pre rhs") };
-    let crate::ast::Expr::Identifier(i3) = base3.as_ref() else { panic!("step3 pre rhs base") };
-    assert_eq!(i3, "u_buck3");
-    assert_eq!(f3, "pgood");
-}
+        let crate::ast::TopLevel::Transaction(t3) = &items[2] else {
+            panic!("step 3")
+        };
+        assert_eq!(t3.name, "power_up_3");
+        let crate::ast::Expr::BinaryOp(_, l3, r3) = &t3.contract.pre_condition else {
+            panic!("step 3 pre should be a conjunction");
+        };
+        let crate::ast::Expr::BinaryOp(_, _, _) = l3.as_ref() else {
+            panic!("step 3 pre lhs should be the nested conjunction");
+        };
+        let crate::ast::Expr::Field(base3, f3) = r3.as_ref() else {
+            panic!("step3 pre rhs")
+        };
+        let crate::ast::Expr::Identifier(i3) = base3.as_ref() else {
+            panic!("step3 pre rhs base")
+        };
+        assert_eq!(i3, "u_buck3");
+        assert_eq!(f3, "pgood");
+    }
 
-#[test]
-fn chain_base_guard_is_optional() {
-    let src = "chain boot { start(); into ready; run(); };\n";
-    let items = parse_prog(src);
-    assert_eq!(items.len(), 2);
-    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
-    assert!(
-        matches!(t1.contract.pre_condition, crate::ast::Expr::Bool(true)),
-        "omitted base guard defaults to true, got {:?}",
-        t1.contract.pre_condition
-    );
-}
+    #[test]
+    fn chain_base_guard_is_optional() {
+        let src = "chain boot { start(); into ready; run(); };\n";
+        let items = parse_prog(src);
+        assert_eq!(items.len(), 2);
+        let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
+            panic!("step 1")
+        };
+        assert!(
+            matches!(t1.contract.pre_condition, crate::ast::Expr::Bool(true)),
+            "omitted base guard defaults to true, got {:?}",
+            t1.contract.pre_condition
+        );
+    }
 
-#[test]
-fn chain_step_actions_may_be_guarded_statements() {
-    // A `when` action inside a step desugars naturally — it is just a
-    // statement in the step's node body.
-    let src = "chain on [armed] {\n\
+    #[test]
+    fn chain_step_actions_may_be_guarded_statements() {
+        // A `when` action inside a step desugars naturally — it is just a
+        // statement in the step's node body.
+        let src = "chain on [armed] {\n\
                \x20   when door_open { unlock(); };\n\
                \x20   into unlatched;\n\
                \x20   release();\n\
                };\n";
-    let items = parse_prog(src);
-    assert_eq!(items.len(), 2);
-    let crate::ast::TopLevel::Transaction(t1) = &items[0] else { panic!("step 1") };
-    assert!(
-        matches!(&t1.body[0], crate::ast::Statement::Guarded(_, _)),
-        "a when-guarded action stays a guarded statement in the node body"
-    );
-}
+        let items = parse_prog(src);
+        assert_eq!(items.len(), 2);
+        let crate::ast::TopLevel::Transaction(t1) = &items[0] else {
+            panic!("step 1")
+        };
+        assert!(
+            matches!(&t1.body[0], crate::ast::Statement::Guarded(_, _)),
+            "a when-guarded action stays a guarded statement in the node body"
+        );
+    }
 
-#[test]
-fn chain_rejects_trailing_signoff() {
-    let src = "chain bad [g] { a(); into done; };\n";
-    let tokens = crate::lexer::tokenize(src).unwrap();
-    let mut p = Parser::new(tokens, src);
-    let err = p.parse_program().unwrap_err();
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("ends in `into ...;`"),
-        "expected the trailing-sign-off error, got: {msg}"
-    );
-}
+    #[test]
+    fn chain_rejects_trailing_signoff() {
+        let src = "chain bad [g] { a(); into done; };\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("ends in `into ...;`"),
+            "expected the trailing-sign-off error, got: {msg}"
+        );
+    }
 
-#[test]
-fn chain_rejects_empty_body() {
-    let src = "chain empty [g] { };\n";
-    let tokens = crate::lexer::tokenize(src).unwrap();
-    let mut p = Parser::new(tokens, src);
-    let err = p.parse_program().unwrap_err();
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("no actions"),
-        "expected the empty-chain error, got: {msg}"
-    );
-}
+    #[test]
+    fn chain_rejects_empty_body() {
+        let src = "chain empty [g] { };\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let mut p = Parser::new(tokens, src);
+        let err = p.parse_program().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("no actions"),
+            "expected the empty-chain error, got: {msg}"
+        );
+    }
 }
 
 // ── 2026-09-22 (D16 p3b): open disconnection ─────────────────────────────

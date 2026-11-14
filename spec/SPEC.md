@@ -2292,6 +2292,278 @@ txn critical()[ready][done] ![progress] within 100cyc {
 
 The watchdog `?`/`!` forms are contextual and do not conflict with expression propagation or compile-time expansion.
 
+### 10.4 Loop invariants
+
+A `foreach` may state an invariant in brackets between its binder and `in`:
+
+```briev
+defn count(n: Int) [n >= 0 && n <= 1000][term >= 0] -> Int {
+    let acc: Int = 0;
+    foreach i [acc == i && i <= n] in 0..n {
+        acc = acc + 1;
+    };
+    term acc;
+};
+```
+
+The bracket is optional; without it the loop is unchanged. It sits before `in`
+because the iterable is parsed as an expression and a postfix `[` is the index
+operator, so `0..n [I]` would read as indexing the range.
+
+The invariant is an **inductive hypothesis**, not an assertion: it is assumed at
+the loop head and must be shown to survive one pass. Verification is the
+while-rule, three loop-free obligations:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| entry — `<fn>_init` | the precondition, each written local at its initialiser, and `i == lo` | `I` |
+| preservation — `<fn>_preserve` | the precondition, `I`, and `i` in range | `I` after the body and `i + 1` |
+| exit — `<fn>_exit` | the precondition, `I`, and `i` past the end | the postcondition |
+
+All three must hold; a partial set proves nothing about the function. Each
+failing obligation is reported under its own name, so the author sees which one
+broke rather than a single undifferentiated failure.
+
+**Bound safety is the author's obligation.** `Int` wraps at 64 bits, so an
+invariant must bound the values it reasons about individually *and* survive the
+growth step. `acc >= 0` alone is not preserved — it can wrap. `acc <= K` is not
+preserved by `acc = acc + i` when `i` is unbounded. `acc == i && i <= n` with `n`
+bounded does both.
+
+This is distinct from §10.2's statement guards (`[cond] stmt;`) and convergence
+gates (`[cond];`), which assert on every pass. The loop invariant is the
+hypothesis that makes the loop's obligations provable at all.
+
+When no invariant is written, the prover **infers** one. Candidate conjuncts
+are drawn from the code itself — `v == i`, `v >= 0`, `v >= lo`, `v <= hi` for each
+variable the loop writes and for the loop variable — and a candidate is kept only
+if the precondition establishes it at entry *and* one pass preserves it. The
+survivors are conjoined.
+
+Candidates are filtered one at a time, so a conjunct that is inductive only
+alongside another is dropped: the usual Houdini trade, which keeps the procedure
+linear in the candidate count. An inferred invariant is then proved exactly as a
+written one — entry, preservation and exit are all still discharged, so nothing is
+assumed. A loop whose contract cannot be proved stays unproven even when a
+conjunct is inferred.
+
+### 10.5 Loop invariants on `node` and `txn`
+
+A `node` or `txn` states its loop invariant as a **third** contract bracket:
+
+```briev
+txn tick(x: Int, done: Int) [x >= 0 && x < 1000][done == 1][x >= 0] {
+    x = x + 1;
+    done = 1;
+};
+```
+
+The slot is unambiguous: after a contract the parser expects a terminator, and
+the watchdog forms start with `?` or `!`, so a third `[` can only be the
+invariant.
+
+There is no index range here. The body runs **until the postcondition holds**, so
+a pass is guarded by the *negation* of the postcondition and two obligations are
+proved:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| entry — `<fn>_init` | the precondition | `I` |
+| preservation — `<fn>_preserve` | the precondition, `I`, and `¬post` | `I` after one pass |
+
+There is deliberately **no progress obligation**. Showing that the body actually
+drives `post` towards truth needs a *variant* — a measure that strictly decreases
+and is bounded below — which the language does not yet express. The invariant
+therefore gives partial correctness of every pass; termination of a convergent
+body remains unproved. This is the same gap as the `beginprogram` rule above,
+where "provably reachable" is checked as a shape on the source rather than proved.
+
+### 10.6 Loop variants
+
+A `node` or `txn` may state a **variant** after its contract: a measure that
+explains why the loop makes progress.
+
+```briev
+txn converge(x: Int, done: Int) [x >= 0 && x <= 100][done == 1][x >= 0] variant [100 - x] {
+    x = x + 1;
+    done = 1;
+};
+```
+
+`variant` is an ordinary identifier followed by one bracketed expression. No new
+token is introduced, and no existing program can reach the position: after a
+contract the parser expects the body or a terminator.
+
+Two obligations, both loop-free:
+
+| Obligation | Assumed | Required |
+|---|---|---|
+| bounded — `<fn>_variant_bound` | `pre ∧ I ∧ ¬post` | `0 <= V` |
+| decreases — `<fn>_variant_step` | `pre ∧ I ∧ ¬post`, with `V` snapshotted at entry | `V` after one pass `<` the snapshot |
+
+The snapshot is how "strictly decreases" is stated: the entry value of `V` is
+recorded under a name in the antecedent, and the postcondition — evaluated in the
+**final** state — compares against that name. Without it a postcondition could
+only compare final values to each other, which cannot express progress.
+
+With §10.5's entry and preservation obligations, a variant makes a convergent
+loop's **termination** provable rather than merely its partial correctness. That
+is precisely what the `beginprogram` rule asks for when it requires the goal to be
+"provably reachable" — until now, a shape check on the source rather than a proof.
+
+A non-decreasing measure is reported, not ignored: `variant [x]` on a loop that
+increments `x` has its **bound** obligation proved and its **step** obligation left
+unproven, so the author sees exactly which half is wrong.
+
+A `foreach` needs no variant — its trip count is bounded by the range — and a
+variant without an invariant is not accepted: the decreasing obligation is stated
+under `I ∧ ¬post`.
+
+### 10.7 What is verified today
+
+Contract checking is **partial, and honest about it**. The prover reasons over a
+pure-integer subset; a body outside that subset is reported as *skipped* — never
+assumed, and never silently passed.
+
+**Candidates.** A declaration is examined when it carries an explicit,
+non-trivial contract and is a `defn`, a `txn` or a `node` (including `export` and
+`sync` wrappers).
+
+**Not candidates — not even examined.** `$defn` / `$txn` compile-time
+declarations, `defn`s that are *members* of a type, and `cell` declarations. The
+verifier's entry point is the top-level declaration, so these never reach it.
+
+**Supported inside a candidate body.** Integer arithmetic and comparisons, `let`,
+`when` guards, `check` / `gate` facts, calls to callees that carry a value
+summary, and `foreach` over a range — with an invariant (§10.4) or one inferred —
+plus the invariant and variant clauses of §10.5 and §10.6.
+
+**Skipped, with a named reason.** Field access, indexing, buffers, floats,
+strings, casts, `match`, and intrinsics without a summary. The reason names the
+construct and the declaration:
+
+```
+info: --verify-bodies skipped: byte_at: indexing
+```
+
+Skips are advisory. They mean *nothing was proved here*, which is different from
+both "proved" and "refuted", and the report keeps those three apart.
+
+**Consequence.** Most of `lib/std`'s loops live in compile-time metaprogramming or
+in type members, so they are not candidates at all (measured: `lib/std/numeric.bv`
+holds 6 `$defn` and 0 plain `defn`). Verification today pays for **user code
+written in the integer subset**, not for the standard library. Widening it means
+index, bounds and alias reasoning, which the prover does not yet have — and which
+also gates parallelism, since independence is a claim about disjoint writes.
+
+### 10.8 How convergence is established — three mechanisms
+
+Briev can establish that a loop stops in three different ways. They are a ladder,
+not alternatives.
+
+| Mechanism | When | What it establishes | Its limit |
+|---|---|---|---|
+| Watchdog `?[progress] within 10ms -> on_timeout()` (§10.3) | runtime | if the loop stalls, a handler runs | the loop can still stall; costs a timer and a handler |
+| Shape recognition (`analysis::loop_shape`) | compile time | "a counter compared to a bound, advanced each pass" | a pattern, not an argument; anything else is `Unprovable` |
+| `variant [V]` (§10.6) | compile time | `0 <= V`, and `V` strictly decreases — an arithmetic proof | needs a measure, and it must live in the integer subset (§10.7) |
+
+**The shape classifier is what the compiler uses today**, and it is a recognition
+rather than a proof:
+
+```rust
+pub enum Convergence {
+    /// counter >= bound is the convergence proof.
+    CounterGeBound { counter: String, bound: Bound },
+    /// Not provable — a conservative reactor loop must be emitted.
+    Unprovable,
+}
+```
+
+**The watchdog is a runtime guarantee.** Its static analysis validates only the
+wiring — `UnknownTrigger`, `NoHandler`, `NoConflict`, `HandlerDoesNotFalsify`,
+`HandlerRestoresPrecondition` — and never asks whether the loop terminates.
+
+**A variant moves the second rung onto the third.** The same counter loop, given
+`variant [bound - counter]`, stops being *recognised* and starts being *proved*.
+Two consequences follow, both consistent with the rest of the language:
+
+- A proved variant makes a watchdog **redundant for that reason**, so the compiler
+  can eventually diagnose it — the same move as diagnosing a redundant `seq` when
+  the iteration order is provably unobservable.
+- `Convergence::Unprovable` is **declared but never constructed**. Measured: a
+  repo-wide grep finds one occurrence of that name — the variant's own declaration
+  at `analysis/loop_shape.rs:62` — so nothing in the compiler produces it, and the
+  "conservative reactor loop" its doc comment promises is an intention, not
+  behaviour. A proven variant therefore buys correctness today; the performance
+  consequence follows only once the classifier is wired to emit it.
+
+That is the third dead analysis in this area (`check_convergence_safety` had no
+caller either, and now does; `check_dangling_ptrs` remains test-only). The pattern
+is worth naming: a declared-but-unwired analysis reads as a guarantee in the source
+and delivers nothing, which is exactly the failure this section is about.
+
+The watchdog keeps its place wherever no measure can be given: dynamic bounds,
+buffer work, or anything else outside the integer subset covered by §10.7.
+
+### 10.9 Declared non-termination: `unbounded`
+
+A `node` or reactive `txn` may declare that it carries **no termination
+obligation**:
+
+```briev
+unbounded node server [ready][done] {
+    ...
+};
+
+unbounded until [shutdown] node server [ready][done] {
+    ...
+};
+```
+
+`unbounded` is a **waiver, not an assertion**. The loop may end; what is waived is
+the requirement to show *that* it does — not the possibility. The `[true]`
+postcondition keeps its existing meaning and is unchanged by this clause.
+
+It is a **contextual identifier** in the modifier prefix, where `async` already
+sits, so it introduces no new token and remains legal as an identifier elsewhere.
+
+**What it waives.** The convergence-safety report: a reactive transaction that
+never advances its own precondition is reported, *unless* it declares `unbounded`.
+That is the point of the waiver — such a loop is either an accident or a design,
+and the declaration is how the author says which. Accidents keep being reported;
+intent is exempt.
+
+**What it rejects.** `variant` may not appear alongside `unbounded`. One supplies
+the proof that the loop stops; the other declares that the proof is not required.
+Both at once is a contradiction, refused at parse time.
+
+**What it charges: interruptibility.**
+
+> for every back-edge in the declaration's control-flow graph, either a `yield` is
+> reachable before it, or the loop is provably bounded.
+
+This is **reachability, never execution** — nothing is inserted at runtime, so the
+obligation costs nothing to satisfy. A guarded `yield` whose guard is false is free,
+and a body with no inner loop satisfies the "provably bounded" disjunct trivially:
+the reactor already interrupts between ticks, so such a body is not asked to write
+a token `yield`.
+
+Structural interruptibility says a `yield` is *reachable*; it does not say one
+arrives *quickly*. Bounding latency stays a runtime property, which is what the
+**required** watchdog is for (§10.3): `![progress] within 10ms -> on_stall()`.
+
+`until [C]` names the condition under which the loop stops, making the exit
+checkable — the exit path owes `C ∧ I ⟹ post` — which turns the loop into a
+`while !C` with the termination obligation removed. Without it the loop exits only
+externally or via `halt`, and the postcondition is checked on every `term` path as
+usual.
+
+**Status (2026-11-14).** Parsing, storage, the `variant` rejection, the
+convergence-safety exemption and the interruptibility check are **enforced**. The
+convergence report and the interruptibility report are **advisory** while the
+existing population is migrated. One intention remains unrealised: an `unbounded`
+declaration is not yet reported distinctly from `Unprovable`.
+
 ## 11. Control flow
 
 ### 11.1 No `if`/`else`

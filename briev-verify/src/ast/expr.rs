@@ -4,7 +4,7 @@
 // No "feature" wrapper types — unified Expr enum only.
 
 use crate::ast::Type;
-use crate::errors::Span;
+use crate::span::Span;
 
 /// The storage class of a spawned obj instance (2026-08-09, Phase 5).
 /// Strategy-keyword surface: the default (Pooled) is the efficient path — a
@@ -384,5 +384,23 @@ impl Expr {
             Expr::Deref(inner) | Expr::AddrOf(inner) | Expr::Consume(inner) | Expr::Await(inner) => inner.collect_vars_into(acc),
             _ => {}
         }
+    }
+}
+
+impl BinaryOpKind {
+    pub fn is_comparison(&self) -> bool {
+        matches!(
+            self,
+            BinaryOpKind::Eq
+                | BinaryOpKind::Neq
+                | BinaryOpKind::Lt
+                | BinaryOpKind::Gt
+                | BinaryOpKind::Le
+                | BinaryOpKind::Ge
+        )
+    }
+
+    pub fn is_logical(&self) -> bool {
+        matches!(self, BinaryOpKind::And | BinaryOpKind::Or)
     }
 }

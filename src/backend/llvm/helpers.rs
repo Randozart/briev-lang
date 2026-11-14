@@ -1550,10 +1550,18 @@ impl LlvmBackend {
     /// first, then the binding's DECLARED type (a `let line: String = X`
     /// binds line→reg with let_original_types[line] = String).
     pub(super) fn is_semantic_string(&self, recv: &Expr, reg: &TypedRegister) -> bool {
+        let name = if let Expr::Identifier(name) = recv { Some(name.as_str()) } else { None };
+        self.is_semantic_string_ident(name, reg)
+    }
+
+    /// 2026-11-13 (H5 phase C): identifier-keyed twin of `is_semantic_string`
+    /// for HIR views (the HIR side probes its own identifier without an AST
+    /// reconstruction).
+    pub(super) fn is_semantic_string_ident(&self, name: Option<&str>, reg: &TypedRegister) -> bool {
         if self.is_string_operand(&reg.ty) {
             return true;
         }
-        if let Expr::Identifier(name) = recv {
+        if let Some(name) = name {
             if let Some(orig) = self.fun.let_original_types.get(name) {
                 return self.is_string_operand(orig);
             }

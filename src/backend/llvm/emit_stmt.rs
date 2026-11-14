@@ -7,7 +7,10 @@
 
 use crate::ast::{Expr, Statement, Type};
 use crate::ast::top::StmtMatchArm;
-use crate::backend::llvm::{emit_expr::member_briev_name, LlvmBackend, TypedRegister};
+use crate::backend::llvm::{
+    emit_expr::{member_briev_name, ArgsView},
+    LlvmBackend, TypedRegister,
+};
 use std::fmt::Write;
 
 /// 2026-10-05 (json.bv): is `ty` a declared enum whose value is an i64 handle?
@@ -242,7 +245,7 @@ impl LlvmBackend {
     ) -> Option<IterKind> {
         if let Some((element_ty, _base)) = self.tier2_op_collection(list) {
             let out_tmp = self.fun.gen_reg();
-            let count_reg = self.emit_method_call(out, &out_tmp, list, "Count", &[], indent);
+            let count_reg = self.emit_method_call(out, &out_tmp, list, "Count", ArgsView::Ast(&[]), indent);
             // 2026-08-12 (slice 4, wasm32 maze): the foreach's loop counter
             // slot is i64; the Count result on wasm32 is i32 — widen it so the
             // header `icmp slt i64` matches.
@@ -262,7 +265,7 @@ impl LlvmBackend {
         }
         if let Some((element_ty, _base)) = self.tier1_cursor_collection(list) {
             let out_tmp = self.fun.gen_reg();
-            let iter_reg = self.emit_method_call(out, &out_tmp, list, "Iter", &[], indent);
+            let iter_reg = self.emit_method_call(out, &out_tmp, list, "Iter", ArgsView::Ast(&[]), indent);
             return Some(IterKind::Tier1Cursor {
                 iter_reg: iter_reg.name,
                 list: list.clone(),
@@ -1739,7 +1742,7 @@ pub(crate) fn emit_foreach_statement(
                 backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                 let arg = Expr::Identifier(cur_tmp);
                 let out_tmp = backend.fun.gen_reg();
-                let end = backend.emit_method_call(out, &out_tmp, list, "IsEnd", &[arg], indent);
+                let end = backend.emit_method_call(out, &out_tmp, list, "IsEnd", ArgsView::Ast(&[arg]), indent);
                 let end_i1 = backend.fun.gen_reg();
                 // 2026-08-12: the IsEnd op returns a native Bool (i8); the
                 // loop condition needs i1 — the standard Bool truncation.
@@ -1782,7 +1785,7 @@ pub(crate) fn emit_foreach_statement(
                     backend.fun.let_original_types.insert(counter_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(counter_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let mut at = backend.emit_method_call(out, &out_tmp, list, "At", &[arg], indent);
+                    let mut at = backend.emit_method_call(out, &out_tmp, list, "At", ArgsView::Ast(&[arg]), indent);
                     // 2026-08-12 (slice 2 String gap): a String/Data element is
                     // the [len][bytes] ADDRESS stored as an i64 handle in the
                     // collection — the item must be the ptr representation
@@ -1813,7 +1816,7 @@ pub(crate) fn emit_foreach_statement(
                     backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(cur_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let mut item = backend.emit_method_call(out, &out_tmp, list, "Current", &[arg], indent);
+                    let mut item = backend.emit_method_call(out, &out_tmp, list, "Current", ArgsView::Ast(&[arg]), indent);
                     // 2026-08-28: same boxed-only guard as the Tier-2 arm above.
                     if (backend.is_string_operand(element_ty) || backend.is_blob_operand(element_ty))
                         && item.ty == Type::int()
@@ -1966,7 +1969,7 @@ pub(crate) fn emit_foreach_statement(
                     backend.fun.let_original_types.insert(cur_tmp.clone(), Type::int());
                     let arg = Expr::Identifier(cur_tmp);
                     let out_tmp = backend.fun.gen_reg();
-                    let step = backend.emit_method_call(out, &out_tmp, list, "Step", &[arg], indent);
+                    let step = backend.emit_method_call(out, &out_tmp, list, "Step", ArgsView::Ast(&[arg]), indent);
                     step.name
                 } else {
                     let n = backend.fun.gen_reg();
@@ -2027,10 +2030,14 @@ fn emit_assign_value(
 /// 2026-11-09 (H5 seam refactor): an arrow operand addressed by NAME/TYPE,
 /// not by AST shape. `name()` peels `AddrOf` layers to the identifier (the
 /// strategy lookup and stores only ever need the variable); `emit()` prefers
-/// the HIR operand and falls back losslessly to the reconstructed AST leaf.
+/// the HIR operand and falls back losslessly to the source AST leaf.
 pub(crate) enum ArrowOperand<'a> {
     Ast(&'a crate::ast::Expr),
-    Hir(&'a crate::hir::expr::HirExpr),
+    /// 2026-11-13 (H5 phase C): HIR operand plus the SOURCE AST expression at
+    /// the same pair slot. Shape decisions read the HIR; the `#StdOut` print
+    /// path and any uncovered operand leaf use the source AST directly, so the
+    /// statement seam never reconstructs through `hir::to_ast`.
+    HirSourced(&'a crate::hir::expr::HirExpr, &'a crate::ast::Expr),
 }
 
 impl ArrowOperand<'_> {
@@ -2043,24 +2050,23 @@ impl ArrowOperand<'_> {
                 }
                 t.as_var_name()
             }
-            ArrowOperand::Hir(expr) => hir_addr_of_name(expr),
+            ArrowOperand::HirSourced(expr, _) => hir_addr_of_name(expr),
         }
     }
 
     fn emit(&self, backend: &mut LlvmBackend, out: &mut String, indent: &str) -> TypedRegister {
         match self {
             ArrowOperand::Ast(expr) => backend.emit_expr(out, expr, indent),
-            ArrowOperand::Hir(expr) => backend.emit_hir_operand(out, expr, indent).unwrap_or_else(|| {
-                let ast = crate::hir::to_ast::expr(expr).expect("reconstructible arrow value");
-                backend.emit_expr(out, &ast, indent)
-            }),
+            ArrowOperand::HirSourced(expr, ast) => backend
+                .emit_hir_operand(out, expr, indent)
+                .unwrap_or_else(|| backend.emit_expr(out, ast, indent)),
         }
     }
 
     fn to_ast(&self) -> Option<crate::ast::Expr> {
         match self {
             ArrowOperand::Ast(expr) => Some((*expr).clone()),
-            ArrowOperand::Hir(expr) => crate::hir::to_ast::expr(expr),
+            ArrowOperand::HirSourced(_, ast) => Some((*ast).clone()),
         }
     }
 
@@ -2075,7 +2081,7 @@ impl ArrowOperand<'_> {
                     .and_then(|n| backend.resolve_id_type(n))
                     .unwrap_or_else(crate::ast::Type::int)).collect(),
             )),
-            ArrowOperand::Hir(expr) => hir_declared_value_type(expr, backend),
+            ArrowOperand::HirSourced(expr, _) => hir_declared_value_type(expr, backend),
             _ => None,
         }
     }

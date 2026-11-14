@@ -34,6 +34,8 @@
 // lshr64 — LOGICAL shift right (>> is arithmetic on i64). For k in 1..63:
 // arithmetic shift then mask off the sign-extended high bits. k == 0 is the
 // identity (the (1 << 64) mask would overflow, so it is special-cased).
+import { U32_MAX } from "std/constants.bv";
+
 defn lshr64(x: Int, k: Int) [k >= 0 && k <= 63][term == 0 || term != 0] -> Int {
     when k == 0 {
         term x;
@@ -157,19 +159,19 @@ out defn xxh64(s: String, seed: Int) [true][term == 0 || term != 0] -> Int {
 // the mask keeps the result within 32 bits).
 defn lshr32(x: Int, k: Int) [k >= 0 && k <= 31][term >= 0 && term <= 4294967295] -> Int {
     when k == 0 {
-        term x & 4294967295;
+        term x & U32_MAX;
     };
     term (x >> k) & ((1 << (32 - k)) - 1);
 };
 
 // rotl32 — 32-bit rotate left, masked to 32 bits.
 defn rotl32(x: Int, r: Int) [r > 0 && r < 32][term >= 0 && term <= 4294967295] -> Int {
-    term ((x << r) | lshr32(x, 32 - r)) & 4294967295;
+    term ((x << r) | lshr32(x, 32 - r)) & U32_MAX;
 };
 
 // xxh32_round — acc += input * P2; acc = rotl(acc,13); acc *= P1. (mod 2^32)
 defn xxh32_round(acc: Int, inp: Int) [true][term >= 0 && term <= 4294967295] -> Int {
-    term rotl32((acc + inp * 2246822519) & 4294967295, 13) * 2654435761 & 4294967295;
+    term rotl32((acc + inp * 2246822519) & U32_MAX, 13) * 2654435761 & U32_MAX;
 };
 
 // xxh32_stripes — fold 16-byte stripes (4 lanes) from p. Returns (v1..v4).
@@ -193,14 +195,14 @@ defn xxh32_pre(s: String, n: Int, seed: Int) [true][term >= 0 && term <= 4294967
     when n >= 16 {
         let lanes: (Int, Int, Int, Int) =
             xxh32_stripes(s, 0, n,
-                (seed + 2654435761 + 2246822519) & 4294967295,
-                (seed + 2246822519) & 4294967295,
-                seed & 4294967295,
-                (seed + 4294967295 - 2654435761 + 1) & 4294967295);
+                (seed + 2654435761 + 2246822519) & U32_MAX,
+                (seed + 2246822519) & U32_MAX,
+                seed & U32_MAX,
+                (seed + U32_MAX - 2654435761 + 1) & U32_MAX);
         let (v1, v2, v3, v4): (Int, Int, Int, Int) = lanes;
-        term (rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18)) & 4294967295;
+        term (rotl32(v1, 1) + rotl32(v2, 7) + rotl32(v3, 12) + rotl32(v4, 18)) & U32_MAX;
     };
-    term (seed + 374761393) & 4294967295;
+    term (seed + 374761393) & U32_MAX;
 };
 
 // xxh32_tail — sub-16-byte tail: 4-byte chunks, then single bytes.
@@ -209,12 +211,12 @@ defn xxh32_tail(s: String, p: Int, n: Int, h: Int)
     -> Int
 {
     when p + 4 <= n {
-        let k: Int = (h + read32le(s, p) * 3266489917) & 4294967295;
-        term xxh32_tail(s, p + 4, n, rotl32(k, 17) * 668265263 & 4294967295);
+        let k: Int = (h + read32le(s, p) * 3266489917) & U32_MAX;
+        term xxh32_tail(s, p + 4, n, rotl32(k, 17) * 668265263 & U32_MAX);
     };
     when p < n {
-        let k: Int = (h + byte_at(s, p) * 374761393) & 4294967295;
-        term xxh32_tail(s, p + 1, n, rotl32(k, 11) * 2654435761 & 4294967295);
+        let k: Int = (h + byte_at(s, p) * 374761393) & U32_MAX;
+        term xxh32_tail(s, p + 1, n, rotl32(k, 11) * 2654435761 & U32_MAX);
     };
     term h;
 };
@@ -223,11 +225,11 @@ defn xxh32_tail(s: String, p: Int, n: Int, h: Int)
 out defn xxh32(s: String, seed: Int) [true][term >= 0 && term <= 4294967295] -> Int {
     let n: Int = str_len_bytes(s);
     let tail_p: Int = n - (n % 16);
-    let mixed: Int = xxh32_pre(s, n, seed) + n & 4294967295;
+    let mixed: Int = xxh32_pre(s, n, seed) + n & U32_MAX;
     let h: Int = xxh32_tail(s, tail_p, n, mixed);
     let a1: Int = h ^ lshr32(h, 15);
-    let a2: Int = a1 * 2246822519 & 4294967295;
+    let a2: Int = a1 * 2246822519 & U32_MAX;
     let a3: Int = a2 ^ lshr32(a2, 13);
-    let a4: Int = a3 * 3266489917 & 4294967295;
+    let a4: Int = a3 * 3266489917 & U32_MAX;
     term a4 ^ lshr32(a4, 16);
 };
