@@ -985,6 +985,28 @@ impl Value {
         }
     }
 
+    /// True for a Float-typed atom (drives numeric-domain selection: a Float
+    /// operand promotes an integer/comparison to f64).
+    pub fn is_float(&self) -> bool {
+        matches!(self, Value::Atom(Atom::Float(_)))
+    }
+
+    /// Numeric value in the f64 domain: Floats exactly, integers/bools/chars
+    /// widened. Used to compare/combine a Float with an integer operand.
+    pub fn as_number_f64(&self) -> Option<f64> {
+        match self {
+            Value::Atom(Atom::Float(f)) => Some(*f),
+            Value::Atom(Atom::Int(n)) => Some(*n as f64),
+            Value::Atom(Atom::Bool(b)) => Some(if *b { 1.0 } else { 0.0 }),
+            Value::Atom(Atom::Char(c)) => Some(*c as i64 as f64),
+            Value::Bits(bytes) if bytes.len() >= 8 => {
+                let arr: [u8; 8] = bytes[..8].try_into().ok()?;
+                Some(f64::from_le_bytes(arr))
+            }
+            _ => None,
+        }
+    }
+
     /// Extract first byte as bool.
     pub fn as_bool(&self) -> Option<bool> {
         match self {
