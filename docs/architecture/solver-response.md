@@ -36,6 +36,25 @@ For an external Cargo target, configure `BRIEV_HOME` as this checkout and
 `BRIEV_STDLIB_PATH` as its `lib` directory when running compiler integration
 tests. This preserves stdlib discovery for temporary source fixtures.
 
-The production parser has a bounded Kani harness for arbitrary eight-byte ASCII
-suffixes after a leading SAT line. Its initial run timed out without a verdict;
-the harness is available for further verification, not an accepted proof.
+Normalization and recognition are separate production phases. The adapter keeps
+Rust's existing line splitting and Unicode whitespace trimming; the byte kernel
+`classify_status_line` recognizes exact status tokens. Its Kani harness
+`normalized_status_is_exact` checks all byte strings of length 0 through 6,
+including non-UTF-8 bytes: UNSAT iff the token is `unsat`, SAT iff it is `sat`,
+and unknown otherwise. SAT, UNSAT, unknown and both length endpoints have
+explicit cover properties, all of which must be satisfied.
+
+```bash
+cargo kani --manifest-path briev-verify/Cargo.toml --harness normalized_status_is_exact
+```
+
+The first run passed with zero failed checks and all five cover properties
+satisfied. A private copy restoring substring recognition failed the same
+assertions; Kani produced `wunsat` and `ssat` counterexamples, retained as ordinary
+parser regressions. Full command logs and source identities are external evidence.
+
+This is a bounded proof of the actual classifier. It does not establish Unicode
+normalization, arbitrary-length parser behavior, query encoding, Z3 correctness,
+or native compiler correctness. The earlier whole-parser harness for arbitrary
+eight-byte ASCII suffixes after a leading SAT line remains present and
+undischarged: its first run timed out. The smaller proof does not replace it.
