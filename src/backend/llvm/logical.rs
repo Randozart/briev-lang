@@ -67,6 +67,97 @@ impl LlvmBackend {
     // edge. Register-level and/or cannot implement that rule for calls, traps
     // or guarded reads. Dedicated predecessors keep nested control-flow phis
     // valid without stack slots. Retire only into an equivalent shared CFG IR.
+    //
+    // 2026-11-13 (H5 phase C): the fast-path predicate and the register-level
+    // emission are shared with the HIR arm (`emit_short_circuit_hir`); the
+    // HIR twins of the two syntactic predicates mirror the AST matches
+    // one-for-one (to_ast's literal map is 1:1), so fast-vs-CFG routing can
+    // never diverge between the two paths.
+    pub(super) fn short_circuit_register_fast(
+        left: super::emit_expr::ExprView<'_>,
+        right: super::emit_expr::ExprView<'_>,
+    ) -> bool {
+        Self::view_is_side_effect_free(right)
+            && !Self::view_contains_beginprogram(left)
+            && !Self::view_contains_beginprogram(right)
+    }
+
+    pub(super) fn view_is_side_effect_free(view: super::emit_expr::ExprView<'_>) -> bool {
+        match view {
+            super::emit_expr::ExprView::Ast(e) => Self::expr_is_side_effect_free(e),
+            super::emit_expr::ExprView::Hir(h) => Self::hir_is_side_effect_free(h),
+        }
+    }
+
+    pub(super) fn view_contains_beginprogram(view: super::emit_expr::ExprView<'_>) -> bool {
+        match view {
+            super::emit_expr::ExprView::Ast(e) => Self::expr_contains_beginprogram(e),
+            super::emit_expr::ExprView::Hir(h) => Self::hir_contains_beginprogram(h),
+        }
+    }
+
+    /// HIR twin of `expr_is_side_effect_free`. Conservative: any kind not
+    /// listed answers false (the CFG form is always safe); true only where
+    /// the AST match above answers true for the `to_ast` image.
+    fn hir_is_side_effect_free(expr: &crate::hir::expr::HirExpr) -> bool {
+        use crate::hir::expr::{HirExprKind as K, HirLiteral as L};
+        match &expr.kind {
+            K::Literal(L::BeginProgram) => false,
+            K::Literal(_) | K::Identifier(_) | K::UnitLiteral { .. } => true,
+            K::Binary { left, right, .. } => {
+                Self::hir_is_side_effect_free(left) && Self::hir_is_side_effect_free(right)
+            }
+            K::Unary { inner, .. } | K::Cast { inner, .. } | K::Field { receiver: inner, .. } => {
+                Self::hir_is_side_effect_free(inner)
+            }
+            _ => false,
+        }
+    }
+
+    /// HIR twin of `expr_contains_beginprogram`. `BeginProgram` reaches HIR
+    /// as a literal (`HirLiteral::BeginProgram`); the recursion mirrors the
+    /// AST walk.
+    fn hir_contains_beginprogram(expr: &crate::hir::expr::HirExpr) -> bool {
+        use crate::hir::expr::{HirExprKind as K, HirLiteral as L};
+        match &expr.kind {
+            K::Literal(L::BeginProgram) => true,
+            K::Binary { left, right, .. } => {
+                Self::hir_contains_beginprogram(left) || Self::hir_contains_beginprogram(right)
+            }
+            K::Unary { inner, .. }
+            | K::Cast { inner, .. }
+            | K::Field { receiver: inner, .. }
+            | K::Deref(inner)
+            | K::AddrOf(inner)
+            | K::Consume(inner)
+            | K::Await(inner) => Self::hir_contains_beginprogram(inner),
+            _ => false,
+        }
+    }
+
+    /// The register-level and/or fast path over expression views (both sides
+    /// emit through `emit_view_expr`). Callers must have checked
+    /// `short_circuit_register_fast` first; a false answer selects the CFG
+    /// form instead.
+    pub(super) fn short_circuit_register_level(
+        &mut self,
+        out: &mut String,
+        operands: (super::emit_expr::ExprView<'_>, super::emit_expr::ExprView<'_>),
+        short_value: bool,
+        indent: &str,
+    ) -> TypedRegister {
+        let left = super::emit_expr::emit_view_expr(self, out, operands.0, indent);
+        let right = super::emit_expr::emit_view_expr(self, out, operands.1, indent);
+        let left_truth = self.logical_truth(out, &left, indent);
+        let right_truth = self.logical_truth(out, &right, indent);
+        let raw = self.fun.gen_reg();
+        let opcode = if short_value { "or" } else { "and" };
+        writeln!(out, "{indent}{raw} = {opcode} i1 {left_truth}, {right_truth}").ok();
+        let result = self.fun.gen_reg();
+        writeln!(out, "{indent}{result} = zext i1 {raw} to i8").ok();
+        TypedRegister { name: result, ty: Type::bool_() }
+    }
+
     pub(super) fn emit_short_circuit(
         &mut self,
         out: &mut String,
@@ -78,22 +169,37 @@ impl LlvmBackend {
         // A literal/arithmetic RHS has neither, so the old register-level and/or
         // is semantically identical and lets LLVM keep the hot guard branch
         // straight-line (ws_frame pays measurably for the control flow).
-        if Self::expr_is_side_effect_free(operands.1)
-            && !Self::expr_contains_beginprogram(operands.0)
-            && !Self::expr_contains_beginprogram(operands.1)
-        {
-            let left = self.emit_expr(out, operands.0, indent);
-            let right = self.emit_expr(out, operands.1, indent);
-            let left_truth = self.logical_truth(out, &left, indent);
-            let right_truth = self.logical_truth(out, &right, indent);
-            let raw = self.fun.gen_reg();
-            let opcode = if short_value { "or" } else { "and" };
-            writeln!(out, "{indent}{raw} = {opcode} i1 {left_truth}, {right_truth}").ok();
-            let result = self.fun.gen_reg();
-            writeln!(out, "{indent}{result} = zext i1 {raw} to i8").ok();
-            return TypedRegister { name: result, ty: Type::bool_() };
+        if Self::short_circuit_register_fast(
+            super::emit_expr::ExprView::Ast(operands.0),
+            super::emit_expr::ExprView::Ast(operands.1),
+        ) {
+            return self.short_circuit_register_level(
+                out,
+                (super::emit_expr::ExprView::Ast(operands.0), super::emit_expr::ExprView::Ast(operands.1)),
+                short_value,
+                indent,
+            );
         }
         self.emit_logical_control(out, LogicalInputs { left: operands.0, right: operands.1, exit: false }, short_value, indent)
+    }
+
+    /// 2026-11-13 (H5 phase C): the HIR And/Or entry. `Some` when the
+    /// register-level fast path applies (identical predicate to the AST
+    /// path); `None` declines to whole-expression conversion, keeping the
+    /// CFG form on today's AST routing. The caller additionally gates on
+    /// operand losslessness before emission (the view path cannot fall back
+    /// mid-emission).
+    pub(super) fn emit_short_circuit_hir(
+        &mut self,
+        out: &mut String,
+        operands: (super::emit_expr::ExprView<'_>, super::emit_expr::ExprView<'_>),
+        short_value: bool,
+        indent: &str,
+    ) -> Option<TypedRegister> {
+        if !Self::short_circuit_register_fast(operands.0, operands.1) {
+            return None;
+        }
+        Some(self.short_circuit_register_level(out, operands, short_value, indent))
     }
 
     pub(super) fn emit_exit_short_circuit(

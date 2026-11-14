@@ -15,12 +15,10 @@ pub fn lower_type(ty: &Type, universe: Option<&crate::type_universe::TypeUnivers
         // — the exact-width alias — lower it to i{N} so a `Bits<32>` field
         // reads/writes exactly 32 bits (a plain/union struct field, not just
         // packed). The generic-application default (i64) silently widened it.
-        Type::Applied(name, _) if name == "Bits" => {
-            match crate::type_universe::bits_width(ty) {
-                Some(n) => format!("i{}", n),
-                None => lower_custom_type(name, universe),
-            }
-        }
+        Type::Applied(name, _) if name == "Bits" => match crate::type_universe::bits_width(ty) {
+            Some(n) => format!("i{}", n),
+            None => lower_custom_type(name, universe),
+        },
         Type::Applied(name, _) => lower_custom_type(name, universe),
         Type::Bits(n) => format!("i{}", n),
         Type::Void => "void".into(),
@@ -31,9 +29,13 @@ pub fn lower_type(ty: &Type, universe: Option<&crate::type_universe::TypeUnivers
         }
         Type::Function(params, ret) => {
             // 2026-08-03: a function VALUE (callback param / CallPtr#
-            // operand) is a pointer to the function — `ptr` under opaque
-            // pointers. The bare `ret (params)` form is only valid in a
-            // function DECLARATION, never as a parameter/operand type.
+            // operand) is a two-word code/env PAIR, and `ptr` under opaque
+            // pointers points at that pair — NOT at the function itself.
+            // Dispatch therefore loads word 0 for the code pointer and passes
+            // the pair as the environment (see emit_call_ptr); calling the ptr
+            // directly jumps to the pair's address. The bare `ret (params)`
+            // form is only valid in a function DECLARATION, never as a
+            // parameter/operand type.
             let _ = (params, ret);
             "ptr".into()
         }
@@ -62,7 +64,6 @@ pub fn type_size(ty: &Type, universe: Option<&crate::type_universe::TypeUniverse
     // When universe is available, read bytes from ResolvedType.
     if let Some(ref u) = universe {
         if let Some(rt) = ty.universe_key().and_then(|k| u.get(k)) {
-
             if rt.bytes > 0 {
                 return rt.bytes;
             }
@@ -101,10 +102,13 @@ pub fn type_size(ty: &Type, universe: Option<&crate::type_universe::TypeUniverse
         // 2026-07-25: Fixed-size array: Int[1024] → 1024 * element_size.
         Type::Vector(inner, dims) => {
             let elem_size = type_size(inner, universe);
-            let count: u64 = dims.iter().map(|d| match d {
-                crate::ast::Dimension::Anonymous(n) => *n as u64,
-                crate::ast::Dimension::Named(_, n) => *n as u64,
-            }).product();
+            let count: u64 = dims
+                .iter()
+                .map(|d| match d {
+                    crate::ast::Dimension::Anonymous(n) => *n as u64,
+                    crate::ast::Dimension::Named(_, n) => *n as u64,
+                })
+                .product();
             elem_size * count
         }
         _ => 8,

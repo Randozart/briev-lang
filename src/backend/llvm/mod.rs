@@ -6641,7 +6641,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.stateless_body = true;
             writeln!(out, "define i32 @{}(ptr noundef noalias nocapture align 8 %state) local_unnamed_addr #0 {{", fn_name).ok();
             let count_tmp = self.fun.gen_reg();
-            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", &[], "  ");
+            let count = self.emit_method_call(out, &count_tmp, &crate::ast::Expr::Identifier(field.clone()), "Count", emit_expr::ArgsView::Ast(&[]), "  ");
             // The Int width on wasm32 is i32; the At index + loop counter are
             // Int, so use i32 (the count register may be i32 already or i64 —
             // adapt).
@@ -6673,7 +6673,7 @@ self.ctx.live_defns = analysis.defn_liveness.live.clone();
             self.fun.let_original_types.insert(cur_tmp.clone(), crate::ast::Type::int());
             let arg = crate::ast::Expr::Identifier(cur_tmp);
             let at_tmp = self.fun.gen_reg();
-            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", &[arg], "  ");
+            let word = self.emit_method_call(out, &at_tmp, &crate::ast::Expr::Identifier(field.clone()), "At", emit_expr::ArgsView::Ast(&[arg]), "  ");
             if row_size == 0 {
                 // Scalar/string element collection: one snapshot word per item.
                 let word64 = self.view_projection_word(out, "  ", &word);
