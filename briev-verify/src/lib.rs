@@ -9,6 +9,7 @@
 pub mod ast;
 pub mod smt;
 pub mod span;
+mod solver_response;
 pub mod symbolic;
 pub mod verify;
 

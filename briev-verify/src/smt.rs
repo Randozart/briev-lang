@@ -4,6 +4,7 @@
 // This aligns with the Bits-is-primitive architecture.
 
 use crate::ast::{Expr, Type};
+use crate::solver_response::parse_solver_output;
 use std::process::Command;
 
 /// Result of an SMT query.
@@ -44,13 +45,7 @@ pub fn prove_smt(formula: &Expr, _param_types: &[(String, Type)]) -> SmtResult {
             match child.wait_with_output() {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    if stdout.contains("unsat") {
-                        SmtResult::Unsat
-                    } else if stdout.contains("sat") {
-                        SmtResult::Sat(Vec::new())
-                    } else {
-                        SmtResult::Unknown
-                    }
+                    parse_solver_output(&stdout)
                 }
                 Err(_) => SmtResult::Unknown,
             }
@@ -84,27 +79,13 @@ pub fn prove_smt_formula(formula: &str, _timeout_ms: u64) -> SmtResult {
             match child.wait_with_output() {
                 Ok(output) => {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    if stdout.contains("unsat") {
-                        SmtResult::Unsat
-                    } else if stdout.contains("sat") {
-                        SmtResult::Sat(parse_smt_model(&stdout))
-                    } else {
-                        SmtResult::Unknown
-                    }
+                    parse_solver_output(&stdout)
                 }
                 Err(_) => SmtResult::Unknown,
             }
         }
         Err(_) => SmtResult::Unknown,
     }
-}
-
-/// Parse Z3's model output into (variable, value) pairs.
-fn parse_smt_model(_stdout: &str) -> Vec<(String, String)> {
-    // Placeholder — full model parsing deferred
-    // In a full implementation, parse "(define-fun x () (_ BitVec 64) #x0000000000000001)"
-    // style model definitions from Z3 output.
-    Vec::new()
 }
 
 /// Build an SMT-LIB query from a Briev expression.
