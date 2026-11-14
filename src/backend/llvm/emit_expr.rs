@@ -3569,6 +3569,12 @@ pub(crate) fn emit_index_with_obj(
         // they land in is the same width. x86_64 (int_bits=64) is unchanged.
         let hw = format!("i{}", self.ctx.int_bits);
         writeln!(out, "{}  {} = ptrtoint ptr {} to {}", indent, result, alloca_reg, hw).ok();
+        // 2026-11-13 (aggregate-arg ABI): the literal is handed out as an
+        // i{int_bits} handle while its Briev type is the struct/obj (whose
+        // llvm_type is `ptr`). Record the emitted SSA type so an outbound call
+        // converts the handle back to ptr instead of forwarding an i64 operand
+        // where the callee signature declares `ptr` (BUGS.md).
+        self.fun.reg_llvm_ty.insert(result.clone(), hw.clone());
         // 2026-07-24: Record the alloca pointer so &let_var on a struct-typed
         // binding retrieves the stack address, not the ptrtoint value.
         self.fun.struct_literal_allocas.insert(result.clone(), alloca_reg.to_string());
